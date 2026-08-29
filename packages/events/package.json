@@ -1,0 +1,22 @@
+{
+  "name": "@verity/events",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Canonical agent event model — the runtime-agnostic contract shared by the control-plane server and the mobile app",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "jsonrepair": "3.14.1",
+    "zod": "4.4.3"
+  }
+}

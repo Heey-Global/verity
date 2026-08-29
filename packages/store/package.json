@@ -1,0 +1,31 @@
+{
+  "name": "@verity/store",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Durable source of truth — append-only canonical event log in Postgres (concept §5a)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@verity/events": "*",
+    "kysely": "0.29.5",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.7",
+    "@types/pg": "8.23.1"
+  }
+}

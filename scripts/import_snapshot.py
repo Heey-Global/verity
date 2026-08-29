@@ -17,7 +17,11 @@ def safe_path(raw):
     if not isinstance(raw, str) or not raw or "\\" in raw or raw.startswith("/"):
         raise ValueError(f"unsafe path: {raw!r}")
     p = pathlib.PurePosixPath(raw)
-    if str(p) != raw or any(x in ("", ".", "..") for x in p.parts) or p.parts[0] in (".git", ".breeze-worktree.json"):
+    if (
+        str(p) != raw
+        or any(x in ("", ".", "..") for x in p.parts)
+        or p.parts[0] in (".git", ".verity-worktree.json")
+    ):
         raise ValueError(f"unsafe path: {raw!r}")
     return p
 

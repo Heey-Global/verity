@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+# Exercise the standalone credential gateway as the production image's PID 1.
+set -euo pipefail
+
+image="${1:-}"
+if [[ -z "$image" ]]; then
+  echo 'usage: verity-agent-gateway-deployment-smoke <server-image>' >&2
+  exit 2
+fi
+
+suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
+gateway="verity-agent-gateway-smoke-${suffix}"
+network="verity-agent-gateway-smoke-${suffix}"
+control_volume="verity-agent-gateway-control-smoke-${suffix}"
+state_volume="verity-agent-gateway-state-smoke-${suffix}"
+config_volume="verity-agent-gateway-config-smoke-${suffix}"
+client_volume="verity-agent-gateway-client-smoke-${suffix}"
+fixture_token='phase-2b-deployment-fixture'
+fixture_codex_access='phase-4-codex-access-fixture'
+fixture_codex_refresh='phase-4-codex-refresh-fixture'
+fixture_codex_account='phase-4-codex-account-fixture'
+
+cleanup() {
+  docker rm -f "$gateway" >/dev/null 2>&1 || true
+  docker network rm "$network" >/dev/null 2>&1 || true
+  docker volume rm -f \
+    "$control_volume" "$state_volume" "$config_volume" "$client_volume" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker network create "$network" >/dev/null
+docker volume create "$control_volume" >/dev/null
+docker volume create "$state_volume" >/dev/null
+docker volume create "$config_volume" >/dev/null
+docker volume create "$client_volume" >/dev/null
+docker run --rm --user 0:0 --network none \
+  --mount "type=volume,src=$config_volume,dst=/config" \
+  --mount "type=volume,src=$client_volume,dst=/client" \
+  --entrypoint=chown "$image" 1000:1000 /config /client
+
+# Generate one gateway leaf and two project identities using the exact CA code
+# shipped in the production image. The second client is intentionally omitted
+# from the peer-binding snapshot and must be rejected by the live listener.
+docker run --rm -i --network none \
+  --mount "type=volume,src=$config_volume,dst=/config" \
+  --mount "type=volume,src=$client_volume,dst=/client" \
+  --entrypoint=node "$image" --input-type=module - \
+  "$fixture_token" "$fixture_codex_access" "$fixture_codex_refresh" "$fixture_codex_account" <<'NODE'
+import { writeFile } from 'node:fs/promises';
+import {
+  createProjectEgressCa,
+  gatewayMtlsMaterial,
+  issueGatewayServerCertificate,
+  issueProjectClientCertificate,
+} from './packages/server/dist/claude-egress-ca.js';
+
+const token = process.argv[2];
+const codexAccess = process.argv[3];
+const codexRefresh = process.argv[4];
+const codexAccount = process.argv[5];
+const ca = await createProjectEgressCa({ validityDays: 2 });
+const server = await issueGatewayServerCertificate(ca, {
+  serverName: 'verity-agent-gateway',
+  validityDays: 2,
+});
+const allowed = await issueProjectClientCertificate(ca, {
+  projectId: 'deployment-allowed',
+  validityDays: 2,
+});
+const denied = await issueProjectClientCertificate(ca, {
+  projectId: 'deployment-denied',
+  validityDays: 2,
+});
+const material = gatewayMtlsMaterial(ca, server, [allowed]);
+const base = {
+  claude: {
+    tls: { ca: ca.caCertPem, cert: server.certPem, key: server.keyPem },
+    peerBindings: material.peerBindings,
+  },
+};
+await Promise.all([
+  writeFile('/config/initial.json', JSON.stringify({
+    revision: 'deployment-initial',
+    claude: {
+      ...base.claude,
+      credential: { unsealKey: '6a'.repeat(32), accessToken: token },
+    },
+    codex: {
+      credential: {
+        unsealKey: '7b'.repeat(32),
+        sourceRevision: '1'.repeat(64),
+        authJson: JSON.stringify({
+          tokens: {
+            access_token: codexAccess,
+            refresh_token: codexRefresh,
+            account_id: codexAccount,
+          },
+        }),
+      },
+    },
+  }), { mode: 0o600 }),
+  writeFile('/config/recovered.json', JSON.stringify({
+    revision: 'deployment-recovered',
+    claude: {
+      ...base.claude,
+      credential: { unsealKey: '6a'.repeat(32) },
+    },
+    codex: {
+      credential: {
+        unsealKey: '7b'.repeat(32),
+        sourceRevision: '1'.repeat(64),
+      },
+    },
+  }), { mode: 0o600 }),
+  writeFile('/client/ca.crt', ca.caCertPem),
+  writeFile('/client/allowed.crt', allowed.certPem),
+  writeFile('/client/allowed.key', allowed.keyPem, { mode: 0o600 }),
+  writeFile('/client/denied.crt', denied.certPem),
+  writeFile('/client/denied.key', denied.keyPem, { mode: 0o600 }),
+]);
+NODE
+
+start_gateway() {
+  docker run -d --name "$gateway" \
+    --network "$network" \
+    --network-alias verity-agent-gateway \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8m \
+    --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --pids-limit 128 \
+    --memory 512m \
+    --cpus 1 \
+    --mount "type=volume,src=$control_volume,dst=/run/verity-agent-gateway" \
+    --mount "type=volume,src=$state_volume,dst=/var/lib/verity-agent-gateway" \
+    --entrypoint=/usr/bin/tini \
+    -e VERITY_AGENT_GATEWAY_CONTROL_SOCKET=/run/verity-agent-gateway/control.sock \
+    -e VERITY_AGENT_GATEWAY_HEALTH_HOST=127.0.0.1 \
+    -e VERITY_AGENT_GATEWAY_HEALTH_PORT=9080 \
+    -e VERITY_AGENT_GATEWAY_CLAUDE_HOST=0.0.0.0 \
+    -e VERITY_AGENT_GATEWAY_CLAUDE_PORT=9443 \
+    -e VERITY_AGENT_GATEWAY_URL=https://verity-agent-gateway:9443 \
+    -e VERITY_AGENT_GATEWAY_SPILL_PATH=/var/lib/verity-agent-gateway/claude.enc \
+    -e VERITY_AGENT_GATEWAY_CODEX_HOST=0.0.0.0 \
+    -e VERITY_AGENT_GATEWAY_CODEX_PORT=9444 \
+    -e VERITY_AGENT_GATEWAY_CODEX_AUTHORITY=verity-agent-gateway:9444 \
+    -e VERITY_AGENT_GATEWAY_CODEX_SPILL_PATH=/var/lib/verity-agent-gateway/codex.enc \
+    "$image" -- node packages/server/dist/agent-gateway-main.js >/dev/null
+}
+
+configure_gateway() {
+  local snapshot="$1"
+  docker run --rm -i --network none \
+    --mount "type=volume,src=$control_volume,dst=/run/verity-agent-gateway" \
+    --mount "type=volume,src=$config_volume,dst=/config,readonly" \
+    --entrypoint=node "$image" --input-type=module - "$snapshot" <<'NODE'
+import { readFile } from 'node:fs/promises';
+import { configureAgentGateway } from './packages/server/dist/agent-gateway-control.js';
+
+const snapshot = JSON.parse(await readFile(`/config/${process.argv[2]}.json`, 'utf8'));
+let lastError;
+for (let attempt = 0; attempt < 100; attempt += 1) {
+  try {
+    await configureAgentGateway('/run/verity-agent-gateway/control.sock', snapshot);
+    process.exit(0);
+  } catch (error) {
+    lastError = error;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+}
+throw lastError;
+NODE
+}
+
+probe_gateway() {
+  docker run --rm -i --network "$network" \
+    --mount "type=volume,src=$client_volume,dst=/client,readonly" \
+    --entrypoint=node "$image" --input-type=module - <<'NODE'
+import { readFile } from 'node:fs/promises';
+import { request as httpsRequest } from 'node:https';
+
+const ca = await readFile('/client/ca.crt');
+async function request(certName, path, method = 'GET') {
+  const [cert, key] = await Promise.all([
+    readFile(`/client/${certName}.crt`),
+    readFile(`/client/${certName}.key`),
+  ]);
+  return await new Promise((resolve, reject) => {
+    const outgoing = httpsRequest({
+      hostname: 'verity-agent-gateway',
+      port: 9443,
+      path,
+      method,
+      ca,
+      cert,
+      key,
+      servername: 'verity-agent-gateway',
+      minVersion: 'TLSv1.3',
+      maxVersion: 'TLSv1.3',
+      headers: {
+        host: 'verity-agent-gateway:9443',
+        authorization: 'Bearer verity-claude-egress-placeholder-v1',
+      },
+      timeout: 5_000,
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.once('error', reject);
+      response.once('end', () => resolve({
+        status: response.statusCode ?? 0,
+        body: Buffer.concat(chunks).toString(),
+      }));
+    });
+    outgoing.once('timeout', () => outgoing.destroy(new Error('gateway probe timed out')));
+    outgoing.once('error', reject);
+    outgoing.end();
+  });
+}
+
+async function codexRequest(certName, path, method = 'GET') {
+  const [cert, key] = await Promise.all([
+    readFile(`/client/${certName}.crt`),
+    readFile(`/client/${certName}.key`),
+  ]);
+  return await new Promise((resolve, reject) => {
+    const outgoing = httpsRequest({
+      hostname: 'verity-agent-gateway',
+      port: 9444,
+      path,
+      method,
+      ca,
+      cert,
+      key,
+      servername: 'verity-agent-gateway',
+      minVersion: 'TLSv1.3',
+      maxVersion: 'TLSv1.3',
+      headers: {
+        host: 'verity-agent-gateway:9444',
+        authorization: 'Bearer verity-codex-gateway-placeholder-v1',
+      },
+      timeout: 5_000,
+    }, response => {
+      response.resume();
+      response.once('error', reject);
+      response.once('end', () => resolve(response.statusCode ?? 0));
+    });
+    outgoing.once('timeout', () => outgoing.destroy(new Error('Codex gateway probe timed out')));
+    outgoing.once('error', reject);
+    outgoing.end();
+  });
+}
+
+const ready = await request('allowed', '/__verity/gateway-ready');
+if (ready.status !== 200 || !ready.body.includes('"authenticated":true')) {
+  throw new Error(`authenticated readiness returned ${ready.status}`);
+}
+const forbidden = await request('allowed', '/v1/models', 'GET');
+if (forbidden.status !== 403) throw new Error(`forbidden inference path returned ${forbidden.status}`);
+const denied = await request('denied', '/__verity/gateway-ready');
+if (denied.status !== 403) throw new Error(`non-member peer returned ${denied.status}`);
+const codexForbidden = await codexRequest('allowed', '/codex/not-allowlisted');
+if (codexForbidden !== 403) throw new Error(`Codex forbidden path returned ${codexForbidden}`);
+const codexDenied = await codexRequest('denied', '/codex/responses', 'POST');
+if (codexDenied !== 403) throw new Error(`Codex non-member peer returned ${codexDenied}`);
+NODE
+}
+
+health_gateway() {
+  local expected_revision="$1"
+  docker exec "$gateway" node -e "
+    const response = await fetch('http://127.0.0.1:9080/healthz');
+    const status = await response.json();
+    if (!response.ok || status.revision !== '$expected_revision' ||
+        !status.credentialReady || !status.listenerReady || status.claudePeerCount !== 1 ||
+        !status.codexCredentialReady || !status.codexListenerReady || status.codexPort !== 9444) {
+      console.error(status);
+      process.exit(1);
+    }
+  "
+}
+
+start_gateway
+configure_gateway initial
+health_gateway deployment-initial
+probe_gateway
+initial_pid="$(docker inspect -f '{{.State.Pid}}' "$gateway")"
+if docker logs "$gateway" 2>&1 | grep -Fq "$fixture_token" ||
+   docker logs "$gateway" 2>&1 | grep -Fq "$fixture_codex_access" ||
+   docker logs "$gateway" 2>&1 | grep -Fq "$fixture_codex_refresh" ||
+   docker logs "$gateway" 2>&1 | grep -Fq "$fixture_codex_account"; then
+  echo 'gateway logs contain the fixture credential' >&2
+  exit 1
+fi
+
+# The fixture token may only exist inside the authenticated process and the
+# encrypted spill. It must never be recoverable as plaintext from the volume.
+docker run --rm --network none \
+  --mount "type=volume,src=$state_volume,dst=/state,readonly" \
+  --entrypoint=node "$image" -e "
+    const fs = require('node:fs');
+    const claude = fs.readFileSync('/state/claude.enc', 'utf8');
+    const codex = fs.readFileSync('/state/codex.enc', 'utf8');
+    if (!claude.startsWith('enc:v1:') || claude.includes('$fixture_token')) process.exit(1);
+    if (!codex.startsWith('enc:v1:') || codex.includes('$fixture_codex_access') ||
+        codex.includes('$fixture_codex_refresh') || codex.includes('$fixture_codex_account')) process.exit(1);
+  "
+
+# Exercise Docker's real supervision boundary: PID 1 exits, the container
+# starts again with the same stable DNS identity and persistent state volume.
+docker restart "$gateway" >/dev/null
+restarted_pid="$(docker inspect -f '{{.State.Pid}}' "$gateway")"
+if [[ "$restarted_pid" = "$initial_pid" ]]; then
+  echo 'gateway PID did not change across Docker restart' >&2
+  exit 1
+fi
+configure_gateway recovered
+health_gateway deployment-recovered
+probe_gateway
+if docker logs "$gateway" 2>&1 | grep -Fq "$fixture_token" ||
+   docker logs "$gateway" 2>&1 | grep -Fq "$fixture_codex_access" ||
+   docker logs "$gateway" 2>&1 | grep -Fq "$fixture_codex_refresh" ||
+   docker logs "$gateway" 2>&1 | grep -Fq "$fixture_codex_account"; then
+  echo 'gateway logs contain the fixture credential after restart' >&2
+  exit 1
+fi
+
+docker inspect "$gateway" | docker run --rm -i --network none \
+  --entrypoint=node "$image" -e "
+    const chunks = [];
+    process.stdin.on('data', chunk => chunks.push(chunk));
+    process.stdin.on('end', () => {
+      const [info] = JSON.parse(Buffer.concat(chunks));
+      const host = info.HostConfig;
+      if (!host.ReadonlyRootfs || host.Privileged) process.exit(1);
+      if (host.CapDrop?.join(',') !== 'ALL') process.exit(1);
+      if (!host.SecurityOpt?.includes('no-new-privileges')) process.exit(1);
+      if (info.Config.User !== 'node') process.exit(1);
+      if ((info.Config.Env ?? []).some(value => value.includes('$fixture_token'))) process.exit(1);
+      const destinations = (info.Mounts ?? []).map(mount => mount.Destination).sort();
+      if (destinations.join(',') !==
+          '/run/verity-agent-gateway,/var/lib/verity-agent-gateway') process.exit(1);
+    });
+  "
+
+echo 'agent gateway deployment smoke test passed'

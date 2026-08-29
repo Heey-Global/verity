@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  // Never WATCH build output or dependencies for changes. This is what stops the
+  // App Runner's `tsc -b --watch` (mobile) from an infinite rebuild loop: it emits
+  // into `dist/`, and over the Docker bind mount those writes surface back to the
+  // watcher as "file change detected" → rebuild → emit → … pegging a CPU core.
+  // Excluding the output dir (and node_modules) from the watcher breaks that cycle;
+  // real `src/**` edits still trigger a rebuild. Harmless for local dev — you never
+  // want to watch dist/node_modules anyway. Inherited by every project via extends.
+  "watchOptions": {
+    "excludeDirectories": ["**/node_modules", "**/dist"]
+  }
+}

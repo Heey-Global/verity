@@ -1,0 +1,1275 @@
+name: verity-release
+
+# release-please maintains three deliberately gated release trains: one shared
+# backend version for toolkit/server/sandbox, one native mobile version, and one
+# for the product website. It collects Conventional Commits into separate
+# release PRs; artifacts ship only after the corresponding release PR is merged.
+#
+# Backend releases keep the existing `v<semver>` tag and shared artifact version.
+# Native app releases use `mobile-vX.Y.0`; every native release bumps the minor
+# version and always triggers a new native TestFlight build. OTA patches are
+# handled separately by mobile-ota.yml as `mobile-vX.Y.1`, `.2`, and so on.
+# Website releases use `website-vX.Y.Z` and publish one image, tagged `vX.Y.Z`,
+# which the k8s repository pins. The website is on its own train so that a
+# backend release does not move a version the cluster tracks, and so that an
+# nginx base-image bump reaches a released website version on its own — the
+# latter needs the bump to be typed `fix`, which renovate.json arranges for
+# that one Dockerfile, since a `chore` commit releases nothing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mobile-tag:
+        description: Existing draft mobile-vX.Y.0 release to recover
+        required: false
+        type: string
+      backend-version:
+        description: Existing draft maintenance release version (X.Y.Z)
+        required: false
+        type: string
+      backend-ref:
+        description: Maintenance source branch or tag
+        required: false
+        type: string
+      backend-republish:
+        description: Republish an existing backend release and stable channel
+        required: false
+        default: false
+        type: boolean
+      backend-schema-forward-max:
+        description: Reviewed migration key promised readable by a maintenance bridge
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  packages: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release.outputs.release_created }}
+      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release.outputs.major, steps.release.outputs.minor, steps.release.outputs.patch) }}
+      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release.outputs.sha }}
+      mobile-release-created: ${{ steps.release.outputs['apps/mobile--release_created'] }}
+      mobile-version: ${{ steps.release.outputs['apps/mobile--major'] }}.${{ steps.release.outputs['apps/mobile--minor'] }}.${{ steps.release.outputs['apps/mobile--patch'] }}
+      mobile-sha: ${{ steps.release.outputs['apps/mobile--sha'] }}
+      mobile-tag: ${{ steps.release.outputs['apps/mobile--tag_name'] }}
+      # The website is its own release train (`website-vX.Y.Z`), so it has no
+      # maintenance arm to fall back to: `steps.maintenance` recovers a backend
+      # version and says nothing about this package.
+      website-release-created: ${{ steps.release.outputs['docs/website--release_created'] }}
+      website-version: ${{ steps.release.outputs['docs/website--major'] }}.${{ steps.release.outputs['docs/website--minor'] }}.${{ steps.release.outputs['docs/website--patch'] }}
+      website-sha: ${{ steps.release.outputs['docs/website--sha'] }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              # No sudo on the runner: a prior container job left root-owned files the
+              # non-root runner can't chown (so actions/checkout's clean fails with
+              # EACCES). Chown them back as root in a throwaway container — the runner
+              # is in the docker group.
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            else
+              chown -R "$owner" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            fi
+          fi
+
+      - name: Open release PRs or create releases
+        id: release
+        if: github.event_name == 'push'
+        # renovate: datasource=github-actions depName=googleapis/release-please-action
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate maintenance backend release
+        id: maintenance
+        if: github.event_name == 'workflow_dispatch' && inputs['backend-version'] != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.backend-version }}
+          SOURCE_REF: ${{ inputs.backend-ref }}
+          REPUBLISH: ${{ inputs.backend-republish }}
+          SCHEMA_FORWARD_MAX: ${{ inputs.backend-schema-forward-max }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Maintenance backend version must match X.Y.Z, got '$VERSION'." >&2
+            exit 1
+          fi
+          if [[ -z "$SOURCE_REF" ]]; then
+            echo '::error::backend-ref is required with backend-version.' >&2
+            exit 1
+          fi
+          if [[ -n "$SCHEMA_FORWARD_MAX" && ! "$SCHEMA_FORWARD_MAX" =~ ^[0-9]{4}_[a-z0-9_]+$ ]]; then
+            echo "::error::backend-schema-forward-max must be a migration key." >&2
+            exit 1
+          fi
+          tag="v${VERSION}"
+          is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
+          if [[ "$REPUBLISH" == 'true' ]]; then
+            if [[ "$is_draft" == 'true' ]]; then
+              echo "::error::$tag is still a draft; republish is only for an existing release." >&2
+              exit 1
+            fi
+          elif [[ "$is_draft" != 'true' ]]; then
+            echo "::error::$tag must exist as a draft release before maintenance publishing." >&2
+            exit 1
+          fi
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_REF}" --jq '.sha')"
+          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+          if [[ "$tag_type" == 'tag' ]]; then
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')"
+          elif [[ "$tag_type" != 'commit' ]]; then
+            echo "::error::$tag resolves to unsupported object type $tag_type." >&2
+            exit 1
+          fi
+          if [[ "$sha" != "$tag_sha" ]]; then
+            echo "::error::$tag points to $tag_sha but backend-ref resolves to $sha." >&2
+            exit 1
+          fi
+          {
+            echo 'release_created=true'
+            echo "version=$VERSION"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # Pull requests created with GITHUB_TOKEN intentionally do not emit another
+      # pull_request workflow event. Dispatch CI explicitly for every release PR
+      # branch instead of introducing a long-lived PAT. Manifest mode can create
+      # both backend and mobile PRs in one run, hence the plural `prs` output.
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - if: steps.release.outputs.prs_created == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      - name: Run checks for release PRs
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PRS_JSON: ${{ steps.release.outputs.prs }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const prs = JSON.parse(process.env.PRS_JSON || "[]");
+            for (const pr of Array.isArray(prs) ? prs : [prs]) {
+              const branch = pr.headBranchName || pr.headRefName || pr.branchName;
+              if (!branch) throw new Error("release-please PR has no head branch");
+              process.stdout.write(`${branch}\n`);
+            }
+          ' | while IFS= read -r branch; do
+            echo "Dispatching CI for $branch"
+            gh workflow run ci.yml --ref "$branch"
+          done
+
+  self-update-gate:
+    # ADR 0008 names the live cutover smoke as the release condition for managed
+    # deployments, and a managed deployment installs what this workflow publishes
+    # without anyone watching. A broken cutover is the one defect that also breaks
+    # the channel a fix would arrive on, so it must not be publishable.
+    #
+    # Call the smoke only after release-please says this commit actually ships.
+    # A direct reusable-workflow dependency is the verdict: it needs no REST
+    # discovery loop, cannot select an unrelated manual run, and occupies no
+    # second runner merely to poll the first one.
+    needs: release-please
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    uses: ./.github/workflows/self-update.yml
+    with:
+      candidate-sha: ${{ needs.release-please.outputs.backend-sha }}
+
+  publish-mobile-native:
+    # Not gated on the cutover: the native app is its own release train and
+    # carries no Server image, so a failing Server cutover has nothing to say
+    # about it.
+    needs: release-please
+    if: >-
+      always() &&
+      (needs.release-please.outputs.mobile-release-created == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
+      MOBILE_REF: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/main' || needs.release-please.outputs.mobile-sha }}
+    permissions:
+      contents: write
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.MOBILE_REF }}
+          fetch-depth: 0
+
+      - name: Validate native release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$MOBILE_TAG" =~ ^mobile-v[0-9]+\.[0-9]+\.0$ ]]; then
+            echo "::error::Native release tag must match mobile-vX.Y.0, got '$MOBILE_TAG'." >&2
+            exit 1
+          fi
+          is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
+          if [[ "$is_draft" != "true" ]]; then
+            echo "::error::$MOBILE_TAG must still be a draft release before TestFlight publishing." >&2
+            exit 1
+          fi
+          configured_version="$(tr -d '[:space:]' < apps/mobile/version.txt)"
+          if [[ "mobile-v${configured_version}" != "$MOBILE_TAG" ]]; then
+            echo "::error::Checked-out mobile version $configured_version does not match $MOBILE_TAG." >&2
+            exit 1
+          fi
+
+      # A recovery runs from the fixed main workflow rather than the older commit
+      # where release-please first created the draft. Align the still-unpublished
+      # tag with the exact source used for the binary and future OTA baseline.
+      - name: Align recovered draft tag with build source
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_sha="$(git rev-parse HEAD)"
+          git tag --force "$MOBILE_TAG" "$build_sha"
+          git push --force origin "refs/tags/${MOBILE_TAG}"
+
+      # The release job must not depend on ambient Node.js
+      # installation. Install the pinned project runtime before invoking npx/EAS.
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      - name: Require EXPO_TOKEN
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPO_TOKEN:-}" ]]; then
+            echo "::error::EXPO_TOKEN secret is required to start the native TestFlight release." >&2
+            exit 1
+          fi
+
+      - name: Build and upload native TestFlight release
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx --yes eas-cli@21.0.1 workflow:run .eas/workflows/deploy-testflight.yml --non-interactive --wait
+
+      - name: Publish verified native GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$MOBILE_TAG" --draft=false --latest=false
+
+  publish-toolkit:
+    needs: [release-please, self-update-gate]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            else
+              chown -R "$owner" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            fi
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.backend-sha }}
+          fetch-depth: 0
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      # Build the Feature with every published boundary build at or above the
+      # downgrade floor. This runs only after release-please has merged and tagged
+      # the trusted main commit; no PR-controlled code receives this job's package
+      # permissions. Reconstructing from immutable release tags also keeps the
+      # compatibility chain complete without a second commit after the tag.
+      - name: Assemble toolkit compatibility ledger
+        run: node scripts/update-toolkit-ledger.mjs
+
+      # Stamp the shared release version into the manifest BEFORE devcontainers/action
+      # reads it (the Feature publish tags from the manifest `version`).
+      - name: Stamp release version into manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'const f="features/verity-sandbox-toolkit/devcontainer-feature.json";const j=require("./"+f);j.version=process.argv[1];require("node:fs").writeFileSync(f,JSON.stringify(j,null,2)+"\n")' "$VERSION"
+          echo "stamped toolkit version = $VERSION"
+
+      # THE canonical note for why release.yml keeps the DEFAULT ephemeral
+      # builder while ci.yml, verity-server.yml, verity-sandbox.yml and
+      # project-relay.yml pin the persistent `verity-ci-bounded-v1` one; the other four
+      # setup-buildx steps in this file point back here. This is deliberate
+      # asymmetry, not an oversight — do not "align" it.
+      #
+      # The persistent builder is shared by every PR build on the host, and a
+      # BuildKit cache entry is keyed by the build inputs while its RESULT is
+      # whatever the build that first produced that key wrote. Reusing it across
+      # PRs is fine: everyone can already run code on these runners. Reusing it
+      # in the jobs that PUSH and SIGN the release artifacts is a different
+      # question, and the answer costs a few minutes per release rather than
+      # anything ongoing — a release runs on a tag, not per push. The published
+      # image is assembled only from layers this job built or pulled, plus the
+      # `type=gha` entries main wrote, and never from a local store an unmerged
+      # branch could have written into.
+      #
+      # This particular job also builds nothing at all: buildx is here for
+      # `docker buildx imagetools create` on the toolkit channel tags, which
+      # talks to the registry and has no local cache to keep.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      # Authenticate to ghcr BEFORE publishing — devcontainers/action shells out to
+      # the `devcontainer features publish` CLI, which reads ambient docker/OCI
+      # credentials. Without this login it runs anonymously and ghcr returns 403.
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # renovate: datasource=github-actions depName=devcontainers/action
+      - name: Publish verity-sandbox-toolkit
+        uses: devcontainers/action@1082abd5d2bf3a11abccba70eef98df068277772 # v1.4.3
+        with:
+          publish-features: 'true'
+          base-path-to-features: features
+          features-namespace: heey-global/verity
+          oci-registry: ghcr.io
+          disable-repo-tagging: 'true'
+
+      - name: Publish toolkit channel tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_target="ghcr.io/heey-global/verity/verity-sandbox-toolkit:v${VERSION}"
+          latest_target="ghcr.io/heey-global/verity/verity-sandbox-toolkit:latest"
+          docker buildx imagetools create \
+            --prefer-index=false \
+            -t "$version_target" \
+            -t "$latest_target" \
+            "ghcr.io/heey-global/verity/verity-sandbox-toolkit:${VERSION}"
+
+  publish-server:
+    # Also gated on the sandbox image and toolkit Feature, not just the relay: a
+    # released server resolves BOTH of those at its OWN version rather than at
+    # `:latest`, so publishing a server whose siblings failed would ship an image
+    # pointing at tags that do not exist. Same `if` on all three, so this only
+    # ever orders jobs that were going to run anyway.
+    needs:
+      [release-please, self-update-gate, publish-project-relay, publish-sandbox, publish-toolkit]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    runs-on: ubuntu-24.04
+    # Bounded below the janitor's cache grace period — see the note on
+    # ci.yml's `server-image` job.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      # Keyless Sigstore signing of the release channel document. The OIDC token
+      # is what binds the signature to this repository, ref, and workflow file —
+      # the Server refuses a channel signed by anything else (ADR 0008 D4).
+      id-token: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: heey-global/verity/verity-server
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+      SCHEMA_FORWARD_MAX: ${{ github.event_name == 'workflow_dispatch' && inputs['backend-schema-forward-max'] || '' }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            else
+              chown -R "$owner" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            fi
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.backend-sha }}
+          fetch-depth: 0
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      # The Server image is the runtime trust root. Assemble the ledger again in
+      # this job's checkout so the Docker build context contains the same complete
+      # release history as the Feature published by its sibling job.
+      - name: Assemble toolkit compatibility ledger
+        run: node scripts/update-toolkit-ledger.mjs
+
+      # Default ephemeral builder, on purpose — see the note on the setup-buildx
+      # step in `publish-toolkit` above for why the release jobs do not use the
+      # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short=12 HEAD)
+          IMAGE_VERSION="v${VERSION}"
+          {
+            echo "tags<<EOF"
+            echo "${REGISTRY}/${IMAGE_NAME}:${IMAGE_VERSION}"
+            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
+            echo "${REGISTRY}/${IMAGE_NAME}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # The control-plane PostgreSQL pin this release will carry as an OCI label
+      # (ADR 0008 D14). Read straight out of `deploy/docker-compose.yml` rather
+      # than kept anywhere else, so the line Renovate already bumps stays the one
+      # source of truth and no release can ship a label that disagrees with the
+      # compose file a fresh install bootstraps from.
+      - name: Resolve the bundled PostgreSQL pin
+        id: postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t pins < <(sed -nE 's/^[[:space:]]*image:[[:space:]]*(postgres:[^[:space:]]+@sha256:[0-9a-f]{64})[[:space:]]*$/\1/p' deploy/docker-compose.yml)
+          if [[ ${#pins[@]} -ne 1 ]]; then
+            echo "expected exactly one digest-pinned postgres image in deploy/docker-compose.yml, found ${#pins[@]}" >&2
+            exit 1
+          fi
+          echo "image=${pins[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Build + push (linux/amd64)
+        id: build
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # Bake the shared release version into the image so the running server
+          # can report it on /healthz (deploy/Dockerfile: ARG/ENV
+          # VERITY_SERVER_VERSION). Bare version, no leading `v`, matching the
+          # runtime string the app footer shows. Absent on PR/local builds, where
+          # the Dockerfile ARG falls back to the `0.0.0-dev` sentinel.
+          # Bake the Google Drive OAuth client id (ADR 0009) into the image so the
+          # deployed server has it without runtime Doppler access. Non-secret; set
+          # the GOOGLE_AUTH_ID Actions secret directly, or auto-sync it from Doppler
+          # via Doppler's GitHub Actions integration. Empty → the Drive feature
+          # reports "not configured" until set.
+          build-args: |
+            VERITY_SERVER_VERSION=${{ env.VERSION }}
+            VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}
+            VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.publish-project-relay.outputs.image }}
+            VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
+            GOOGLE_AUTH_ID=${{ secrets.GOOGLE_AUTH_ID }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=v${{ env.VERSION }}
+          # `scope` and `ignore-error`: see the note on the `Build Verity server
+          # image` step in ci.yml. The scope name follows the Dockerfile, not the
+          # workflow, so this job and ci.yml's server-image build share one entry
+          # instead of overwriting each other in buildkit's default scope.
+          #
+          # No pull_request gate anywhere in this file: every job here is gated on
+          # `release-please.outputs.backend-release-created`, so it only ever runs
+          # on main. This file is in fact the ONLY writer for the sandbox and relay
+          # scopes now that their PR workflows read-only — deliberate, since a
+          # PR-ref entry was never readable outside that one PR.
+          cache-from: type=gha,scope=verity-server
+          cache-to: type=gha,mode=max,scope=verity-server,ignore-error=true
+
+      # Everything below publishes the signed stable release channel (ADR 0008
+      # D4) — the only thing a managed deployment will accept as an update
+      # offer. It runs last, after the image it describes is pushed, so the
+      # digest it names always exists.
+
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # renovate: datasource=github-actions depName=oras-project/setup-oras
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Sign the Server image
+        shell: bash
+        env:
+          SERVER_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Signed here rather than in the slice that consumes it: a signature
+          # can only be attached while the release is being published, so an
+          # image shipped without one could never be verified afterwards. The
+          # Updater checks this before it pulls (ADR 0008 D4).
+          cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${SERVER_DIGEST}"
+
+      - name: Publish the signed release channel
+        shell: bash
+        env:
+          SERVER_DIGEST: ${{ steps.build.outputs.digest }}
+          # Cosign binds the channel signature to the commit executing this
+          # trusted workflow. For an ordinary release that is also the source
+          # commit; a maintenance bridge deliberately builds an older source ref
+          # from the current reviewed publisher, so checkout remains pinned to
+          # backend-sha while the signed revision is this workflow commit.
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SERVER_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "build step produced no image digest" >&2
+            exit 1
+          fi
+          # The certificate binds the signature to the commit the OIDC token was
+          # issued for, and the Server checks that claim against the `revision`
+          # in the document. If release-please ever tagged a commit other than
+          # the one this run was triggered by, the two would disagree and every
+          # deployment would refuse the release — fail here instead.
+          if [[ "$REVISION" != "$GITHUB_SHA" ]]; then
+            echo "release commit $REVISION is not the commit this run was triggered by ($GITHUB_SHA)" >&2
+            exit 1
+          fi
+          image="${REGISTRY}/${IMAGE_NAME}@${SERVER_DIGEST}"
+          workdir="$(mktemp -d)"
+
+          # The document is rendered BY the image it describes, so the
+          # compatibility window that gets signed is the one this build actually
+          # ships (packages/server/src/self-update/release-channel-publish.ts).
+          # The image also refuses to emit a document it would not itself accept,
+          # which turns a schema mistake into a failed release rather than a
+          # channel every deployment silently ignores.
+          docker run --rm \
+            -e VERITY_RELEASE_SERVER_IMAGE="$image" \
+            -e VERITY_RELEASE_REVISION="$REVISION" \
+            -e VERITY_RELEASE_ARCHITECTURE=amd64 \
+            -e VERITY_RELEASE_PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$image" release-channel-metadata > "$workdir/payload.json"
+
+          # Keyless: the certificate Fulcio issues carries this workflow's OIDC
+          # identity, and the Server pins repository, repository id, ref, and the
+          # built commit against it. No signing key exists to leak or rotate.
+          cosign sign-blob --yes --bundle "$workdir/bundle.json" "$workdir/payload.json"
+
+          # Verify what was just signed against the same identity the Server
+          # pins. A release that cannot pass this would be published, ignored by
+          # every deployment, and only noticed as "no updates available".
+          cosign verify-blob \
+            --bundle "$workdir/bundle.json" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main" \
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+            --certificate-github-workflow-ref refs/heads/main \
+            --certificate-github-workflow-sha "$REVISION" \
+            "$workdir/payload.json"
+
+          # The envelope carries the payload as opaque base64 rather than inline
+          # JSON: the signature covers exact bytes, and re-serializing the
+          # document anywhere between here and the Server would break it.
+          {
+            printf '{"payload":"%s","signature":{"kind":"sigstore-bundle","bundle":"%s"}}' \
+              "$(base64 -w0 "$workdir/payload.json")" \
+              "$(base64 -w0 "$workdir/bundle.json")"
+          } > "$workdir/channel.json"
+
+          cd "$workdir"
+          oras push "${REGISTRY}/${IMAGE_NAME}:channel-stable-amd64" \
+            --artifact-type application/vnd.verity.release-channel.v1+json \
+            channel.json:application/json
+
+  publish-sandbox:
+    needs: [release-please, self-update-gate]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    runs-on: ubuntu-24.04
+    # Bounded below the janitor's cache grace period — see the note on
+    # ci.yml's `server-image` job.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      # Legacy path (kept during namespace migration #475) + new namespaced path.
+      IMAGE_NAME: heey-global/verity-sandbox
+      IMAGE_NAME_NEW: heey-global/verity/verity-sandbox
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            else
+              chown -R "$owner" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            fi
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.backend-sha }}
+
+      - name: Prepare hosted-runner disk
+        uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '25'
+
+      # Default ephemeral builder, on purpose — see the note on the setup-buildx
+      # step in `publish-toolkit` above for why the release jobs do not use the
+      # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short=12 HEAD)
+          IMAGE_VERSION="v${VERSION}"
+          # Dual-publish to the legacy path AND the new namespaced path (#475).
+          {
+            echo "tags<<EOF"
+            echo "${REGISTRY}/${IMAGE_NAME}:${IMAGE_VERSION}"
+            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
+            echo "${REGISTRY}/${IMAGE_NAME}:latest"
+            echo "${REGISTRY}/${IMAGE_NAME_NEW}:${IMAGE_VERSION}"
+            echo "${REGISTRY}/${IMAGE_NAME_NEW}:sha-${SHORT_SHA}"
+            echo "${REGISTRY}/${IMAGE_NAME_NEW}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build + push (linux/amd64)
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          # Repo root so `COPY features/verity-sandbox-toolkit` resolves.
+          context: .
+          file: deploy/verity-sandbox.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=v${{ env.VERSION }}
+            org.opencontainers.image.title=heey-global/verity-sandbox
+            org.opencontainers.image.description=Verity project base image (plain base + verity-sandbox-toolkit Feature)
+          # Scope matches verity-sandbox.yml's read-only build; see the note on the
+          # `Build Verity server image` step in ci.yml.
+          cache-from: type=gha,scope=verity-sandbox
+          cache-to: type=gha,mode=max,scope=verity-sandbox,ignore-error=true
+
+  publish-project-relay:
+    needs: [release-please, self-update-gate]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    outputs:
+      image: ${{ steps.relay-reference.outputs.image }}
+    runs-on: ubuntu-24.04
+    # Bounded below the janitor's cache grace period — see the note on
+    # ci.yml's `server-image` job.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: heey-global/verity/verity-project-relay
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            else
+              chown -R "$owner" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            fi
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.backend-sha }}
+
+      # The relay smoke harness uses host-side Node; provision it explicitly on
+      # runner Docker daemons before validating the exact release image.
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      # Default ephemeral builder, on purpose — see the note on the setup-buildx
+      # step in `publish-toolkit` above for why the release jobs do not use the
+      # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Build exact release relay for smoke test
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/project-relay.Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: verity-project-relay:release-smoke
+          # Same Dockerfile as the push step below and as project-relay.yml, so
+          # deliberately the same scope; see the note on the `Build Verity server
+          # image` step in ci.yml.
+          cache-from: type=gha,scope=verity-project-relay
+          cache-to: type=gha,mode=max,scope=verity-project-relay,ignore-error=true
+
+      - name: Verify exact release relay confinement
+        run: deploy/bin/verity-project-relay-smoke verity-project-relay:release-smoke
+
+      - name: Remove release smoke image
+        if: always()
+        run: docker image rm -f verity-project-relay:release-smoke >/dev/null 2>&1 || true
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short=12 HEAD)
+          {
+            echo "tags<<EOF"
+            echo "${REGISTRY}/${IMAGE_NAME}:v${VERSION}"
+            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
+            echo "${REGISTRY}/${IMAGE_NAME}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build + push (linux/amd64)
+        id: push-relay
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/project-relay.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=v${{ env.VERSION }}
+            org.opencontainers.image.title=heey-global/verity-project-relay
+            org.opencontainers.image.description=Fixed-destination per-project Verity relay
+          # See the note on the `Build Verity server image` step in ci.yml.
+          cache-from: type=gha,scope=verity-project-relay
+          cache-to: type=gha,mode=max,scope=verity-project-relay,ignore-error=true
+
+      - name: Record digest-pinned relay reference
+        id: relay-reference
+        env:
+          RELAY_DIGEST: ${{ steps.push-relay.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$RELAY_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          reference="${REGISTRY}/${IMAGE_NAME}@${RELAY_DIGEST}"
+          echo "image=$reference" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$reference" > verity-project-relay-image.txt
+          {
+            echo '## Project broker relay'
+            echo
+            echo 'Bundled into the matching `verity-server` image:'
+            echo
+            echo "\`$reference\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload digest-pinned relay reference
+        # renovate: datasource=github-actions depName=actions/upload-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verity-project-relay-image
+          path: verity-project-relay-image.txt
+          if-no-files-found: error
+
+  publish-preview-images:
+    # Preview images are not inputs to the stable Server image. Keep them behind
+    # its signed channel publication so they cannot occupy the limited dev-server
+    # runner slots needed by sandbox, toolkit, relay and Server. They still ship
+    # in this release run, but update availability is no longer delayed by them.
+    needs: [release-please, self-update-gate, publish-server]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    runs-on: ubuntu-24.04
+    # Bounded below the janitor's cache grace period — see the note on
+    # ci.yml's `server-image` job.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: edge
+            dockerfile: deploy/preview-edge.Dockerfile
+            image: heey-global/verity/verity-preview-edge
+          - component: connector
+            dockerfile: deploy/preview-connector.Dockerfile
+            image: heey-global/verity/verity-preview-connector
+    env:
+      REGISTRY: ghcr.io
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            fi
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.backend-sha }}
+
+      # Default ephemeral builder, on purpose — see the note on the setup-buildx
+      # step in `publish-toolkit` above for why the release jobs do not use the
+      # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          {
+            echo 'tags<<EOF'
+            echo "${REGISTRY}/${{ matrix.image }}:v${VERSION}"
+            echo "${REGISTRY}/${{ matrix.image }}:sha-${short_sha}"
+            echo "${REGISTRY}/${{ matrix.image }}:latest"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish
+        id: publish
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
+            org.opencontainers.image.version=v${{ env.VERSION }}
+          # One scope per matrix component — edge and connector are different
+          # images and must not share an index. See the note on the `Build Verity
+          # server image` step in ci.yml.
+          cache-from: type=gha,scope=preview-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=preview-${{ matrix.component }},ignore-error=true
+
+      - name: Record immutable image reference
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          reference="${REGISTRY}/${{ matrix.image }}@${DIGEST}"
+          printf '%s\n' "$reference" > "verity-preview-${{ matrix.component }}-image.txt"
+          {
+            echo "## Preview ${{ matrix.component }}"
+            echo
+            echo "\`$reference\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable image reference
+        # renovate: datasource=github-actions depName=actions/upload-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verity-preview-${{ matrix.component }}-image
+          path: verity-preview-${{ matrix.component }}-image.txt
+          if-no-files-found: error
+
+  publish-website:
+    # The Verity product website rides its own release train, so this job is
+    # gated on `website-release-created` and not on the backend release. Two
+    # things follow from that, both deliberate.
+    #
+    # It does not need `self-update-gate`. That gate exists because a released
+    # Server resolves its sandbox image and toolkit Feature at its OWN version,
+    # so publishing those before self-update is proven strands a release. No
+    # Server resolves the website image; ArgoCD in the k8s repository does, by
+    # an explicit pin a human or Renovate moves.
+    #
+    # It is also absent from RELEASE_IMAGES in scripts/audit-release-images.mjs,
+    # which is not an oversight — see the note there. That audit asks whether a
+    # `vX.Y.Z` BACKEND release got its images; this image is versioned on a
+    # different train and would read as missing for every backend release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: release-please
+    if: needs.release-please.outputs.website-release-created == 'true'
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: heey-global/verity/verity-website
+      VERSION: ${{ needs.release-please.outputs.website-version }}
+      TEST_CONTAINER: verity-website-release-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            fi
+          fi
+
+      # `VERSION` is three release-please outputs joined by dots. If one is
+      # missing the join still succeeds and yields `..`, which every step below
+      # accepts: the build labels the image `v..` and the promote step creates
+      # that tag. Checked before the build rather than after, so a renamed
+      # output costs a failed step and not a released image nobody can pin.
+      - name: Verify the release version resolved
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Website release version did not resolve: '$VERSION'" >&2
+            exit 1
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.website-sha }}
+
+      # The guard above proves `VERSION` is well-formed, not that it belongs to
+      # the source now checked out. `website-sha` is the release commit that
+      # bumped this file, so the two agree by construction — and if they ever
+      # disagree, the outputs came from different releases and the tag would
+      # name an image built from something else.
+      - name: Verify the checkout is the release it tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version="$(tr -d '[:space:]' < docs/website/version.txt)"
+          if [[ "$source_version" != "$VERSION" ]]; then
+            echo "Checked-out website is $source_version but the release is $VERSION" >&2
+            exit 1
+          fi
+
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed by digest and tagged only after the smoke passes, exactly as the
+      # per-commit publish does: a version tag is the thing the k8s manifest
+      # pins, so it must never name an image that was never proven to serve.
+      - name: Build and publish untagged image digest
+        id: build
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docs/website/Dockerfile
+          platforms: linux/amd64
+          outputs: >-
+            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          provenance: true
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.release-please.outputs.website-sha }}
+            org.opencontainers.image.version=v${{ env.VERSION }}
+
+      - name: Smoke-test published digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          deploy/bin/verity-website-smoke \
+            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" "$TEST_CONTAINER"
+
+      # No `latest`. The per-commit publish deliberately has no mutable tag to
+      # race, and the deployment pins a version anyway — a floating tag here
+      # would be a second, unpinned way into the cluster.
+      #
+      # Re-running a failed release job is how a release that lost one image is
+      # recovered, so `v${VERSION}` is created rather than claimed once. But a
+      # release that already published has nothing to recover, and the cluster
+      # pins this tag by name: moving it under a running deployment is invisible
+      # to ArgoCD, so running pods keep the old digest while new ones get the
+      # new. Serialization does not help — that is a re-run, not a race. So the
+      # tag is only written when it is absent or already ours; a publish that
+      # genuinely has to replace a released image is a new patch version.
+      - name: Promote tested digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version_target="${REGISTRY}/${IMAGE_NAME}:v${VERSION}"
+          # Sets `inspect_output` to the digest on success and to the error text
+          # on failure, because the two have to be told apart: "no such tag" is
+          # the normal case for a first publish, and every other failure is a
+          # read we did not get an answer from.
+          inspect_output=''
+          inspect_tag() {
+            inspect_output="$(
+              docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1" 2>&1
+            )"
+          }
+          if inspect_tag "$version_target"; then
+            existing="$inspect_output"
+          elif grep -qiE 'not found|manifest unknown|404|denied|unauthorized' <<<"$inspect_output"; then
+            # `denied` is in here because GHCR answers a read for something that
+            # is not there with a permission error as readily as with a 404, and
+            # a first publish must not need a human. Reading it as "absent" is
+            # safe in the direction that matters: if the credentials are the real
+            # problem, the create below fails on the same credentials.
+            existing=''
+          else
+            # Treating an unreadable registry as an absent tag is how a guard
+            # against overwriting a released tag overwrites one.
+            echo "Could not read $version_target: $inspect_output" >&2
+            echo "Refusing to tag without knowing whether one is already published." >&2
+            exit 1
+          fi
+          if [[ -n "$existing" && "$existing" != "$IMAGE_DIGEST" ]]; then
+            echo "$version_target already published $existing." >&2
+            echo "That tag was created from a digest this job had already smoked, so" >&2
+            echo "the release is complete even if a later step failed. To publish" >&2
+            echo "different content, release a patch version; to genuinely replace" >&2
+            echo "this one, delete the tag in the registry first and re-run." >&2
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "$version_target" \
+            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          # Read back before reporting success. This image is deliberately
+          # outside the release audit (scripts/audit-release-images.mjs), so
+          # nothing downstream ever asks again whether the tag the release
+          # created resolves — and a `website-vX.Y.Z` tag with no image behind
+          # it is a pin the cluster cannot satisfy.
+          #
+          # Resolving at all is the failure; resolving to a different digest is
+          # only a warning. Whether `imagetools create` republishes an index
+          # under its own digest or copies the source one is a buildx detail
+          # this repository has never had to know — and the tag is already
+          # written by the time we could find out, so failing on it would turn a
+          # published release into one that reports failure and, by the guard
+          # above, can no longer be re-run.
+          # Retried: a tag that has just been written and a registry that is
+          # briefly unreadable look the same from here, and the failure exit is
+          # the expensive one — the guard above then refuses the re-run of a
+          # release that did publish.
+          resolved=''
+          for attempt in 1 2 3; do
+            if inspect_tag "$version_target"; then
+              resolved="$inspect_output"
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          if [[ -z "$resolved" ]]; then
+            echo "Tag $version_target does not resolve after promotion: $inspect_output" >&2
+            exit 1
+          fi
+          if [[ "$resolved" != "$IMAGE_DIGEST" ]]; then
+            echo "::warning::$version_target resolves to $resolved, not the built $IMAGE_DIGEST"
+          fi
+          {
+            echo "## Verity website"
+            echo
+            echo "\`$version_target\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  finalize-maintenance-backend:
+    needs:
+      - release-please
+      - publish-server
+      - publish-sandbox
+      - publish-toolkit
+      - publish-project-relay
+      - publish-preview-images
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs['backend-version'] != '' &&
+      !inputs['backend-republish'] &&
+      needs.publish-server.result == 'success' &&
+      needs.publish-sandbox.result == 'success' &&
+      needs.publish-toolkit.result == 'success' &&
+      needs.publish-project-relay.result == 'success' &&
+      needs.publish-preview-images.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: v${{ inputs.backend-version }}
+    steps:
+      - name: Publish verified maintenance release
+        run: gh release edit "$TAG" --draft=false --latest=false

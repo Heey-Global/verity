@@ -1,0 +1,34 @@
+{
+  "name": "@verity/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Control-plane HTTP server (Fastify) — read REST over the durable store (concept §3, §8, §12)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@verity/events": "*",
+    "@verity/secret-contracts": "*",
+    "@verity/session": "*",
+    "@verity/store": "*",
+    "@fastify/websocket": "11.2.0",
+    "expo-server-sdk": "6.1.0",
+    "fastify": "5.8.5",
+    "sigstore": "5.0.0",
+    "ws": "8.21.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  }
+}

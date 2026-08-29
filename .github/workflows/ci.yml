@@ -1,0 +1,1395 @@
+name: verity-ci
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Keep local Vitest runs tight and deterministic within the fixed GitHub-hosted
+# runner resources.
+env:
+  VERITY_TEST_TIMEOUT_MS: '60000'
+
+concurrency:
+  # PRs group by source branch, so a force-push cancels its own stale run. Pushes to
+  # main group by commit SHA (unique per merge) so back-to-back merges NEVER cancel
+  # each other: a cancelled run reports `cancelled`, which the `ci-checks` gate treats
+  # as failure and stamps a false red X on the merge commit (seen with #465, cancelled
+  # 3s later by #464's merge). `github.head_ref` is empty on push, so the fallback picks
+  # the SHA there.
+  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    # `actions: read` is for the base commit's own CI verdict, which the
+    # release-please skip below refuses to take on faith. A job-level block
+    # replaces the workflow-level one rather than adding to it, so `contents`
+    # is restated here.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      lint: ${{ steps.detect.outputs.lint }}
+      typecheck: ${{ steps.detect.outputs.typecheck }}
+      test: ${{ steps.detect.outputs.test }}
+      installer: ${{ steps.detect.outputs.installer }}
+      mobile: ${{ steps.detect.outputs.mobile }}
+      mobile_app: ${{ steps.detect.outputs.mobile_app }}
+      server_image: ${{ steps.detect.outputs.server_image }}
+      agent_seed_drift: ${{ steps.detect.outputs.agent_seed_drift }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: detect
+        name: Detect changed areas
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          lint=false
+          typecheck=false
+          test=false
+          installer=false
+          mobile=false
+          mobile_app=false
+          server_image=false
+          agent_seed_drift=false
+
+          # The `case` table below is a PRE-merge gate and stays one, even though it
+          # no longer has the hole it was written around: an unnamed path used to
+          # match nothing and therefore run nothing, and now falls through to a
+          # catch-all that runs the broad jobs.
+          #
+          # What keeps main unconditional is not that hole but what a pull request
+          # diff structurally cannot see. It is measured against the base, so two
+          # branches that each pass alone and break together produce no diff that
+          # names the breakage — only the merged tree does, and this is the only
+          # event that tests it.
+          #
+          # The one push that provably needs nothing is a release-please commit. It
+          # changes exactly the three files below and nothing else — no source, no
+          # workflow, no fixture — so every input a job reads is the one its base
+          # was tested with, and no test in the repo reads any of them (asserted in
+          # scripts/ci-workflow.test.ts). Running the full matrix on it means a
+          # complete Server image build plus the Docker smoke chain on the shared
+          # dev-server, and the only result it can produce is the base's.
+          #
+          # Which is why the base's result is read rather than assumed: inheriting
+          # it is the whole mechanism, and there is nothing to inherit until it
+          # exists and is green.
+          #
+          # What the paths are is checked; what is in them is not, deliberately.
+          # Nothing this workflow runs reads their contents — that is the same
+          # assertion the skip rests on — so there is no verdict for a content
+          # check to protect. A corrupt manifest breaks release.yml, which this
+          # detector does not gate and which runs on the push regardless.
+          release_only=false
+          before=''
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # `github.event.before` covers a push carrying more than one commit;
+            # `HEAD^` is the fallback for the first push on a ref, where `before`
+            # is the all-zero sha and nothing was fetched under that name.
+            before='${{ github.event.before }}'
+            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              before="$(git rev-parse --verify --quiet 'HEAD^' || true)"
+            fi
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            # The same commit, one step earlier. release-please opens its output as
+            # a PR before it lands, carrying exactly those three files against the
+            # same base — so the argument the push path already makes holds here
+            # unchanged, and the base is a commit on main whose verdict this
+            # inherits the same way. Without this the release PR pays a full Server
+            # image build and the Docker chain on the shared dev-server to test a
+            # version bump, and the merge commit then skips it on the very same
+            # reasoning minutes later.
+            before='${{ github.event.pull_request.base.sha }}'
+            git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
+          fi
+          if [ -n "$before" ]; then
+            # `--no-renames` for both: rename detection is on by default and
+            # reports only a rename's DESTINATION, so a commit moving a source
+            # file onto one of the allowlisted paths would list that path alone
+            # — allowlisted, no deletion in sight — while the source is gone.
+            # Off, the same commit lists the source as deleted and the guard
+            # below catches it. release-please only ever edits files that
+            # already exist, so it never has a rename to detect.
+            mapfile -t pushed < <(git diff --no-renames --name-only "$before" HEAD)
+            # `--name-only` reports a deleted file exactly like an edited one, and
+            # a commit that REMOVES the changelog is not release-please's output
+            # whatever its paths say. `-d` drops deletions, so a shorter list is
+            # one, and the allowlist below never sees that commit.
+            mapfile -t kept < <(git diff --no-renames --name-only --diff-filter=d "$before" HEAD)
+            # An empty diff must NOT count as release-only: "nothing changed" is
+            # also what a mis-resolved base looks like, and the safe reading of a
+            # base we could not trust is to run everything.
+            if [ "${#pushed[@]}" -gt 0 ] && [ "${#pushed[@]}" -eq "${#kept[@]}" ]; then
+              release_only=true
+              for file in "${pushed[@]}"; do
+                case "$file" in
+                  # release-please's `simple` release type, for the root package
+                  # and for the website. A release commit on either train writes
+                  # nothing but that package's changelog and version file, so the
+                  # argument above — there is no source here for a job to check —
+                  # is the same argument for both.
+                  # apps/mobile is deliberately absent: its release commit also
+                  # rewrites app.config.ts, which is source the mobile jobs cover.
+                  CHANGELOG.md|version.txt|.release-please-manifest.json|docs/website/CHANGELOG.md|docs/website/version.txt) ;;
+                  *)
+                    release_only=false
+                    break
+                    ;;
+                esac
+              done
+            fi
+            if [ "$release_only" = "true" ]; then
+              # The skip inherits a verdict, so there has to be one. A base run
+              # that is still going has reported nothing yet, and one that went
+              # red reported a break this tree still carries — inheriting either
+              # would put a green check on a commit no job examined. Back-to-back
+              # merges are exactly when the base is still running, which is why
+              # this is asked rather than assumed.
+              #
+              # Only a completed success skips. An unreadable answer is not one,
+              # so an API outage costs a redundant run and never a false green.
+              # The call is inside this branch: an ordinary push never makes it.
+              runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${before}&per_page=1"
+              verdict="$(gh api "$runs" --jq \
+                '(.workflow_runs[0] // {}) | "\(.status // "missing")/\(.conclusion // "none")"' \
+                2>/dev/null || echo 'unreadable/none')"
+              if [ "$verdict" != "completed/success" ]; then
+                echo "::notice::base $before reports '$verdict', not a completed success — running everything"
+                release_only=false
+              fi
+            fi
+          fi
+
+          if [ "$release_only" = "true" ]; then
+            echo "::notice::release-please commit — no source file changed, every job skipped"
+          elif [ "${{ github.event_name }}" != "pull_request" ]; then
+            lint=true
+            typecheck=true
+            test=true
+            installer=true
+            mobile=true
+            mobile_app=true
+            server_image=true
+            agent_seed_drift=true
+          else
+            # NOT `--depth=1`. A shallow fetch grafts the base branch's tip as a
+            # parentless commit, and `...` then has nothing to compute a merge base
+            # from unless that exact tip is already in HEAD. The pull_request
+            # checkout is GitHub's merge ref, built against whatever main was when
+            # GitHub last rebuilt it — so the moment main moves ahead of that, the
+            # grafted tip shares no ancestry with HEAD and the diff aborts with
+            # `fatal: origin/main...HEAD: no merge base`, failing the detector and
+            # with it the `ci-checks` gate on a pull request that changed nothing.
+            # Seen on #1741, whose merge ref was three commits behind main.
+            #
+            # Depth costs nothing here: the checkout above already fetched the whole
+            # repository at `fetch-depth: 0`, so this only refreshes a ref whose
+            # history is local. Left full, the merge base resolves to the commit the
+            # branch actually diverged at, however far the base has advanced.
+            #
+            # `fetch-depth: 0` makes the ancestry explicit rather than relying on
+            # whichever shallow boundary checkout would otherwise choose.
+            git fetch --no-tags --prune origin "${{ github.base_ref }}"
+            base="origin/${{ github.base_ref }}"
+            # `--no-renames` so a move reports both halves. With git's default
+            # rename detection a file moved OUT of a heavyweight area reports only
+            # where it landed, so `packages/server/src/x.ts` → `docs/x.md` reads as
+            # a documentation edit and never runs `server_image` — the job that
+            # would have noticed the source leaving. The cost is one extra path per
+            # move; the arms below are cheap to reach and false greens are not.
+            mapfile -t changed < <(git diff --no-renames --name-only "$base"...HEAD)
+
+            # Asked about the SET of tracked paths before the table is asked about
+            # their contents. A file appearing or disappearing must run the suite so
+            # coverage and workflow-routing assertions see the new tree shape,
+            # including under arms below that deliberately run nothing for edits.
+            #
+            # `--no-renames` so a move reports both halves: rename detection would
+            # collapse it to the destination alone, and a file leaving an arm is the
+            # half that makes the inventory stale. Editing prose still runs nothing.
+            #
+            # Only this branch needs it. The one above runs every job for any push
+            # that is not release-please's, and that skip is itself restricted to
+            # edits of three existing files — a commit that adds or deletes anything
+            # either names an unallowlisted path or shows a deletion, and fails the
+            # `--diff-filter=d` count check either way.
+            #
+            # A command substitution rather than `mapfile < <(...)`: a process
+            # substitution discards git's exit status, so a failed diff would read as
+            # "nothing appeared" and skip a guard whose whole job is to fail closed.
+            # `set -e` aborts the step on the assignment instead.
+            inventory="$(git diff --no-renames --name-only --diff-filter=AD "$base"...HEAD)"
+            if [ -n "$inventory" ]; then
+              test=true
+            fi
+
+            for file in "${changed[@]}"; do
+              case "$file" in
+                package.json|package-lock.json|tsconfig.json|tsconfig.base.json|vitest.config.ts|eslint.config.js|.github/workflows/ci.yml)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  installer=true
+                  mobile=true
+                  mobile_app=true
+                  server_image=true
+                  agent_seed_drift=true
+                  ;;
+                # The native patch runner, ahead of the broad `scripts/*` arm. Its
+                # anchors are byte-exact against an installed dependency, and the
+                # `mobile-app` job — which has the only full mobile install in CI —
+                # is where that is checked. A change to the anchors themselves is
+                # the likeliest way to break it, so it must reach that job.
+                scripts/patch-mobile-native-deps.mjs|scripts/patch-mobile-native-deps.test.ts)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  mobile_app=true
+                  server_image=true
+                  ;;
+                packages/adapter-claude/*|packages/project-relay/*|packages/events/*|packages/preview-tunnel/*|packages/secret-contracts/*|packages/server/*|packages/session/*|packages/store/*|scripts/*)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  server_image=true
+                  ;;
+                packages/mobile/*)
+                  lint=true
+                  typecheck=true
+                  mobile=true
+                  mobile_app=true
+                  ;;
+                # `test` because scripts/patch-mobile-native-deps.test.ts reads the
+                # app's manifest: the EAS hook chain in it is what applies the
+                # backported native patches before prebuild, and an edit that drops
+                # `npm run patch:native &&` from it is exactly the change that must
+                # not go unchecked. Keep this narrower than the whole app so an
+                # unrelated screen edit does not pull in the full root suite.
+                apps/mobile/package.json)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  mobile_app=true
+                  ;;
+                # App configuration is consumed by release and native-build tests,
+                # so edits must run the root suite as well as the mobile checks.
+                # Keep this narrower than the whole app to avoid running the full
+                # suite for an unrelated screen edit.
+                apps/mobile/app.config.ts)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  mobile_app=true
+                  ;;
+                apps/mobile/*)
+                  lint=true
+                  typecheck=true
+                  mobile_app=true
+                  ;;
+                # `test` because the suite reads these as data, not only as build
+                # inputs: gvisor-runtime-config.test.ts reads `.dockerignore`,
+                # renovate-config.test.ts and claude-egress-deployment.test.ts read
+                # `deploy/Dockerfile`, ci-workflow.test.ts parses
+                # `verity-server.yml`, and runner-supervisor-feature.test.ts and
+                # runner-boundary-attestation.test.ts read the toolkit's install
+                # script and published hashes. Naming a path without running the
+                # job that reads it is the same green-on-nothing as not naming it
+                # at all — scripts/ci-workflow.test.ts holds this arm to that.
+                #
+                # `verity-control-plane-runner-start` belongs here for the image
+                # half of the same rule: it is COPYed into the server image and is
+                # the sole entrypoint of the control-plane Runner, so it is only
+                # ever exercised by the deployment smoke that runs against a built
+                # image. Reaching the catch-all instead left the launcher's
+                # environment — which is what tells the spawn broker which worktree
+                # roots the container has — provable by nothing at all.
+                .dockerignore|.github/workflows/verity-server.yml|deploy/Dockerfile|deploy/bin/verity-transcribe-meeting|deploy/bin/verity-agent-gateway-deployment-smoke|deploy/bin/verity-control-plane-runner-deployment-smoke|deploy/bin/verity-control-plane-runner-start|features/verity-sandbox-toolkit/*)
+                  lint=true
+                  test=true
+                  server_image=true
+                  ;;
+                deploy/bin/verity-agent-gateway-cutover-check.mjs|deploy/bin/verity-agent-gateway-cutover-check.test.mjs)
+                  lint=true
+                  test=true
+                  ;;
+                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose)
+                  lint=true
+                  test=true
+                  installer=true
+                  server_image=true
+                  ;;
+                deploy/docker-compose.yml|deploy/docker-compose.runner-supervisor.yml|deploy/bin/verity-clean-install-smoke)
+                  lint=true
+                  test=true
+                  server_image=true
+                  ;;
+                # The complete deploy tree is copied into the official Server
+                # image as the release-matched installer payload. Keep this
+                # after the narrower arms above, which enable extra jobs.
+                deploy/*)
+                  lint=true
+                  test=true
+                  server_image=true
+                  ;;
+                docs/website/site/install.sh)
+                  lint=true
+                  test=true
+                  ;;
+                # Same reason for `test`: verity-git-guard.test.ts executes
+                # `agent-seed/bin/git`, and the drift job compares the two copies
+                # rather than reading either one's behaviour.
+                agent-seed/*|features/verity-sandbox-toolkit/agent-seed/*)
+                  lint=true
+                  test=true
+                  agent_seed_drift=true
+                  server_image=true
+                  ;;
+                # Prose. Nothing builds it, `.prettierignore` excludes it from the
+                # formatter, and no test reads one — the last of which is asserted
+                # in scripts/ci-workflow.test.ts rather than trusted, because the
+                # arm below is the only thing standing between this directory and
+                # the full suite.
+                docs/*)
+                  ;;
+                # Everything this table does not name. Matching nothing used to
+                # mean running nothing, so a pull request touching only such a path
+                # reported green — not because the suite passed, but because it
+                # never started. That covered 25 files the suite reads, among them
+                # deploy/docker-compose.yml, four of the five workflow YAMLs
+                # scripts/ci-workflow.test.ts parses, deploy/gvisor/versions.env
+                # and renovate.json.
+                #
+                # Only the three broad jobs. lint, typecheck and test read the
+                # repository at large, so "unknown path" is a real reason to run
+                # them. The narrow, expensive ones stay named: the image build, the
+                # installer's `unshare` matrix and the two mobile jobs each cover a
+                # bounded set of inputs, and a catch-all there would run twelve
+                # minutes of Docker on a README.
+                *)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  ;;
+              esac
+            done
+          fi
+
+          {
+            echo "lint=$lint"
+            echo "typecheck=$typecheck"
+            echo "test=$test"
+            echo "installer=$installer"
+            echo "mobile=$mobile"
+            echo "mobile_app=$mobile_app"
+            echo "server_image=$server_image"
+            echo "agent_seed_drift=$agent_seed_drift"
+          } >> "$GITHUB_OUTPUT"
+
+          printf 'lint=%s typecheck=%s test=%s installer=%s mobile=%s mobile_app=%s server_image=%s agent_seed_drift=%s\n' "$lint" "$typecheck" "$test" "$installer" "$mobile" "$mobile_app" "$server_image" "$agent_seed_drift"
+
+  # Security classification and secret scanning cover the whole publishable tree,
+  # including prose-only changes for which the expensive code jobs stay inert.
+  public-snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
+      - name: Install pinned Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          bin_dir="$RUNNER_TEMP/gitleaks-bin"
+          curl -fsSL --retry 5 --retry-all-errors \
+            -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  '"$archive" \
+            | sha256sum --check --strict
+          mkdir -p "$bin_dir"
+          tar --no-same-owner -xzf "$archive" -C "$bin_dir" gitleaks
+          echo "$bin_dir" >> "$GITHUB_PATH"
+      - name: Scan public source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_file="$RUNNER_TEMP/verity-gitleaks.json"
+          env -i PATH="$PATH" TMPDIR="$RUNNER_TEMP" gitleaks git \
+            --no-banner \
+            --redact \
+            --report-format json \
+            --report-path "$report_file" \
+            .
+
+  lint:
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
+      # ESLint covers every Node package but deliberately ignores the Expo app
+      # (see eslint.config.js). Install that exact workspace set plus the root
+      # lint/format tooling. A full monorepo install also resolves the large Expo
+      # dependency graph and has been SIGTERMed on this shared runner before the
+      # lint command can start. Lifecycle scripts and optional platform binaries
+      # are not needed for static analysis.
+      - run: npm ci --workspace packages --include-workspace-root --ignore-scripts --omit=optional
+      # There is deliberately NO ESLint result cache here, and `npm run lint`
+      # deliberately carries no `--cache`. It was removed for two independent
+      # reasons, either of which is sufficient. `scripts/ci-workflow.test.ts`
+      # asserts both halves stay gone, because re-adding them reads as a free win.
+      #
+      # 1. It almost certainly never hit. ESLint's default `cacheStrategy` is
+      #    `metadata` — mtime and size. The six lanes each check the tree out into
+      #    their own workspace, so an entry written on one lane sees different
+      #    mtimes on every other and re-lints the whole tree anyway. (This is the
+      #    same trap `--cache-strategy content` exists to avoid for Prettier
+      #    below; ESLint has no equivalent flag worth reaching for, because of 2.)
+      #
+      # 2. It is a correctness hazard, and it fails OPEN. An ESLint cache entry is
+      #    invalidated by the linted file's own content — but typescript-eslint
+      #    `projectService` findings depend on OTHER files' types. Change a type in
+      #    packages/events, leave a consumer in packages/server untouched, and that
+      #    consumer is served its pre-change verdict from cache: a green lint job
+      #    over code that no longer type-checks the way it was linted. The outer
+      #    key hashed only package-lock.json and eslint.config.js, so no source
+      #    change ever busted it, and `restore-keys: <os>-eslint-` would restore an
+      #    arbitrarily old entry on top. The step below calls itself the
+      #    authoritative gate, lints the WHOLE tree, and promises "a type-aware
+      #    finding in an unchanged consumer can never slip through" — which is
+      #    precisely the promise this cache broke.
+      #
+      # `lint:changed` in package.json KEEPS its cache flags. It is not this gate:
+      # the pre-push hook (agent-seed/hooks/pre-push) runs it on one developer
+      # machine with one workspace, so reason 1 does not apply — the mtimes are
+      # stable and the cache genuinely hits. Reason 2 does not weaken it either,
+      # because that path only ever hands ESLint the CHANGED files and therefore
+      # already cannot see a finding in an unchanged consumer; the hook says so
+      # itself and defers to this job. The hook also re-runs the full uncached
+      # `lint` whenever the ruleset or a manifest changes.
+      #
+      # Prettier ran with no cache at all until now. Unlike the ESLint one, this
+      # cache cannot serve a stale verdict: a Prettier result depends on that
+      # file's own bytes and nothing else — there is no cross-file type graph — so
+      # a changed file always misses and an unchanged one cannot have a different
+      # answer.
+      #
+      # On the key: Prettier folds its own version and the RESOLVED OPTIONS into
+      # the per-file key it computes, so adding a `.prettierrc` (there is none
+      # today) invalidates entries on its own and needs no help from the outer
+      # key. `.prettierignore` does exist, and deliberately is NOT in the hash: it
+      # decides which files are checked, never how any one of them is formatted,
+      # so an entry stays valid across a change to it. Un-ignoring a file simply
+      # has no entry yet and gets checked; a newly ignored file's leftover entry
+      # is never consulted. That leaves the lockfile — i.e. the Prettier version —
+      # as the only thing the outer key needs to track.
+      #
+      # `--cache-strategy content` is load-bearing rather than a detail. The
+      # default is `metadata` (mtime + size), but mtimes come from whichever of the
+      # six lanes last checked the tree out, so an mtime-keyed cache restored onto
+      # a different lane would miss on every file and buy nothing.
+      #
+      # The primary key carries the run id so it can never hit. `actions/cache`
+      # saves ONLY when the primary key missed, so a key that is stable across
+      # runs is written exactly once and then frozen: every file changed after
+      # that first save is re-checked on every later run, until the lockfile
+      # moves. Missing on purpose and restoring through the prefix is what keeps
+      # the entry rolling forward. Each snapshot is 232 KB and the janitor evicts
+      # them LRU, so the extra entries are not worth economising on.
+      # renovate: datasource=github-actions depName=actions/cache
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/prettier
+          key: ${{ runner.os }}-prettier-${{ hashFiles('package-lock.json') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-prettier-${{ hashFiles('package-lock.json') }}-
+            ${{ runner.os }}-prettier-
+      # CI lints the WHOLE tree (authoritative gate) — no diff scoping here, so a
+      # type-aware finding in an unchanged consumer can never slip through. The
+      # fast changed-files path lives in the pre-push hook for local iteration.
+      # `eslint .` in a single process is type-aware (typescript-eslint
+      # projectService) and loads every workspace's TS program at once — peak
+      # >4 GB, which OOMs this runner as the repo grows. So we split it: one
+      # process per package, then every other tracked source FILE in one
+      # process. ESLint's own config decides what is ignored (e.g. apps/mobile);
+      # passing an ignored FILE just skips it (a whole ignored DIRECTORY errors,
+      # so never pass directories), and --no-warn-ignored keeps that skip quiet.
+      #
+      # Per package is no longer a tight enough bound on its own. A process
+      # costs ~610 MB for the package's TS program plus roughly 3.5 MB of lint
+      # state per file it is handed, so packages/server's 262 files peaked at
+      # ~1.55 GB and this shared runner SIGTERMs it (exit 143, mid-package)
+      # whenever a test shard, the image build and the smoke test are in flight
+      # beside it. Cap the files per process too: batches of 64 hold every
+      # process near ~1.1 GB. Each batch re-pays the program cost, which costs
+      # ~12 s on packages/server — today the only package big enough to split,
+      # and the bound now applies to whichever one grows into it next. A
+      # --max-old-space-size cap was measured too and rejected: once batched it
+      # bought ~5% more, and 768 MB turned the SIGTERM into a hard V8 OOM.
+      - name: ESLint
+        shell: bash
+        run: |
+          set -euo pipefail
+          exts=('*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.mts' '*.cts')
+          # No --cache here either; see the note above the Prettier cache step.
+          eslint_opts=(--no-warn-ignored)
+          batch=64
+          lint_batched() {
+            local label="$1"; shift
+            local -a all=("$@")
+            local i part=1
+            for ((i = 0; i < ${#all[@]}; i += batch)); do
+              echo "::group::eslint $label ($part)"
+              npx eslint "${eslint_opts[@]}" -- "${all[@]:i:batch}"
+              echo "::endgroup::"
+              part=$((part + 1))
+            done
+          }
+          for pkg in packages/*; do
+            [ -d "$pkg" ] || continue
+            mapfile -t files < <(git ls-files -- "$pkg" \
+              | grep -E '\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$' || true)
+            [ "${#files[@]}" -gt 0 ] || continue
+            lint_batched "$pkg" "${files[@]}"
+          done
+          mapfile -t rest < <(git ls-files "${exts[@]}" ':!:packages/**')
+          if [ "${#rest[@]}" -gt 0 ]; then
+            lint_batched "(non-package files)" "${rest[@]}"
+          fi
+      - run: npm run format
+
+  typecheck:
+    needs: changes
+    if: needs.changes.outputs.typecheck == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # Deliberately no `cache: npm`: the archive is roughly 2 GB and duplicates
+          # the lockfile-derived install across parallel jobs. Keep the repository's
+          # limited Actions cache available for the smaller targeted tool caches and
+          # BuildKit layers that materially shorten the expensive image jobs.
+      # The root composite build ends at @verity/server, which pulls in the four
+      # referenced workspace packages. Install only that dependency closure plus
+      # root TypeScript tooling: a full monorepo install also brings the Expo app
+      # and exceeded this runner's memory limit (exit 137). Typechecking needs no
+      # optional platform binaries or package lifecycle scripts. Test, mobile,
+      # and image jobs retain their complete installs.
+      - run: npm ci --workspace @verity/server --include-workspace-root --ignore-scripts --omit=optional
+      # No tsbuildinfo cache here. `tsc -b` incremental state (*.tsbuildinfo) is
+      # only correct alongside the emitted dist/ it describes: restoring the
+      # tsbuildinfo without dist/ (which was never cached, and checkout wipes)
+      # makes tsc -b believe every project is up to date, skip emitting, and
+      # then downstream projects fail with "Cannot find module '@verity/…'".
+      # The restore-keys prefix made it worse by matching any stale state. A
+      # clean composite build of the five packages is only a few seconds, so we
+      # just build. To reintroduce the speedup, cache dist/ AND tsbuildinfo
+      # together under a busted key so the pair stays consistent.
+      - run: npm run build
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.test == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
+      # Root Vitest explicitly excludes packages/mobile and the Expo app. Install
+      # only the Server dependency closure plus root test tooling; the Expo graph
+      # is unrelated to this job.
+      - run: npm ci --workspace @verity/server --include-workspace-root
+      # mTLS integration tests generate one-day certificates in a private temp
+      # directory; never commit reusable private-key fixtures (Gitleaks gate).
+      - run: openssl version
+      # Vitest cache is deliberately given NO restore-keys fallback. The key
+      # already pins package-lock.json, so each dependency set gets its own
+      # isolated cache. A `${{ runner.os }}-vitest-` prefix fallback would
+      # restore another dep set's on-disk transforms into a dependency-update
+      # (Renovate) run — Vitest keys transforms by source content, not by
+      # resolved dependency versions, so a stale transform can survive and skew
+      # results. Exact-key hits still warm normal (non-dep-changing) PRs.
+      # renovate: datasource=github-actions depName=actions/cache
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/vitest
+          key: ${{ runner.os }}-vitest-${{ hashFiles('package-lock.json', 'vitest.config.ts') }}
+      # The full suite runs (sharded) on every PR and on push to main. Tests here
+      # deliberately are NOT scoped to the diff: this suite drives child processes
+      # and reads fixtures/resources by path, so `vitest --changed` (module-graph
+      # only) would silently omit affected tests. The PR speed-up comes from NOT
+      # re-running the whole suite a second time for coverage — see the `coverage`
+      # job, which now runs on push to main only.
+      # Four fresh Vitest processes run one at a time. Separate processes retain
+      # the RSS reset that sharding exists for, while one job avoids paying four
+      # times for checkout, Node setup, npm ci, cache restore and PostgreSQL.
+      # Keep each shard single-worker, and give the especially
+      # memory-heavy embedded composition suite a fresh process below; otherwise
+      # its fork can disappear after the preceding PGlite files without an
+      # assertion failure.
+      # One real PostgreSQL for the whole job instead of a private WASM Postgres
+      # per test file: booting pglite costs ~5s and ~790MB that destroy() does not
+      # hand back, and 50+ files pay it. That fixed cost, not the amount of test
+      # code, is what forced serial shards/maxWorkers down to one. See
+      # packages/store/src/testing.ts — without the URL the suite stays hermetic
+      # on pglite, which is what local runs (and any runner without Docker) get.
+      - id: postgres
+        uses: ./.github/actions/postgres
+        with:
+          container-name: verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Run four isolated test shards serially
+        env:
+          VERITY_TEST_SHARED_POSTGRES_URL: ${{ steps.postgres.outputs.url }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for shard in 1 2 3 4; do
+            if ! npx vitest run --shard="$shard/4" --maxWorkers=1 \
+              --exclude packages/server/src/embedded.test.ts; then
+              failed=1
+            fi
+          done
+          # This composition suite retains enough state that a forked worker can
+          # be killed after the preceding PGlite files. Its own process with one
+          # worker thread keeps it below the runner's memory ceiling.
+          if ! npx vitest run packages/server/src/embedded.test.ts \
+            --pool=threads --maxWorkers=1 --maxConcurrency=1; then
+            failed=1
+          fi
+          exit "$failed"
+      - name: Clean test PostgreSQL
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f "verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}" \
+            >/dev/null 2>&1 || true
+
+  # deploy/bin/verity-install.test.mjs drives the real installer under `unshare -r`,
+  # because every decision that script makes is a read of host state only uid 0 can
+  # see, and a test-only escape hatch compiled into it would test the hatch. That is
+  # why the suite cannot run inside the sharded `test` job: the runner containers get
+  # Docker's DEFAULT seccomp profile, which rejects `unshare` and `clone` carrying
+  # CLONE_NEWUSER, so the suite aborted there in 83 ms with every case skipped.
+  #
+  # It used to be GitHub-hosted for that reason. It does not need to be. The blocker
+  # is one seccomp profile on one container, and these runners already reach the host
+  # daemon — so the job starts a container of its own with that profile off and runs
+  # the suite inside it. Nothing about the RUNNER is loosened: the exemption lives and
+  # dies with a throwaway container that is non-root, capability-less, network-less
+  # and sees the checkout read-only. Narrower still would mean hand-maintaining a
+  # fork of the default profile with two syscall rules changed, which is a file
+  # nobody would keep in step with Docker's.
+  #
+  # `kernel.apparmor_restrict_unprivileged_userns` is already 0 on this host, so the
+  # other axis Ubuntu 24.04 can close is open; the preflight below proves both at
+  # once rather than asserting either. The suite imports nothing beyond node:
+  # builtins, so the container image supplies node and the job needs no `npm ci`, no
+  # `setup-node` and no node_modules — it finishes in well under a minute.
+  installer:
+    needs: changes
+    if: needs.changes.outputs.installer == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
+      VERITY_INSTALLER_IMAGE: node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+      VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
+    steps:
+      # A prior job on this lane can leave root-owned files in the shared workspace,
+      # and actions/checkout's clean then fails with EACCES for the non-root runner.
+      # Same fallback as release.yml: the runner's only sudo grant is
+      # `NOPASSWD: /usr/sbin/groupmod`, so in practice the container branch runs.
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            fi
+          fi
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The suite's whole value depends on the namespace, so prove it is reachable
+      # and fail with the reason in the step name — rather than inside the suite's
+      # fail-closed fallback, where it reads as a broken test.
+      #
+      # `--user` is NOT root, and not incidentally: the suite asserts that the
+      # installer refuses a non-root caller (`must run as root`) by invoking it
+      # outside `unshare -r`. As root in the container that case would pass the check
+      # it exists to fail, and the assertion would silently invert.
+      - name: Ensure unprivileged user namespaces are available in the test container
+        run: |
+          set -euo pipefail
+          docker run $VERITY_INSTALLER_SANDBOX \
+            --user "$(id -u):$(id -g)" \
+            "$VERITY_INSTALLER_IMAGE" \
+            unshare -r true
+      - name: Run the installer behaviour suite
+        run: |
+          set -euo pipefail
+          # `CI` is passed explicitly. `docker run` inherits no environment, and the
+          # suite reads it to decide whether an unavailable user namespace is a skip
+          # or a hard failure — without it a container that could not unshare would
+          # report green having exercised none of the installer's behaviour.
+          docker run $VERITY_INSTALLER_SANDBOX \
+            --user "$(id -u):$(id -g)" \
+            --env CI=true \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --workdir /workspace \
+            "$VERITY_INSTALLER_IMAGE" \
+            node --test deploy/bin/verity-install.test.mjs
+
+  runner-postgres-race:
+    needs: changes
+    if: needs.changes.outputs.test == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      VERITY_RUNNER_RACE_POSTGRES: verity-runner-race-postgres-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
+      - run: npm ci --workspace @verity/server --include-workspace-root
+      # Only the PostgreSQL-gated suites run here, and the sole reason they need
+      # emitted output at all is the cutover test's spawned child, which imports
+      # packages/session/dist and packages/store/dist by path (everything
+      # in-process resolves to source through the root Vitest aliases). Build
+      # exactly that closure instead of the full composite: the root `tsc -b`
+      # also emits @verity/server and peaks around 1.2 GB for ~19 s, while this
+      # one peaks around 0.85 GB for ~6 s (measured on a dev-server host). The
+      # GitHub-hosted runner is memory-constrained enough that the full build has
+      # been externally SIGTERMed here (exit 143) — on this branch and on main —
+      # so keep the peak and the exposure window no larger than the test needs.
+      - run: npx tsc -b packages/session packages/store
+      - id: postgres
+        uses: ./.github/actions/postgres
+        with:
+          container-name: ${{ env.VERITY_RUNNER_RACE_POSTGRES }}
+      # This is the ONLY job that supplies VERITY_TEST_POSTGRES_URL, so a suite
+      # gated on it that is not named here runs nowhere: it reports as a skipped
+      # `describe` in the shard jobs and is silently absent from this one.
+      # scripts/ci-workflow.test.ts derives the required list from the gate itself
+      # and fails when this one falls behind, so a new gated suite is added here.
+      # They share the single database above and run sequentially
+      # (`--maxWorkers=1`), which is what lets the generation-fence suite own
+      # `control_plane_generation` and the control-plane advisory lock outright;
+      # no other suite here touches either.
+      - name: Run the PostgreSQL-gated race and fence suites
+        shell: bash
+        env:
+          VERITY_TEST_POSTGRES_URL: ${{ steps.postgres.outputs.url }}
+        run: |
+          set -euo pipefail
+          npx vitest run \
+            packages/store/src/runner-frames-postgres.test.ts \
+            packages/store/src/schema-forward-postgres.test.ts \
+            packages/store/src/pool-checkout-error-postgres.test.ts \
+            packages/session/src/two-server-cutover-postgres.test.ts \
+            packages/server/src/self-update/control-plane-generation-postgres.test.ts \
+            --maxWorkers=1
+      - name: Clean Runner race PostgreSQL
+        if: always()
+        shell: bash
+        run: docker rm -f "$VERITY_RUNNER_RACE_POSTGRES" >/dev/null 2>&1 || true
+
+  coverage:
+    needs: [changes, test]
+    # Coverage runs the WHOLE suite with instrumentation (required for the
+    # repo-wide threshold gate in vitest.config.ts) — the single slowest check,
+    # and on a PR it just re-runs what the `test` job already ran. So it runs on
+    # push to main only (and manual dispatch). TRADE-OFF: the coverage floor is
+    # enforced POST-MERGE on main, not as a pre-merge PR gate — a regression is
+    # caught on the main run (and blocks the release gate) rather than blocking
+    # the PR that introduced it. This is an intentional speed decision; to make
+    # coverage pre-merge again without the double-run, collect per-shard coverage
+    # in the `test` job and merge the blobs (needs the vitest blob-merge to be
+    # reliable — see the note in the `coverage` step below).
+    if: needs.changes.outputs.test == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
+      # Coverage exercises the same root Vitest package set as the sharded test
+      # jobs, so it needs the Server closure and root tooling, not Mobile/Expo.
+      - run: npm ci --workspace @verity/server --include-workspace-root
+      - run: openssl version
+      # Vitest cache is deliberately given NO restore-keys fallback. The key
+      # already pins package-lock.json, so each dependency set gets its own
+      # isolated cache. A `${{ runner.os }}-vitest-` prefix fallback would
+      # restore another dep set's on-disk transforms into a dependency-update
+      # (Renovate) run — Vitest keys transforms by source content, not by
+      # resolved dependency versions, so a stale transform can survive and skew
+      # results. Exact-key hits still warm normal (non-dep-changing) PRs.
+      # renovate: datasource=github-actions depName=actions/cache
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/vitest
+          key: ${{ runner.os }}-vitest-${{ hashFiles('package-lock.json', 'vitest.config.ts') }}
+      # Vitest 4.1.9 does not reliably merge V8 coverage carried by sharded
+      # blob reports: all four blobs can be present while the merged result
+      # contains only ~45% line coverage. Keep shards as the fast test gate,
+      # then collect authoritative coverage in one complete run.
+      - id: postgres
+        uses: ./.github/actions/postgres
+        with:
+          container-name: verity-coverage-postgres-${{ github.run_id }}-${{ github.run_attempt }}
+      # One worker, for the same reason the shards run one at a time. The shared
+      # PostgreSQL above removes the per-file WASM Postgres for the ~50 files on
+      # `createTestDb`, but not for the ones that stay hermetic by design: the
+      # `createIsolatedTestDb` callers, and packages/server/src/embedded.test.ts,
+      # which builds an in-memory pglite server 40 times over. This run is
+      # unsharded, so vitest.config.ts's default of two workers can still overlap
+      # two of them — under instrumentation, on the shared runner. When the loser
+      # is the embedded suite the kernel takes its fork: every test in the run
+      # still passes, but that file's coverage is simply absent, and the missing
+      # ~3.5k lines of embedded.ts drop all four global thresholds below the gate.
+      # A silent worker death reads exactly like a coverage regression, so
+      # serialize rather than re-derive the diagnosis each time. Costs wall-clock
+      # on the slowest check; it runs on main only and gates no PR.
+      - env:
+          VERITY_TEST_SHARED_POSTGRES_URL: ${{ steps.postgres.outputs.url }}
+        run: npm run coverage -- --maxWorkers=1
+      - name: Clean coverage PostgreSQL
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f "verity-coverage-postgres-${{ github.run_id }}-${{ github.run_attempt }}" \
+            >/dev/null 2>&1 || true
+
+  # Mobile (packages/mobile) — the TS data/logic core, isolated from the server
+  # toolchain: its own typecheck + coverage. The Expo app (apps/mobile) and its
+  # native build are verified in the operator's RN environment. Root build/test
+  # exclude packages/mobile; this job covers it.
+  mobile:
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+      # The full mobile dependency closure grows the shared npm cache to roughly
+      # 1.8 GB. Restoring and extracting it immediately before the full `npm ci`
+      # has repeatedly pushed the GitHub-hosted runner into an external SIGTERM.
+      # A lockfile-clean install is slower but avoids holding both footprints.
+      - run: npm ci
+      # No restore-keys fallback — see the .cache/vitest note above. The key
+      # pins package-lock.json so each dependency set stays isolated instead of
+      # inheriting another set's transforms on a Renovate update.
+      # renovate: datasource=github-actions depName=actions/cache
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: packages/mobile/.cache/vitest
+          key: ${{ runner.os }}-vitest-mobile-${{ hashFiles('package-lock.json', 'packages/mobile/vitest.config.ts') }}
+      - run: npm run -w @verity/mobile typecheck
+      - run: npm run -w @verity/mobile coverage
+
+  # Expo app (apps/mobile) — typecheck + jest-expo/RNTL component smoke tests. It
+  # consumes the built @verity/mobile (so build that first; the app's jest
+  # `moduleNameMapper` also resolves @verity/mobile to that dist), and the native
+  # build/bundle is verified in the operator's Expo environment, not CI.
+  mobile-app:
+    needs: changes
+    if: needs.changes.outputs.mobile_app == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
+      - run: npm ci
+      # renovate: datasource=github-actions depName=actions/cache
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: apps/mobile/.cache/jest
+          key: ${{ runner.os }}-jest-mobile-app-${{ hashFiles('package-lock.json', 'apps/mobile/jest.config.js') }}
+          restore-keys: ${{ runner.os }}-jest-mobile-app-
+      # The backported native fixes in scripts/patch-mobile-native-deps.mjs are
+      # applied on the EAS builder, against a tree CI otherwise never installs.
+      # Running them here is what turns "the anchors no longer match the upstream
+      # source" into a red pull request instead of a failed release build. The
+      # changed-area arms route the inputs that can break it here: apps/mobile/*,
+      # package-lock.json, and the patch runner itself. It rewrites this job's own
+      # `npm ci` tree, which nothing caches or shares (no `cache: npm`, and the
+      # only cache above is apps/mobile/.cache/jest).
+      - run: npm run -w @verity/mobile-app patch:native
+      - run: npm run -w @verity/mobile build
+      - run: npm run -w @verity/mobile-app typecheck
+      - run: npm run -w @verity/mobile-app test
+
+  server-image:
+    needs: changes
+    if: needs.changes.outputs.server_image == 'true'
+    runs-on: ubuntu-24.04
+    # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
+    # cache-janitor.yml). The janitor only deletes entries nothing has read for
+    # that long, and that is the whole reason it cannot pull a cache out from
+    # under a build still restoring it — but a job with no `timeout-minutes`
+    # inherits GitHub's 360-minute default and can outlive the window six times
+    # over. This is a single-arch amd64 build that finishes in minutes, so the
+    # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
+    # every step in the repo that reads or writes a gha cache.
+    timeout-minutes: 45
+    # Namespace every mutable smoke-test resource. This remains useful for local
+    # reproduction and protects against future runner-layout changes.
+    env:
+      VERITY_CI_IMAGE: verity-server:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_SERVER: verity-server-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_POSTGRES: verity-postgres-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_NETWORK: verity-ci-net-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_CLEAN_DIND: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_CLEAN_DIND_VOLUME: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}-data
+      # The relay-only server validates an immutable relay reference at startup.
+      # The image is never pulled in this health-only smoke because no project is
+      # provisioned.
+      VERITY_CI_RELAY_IMAGE: ghcr.io/heey-global/verity/verity-project-relay@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      # Health-only smoke values. No gateway is contacted until a Claude turn;
+      # these exercise the server's mandatory routing configuration at boot.
+      VERITY_CI_GATEWAY_UNSEAL_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # THE canonical note for the persistent builder; verity-server.yml,
+      # verity-sandbox.yml and project-relay.yml point back here.
+      #
+      # With no inputs this action mints a NEW `docker-container` builder per job
+      # and (v4 default `cleanup: true`) runs `buildx rm` in its post step, which
+      # deletes the buildkit container AND its `_state` volume. Every local layer
+      # the build just produced dies with it — on a machine whose Docker daemon
+      # persists across jobs. Naming the builder and turning cleanup off keeps
+      # that state.
+      #
+      # The payoff is specifically the pull_request case. `cache-to` is off on PR
+      # refs (see the note on the build step below), so today two pushes to the
+      # SAME PR cannot share a single layer: both start from whatever main last
+      # wrote to `type=gha`. A persistent local builder makes the second push free
+      # for every layer above the change point, and costs nothing from the 10 GB
+      # Actions budget. `server-image` is the longest job in a CI run (~319 s).
+      # `cache-from: type=gha` stays exactly as it was — it is the cold-start
+      # path, for the first build after the host or the builder is rebuilt.
+      #
+      # SHARED across the lanes, not per-lane. Six runner lanes share one Docker
+      # daemon but each has its own home, so `~/.docker/buildx` — the builder
+      # RECORD — is per-lane. That record is only a pointer: the docker-container
+      # driver derives the container name from the builder name alone
+      # (`buildx_buildkit_` + node name, buildx driver/driver.go), and Bootstrap
+      # INSPECTS that name and reuses the container it finds rather than creating
+      # one. So all six lanes attach to one `buildx_buildkit_verity-ci-bounded-v10` and its
+      # one `_state` volume: the cache warms ONCE, not six times. Two lanes racing
+      # a cold start are safe — the driver tolerates the create conflict
+      # (`!cerrdefs.IsConflict(err)`) and waits for the winner — and the container
+      # is created with `unless-stopped`, so it survives a daemon or host restart.
+      #
+      # `cleanup: false` rather than `keep-state: true`. Keep-state still runs
+      # `buildx rm --keep-state` in the post step: it preserves the volume but
+      # DELETES the container — and with one shared name that tears the builder
+      # out from under whichever of the other five lanes is mid-build. Nothing may
+      # remove this container on a job boundary.
+      #
+      # `builder:` on the build step below is load-bearing, not belt-and-braces.
+      # The action passes `--use` only on the path where it CREATES the builder;
+      # when the name already exists it logs "skipping creation" and leaves the
+      # lane's current builder wherever it was — and release.yml's ephemeral
+      # builder resets that to `default` when its post step removes it. Without
+      # the explicit input the build would silently run on `default`, which is the
+      # docker driver and cannot even import `type=gha`.
+      #
+      # Because only the first create configures the container, changing driver
+      # options or buildkitd config here does NOT take effect until someone
+      # uses a new versioned name. Bump the suffix whenever these creation-only
+      # driver options change so the next run creates a freshly configured node.
+      - name: Retire previous persistent builder
+        run: docker buildx rm --force verity-ci >/dev/null 2>&1 || true
+
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          name: verity-ci-bounded-v1
+          cleanup: false
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+      - name: Build Verity server image
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          # The persistent shared builder, named explicitly — see the note on the
+          # setup-buildx step above for why the action's `use` cannot be relied on.
+          builder: verity-ci-bounded-v1
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.VERITY_CI_IMAGE }}
+          build-args: |
+            VERITY_SERVER_VERSION=99.0.0
+            VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ env.VERITY_CI_RELAY_IMAGE }}
+          # THE canonical note for every `type=gha` cache in this repo; the other
+          # eight build steps point back here. All three attributes exist because
+          # the whole repository shares ONE 10 GB Actions cache.
+          #
+          # `scope` — without it every build exports into buildkit's default scope
+          # `buildkit`, and this repo has six Dockerfiles across nine build steps.
+          # Each export overwrites the index the previous one wrote, so a build
+          # imports a manifest describing a DIFFERENT image's layers and dies with
+          # `blob <sha>: not found` on something it was just told was cached. The
+          # scope name follows the image, not the workflow: ci.yml, verity-server.yml
+          # and release.yml all build deploy/Dockerfile and SHOULD share this entry.
+          #
+          # `cache-to` only off a pull request — GitHub scopes cache entries by ref.
+          # An entry written from `refs/pull/N/merge` is invisible to main and to
+          # every other PR; only later pushes to that same PR can read it. So a PR
+          # write largely just consumes budget, and what gets evicted for it are
+          # main's entries — the ones everything else reads. Reading stays
+          # unconditional: PRs get their hits from what main wrote.
+          #
+          # The gate MUST be spelled `!= 'pull_request' && '<cache>' || ''`, never
+          # `== 'pull_request' && '' || '<cache>'`. GitHub's `&&`/`||` return
+          # operands, not booleans, so a falsy left-hand result falls through to
+          # the right — and `''` is falsy. The `== … && ''` spelling therefore
+          # exports the cache on EVERY event and the gate silently does nothing.
+          # `Actions cache budget` in scripts/ci-workflow.test.ts asserts this.
+          #
+          # `ignore-error` — this image is `load`ed for the smoke test below and
+          # never pushed, so the export is pure optimization: a cache the next run
+          # cannot reuse costs time, not correctness. Without it buildx propagates
+          # the exporter's failure and the job goes red on a build that produced a
+          # working image. Run 31219396281 sat 2.5 minutes on `#74 writing layer
+          # <sha>` before failing, while the cache was over its limit and GitHub
+          # was evicting the very blobs being written.
+          cache-from: type=gha,scope=verity-server
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server,ignore-error=true' || '' }}
+      - name: Verify the bundled installer payload
+        run: |
+          docker run --rm --entrypoint /bin/sh "$VERITY_CI_IMAGE" -c '
+            test -x /opt/verity-install/deploy/bin/verity-install
+            test -x /opt/verity-install/deploy/bin/verity-compose
+            test -f /opt/verity-install/deploy/docker-compose.yml
+            test -f /opt/verity-install/deploy/docker-compose.managed.yml
+            test -f /opt/verity-install/deploy/docker-compose.runner-supervisor.yml
+          '
+      - name: Verify immutable Server version stamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          reported="$({ docker run --rm \
+            --env VERITY_SERVER_VERSION=98.0.0 \
+            --entrypoint node \
+            "$VERITY_CI_IMAGE" \
+            --input-type=module \
+            -e "import { runtimeServerVersion } from '/app/packages/server/dist/runtime-version.js'; process.stdout.write(runtimeServerVersion());"; } 2>/dev/null)"
+          test "$reported" = 99.0.0
+      - name: Verify Runner anti-forgery boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --user 0:0 --entrypoint=node \
+            --mount "type=bind,src=$PWD/scripts/test-runner-forgery-boundary.mjs,dst=/test-runner-forgery-boundary.mjs,readonly" \
+            "$VERITY_CI_IMAGE" /test-runner-forgery-boundary.mjs
+      - name: Smoke-test Verity server image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint=sh "$VERITY_CI_IMAGE" -lc '
+            set -eu
+            node --version
+            git --version
+            docker --version
+            docker compose version
+            devcontainer --version
+            command -v claude
+            command -v codex
+            test -x /usr/local/bin/verity-transcribe-meeting
+            test -d /opt/verity-features/verity-sandbox-toolkit
+            test "$(id -un)" = "node"
+          '
+          docker rm -f "$VERITY_CI_SERVER" "$VERITY_CI_POSTGRES" >/dev/null 2>&1 || true
+          docker network create "$VERITY_CI_NETWORK" >/dev/null 2>&1 || true
+          # The server now requires a real Postgres (pglite removed from the
+          # runtime). Bring one up exactly like the compose stack does: internal
+          # only, trust auth (no password), no published port.
+          docker run -d --name "$VERITY_CI_POSTGRES" --network "$VERITY_CI_NETWORK" \
+            -e POSTGRES_USER=verity -e POSTGRES_DB=verity \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            postgres:18-alpine
+          for _ in $(seq 1 30); do
+            if docker exec "$VERITY_CI_POSTGRES" pg_isready -U verity -d verity >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker run -d --name "$VERITY_CI_SERVER" --network "$VERITY_CI_NETWORK" \
+            --group-add 65532 \
+            -e HOST=0.0.0.0 \
+            -e VERITY_REPO_DIR= \
+            -e VERITY_DOCKER_BASE_URL=unix:///var/run/docker.sock \
+            -e VERITY_DATA_VOLUME=verity-data \
+            -e VERITY_PROJECT_RELAY_IMAGE="$VERITY_CI_RELAY_IMAGE" \
+            -e VERITY_AGENT_GATEWAY_CONTROL_SOCKET=/tmp/verity-agent-gateway-control.sock \
+            -e VERITY_AGENT_GATEWAY_UNSEAL_KEY="$VERITY_CI_GATEWAY_UNSEAL_KEY" \
+            -e VERITY_AGENT_GATEWAY_URL=https://verity-agent-gateway:9443 \
+            -e VERITY_CLAUDE_EGRESS_GATEWAY_URL=https://verity:9443 \
+            -e VERITY_CLAUDE_CONNECTOR_PORT=47821 \
+            -e DATABASE_URL="postgres://verity@$VERITY_CI_POSTGRES:5432/verity" \
+            "$VERITY_CI_IMAGE"
+          cleanup() {
+            docker rm -f "$VERITY_CI_SERVER" "$VERITY_CI_POSTGRES" >/dev/null 2>&1 || true
+            docker network rm "$VERITY_CI_NETWORK" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 30); do
+            if docker exec "$VERITY_CI_SERVER" node -e \
+              "const r = await fetch('http://127.0.0.1:8082/healthz'); if (!r.ok) process.exit(1);"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Verity server image did not pass /healthz smoke test" >&2
+          docker logs --tail=120 "$VERITY_CI_SERVER" 2>/dev/null || true
+          exit 1
+
+      - name: Verify standalone agent gateway deployment lifecycle
+        shell: bash
+        run: deploy/bin/verity-agent-gateway-deployment-smoke "$VERITY_CI_IMAGE"
+
+      - name: Verify isolated control-plane Runner lifecycle
+        shell: bash
+        run: deploy/bin/verity-control-plane-runner-deployment-smoke "$VERITY_CI_IMAGE"
+
+      - name: Release build cache before isolated daemon
+        run: docker buildx rm --force verity-ci-bounded-v1
+
+      - uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '25'
+
+      - name: Verify clean Compose installation on an empty Docker host
+        shell: bash
+        run: |
+          set -euo pipefail
+          socket_dir="$RUNNER_TEMP/$VERITY_CI_CLEAN_DIND"
+          socket_path="$socket_dir/docker.sock"
+
+          cleanup_clean_install() {
+            docker --host unix:///var/run/docker.sock rm --force "$VERITY_CI_CLEAN_DIND" >/dev/null 2>&1 || true
+            docker --host unix:///var/run/docker.sock volume rm "$VERITY_CI_CLEAN_DIND_VOLUME" >/dev/null 2>&1 || true
+            rm -f "$socket_path"
+            rmdir "$socket_dir" 2>/dev/null || true
+          }
+          trap cleanup_clean_install EXIT
+
+          mkdir -p "$socket_dir"
+          docker volume create "$VERITY_CI_CLEAN_DIND_VOLUME" >/dev/null
+          # renovate: datasource=docker depName=docker
+          docker run --detach --privileged --name "$VERITY_CI_CLEAN_DIND" --volume "$socket_dir:$socket_dir" --mount "type=volume,src=$VERITY_CI_CLEAN_DIND_VOLUME,dst=/var/lib/docker" --env DOCKER_TLS_CERTDIR= docker:29.7.1-dind@sha256:66fd272fc375aad4c8fa06351c414e15bffe8cb015c171e1b8a8efe36a72cc1e --host=unix:///var/run/docker.sock --host="unix://$socket_path"
+
+          for attempt in $(seq 1 60); do
+            if docker exec "$VERITY_CI_CLEAN_DIND" docker info >/dev/null 2>&1; then
+              docker exec "$VERITY_CI_CLEAN_DIND" chmod 0666 "$socket_path"
+              break
+            fi
+            if [[ "$attempt" -eq 60 ]]; then
+              docker logs "$VERITY_CI_CLEAN_DIND" >&2 || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          isolated="unix://$socket_path"
+          docker save "$VERITY_CI_IMAGE" | docker --host "$isolated" load
+          isolated_id="$(docker --host "$isolated" info --format '{{.ID}}')"
+          VERITY_CLEAN_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" deploy/bin/verity-clean-install-smoke "$VERITY_CI_IMAGE"
+
+      - name: Clean Docker smoke artifacts
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f "$VERITY_CI_SERVER" "$VERITY_CI_POSTGRES" >/dev/null 2>&1 || true
+          docker network rm "$VERITY_CI_NETWORK" >/dev/null 2>&1 || true
+          docker image rm -f "$VERITY_CI_IMAGE" >/dev/null 2>&1 || true
+          # THE canonical note for the cache prune; the other three image
+          # workflows point back here.
+          #
+          # There are TWO build-cache stores on this host and neither prune command
+          # reaches the other. `docker builder prune` talks to the DAEMON's own
+          # builder — the ~112 GB `docker system df` reports, produced by whatever
+          # builds through the daemon directly. Our layers do not live there: a
+          # docker-container builder keeps its cache inside its own `_state`
+          # volume, and only `docker buildx prune --builder` can trim that. Until
+          # the builder became persistent that volume was deleted with the builder
+          # after every job, so this line has never actually bounded CI's cache —
+          # and now that the volume survives, nothing would.
+          #
+          # Bounded by SIZE, not by age. `--filter until=24h` deletes by last-use
+          # regardless of how much disk is actually at stake: on a quiet weekend it
+          # throws away exactly the base layers the next cold PR needs, and on a
+          # busy day it frees nothing while the volume grows. Worse on shared
+          # state — it runs at the end of EVERY job while five other lanes may be
+          # mid-build, so its blast radius is everyone's cache, not this job's. A
+          # cap removes nothing until the store is genuinely over budget, which is
+          # the only condition we care about (465 GB disk, 147 GB free).
+          #
+          # Buildx v0.19 / Docker CLI v28 renamed `--keep-storage` to
+          # `--reserved-space`; the old spelling still works but is deprecated, so
+          # try it and fall back rather than pinning to one CLI generation.
+          docker buildx prune --builder verity-ci-bounded-v1 --force --keep-storage 40GB >/dev/null 2>&1 \
+            || docker buildx prune --builder verity-ci-bounded-v1 --force --reserved-space 40GB >/dev/null 2>&1 \
+            || true
+          docker builder prune --all --force --keep-storage 20GB >/dev/null 2>&1 \
+            || docker builder prune --all --force --reserved-space 20GB >/dev/null 2>&1 \
+            || true
+
+  # Artifact versioning is now gated by release-please (`release.yml`) — the
+  # old per-PR feature-version / image-version bump gates were removed. PRs no
+  # longer touch a version.
+
+  # agent-seed bundling guard: the copies under
+  # features/verity-sandbox-toolkit/agent-seed/ MUST stay byte-identical to the
+  # repo-root agent-seed/ originals. The Feature bundles them (self-contained on
+  # both consume paths — baked verity-sandbox + --additional-features), so the
+  # repo-root tree is the single source of truth and this guard fails the PR if
+  # the bundled copy silently drifts.
+  agent-seed-drift:
+    needs: changes
+    if: needs.changes.outputs.agent_seed_drift == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bundled agent-seed matches repo-root source
+        run: |
+          set -euo pipefail
+          feature=features/verity-sandbox-toolkit/agent-seed
+          status=0
+          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-secret-scan bin/verity-tasks bin/verity-git-sign code-review-prompt.md; do
+            if cmp -s "agent-seed/$rel" "$feature/$rel"; then
+              echo "OK: $rel matches agent-seed/ source"
+            else
+              echo "::error::$feature/$rel drifted from agent-seed/$rel — re-copy the repo-root original"
+              status=1
+            fi
+          done
+          exit "$status"
+
+  # Aggregate gate required by the `main` branch ruleset ("CI-Checks").
+  # Real jobs above report up here. Path-gated jobs may be skipped only when
+  # the changes detector says their area is irrelevant; every required/changed
+  # job must still succeed.
+  ci-checks:
+    needs:
+      [
+        changes,
+        public-snapshot,
+        lint,
+        typecheck,
+        test,
+        installer,
+        runner-postgres-race,
+        coverage,
+        mobile,
+        mobile-app,
+        server-image,
+        agent-seed-drift,
+      ]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify all required jobs succeeded
+        run: |
+          set -euo pipefail
+          require_success() {
+            name="$1"
+            result="$2"
+            echo "$name result: $result"
+            if [ "$result" != "success" ]; then
+              echo "::error::$name did not succeed (got '$result')"
+              exit 1
+            fi
+          }
+
+          require_when_changed() {
+            name="$1"
+            result="$2"
+            should_run="$3"
+            echo "$name result: $result (changed=$should_run)"
+            if [ "$should_run" = "true" ]; then
+              if [ "$result" != "success" ]; then
+                echo "::error::$name should have run and succeeded (got '$result')"
+                exit 1
+              fi
+            elif [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "::error::$name was not required, but ended in '$result'"
+              exit 1
+            fi
+          }
+
+          require_success changes "${{ needs.changes.result }}"
+          require_success public-snapshot "${{ needs.public-snapshot.result }}"
+          require_when_changed lint "${{ needs.lint.result }}" "${{ needs.changes.outputs.lint }}"
+          require_when_changed agent-seed-drift "${{ needs.agent-seed-drift.result }}" "${{ needs.changes.outputs.agent_seed_drift }}"
+          require_when_changed typecheck "${{ needs.typecheck.result }}" "${{ needs.changes.outputs.typecheck }}"
+          require_when_changed test "${{ needs.test.result }}" "${{ needs.changes.outputs.test }}"
+          require_when_changed installer "${{ needs.installer.result }}" "${{ needs.changes.outputs.installer }}"
+          require_when_changed runner-postgres-race "${{ needs.runner-postgres-race.result }}" "${{ needs.changes.outputs.test }}"
+          require_when_changed coverage "${{ needs.coverage.result }}" "${{ github.event_name != 'pull_request' && needs.changes.outputs.test == 'true' }}"
+          require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.changes.outputs.mobile }}"
+          require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.changes.outputs.mobile_app }}"
+          require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.changes.outputs.server_image }}"
+          echo "all required CI jobs succeeded"

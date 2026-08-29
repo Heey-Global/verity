@@ -1,0 +1,466 @@
+#!/usr/bin/env node
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+
+const DEFAULT_MODEL = 'parakeet-tdt-0.6b';
+const DEFAULT_RESPONSE_FORMAT = 'verbose_json';
+// Keep the client side of the request alive for two-hour recordings and allow
+// ffmpeg ample time to prepare them on slower hosts.
+const DEFAULT_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+const DEFAULT_FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_MAX_UPLOAD_BYTES = 25_000_000;
+const MAX_CHILD_OUTPUT_BYTES = 1_000_000;
+const DEFAULT_RETRIES = 0;
+const DEFAULT_HTTP_RETRIES = 0;
+const DEFAULT_RETRY_DELAY_MS = 2_000;
+// Parakeet-class encoders reject inputs above 400 seconds in single-pass mode.
+// Keep Verity's normal padded window safely below that ceiling: a 300-second
+// core plus five seconds of context on either side is at most 310 seconds.
+const DEFAULT_CHUNK_SECONDS = 5 * 60;
+const DEFAULT_CHUNK_OVERLAP_SECONDS = 5;
+const shutdownController = new AbortController();
+process.once('SIGTERM', () => shutdownController.abort());
+process.once('SIGINT', () => shutdownController.abort());
+
+function inputAudioPath() {
+  const fromEnv = process.env.VERITY_AUDIO_FILE?.trim();
+  if (fromEnv) return fromEnv;
+  return process.argv
+    .slice(2)
+    .filter((arg) => !arg.startsWith('-'))
+    .at(-1)
+    ?.trim();
+}
+
+function numberOrUndefined(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function positiveNumberEnv(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeNumberEnv(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new Error('meeting transcription was stopped'));
+    };
+    if (signal?.aborted) abort();
+    else signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
+function isRetriableStatus(status) {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function connectionErrorCode(error) {
+  const cause = error && typeof error === 'object' ? error.cause : undefined;
+  return cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : undefined;
+}
+
+function isPreInferenceConnectionError(error) {
+  const code = connectionErrorCode(error);
+  return ['ECONNREFUSED', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH'].includes(code);
+}
+
+function normalizeSegments(body) {
+  const source = Array.isArray(body.segments)
+    ? body.segments
+    : Array.isArray(body.utterances)
+      ? body.utterances
+      : [];
+  if (source.length > 0) {
+    return source.flatMap((segment) => {
+      if (typeof segment !== 'object' || segment === null) return [];
+      const text = typeof segment.text === 'string' ? segment.text.trim() : '';
+      if (!text) return [];
+      return [
+        {
+          speaker:
+            typeof segment.speaker === 'string' && segment.speaker.trim()
+              ? segment.speaker.trim()
+              : 'Speaker 1',
+          text,
+          start: numberOrUndefined(segment.start),
+          end: numberOrUndefined(segment.end),
+        },
+      ];
+    });
+  }
+  if (typeof body.text === 'string' && body.text.trim()) {
+    return [{ speaker: 'Speaker 1', text: body.text.trim() }];
+  }
+  return [];
+}
+
+function runChild(command, args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let outputExceeded = false;
+    const appendOutput = (current, chunk) => {
+      const next = current + chunk;
+      if (Buffer.byteLength(next) > MAX_CHILD_OUTPUT_BYTES) {
+        outputExceeded = true;
+        child.kill('SIGKILL');
+        return current;
+      }
+      return next;
+    };
+    child.stdout.setEncoding('utf8').on('data', (chunk) => (stdout = appendOutput(stdout, chunk)));
+    child.stderr.setEncoding('utf8').on('data', (chunk) => (stderr = appendOutput(stderr, chunk)));
+    let abortKillTimer;
+    const abort = () => {
+      child.kill('SIGTERM');
+      abortKillTimer = setTimeout(() => child.kill('SIGKILL'), 1_000);
+      abortKillTimer.unref?.();
+    };
+    shutdownController.signal.addEventListener('abort', abort, { once: true });
+    if (shutdownController.signal.aborted) abort();
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    timer.unref?.();
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      clearTimeout(abortKillTimer);
+      shutdownController.signal.removeEventListener('abort', abort);
+      reject(error);
+    });
+    child.once('close', (status, signal) => {
+      clearTimeout(timer);
+      clearTimeout(abortKillTimer);
+      shutdownController.signal.removeEventListener('abort', abort);
+      if (shutdownController.signal.aborted) reject(new Error('meeting transcription was stopped'));
+      else if (outputExceeded) reject(new Error(`${command} produced too much output`));
+      else if (timedOut) reject(new Error(`${command} timed out while preparing meeting audio`));
+      else resolve({ stdout, stderr, status, signal });
+    });
+  });
+}
+
+async function runFfmpeg(ffmpeg, args, timeoutMs) {
+  let result;
+  try {
+    result = await runChild(
+      ffmpeg,
+      args,
+      Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_FFMPEG_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (shutdownController.signal.aborted) throw error;
+    throw new Error(`ffmpeg failed to start: ${error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      result.stderr.trim() ||
+        `ffmpeg exited with ${result.signal ?? `status ${result.status ?? 'unknown'}`}`,
+    );
+  }
+}
+
+async function probeAudioDuration(audioPath) {
+  const ffprobe = process.env.VERITY_MEETING_FFPROBE_COMMAND?.trim() || 'ffprobe';
+  const result = await runChild(
+    ffprobe,
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      audioPath,
+    ],
+    60_000,
+  );
+  const duration = Number(result.stdout?.trim());
+  if (result.status !== 0 || !Number.isFinite(duration) || duration <= 0) {
+    throw new Error(result.stderr?.trim() || 'ffprobe could not determine meeting audio duration');
+  }
+  return duration;
+}
+
+async function prepareAudioChunks(audioPath, enableOverlap) {
+  const maxBytes = Number(process.env.VERITY_PARAKEET_MAX_UPLOAD_BYTES ?? DEFAULT_MAX_UPLOAD_BYTES);
+  const chunkSeconds = nonNegativeNumberEnv('VERITY_MEETING_CHUNK_SECONDS', DEFAULT_CHUNK_SECONDS);
+  const overlapSeconds = enableOverlap
+    ? nonNegativeNumberEnv('VERITY_MEETING_CHUNK_OVERLAP_SECONDS', DEFAULT_CHUNK_OVERLAP_SECONDS)
+    : 0;
+  if (
+    chunkSeconds === 0 &&
+    statSync(audioPath).size <= (Number.isFinite(maxBytes) ? maxBytes : DEFAULT_MAX_UPLOAD_BYTES)
+  ) {
+    return {
+      chunks: [{ path: audioPath, offset: 0, coreStart: 0, coreEnd: Infinity }],
+      overlapSeconds: 0,
+      cleanup: () => undefined,
+    };
+  }
+
+  // Windowed chunks are shipped losslessly. Aggressive compression is survivable
+  // for clean studio speech but not for real meeting audio: on one 5-minute
+  // window of an 87-minute recording, 24 kbps MP3 produced 38 words of English
+  // noise where 16 kHz mono PCM produced 380 words of correct German. A 310-second
+  // window of that PCM is 9.9 MB, comfortably inside the 25 MB upload ceiling, and
+  // the backend can read it without its own ffmpeg conversion pass.
+  //
+  // The unwindowed fallback keeps lossy compression: with chunking disabled the
+  // entire recording has to fit under that same ceiling, so bitrate is the only
+  // lever left.
+  const lossless = chunkSeconds > 0;
+
+  const dir = mkdtempSync(join(tmpdir(), 'verity-parakeet-audio-'));
+  const ffmpeg = process.env.VERITY_MEETING_FFMPEG_COMMAND?.trim() || 'ffmpeg';
+  const timeoutMs = Number(
+    process.env.VERITY_MEETING_FFMPEG_TIMEOUT_MS ?? DEFAULT_FFMPEG_TIMEOUT_MS,
+  );
+  try {
+    const windows = [];
+    if (chunkSeconds > 0) {
+      const totalDuration = await probeAudioDuration(audioPath);
+      for (let coreStart = 0, index = 0; coreStart < totalDuration; index += 1) {
+        const coreEnd = Math.min(totalDuration, coreStart + chunkSeconds);
+        const paddedStart = Math.max(0, coreStart - overlapSeconds);
+        const paddedEnd = Math.min(totalDuration, coreEnd + overlapSeconds);
+        windows.push({ index, coreStart, coreEnd, paddedStart, paddedEnd });
+        coreStart = coreEnd;
+      }
+    } else {
+      windows.push({
+        index: 0,
+        coreStart: 0,
+        coreEnd: Infinity,
+        paddedStart: 0,
+        paddedEnd: undefined,
+      });
+    }
+
+    const chunks = [];
+    for (const window of windows) {
+      const path = join(
+        dir,
+        lossless ? `meeting-${String(window.index).padStart(4, '0')}.wav` : 'meeting.mp3',
+      );
+      await runFfmpeg(
+        ffmpeg,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-nostdin',
+          '-i',
+          audioPath,
+          ...(window.paddedStart > 0 ? ['-ss', String(window.paddedStart)] : []),
+          ...(window.paddedEnd === undefined
+            ? []
+            : ['-t', String(window.paddedEnd - window.paddedStart)]),
+          '-vn',
+          '-ac',
+          '1',
+          '-ar',
+          '16000',
+          ...(lossless ? ['-c:a', 'pcm_s16le'] : ['-b:a', '24k']),
+          path,
+        ],
+        timeoutMs,
+      );
+      if (statSync(path).size > (Number.isFinite(maxBytes) ? maxBytes : DEFAULT_MAX_UPLOAD_BYTES)) {
+        throw new Error('a meeting audio chunk is still too large for the transcription backend');
+      }
+      chunks.push({
+        path,
+        offset: window.paddedStart,
+        coreStart: window.coreStart,
+        coreEnd: window.coreEnd,
+      });
+    }
+    return {
+      chunks,
+      overlapSeconds,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function transcribe(audioPath) {
+  // No default: Verity bundles no transcription backend, so an unset base URL is
+  // "not configured", not "try localhost".
+  const baseUrl = process.env.VERITY_PARAKEET_BASE_URL?.trim();
+  if (!baseUrl) {
+    throw new Error(
+      'No meeting transcription backend is configured. Set VERITY_TRANSCRIBE_BASE_URL ' +
+        '(plus VERITY_TRANSCRIBE_API_KEY and VERITY_TRANSCRIBE_MODEL) to an ' +
+        'OpenAI-compatible transcription API, or configure one in Settings.',
+    );
+  }
+  const apiKey = process.env.VERITY_PARAKEET_API_KEY?.trim();
+  const model = process.env.VERITY_PARAKEET_MODEL?.trim() || DEFAULT_MODEL;
+  const responseFormat =
+    process.env.VERITY_PARAKEET_RESPONSE_FORMAT?.trim() || DEFAULT_RESPONSE_FORMAT;
+  const language = process.env.VERITY_PARAKEET_LANGUAGE?.trim();
+  const timeoutMs = positiveNumberEnv('VERITY_PARAKEET_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
+  const connectionRetries = nonNegativeNumberEnv('VERITY_PARAKEET_RETRIES', DEFAULT_RETRIES);
+  const httpRetries = nonNegativeNumberEnv('VERITY_PARAKEET_HTTP_RETRIES', DEFAULT_HTTP_RETRIES);
+  const maxAttempts = connectionRetries + httpRetries + 1;
+  const retryDelayMs = positiveNumberEnv('VERITY_PARAKEET_RETRY_DELAY_MS', DEFAULT_RETRY_DELAY_MS);
+  const prepared = await prepareAudioChunks(audioPath, responseFormat === 'verbose_json');
+
+  const endpoint = `${baseUrl.replace(/\/+$/, '')}/audio/transcriptions`;
+  try {
+    const segments = [];
+    let detectedLanguage;
+    let duration = 0;
+    for (const chunk of prepared.chunks) {
+      let response;
+      let lastError;
+      let httpFailures = 0;
+      let connectionFailures = 0;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        if (shutdownController.signal.aborted) throw new Error('meeting transcription was stopped');
+        response = undefined;
+        lastError = undefined;
+        const form = new FormData();
+        form.set('file', new Blob([readFileSync(chunk.path)]), basename(chunk.path));
+        form.set('model', model);
+        form.set('response_format', responseFormat);
+        if (language) form.set('language', language);
+
+        const controller = new AbortController();
+        const stopRequest = () => controller.abort();
+        shutdownController.signal.addEventListener('abort', stopRequest, { once: true });
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        timer.unref?.();
+        try {
+          response = await fetch(endpoint, {
+            method: 'POST',
+            headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+            body: form,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          lastError = error;
+        } finally {
+          clearTimeout(timer);
+          shutdownController.signal.removeEventListener('abort', stopRequest);
+        }
+        if (shutdownController.signal.aborted) throw new Error('meeting transcription was stopped');
+        if (response?.ok) break;
+        if (response && !isRetriableStatus(response.status)) break;
+        if (response) {
+          httpFailures += 1;
+          if (httpFailures > httpRetries) break;
+          // Release the response body/socket before issuing another potentially
+          // hours-long request. The final failed response remains unread so its
+          // diagnostic body can still be surfaced below.
+          await response.arrayBuffer().catch(() => undefined);
+        } else {
+          // An abort or an established socket closing may mean inference already
+          // consumed minutes or hours. Never resubmit it blindly. Only retry errors
+          // that prove the request could not reach a listening backend.
+          if (!isPreInferenceConnectionError(lastError)) break;
+          connectionFailures += 1;
+          if (connectionFailures > connectionRetries) break;
+        }
+        if (attempt < maxAttempts) {
+          await sleep(retryDelayMs, shutdownController.signal);
+        }
+      }
+      if (!response) {
+        // No HTTP response at all: the backend is unreachable or the request timed
+        // out. Surface a concrete, actionable message (endpoint + underlying cause)
+        // instead of Node's bare "fetch failed", which is useless for diagnosis.
+        if (lastError && lastError.name === 'AbortError') {
+          throw new Error(`Parakeet request to ${endpoint} timed out after ${timeoutMs}ms`);
+        }
+        const code = connectionErrorCode(lastError);
+        const reason =
+          code ?? (lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown'));
+        throw new Error(`Could not reach the Parakeet server at ${endpoint} (${reason})`);
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(
+          `Parakeet transcription failed with HTTP ${response.status} at ${endpoint}${
+            text.trim() ? `: ${text.trim()}` : ''
+          }`,
+        );
+      }
+
+      const body =
+        responseFormat === 'text' ? { text: await response.text() } : await response.json();
+      const normalizedSegments = normalizeSegments(body);
+      if (
+        prepared.overlapSeconds > 0 &&
+        prepared.chunks.length > 1 &&
+        normalizedSegments.some(
+          (segment) => segment.start === undefined || segment.end === undefined,
+        )
+      ) {
+        throw new Error('Parakeet returned untimed text for overlapping meeting audio chunks');
+      }
+      const chunkSegments = normalizedSegments
+        .map((segment) => ({
+          ...segment,
+          ...(segment.start === undefined ? {} : { start: segment.start + chunk.offset }),
+          ...(segment.end === undefined ? {} : { end: segment.end + chunk.offset }),
+        }))
+        .filter((segment) => {
+          if (segment.start === undefined || segment.end === undefined) return true;
+          const midpoint = (segment.start + segment.end) / 2;
+          return midpoint >= chunk.coreStart && midpoint < chunk.coreEnd;
+        });
+      segments.push(...chunkSegments);
+      if (!detectedLanguage && typeof body.language === 'string') detectedLanguage = body.language;
+      duration = Math.max(
+        duration,
+        Number.isFinite(chunk.coreEnd)
+          ? chunk.coreEnd
+          : chunk.offset +
+              (typeof body.duration === 'number'
+                ? body.duration
+                : Math.max(0, ...chunkSegments.map((segment) => segment.end ?? 0)) - chunk.offset),
+      );
+    }
+    if (segments.length === 0) throw new Error('Parakeet returned no transcript text');
+    return {
+      segments,
+      ...(detectedLanguage ? { language: detectedLanguage } : {}),
+      ...(duration > 0 ? { duration } : {}),
+    };
+  } finally {
+    prepared.cleanup();
+  }
+}
+
+async function main() {
+  const audioPath = inputAudioPath();
+  if (!audioPath) throw new Error('missing meeting audio path');
+  process.stdout.write(`${JSON.stringify(await transcribe(audioPath))}\n`);
+}
+
+main().catch((error) => {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});

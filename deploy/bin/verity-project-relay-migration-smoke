@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Stage 5 real-Docker gate: prove a legacy shared-network sandbox is detected and
+# REPLACED (not silently reused) while a foreign container is left untouched. This
+# exercises the production docker.ts client and the production classifier against a
+# real daemon, so unlike the unit mocks it cannot fabricate an inspect shape the
+# classifier would never see in production.
+#
+# Unlike the lifecycle smoke this needs no registry or relay image: the fake
+# sandboxes are throwaway node containers, and the assertions run the built dist's
+# classifier over their real `docker inspect` output.
+
+suffix="${VERITY_MIGRATION_SMOKE_ID:-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$}"
+smoke_label="verity.migration-smoke=$suffix"
+harness="verity-relay-migration-harness-${suffix}"
+harness_volume="verity-relay-migration-harness-${suffix}"
+probe_image='node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'
+
+cleanup() {
+  docker rm -f "$harness" >/dev/null 2>&1 || true
+  docker ps -aq --filter "label=$smoke_label" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker network ls -q --filter "label=$smoke_label" | xargs -r docker network rm >/dev/null 2>&1 || true
+  docker volume rm -f "$harness_volume" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker volume create --label "$smoke_label" "$harness_volume" >/dev/null
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+# Stream the built runtime through Docker stdin so a remote/containerized daemon
+# never has to resolve the workflow checkout as a host bind path.
+tar -C "$repo_root" -cf - \
+  node_modules package.json packages/*/package.json packages/*/dist \
+  deploy/bin/verity-project-relay-migration-smoke.mjs | \
+  docker run --rm -i --mount "type=volume,src=$harness_volume,dst=/repo" \
+    "$probe_image" tar -C /repo -xf -
+
+if ! docker run --name "$harness" --user 0:0 \
+  --label "$smoke_label" \
+  --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+  --mount "type=volume,src=$harness_volume,dst=/repo,readonly" \
+  --workdir /repo \
+  "$probe_image" node deploy/bin/verity-project-relay-migration-smoke.mjs \
+  "$probe_image" "$suffix"; then
+  while read -r stray_id; do
+    [[ -n "$stray_id" ]] || continue
+    docker inspect -f 'container={{.Name}} status={{.State.Status}} networks={{json .NetworkSettings.Networks}} labels={{json .Config.Labels}}' "$stray_id" >&2 || true
+  done < <(docker ps -aq --filter "label=$smoke_label")
+  exit 1
+fi

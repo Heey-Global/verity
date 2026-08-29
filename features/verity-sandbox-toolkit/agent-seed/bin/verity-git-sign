@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Verity commit-signing broker wrapper (audit finding H1).
+#
+# Transparent by default: with no broker env set it behaves EXACTLY like
+# `ssh-keygen`, so it is safe to wire as git's `gpg.ssh.program` unconditionally.
+# When VERITY_SIGNING_URL is set (broker mode), it forwards a `-Y sign` request to
+# the Verity signing endpoint instead of signing with a local private key — so the
+# fleet signing key never lives in the sandbox. Verification (`-Y verify` /
+# `-Y check-novalidate`) and every other invocation always delegate to the real
+# `ssh-keygen`; the public key + allowed_signers are still mounted for that.
+set -euo pipefail
+
+# Only intercept `-Y sign` while broker mode is active; otherwise BE ssh-keygen.
+if [ -z "${VERITY_SIGNING_URL:-}" ] || [ "${1:-}" != "-Y" ] || [ "${2:-}" != "sign" ]; then
+  exec ssh-keygen "$@"
+fi
+
+# git invokes: -Y sign -n <namespace> -f <keyref> <datafile>  (contract verified).
+shift 2
+namespace="git"
+datafile=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n) namespace="${2:-git}"; shift 2 ;;
+    -f) shift 2 ;;   # key ref — the broker holds the private key, we don't need it
+    --) shift ;;
+    -*) shift ;;     # any other flag we don't consume
+    *) datafile="$1"; shift ;;
+  esac
+done
+
+if [ -z "$datafile" ]; then
+  echo "verity-git-sign: no data file in ssh-keygen sign args" >&2
+  exit 1
+fi
+
+try_docker_fallback() {
+  if [ -z "${VERITY_SIGNING_DOCKER_CONTAINER:-}" ] || [ -n "${VERITY_SIGNING_DOCKER_FALLBACK_ACTIVE:-}" ] || ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+  remote="/tmp/verity-git-sign-${RANDOM}-${RANDOM}"
+  if ! docker cp "$datafile" "${VERITY_SIGNING_DOCKER_CONTAINER}:${remote}" >/dev/null 2>&1; then
+    return 1
+  fi
+  # Address the agent by NUMERIC uid, never by name: `remoteUser` comes from the
+  # project's own devcontainer.json, so uid 1000 is `vscode` on the common base
+  # images, `node` on others, and `dev` only on verity-sandbox. A hardcoded `dev`
+  # made this fallback die with "unable to find user dev" on every neutral-path
+  # container. Verity owns the uid (RUNNER_AGENT_UID), not the name.
+  if docker exec --user "${VERITY_AGENT_UID:-1000}" \
+    -e VERITY_SIGNING_DOCKER_FALLBACK_ACTIVE=1 \
+    "${VERITY_SIGNING_DOCKER_CONTAINER}" \
+    /opt/agent-seed/bin/verity-git-sign -Y sign -n "$namespace" -f /run/verity/ssh/id_ed25519.pub "$remote"; then
+    docker cp "${VERITY_SIGNING_DOCKER_CONTAINER}:${remote}.sig" "$datafile.sig" >/dev/null
+    docker exec "${VERITY_SIGNING_DOCKER_CONTAINER}" rm -f "$remote" "$remote.sig" >/dev/null 2>&1 || true
+    return 0
+  fi
+  docker exec "${VERITY_SIGNING_DOCKER_CONTAINER}" rm -f "$remote" "$remote.sig" >/dev/null 2>&1 || true
+  return 1
+}
+
+token_file="${VERITY_SIGNING_TOKEN_FILE:-/run/verity/ssh/signing_broker_token}"
+if [ ! -r "$token_file" ]; then
+  if try_docker_fallback; then
+    exit 0
+  fi
+  echo "verity-git-sign: signing token file is not readable" >&2
+  exit 1
+fi
+token="$(tr -d '\r\n' < "$token_file")"
+if [ -z "$token" ]; then
+  if try_docker_fallback; then
+    exit 0
+  fi
+  echo "verity-git-sign: signing token file is empty" >&2
+  exit 1
+fi
+
+payload="$(base64 -w0 < "$datafile")"
+# Build the JSON with jq so a namespace/payload containing quotes or backslashes
+# can never break out of the string (the broker re-validates the namespace anyway).
+if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+  if try_docker_fallback; then
+    exit 0
+  fi
+fi
+body="$(jq -nc --arg namespace "$namespace" --arg payload "$payload" \
+  '{namespace: $namespace, payload: $payload}')"
+
+urls=("${VERITY_SIGNING_URL}")
+
+resp=""
+last_error=""
+for url in "${urls[@]}"; do
+  errtmp="$(mktemp)"
+  if resp="$(curl -fsS --max-time 30 -X POST "${url%/}/internal/git/sign" \
+    -H "authorization: Bearer ${token}" \
+    -H "content-type: application/json" \
+    --data "$body" 2>"$errtmp")"; then
+    rm -f "$errtmp"
+    break
+  fi
+  last_error="$(cat "$errtmp")"
+  rm -f "$errtmp"
+  resp=""
+done
+
+if [ -z "$resp" ]; then
+  if try_docker_fallback; then
+    exit 0
+  fi
+  if [ -n "$last_error" ]; then
+    printf '%s\n' "$last_error" >&2
+  fi
+  echo "verity-git-sign: signing request to the Verity broker failed" >&2
+  exit 1
+fi
+
+# The broker returns { "signature": "-----BEGIN SSH SIGNATURE-----\n…" }; `jq -je`
+# un-escapes the JSON string back to the real armored blob AND writes it verbatim
+# (no trailing newline added — git wants exactly the bytes ssh-keygen produced),
+# while -e still makes a missing `.signature` a non-zero exit so git aborts.
+# Write to a temp first and only rename on success, so a jq failure never leaves a
+# truncated/empty `<datafile>.sig` behind for a caller that inspects it.
+sigtmp="$datafile.sig.tmp.$$"
+if printf '%s' "$resp" | jq -je '.signature' >"$sigtmp"; then
+  mv "$sigtmp" "$datafile.sig"
+else
+  rm -f "$sigtmp"
+  echo "verity-git-sign: no signature in broker response" >&2
+  exit 1
+fi

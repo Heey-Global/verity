@@ -1,0 +1,72 @@
+name: Ephemeral PostgreSQL
+description: >-
+  Start a throwaway postgres:18-alpine container on the GitHub-hosted runner and
+  return a localhost connection string with an ephemeral host port.
+inputs:
+  container-name:
+    description: Container name; must be unique per job so parallel jobs do not collide.
+    required: true
+outputs:
+  url:
+    description: >-
+      Superuser connection string for the `verity` database. The password is
+      registered with ::add-mask:: before it is emitted, so it stays redacted in
+      logs — but it is still a job output, so do not echo it deliberately.
+    value: ${{ steps.start.outputs.url }}
+runs:
+  using: composite
+  steps:
+    - id: start
+      shell: bash
+      env:
+        VERITY_PG_CONTAINER: ${{ inputs.container-name }}
+      run: |
+        set -euo pipefail
+        docker rm -f "$VERITY_PG_CONTAINER" >/dev/null 2>&1 || true
+        db_password="$(openssl rand -hex 24)"
+        echo "::add-mask::$db_password"
+        docker run -d --name "$VERITY_PG_CONTAINER" \
+          --label verity-test-postgres \
+          -p 127.0.0.1::5432 \
+          -e POSTGRES_USER=verity -e POSTGRES_DB=verity \
+          -e POSTGRES_PASSWORD="$db_password" \
+          postgres:18-alpine
+        postgres_ready=false
+        for _ in $(seq 1 30); do
+          if docker exec "$VERITY_PG_CONTAINER" \
+            pg_isready -U verity -d verity >/dev/null 2>&1; then
+            postgres_ready=true
+            break
+          fi
+          sleep 1
+        done
+        if [ "$postgres_ready" != true ]; then
+          echo "PostgreSQL container did not become ready" >&2
+          docker logs --tail=120 "$VERITY_PG_CONTAINER" >&2 || true
+          exit 1
+        fi
+        port="$(docker inspect -f '{{(index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort}}' "$VERITY_PG_CONTAINER")"
+        # pg_isready passing inside the container does not prove the published
+        # port is routable from the runner, so probe it from here too.
+        reachable=false
+        for _ in $(seq 1 30); do
+          if PGHOST=127.0.0.1 PGPORT="$port" node -e '
+            const socket = require("node:net").createConnection({
+              host: process.env.PGHOST,
+              port: Number(process.env.PGPORT),
+            });
+            socket.setTimeout(500);
+            socket.once("connect", () => { socket.destroy(); });
+            socket.once("error", () => process.exit(1));
+            socket.once("timeout", () => process.exit(1));
+          '; then
+            reachable=true
+            break
+          fi
+          sleep 1
+        done
+        if [ "$reachable" != true ]; then
+          echo "PostgreSQL is not reachable through localhost:$port" >&2
+          exit 1
+        fi
+        echo "url=postgres://verity:$db_password@127.0.0.1:$port/verity" >>"$GITHUB_OUTPUT"

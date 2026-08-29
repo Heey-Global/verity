@@ -1,0 +1,188 @@
+# Opt-in overlay for the ADR 0006 Stage 3 Runner supervisor preview.
+#
+# Layer this on top of the base compose ONLY when you also set
+# VERITY_RUNNER_SUPERVISOR=1 — it grants the Server the two extra privileges the
+# supervisor path needs, which the base install deliberately does not carry:
+#
+#   - CAP_CHOWN: lets the non-root Server process hand a freshly-created
+#     1101:1101,0770 runtime directory to the dedicated Runner UID/GID before the
+#     Sandbox mounts it (prepareRunnerRuntime → fchown).
+#
+# The `${VERITY_RUNNER_RUNTIME_GID}` supplementary group is NOT granted here: the base
+# compose already carries it, because the Claude egress key chown needs it for every
+# project regardless of this feature. Compose merges `group_add` ADDITIVELY, so listing
+# it in both files yields a duplicate entry and compose refuses the whole deploy with
+# "services.verity.group_add items at 2 and 3 are equal" — the build still succeeds, so
+# the product silently freezes on its last container.
+#
+# Compose merges `cap_add` additively too, so CHOWN appends to the base definition.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.runner-supervisor.yml up -d
+services:
+  verity:
+    cap_add:
+      - CHOWN
+    environment:
+      VERITY_RUNNER_SUPERVISOR: '1'
+      VERITY_CONTROL_PLANE_RUNNER: '1'
+      VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR: /run/verity-control-identity
+      # ADR 0006 Amendment 1. Read by `reconcileManagedControlPlaneRunner` to decide whether
+      # the managed Runner spec carries the daemon socket at all, so it has to be
+      # sealed alongside the flags above — an unsealed variable never reaches the
+      # managed Server, and the switch would be unflippable on that topology.
+      VERITY_CONTROL_PLANE_RUNNER_DOCKER: ${VERITY_CONTROL_PLANE_RUNNER_DOCKER:-1}
+    volumes:
+      - verity-control-runner-runtime:/srv/verity/runners/verity-control
+      - verity-control-runner-identity:/run/verity-control-identity
+    depends_on:
+      verity-control-runner-init:
+        condition: service_completed_successfully
+
+  verity-control-runner-init:
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
+    user: root
+    entrypoint: [/bin/sh, -c]
+    command:
+      - >-
+        mkdir -p /data/workspaces/verity-control /data/sessions &&
+        chown -R 1000:1000 /data/workspaces/verity-control &&
+        chown 1000:$${VERITY_RUNNER_RUNTIME_GID} /runner && chmod 0170 /runner &&
+        chown 0:$${VERITY_RUNNER_RUNTIME_GID} /identity && chmod 2770 /identity
+    environment:
+      VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
+    volumes:
+      - verity-data:/data
+      - verity-control-runner-runtime:/runner
+      - verity-control-runner-identity:/identity
+    restart: 'no'
+
+  # The managed Server is reconstructed from this service's environment rather
+  # than from the legacy `verity` service override above. Seal the same ACP
+  # control-plane settings into that immutable deployment specification.
+  managed-bootstrap:
+    environment:
+      VERITY_RUNNER_SUPERVISOR: '1'
+      VERITY_CONTROL_PLANE_RUNNER: '1'
+      VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR: /run/verity-control-identity
+      # ADR 0006 Amendment 1. Read by `reconcileManagedControlPlaneRunner` to decide whether
+      # the managed Runner spec carries the daemon socket at all, so it has to be
+      # sealed alongside the flags above — an unsealed variable never reaches the
+      # managed Server, and the switch would be unflippable on that topology.
+      VERITY_CONTROL_PLANE_RUNNER_DOCKER: ${VERITY_CONTROL_PLANE_RUNNER_DOCKER:-1}
+
+  # The sealed spec stores environment sources, not values. The Updater resolves
+  # those sources on every managed Server generation, so it must carry the same
+  # literals as bootstrap or reconciliation fails closed.
+  verity-updater:
+    environment:
+      VERITY_RUNNER_SUPERVISOR: '1'
+      VERITY_CONTROL_PLANE_RUNNER: '1'
+      VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR: /run/verity-control-identity
+      # ADR 0006 Amendment 1. Read by `reconcileManagedControlPlaneRunner` to decide whether
+      # the managed Runner spec carries the daemon socket at all, so it has to be
+      # sealed alongside the flags above — an unsealed variable never reaches the
+      # managed Server, and the switch would be unflippable on that topology.
+      VERITY_CONTROL_PLANE_RUNNER_DOCKER: ${VERITY_CONTROL_PLANE_RUNNER_DOCKER:-1}
+
+  verity-control-runner:
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
+    restart: unless-stopped
+    mem_limit: ${VERITY_CONTROL_PLANE_RUNNER_MEMORY:-4g}
+    memswap_limit: ${VERITY_CONTROL_PLANE_RUNNER_MEMORY_SWAP:-4g}
+    cpus: ${VERITY_CONTROL_PLANE_RUNNER_CPUS:-4}
+    pids_limit: ${VERITY_CONTROL_PLANE_RUNNER_PIDS_LIMIT:-512}
+    user: root
+    entrypoint: [/usr/bin/tini, --, /usr/local/bin/verity-control-plane-runner-start]
+    environment:
+      VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
+      VERITY_RUNNER_RUNTIME: /run/verity-runner
+      # ADR 0006 Amendment 1 kill switch, DEFAULT ON — the operator's decision. Set to 0 in
+      # .env to withhold the Docker grant. In THIS topology the mount below stays
+      # (Compose cannot drop a list entry conditionally) and the launcher simply
+      # does not hand the docker group to the agent, so uid 1000 cannot open the
+      # 0660 socket. See `deploy/bin/verity-control-plane-runner-start`.
+      VERITY_CONTROL_PLANE_RUNNER_DOCKER: ${VERITY_CONTROL_PLANE_RUNNER_DOCKER:-1}
+      # The control-plane variant of the gateway route, NOT /internal/mcp: this Runner has no
+      # per-project socket, so its connection carries no project identity and /internal/mcp
+      # answers 401. Must match the managed `desiredSpec` in
+      # packages/server/src/self-update/managed-control-plane-runner.ts and the default in
+      # deploy/bin/verity-control-plane-runner-start.
+      VERITY_MCP_GATEWAY_URL: http://verity:8083/internal/control-plane/mcp
+      VERITY_CLAUDE_EGRESS_URL: https://verity-agent-gateway:9443
+      VERITY_CLAUDE_EGRESS_SERVERNAME: verity-agent-gateway
+      VERITY_CODEX_EGRESS_URL: https://verity-agent-gateway:9444
+      VERITY_CODEX_EGRESS_AUTHORITY: verity-agent-gateway:9444
+      VERITY_CLAUDE_CONNECTOR_RECONCILE_SECONDS: '1'
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - KILL
+      - SETPCAP
+    group_add:
+      - '${VERITY_RUNNER_RUNTIME_GID:-1101}'
+      # The docker group, for the ADR 0006 Amendment 1 diagnostics grant below. Resolved by
+      # `deploy/bin/verity-compose`, which stats the socket rather than guessing;
+      # 999 is only the fallback for a hand-run compose. This grants the group to
+      # the CONTAINER's root process — the agent child is dropped to uid 1000 by
+      # `setpriv --clear-groups` and would hold no group at all, so the launcher
+      # grants it separately (`verity-control-plane-runner-start`), statting the
+      # socket itself.
+      - '${VERITY_DOCKER_SOCKET_GID:-999}'
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test ! -e /run/verity-runner-broker/connector-reconcile.failed &&
+          VERITY_RUNNER_RUNTIME=/run/verity-runner
+          /usr/local/bin/verity-runner-supervisor --probe
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - verity-control-runner-runtime:/run/verity-runner
+      - verity-control-runner-identity:/run/verity-control-identity:ro
+      - type: volume
+        source: verity-data
+        target: /work
+        volume:
+          subpath: workspaces/verity-control
+      - type: volume
+        source: verity-data
+        target: /srv/verity/sessions
+        volume:
+          subpath: sessions
+      # The host Docker daemon socket — ADR 0006 Amendment 1, a deliberate operator decision.
+      # The control-plane session is this deployment's fleet diagnostics console,
+      # and it lost that job when control-plane turns moved out of the Server
+      # process (#1478); the Server container has carried this same mount all
+      # along. READ IT AS WHAT IT IS: a container holding this socket is
+      # host-root-equivalent, so ADR 0002 D2's isolation no longer binds this one
+      # container. The residual risk and the reasoning are in ADR 0006 Amendment 1 — do not
+      # copy this mount to a project sandbox.
+      #
+      # Not read-only: connecting to a Unix socket writes the inode, and a
+      # read-only mount refuses it even for root.
+      #
+      # Held equal to the managed `desiredSpec` by the mount-parity test in
+      # scripts/verity-compose.test.ts.
+      - ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    depends_on:
+      verity-control-runner-init:
+        condition: service_completed_successfully
+      verity:
+        condition: service_healthy
+      verity-agent-gateway:
+        condition: service_started
+
+volumes:
+  verity-data:
+    name: verity-data
+  verity-control-runner-runtime:
+    name: verity-control-runner-runtime
+  verity-control-runner-identity:
+    name: verity-control-runner-identity

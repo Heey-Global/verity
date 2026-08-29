@@ -1,0 +1,35 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // jest-expo tests use jest globals (`describe`/`it`/`expect`/`jest`). Expo's
+    // base config auto-includes ambient `@types/*`, but the monorepo hoists
+    // `@types/jest` to the repo root alongside vitest's `@types/chai`; pin the
+    // jest types explicitly so the test + setup files typecheck. `expo/types`
+    // (referenced from expo-env.d.ts) and RN/React types come via imports, so
+    // listing `types` here doesn't drop them.
+    "types": ["jest", "node", "expo"],
+    "paths": {
+      "@verity/mobile": ["../../packages/mobile/src/index.ts"],
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"],
+  // `jest.setup.ts` imports `react-native-unistyles/mocks`, whose `react-native`
+  // export condition resolves to the library's TS SOURCE. That source pulls in an
+  // untyped `@react-native/normalize-colors` (implicit-any under strict) — a
+  // library-internal typing gap, not our code. `skipLibCheck` doesn't cover it
+  // (it's `.ts`, not `.d.ts`). The setup is test-runner infra (jest.mock calls,
+  // run by jest, not tsc — mirroring how expo's base config excludes
+  // `jest.config.js`), so exclude it from the app typecheck. The base config's
+  // own excludes are re-listed because an extending tsconfig replaces `exclude`.
+  "exclude": [
+    "node_modules",
+    "babel.config.js",
+    "metro.config.js",
+    "jest.config.js",
+    "jest.setup.ts",
+    "android",
+    "ios"
+  ]
+}

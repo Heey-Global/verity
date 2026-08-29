@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Verify Canary routing plus mTLS isolation at the Claude egress boundary.
+set -euo pipefail
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  echo 'usage: verity-claude-egress-smoke <canary-container> [non-canary-container]' >&2
+  exit 2
+fi
+
+canary="$1"
+stable_url="${VERITY_AGENT_GATEWAY_URL:-https://verity-agent-gateway:9443}"
+
+environment() {
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$1"
+}
+
+value() {
+  local name="$1" input="$2"
+  sed -n "s/^${name}=//p" <<<"$input"
+}
+
+require_egress_environment() {
+  local container="$1" input="$2" name
+  for name in \
+    VERITY_CLAUDE_CONNECTOR_PORT \
+    VERITY_CLAUDE_CONNECTOR_AUTHORITY \
+    VERITY_CLAUDE_EGRESS_URL \
+    VERITY_CLAUDE_EGRESS_CA \
+    VERITY_CLAUDE_EGRESS_CERT \
+    VERITY_CLAUDE_EGRESS_KEY; do
+    grep -q "^${name}=" <<<"$input" || {
+      echo "missing $name in $container" >&2
+      exit 1
+    }
+  done
+}
+
+canary_environment="$(environment "$canary")"
+require_egress_environment "$canary" "$canary_environment"
+test "$(value VERITY_CLAUDE_EGRESS_URL "$canary_environment")" = "${stable_url%/}" || {
+  echo "$canary is not provisioned for stable gateway $stable_url" >&2
+  exit 1
+}
+port="$(value VERITY_CLAUDE_CONNECTOR_PORT "$canary_environment")"
+authority="$(value VERITY_CLAUDE_CONNECTOR_AUTHORITY "$canary_environment")"
+docker exec "$canary" curl --silent --show-error --fail --max-time 2 \
+  -H "Host: $authority" "http://127.0.0.1:$port/__verity/gateway-ready" \
+  | grep -Fq '"authenticated":true'
+
+if [ "$#" -eq 2 ]; then
+  legacy="$2"
+  legacy_environment="$(environment "$legacy")"
+  require_egress_environment "$legacy" "$legacy_environment"
+  test "$(value VERITY_CLAUDE_EGRESS_URL "$legacy_environment")" != "${stable_url%/}" || {
+    echo "$legacy unexpectedly targets the stable Canary gateway" >&2
+    exit 1
+  }
+  ca="$(value VERITY_CLAUDE_EGRESS_CA "$legacy_environment")"
+  cert="$(value VERITY_CLAUDE_EGRESS_CERT "$legacy_environment")"
+  key="$(value VERITY_CLAUDE_EGRESS_KEY "$legacy_environment")"
+  status="$(docker exec "$legacy" curl --silent --show-error --max-time 2 \
+    --output /dev/null --write-out '%{http_code}' \
+    --cacert "$ca" --cert "$cert" --key "$key" \
+    "${stable_url%/}/__verity/gateway-ready")"
+  test "$status" = 403 || {
+    echo "standalone gateway returned $status for non-Canary $legacy (expected 403)" >&2
+    exit 1
+  }
+fi
+
+echo "Claude standalone gateway Canary gate passed for $canary."

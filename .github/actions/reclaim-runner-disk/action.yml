@@ -1,0 +1,46 @@
+name: Reclaim GitHub-hosted runner disk
+description: Remove unused hosted-image SDKs and enforce a free-space floor
+
+inputs:
+  minimum-free-gib:
+    description: Minimum free GiB required after cleanup
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Remove unused SDKs
+      shell: bash
+      env:
+        RUNNER_KIND: ${{ runner.environment }}
+        MINIMUM_FREE_GIB: ${{ inputs.minimum-free-gib }}
+      run: |
+        set -euo pipefail
+        if [[ "$RUNNER_KIND" != github-hosted ]]; then
+          echo '::error::Disk reclamation is restricted to disposable GitHub-hosted runners.' >&2
+          exit 1
+        fi
+        if [[ ! "$MINIMUM_FREE_GIB" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::Invalid minimum-free-gib: $MINIMUM_FREE_GIB" >&2
+          exit 1
+        fi
+
+        echo 'Disk usage before hosted-image cleanup:'
+        df -h "$RUNNER_TEMP"
+
+        # Exact image-owned paths only. Never accept caller-provided deletion paths.
+        sudo rm -rf -- \
+          /usr/local/lib/android \
+          /usr/share/dotnet \
+          /opt/ghc \
+          /usr/local/.ghcup \
+          /opt/hostedtoolcache/CodeQL
+
+        echo 'Disk usage after hosted-image cleanup:'
+        df -h "$RUNNER_TEMP"
+        avail_mib="$(df --output=avail --block-size=1M "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')"
+        echo "$((avail_mib / 1024)) GiB free on the filesystem holding \$RUNNER_TEMP"
+        if (( avail_mib < MINIMUM_FREE_GIB * 1024 )); then
+          echo "::error::Only $((avail_mib / 1024)) GiB free; need ${MINIMUM_FREE_GIB} GiB." >&2
+          exit 1
+        fi

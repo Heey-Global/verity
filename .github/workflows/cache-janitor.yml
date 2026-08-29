@@ -1,0 +1,85 @@
+name: verity-cache-janitor
+
+# Trims the repository's GitHub Actions cache back under a target size so GitHub
+# never has to evict during a build.
+#
+# GitHub enforces the 10 GB limit lazily and from inside a running job: a build
+# reads a buildkit manifest, GitHub frees space for the entry that same build is
+# exporting, and the next `cache-from` fails with `blob <sha>: not found` on a
+# layer the log already reported as CACHED. Run 31219396281 died exactly that way
+# with the repo 2.29 GB over the limit — on a PR whose diff touched nothing but a
+# Vitest flag.
+#
+# This is the fallback line, not the fix. The fix is in the workflows: no
+# `cache: npm` on the persistent self-hosted runners, one `scope` per image so
+# nine build steps stop overwriting each other's index, and no cache writes from
+# pull request refs (see the note on ci.yml's `Build Verity server image` step).
+# The janitor is here because any of those can regress silently and the symptom
+# lands on an unrelated PR.
+#
+# The policy itself lives in scripts/prune-actions-cache.mjs and is unit-tested
+# in scripts/prune-actions-cache.test.ts — deliberately not inline bash, because
+# "which entries are safe to delete" is the part that can go wrong.
+
+on:
+  schedule:
+    # Every six hours, off the top of the hour: minute 0 is when every scheduled
+    # workflow on GitHub fires at once and queues behind everyone else's.
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List what would be deleted without deleting it
+        type: boolean
+        default: false
+      target-bytes:
+        description: Trim down to this many bytes (default 7 GiB)
+        type: string
+        default: ''
+
+permissions:
+  # `actions: write` is the whole point — deleting a cache entry needs it, and
+  # nothing else here does. Notably NOT granted to the project App token
+  # (packages/server/src/github-app-token.ts), which stays read-only so agent
+  # sessions cannot delete or re-run workflow runs; this scheduled workflow is
+  # the sanctioned place for that permission.
+  actions: write
+  contents: read
+
+concurrency:
+  # Two janitors listing the same entries would race each other into 404s on
+  # delete. Harmless, but there is no reason to produce the noise.
+  group: cache-janitor
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    # GitHub-hosted on purpose: this is an API-only job, and the four self-hosted
+    # runners are exactly the contended resource the cache pressure hurts. It must
+    # also be able to run while every one of them is busy — that is when the cache
+    # is fullest.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/prune-actions-cache.mjs
+          sparse-checkout-cone-mode: false
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # No `cache: npm` here either, and here it is not even a trade-off: the
+          # script has zero dependencies and never runs `npm ci`.
+
+      - name: Prune
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CACHE_TARGET_BYTES: ${{ inputs.target-bytes }}
+          CACHE_MIN_AGE_MINUTES: '60'
+        # A blank `target-bytes` (every scheduled run) falls back to the script's
+        # default; it deliberately does NOT read as 0, which would mean "delete
+        # everything".
+        run: node scripts/prune-actions-cache.mjs ${{ inputs.dry-run == true && '--dry-run' || '' }}

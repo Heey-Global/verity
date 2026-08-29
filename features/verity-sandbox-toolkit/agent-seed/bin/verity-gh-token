@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Verity GitHub-token broker client.
+#
+# Redeems this container's opaque per-project CAPABILITY for a fresh, repo-scoped
+# GitHub token from the Verity token broker (POST /internal/github/token) and
+# prints ONLY the token to stdout. No GitHub token is stored in the sandbox: the
+# capability is not a GitHub credential (it is redeemable only against the broker,
+# on the internal network), and the token it yields is minted on demand and lives
+# only for the caller that requested it.
+#
+# Prints nothing and exits non-zero on any failure, so callers (the git credential
+# helper, the gh wrapper) can degrade cleanly instead of leaking an error as a
+# password.
+set -euo pipefail
+
+try_docker_fallback() {
+  if [ -z "${VERITY_GH_TOKEN_DOCKER_CONTAINER:-}" ] || [ -n "${VERITY_GH_TOKEN_DOCKER_FALLBACK_ACTIVE:-}" ] || ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+  # Numeric uid, not a name: `remoteUser` is whatever the project's devcontainer
+  # declares (`vscode`, `node`, `dev`, ...), so a hardcoded `dev` broke this
+  # fallback on every neutral-path container. Verity owns the uid, not the name.
+  token="$(docker exec --user "${VERITY_AGENT_UID:-1000}" \
+    -e VERITY_GH_TOKEN_DOCKER_FALLBACK_ACTIVE=1 \
+    "${VERITY_GH_TOKEN_DOCKER_CONTAINER}" \
+    /opt/agent-seed/bin/verity-gh-token 2>/dev/null || true)"
+  [ -n "$token" ] || return 1
+  printf '%s' "$token"
+  return 0
+}
+
+cap_file="${VERITY_GH_TOKEN_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
+[ -n "${VERITY_GH_TOKEN_URL:-}" ] && [ -r "$cap_file" ] || {
+  try_docker_fallback && exit 0
+  exit 1
+}
+
+cap="$(tr -d '[:space:]' <"$cap_file")"
+[ -n "$cap" ] || exit 1
+
+# The broker returns { "token": "ghs_…" }. `--fail` makes curl exit non-zero on a
+# 4xx/5xx (e.g. an unknown/rotated capability → 401), so we never emit a body as a
+# token. jq -re fails when `.token` is absent/empty.
+urls=("${VERITY_GH_TOKEN_URL}")
+
+resp=""
+for url in "${urls[@]}"; do
+  if resp="$(curl -fsS --max-time 15 -X POST "$url" -H "authorization: Bearer $cap" 2>/dev/null)"; then
+    break
+  fi
+  resp=""
+done
+if [ -z "$resp" ] && try_docker_fallback; then
+  exit 0
+fi
+[ -n "$resp" ] || exit 1
+token="$(printf '%s' "$resp" | jq -re '.token')" || {
+  try_docker_fallback && exit 0
+  exit 1
+}
+[ -n "$token" ] || exit 1
+
+printf '%s' "$token"

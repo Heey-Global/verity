@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+# Idempotently launch the project-scoped egress connector as the Runner identity.
+set -euo pipefail
+umask 0077
+
+MODE=start
+STANDALONE=0
+if [ "${1:-}" = '--standalone' ]; then STANDALONE=1; shift; fi
+if [ "${1:-}" = '--validate-config' ]; then MODE=validate; shift; fi
+if [ "${1:-}" = '--config-fingerprint' ]; then MODE=fingerprint; shift; fi
+if [ "$#" -ne 0 ]; then
+  echo 'unexpected connector launcher argument' >&2
+  exit 1
+fi
+if [ "$MODE" = start ] && [ "$STANDALONE" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+  echo 'verity-egress-connector-start must run as root' >&2
+  exit 1
+fi
+
+required() {
+  local value="${!1:-}"
+  if [ -z "$value" ]; then
+    echo "missing $1" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
+RUNNER_UID="${VERITY_RUNNER_RUNTIME_UID:-1101}"
+RUNNER_GID="${VERITY_RUNNER_RUNTIME_GID:-1101}"
+case "$RUNNER_UID:$RUNNER_GID" in *[!0-9:]*) echo 'invalid Runner identity' >&2; exit 1 ;; esac
+if [ "$RUNNER_UID" -lt 1 ] || [ "$RUNNER_GID" -lt 1 ] || \
+  [ "$RUNNER_UID" -gt 2147483647 ] || [ "$RUNNER_GID" -gt 2147483647 ]; then
+  echo 'Runner identity must be non-root' >&2
+  exit 1
+fi
+PORT="$(required VERITY_CLAUDE_CONNECTOR_PORT)"
+AUTHORITY="$(required VERITY_CLAUDE_CONNECTOR_AUTHORITY)"
+CONTROL_DIR=/run/verity-runner-broker
+CONNECTOR_BIN=/usr/local/bin/verity-egress-connector
+if [ "$STANDALONE" -eq 1 ]; then
+  # Overridable for hermetic tests only; the standalone connector already runs
+  # as the Runner identity, so neither location crosses a privilege boundary.
+  CONTROL_DIR="${VERITY_CLAUDE_CONNECTOR_CONTROL_DIR:-/tmp/verity-egress-$RUNNER_UID}"
+  CONNECTOR_BIN="${VERITY_CLAUDE_CONNECTOR_BIN:-$CONNECTOR_BIN}"
+fi
+PID_FILE="$CONTROL_DIR/egress-connector.pid"
+LOCK_FILE="$CONTROL_DIR/egress-connector.lock"
+LOG_FILE="$CONTROL_DIR/egress-connector.log"
+
+case "$PORT" in
+  ''|*[!0-9]*) echo 'invalid Claude connector port' >&2; exit 1 ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ] || [ "$AUTHORITY" != "127.0.0.1:$PORT" ]; then
+  echo 'invalid Claude connector authority' >&2
+  exit 1
+fi
+
+for _name in VERITY_CLAUDE_EGRESS_URL VERITY_CLAUDE_EGRESS_AUTHORITY VERITY_CLAUDE_EGRESS_CA VERITY_CLAUDE_EGRESS_CERT VERITY_CLAUDE_EGRESS_KEY; do
+  required "$_name" >/dev/null
+done
+CODEX_EGRESS_SET=0
+for _name in VERITY_CODEX_EGRESS_URL VERITY_CODEX_EGRESS_AUTHORITY; do
+  if [ -n "${!_name:-}" ]; then CODEX_EGRESS_SET=$((CODEX_EGRESS_SET + 1)); fi
+done
+if [ "$CODEX_EGRESS_SET" -ne 0 ] && [ "$CODEX_EGRESS_SET" -ne 2 ]; then
+  echo 'incomplete Codex egress connector configuration' >&2
+  exit 1
+fi
+for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CLAUDE_EGRESS_KEY"; do
+  case "$_path" in /*) ;; *) echo 'Claude egress TLS paths must be absolute' >&2; exit 1 ;; esac
+  _canonical="$(realpath -e -- "$_path" 2>/dev/null || true)"
+  if [ -z "$_canonical" ] || [ "$_canonical" != "$_path" ] || [ ! -f "$_path" ] || [ -L "$_path" ]; then
+    echo 'invalid Claude egress TLS material' >&2
+    exit 1
+  fi
+done
+KEY_OWNER="$(stat -c '%u:%g' "$VERITY_CLAUDE_EGRESS_KEY")"
+KEY_UID="${KEY_OWNER%:*}"
+KEY_GID="${KEY_OWNER#*:}"
+if [ "$KEY_GID" != "$RUNNER_GID" ]; then
+  echo 'Claude egress private key has invalid ownership' >&2
+  exit 1
+fi
+KEY_MODE="$(stat -c '%a' "$VERITY_CLAUDE_EGRESS_KEY")"
+if (( 8#$KEY_MODE & 007 )); then
+  echo 'Claude egress private key must not be accessible to other users' >&2
+  exit 1
+fi
+if [ "$KEY_UID" != "$RUNNER_UID" ] && [ "$KEY_UID" != 0 ]; then
+  if (( 8#$KEY_MODE & 0700 )); then
+    echo 'Claude egress private key must not be owner-readable unless owned by Runner or root' >&2
+    exit 1
+  fi
+  if ! (( 8#$KEY_MODE & 040 )); then
+    echo 'Claude egress private key must be readable by the Runner group' >&2
+    exit 1
+  fi
+fi
+for _path in "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CLAUDE_EGRESS_KEY"; do
+  if [ "$(id -u)" -eq 0 ]; then
+    /usr/bin/setpriv "--reuid=$RUNNER_UID" "--regid=$RUNNER_GID" --clear-groups \
+      /usr/bin/test -r "$_path" || {
+        echo 'Runner identity cannot read Claude egress TLS material' >&2
+        exit 1
+      }
+  elif [ "$(id -u)" -ne "$RUNNER_UID" ] || [ "$(id -g)" -ne "$RUNNER_GID" ] || [ ! -r "$_path" ]; then
+    echo 'Runner identity cannot read Claude egress TLS material' >&2
+    exit 1
+  fi
+done
+CONFIG_FINGERPRINT="$({
+  printf '%s\0%s\0%s\0%s\0%s\0' "$VERITY_CLAUDE_EGRESS_URL" "$VERITY_CLAUDE_EGRESS_AUTHORITY" "${VERITY_CLAUDE_EGRESS_SERVERNAME:-}" "${VERITY_CODEX_EGRESS_URL:-}" "${VERITY_CODEX_EGRESS_AUTHORITY:-}"
+  sha256sum -- "$VERITY_CLAUDE_EGRESS_CA" "$VERITY_CLAUDE_EGRESS_CERT" "$VERITY_CLAUDE_EGRESS_KEY"
+} | sha256sum | awk '{print $1}')"
+if [ "$MODE" = fingerprint ]; then printf '%s\n' "$CONFIG_FINGERPRINT"; exit 0; fi
+if [ "$MODE" = validate ]; then exit 0; fi
+
+if [ "$STANDALONE" -eq 1 ] && \
+  { [ "$(id -u)" -ne "$RUNNER_UID" ] || [ "$(id -g)" -ne "$RUNNER_GID" ]; }; then
+  echo 'standalone Claude connector must run as the Runner identity' >&2
+  exit 1
+fi
+
+if [ -L "$CONTROL_DIR" ]; then
+  echo 'invalid connector control directory ownership' >&2
+  exit 1
+fi
+mkdir -p "$CONTROL_DIR"
+chmod 0711 "$CONTROL_DIR"
+CONTROL_OWNER="$(stat -c '%u' "$CONTROL_DIR")"
+CONTROL_MODE="$(stat -c '%a' "$CONTROL_DIR")"
+if [ "$STANDALONE" -eq 1 ]; then
+  CONTROL_OWNER="$(stat -c '%u:%g' "$CONTROL_DIR")"
+  CONTROL_MODE="$(stat -c '%a' "$CONTROL_DIR")"
+  if [ ! -d "$CONTROL_DIR" ] || [ -L "$CONTROL_DIR" ] || [ "$CONTROL_OWNER" != "$RUNNER_UID:$RUNNER_GID" ] || [ $((8#$CONTROL_MODE & 022)) -ne 0 ]; then
+    echo 'invalid connector control directory ownership' >&2
+    exit 1
+  fi
+elif [ ! -d "$CONTROL_DIR" ] || [ -L "$CONTROL_DIR" ] || [ "$CONTROL_OWNER" != '0' ] || [ $((8#$CONTROL_MODE & 022)) -ne 0 ]; then
+  echo 'invalid connector control directory ownership' >&2
+  exit 1
+fi
+
+process_start_time() {
+  sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'
+}
+
+process_identity_valid() {
+  local pid expected recorded_fingerprint actual
+  [ -r "$PID_FILE" ] || return 1
+  read -r pid expected recorded_fingerprint <"$PID_FILE" || return 1
+  case "$pid:$expected:$recorded_fingerprint" in *[!0-9:a-f]*) return 1 ;; esac
+  actual="$(process_start_time "$pid")"
+  [ -n "$actual" ] && [ "$actual" = "$expected" ] || return 1
+  tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -Fq "$CONNECTOR_BIN" || return 1
+}
+
+identity_valid() {
+  local _pid _start recorded_fingerprint
+  process_identity_valid || return 1
+  read -r _pid _start recorded_fingerprint <"$PID_FILE" || return 1
+  [ "$recorded_fingerprint" = "$CONFIG_FINGERPRINT" ]
+}
+
+print_connector_log() {
+  [ -s "$LOG_FILE" ] || return 0
+  sed -n '1,80p' "$LOG_FILE" >&2 || true
+}
+
+# The connector is a Node program, but a devcontainer image may carry node
+# outside the sanitized launch PATH (e.g. the nvm Feature's
+# /usr/local/share/nvm/current/bin) — there `#!/usr/bin/env node` finds nothing
+# and the connector can never start. Resolve an absolute interpreter up front
+# and invoke it explicitly; it also serves the readiness probe, so the launcher
+# works on images without curl (the toolkit only installs curl on apt bases).
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [ -z "$NODE_BIN" ]; then
+  for _candidate in /usr/local/bin/node /usr/bin/node /usr/local/share/nvm/current/bin/node; do
+    if [ -x "$_candidate" ]; then NODE_BIN="$_candidate"; break; fi
+  done
+fi
+if [ -z "$NODE_BIN" ]; then
+  echo 'verity-egress-connector requires a node runtime in the image' >&2
+  exit 1
+fi
+
+# AUTHORITY is validated above to be exactly 127.0.0.1:$PORT, so the default
+# Host header already matches what the connector expects.
+PROBE_JS='fetch("http://127.0.0.1:" + process.argv[1] + "/__verity/ready", { signal: AbortSignal.timeout(1000) })
+  .then(async (r) => process.exit(r.ok && (await r.text()).includes("\"ready\":true") ? 0 : 1))
+  .catch(() => process.exit(1));'
+
+probe() {
+  identity_valid || return 1
+  "$NODE_BIN" -e "$PROBE_JS" "$PORT"
+}
+
+if probe; then exit 0; fi
+exec 9>"$LOCK_FILE"
+if ! flock --exclusive --nonblock 9; then
+  if probe; then exit 0; fi
+  echo 'Claude egress connector start already in progress' >&2
+  exit 0
+fi
+chmod 0600 "$LOCK_FILE"
+if probe; then exit 0; fi
+if process_identity_valid; then
+  read -r STALE_PID _ <"$PID_FILE"
+  kill "$STALE_PID" 2>/dev/null || true
+  for _attempt in $(seq 1 20); do
+    if ! kill -0 "$STALE_PID" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  if kill -0 "$STALE_PID" 2>/dev/null; then kill -KILL "$STALE_PID" 2>/dev/null || true; fi
+fi
+rm -f "$PID_FILE"
+touch "$LOG_FILE"
+if [ "$STANDALONE" -eq 0 ]; then chown 0:0 "$LOG_FILE"; fi
+chmod 0600 "$LOG_FILE"
+SERVERNAME_ENV=()
+if [ -n "${VERITY_CLAUDE_EGRESS_SERVERNAME:-}" ]; then
+  SERVERNAME_ENV+=("VERITY_CLAUDE_EGRESS_SERVERNAME=$VERITY_CLAUDE_EGRESS_SERVERNAME")
+fi
+# The connector serves both the Claude and the Codex leg, so the Codex gateway
+# has to survive the env -i allowlist below. Without this the process starts
+# with an unconfigured Codex leg and answers 502 on /codex/responses even though
+# the Sandbox itself was provisioned with a Codex gateway.
+CODEX_EGRESS_ENV=()
+if [ "$CODEX_EGRESS_SET" -eq 2 ]; then
+  CODEX_EGRESS_ENV+=("VERITY_CODEX_EGRESS_URL=$VERITY_CODEX_EGRESS_URL")
+  CODEX_EGRESS_ENV+=("VERITY_CODEX_EGRESS_AUTHORITY=$VERITY_CODEX_EGRESS_AUTHORITY")
+fi
+PRIVILEGE_DROP=()
+if [ "$STANDALONE" -eq 0 ]; then
+  PRIVILEGE_DROP=(/usr/bin/setpriv "--reuid=$RUNNER_UID" "--regid=$RUNNER_GID" --clear-groups --no-new-privs --inh-caps=-all --ambient-caps=-all --bounding-set=-all)
+fi
+nohup "${PRIVILEGE_DROP[@]}" \
+  env -i \
+  "PATH=$(dirname "$NODE_BIN"):/usr/local/bin:/usr/bin:/bin" \
+  LANG=C.UTF-8 \
+  "VERITY_CLAUDE_CONNECTOR_PORT=$PORT" \
+  "VERITY_CLAUDE_CONNECTOR_AUTHORITY=$AUTHORITY" \
+  "VERITY_CLAUDE_EGRESS_URL=$VERITY_CLAUDE_EGRESS_URL" \
+  "VERITY_CLAUDE_EGRESS_AUTHORITY=$VERITY_CLAUDE_EGRESS_AUTHORITY" \
+  "VERITY_CLAUDE_EGRESS_CA=$VERITY_CLAUDE_EGRESS_CA" \
+  "VERITY_CLAUDE_EGRESS_CERT=$VERITY_CLAUDE_EGRESS_CERT" \
+  "VERITY_CLAUDE_EGRESS_KEY=$VERITY_CLAUDE_EGRESS_KEY" \
+  "${SERVERNAME_ENV[@]}" \
+  "${CODEX_EGRESS_ENV[@]}" \
+  "$NODE_BIN" "$CONNECTOR_BIN" >>"$LOG_FILE" 2>&1 9>&- &
+PID=$!
+START_TIME="$(process_start_time "$PID")"
+if [ -z "$START_TIME" ]; then
+  echo 'Claude connector process did not start' >&2
+  exit 1
+fi
+printf '%s %s %s\n' "$PID" "$START_TIME" "$CONFIG_FINGERPRINT" >"$PID_FILE"
+chmod 0600 "$PID_FILE"
+
+for _attempt in $(seq 1 100); do
+  if probe; then exit 0; fi
+  sleep 0.05
+done
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+rm -f "$PID_FILE"
+print_connector_log
+echo 'verity-egress-connector did not become ready' >&2
+exit 1

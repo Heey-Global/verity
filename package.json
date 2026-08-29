@@ -1,0 +1,50 @@
+{
+  "name": "verity",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Open-core, self-hosted mobile control plane for steering coding agents across a development fleet",
+  "engines": {
+    "node": "24.19.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "build:runner-worker": "npm run build && node scripts/build-runner-worker.mjs",
+    "check:runner-worker": "npm run build && node scripts/build-runner-worker.mjs --check",
+    "typecheck": "tsc -b",
+    "clean": "tsc -b --clean",
+    "lint": "eslint .",
+    "licenses:check": "node scripts/third-party-notices.ts --check",
+    "licenses:write": "node scripts/third-party-notices.ts --write",
+    "lint:changed": "eslint --no-warn-ignored --cache --cache-location .cache/eslint --",
+    "format": "prettier --check --cache --cache-strategy content --cache-location .cache/prettier .",
+    "format:changed": "prettier --check --ignore-unknown --",
+    "format:write": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.70.0",
+    "@agentclientprotocol/codex-acp": "1.6.2",
+    "@devcontainers/cli": "0.88.0",
+    "@eslint/js": "10.0.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@openai/codex": "0.149.0",
+    "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.11",
+    "esbuild": "0.28.2",
+    "eslint": "10.8.1",
+    "ignore": "7.0.5",
+    "pg-connection-string": "2.14.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  }
+}

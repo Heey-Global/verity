@@ -1,0 +1,25 @@
+{
+  "name": "@verity/mobile",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Verity mobile TS core (Happy fork) — the data layer (canonical-event reducer, REST/WS client, presentation adapters, view-models) the Expo app (apps/mobile) consumes. Runtime-agnostic; no React Native.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@verity/events": "*",
+    "zod": "4.4.3"
+  }
+}

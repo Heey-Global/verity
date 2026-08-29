@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${1:-verity-project-relay:smoke}"
+suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
+volume="verity-relay-isolation-${suffix}"
+fixture="verity-relay-fixture-${suffix}"
+relay_a="verity-relay-a-${suffix}"
+relay_b="verity-relay-b-${suffix}"
+control="verity-control-${suffix}"
+network_a="verity-proj-a-${suffix}"
+network_b="verity-proj-b-${suffix}"
+control_network="verity-control-${suffix}"
+probe_image='node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'
+
+binding_name() {
+  node -e "const c=require('node:crypto');process.stdout.write('project-'+c.createHash('sha256').update(process.argv[1]+'\\0'+process.argv[2]).digest('hex').slice(0,32))" "$1" "$2"
+}
+
+binding_a="$(binding_name project-a generation-a)"
+binding_b="$(binding_name project-b generation-b)"
+
+cleanup() {
+  docker rm -f "$relay_a" "$relay_b" "$fixture" "$control" >/dev/null 2>&1 || true
+  docker network rm "$network_a" "$network_b" "$control_network" >/dev/null 2>&1 || true
+  docker volume rm -f "$volume" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+fixture_source=''
+read -r -d '' fixture_source <<'NODE' || true
+const fs = require('node:fs');
+const http = require('node:http');
+const net = require('node:net');
+const path = require('node:path');
+const [bindingA, bindingB] = process.argv.slice(1);
+let ready = 0;
+for (const [binding, marker] of [[bindingA, 'project-a'], [bindingB, 'project-b']]) {
+  const broker = path.join('/data/broker', binding);
+  const claude = path.join('/data/claude', binding);
+  for (const directory of ['/data/broker', '/data/claude', broker, claude]) {
+    fs.mkdirSync(directory, {recursive: true});
+    fs.chownSync(directory, 1000, 65532);
+    fs.chmodSync(directory, directory === broker || directory === claude ? 0o710 : 0o755);
+  }
+  const brokerSocket = path.join(broker, 'broker.sock');
+  http.createServer((_req, response) => response.end(marker)).listen(brokerSocket, () => {
+    fs.chownSync(brokerSocket, 1000, 65532);
+    fs.chmodSync(brokerSocket, 0o660);
+    if (++ready === 4) console.log('ready');
+  });
+  const claudeSocket = path.join(claude, 'claude.sock');
+  net.createServer(socket => {
+    socket.once('data', () => socket.end(marker));
+  }).listen(claudeSocket, () => {
+    fs.chownSync(claudeSocket, 1000, 65532);
+    fs.chmodSync(claudeSocket, 0o660);
+    if (++ready === 4) console.log('ready');
+  });
+}
+setInterval(() => {}, 60_000);
+NODE
+
+probe_source=''
+read -r -d '' probe_source <<'NODE' || true
+const http = require('node:http');
+const dns = require('node:dns/promises');
+const net = require('node:net');
+const [relay, expected, forbiddenRelay, forbiddenControl, forbiddenRelayIp, forbiddenControlIp] = process.argv.slice(1);
+async function request() {
+  return await new Promise((resolve, reject) => {
+    const outgoing = http.request({host: relay, port: 8080, method: 'POST', path: '/internal/github/token', timeout: 5000}, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.once('error', reject);
+      response.once('end', () => resolve(Buffer.concat(chunks).toString()));
+    });
+    outgoing.once('timeout', () => outgoing.destroy(new Error('relay request timed out')));
+    outgoing.once('error', reject);
+    outgoing.end();
+  });
+}
+async function requestClaude() {
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection({host: relay, port: 8443});
+    const chunks = [];
+    socket.setTimeout(5000, () => socket.destroy(new Error('Claude relay request timed out')));
+    socket.once('connect', () => socket.write('probe'));
+    socket.on('data', chunk => chunks.push(chunk));
+    socket.once('end', () => resolve(Buffer.concat(chunks).toString()));
+    socket.once('error', reject);
+  });
+}
+async function mustNotResolve(name) {
+  try {
+    await dns.lookup(name);
+  } catch (error) {
+    if (error?.code === 'ENOTFOUND' || error?.code === 'EAI_AGAIN') return;
+    throw error;
+  }
+  throw new Error(`${name} unexpectedly resolves across an isolation boundary`);
+}
+async function mustNotConnect(host) {
+  await new Promise((resolve, reject) => {
+    const socket = require('node:net').createConnection({host, port: 8080});
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve();
+    }, 1000);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      socket.destroy();
+      reject(new Error(`${host} unexpectedly accepts cross-network traffic`));
+    });
+    socket.once('error', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+void (async () => {
+  const body = await request();
+  if (body !== expected) throw new Error(`wrong generation response: ${body}`);
+  const claudeBody = await requestClaude();
+  if (claudeBody !== expected) throw new Error(`wrong Claude generation response: ${claudeBody}`);
+  await mustNotResolve(forbiddenRelay);
+  await mustNotResolve(forbiddenControl);
+  await mustNotConnect(forbiddenRelayIp);
+  await mustNotConnect(forbiddenControlIp);
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+NODE
+
+docker volume create "$volume" >/dev/null
+docker run -d --name "$fixture" --network none \
+  --mount "type=volume,src=$volume,dst=/data" \
+  "$probe_image" -e "$fixture_source" "$binding_a" "$binding_b" >/dev/null
+for _ in $(seq 1 100); do
+  docker logs "$fixture" 2>&1 | grep -q '^ready$' && break
+  sleep 0.1
+done
+docker logs "$fixture" 2>&1 | grep -q '^ready$'
+
+docker network create "$network_a" >/dev/null
+docker network create "$network_b" >/dev/null
+docker network create "$control_network" >/dev/null
+docker run -d --name "$control" --network "$control_network" "$probe_image" \
+  -e "require('node:http').createServer((_req,res)=>res.end('control')).listen(8080)" >/dev/null
+for _ in $(seq 1 50); do
+  if docker exec "$control" node -e \
+    "require('node:http').get('http://127.0.0.1:8080',response=>process.exit(response.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then
+    control_ready=1
+    break
+  fi
+  sleep 0.1
+done
+[[ "${control_ready:-0}" == 1 ]]
+
+start_relay() {
+  local name="$1" network="$2" binding="$3" project="$4" generation="$5"
+  docker run -d --name "$name" --network "$network" \
+    --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 \
+    --memory 64m --cpus 0.25 --ulimit nofile=64:64 --restart no \
+    --user 65532:65532 \
+    --label verity.component=project-relay \
+    --label "verity.project-id=$project" \
+    --label "verity.container-generation=$generation" \
+    --mount "type=volume,src=$volume,dst=/run/verity-relay/broker,readonly,volume-subpath=broker/$binding" \
+    --mount "type=volume,src=$volume,dst=/run/verity-relay/claude,readonly,volume-subpath=claude/$binding" \
+    "$image" >/dev/null
+}
+
+start_relay "$relay_a" "$network_a" "$binding_a" project-a generation-a
+start_relay "$relay_b" "$network_b" "$binding_b" project-b generation-b
+
+relay_a_ip="$(docker inspect -f "{{with index .NetworkSettings.Networks \"$network_a\"}}{{.IPAddress}}{{end}}" "$relay_a")"
+relay_b_ip="$(docker inspect -f "{{with index .NetworkSettings.Networks \"$network_b\"}}{{.IPAddress}}{{end}}" "$relay_b")"
+control_ip="$(docker inspect -f "{{with index .NetworkSettings.Networks \"$control_network\"}}{{.IPAddress}}{{end}}" "$control")"
+
+run_probe() {
+  local network="$1" relay="$2" expected="$3" forbidden="$4" forbidden_ip="$5"
+  docker run --rm --network "$network" "$probe_image" \
+    -e "$probe_source" "$relay" "$expected" "$forbidden" "$control" "$forbidden_ip" "$control_ip"
+}
+
+for _ in $(seq 1 50); do
+  if run_probe "$network_a" "$relay_a" project-a "$relay_b" "$relay_b_ip"; then
+    ready_a=1
+    break
+  fi
+  sleep 0.1
+done
+[[ "${ready_a:-0}" == 1 ]]
+for _ in $(seq 1 50); do
+  if run_probe "$network_b" "$relay_b" project-b "$relay_a" "$relay_a_ip"; then
+    ready_b=1
+    break
+  fi
+  sleep 0.1
+done
+[[ "${ready_b:-0}" == 1 ]]
+# Repeat A after B has definitely answered on its own network so a startup race
+# cannot masquerade as successful cross-network isolation.
+run_probe "$network_a" "$relay_a" project-a "$relay_b" "$relay_b_ip"
+
+node - "$relay_a" "$relay_b" "$network_a" "$network_b" "$volume" "$binding_a" "$binding_b" <<'NODE'
+const {execFileSync} = require('node:child_process');
+const [relayA, relayB, networkA, networkB, volume, bindingA, bindingB] = process.argv.slice(2);
+for (const [relay, expectedNetwork, project, generation, binding] of [
+  [relayA, networkA, 'project-a', 'generation-a', bindingA],
+  [relayB, networkB, 'project-b', 'generation-b', bindingB],
+]) {
+  const [info] = JSON.parse(execFileSync('docker', ['inspect', relay], {encoding: 'utf8'}));
+  const networks = Object.keys(info.NetworkSettings.Networks ?? {});
+  if (networks.length !== 1 || networks[0] !== expectedNetwork) throw new Error(`${relay} is not single-homed`);
+  if (info.Config.Labels['verity.project-id'] !== project) throw new Error(`${relay} project label mismatch`);
+  if (info.Config.Labels['verity.container-generation'] !== generation) throw new Error(`${relay} generation label mismatch`);
+  const mounts = info.HostConfig.Mounts ?? [];
+  const expectedMounts = new Map([
+    ['/run/verity-relay/broker', `broker/${binding}`],
+    ['/run/verity-relay/claude', `claude/${binding}`],
+  ]);
+  if (mounts.length !== expectedMounts.size) throw new Error(`${relay} mount count mismatch`);
+  for (const mount of mounts) {
+    const expectedSubpath = expectedMounts.get(mount.Target);
+    if (mount.Type !== 'volume' || mount.Source !== volume || mount.ReadOnly !== true || mount.VolumeOptions?.Subpath !== expectedSubpath) {
+      throw new Error(`${relay} has an incorrect generation socket mount: ${JSON.stringify(mount)}`);
+    }
+    expectedMounts.delete(mount.Target);
+  }
+  if (expectedMounts.size !== 0) throw new Error(`${relay} is missing a generation socket mount`);
+}
+NODE
+
+docker rm -f "$relay_a" >/dev/null
+if docker inspect "$relay_a" >/dev/null 2>&1; then
+  echo 'retired relay still exists after teardown' >&2
+  exit 1
+fi
+# Retirement of one generation must not disturb the surviving project relay.
+run_probe "$network_b" "$relay_b" project-b "$relay_a" "$relay_a_ip"
+
+echo 'project relay isolation smoke test passed'

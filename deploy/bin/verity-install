@@ -1,0 +1,688 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+#  VERITY INSTALL — one command to stand a host up on managed Server updates
+# ═══════════════════════════════════════════════════════════════════════════
+# Run this once to install, and again only for recovery. Normal app-initiated
+# updates move the Server and managed companions as one journalled transaction;
+# this command remains the privileged bootstrap/repair path that derives the
+# active Server image and restores the host topology to that release.
+#
+# Everything this script decides is persisted under /etc/verity, so a re-run is a
+# no-argument command: the deployment identity, the control token and the Compose
+# project name are read back rather than asked for again. That matters because the
+# deployment identity is sealed on the container label and a later run with a
+# different one is rejected outright (deploy/bin/verity-compose:232-238).
+#
+# The actual migration is `verity-compose managed-up`, which is fail-closed: if
+# validation or bootstrap fails, the existing Server keeps running untouched. This
+# script only assembles and validates its inputs, then hands over.
+set -euo pipefail
+
+SERVER_REPO='ghcr.io/heey-global/verity/verity-server'
+STATE_DIR="${VERITY_STATE_DIR:-/etc/verity}"
+TOKEN_PATH="$STATE_DIR/updater-token"
+ID_PATH="$STATE_DIR/deployment-id"
+PROJECT_PATH="$STATE_DIR/compose-project"
+SUPERVISOR_PATH="$STATE_DIR/runner-supervisor"
+GVISOR_PATH="$STATE_DIR/gvisor-required"
+LOCK_PATH="$STATE_DIR/.verity-install.lock"
+MANAGED_CONTAINER_PREFIX='verity-managed-server'
+MANAGED_DEPLOYMENT_VOLUME='verity-managed-deployment'
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/../.." && pwd)"
+
+opt_image=''
+opt_deployment_id=''
+opt_tag='latest'
+opt_project=''
+opt_check=0
+
+die() { printf 'verity-install: %s\n' "$*" >&2; exit 1; }
+note() { printf 'verity-install: %s\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+Usage: sudo deploy/bin/verity-install [options]
+
+Installs Verity on this host with managed Server updates, or — run again later —
+brings the host-side components forward onto the release the Server now runs.
+
+Options:
+  --image REF          Official digest-pinned Server image to install
+                       (ghcr.io/heey-global/verity/verity-server@sha256:<64 hex>).
+                       Default: derived from the running managed Server, or pulled
+                       from --tag on a first install.
+  --tag TAG            Release tag to resolve on a first install (default: latest).
+  --deployment-id ID   Stable deployment identity. Generated and persisted on the
+                       first install; NEVER changes afterwards.
+  --project NAME       Compose project name. Detected from an existing install,
+                       then persisted; defaults to "verity" on a fresh host.
+  --check              Run the preflight and print what would be installed, then
+                       stop without touching the deployment.
+  -h, --help           Show this help.
+
+Environment:
+  sudo resets the environment, so set these through it rather than in front of it:
+  sudo env VERITY_RUNNER_SUPERVISOR=0 deploy/bin/verity-install
+
+  VERITY_RUNNER_SUPERVISOR   Defaults to 1 because Claude is ACP-only. Set 0 only
+                             to install without Claude support. The capability is
+                             sealed into the deployment spec on first install; a
+                             later run cannot add it without reinstalling. The value
+                             is persisted and reused.
+  VERITY_GVISOR_REQUIRED     1 to require the pinned gVisor runtime (brokered
+                             secrets); verity-compose verifies it before migrating.
+                             Persisted and reused like the flag above, so a later
+                             run needs it only to change the setting.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --image) [ "$#" -ge 2 ] || die 'option --image needs a value'; opt_image="$2"; shift 2 ;;
+    --image=*) opt_image="${1#--image=}"; shift ;;
+    --tag) [ "$#" -ge 2 ] || die 'option --tag needs a value'; opt_tag="$2"; shift 2 ;;
+    --tag=*) opt_tag="${1#--tag=}"; shift ;;
+    --deployment-id) [ "$#" -ge 2 ] || die 'option --deployment-id needs a value'; opt_deployment_id="$2"; shift 2 ;;
+    --deployment-id=*) opt_deployment_id="${1#--deployment-id=}"; shift ;;
+    --project) [ "$#" -ge 2 ] || die 'option --project needs a value'; opt_project="$2"; shift 2 ;;
+    --project=*) opt_project="${1#--project=}"; shift ;;
+    --check) opt_check=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; die "unknown argument: $1" ;;
+  esac
+done
+
+# ── validators ─────────────────────────────────────────────────────────────
+# Deliberately the same shapes verity-compose enforces. Failing here costs a
+# message; failing there costs a half-understood exit 64 after a docker pull.
+valid_server_image() {
+  [[ $1 == "$SERVER_REPO@sha256:"* ]] || return 1
+  [[ ${1#"$SERVER_REPO@sha256:"} =~ ^[a-f0-9]{64}$ ]]
+}
+
+valid_deployment_id() {
+  [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] && [ "${#1}" -le 128 ]
+}
+
+# Compose takes lowercase letters, digits, dashes and underscores, starting with a
+# letter or a digit. Checking the name here rather than letting `docker compose`
+# reject it is what keeps a typo out of the state file: the project is persisted
+# before the migration runs, and every corrected run afterwards would be refused for
+# contradicting the name this one wrote.
+valid_project_name() {
+  [[ $1 =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+}
+
+# ── preflight ──────────────────────────────────────────────────────────────
+[ "$(id -u)" = 0 ] || die 'must run as root (use sudo) — the control token is root-owned 0600 and is bind-mounted without becoming readable to your user'
+
+[ -f "$repo_root/deploy/docker-compose.yml" ] \
+  || die "cannot find deploy/docker-compose.yml under $repo_root — run this from a Verity checkout"
+[ -x "$repo_root/deploy/bin/verity-compose" ] \
+  || die "deploy/bin/verity-compose is missing or not executable under $repo_root"
+
+command -v docker >/dev/null || die 'docker is required'
+command -v flock >/dev/null || die 'the host flock utility is required'
+
+docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+[ -n "$docker_version" ] || die 'cannot talk to the Docker daemon — is it running, and can this user reach the socket?'
+case "${docker_version%%.*}" in
+  ''|*[!0-9]*) die "cannot read the Docker server version (got '$docker_version')" ;;
+  *) [ "${docker_version%%.*}" -ge 25 ] || die "Docker 25.0 or newer is required (found $docker_version)" ;;
+esac
+
+# verity-compose drives `docker compose`, the v2 plugin — not the standalone
+# docker-compose binary. Without it the run pulls several gigabytes and persists the
+# deployment identity before failing inside the migration.
+docker compose version >/dev/null 2>&1 \
+  || die 'the Docker Compose v2 plugin is required — `docker compose version` failed. Install docker-compose-plugin; the standalone docker-compose binary is not used.'
+
+case "$(uname -m)" in
+  x86_64|amd64|aarch64|arm64) ;;
+  *) die "unsupported architecture $(uname -m) — managed mode supports amd64 and arm64" ;;
+esac
+
+# ── docker helpers ─────────────────────────────────────────────────────────
+# `|| true` on a docker query turns a daemon that went away into an empty answer,
+# and an empty answer here reads as "nothing installed yet" — which would send a
+# working host down the first-install path and persist a second identity beside the
+# sealed one. So a failed query has to be told apart from an empty one.
+docker_query() {
+  local what="$1" out; shift
+  out="$(docker "$@" 2>/dev/null)" || die "could not ask Docker for $what — the daemon answered with an error. Nothing was changed; fix the daemon and run this again."
+  printf '%s' "$out"
+}
+
+count_lines() { printf '%s\n' "$1" | grep -c . || true; }
+
+# ── state directory ────────────────────────────────────────────────────────
+# verity-compose walks every ancestor of the token and rejects any that is not a
+# root-owned directory without group/world write, so create this ourselves rather
+# than trusting whatever mode a host's umask would have produced. It also has to be
+# a real directory: `install -d` would happily follow a symlink planted here, and
+# every state file below it would then be read and written somewhere else entirely.
+[ ! -L "$STATE_DIR" ] || die "$STATE_DIR is a symlink; it must be a real root-owned directory"
+# Absolute, because this script `cd`s to the checkout before the handover: a relative
+# VERITY_STATE_DIR would have the state written next to whoever ran the command and
+# then have verity-compose look for the token next to the checkout.
+case "$STATE_DIR" in
+  /*) ;;
+  *) die "VERITY_STATE_DIR is '$STATE_DIR'; it must be an absolute path. State is written from the directory you ran this in, but the token path is handed to verity-compose from the checkout, so a relative path names two different directories." ;;
+esac
+# Canonical, for the same reason verity-compose demands it of the token path
+# (deploy/bin/verity-compose:91-94): a symlinked parent is a way to move this
+# script's state elsewhere between runs, and the handover would be refused later
+# anyway — with an exit code and no explanation. What is deliberately NOT repeated
+# here is that script's ownership walk over every ancestor up to `/`. It runs before
+# the token is used and it is fail-closed, and the sliver of exposure it leaves this
+# script is not one an attacker gains from: nobody but root can put a root-owned
+# directory back under a swapped path, so a state directory that changes underneath
+# this run is refused on the spot by the uid check below or by that walk, and the
+# files created in the meantime are 0600 root-owned — unreadable to whoever owns the
+# directory they landed in.
+canonical_state="$(readlink -f -- "$STATE_DIR" 2>/dev/null || true)"
+[ -n "$canonical_state" ] \
+  || die "VERITY_STATE_DIR is '$STATE_DIR', whose parent directory does not exist. Create it — root-owned, without group or world write — and run this again."
+[ "$canonical_state" = "$STATE_DIR" ] \
+  || die "VERITY_STATE_DIR is '$STATE_DIR', which resolves to '$canonical_state' — a symlinked parent, a '..' segment or a trailing slash. Pass the resolved path instead; verity-compose rejects a token path that is not canonical."
+# An existing directory is inspected BEFORE anything repairs it. `install -d` on a
+# directory that is already there chowns and chmods it, which would erase the very
+# evidence being checked for: whoever could write to a group-writable /etc/verity
+# could have planted an updater-token of their choosing, and a run that quietly
+# tightened the mode would then adopt that token — and chown it to root — as the
+# control credential for the whole deployment. Refuse instead, and let the operator
+# decide whether the contents are still trustworthy.
+if [ -e "$STATE_DIR" ]; then
+  [ -d "$STATE_DIR" ] || die "$STATE_DIR is not a directory. Remove it and run this again."
+  state_uid="$(stat -c '%u' "$STATE_DIR")"
+  state_mode="$(stat -c '%a' "$STATE_DIR")"
+  [ "$state_uid" = 0 ] || die "$STATE_DIR is owned by uid $state_uid; it must be owned by root. Anything it already contains was writable by that user — inspect it, then chown it to root or remove it and run this again."
+  # Both the group and the other digit, not just the last one: 0720 is writable by
+  # another user, and this script generates the control token and its temp files here
+  # long before verity-compose gets to reject the directory.
+  state_perm="$(printf '%04d' "$state_mode")"
+  case "${state_perm:2:2}" in
+    *[2367]*)
+      die "$STATE_DIR is mode $state_mode; group or world write access is rejected by verity-compose. Anything it already contains — the updater token above all — could have been written by another user, so review it before running \`chmod 0700 $STATE_DIR\` and trying again."
+      ;;
+  esac
+  # Deliberately NOT narrowed to 0700 from here. A directory that got past the two
+  # checks above is already safe — root-owned, no group or world write — and the
+  # token inside it is created 0600 either way, so tightening it buys nothing and
+  # mutates a path the operator named. VERITY_STATE_DIR points this script anywhere,
+  # and `chmod 0700 /etc` on a host whose operator mistyped the override is a far
+  # worse outcome than a state directory that stays 0755.
+elif [ "$opt_check" = 0 ]; then
+  install -d -m 0700 -o root -g root "$STATE_DIR"
+fi
+
+# Reading a state file through a symlink lets whoever planted it choose what this
+# script believes — and, for the token, what gets chowned to root later.
+read_state() {
+  [ -e "$1" ] || return 0
+  [ ! -L "$1" ] || die "$1 is a symlink; state files must be regular files. Remove it and run this again."
+  [ -f "$1" ] || die "$1 is not a regular file. Remove it and run this again."
+  head -n1 "$1"
+}
+
+# ── serialise concurrent runs ──────────────────────────────────────────────
+# managed-up takes its own lock, but only around the migration — two installers
+# racing before that point generate two identities, and the loser's is what stays
+# in /etc/verity while the winner's is sealed on the container. Hold this from
+# before the first state read until after the migration returns. Deliberately not
+# managed-up's own lock file, which it must still be able to take from here.
+if [ "$opt_check" = 0 ]; then
+  # `exec 8>` follows a symlink and truncates whatever it points at, as root, before
+  # anything here has looked at it — the same reason read_state and the token path
+  # are checked. The directory above was just verified as root-owned and not
+  # group-writable, so a link here is not something another user could have planted;
+  # refusing it still beats destroying a file on the way to taking a lock.
+  [ ! -L "$LOCK_PATH" ] \
+    || die "$LOCK_PATH is a symlink; the lock must be a regular file. Remove it and run this again."
+  [ ! -e "$LOCK_PATH" ] || [ -f "$LOCK_PATH" ] \
+    || die "$LOCK_PATH is not a regular file. Remove it and run this again."
+  exec 8>"$LOCK_PATH"
+  chmod 0600 "$LOCK_PATH"
+  flock -n 8 || die 'another verity-install is already running on this host'
+fi
+
+# ── managed Server already present? ────────────────────────────────────────
+# Managed mode gives the Server exactly two name shapes: the base name, and the
+# generation-qualified name a cutover creates (docker-update-preparation.ts:54,
+# managed-gateway.ts:84). Anything else sharing the prefix — an operator's
+# `verity-managed-server-backup`, say — is not part of this deployment, and reading
+# an identity or an image off it would be worse than not finding one at all.
+#
+# `--filter name=` matches a Go regex against the internal `/name`, but the exact
+# shape is re-checked here rather than trusted to the daemon's matching.
+MANAGED_GENERATION_MAX=2147483647
+
+# The query is a separate step from the filtering on purpose. Piping docker_query
+# into `grep … || true` would put it in a subshell whose non-zero exit the `|| true`
+# then swallows — turning a daemon error back into the empty answer docker_query
+# exists to distinguish from one.
+managed_ps_raw="$(docker_query 'the running managed Server' \
+  ps --filter "name=^/$MANAGED_CONTAINER_PREFIX" \
+  --format '{{.Names}}'$'\t''{{.Label "verity.managed-deployment-id"}}')"
+all_managed_raw="$(docker_query 'the managed Server containers on this host' \
+  ps -a --filter "name=^/$MANAGED_CONTAINER_PREFIX" \
+  --format '{{.Names}}'$'\t''{{.Label "verity.managed-deployment-id"}}')"
+
+# Keeps the `name<TAB>id` rows whose name is one this deployment can own. The
+# generation bound is the one managed-gateway.ts:84 enforces on the routed host, so a
+# name it would refuse to route to cannot become an identity or an image source here.
+managed_names() {
+  local line name generation
+  while IFS= read -r line; do
+    name="${line%%$'\t'*}"
+    case "$name" in
+      "$MANAGED_CONTAINER_PREFIX") ;;
+      "$MANAGED_CONTAINER_PREFIX"-g*)
+        generation="${name#"$MANAGED_CONTAINER_PREFIX"-g}"
+        case "$generation" in '' | *[!0-9]* | 0*) continue ;; esac
+        [ "${#generation}" -le 10 ] && [ "$generation" -le "$MANAGED_GENERATION_MAX" ] || continue
+        ;;
+      *) continue ;;
+    esac
+    printf '%s\n' "$line"
+  done <<<"$1"
+}
+
+running_managed="$(managed_names "$managed_ps_raw" | cut -f1)"
+managed_count="$(count_lines "$running_managed")"
+
+# A host whose Server is merely down still has one container on disk. Those containers
+# carry the sealed identity on a label and the sealed image on their config — which is
+# what makes a stopped deployment recoverable rather than a source of a second identity
+# and a second image that bootstrap then rejects. `docker ps -a` lists newest first.
+all_managed="$(managed_names "$all_managed_raw")"
+all_managed_names="$(printf '%s' "$all_managed" | cut -f1)"
+
+# A cutover retains the previous generation — quiesced, then stopped — through the
+# observation window so the Updater can still roll forward-fenced back to it, and only
+# `retireOld` removes it once that window has closed; a rollback removes the candidate
+# instead (packages/server/src/self-update/docker-in-place-cutover.ts). Either way a
+# settled host ends up with exactly one managed Server container, so a second one —
+# running *or* stopped — means an update is in flight and this run would race the
+# Updater's own reconciliation for the container it is about to migrate.
+if [ "$(count_lines "$all_managed_names")" -gt 1 ]; then
+  die "more than one $MANAGED_CONTAINER_PREFIX container exists — an update is mid-flight (the cutover keeps the previous generation until its observation window closes). Wait for it to finish and run this again. Found$([ "$managed_count" -gt 0 ] && printf ' (running: %s)' "$(printf '%s' "$running_managed" | tr '\n' ' ')"):
+$(printf '%s\n' "$all_managed_names" | sed 's/^/  /')"
+fi
+
+stopped_managed_ids="$(printf '%s' "$all_managed" | cut -f2 | sort -u | grep -v '^$' || true)"
+newest_managed="$(printf '%s' "$all_managed_names" | head -n1)"
+
+# The container to read the sealed spec off: the running one, or the newest on disk
+# when the deployment is down.
+managed_ref="$running_managed"
+[ -n "$managed_ref" ] || managed_ref="$newest_managed"
+
+# ── deployment identity ────────────────────────────────────────────────────
+persisted_id="$(read_state "$ID_PATH")"
+
+# The label on the managed Server containers, running or stopped, is the identity
+# verity-compose will check this run against. Without this a host whose Server is
+# merely stopped and whose state file is gone looks brand new, and the generated
+# identity is rejected by the seal — after it has been persisted, so every later run
+# is stuck on the wrong one.
+id_source='state file'
+if [ -z "$persisted_id" ] && [ -n "$stopped_managed_ids" ]; then
+  if [ "$(count_lines "$stopped_managed_ids")" -gt 1 ]; then
+    die "the managed Server containers on this host carry more than one deployment identity; pass --deployment-id to say which one this host is. Found:
+$(printf '%s\n' "$stopped_managed_ids" | sed 's/^/  /')"
+  fi
+  persisted_id="$stopped_managed_ids"
+  id_source='sealed container label'
+fi
+
+if [ -n "$opt_deployment_id" ] && [ -n "$persisted_id" ] && [ "$opt_deployment_id" != "$persisted_id" ]; then
+  die "--deployment-id '$opt_deployment_id' conflicts with the identity this host was installed under ('$persisted_id', from the $id_source). The identity is sealed on the Server's container label and changing it is rejected; drop the option to keep the existing one."
+fi
+
+if [ -n "$persisted_id" ]; then
+  deployment_id="$persisted_id"
+elif [ -n "$opt_deployment_id" ]; then
+  deployment_id="$opt_deployment_id"
+else
+  # Derive from the hostname so support can read an identity off a machine, and
+  # append entropy so two hosts that share a hostname never collide. Sanitised to
+  # the charset verity-compose accepts, with a leading character that is never
+  # '-', '.' or '_'.
+  host_part="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)"
+  host_part="$(printf '%s' "$host_part" | tr -c 'a-zA-Z0-9' '-' | sed 's/^[-._]*//; s/-*$//')"
+  [ -n "$host_part" ] || host_part='verity'
+  deployment_id="${host_part}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+fi
+valid_deployment_id "$deployment_id" \
+  || die "deployment identity '$deployment_id' is not accepted: use a-z A-Z 0-9 _ . - (max 128), not starting with - . or _"
+
+# ── first install or host-side upgrade? ────────────────────────────────────
+# The volume carries an explicit `name:` in docker-compose.yml, so match it exactly —
+# `--filter name=` is a regex, and a substring hit on some unrelated volume would
+# make a genuinely fresh host look like it had already been sealed. Queried and
+# filtered in two steps for the same reason as the container lookup above.
+volumes_raw="$(docker_query 'the managed-deployment volume' volume ls --quiet)"
+sealed_volume="$(printf '%s' "$volumes_raw" | grep -Fx "$MANAGED_DEPLOYMENT_VOLUME" || true)"
+
+# Deliberately keyed on host evidence only — a container or the sealed volume — and
+# NOT on the state file. State is written before the migration runs, so a first
+# install whose migration failed leaves an identity behind with nothing sealed. If
+# that counted as an existing deployment, the retry would be refused for want of an
+# --image the host has never had. The identity is still reused; only the mode differs.
+first_install=0
+if [ -z "$all_managed" ] && [ -z "$sealed_volume" ]; then first_install=1; fi
+
+# The volume holds a sealed identity that bootstrap will check this run against, and
+# with no state file and no labelled container left there is nothing here that can
+# reproduce it. Generating one and persisting it would be worse than stopping: the
+# migration fails against the seal, and every later run then reuses the wrong value.
+if [ "$first_install" = 0 ] && [ -z "$persisted_id" ] && [ -z "$opt_deployment_id" ]; then
+  die "this host has a sealed $MANAGED_DEPLOYMENT_VOLUME volume but no deployment identity left to recover — $ID_PATH is gone and no managed Server container carries the label. Pass --deployment-id with the identity this host was installed under, or discard the volume to install it fresh."
+fi
+
+# ── Compose project ────────────────────────────────────────────────────────
+# Getting this wrong splits the deployment in two: a second project name means a
+# second Postgres and a second Server, and the control-plane fence then refuses to
+# start the newcomer. So resolve it once, persist it, and reuse it forever after.
+persisted_project="$(read_state "$PROJECT_PATH")"
+
+# A name given by hand or inherited from the environment must not quietly displace
+# the persisted one: that is precisely how a second project gets stood up beside the
+# real deployment. Say so and let the caller decide.
+assert_project_matches_persisted() {
+  [ -n "$persisted_project" ] || return 0
+  [ "$1" != "$persisted_project" ] || return 0
+  die "$2 says the Compose project is '$1', but this host was installed under '$persisted_project'. Using a different project name creates a second Postgres and a second Server beside the running one; drop the override to keep the existing project."
+}
+
+resolve_project() {
+  local labelled existing found chosen origin
+  # Discover before deciding. A name given by hand or inherited from the environment
+  # has to be checked against what is actually running, not only against the state
+  # file: on a host installed before this script existed there is no state file, and
+  # a typo or a stale COMPOSE_PROJECT_NAME would then be taken at face value.
+  existing=''
+  if [ -z "$persisted_project" ]; then
+    # The legacy `verity` service is torn down as an orphan by the managed migration,
+    # so on such a host the project name survives only on the managed control plane.
+    # Ask for every Compose container and keep the Verity-specific service names;
+    # generic ones such as `postgres` are left out on purpose, because an unrelated
+    # project on the same host answers to those.
+    labelled="$(docker_query 'the Compose project of the existing Verity containers' \
+      ps -a --filter 'label=com.docker.compose.project' \
+      --format '{{.Label "com.docker.compose.service"}}'$'\t''{{.Label "com.docker.compose.project"}}')"
+    existing="$(printf '%s' "$labelled" \
+      | grep -E "^verity(-managed-gateway|-updater|-agent-gateway|-agent-seed|-transcribe)?"$'\t' \
+      | cut -f2 | sort -u | grep -v '^$' || true)"
+  fi
+  found="$(count_lines "$existing")"
+
+  chosen=''
+  if [ -n "$opt_project" ]; then
+    chosen="$opt_project"; origin='--project'
+  elif [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+    chosen="$COMPOSE_PROJECT_NAME"; origin='COMPOSE_PROJECT_NAME'
+  fi
+  if [ -n "$chosen" ]; then
+    valid_project_name "$chosen" \
+      || die "$origin says the Compose project is '$chosen', which Compose will not accept: a project name is lowercase letters, digits, dashes and underscores, starting with a letter or a digit."
+    assert_project_matches_persisted "$chosen" "$origin"
+    # Naming one of several discovered projects is the documented way to disambiguate
+    # them, so the override is checked for membership rather than equality.
+    if [ "$found" -gt 0 ] && ! printf '%s\n' "$existing" | grep -Fxq "$chosen"; then
+      die "$origin says the Compose project is '$chosen', but the Verity containers on this host run under another one. Standing this deployment up under a name of its own gives it a second Postgres, a second Gateway and a second Server beside the running ones; drop the override to adopt what is there. Found:
+$(printf '%s\n' "$existing" | sed 's/^/  /')"
+    fi
+    printf '%s' "$chosen"; return
+  fi
+
+  if [ -n "$persisted_project" ]; then printf '%s' "$persisted_project"; return; fi
+  # An install that predates this script has no state file. Adopt the project the
+  # running stack already uses rather than inventing a new one beside it.
+  if [ "$found" = 1 ]; then printf '%s' "$existing"; return; fi
+  # Guessing here is the one failure this function exists to prevent: picking the
+  # wrong name of several stands a second deployment up beside the real one.
+  [ "$found" = 0 ] || die "this host has Verity containers under more than one Compose project; pass --project to say which one to adopt. Found:
+$(printf '%s\n' "$existing" | sed 's/^/  /')"
+  # Nothing to adopt. On a fresh host the default is right; on a host that already
+  # has a sealed deployment it is a guess, and guessing 'verity' for a stack that
+  # was brought up under another project name stands a second control plane, a
+  # second Postgres and a second Server up beside the running one.
+  [ "$first_install" = 1 ] || die "this host has a sealed deployment but no Compose-labelled Verity container left to read the project name from. Pass --project with the project this host was brought up under; read it with:
+  docker ps -a --format '{{.Label \"com.docker.compose.project\"}}\t{{.Names}}'"
+  printf 'verity'
+}
+compose_project="$(resolve_project)"
+[ -n "$compose_project" ] || die 'could not determine a Compose project name'
+# The override is checked inside resolve_project, where the message can name where
+# the value came from; this covers the other two sources — a hand-edited state file
+# and a label read off a container — so nothing unusable reaches the migration.
+valid_project_name "$compose_project" \
+  || die "resolved the Compose project name '$compose_project', which Compose will not accept: a project name is lowercase letters, digits, dashes and underscores, starting with a letter or a digit. It comes from $PROJECT_PATH or from the label on an existing container; correct that file, or delete it and pass --project."
+
+# ── Runner supervisor ──────────────────────────────────────────────────────
+# managed-bootstrap matches the literal string '1' and nothing else when it decides
+# whether to seal CAP_CHOWN into the spec, while the Server treats 'true' as enabled
+# too. Normalising here keeps a host from running the supervisor path against a spec
+# that never got the capability — a mismatch the seal makes permanent.
+normalise_flag() {
+  case "$2" in
+    1|true|TRUE|True|yes|on) printf 1 ;;
+    0|false|FALSE|False|no|off|'') printf 0 ;;
+    *) die "$1 must be 1 or 0 (got '$2')" ;;
+  esac
+}
+
+# Two different things wear this flag's name and they must not be conflated. The
+# CHOWN capability is sealed once, at bootstrap, and is permanent. The runtime
+# setting docker-compose.yml passes to the Server on every `up` is just a value, and
+# switching it off must stay reversible — so the refusal below is keyed on the sealed
+# capability, never on the last runtime value chosen.
+persisted_supervisor=''
+supervisor_state="$(read_state "$SUPERVISOR_PATH")"
+if [ -n "$supervisor_state" ]; then persisted_supervisor="$(normalise_flag VERITY_RUNNER_SUPERVISOR "$supervisor_state")"; fi
+
+# The sealed spec is readable off the Server the Updater created from it:
+# managed-bootstrap adds CHOWN for this flag and for nothing else
+# (managed-bootstrap.ts:142). That also answers the question for a deployment
+# installed before this script, which has no state file to read.
+sealed_supervisor=''
+if [ -n "$managed_ref" ]; then
+  sealed_caps="$(docker_query "the sealed capabilities of $managed_ref" \
+    inspect --format '{{json .HostConfig.CapAdd}}' "$managed_ref")"
+  case "$sealed_caps" in
+    *CHOWN*) sealed_supervisor=1 ;;
+    '') ;;
+    *) sealed_supervisor=0 ;;
+  esac
+fi
+
+# A no-argument re-run must carry the installed value forward rather than switching
+# the supervisor behind the operator's back. Fresh installs default to ACP-only
+# Claude and therefore seal the supervisor capability unless explicitly disabled.
+if [ -n "${VERITY_RUNNER_SUPERVISOR:-}" ]; then
+  runner_supervisor="$(normalise_flag VERITY_RUNNER_SUPERVISOR "$VERITY_RUNNER_SUPERVISOR")"
+  if [ "$first_install" = 0 ] && [ "$runner_supervisor" = 1 ] && [ "$sealed_supervisor" = 0 ]; then
+    die "VERITY_RUNNER_SUPERVISOR=1 cannot be turned on for this deployment: $managed_ref runs from a sealed spec that carries no CHOWN capability, and re-running this does not add it. Enabling it needs the $MANAGED_DEPLOYMENT_VOLUME volume discarded and the deployment installed again."
+  fi
+  if [ "$first_install" = 0 ] && [ "$runner_supervisor" = 1 ] && [ -z "$sealed_supervisor" ]; then
+    note 'no running managed Server to read the sealed capability from — if this deployment was sealed without CHOWN, the supervisor stays inert no matter what this flag says'
+  fi
+  if [ -n "$persisted_supervisor" ] && [ "$runner_supervisor" != "$persisted_supervisor" ]; then
+    note "runner supervisor changes from $persisted_supervisor to $runner_supervisor for this and every later run"
+  fi
+elif [ -n "$persisted_supervisor" ]; then
+  runner_supervisor="$persisted_supervisor"
+elif [ -n "$sealed_supervisor" ]; then
+  runner_supervisor="$sealed_supervisor"
+  note "adopting runner supervisor = $runner_supervisor from the sealed spec of $managed_ref"
+else
+  runner_supervisor=1
+fi
+
+# ── brokered-secret runtime ────────────────────────────────────────────────
+# Nothing seals this one: docker-compose.yml:105 turns it into
+# VERITY_SECRET_JOB_RUNTIME_REQUIRED on every `up`, and verity-compose:14 runs the
+# gVisor smoke before it migrates. So it stays reversible — but it still has to be
+# carried forward, because the documented no-argument re-run would otherwise fall
+# back to the 0 default and quietly drop runtime enforcement on a host that was
+# installed with it, without the migration ever objecting.
+persisted_gvisor=''
+gvisor_state="$(read_state "$GVISOR_PATH")"
+if [ -n "$gvisor_state" ]; then persisted_gvisor="$(normalise_flag VERITY_GVISOR_REQUIRED "$gvisor_state")"; fi
+
+if [ -n "${VERITY_GVISOR_REQUIRED:-}" ]; then
+  gvisor_required="$(normalise_flag VERITY_GVISOR_REQUIRED "$VERITY_GVISOR_REQUIRED")"
+  if [ -n "$persisted_gvisor" ] && [ "$gvisor_required" != "$persisted_gvisor" ]; then
+    note "gVisor requirement changes from $persisted_gvisor to $gvisor_required for this and every later run"
+  fi
+else
+  gvisor_required="${persisted_gvisor:-0}"
+fi
+
+# ── Server image ───────────────────────────────────────────────────────────
+if [ -n "$opt_image" ]; then
+  server_image="$opt_image"
+  valid_server_image "$server_image" \
+    || die "--image must be the official digest-pinned Server image ($SERVER_REPO@sha256:<64 hex>); a tag is not accepted"
+  image_source='--image'
+elif [ -n "$managed_ref" ]; then
+  # The re-run path. The sealed spec is what the Server follows, so the digest it
+  # runs is the one the rest of the host has to catch up to — not the newest
+  # release, and not what this checkout happens to be pinned at. A stopped Server is
+  # read the same way: bootstrap checks the image against the seal, so resolving a
+  # tag here would fail the recovery of exactly the host that needs it.
+  server_image="$(docker_query "the image of $managed_ref" \
+    inspect --format '{{.Config.Image}}' "$managed_ref")"
+  [ -n "$server_image" ] || die "could not read the image of $managed_ref"
+  valid_server_image "$server_image" \
+    || die "$managed_ref runs '$server_image', which is not an official digest-pinned Server image — this deployment was not created by managed mode"
+  if [ "$managed_count" = 1 ]; then
+    image_source="running $managed_ref"
+  else
+    image_source="stopped $managed_ref"
+  fi
+elif [ "$first_install" = 0 ]; then
+  # Sealed deployment, no container left to read the digest off. Resolving the tag
+  # here would look like recovery and then fail inside bootstrap, which compares
+  # VERITY_SERVER_IMAGE against the sealed spec (managed-bootstrap.ts:151) — and
+  # `latest` is only the sealed digest by coincidence. The sealed value is in the
+  # volume, so say where it is instead of guessing at it.
+  die "this host has a sealed deployment but no $MANAGED_CONTAINER_PREFIX container left to read the Server image from, and the sealed spec pins a digest that '$opt_tag' will not generally match. Pass --image with the digest this deployment was sealed at; read it with:
+  docker run --rm -v $MANAGED_DEPLOYMENT_VOLUME:/d:ro busybox cat /d/server-deployment.json"
+elif [ "$opt_check" = 1 ]; then
+  # --check must stay cheap and side-effect free; a first install would otherwise
+  # pull several gigabytes just to print a report.
+  server_image=''
+  image_source="$SERVER_REPO:$opt_tag (resolved at install time)"
+else
+  note "no managed Server yet — resolving $SERVER_REPO:$opt_tag"
+  docker pull --quiet "$SERVER_REPO:$opt_tag" >/dev/null \
+    || die "could not pull $SERVER_REPO:$opt_tag"
+  server_image="$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$SERVER_REPO:$opt_tag" 2>/dev/null \
+    | grep "^$SERVER_REPO@sha256:" | head -n1 || true)"
+  [ -n "$server_image" ] \
+    || die "could not read a registry digest for $SERVER_REPO:$opt_tag — a locally built image cannot be adopted"
+  valid_server_image "$server_image" || die "resolved an unexpected image reference: $server_image"
+  image_source="$SERVER_REPO:$opt_tag"
+fi
+
+# ── report ─────────────────────────────────────────────────────────────────
+printf '\n'
+printf '  server image      %s\n' "${server_image:-<resolved at install time>}"
+printf '  image source      %s\n' "$image_source"
+if [ -n "$persisted_id" ]; then
+  printf '  deployment id     %s (persisted)\n' "$deployment_id"
+elif [ "$opt_check" = 1 ] && [ -z "$opt_deployment_id" ]; then
+  # Showing the value generated for this dry run would be a lie: nothing persists
+  # it, so the real install generates a different one.
+  printf '  deployment id     <generated and persisted at install time>\n'
+else
+  printf '  deployment id     %s (new)\n' "$deployment_id"
+fi
+printf '  compose project   %s\n' "$compose_project"
+printf '  runner supervisor %s\n' "$runner_supervisor"
+printf '  gvisor required   %s\n' "$gvisor_required"
+printf '  control token     %s\n' "$TOKEN_PATH"
+printf '  mode              %s\n' "$([ "$first_install" = 1 ] && printf 'first install' || printf 'host-side upgrade')"
+printf '\n'
+
+if [ "$first_install" = 1 ] && [ "$runner_supervisor" = 1 ]; then
+  note 'the Runner supervisor capability is sealed on this first install and cannot be added later'
+fi
+if [ "$first_install" = 1 ] && [ "$runner_supervisor" = 0 ]; then
+  note 'installing WITHOUT Claude support — ACP-only Claude requires the Runner supervisor, and enabling it later needs the managed-deployment volume discarded. Remove VERITY_RUNNER_SUPERVISOR=0 unless this deployment intentionally disables Claude.'
+fi
+
+if [ "$opt_check" = 1 ]; then
+  note 'preflight only (--check); nothing was changed'
+  exit 0
+fi
+
+# ── control token and persisted state ──────────────────────────────────────
+# Every write below goes through here. Redirecting straight at a state path would
+# follow a symlink someone left there and truncate its target as root, and a write
+# interrupted in place would leave a half-written deployment identity behind — which
+# the next run would replace with a fresh one that the sealed Server then rejects.
+# Writing to a private temp file and renaming avoids both: rename replaces a symlink
+# rather than following it, and it is atomic.
+write_state() {
+  local path="$1" mode="$2" tmp
+  tmp="$(dirname -- "$path")/.$(basename -- "$path").$$"
+  rm -f "$tmp"
+  ( umask 077; cat > "$tmp" )
+  chown root:root "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$path"
+}
+
+if [ ! -e "$TOKEN_PATH" ] && [ ! -L "$TOKEN_PATH" ]; then
+  note "generating a control token at $TOKEN_PATH"
+  # Exactly 32 random bytes as lowercase hex and NOT one byte more: the file must be
+  # 64 bytes, so a trailing newline (which `echo` would add) fails validation.
+  dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' \
+    | write_state "$TOKEN_PATH" 0600
+fi
+
+# Everything below runs as root, so refuse to chown/chmod through a link: verity-compose
+# rejects a symlinked token, but only after we would already have retargeted an
+# arbitrary file's ownership and mode.
+[ ! -L "$TOKEN_PATH" ] \
+  || die "$TOKEN_PATH is a symlink; the control token must be a regular file (verity-compose rejects symlinked tokens). Remove it and run this again."
+[ -f "$TOKEN_PATH" ] \
+  || die "$TOKEN_PATH exists but is not a regular file. Remove it and run this again."
+chown root:root "$TOKEN_PATH"
+chmod 0600 "$TOKEN_PATH"
+
+token_size="$(wc -c < "$TOKEN_PATH" | tr -d ' ')"
+[ "$token_size" = 64 ] \
+  || die "$TOKEN_PATH is $token_size bytes; it must be exactly 64 (32 random bytes as lowercase hex, no trailing newline). Delete it to have this script regenerate it."
+grep -qE '^[a-f0-9]{64}$' "$TOKEN_PATH" \
+  || die "$TOKEN_PATH is not 64 lowercase hex characters. Delete it to have this script regenerate it."
+
+printf '%s\n' "$deployment_id" | write_state "$ID_PATH" 0644
+printf '%s\n' "$compose_project" | write_state "$PROJECT_PATH" 0644
+printf '%s\n' "$runner_supervisor" | write_state "$SUPERVISOR_PATH" 0644
+printf '%s\n' "$gvisor_required" | write_state "$GVISOR_PATH" 0644
+
+# ── hand over to the guarded migration ─────────────────────────────────────
+note 'running the guarded migration (verity-compose managed-up)'
+cd "$repo_root"
+VERITY_SERVER_IMAGE="$server_image" \
+VERITY_MANAGED_DEPLOYMENT_ID="$deployment_id" \
+VERITY_UPDATER_TOKEN_HOST_PATH="$TOKEN_PATH" \
+VERITY_RUNNER_SUPERVISOR="$runner_supervisor" \
+VERITY_GVISOR_REQUIRED="$gvisor_required" \
+COMPOSE_PROJECT_NAME="$compose_project" \
+  ./deploy/bin/verity-compose managed-up
+
+printf '\n'
+if [ "$first_install" = 1 ]; then
+  note 'installed. Open the app and unlock the master password store to finish first-run setup.'
+else
+  note 'host side is now on the same release as the Server.'
+fi
+note 'normal app-initiated updates carry managed companions forward automatically; re-run this command only for recovery.'

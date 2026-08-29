@@ -1,0 +1,39 @@
+# Keep the Verity runner build context (deploy/Dockerfile) small + deterministic.
+# The image installs deps from the lockfile and compiles from source; nothing
+# generated or local should enter the context.
+
+# Dependencies (reinstalled in the builder/deps stages)
+**/node_modules
+
+# Build output (recompiled by tsc -b in the builder stage)
+**/dist
+**/*.tsbuildinfo
+
+# VCS + CI
+.git
+.github
+
+# Embedded server data / sessions (runtime state, never build input)
+**/.verity-data
+**/.verity-sessions
+
+# Env / secrets — never bake into an image layer
+.env
+.env.local
+**/.env
+**/.env.local
+
+# Test / coverage artifacts
+coverage
+
+# Expo / React Native generated native dirs (mobile app is not built here)
+.expo
+apps/*/android
+apps/*/ios
+
+# Editor / OS noise
+.DS_Store
+**/*.log
+
+# The complete deploy tree is an intentional image input: official Server
+# releases carry their matching host-install bundle under /opt/verity-install.

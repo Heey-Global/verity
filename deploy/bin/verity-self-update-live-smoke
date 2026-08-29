@@ -1,0 +1,1720 @@
+#!/usr/bin/env bash
+# Drive the self-update path — preparation and the in-place cutover — against a
+# real Docker daemon and the real Server image (ADR 0008 D4/D5 and the in-place
+# cutover addendum).
+#
+# Requires an ISOLATED daemon at $DOCKER_HOST. The managed deployment's names —
+# the `verity-managed-server` and `verity-managed-gateway` containers, the
+# `verity-net` network, the `verity-data`, `verity-agent-gateway-control`,
+# `verity-managed-gateway-control` and `verity-updater-control`
+# volumes — are pinned by the deployment-spec allowlist and cannot be namespaced
+# per run, so on a shared daemon this would adopt and reconcile that host's real
+# Verity stack. The workflow supplies a throwaway dockerd; there is nothing to
+# namespace here. Since the workflow now runs on a persistent self-hosted runner
+# that bind-mounts the production host's docker.sock, "isolated" is enforced
+# rather than assumed — see the three-layer guard below `set -euo pipefail`.
+#
+# The image ref is pinned to ghcr.io/heey-global/verity/verity-server@sha256:…
+# by the same allowlist, so the smoke serves that exact name from a registry
+# inside the isolated daemon (`--insecure-registry ghcr.io` plus an /etc/hosts
+# alias, both set on the daemon the workflow starts). The digests are therefore
+# real digests minted by a real registry, and the pull under test is a real
+# pull-by-digest — not a local tag the daemon happens to already have.
+set -euo pipefail
+
+image="${1:-}"
+previous_image="${2:-$image}"
+# The git tag the previous image was released from, so this run can read the
+# Compose file that release shipped. See the drift stage below for why the
+# IMAGE alone cannot answer that: the environment a host seals is written in
+# `deploy/docker-compose.yml`, not in the Server image.
+previous_tag="${3:-}"
+if [[ -z "$image" ]]; then
+  echo 'usage: verity-self-update-live-smoke <target-server-image> <previous-server-image> <previous-release-tag>' >&2
+  exit 2
+fi
+: "${DOCKER_HOST:?DOCKER_HOST must point at the isolated daemon}"
+
+socket="${DOCKER_HOST#unix://}"
+
+# The guard, and the reason it is more than a formality.
+#
+# Everything below drives the deployment's REAL names — `verity-managed-server`,
+# `verity-net`, `verity-data` — because the deployment-spec allowlist pins them
+# and they cannot be namespaced per run. The cleanup trap installed a few lines
+# down therefore ends in
+# `docker ps -aq --filter 'name=^verity-managed-' | xargs -r docker rm -f`.
+# Pointed at this repository's own self-hosted runners, whose `docker.sock` is
+# the production host's, that single line deletes the live Verity deployment.
+#
+# `${DOCKER_HOST:?}` above does not prevent that. It only asks whether the
+# variable is set, and the workflow sets it from a step — so a reordered step, a
+# `DOCKER_HOST` inherited from a shell profile, a stray `docker context`, or an
+# operator running this by hand all arrive here with a value that is perfectly
+# non-empty and points straight at production. What has to be checked is which
+# daemon it names, in three independent layers, all of them BEFORE the trap is
+# installed so that a refusal cannot itself delete anything:
+#
+#   1. shape — a unix socket named `docker.sock` inside a per-run `verity-*dind*`
+#      directory, and never one of the well-known host socket paths. Cheap, and
+#      it catches the two spellings a mistake actually takes.
+#   2. identity — the daemon's own ID must differ from the one answering on
+#      `/var/run/docker.sock`, and BOTH have to answer. This is the layer that
+#      cannot be spoofed by naming: a symlink, bind mount or proxy that dresses
+#      the host daemon up in a run-scoped path still reports the host daemon's
+#      ID. It is also the layer with a tempting failure mode — treating "the host
+#      socket did not answer" as "then it cannot be the host daemon" — which
+#      turns the check off precisely where the socket layout is unusual enough to
+#      warrant it. Both lookups must succeed or this refuses.
+#   3. emptiness — no container named `verity-*` may already exist on it. That is
+#      the exact blast radius of the trap below, so a daemon holding anything for
+#      it to delete is by construction the wrong daemon.
+#
+# Layer 3 is the backstop for a failure nobody has thought of yet: whatever new
+# way a future edit finds to hand this script the production daemon, that daemon
+# has the production containers on it, and this refuses before touching them.
+refuse_daemon() {
+  echo "verity-self-update-live-smoke refuses to run: $1" >&2
+  echo "  DOCKER_HOST=$DOCKER_HOST" >&2
+  echo '  It must name a throwaway Docker-in-Docker daemon started for this run —' >&2
+  echo '  unix://<dir>/docker.sock with a verity-*dind* directory, as' >&2
+  echo '  .github/workflows/self-update.yml sets it. This smoke force-removes every' >&2
+  echo '  verity-managed-* container on the daemon it is given.' >&2
+  exit 1
+}
+
+socket_dir_name="${socket%/*}"
+socket_dir_name="${socket_dir_name##*/}"
+[[ "$DOCKER_HOST" == unix://* ]] || refuse_daemon 'DOCKER_HOST is not a unix:// socket'
+case "$socket" in
+  /var/run/docker.sock | /run/docker.sock | /var/run/docker/docker.sock)
+    refuse_daemon 'DOCKER_HOST is the host daemon socket'
+    ;;
+esac
+[[ "$socket" == /*/docker.sock ]] ||
+  refuse_daemon 'DOCKER_HOST is not an absolute path ending in /docker.sock'
+[[ "$socket_dir_name" == verity-*dind* ]] ||
+  refuse_daemon "the socket directory '$socket_dir_name' is not a per-run verity-*dind* directory"
+[[ -S "$socket" ]] || refuse_daemon 'nothing is listening on that socket path'
+
+isolated_daemon_id="$(docker --host "$DOCKER_HOST" info --format '{{.ID}}' 2>/dev/null || true)"
+[[ -n "$isolated_daemon_id" ]] || refuse_daemon 'no Docker daemon answered on that socket'
+host_daemon_id="$(docker --host unix:///var/run/docker.sock info --format '{{.ID}}' 2>/dev/null || true)"
+# Not being able to LOOK is a refusal, not a pass. This check's whole job is to
+# prove the daemon above is a different one from the host's, and an unreadable
+# /var/run/docker.sock proves nothing — it just removes the evidence. Accepting an
+# empty answer would make the guard weakest in exactly the environment that needs
+# it most: a proxied, remapped or partially mounted socket layout is both how the
+# canonical path stops answering AND how a correctly named path ends up wired to
+# the production daemon. Fail closed and say which half is missing.
+[[ -n "$host_daemon_id" ]] ||
+  refuse_daemon 'the daemon at unix:///var/run/docker.sock could not be identified, so this cannot prove the socket above belongs to a different one'
+[[ "$host_daemon_id" != "$isolated_daemon_id" ]] ||
+  refuse_daemon 'that socket is answered by the HOST Docker daemon'
+
+adopted="$(docker --host "$DOCKER_HOST" ps --all --quiet --filter 'name=^verity-' | wc -l | tr -d '[:space:]')"
+[[ "$adopted" == 0 ]] ||
+  refuse_daemon "the daemon already holds $adopted verity-* container(s), which the cleanup below would force-remove"
+
+# Checked AFTER the daemon guard and before the cleanup trap, in that order and
+# for two different reasons. After the guard, because a missing argument is a
+# usage mistake and being pointed at production is not — the refusal that must
+# win the race is the one about the daemon. Before the trap, because a run that
+# stops here has created nothing and must delete nothing.
+#
+# Required rather than defaulted, deliberately. Falling back to the working
+# tree's own Compose file would make the drift stage compare a release against
+# itself, which is exactly the shape the hand-written dictionaries had: a stage
+# that cannot fail, on a gate whose whole value is that it can.
+repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ -z "$previous_tag" ]]; then
+  echo 'verity-self-update-live-smoke: the previous release tag is required' >&2
+  echo '  The drift stage seals the deployment from `git show <tag>:deploy/docker-compose.yml`,' >&2
+  echo '  so a release that removes or re-defaults a Server variable fails this smoke' >&2
+  echo '  instead of every sealed host. Pass the tag the previous image was released from.' >&2
+  exit 2
+fi
+if ! git -C "$repo_root" rev-parse --verify --quiet "$previous_tag^{commit}" >/dev/null; then
+  echo "verity-self-update-live-smoke: '$previous_tag' is not a commit in this checkout" >&2
+  echo '  The registry says that release is published; git must be able to show the' >&2
+  echo '  Compose file it shipped. Fetch tags (actions/checkout fetch-depth: 0) rather' >&2
+  echo '  than skipping the stage.' >&2
+  exit 1
+fi
+# Compose renders the two environments this run compares, and it is the only
+# thing that can: the anchor nests interpolation defaults inside one another.
+# Asserted here rather than discovered as a bare "docker: 'compose' is not a
+# docker command" in the middle of the gate.
+if ! docker compose version >/dev/null 2>&1; then
+  echo 'verity-self-update-live-smoke: the Docker Compose plugin is not on this runner' >&2
+  echo '  The drift stage renders the server environment of both releases with' >&2
+  echo '  `docker compose config`. Do not replace it with a YAML reader: the anchor' >&2
+  echo '  carries ${A:-${B:-literal}}, and the drift these releases shipped lived' >&2
+  echo '  inside exactly such a default.' >&2
+  exit 1
+fi
+
+repo='ghcr.io/heey-global/verity/verity-server'
+registry_image='registry:2.8.3@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278'
+postgres_image='postgres:18-alpine'
+# The adoption job the restart stage re-runs refuses any root whose basename is
+# not `managed-deployment`, so the throwaway root carries the production name
+# inside a temporary parent instead of being the temporary directory itself.
+managed_parent="$(mktemp -d)"
+managed_root="$managed_parent/managed-deployment"
+mkdir --mode=0700 "$managed_root"
+
+cleanup() {
+  docker rm -f verity-managed-server verity-smoke-registry \
+    verity-postgres verity-postgres-unmigrated >/dev/null 2>&1 || true
+  docker ps -aq --filter 'name=^verity-managed-' --filter 'name=^verity-smoke-' |
+    xargs -r docker rm -f >/dev/null 2>&1 || true
+  rm -rf "$managed_parent"
+}
+trap cleanup EXIT
+
+# Port 80 is the one that matters: `ghcr.io` carries no port, so the daemon
+# builds its plaintext retry as `http://ghcr.io` — the scheme's default port —
+# after the HTTPS attempt to :443 fails. 443 is published at the same plaintext
+# registry only so that attempt fails on the TLS handshake rather than on a
+# refused connection, which is the difference between a legible log line and a
+# confusing one.
+echo '--- isolated daemon: registry serving the pinned ghcr.io name'
+docker run --detach --name verity-smoke-registry \
+  --publish 80:5000 --publish 443:5000 "$registry_image" >/dev/null
+for attempt in $(seq 1 60); do
+  if docker run --rm --network host "$registry_image" \
+    wget --quiet --spider http://127.0.0.1:80/v2/ >/dev/null 2>&1; then
+    break
+  fi
+  if [[ "$attempt" -eq 60 ]]; then
+    docker logs verity-smoke-registry >&2 || true
+    echo 'smoke registry did not become ready' >&2
+    exit 1
+  fi
+  sleep 0.25
+done
+
+# Seven digests from one build. The generations must differ by digest — that is
+# what the journal fences on — but not by behaviour, or a failure would not say
+# whether the update path or the new build broke. A label is the smallest
+# difference that produces a distinct manifest.
+#
+# One per COMMIT, not one per operation. A commit installs its target as the
+# image the deployment is now running, so every operation started afterwards
+# would otherwise be an update from a digest to itself — and against such an
+# operation "the authority kept the previous digest" and "the promoted generation
+# runs the target" are the same assertion, true whatever the cutover did. This
+# run commits six times (`target`, `successor`, `final`, `drained`, `forced`,
+# `resumed`); the rollbacks in between share the target of the commit they
+# precede, which is exactly what a real retry after a failed update looks like.
+echo '--- isolated daemon: publishing the generations this run moves between'
+generation=1
+for tag in target successor final drained forced resumed; do
+  generation=$((generation + 1))
+  printf 'FROM %s\nLABEL verity.smoke.generation="%s"\n' "$image" "$generation" |
+    docker build --quiet --tag "$repo:$tag" - >/dev/null
+done
+docker tag "$previous_image" "$repo:previous"
+for tag in previous target successor final drained forced resumed; do
+  docker push --quiet "$repo:$tag" >/dev/null
+done
+
+digest_of() {
+  docker inspect --format '{{index .RepoDigests 0}}' "$1" | sed "s|^[^@]*|$repo|"
+}
+previous_digest="$(digest_of "$repo:previous")"
+target_digest="$(digest_of "$repo:target")"
+successor_digest="$(digest_of "$repo:successor")"
+final_digest="$(digest_of "$repo:final")"
+drained_digest="$(digest_of "$repo:drained")"
+forced_digest="$(digest_of "$repo:forced")"
+resumed_digest="$(digest_of "$repo:resumed")"
+digests=("$previous_digest" "$target_digest" "$successor_digest" "$final_digest"
+  "$drained_digest" "$forced_digest" "$resumed_digest")
+for digest in "${digests[@]}"; do
+  [[ "$digest" == "$repo@sha256:"* ]] || { echo "bad generation digest: $digest" >&2; exit 1; }
+done
+if [[ "$(printf '%s\n' "${digests[@]}" | sort -u | wc -l)" -ne "${#digests[@]}" ]]; then
+  echo 'generations share a digest' >&2
+  exit 1
+fi
+
+# Every generation is pulled back by digest, so the run below starts from an
+# image the daemon fetched from a registry under the pinned name rather than one
+# left in its cache by the build.
+docker image rm -f "$repo:previous" "$repo:target" "$repo:successor" "$repo:final" \
+  "$repo:drained" "$repo:forced" "$repo:resumed" "${digests[@]}" >/dev/null 2>&1 || true
+docker pull --quiet "$previous_digest" >/dev/null
+
+echo '--- isolated daemon: managed deployment topology'
+docker network create verity-net >/dev/null 2>&1 || true
+docker volume create verity-data >/dev/null
+docker volume create verity-agent-gateway-control >/dev/null
+docker volume create verity-updater-control >/dev/null
+# The Gateway's own control volume. The image pre-creates /run/verity-gateway
+# owned by uid 1000, so Docker seeds this one with the right owner and no chown
+# container is needed: the Gateway binds its socket there as the unprivileged
+# user, and root in another container connects to it.
+docker volume create verity-managed-gateway-control >/dev/null
+# The smoke's own channel into the relay container, deliberately not the control
+# volume: that one is the boundary under test, and a driver writing into it would
+# be proving something about a path production does not have.
+docker volume create verity-smoke-standby >/dev/null
+
+# Start in the flat layout shipped by the adjacent previous release. The first
+# managed target-image helper must recognize this only after validating the full
+# legacy tree, publish the target beside it, and establish `.current`.
+seed_version='1.0.0-smoke-server'
+docker volume create verity-smoke-agent-seed >/dev/null
+export VERITY_SMOKE_AGENT_SEED_HOST_PATH="$(docker volume inspect \
+  --format '{{.Mountpoint}}' verity-smoke-agent-seed)"
+if [[ -z "$VERITY_SMOKE_AGENT_SEED_HOST_PATH" ]]; then
+  echo 'the isolated daemon did not expose the agent-seed volume mountpoint' >&2
+  exit 1
+fi
+docker run --rm --user 0:0 --network none \
+  --mount 'type=volume,src=verity-smoke-agent-seed,dst=/opt/agent-seed' \
+  --entrypoint=sh "$previous_digest" -c \
+  "cp -a /opt/verity-features/verity-sandbox-toolkit/agent-seed/. /opt/agent-seed/ && \
+   printf 'schema=1\nimage=%s\nversion=%s\npublished=%s\n' \
+     '$previous_digest' '$seed_version' '2026-01-01T00:00:00Z' \
+     > /opt/agent-seed/.verity-agent-seed" >/dev/null
+# The volumes are mounted by a container running as uid 1000; the daemon seeds an
+# empty volume from the image path, which is root-owned.
+docker run --rm --user 0:0 --network none \
+  --mount 'type=volume,src=verity-data,dst=/srv/verity' \
+  --mount 'type=volume,src=verity-agent-gateway-control,dst=/run/verity-agent-gateway' \
+  --entrypoint=chown "$previous_digest" -R 1000:1000 /srv/verity /run/verity-agent-gateway >/dev/null
+# The control volume is the exception: it stays root-owned and only group-readable,
+# exactly as the Updater sets it in production. The Server may traverse it and read
+# the activation marker; it may not create or replace one.
+docker run --rm --user 0:0 --network none \
+  --mount 'type=volume,src=verity-updater-control,dst=/run/verity-updater/control' \
+  --entrypoint=sh "$previous_digest" -c \
+  'chown 0:1000 /run/verity-updater/control && chmod 0750 /run/verity-updater/control' >/dev/null
+
+wait_for_postgres() {
+  for _ in $(seq 1 60); do
+    if docker exec "$1" pg_isready -U verity -d verity >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  docker logs --tail=50 "$1" >&2 || true
+  echo "$1 did not become ready" >&2
+  exit 1
+}
+
+start_postgres() {
+  docker run --detach --name "$1" --network verity-net \
+    --env POSTGRES_USER=verity --env POSTGRES_DB=verity \
+    --env POSTGRES_HOST_AUTH_METHOD=trust "$postgres_image" >/dev/null
+  wait_for_postgres "$1"
+}
+# verity-postgres is migrated by the running Server below. verity-postgres-unmigrated
+# is never touched by a Server, so it stays at zero applied migrations — the
+# state a candidate preflight has to refuse.
+start_postgres verity-postgres
+start_postgres verity-postgres-unmigrated
+
+# The real Gateway, in front of the deployment for the whole run. Everything the
+# cutover does to routing — maintenance, the drain, the backend switch — goes
+# through this container's control socket, so what the assertions below read is
+# the product's own durable route selection rather than a file the driver keeps
+# on the side. It is started once and never replaced: that is the point of a
+# stable front door (ADR 0008), and it is why a client can hold a connection
+# across a generation change at all.
+#
+# Same image as the first generation, `managed-gateway` command, unprivileged —
+# the compose service in deploy/docker-compose.yml, minus the published port
+# nothing here needs.
+echo '--- isolated daemon: the managed Gateway in front of the deployment'
+docker run --detach --name verity-managed-gateway --network verity-net \
+  --user 1000:1000 --restart=no \
+  --mount 'type=volume,src=verity-managed-gateway-control,dst=/run/verity-gateway' \
+  "$previous_digest" managed-gateway >/dev/null
+
+# Asked the way the Updater asks: as root, from a networkless container, over the
+# 0600 socket on the shared volume. There is no cheaper check worth making — that
+# channel is what every routing assertion in this run depends on.
+gateway_status() {
+  docker run --rm --user 0:0 --network none \
+    --mount 'type=volume,src=verity-managed-gateway-control,dst=/run/verity-gateway' \
+    --entrypoint=node "$previous_digest" -e \
+    "const control = await import('/app/packages/server/dist/self-update/managed-gateway-control.js');
+     const status = await control.readManagedGatewayStatus('/run/verity-gateway/control.sock');
+     process.stdout.write(JSON.stringify(status));"
+}
+
+for attempt in $(seq 1 60); do
+  if gateway_status >/dev/null 2>&1; then break; fi
+  if [[ "$attempt" -eq 60 ]]; then
+    docker logs --tail=120 verity-managed-gateway >&2 || true
+    echo 'the managed Gateway never opened its control socket' >&2
+    exit 1
+  fi
+  sleep 1
+done
+echo "the managed Gateway is up: $(gateway_status)"
+
+# The front door itself, from a client's side of it. `wait_for_healthy` above
+# asks the Server about the Server; this asks whether the deployment is reachable
+# under the one name that never changes, which is the property a generation
+# change is supposed to preserve.
+expect_gateway_serving() {
+  local message="$1"
+  for attempt in $(seq 1 30); do
+    if docker run --rm --network verity-net --entrypoint=node "$previous_digest" -e \
+      "const r = await fetch('http://verity-managed-gateway:8082/healthz');
+       if (!r.ok) process.exit(1);" >/dev/null 2>&1; then
+      echo 'the Gateway is serving the deployment'
+      return 0
+    fi
+    sleep 1
+  done
+  docker logs --tail=120 verity-managed-gateway >&2 || true
+  echo "$message" >&2
+  exit 1
+}
+
+# The party every other stage of this smoke leaves out: connections that were
+# already open when the update started. The client container reaches the
+# deployment only through the Gateway — the public port the way the app does, the
+# internal one the way a sandbox's broker wrapper does — holds WebSockets and
+# half-written request bodies on both across the cutover, and asserts what it
+# observed itself — see packages/server/src/self-update-live-smoke-client.ts. Started
+# BEFORE the cutover stage and waited on after it, because a client that attached
+# afterwards would be testing the front door, not the drain.
+client='verity-smoke-gateway-client'
+
+# What the client claims and what the Gateway counted are two different things:
+# `attached` says the streams are up and the request bodies are on the wire, but
+# only the Gateway's own accounting says it has seen them. The drain waits on
+# exactly these two numbers, so an update started before they are in place could
+# open on connections the Gateway had not registered yet — a race that would
+# surface as an occasional 503 on a request the client believed was in flight.
+# Read from the client's own report rather than repeated here, so the two cannot
+# drift apart.
+expect_gateway_holding() {
+  local streams="$1" requests="$2" status held_streams held_requests attempt
+  for attempt in $(seq 1 30); do
+    status="$(gateway_status 2>/dev/null || true)"
+    held_streams="$(printf '%s' "$status" | sed -n 's/.*"upgradedConnections":\([0-9]*\).*/\1/p')"
+    held_requests="$(printf '%s' "$status" | sed -n 's/.*"activeRequests":\([0-9]*\).*/\1/p')"
+    if [[ "${held_streams:-0}" -ge "$streams" && "${held_requests:-0}" -ge "$requests" ]]; then
+      echo "the Gateway is holding $held_streams stream(s) and $held_requests request(s)"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "the Gateway never registered the client's connections (last: $status)" >&2
+  exit 1
+}
+
+start_client() {
+  local mode="$1" attempt attached
+  docker rm -f "$client" >/dev/null 2>&1 || true
+  # The database is passed for the `catchup` mode, which owns a session of its
+  # own: it writes events the way a Runner does — with no Server in the path —
+  # and then asks the deployment to stream them back. The drain modes never open
+  # it. It is the deployment's own database on purpose; a separate one would
+  # prove nothing about what a client sees across a generation change.
+  docker run --detach --name "$client" --network verity-net --restart=no \
+    --env "VERITY_SMOKE_MASTER_PASSWORD=$master_password" \
+    --env "VERITY_SMOKE_CLIENT_MODE=$mode" \
+    --env "VERITY_SMOKE_DATABASE_URL=$VERITY_SMOKE_DATABASE_URL" \
+    --entrypoint=node "$previous_digest" \
+    packages/server/dist/self-update-live-smoke-client.js >/dev/null
+  # Attached means: streams upgraded and caught up, request bodies open. Only
+  # then may the update start, or the drain would have nothing to drain.
+  for attempt in $(seq 1 60); do
+    if docker logs "$client" 2>/dev/null | grep -q '"event":"attached"'; then
+      attached="$(docker logs "$client" 2>/dev/null | grep '"event":"attached"' | tail -1)"
+      echo "$attached"
+      expect_gateway_holding \
+        "$(printf '%s' "$attached" | sed -n 's/.*"streams":\([0-9]*\).*/\1/p')" \
+        "$(printf '%s' "$attached" | sed -n 's/.*"inFlight":\([0-9]*\).*/\1/p')"
+      return 0
+    fi
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$client" 2>/dev/null)" != 'true' ]]; then
+      docker logs "$client" >&2 || true
+      echo "the $mode client died before it attached" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  docker logs "$client" >&2 || true
+  echo "the $mode client never attached to the deployment" >&2
+  exit 1
+}
+
+# The client's verdict is its exit code; its report is what it saw on the way
+# there. Both are echoed, because a green run should still say what the update
+# cost the clients that lived through it.
+expect_client_done() {
+  local mode="$1" attempt code
+  for attempt in $(seq 1 360); do
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$client" 2>/dev/null)" != 'true' ]]; then
+      code="$(docker inspect --format '{{.State.ExitCode}}' "$client")"
+      docker logs "$client" 2>&1 | grep '^gateway-client ' || true
+      if [[ "$code" != '0' ]]; then
+        docker logs --tail=120 "$client" >&2 || true
+        echo "the $mode client's assertions failed" >&2
+        exit 1
+      fi
+      docker rm -f "$client" >/dev/null
+      return 0
+    fi
+    sleep 1
+  done
+  docker logs --tail=120 "$client" >&2 || true
+  echo "the $mode client never finished" >&2
+  exit 1
+}
+
+export VERITY_SMOKE_DOCKER_SOCKET="$socket"
+export VERITY_SMOKE_MANAGED_ROOT="$managed_root"
+export VERITY_SMOKE_PREVIOUS_DIGEST="$previous_digest"
+export VERITY_SMOKE_TARGET_DIGEST="$target_digest"
+export VERITY_SMOKE_DATABASE_URL='postgres://verity@verity-postgres:5432/verity'
+export VERITY_SMOKE_UNMIGRATED_DATABASE_URL='postgres://verity@verity-postgres-unmigrated:5432/verity'
+# The other half of the same gate: a host that is up with nothing listening on
+# the port, which is what a database that is down looks like from inside the
+# network. A real container name is used on purpose — an unresolvable one would
+# fail in DNS and prove a typo is caught, not that an unavailable database is.
+export VERITY_SMOKE_UNREACHABLE_DATABASE_URL='postgres://verity@verity-postgres:5433/verity'
+
+# Asked from inside the container, so this reports on the Server process itself
+# rather than on anything the cutover does to routing. The container is named
+# rather than assumed: a committed generation serves under its own
+# `verity-managed-server-g<n>`, and the old name is gone by then.
+wait_for_healthy() {
+  local container="$1" message="$2"
+  for attempt in $(seq 1 90); do
+    if docker exec "$container" node -e \
+      "const r = await fetch('http://127.0.0.1:8082/healthz'); if (!r.ok) process.exit(1);" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ "$attempt" -eq 90 ]]; then
+      docker logs --tail=120 "$container" >&2 || true
+      echo "$message" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+# Both routes are on the Server's pre-auth allowlist, so they keep working after
+# the master password arms the bearer gate — which is the point: the readiness
+# probe the cutover depends on is on that same list.
+secret_status() {
+  docker exec "$1" node -e \
+    "const r = await fetch('http://127.0.0.1:8082/secret/status');
+     if (!r.ok) process.exit(1);
+     process.stdout.write((await r.json()).status);"
+}
+
+expect_secret_status() {
+  local container="$1" want="$2" got
+  got="$(secret_status "$container" || true)"
+  if [[ "$got" != "$want" ]]; then
+    docker logs --tail=120 "$container" >&2 || true
+    echo "expected the secret store in $container to be '$want', got '$got'" >&2
+    exit 1
+  fi
+  echo "$container secret store is $want"
+}
+
+# The same assertion where the handoff it depends on is genuinely asynchronous.
+#
+# Almost every generation below adopts a key that was sealed for it before the
+# cutover started, so the store is settled by the time the Server answers at all
+# and a plain `expect_secret_status` is the honest check. The exception is a
+# candidate that was killed after it had already claimed one: the envelope was
+# sealed to an ephemeral key that died with the process, so the restarted
+# container has to offer again and be answered again, and that round trip runs
+# against a boot rather than in front of one. Waiting for it is the assertion —
+# what would be wrong is not waiting and calling the resulting flake a failure.
+wait_for_secret_status() {
+  local container="$1" want="$2" message="$3" got=''
+  for attempt in $(seq 1 60); do
+    got="$(secret_status "$container" || true)"
+    if [[ "$got" == "$want" ]]; then
+      echo "$container secret store is $want"
+      return 0
+    fi
+    if [[ "$attempt" -eq 60 ]]; then
+      docker logs --tail=120 "$container" >&2 || true
+      echo "$message (still '$got')" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+# `/secret/init` on the first call, `/secret/unlock` afterwards: the same
+# password, entered the way the operator's app enters it.
+secret_password() {
+  local container="$1" path="$2"
+  docker exec --env "VERITY_SMOKE_MASTER_PASSWORD=$master_password" "$container" node -e \
+    "const r = await fetch('http://127.0.0.1:8082/secret/$path', {
+       method: 'POST',
+       headers: { 'content-type': 'application/json' },
+       body: JSON.stringify({
+         password: process.env.VERITY_SMOKE_MASTER_PASSWORD,
+         deviceLabel: 'live-smoke',
+       }),
+     });
+     if (!r.ok) { console.error(r.status, await r.text()); process.exit(1); }" >/dev/null
+}
+
+# The seal is what makes every "came up unlocked" assertion below mean something,
+# and it is an optimisation the cutover never blocks on — so without waiting for
+# it, the outgoing Server could be quiesced or stopped before it got the chance,
+# and the assertion would be timing rather than behaviour.
+#
+# Counted, because this run seals more than once: the relay is the whole run's
+# control boundary, so each binding published against it gets its own envelope.
+# The count only grows — a container that is cold-started keeps the log lines it
+# already wrote — so what a barrier waits for is an increase, not a total.
+seal_count() {
+  docker logs "$server" 2>&1 |
+    grep -c 'secret store key sealed for the next generation' || true
+}
+
+# A count that has stopped moving, which is the only safe baseline: a seal for
+# the PREVIOUS binding may still be in flight when a barrier is set up, and a
+# wait that the previous seal satisfies proves nothing about the one it was
+# written for. An unlocked Server answers a given binding once, so this settles
+# within a tick or two; the bound is there so a Server that seals in a loop
+# fails the assertions rather than this helper.
+settled_seal_count() {
+  local last='' got=''
+  for _ in $(seq 1 10); do
+    got="$(seal_count)"
+    if [[ "$got" == "$last" ]]; then break; fi
+    last="$got"
+    sleep 2
+  done
+  echo "$got"
+}
+
+wait_for_new_seal() {
+  local base="$1" got=''
+  for attempt in $(seq 1 60); do
+    got="$(seal_count)"
+    if [[ "$got" -gt "$base" ]]; then
+      echo "the outgoing Server has sealed its key $got time(s)"
+      return 0
+    fi
+    if [[ "$attempt" -eq 60 ]]; then
+      docker logs --tail=120 verity-smoke-handoff-relay >&2 || true
+      docker logs --tail=120 "$server" >&2 || true
+      echo "the outgoing Server never sealed its key again; still $got" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+# The Server's own view of the agent seed, produced by the shipped client rather
+# than by reading the file from out here: it opens the control channel the sealed
+# spec gives it, reads the token the Updater published to its group, asks the
+# Updater over that socket, and compares. Prints `<state> <version> <image>`.
+#
+# The version it compares against is injected because every generation in this
+# run is built from one image and reports the `0.0.0-dev` sentinel, which the
+# comparison correctly declines to draw any conclusion from. What is under test
+# is that the seed's provenance survives a cutover intact and reaches the Server
+# — not how semantic-release stamps a build.
+agent_seed_state() {
+  docker exec --env "VERITY_SMOKE_SERVER_VERSION=$2" "$1" node -e \
+    "const m = await import('file:///app/packages/server/dist/self-update/server-update-controller.js');
+     const client = await m.createAgentSeedProvenanceClient(process.env.VERITY_SMOKE_SERVER_VERSION);
+     if (client === undefined) { process.stdout.write('no-control-channel - -'); process.exit(0); }
+     const seed = await client.read();
+     process.stdout.write([seed.state, seed.stamp?.version ?? '-', seed.stamp?.image ?? '-'].join(' '));"
+}
+
+expect_agent_seed() {
+  local container="$1" version="$2" want="$3" got=''
+  got="$(agent_seed_state "$container" "$version" || true)"
+  if [[ "$got" != "$want" ]]; then
+    docker logs --tail=120 verity-smoke-handoff-relay >&2 || true
+    echo "expected $container to report the agent seed as '$want', got '$got'" >&2
+    exit 1
+  fi
+  echo "$container reports the agent seed as: $got"
+}
+
+# Identity AND start time, because either alone can be satisfied by the fallback:
+# a stopped-and-restarted container keeps its id, and a replaced one would fail
+# the id check without saying whether the process survived.
+server_incarnation() {
+  docker inspect --format '{{.Id}} {{.State.StartedAt}}' "$server"
+}
+
+# The SIGKILL half of the acceptance gate. The harness cannot do this to itself:
+# a cutover that shot its own Server would be proving something about the test
+# double rather than about the update, and the Docker client the update path uses
+# deliberately has no kill. So the stage drives a real cutover up to one of the
+# four named moments, leaves the journal there, names the container the ADR says
+# a dying Updater would take with it, and exits; the kill lands from out here,
+# with no in-process handler to run and no orderly write to make.
+#
+# `docker kill` and not `stop`, because SIGTERM is the signal the Server has a
+# shutdown path for. Every container in this run carries `restartPolicy: no`, so
+# what is killed stays dead until something in the update path decides to start
+# it again — which is the whole question each stage below asks.
+halt_and_kill() {
+  local point="$1" out='' target=''
+  out="$(node packages/server/dist/self-update-live-smoke.js cutover-halts-at "$point")"
+  echo "$out"
+  target="$(sed -n 's/^kill-target //p' <<<"$out" | tail -n 1)"
+  if [[ -z "$target" ]]; then
+    echo "the $point halt named no container to kill" >&2
+    exit 1
+  fi
+  echo "--- killing the $point container $target"
+  docker kill "$target" >/dev/null
+}
+
+# The container that is serving right now. It is a variable rather than a literal
+# because a commit renames the deployment: the promoted candidate keeps the
+# generation-suffixed name preparation gave it, so every commit below moves this
+# on. Reassign it immediately after each commit and nowhere else — a stale value
+# is the difference between asserting on the new generation and asserting on a
+# container that no longer exists.
+server='verity-managed-server'
+
+# Minted per run rather than written down here: nothing in this repository should
+# contain a password-shaped literal, and the smoke only needs the two Servers to
+# agree with the store, not with a fixture.
+master_password="$(openssl rand -hex 16)"
+
+# ---------------------------------------------------------------------------
+# The drift stage: what a host that was installed BEFORE this candidate meets.
+#
+# Everything else in this smoke runs one release against itself. The sealed spec
+# and the environment it resolves against are both written here, in this file,
+# and both processes read the same dictionary — so no difference between the
+# previous release and the candidate is even representable, let alone detected.
+# Two production outages in one night came through that gap, and both passed this
+# gate:
+#
+#   - #1553 deleted VERITY_LOCAL_TRANSCRIBE_AVAILABLE from the Compose server
+#     environment. Sealed specs go on naming it as an env SOURCE forever, so
+#     every already-installed host's Updater exited on `managed Server
+#     environment source is missing` and restarted into the same failure.
+#   - the same commit changed VERITY_PARAKEET_BASE_URL's default from
+#     `${VERITY_TRANSCRIBE_BASE_URL:-http://verity-transcribe:5092/v1}` to
+#     `${VERITY_TRANSCRIBE_BASE_URL:-}`. Hosts whose Server container had been
+#     created with the old value then failed on `managed Server container
+#     conflicts with the sealed deployment spec`, because reconciliation compares
+#     and never recreates.
+#
+# So this stage supplies the missing half — the PREVIOUS RELEASE'S Compose file —
+# and drives the real production shape end to end, in containers, through the
+# image entrypoints rather than through anything this repository invents:
+#
+#   1. the previous image's `managed-bootstrap` seals the deployment from the
+#      previous release's `managed-bootstrap` environment, which is exactly the
+#      one documented adoption job an operator ran;
+#   2. the previous image's `managed-updater` creates the Server from that spec,
+#      resolved against the previous release's `verity-updater` environment, so
+#      the container carries the values that release supplied;
+#   3. the CANDIDATE's `managed-updater` starts on the same sealed spec and the
+#      CURRENT checkout's `verity-updater` environment — the operator's git
+#      checkout moves with the release, the sealed spec does not — and must
+#      start, bind its control boundary and reconcile without exiting.
+#
+# Compose does the rendering (`docker compose config`), and that is the point
+# rather than a shortcut: the anchor carries `${A:-${B:-literal}}`, so anything
+# else here would be a second implementation of Compose interpolation, disagreeing
+# with the hosts about exactly the nested defaults these two incidents lived in.
+#
+# It runs before the adoption below because the deployment-spec allowlist pins
+# `verity-managed-server`, so there is only one of that name to go around: this
+# stage removes the Server it built and the adoption then makes the run's own.
+# The two share `verity-data` and the migrated database for the same reason — a
+# name the allowlist pins cannot be namespaced per stage — and neither costs the
+# run anything, because both Servers here are the previous release's image.
+echo '--- stage: seal the deployment from the previous release, start the candidate Updater on it'
+
+compose_dir="$managed_parent/compose"
+mkdir --mode=0700 "$compose_dir"
+git -C "$repo_root" show "$previous_tag:deploy/docker-compose.yml" \
+  >"$compose_dir/previous-docker-compose.yml"
+# Copied rather than read in place, so both renderings resolve their project
+# directory to this empty temporary one. A `deploy/.env` beside the checkout's
+# file would otherwise apply to the candidate's rendering and not to the previous
+# release's, and the difference between the two is the entire measurement.
+cp "$repo_root/deploy/docker-compose.yml" "$compose_dir/current-docker-compose.yml"
+
+# The values a host supplies rather than the file. They are applied to BOTH
+# renderings, so a difference between the two env files can only have come from
+# the Compose files themselves — which is what this stage measures. The Server
+# these seal is the throwaway one below, not the deployment the rest of the run
+# adopts, so it gets its own deployment id.
+drift_deployment_id='live-smoke-drift'
+render_compose_environment() {
+  local compose_file="$1" service="$2" out="$3"
+  shift 3
+  # `config` renders; it never contacts a daemon, so $DOCKER_HOST is irrelevant
+  # here. VERITY_SERVER_IMAGE is only required to BE a value: it is interpolated
+  # into `image:` keys, which no environment block below reads.
+  VERITY_SERVER_IMAGE="$previous_digest" \
+    COMPOSE_PROFILES='managed,managed-migration' \
+    docker compose --file "$compose_file" config --format json >"$out.json"
+  node packages/server/dist/self-update-live-smoke.js compose-environment \
+    "$out.json" "$service" "$out" \
+    "VERITY_MANAGED_DEPLOYMENT_ID=$drift_deployment_id" \
+    "DATABASE_URL=$VERITY_SMOKE_DATABASE_URL" \
+    "$@"
+}
+render_compose_environment "$compose_dir/previous-docker-compose.yml" \
+  managed-bootstrap "$compose_dir/previous-bootstrap.env" \
+  "VERITY_SERVER_IMAGE=$previous_digest" 'VERITY_HOST_ARCHITECTURE=amd64'
+render_compose_environment "$compose_dir/previous-docker-compose.yml" \
+  verity-updater "$compose_dir/previous-updater.env"
+render_compose_environment "$compose_dir/current-docker-compose.yml" \
+  verity-updater "$compose_dir/candidate-updater.env"
+
+# Printed on the way past rather than only on failure: a release that changes
+# nothing here says so in one line, and one that does has named the change before
+# any container starts — so a red stage below is already explained.
+#
+# Names ONLY, never values. This log is public and a host's rendered environment
+# is one `.env` away from carrying a credential.
+echo '--- what this release changes in the Server environment a sealed host resolves'
+compose_environment_delta() {
+  awk -F= '
+    NR == FNR { before[$1] = substr($0, index($0, "=") + 1); next }
+    {
+      value = substr($0, index($0, "=") + 1)
+      seen[$1] = 1
+      if (!($1 in before)) { print "  added:     " $1; next }
+      if (before[$1] != value) print "  re-valued: " $1
+    }
+    END { for (name in before) if (!(name in seen)) print "  removed:   " name }
+  ' "$1" "$2" | sort
+}
+drift_delta="$(compose_environment_delta "$compose_dir/previous-updater.env" \
+  "$compose_dir/candidate-updater.env")"
+if [[ -z "$drift_delta" ]]; then
+  echo '  nothing: this release leaves every variable a sealed host resolves untouched'
+else
+  echo "$drift_delta"
+  echo '  A removal needs RETIRED_MANAGED_SERVER_ENVIRONMENT in the same commit; a'
+  echo '  re-valued variable cannot be applied to a Server that already exists at all,'
+  echo '  because reconciliation compares and never recreates. See the notes on the'
+  echo '  `&verity-server-environment` anchor in deploy/docker-compose.yml.'
+fi
+
+drift_deployment_volume='verity-smoke-drift-deployment'
+drift_control_volume='verity-smoke-drift-control'
+drift_secret_volume='verity-smoke-drift-secrets'
+docker volume create "$drift_deployment_volume" >/dev/null
+docker volume create "$drift_control_volume" >/dev/null
+docker volume create "$drift_secret_volume" >/dev/null
+
+# The Updater's own control volume is deliberately NOT `verity-updater-control`,
+# which the rest of this run uses for the activation gate: two Updaters publishing
+# a control token into one directory would make a later stage's assertions depend
+# on which of them wrote last.
+drift_updater_token="$(openssl rand -hex 32)"
+# Minted inside the daemon, because the entrypoint refuses anything but a
+# root-owned 0600 regular file under /run/secrets and a bind would name a path on
+# the runner that no container on this daemon can reach.
+docker run --rm --user 0:0 --network none \
+  --env "VERITY_SMOKE_DRIFT_TOKEN=$drift_updater_token" \
+  --mount "type=volume,src=$drift_secret_volume,dst=/run/secrets" \
+  --entrypoint=sh "$previous_digest" -c \
+  'umask 077 && printf %s "$VERITY_SMOKE_DRIFT_TOKEN" >/run/secrets/updater-token' >/dev/null
+
+start_drift_updater() {
+  local name="$1" updater_image="$2" env_file="$3"
+  docker run --detach --name "$name" --user 0:0 --network none --restart=no \
+    --env-file "$env_file" \
+    --mount "type=volume,src=$drift_deployment_volume,dst=/var/lib/verity/updater/managed-deployment" \
+    --mount "type=volume,src=$drift_control_volume,dst=/run/verity-updater/control" \
+    --mount "type=volume,src=$drift_secret_volume,dst=/run/secrets" \
+    --volume /var/run/docker.sock:/var/run/docker.sock \
+    "$updater_image" managed-updater >/dev/null
+}
+
+# Asked through the shipped client over the control socket, not by looking for a
+# file: "the socket exists" is satisfied by a stale inode from a process that has
+# since exited, and this is the boundary a crash-looping Updater never reaches.
+drift_updater_deployment() {
+  docker run --rm --user 0:0 --network none \
+    --env "VERITY_SMOKE_DRIFT_TOKEN=$drift_updater_token" \
+    --mount "type=volume,src=$drift_control_volume,dst=/run/verity-updater/control" \
+    --entrypoint=node "$1" -e \
+    "const m = await import('/app/packages/server/dist/self-update/updater-status.js');
+     const state = await m.readUpdaterDeployment({
+       socketPath: '/run/verity-updater/control/updater.sock',
+       token: process.env.VERITY_SMOKE_DRIFT_TOKEN,
+     });
+     if (!state.managed) { process.stderr.write(state.reason); process.exit(1); }
+     process.stdout.write(state.spec.image);"
+}
+
+# The three things a host needs from an Updater on the morning after an upstream
+# change, and the ones neither incident had: it is still there, it is answering,
+# and the Server it owns is the one it found rather than a casualty.
+expect_drift_updater_reconciled() {
+  local name="$1" updater_image="$2" message="$3" attempt sealed
+  for attempt in $(seq 1 90); do
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null)" != 'true' ]]; then
+      echo "--- $name exited; its last words:" >&2
+      docker logs --tail=60 "$name" >&2 || true
+      echo "$message" >&2
+      exit 1
+    fi
+    if sealed="$(drift_updater_deployment "$updater_image" 2>/dev/null)"; then
+      echo "$name is serving its control boundary on the deployment sealed at $sealed"
+      return 0
+    fi
+    sleep 1
+  done
+  docker logs --tail=60 "$name" >&2 || true
+  echo "$name never opened its control boundary" >&2
+  exit 1
+}
+
+# `return`, not `exit`: this is read through a command substitution, and an `exit`
+# there ends the SUBSHELL — the run would carry on with an empty id and assert on
+# nothing. `set -e` turns the non-zero return into the stop this wants.
+expect_drift_server() {
+  local message="$1" state
+  state="$(docker inspect --format '{{.Id}} {{.State.Running}} {{.Image}}' \
+    verity-managed-server 2>/dev/null || true)"
+  if [[ "$state" != *' true '* ]]; then
+    echo "$message (docker says: ${state:-no such container})" >&2
+    return 1
+  fi
+  printf '%s' "${state%% *}"
+}
+
+echo '--- the previous release seals its deployment and builds the Server it describes'
+docker run --rm --user 0:0 --network none \
+  --env-file "$compose_dir/previous-bootstrap.env" \
+  --mount "type=volume,src=$drift_deployment_volume,dst=/var/lib/verity/updater/managed-deployment" \
+  "$previous_digest" managed-bootstrap
+start_drift_updater verity-smoke-drift-updater-previous "$previous_digest" \
+  "$compose_dir/previous-updater.env"
+expect_drift_updater_reconciled verity-smoke-drift-updater-previous "$previous_digest" \
+  'the previous release could not run its OWN deployment, so this run cannot say anything about the candidate'
+drift_server_before="$(expect_drift_server 'the previous release built no managed Server')"
+echo "the previous release's Server is $drift_server_before"
+
+# Stopped rather than left running, because production has exactly one Updater:
+# the candidate's container replaces its predecessor, it does not join it.
+docker rm -f verity-smoke-drift-updater-previous >/dev/null
+
+echo '--- the candidate Updater inherits that deployment with the current Compose environment'
+start_drift_updater verity-smoke-drift-updater "$image" "$compose_dir/candidate-updater.env"
+expect_drift_updater_reconciled verity-smoke-drift-updater "$image" \
+  'the candidate Updater exited on a deployment the previous release sealed — every host installed before this release would crash-loop the same way'
+drift_server_after="$(expect_drift_server 'the candidate Updater lost the Server it inherited')"
+if [[ "$drift_server_after" != "$drift_server_before" ]]; then
+  echo "the candidate Updater replaced the inherited Server ($drift_server_before -> $drift_server_after)" >&2
+  exit 1
+fi
+echo "the candidate Updater kept $drift_server_after and its sealed environment"
+
+docker rm -f verity-smoke-drift-updater verity-managed-server >/dev/null
+docker volume rm -f "$drift_deployment_volume" "$drift_control_volume" \
+  "$drift_secret_volume" >/dev/null
+
+echo '--- stage: adopt the running generation'
+node packages/server/dist/self-update-live-smoke.js adopt
+
+echo '--- waiting for the adopted Server to migrate and serve /healthz'
+wait_for_healthy "$server" 'adopted Server never became healthy'
+expect_gateway_serving 'the Gateway never routed to the adopted Server'
+
+# From here the deployment has a real secret store, so the update path is
+# exercised against a Server that actually holds a key — which is what makes the
+# handoff assertions below mean anything. It also arms the bearer gate, so every
+# later probe has to be a pre-auth route.
+echo '--- stage: set the master password on the running generation'
+secret_password "$server" init
+expect_secret_status "$server" unlocked
+
+# Deliberately a separate process from `adopt`: the journal is the only state
+# carried across, so this also proves preparation resumes from durable intent
+# rather than from anything held in memory.
+echo '--- stage: preflight must fail closed on an unmigrated database'
+node packages/server/dist/self-update-live-smoke.js preflight-fails
+
+# The database half of the same gate. Like the unmigrated one it drives its own
+# throwaway managed authority, but on the same daemon and the same network as
+# the deployment that is serving — so the assertions that follow can say that a
+# refused preparation cost the running generation nothing.
+echo '--- stage: preflight must fail closed on a database that does not answer'
+node packages/server/dist/self-update-live-smoke.js preflight-fails-unreachable
+
+echo '--- the refused preparations must not have disturbed the serving generation'
+wait_for_healthy "$server" 'the serving generation did not survive a refused preparation'
+expect_gateway_serving 'the Gateway stopped serving over a refused preparation'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: prepare a candidate through pull, verify, preflight and standby'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+# The failing direction runs first, and against the generation that is actually
+# serving. A rollback proven on a throwaway deployment would prove nothing about
+# the case that matters: the live Server is already gone by the time the new one
+# is found wanting.
+echo '--- stage: a candidate that never answers must roll back to the old generation'
+node packages/server/dist/self-update-live-smoke.js cutover-rolls-back
+
+echo '--- waiting for the restored Server to serve /healthz again'
+wait_for_healthy "$server" 'rollback did not restore a healthy Server'
+
+# The other half of ADR 0008 D8, and the cost of the fallback the first cutover
+# ran: with no relay there was no exchange, so the old Server was stopped rather
+# than asked, and a restart has nothing to adopt. A rollback that goes through
+# the container therefore always lands at the master-password prompt — which is
+# exactly what the standby rollback below must not do.
+echo '--- the rolled-back generation must come back sealed'
+expect_secret_status "$server" sealed
+
+echo '--- stage: unlock the restored generation'
+secret_password "$server" unlock
+expect_secret_status "$server" unlocked
+
+echo '--- stage: prepare the same target again, on top of the rolled-back generation'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+# From here on the run has a control boundary, so every remaining cutover is
+# driven the way ADR 0008 D9 describes: the outgoing Server polls this socket for
+# its directive, and the driver reads its acknowledgement back. The relay stays up
+# for the rest of the run — it stands in for the Updater, which is one process
+# across every operation, not one per operation.
+echo '--- stage: serve the Updater control socket the handoff and directive run over'
+seals="$(seal_count)"
+node packages/server/dist/self-update-live-smoke.js handoff-relay
+
+echo '--- waiting for the outgoing Server to seal its key for the standby'
+wait_for_new_seal "$seals"
+
+# Read before the cutover so the comparison after it is against the process that
+# was actually serving, not against anything the cutover may have rebuilt.
+standby_incarnation="$(server_incarnation)"
+
+echo '--- stage: a failed candidate must roll back onto the quiesced process itself'
+node packages/server/dist/self-update-live-smoke.js cutover-rolls-back-onto-standby
+
+echo '--- waiting for the resumed standby to serve /healthz again'
+wait_for_healthy "$server" 'the resumed standby never served again'
+
+# The whole point of D9, and not something the driver can prove on its own: it
+# asserts that the acknowledgement arrived and the container stayed up, while this
+# asserts that the container was never even restarted underneath it.
+if [[ "$(server_incarnation)" != "$standby_incarnation" ]]; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo "the standby was restarted: $standby_incarnation became $(server_incarnation)" >&2
+  exit 1
+fi
+echo 'the standby served again as the same process'
+
+# The consequence worth having, and the one the sealed assertion above is the
+# control for: the key never left the process, so nobody has to type the master
+# password to recover from a failed update.
+echo '--- the resumed standby must still hold its key'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: prepare the same target a third time, on top of the resumed standby'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+# The relay predates this generation, and its journal is a copy. Two things break
+# without the refresh: the mailbox stays bound to the operation that just rolled
+# back, so a seal lands against a binding the new candidate cannot open; and the
+# directive is published under the old generation's id, so the outgoing Server
+# never hears the one addressed to it.
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+# Read before the cutover for the same reason as above, and kept because the
+# recovery below must be shown to be a restart of THIS container rather than a
+# replacement of it.
+failed_resume_incarnation="$(server_incarnation)"
+
+# The remaining way the exchange can fail with a live Server on the other side:
+# it quiesced, and the answer that would have brought it back never arrived. The
+# ADR's claim is that this costs exactly the fallback and nothing more — the
+# probe catches it, the container is stopped, and recovery is the cold start it
+# would have done all along.
+echo '--- stage: a standby that does not come back must fail the probe and be stopped'
+node packages/server/dist/self-update-live-smoke.js cutover-standby-fails-to-resume
+
+# Before anything starts that container again: the listener is still holding the
+# quiesce this cutover asked for, and a Server cold-starting into it would close
+# its listeners the moment it finished booting.
+echo '--- stage: retire the quiesce the failed cutover left behind'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- stage: the next attempt must finish the rollback from the container alone'
+node packages/server/dist/self-update-live-smoke.js cutover-recovers-rollback
+
+echo '--- waiting for the cold-started Server to serve /healthz again'
+wait_for_healthy "$server" 'the recovered rollback never served again'
+
+recovered_incarnation="$(server_incarnation)"
+if [[ "$recovered_incarnation" == "$failed_resume_incarnation" ]]; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo 'the standby that failed to resume was never actually restarted' >&2
+  exit 1
+fi
+if [[ "${recovered_incarnation%% *}" != "${failed_resume_incarnation%% *}" ]]; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo "the recovery replaced the container: ${failed_resume_incarnation%% *} became ${recovered_incarnation%% *}" >&2
+  exit 1
+fi
+echo 'the same container came back as a new process'
+
+# The price of a resume that does not land, and the control for the standby
+# rollback above: this Server is the same container, but not the same process, so
+# the key it was holding went with the one that was stopped.
+echo '--- the cold-started generation must come back sealed'
+expect_secret_status "$server" sealed
+
+echo '--- stage: unlock the cold-started generation'
+secret_password "$server" unlock
+expect_secret_status "$server" unlocked
+
+# The failure preflight exists to prevent, arriving after preflight is over. Both
+# stages above fail a candidate on a protocol: a probe pointed at a dead port, a
+# resume that is withheld. This one fails it on the thing the whole deployment
+# stands on — the database goes away between the key handoff and the candidate's
+# first connection, which is inside the window an update cannot back out of
+# cheaply, and outside anything preflight could have refused.
+#
+# The store is taken away from the harness rather than from here, because it has
+# to land at a point in the cutover the driver cannot see. What the driver does
+# is the other half: it puts the database back, and then asks the ordinary
+# recovery stage to finish a rollback that was left parked with no store to
+# finish it against.
+echo '--- stage: prepare the same target a fourth time, for a cutover that loses its database'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+# Read before the cutover, for the assertion after the recovery: the container
+# that comes back must be this one. A rollback that could not reach its store is
+# still a rollback onto a retained container, not a rebuild.
+lost_database_incarnation="$(server_incarnation)"
+
+echo '--- stage: take the database away after the point of no return'
+node packages/server/dist/self-update-live-smoke.js cutover-loses-the-database
+
+# Nothing above restarts it: the stage stops this container and the recovery
+# below is the first thing that could want it again, so the database is down for
+# exactly the window the failure needed and no longer.
+echo '--- restoring the database the cutover lost'
+docker start verity-postgres >/dev/null
+wait_for_postgres verity-postgres
+
+# For the same reason as after the withheld resume: the listener is still holding
+# the request the failed rollback published, and the Server about to be cold-started
+# has to boot into a directive derived from the phase alone.
+echo '--- stage: retire the request the interrupted rollback left behind'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+# The same recovery as after the withheld resume, which is the point of running
+# it here too: a rollback parked by a missing store is not a special case that
+# needs its own repair, it is the cold start the Updater's next attempt performs
+# anyway — once there is something to connect to.
+echo '--- stage: the next attempt must finish the rollback the database interrupted'
+node packages/server/dist/self-update-live-smoke.js cutover-recovers-rollback
+
+echo '--- waiting for the Server to serve /healthz again on the restored database'
+wait_for_healthy "$server" 'the rollback interrupted by the database loss never served again'
+expect_gateway_serving 'the Gateway never reached the Server the interrupted rollback restored'
+
+restored_incarnation="$(server_incarnation)"
+if [[ "${restored_incarnation%% *}" != "${lost_database_incarnation%% *}" ]]; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo "the database loss replaced the container: ${lost_database_incarnation%% *} became ${restored_incarnation%% *}" >&2
+  exit 1
+fi
+echo 'the same container came back once the database did'
+
+# Sealed for the same reason as every other cold start above, and worth asserting
+# here because the key survived none of this: the process holding it exited when
+# it could not reclaim the control plane.
+echo '--- the generation recovered from the database loss must come back sealed'
+expect_secret_status "$server" sealed
+
+echo '--- stage: unlock the generation recovered from the database loss'
+secret_password "$server" unlock
+expect_secret_status "$server" unlocked
+
+echo '--- stage: prepare the same target a fifth time, on top of the recovered rollback'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the recovered Server to seal its key for the new candidate'
+wait_for_new_seal "$seals"
+
+# Read before the cutover: what has to hold after the request is lost is that the
+# process serving now is the process that was serving then.
+lost_request_incarnation="$(server_incarnation)"
+
+# The one directive the journal cannot express, destroyed the way the ADR says it
+# is survivable. The stage quiesces the Server for real and then exits where the
+# Updater would have died, leaving the journal in `quiescing-old`.
+echo '--- stage: lose the quiesce request inside the window'
+node packages/server/dist/self-update-live-smoke.js cutover-loses-the-request
+
+# The other half of that memory. With no request published, the listener has only
+# the phase to go on — and `quiescing-old` by itself reads as `serving`, which is
+# the property the whole derivation exists for.
+echo '--- stage: let the listener forget the request the crash took with it'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the abandoned standby to serve /healthz again on the phase alone'
+wait_for_healthy "$server" 'the abandoned standby never resumed'
+
+if [[ "$(server_incarnation)" != "$lost_request_incarnation" ]]; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo "the abandoned standby was restarted: $lost_request_incarnation became $(server_incarnation)" >&2
+  exit 1
+fi
+echo 'the abandoned standby resumed as the same process'
+
+echo '--- the abandoned standby must still hold its key'
+expect_secret_status "$server" unlocked
+
+# The resumed cutover: same journal, same generation, a fresh process that has
+# never asked for anything. It drains and asks a second time, and this one commits.
+echo '--- stage: cut over in place and commit'
+node packages/server/dist/self-update-live-smoke.js cutover
+
+# The fifth operation is the deployment's fifth generation: the first four
+# rolled back and were archived, so `beginUpdate` numbered this one above all of
+# them. The committed Server therefore answers as `verity-managed-server-g5`, and
+# the unsuffixed name it replaced no longer exists.
+server='verity-managed-server-g5'
+
+echo '--- waiting for the committed generation to serve /healthz'
+wait_for_healthy "$server" 'committed generation never became healthy'
+expect_gateway_serving 'the Gateway never followed the commit onto the new generation'
+
+# What ADR 0008 D8 is for: an update the operator asked for once must not end at
+# a master-password prompt. The promoted container never saw the password and
+# nothing on disk carries the key — it holds it because the Server it replaced
+# sealed it to an ephemeral public key that exists only in this process. That
+# Server had quiesced, been abandoned mid-cutover, and resumed on the phase alone
+# by then, which is the stronger claim: none of that costs a Server the key its
+# successor needs.
+echo '--- the committed generation must have come up unlocked'
+expect_secret_status "$server" unlocked
+
+# Server promotion precedes companion reconciliation. The new Updater expects
+# `.current`, so the legacy flat tree is deliberately unattributed until the
+# helper validates and migrates it; it must never claim a partial target tree.
+echo '--- the committed generation must not misattribute the legacy seed before handoff'
+if [[ "$(docker inspect --format '{{.Image}}' "$server")" != \
+  "$(docker inspect --format '{{.Id}}' "$target_digest")" ]]; then
+  echo 'the commit did not move the Server, so the seed assertion proves nothing' >&2
+  exit 1
+fi
+expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" 'unknown - -'
+
+echo '--- stage: reconcile every managed companion after the fifth-generation commit'
+node packages/server/dist/self-update-live-smoke.js companion-handoff
+expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" \
+  "matched $VERITY_SMOKE_SERVER_VERSION $target_digest"
+
+# Everything above fails a cutover the way a protocol fails: a directive that is
+# never answered, a candidate that never serves, a request that is lost. What is
+# left is the case with no failure path at all — a process that disappears where
+# it stands, having written nothing and run no handler. The four generations
+# below take it at the four moments ADR 0008's acceptance gate names, one each.
+#
+# The kill lands from out here rather than from inside the harness. Each stage
+# drives a real cutover up to its point, leaves the journal there, names the
+# container the dying process would have taken with it, and exits; `docker kill`
+# does the rest. What resumes afterwards is a fresh process with nothing but the
+# journal, which is the claim under test.
+#
+# The first three aim at the successor digest, because the commit above made the
+# target the image the deployment is now running: an update from a digest to
+# itself cannot tell a rollback from a commit apart. The pull under test is a
+# real one again too — nothing has fetched this digest yet.
+export VERITY_SMOKE_TARGET_DIGEST="$successor_digest"
+
+echo '--- stage: prepare a sixth generation, on top of the committed one'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the committed Server to seal its key for the sixth candidate'
+wait_for_new_seal "$seals"
+
+switch_kill_incarnation="$(server_incarnation)"
+
+# Past the point the ADR calls irreversible in one direction only: traffic is on
+# the candidate, and the candidate is gone a moment later. The reversal is still
+# available because the generation it held was released by the database the
+# instant its connection dropped, and because the process it displaced is a
+# quiesced standby rather than a stopped container.
+echo '--- stage: halt a cutover at the route switch and kill the candidate'
+halt_and_kill switching
+
+echo '--- stage: the resumed cutover must find the candidate gone and roll back'
+node packages/server/dist/self-update-live-smoke.js cutover-rolls-back-after-kill
+
+echo '--- waiting for the standby to serve /healthz again after the switch kill'
+wait_for_healthy "$server" 'the standby never served again after the switch kill'
+
+if [[ "$(server_incarnation)" != "$switch_kill_incarnation" ]]; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo "the switch kill restarted the standby: $switch_kill_incarnation became $(server_incarnation)" >&2
+  exit 1
+fi
+echo 'the standby served again as the same process'
+
+echo '--- the standby must still hold its key after the switch kill'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: prepare a seventh generation, on top of the recovered standby'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the standby to seal its key for the seventh candidate'
+wait_for_new_seal "$seals"
+
+observe_kill_incarnation="$(server_incarnation)"
+
+# The last moment a cutover may still change its mind: the candidate has passed
+# readiness, holds the generation and is being watched. Killing it inside the
+# window is what the window is for — the difference from the switch kill is that
+# here the verification had already succeeded once, so what must not happen is a
+# commit on the strength of that.
+echo '--- stage: halt a cutover in the observation window and kill the candidate'
+halt_and_kill observing
+
+echo '--- stage: the resumed cutover must not commit a candidate that died observed'
+node packages/server/dist/self-update-live-smoke.js cutover-rolls-back-after-kill
+
+echo '--- waiting for the standby to serve /healthz again after the observation kill'
+wait_for_healthy "$server" 'the standby never served again after the observation kill'
+
+if [[ "$(server_incarnation)" != "$observe_kill_incarnation" ]]; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo "the observation kill restarted the standby: $observe_kill_incarnation became $(server_incarnation)" >&2
+  exit 1
+fi
+echo 'the standby served again as the same process'
+
+echo '--- the standby must still hold its key after the observation kill'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: prepare an eighth generation, on top of the twice-recovered standby'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the standby to seal its key for the eighth candidate'
+wait_for_new_seal "$seals"
+
+# The kill the standby directive is most exposed to: the Server has quiesced and
+# acknowledged, and the process holding that acknowledgement dies before anything
+# reads it. There is no rollback from here — the old generation is fenced and its
+# container is dead — so the only way out is forward, which is what the phase the
+# journal is parked at already says.
+echo '--- stage: halt a cutover in the handoff window and kill the quiesced Server'
+halt_and_kill quiesced
+
+echo '--- stage: the cutover must commit without the Server it quiesced'
+node packages/server/dist/self-update-live-smoke.js cutover-commits-without-the-standby
+
+server='verity-managed-server-g8'
+
+echo '--- waiting for the eighth generation to serve /healthz'
+wait_for_healthy "$server" 'the generation promoted over a killed standby never became healthy'
+
+# The reason ADR 0008 D8 seals early rather than during the cutover, stated as a
+# consequence: the envelope was in the mailbox before the quiesce, so the Server
+# that would have handed it over can die inside the window and cost its successor
+# nothing. The barrier above is what makes this an assertion rather than a race —
+# the seal is known to have happened before the kill.
+echo '--- the generation promoted over a killed standby must have come up unlocked'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: reconcile every managed companion after the eighth-generation commit'
+node packages/server/dist/self-update-live-smoke.js companion-handoff
+
+# The second commit of the second half moved the deployment onto the successor
+# digest, so the last generation needs a target of its own for the same reason
+# the kill matrix did.
+export VERITY_SMOKE_TARGET_DIGEST="$final_digest"
+
+echo '--- stage: prepare a ninth generation, on top of the promoted one'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the eighth generation to seal its key for the ninth candidate'
+wait_for_new_seal "$seals"
+
+# The one kill that heals forward. The candidate has claimed the generation and
+# is then destroyed, which releases it again; a resume re-enters the same phase,
+# finds the container stopped, starts it, and carries on. Nothing here is a
+# retry the update path had to be taught — activation was written to be
+# idempotent, and a killed candidate is just the case where it has work to do.
+echo '--- stage: halt a cutover at activation and kill the candidate'
+halt_and_kill activating
+
+echo '--- stage: the resumed cutover must restart the candidate and commit'
+node packages/server/dist/self-update-live-smoke.js cutover-survives-activation-kill
+
+server='verity-managed-server-g9'
+
+echo '--- waiting for the ninth generation to serve /healthz'
+wait_for_healthy "$server" 'the restarted candidate never became healthy'
+expect_gateway_serving 'the Gateway never followed the last commit'
+
+# The other half of what the kill destroyed. The envelope this candidate claimed
+# before it died was sealed to an ephemeral key that existed only in that
+# process, so it is worthless to the container that came back — a fresh offer has
+# to go out and be answered again. It can be, and only because the predecessor is
+# a quiesced standby that still holds the key: a cutover that had stopped it
+# would end this generation at a master-password prompt.
+echo '--- the restarted candidate must have been sealed to a second time'
+wait_for_secret_status "$server" unlocked 'the restarted candidate never adopted a key'
+
+echo '--- stage: reconcile every managed companion after the ninth-generation commit'
+node packages/server/dist/self-update-live-smoke.js companion-handoff
+
+# ── The drain, with someone on the other end ──────────────────────────────────
+#
+# Everything above watched the update from the side that performs it. The two
+# generations below watch it from the side that pays for it: a client container
+# holding streams and half-written requests through the Gateway while the
+# deployment changes underneath it. They differ only in what that client does
+# when the front door closes, because that is the whole of ADR 0008's drain
+# contract — wait for the work that is already there, and take the rest away when
+# the budget runs out. One cutover drains once, so it takes two to say both.
+export VERITY_SMOKE_TARGET_DIGEST="$drained_digest"
+
+echo '--- stage: prepare a tenth generation, for a cutover with clients attached'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the ninth generation to seal its key for the tenth candidate'
+wait_for_new_seal "$seals"
+
+echo '--- stage: attach clients that let go once the front door closes'
+start_client polite
+
+echo '--- stage: the cutover must wait for those clients and force nothing'
+node packages/server/dist/self-update-live-smoke.js cutover-releases-the-drain
+
+server='verity-managed-server-g10'
+
+echo '--- waiting for the tenth generation to serve /healthz'
+wait_for_healthy "$server" 'the generation committed under attached clients never became healthy'
+expect_gateway_serving 'the Gateway never followed the commit the clients lived through'
+
+# The client's own report: in-flight requests answered whole, no connection taken
+# away, the same URL and the same token working against the new generation.
+echo '--- the cooperative clients must have been let go rather than cut off'
+expect_client_done polite
+
+echo '--- the generation committed under attached clients must have come up unlocked'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: reconcile every managed companion after the tenth-generation commit'
+node packages/server/dist/self-update-live-smoke.js companion-handoff
+
+# The same cutover against a client that ignores maintenance entirely. The budget
+# is short and spent in full by construction: this is the case where an update
+# would otherwise be hostage to one connection, and the assertion is that it is
+# not — the drain gives that client its whole window and then disconnects it.
+export VERITY_SMOKE_TARGET_DIGEST="$forced_digest"
+
+echo '--- stage: prepare an eleventh generation, for a client that will not let go'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the tenth generation to seal its key for the eleventh candidate'
+wait_for_new_seal "$seals"
+
+echo '--- stage: attach a client that holds its stream through maintenance'
+start_client stubborn
+
+echo '--- stage: the cutover must force the drain closed at its timeout and commit'
+node packages/server/dist/self-update-live-smoke.js cutover-forces-the-drain
+
+server='verity-managed-server-g11'
+
+echo '--- waiting for the eleventh generation to serve /healthz'
+wait_for_healthy "$server" 'the generation committed over a forced drain never became healthy'
+expect_gateway_serving 'the Gateway never followed the commit that forced the drain'
+
+# Forced is not the same as broken: the request that was already in flight is
+# still answered whole, and the client can reconnect to the same URL immediately.
+echo '--- the stubborn client must have been disconnected, then served again'
+expect_client_done stubborn
+
+echo '--- the generation committed over a forced drain must have come up unlocked'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: reconcile every managed companion after the eleventh-generation commit'
+node packages/server/dist/self-update-live-smoke.js companion-handoff
+
+# ── The cursor, across the switch ─────────────────────────────────────────────
+#
+# The two generations above are about the connections an update takes away. This
+# one is about what the client is holding when it gets them back: ADR 0008's
+# "WebSocket disconnect/catch-up without event duplication", and the delivery
+# half of "steer and permission ACK loss during cutover" — that an operator
+# action is answered, refused retryably, or answered again, never swallowed.
+# Whether a decision itself is lost or applied twice needs a parked prompt and a
+# held turn, which need a runner; `two-server-cutover-postgres.test.ts` owns that
+# against two real Server processes and a real Postgres.
+#
+# The client owns a session in the deployment's own database. It streams that
+# session's backlog through the Gateway, writes more events into it while the
+# Gateway is refusing every request — a Runner finishing work through an update —
+# lets its stream go, and reconnects to the new generation with the cursor it
+# had. Its assertions are that the second stream carries exactly the events
+# written in between, each once, and that an operator action against that session
+# reaches a definite verdict from both generations — the same verdict, so the
+# session state the action is about survived the update — and the Gateway's own
+# retryable 503 in the window between them.
+export VERITY_SMOKE_TARGET_DIGEST="$resumed_digest"
+
+echo '--- stage: prepare a twelfth generation, for a client that reconnects across it'
+node packages/server/dist/self-update-live-smoke.js prepare
+
+seals="$(settled_seal_count)"
+echo '--- stage: refresh the relay journal to the prepared generation'
+node packages/server/dist/self-update-live-smoke.js relay-journal
+
+echo '--- waiting for the eleventh generation to seal its key for the twelfth candidate'
+wait_for_new_seal "$seals"
+
+echo '--- stage: attach a client holding a stream cursor into a session of its own'
+start_client catchup
+
+# The same cutover as the polite one — this client also lets go when it is asked
+# to, so the drain assertions are the released ones. What differs is entirely on
+# the client's side of it.
+echo '--- stage: the cutover must replace the deployment under that cursor'
+node packages/server/dist/self-update-live-smoke.js cutover-releases-the-drain
+
+server='verity-managed-server-g12'
+
+echo '--- waiting for the twelfth generation to serve /healthz'
+wait_for_healthy "$server" 'the generation committed under a streaming client never became healthy'
+expect_gateway_serving 'the Gateway never followed the commit the streaming client lived through'
+
+echo '--- the reconnected client must have caught up exactly once, and been answered'
+expect_client_done catchup
+
+echo '--- the generation committed under a streaming client must have come up unlocked'
+expect_secret_status "$server" unlocked
+
+echo '--- stage: reconcile every managed companion after the twelfth-generation commit'
+node packages/server/dist/self-update-live-smoke.js companion-handoff
+
+# ── The restart, long after the update ────────────────────────────────────────
+#
+# Everything above ends with an update. This is the day after: the deployment is
+# restarted by something that knows no update ever ran. The Compose file still
+# names $previous_digest — a self-update never rewrites it — and in the managed
+# topology the Server is not a Compose service at all, so the only thing that
+# remembers $resumed_digest is the Updater-owned sealed spec. ADR 0008's "a later
+# managed-deployment restart preserves the selected Server digest rather than
+# reverting to the Compose file's former value" is exactly the claim that the
+# seal wins that disagreement.
+#
+# The stage restarts through the real Updater start path three times over — a
+# stopped Server, a removed one, and the documented adoption job re-run with the
+# file's former digest exported — and asserts on the digest, the container
+# identity and the sealed spec itself. Left here is the half it cannot assert
+# about itself: that what came back is a Server the Gateway actually serves, and
+# that it behaves like the cold boot it is. A rebuilt container carries no key
+# handoff, so it comes up sealed and has to be unlocked again — which is what an
+# operator's host does after a reboot, and the reason the restart path is worth
+# proving end to end rather than at the file layer alone.
+echo '--- stage: a restart must keep the deployment on the digest the update selected'
+node packages/server/dist/self-update-live-smoke.js updater-restarts
+
+echo '--- waiting for the rebuilt twelfth generation to serve /healthz'
+wait_for_healthy "$server" 'the generation rebuilt by the restart never became healthy'
+expect_gateway_serving 'the Gateway never reached the Server the restart rebuilt'
+
+echo '--- the rebuilt generation must come back sealed'
+expect_secret_status "$server" sealed
+echo '--- stage: unlock the rebuilt generation'
+secret_password "$server" unlock
+expect_secret_status "$server" unlocked
+
+# ── The store, taken away from a Server that committed long ago ───────────────
+#
+# The cutover stage above loses the database inside an update, where the update
+# is the thing that has to survive it. This is the other side of the same gate,
+# and the only place in the run where it can be asked honestly: no operation is
+# in flight, nothing is holding a journal lease, and the container was rebuilt by
+# the Updater from the sealed spec — so it carries the production restart policy
+# rather than the `no` every container created inside a cutover gets.
+#
+# The claim under test is that losing the control plane is not a degraded mode. A
+# Server whose PostgreSQL session lock is gone can no longer prove it is the only
+# one writing, so it must exit rather than keep serving on the assumption that it
+# still is — and because it exits deliberately with a non-zero status, the policy
+# that owns it brings it back. That is the whole recovery path: no operator step,
+# no repair, and no update involved.
+restart_count() {
+  docker inspect --format '{{.RestartCount}}' "$server"
+}
+committed_restarts="$(restart_count)"
+
+# How long the Server is ALLOWED to stay before this is a failure, read out of
+# the image under test instead of written down here.
+#
+# The keeper does not treat a silent database as a loss until it has spent its
+# reconnect budget on reconnecting (ADR 0008 D7) — that budget is the entire
+# reason an ordinary PostgreSQL restart no longer looks like a takeover. A wait
+# SHORTER than the budget therefore asserts something the Server is forbidden to
+# do yet: when the budget arrived at 120s and this wait was still a hardcoded
+# 60s, the stage could no longer pass on any input at all, and every release was
+# blocked by a gate failing on its own arithmetic rather than on the deployment.
+#
+# Derived, so the next change to the budget re-times this wait with it instead of
+# silently un-satisfiable again.
+control_plane_budget_ms="$(docker exec "$server" node -e \
+  "const m = await import('/app/packages/store/dist/db.js');
+   process.stdout.write(String(m.CONTROL_PLANE_RECONNECT_BUDGET_MS));")"
+if [[ ! "$control_plane_budget_ms" =~ ^[1-9][0-9]*$ ]]; then
+  echo "could not read the reconnect budget the image enforces:" >&2
+  echo "  asked $server for CONTROL_PLANE_RECONNECT_BUDGET_MS from" >&2
+  echo "  /app/packages/store/dist/db.js and got '$control_plane_budget_ms'." >&2
+  echo "  Without it there is no honest bound for the wait below, so this stage" >&2
+  echo "  refuses to guess one." >&2
+  exit 1
+fi
+# The budget is armed by the first FAILED reconnect rather than by the stop, and
+# what follows it is a shutdown and a restart rather than an abort — so the wait
+# is the budget plus a margin for both ends, not the budget exactly.
+lock_loss_window_s=$((control_plane_budget_ms / 1000 + 60))
+
+echo '--- stage: take the database away from the committed deployment'
+echo "    (allowing ${lock_loss_window_s}s: the image's own ${control_plane_budget_ms}ms reconnect budget, plus a margin)"
+docker stop verity-postgres >/dev/null
+
+# Two things, and the second is what makes the first mean something: the Server
+# said why it was going — naming the process lock, not a connection error it
+# might have retried — and the policy really restarted it afterwards.
+#
+# Tracked as two separate facts rather than one conjunction, because they fail
+# independently and one sentence for both can be false about what happened. It
+# was: this stage reported that the Server "kept serving without its control
+# plane" about a Server that had already exited a full half-minute earlier — it
+# had crashed on an unrelated unhandled rejection instead of naming the lock,
+# which is a different bug, in a different file, and the message sent the reader
+# nowhere near it.
+#
+# Read into a variable and matched in the shell rather than piped into `grep -q`:
+# under `pipefail` a `grep -q` that stops at the first hit can leave `docker logs`
+# killed by SIGPIPE, and the pipeline then reports the failure of the write rather
+# than the success of the match — turning the condition this loop waits for into
+# one it can never observe.
+said_lock_lost=false
+policy_restarted=false
+for attempt in $(seq 1 "$lock_loss_window_s"); do
+  server_log="$(docker logs "$server" 2>&1 || true)"
+  if [[ "$server_log" == *'PostgreSQL control-plane process lock lost'* ]]; then
+    said_lock_lost=true
+  fi
+  if [[ "$(restart_count)" -gt "$committed_restarts" ]]; then
+    policy_restarted=true
+  fi
+  if [[ "$said_lock_lost" == true && "$policy_restarted" == true ]]; then
+    break
+  fi
+  if [[ "$attempt" -eq "$lock_loss_window_s" ]]; then
+    docker logs --tail=120 "$server" >&2 || true
+    echo "the committed Server did not give the control plane up in the ${lock_loss_window_s}s" >&2
+    echo "after its database was stopped. Of the two things it owed:" >&2
+    echo "  logged 'PostgreSQL control-plane process lock lost': $said_lock_lost" >&2
+    echo "  restarted by its own policy (RestartCount past $committed_restarts, now $(restart_count)): $policy_restarted" >&2
+    if [[ "$said_lock_lost" == false && "$policy_restarted" == true ]]; then
+      echo "  It DID exit, without naming the lock: something other than the keeper" >&2
+      echo "  ended the process — read the tail above for the cause it went out on." >&2
+    fi
+    exit 1
+  fi
+  sleep 1
+done
+echo 'the committed Server exited when its control-plane lock went away'
+
+# It cannot come up while the store is away either — a Server that claimed no
+# generation has nothing to serve with — so what the restart policy is doing in
+# this window is retrying, not recovering. The recovery is the database coming
+# back, and nothing else is allowed to be needed for it.
+echo '--- the deployment must not serve while its store is away'
+if docker exec "$server" node -e \
+  "const r = await fetch('http://127.0.0.1:8082/healthz'); if (!r.ok) process.exit(1);" \
+  >/dev/null 2>&1; then
+  docker logs --tail=120 "$server" >&2 || true
+  echo 'the deployment served /healthz with no database behind it' >&2
+  exit 1
+fi
+
+echo '--- restoring the database the committed deployment lost'
+docker start verity-postgres >/dev/null
+wait_for_postgres verity-postgres
+
+echo '--- waiting for the deployment to come back on its own'
+wait_for_healthy "$server" 'the deployment never came back after its database returned'
+expect_gateway_serving 'the Gateway never reached the Server the restart policy brought back'
+
+# Sealed, and by the same rule as every other cold start in this run: the key
+# lived in the process that exited. What is worth having here is that this is the
+# ONLY cost — the digest, the container, the sealed spec and the route are all
+# the ones the update selected, and the operator's part is the password, not a
+# repair.
+echo '--- the deployment that came back must be sealed and otherwise unchanged'
+expect_secret_status "$server" sealed
+if [[ "$(docker inspect --format '{{.Image}}' "$server")" != \
+  "$(docker inspect --format '{{.Id}}' "$resumed_digest")" ]]; then
+  echo 'the deployment came back on a different image than the update selected' >&2
+  exit 1
+fi
+
+echo '--- stage: unlock the deployment that came back'
+secret_password "$server" unlock
+expect_secret_status "$server" unlocked
+
+echo '--- stage: verify the completed companion handoff remains idempotent after recovery'
+node packages/server/dist/self-update-live-smoke.js companion-handoff
+
+echo 'live self-update smoke passed'

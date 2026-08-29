@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+# Idempotently activate the privileged spawn broker and unprivileged Runner supervisor.
+set -euo pipefail
+umask 0077
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo 'verity-runner-stack-start must run as root' >&2
+  exit 1
+fi
+
+RUNTIME_DIR="${VERITY_RUNNER_RUNTIME:-/run/verity-runner}"
+RUNNER_UID="${VERITY_RUNNER_RUNTIME_UID:-1101}"
+RUNNER_GID="${VERITY_RUNNER_RUNTIME_GID:-1101}"
+case "$RUNNER_UID:$RUNNER_GID" in *[!0-9:]*) echo 'invalid Runner identity' >&2; exit 1 ;; esac
+if [ "$RUNNER_UID" -lt 1 ] || [ "$RUNNER_GID" -lt 1 ] || \
+  [ "$RUNNER_UID" -gt 2147483647 ] || [ "$RUNNER_GID" -gt 2147483647 ]; then
+  echo 'Runner identity must be non-root' >&2
+  exit 1
+fi
+
+# Stage-5b transcript capture: the in-sandbox Claude worker writes its verbatim
+# session .jsonl under CLAUDE_CONFIG_DIR, which the provisioner points at
+# "$RUNTIME_DIR/claude" (== /run/verity-runner/claude) on the runner-supervisor
+# path so the server-side tail can persist it. Claude runs as the agent uid
+# (1000) while the runtime mount is owned by the Runner uid (1101), so only this
+# root pass can create the directory and hand it to the agent. The mount is
+# Runner-writable, so refuse a pre-placed symlink both before and after creation
+# (a Runner could swap one in) before chowning it to the agent identity.
+AGENT_UID="${VERITY_AGENT_UID:-1000}"
+AGENT_GID="${VERITY_AGENT_GID:-1000}"
+case "$AGENT_UID:$AGENT_GID" in *[!0-9:]*) echo 'invalid agent identity' >&2; exit 1 ;; esac
+if [ "$AGENT_UID" -lt 1 ] || [ "$AGENT_GID" -lt 1 ] || \
+  [ "$AGENT_UID" -gt 2147483647 ] || [ "$AGENT_GID" -gt 2147483647 ]; then
+  echo 'agent identity must be non-root' >&2
+  exit 1
+fi
+CLAUDE_DIR="$RUNTIME_DIR/claude"
+if [ -L "$CLAUDE_DIR" ]; then
+  echo 'invalid Claude transcript directory' >&2
+  exit 1
+fi
+mkdir -p "$CLAUDE_DIR"
+if [ -L "$CLAUDE_DIR" ] || [ ! -d "$CLAUDE_DIR" ]; then
+  echo 'invalid Claude transcript directory' >&2
+  exit 1
+fi
+chown "$AGENT_UID:$AGENT_GID" "$CLAUDE_DIR"
+CLAUDE_OWNER="$(stat -c '%u' "$CLAUDE_DIR")"
+CLAUDE_GROUP="$(stat -c '%g' "$CLAUDE_DIR")"
+if [ "$CLAUDE_OWNER" != "$AGENT_UID" ] || [ "$CLAUDE_GROUP" != "$AGENT_GID" ]; then
+  echo 'invalid Claude transcript directory ownership' >&2
+  exit 1
+fi
+
+# Persist only Codex rollout state. CODEX_HOME contains non-secret provider
+# configuration; sessions is a controlled symlink into the recreate-safe mount.
+CODEX_DIR="${CODEX_HOME:-/run/verity/codex}"
+CODEX_SESSIONS_DIR="$RUNTIME_DIR/codex-sessions"
+if [ -L "$CODEX_DIR" ] || [ -L "$CODEX_SESSIONS_DIR" ]; then
+  echo 'invalid Codex state path' >&2
+  exit 1
+fi
+mkdir -p "$CODEX_DIR" "$CODEX_SESSIONS_DIR"
+if [ ! -d "$CODEX_DIR" ] || [ ! -d "$CODEX_SESSIONS_DIR" ]; then
+  echo 'invalid Codex state directory' >&2
+  exit 1
+fi
+chown "$AGENT_UID:$AGENT_GID" "$CODEX_DIR" "$CODEX_SESSIONS_DIR"
+# Everything that MUTATES the two directories above now runs as the agent, not as
+# root. The container is launched with cap-drop ALL plus only
+# RUNNER_BROKER_CAPABILITIES (CHOWN, SETUID, SETGID, KILL, SETPCAP), so root here
+# holds NO CAP_DAC_OVERRIDE: against a directory it does not own it is judged by
+# the "other" bits and cannot write. CODEX_DIR is never root-owned — install.sh's
+# ownership pass ships /run/verity to the remote user (0755 uid 1000) — so a root
+# `ln -s` into it fails with EACCES and tore down every runner-supervisor project
+# ("Runner supervisor failed to start: ln: failed to create symbolic link
+# '/run/verity/codex/sessions': Permission denied"). The chown above guarantees
+# the agent owns both paths, and the agent then does its own writes through the
+# owner bits. CAP_SETUID/CAP_SETGID are exactly what setpriv needs to drop here,
+# and the agent could create this symlink unaided anyway — it owns the directory —
+# so this grants it nothing it did not already have. The root-only work (creating
+# CODEX_SESSIONS_DIR inside the 0170 Runner mount, which the agent cannot write)
+# already happened above.
+as_agent() {
+  setpriv --reuid="$AGENT_UID" --regid="$AGENT_GID" --clear-groups "$@"
+}
+# Runtime Codex must never discover a subscription credential locally. Project
+# sandboxes receive a read-only config.toml bind; the dedicated control-plane
+# Runner generates the same non-secret provider config in its private runtime.
+as_agent rm -f "$CODEX_DIR/auth.json"
+if [ "${VERITY_CODEX_GATEWAY_CONFIG_WRITE:-0}" = '1' ]; then
+  CODEX_CONFIG_TMP="$CODEX_DIR/.config.toml.$$"
+  printf '%s\n' \
+    'model_provider = "verity_gateway"' \
+    '[model_providers.verity_gateway]' \
+    'name = "Verity Gateway"' \
+    "base_url = \"http://127.0.0.1:${VERITY_CLAUDE_CONNECTOR_PORT}/codex\"" \
+    'env_key = "VERITY_CODEX_PLACEHOLDER"' \
+    'wire_api = "responses"' \
+    'requires_openai_auth = false' | as_agent tee "$CODEX_CONFIG_TMP" >/dev/null
+  as_agent chmod 0600 "$CODEX_CONFIG_TMP"
+  as_agent mv -f "$CODEX_CONFIG_TMP" "$CODEX_DIR/config.toml"
+fi
+# INSPECT with the same privileges that mutate. Everything below looks INSIDE
+# CODEX_DIR, which the chown above just handed to the agent at 0700 — and root here
+# holds no CAP_DAC_OVERRIDE, so it cannot even traverse that directory. Every
+# `[ -L ... ]` and `[ -e ... ]` root evaluated in there was silently false, which is
+# not cosmetic: it sent every start after the first into the `else` branch, where the
+# agent's own `ln` found the symlink IT had created on the first start, dereferenced
+# it and died with "File exists". The control-plane Runner could therefore never
+# start a second time. The legacy-migration branch was unreachable for the same
+# reason, so a pre-runner sessions directory was never migrated either.
+if as_agent test -L "$CODEX_DIR/sessions"; then
+  if [ "$(as_agent readlink "$CODEX_DIR/sessions")" != "$CODEX_SESSIONS_DIR" ]; then
+    echo 'invalid Codex sessions symlink' >&2
+    exit 1
+  fi
+elif as_agent test -e "$CODEX_DIR/sessions"; then
+  CODEX_LEGACY_DIR="$CODEX_DIR/sessions.pre-runner"
+  if as_agent test -e "$CODEX_LEGACY_DIR" || as_agent test -L "$CODEX_LEGACY_DIR"; then
+    echo 'ambiguous Codex legacy sessions migration' >&2
+    exit 1
+  fi
+  as_agent mv "$CODEX_DIR/sessions" "$CODEX_LEGACY_DIR"
+  as_agent cp -an "$CODEX_LEGACY_DIR/." "$CODEX_SESSIONS_DIR/"
+  # -n so an existing symlink is replaced rather than followed into, -f so a
+  # concurrent creator cannot turn this into a hard failure. Idempotent either way.
+  as_agent ln -sfn "$CODEX_SESSIONS_DIR" "$CODEX_DIR/sessions"
+else
+  CODEX_LEGACY_DIR="$CODEX_DIR/sessions.pre-runner"
+  if as_agent test -d "$CODEX_LEGACY_DIR" && ! as_agent test -L "$CODEX_LEGACY_DIR"; then
+    as_agent cp -an "$CODEX_LEGACY_DIR/." "$CODEX_SESSIONS_DIR/"
+  fi
+  as_agent ln -sfn "$CODEX_SESSIONS_DIR" "$CODEX_DIR/sessions"
+fi
+
+# OpenCode's non-config state: session storage, locks and its helper-binary cache,
+# which the spawn broker points XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME at
+# (verity-agent-spawn-broker.mjs, OPENCODE_STATE_DIR). Without them `opencode acp`
+# falls back to $HOME, which the broker pins to /home/dev — a directory a project's
+# own devcontainer image generally does not have, and the agent cannot create. The
+# child then dies at spawn with EACCES before answering `initialize`.
+#
+# Handed to the agent below like CLAUDE_DIR and CODEX_DIR. Container-local rather
+# than under RUNTIME_DIR, so the conversations OpenCode keeps here die with the
+# container — session-artifacts.ts names no files for this backend on that basis.
+#
+# Unlike CLAUDE_DIR — which lives under the runner-owned RUNTIME_DIR — this sits
+# directly under /run/verity, whose owner differs by image: root on some, but the
+# agent (uid 1000, mode 0755) on a project sandbox whose "ownership pass" shipped
+# it to the remote user. This supervisor holds CAP_CHOWN but NOT CAP_DAC_OVERRIDE,
+# so when the agent owns /run/verity a root mkdir here fails with EACCES ("mkdir:
+# cannot create directory '/run/verity/opencode': Permission denied") and the whole
+# Runner supervisor never starts. Create the directory as whoever owns /run/verity
+# — the agent when it owns the parent, root otherwise — then hand it over below.
+OPENCODE_STATE_DIR=/run/verity/opencode
+if [ -L "$OPENCODE_STATE_DIR" ]; then
+  echo 'invalid OpenCode state directory' >&2
+  exit 1
+fi
+if [ "$(stat -c '%u' /run/verity)" = "$AGENT_UID" ]; then
+  as_agent mkdir -p "$OPENCODE_STATE_DIR"
+else
+  mkdir -p "$OPENCODE_STATE_DIR"
+fi
+if [ -L "$OPENCODE_STATE_DIR" ] || [ ! -d "$OPENCODE_STATE_DIR" ]; then
+  echo 'invalid OpenCode state directory' >&2
+  exit 1
+fi
+chown "$AGENT_UID:$AGENT_GID" "$OPENCODE_STATE_DIR"
+OPENCODE_OWNER="$(stat -c '%u' "$OPENCODE_STATE_DIR")"
+OPENCODE_GROUP="$(stat -c '%g' "$OPENCODE_STATE_DIR")"
+if [ "$OPENCODE_OWNER" != "$AGENT_UID" ] || [ "$OPENCODE_GROUP" != "$AGENT_GID" ]; then
+  echo 'invalid OpenCode state directory ownership' >&2
+  exit 1
+fi
+
+BROKER_RUNTIME=/run/verity-runner-broker
+BROKER_SOCKET="$BROKER_RUNTIME/agent-spawn-broker.sock"
+BROKER_LOG="$BROKER_RUNTIME/agent-spawn-broker.log"
+
+# Never place root-opened files in the Runner-writable runtime directory: the
+# Runner could pre-place a symlink before a later root reconciliation.
+if [ -L "$BROKER_RUNTIME" ]; then
+  echo 'invalid broker control directory' >&2
+  exit 1
+fi
+mkdir -p "$BROKER_RUNTIME"
+chmod 0711 "$BROKER_RUNTIME"
+BROKER_OWNER="$(stat -c '%u' "$BROKER_RUNTIME")"
+BROKER_MODE="$(stat -c '%a' "$BROKER_RUNTIME")"
+if [ ! -d "$BROKER_RUNTIME" ] || [ "$BROKER_OWNER" != '0' ] || [ $((8#$BROKER_MODE & 022)) -ne 0 ]; then
+  echo 'invalid broker control directory ownership' >&2
+  exit 1
+fi
+export VERITY_AGENT_BROKER_RUNTIME="$BROKER_RUNTIME"
+
+# Credential-safe Claude routing is all-or-nothing. The launcher validates the
+# mTLS files and owns the root-protected PID identity; a partial configuration
+# must fail before either the broker or supervisor can accept a turn.
+EGRESS_VARS=(
+  VERITY_CLAUDE_CONNECTOR_PORT
+  VERITY_CLAUDE_CONNECTOR_AUTHORITY
+  VERITY_CLAUDE_EGRESS_URL
+  VERITY_CLAUDE_EGRESS_AUTHORITY
+  VERITY_CLAUDE_EGRESS_CA
+  VERITY_CLAUDE_EGRESS_CERT
+  VERITY_CLAUDE_EGRESS_KEY
+  VERITY_CODEX_EGRESS_URL
+  VERITY_CODEX_EGRESS_AUTHORITY
+)
+EGRESS_SET=0
+for _name in "${EGRESS_VARS[@]}"; do
+  if [ -n "${!_name:-}" ]; then EGRESS_SET=$((EGRESS_SET + 1)); fi
+done
+if [ "$EGRESS_SET" -ne 0 ] && [ "$EGRESS_SET" -ne "${#EGRESS_VARS[@]}" ]; then
+  echo 'incomplete Sandbox egress connector configuration' >&2
+  exit 1
+fi
+if [ "$EGRESS_SET" -ne 0 ]; then
+  export VERITY_RUNNER_RUNTIME_UID="$RUNNER_UID"
+  export VERITY_RUNNER_RUNTIME_GID="$RUNNER_GID"
+  /usr/local/bin/verity-egress-connector-start
+  CONNECTOR_URL="http://127.0.0.1:${VERITY_CLAUDE_CONNECTOR_PORT}"
+  CONNECTOR_URL_TMP="$BROKER_RUNTIME/.egress-connector.url.$$"
+  printf '%s\n' "$CONNECTOR_URL" >"$CONNECTOR_URL_TMP"
+  chown 0:0 "$CONNECTOR_URL_TMP"
+  chmod 0600 "$CONNECTOR_URL_TMP"
+  mv -f "$CONNECTOR_URL_TMP" "$BROKER_RUNTIME/egress-connector.url"
+else
+  rm -f "$BROKER_RUNTIME/egress-connector.url"
+fi
+# The Runner runtime is a host directory that outlives the container, so the
+# routing file written under the previous name survives a recreate onto the
+# renamed toolkit. Nothing reads it any more; drop it so it cannot be mistaken
+# for live routing, and so a rolled-back image does not find a stale URL.
+rm -f "$BROKER_RUNTIME/claude-egress-connector.url"
+
+if ! /usr/local/bin/verity-agent-spawn-broker --probe >/dev/null 2>&1; then
+  touch "$BROKER_LOG"
+  chown 0:0 "$BROKER_LOG"
+  chmod 0600 "$BROKER_LOG"
+  nohup /usr/local/bin/verity-agent-spawn-broker >>"$BROKER_LOG" 2>&1 &
+  for _attempt in $(seq 1 100); do
+    /usr/local/bin/verity-agent-spawn-broker --probe >/dev/null 2>&1 && break
+    sleep 0.05
+  done
+  if ! /usr/local/bin/verity-agent-spawn-broker --probe >/dev/null 2>&1; then
+    if [ -s "$BROKER_LOG" ]; then sed -n '1,80p' "$BROKER_LOG" >&2 || true; fi
+    echo 'verity-agent-spawn-broker did not become ready' >&2
+    exit 1
+  fi
+fi
+
+SUPERVISOR_ENTRY=/usr/local/bin/verity-runner-supervisor-start
+if [ "${VERITY_RUNNER_FOREGROUND:-0}" = '1' ]; then
+  # A dedicated Runner service needs its supervisor to remain PID 1's child so
+  # container liveness and shutdown reflect the actual serving process. Project
+  # devcontainers retain the idempotent background launcher above.
+  SUPERVISOR_ENTRY=/usr/local/bin/verity-runner-supervisor
+  RECONCILE_SECONDS="${VERITY_CLAUDE_CONNECTOR_RECONCILE_SECONDS:-1}"
+  case "$RECONCILE_SECONDS" in ''|*[!0-9]*) echo 'invalid connector reconcile interval' >&2; exit 1 ;; esac
+  if [ "$RECONCILE_SECONDS" -lt 1 ]; then
+    echo 'connector reconcile interval must be positive' >&2
+    exit 1
+  fi
+  if [ "$EGRESS_SET" -ne 0 ]; then
+    publish_generation_ack() {
+      _generation="$1"
+      _ack_tmp="$RUNTIME_DIR/.claude-egress-generation.$$"
+      printf '%s\n' "$_generation" >"$_ack_tmp"
+      chmod 0640 "$_ack_tmp"
+      chown "$RUNNER_UID:$RUNNER_GID" "$_ack_tmp"
+      mv -f "$_ack_tmp" "$RUNTIME_DIR/claude-egress-generation"
+    }
+    (
+      GENERATION_FILE="$(dirname "$VERITY_CLAUDE_EGRESS_KEY")/generation"
+      LAST_GENERATION="$(cat "$GENERATION_FILE" 2>/dev/null || true)"
+      if [ -n "$LAST_GENERATION" ]; then publish_generation_ack "$LAST_GENERATION"; fi
+      while sleep "$RECONCILE_SECONDS"; do
+        NEXT_GENERATION="$(cat "$GENERATION_FILE" 2>/dev/null || true)"
+        # The Server publishes the generation marker only after all three PEM
+        # files. On first bootstrap LAST_GENERATION is empty; without this guard
+        # the loop would otherwise restart the connector against a partial set.
+        if [ -z "$NEXT_GENERATION" ]; then
+          continue
+        fi
+        if [ -n "$LAST_GENERATION" ] && [ "$NEXT_GENERATION" = "$LAST_GENERATION" ]; then
+          continue
+        fi
+        if ! /usr/local/bin/verity-egress-connector-start; then
+          touch "$BROKER_RUNTIME/connector-reconcile.failed"
+          continue
+        fi
+        rm -f "$BROKER_RUNTIME/connector-reconcile.failed"
+        LAST_GENERATION="$NEXT_GENERATION"
+        if [ -n "$LAST_GENERATION" ]; then publish_generation_ack "$LAST_GENERATION"; fi
+      done
+    ) &
+  fi
+fi
+
+exec /usr/bin/setpriv \
+  "--reuid=$RUNNER_UID" \
+  "--regid=$RUNNER_GID" \
+  --clear-groups \
+  --no-new-privs \
+  --inh-caps=-all \
+  --ambient-caps=-all \
+  --bounding-set=-all \
+  env \
+  "VERITY_RUNNER_RUNTIME=$RUNTIME_DIR" \
+  "VERITY_AGENT_SPAWN_BROKER_SOCKET=$BROKER_SOCKET" \
+  VERITY_RUNNER_WORKER=/usr/local/bin/verity-runner-worker \
+  "$SUPERVISOR_ENTRY"

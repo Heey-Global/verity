@@ -1,0 +1,158 @@
+{
+  "$comment": [
+    "Boundary-binary hashes of published toolkit releases — ADR 0006 D9.",
+    "",
+    "The Server accepts a Sandbox whose boundary binaries match its own bundle OR",
+    "any single release listed here at or above `minimumVersion`. D9 takes a Server",
+    "newer than a running Sandbox as the normal case and requires the previous",
+    "Runner to keep working; equality against the Server's own bundle is a lockstep",
+    "check the system cannot hold, because a container outlives Server deploys.",
+    "",
+    "A release is matched WHOLE. An entry that does not name every boundary binary",
+    "is skipped, and binaries from two different releases never combine into an",
+    "accepted toolkit: that combination was never published and never tested, and",
+    "its halves need not agree about the boundary they jointly enforce.",
+    "",
+    "`minimumVersion` is not optional. Without it, accepting a set is a downgrade",
+    "path: an image pinned to a release with a known-bad toolkit would attest",
+    "cleanly for ever. Raise it whenever a release must stop being accepted. A file",
+    "without a readable floor is ignored entirely rather than read as no floor.",
+    "",
+    "The checked-in releases bootstrap the compatibility window. At publish time",
+    "the trusted main workflow reconstructs the complete ledger from immutable Git",
+    "release tags, so every Server image contains every release up to its own and",
+    "runtime attestation requires no network lookup.",
+    "",
+    "Entries are read defensively: a malformed file, a wrong shape, an unparsable",
+    "version or a value that is not 64 hex characters is ignored, and the Server",
+    "then accepts its own bundle alone — exactly the behaviour from before this",
+    "file existed. That is deliberate. This file can only ever WIDEN what is",
+    "accepted, so ignoring it cannot admit anything it should not, whereas failing",
+    "closed on a bad ledger would disable every project in the fleet.",
+    "",
+    "While `releases` is empty the Server accepts its own bundle alone, which is",
+    "today's behaviour: the structure, the floor and the tests are in place, and",
+    "the compatibility this file describes begins when the build that publishes a",
+    "release starts writing its hashes here."
+  ],
+  "minimumVersion": "9.0.0",
+  "releases": [
+    {
+      "version": "9.0.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "1907875b87422124335324bbc2838213619d96e9659af3a8fd76c44b1917e57e",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "3f265a7e57b6003ac8750d9f8b11c7db3a3377fc07266505a51dcb2499c79909",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.0.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "eeff9d1a6e59ffe04324c5437bb2210118c90999185b65aee78f588b9b3e2834",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "4e0df8e96b2033136a9e2a6e5075fe494dfb3b646d98a3cabe7a3f2e4665eb24",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.0.1",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "62bc66ae71fe1076dd45d928f920b3f722fd8f85ab06562858d29f15d6d62199",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "d98067f4527113e3bc8008d200239c5aad8754168e7a7f7da805e7850f3fa20f",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.1.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "62bc66ae71fe1076dd45d928f920b3f722fd8f85ab06562858d29f15d6d62199",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "7bc1aa9e7333108f3bd6c49102d7bfe8b8040c5e5330202fa763aaa285ca7ac4",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.2.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "69673eb28af4cc79913046de22435aa9c87bc17de341a715952e86dcd97441fa",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "adbc104a9cec0390e740916b8550173b97d575fa53d130cbbd65b912d5e9de78",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.3.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "69673eb28af4cc79913046de22435aa9c87bc17de341a715952e86dcd97441fa",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.4.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.5.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.6.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "10.7.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "11.0.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "32222a8aa935e6c7e0060236ff33cc45b716120d2e5f389c566a2349ae30bb04",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "fad4ae0d99e9bd6b55dc357a69e0e494d4c75ac37dd7e05835f17c810def88de",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "11.1.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "32222a8aa935e6c7e0060236ff33cc45b716120d2e5f389c566a2349ae30bb04",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "268f101b230907674832ab8ab27fbdfa745dae545217d750baa2a9dfe12e9081",
+        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+      }
+    },
+    {
+      "version": "12.0.0",
+      "hashes": {
+        "/usr/local/bin/verity-runner-supervisor": "8e39702da03da82da0cbc74b7a862ec7b3d0e763d91ad6e28ed8a9c7a3758199",
+        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
+        "/usr/local/bin/verity-runner-worker": "34abbe758b58488808b613733ce99ea31a17061b0cff41752f4c07baab476827",
+        "/usr/local/bin/verity-runner-stack-start": "eca4f6cd925cafafe4b47ca9c92783f405b0a1a9c9ecfa3f8fe7a6fe937ba4a0"
+      }
+    }
+  ]
+}

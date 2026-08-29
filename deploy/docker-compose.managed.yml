@@ -1,0 +1,38 @@
+# Atomic managed-Server ownership overlay (ADR 0008 D2).
+#
+# Use only after `managed-bootstrap` has successfully sealed the deployment
+# authority and a private updater-token file has been provisioned:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.managed.yml \
+#     --profile managed up -d --remove-orphans
+#
+# The override removes the legacy Compose-owned Server from the selected profile.
+# Gateway and Updater are defined in the base file under the `managed` profile;
+# the Updater alone creates/restarts `verity-managed-server` from the sealed spec.
+services:
+  verity:
+    profiles: [legacy]
+
+  # The control-plane Runner belongs to the managed Server, not to Compose. The
+  # Server creates and owns `verity-managed-control-plane-runner` so a
+  # self-update can carry the Runner forward with it — Compose cannot rewrite its
+  # own VERITY_SERVER_IMAGE pin, which would otherwise strand this companion on
+  # the pre-update image forever (see managed-control-plane-runner.ts).
+  #
+  # Both containers mount the same `verity-control-runner-runtime` volume, and
+  # the supervisor claims `/run/verity-runner/supervisor.lock` with an flock that
+  # spans namespaces — deliberately, so a second supervisor cannot start. Two
+  # owners are therefore not merely redundant, they are mutually exclusive by
+  # construction: whichever loses the race crash-loops on "runner supervisor is
+  # already claimed" forever. Observed on the dev-server at 91 restarts and
+  # climbing, because Compose recreates it on every converge while the managed
+  # Runner holds the lock. So the legacy Runner leaves the managed profile the
+  # same way the legacy Server does.
+  verity-control-runner:
+    profiles: [legacy]
+
+  # Its one-shot init goes with it. The managed path grew an equivalent of its
+  # own in `prepareSpec()` — same mkdir/chown/chmod, plus a repair loop for
+  # identity material published before the setgid bit existed — and runs it
+  # before the Runner on every reconcile.
+  verity-control-runner-init:
+    profiles: [legacy]

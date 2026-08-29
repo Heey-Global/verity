@@ -1,0 +1,12 @@
+{
+  "name": "@verity/project-relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fixed-destination per-project relay",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/main.js"
+  }
+}

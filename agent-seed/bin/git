@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Verity git wrapper — refuses to let an agent remove its OWN (or another
+# session's) Verity worktree from inside a session.
+#
+# Why: each Verity session runs in a git worktree at `.verity-sessions/agent-<id>`
+# and its PR/Issue chip + resumability are resolved live from that worktree's
+# HEAD on disk (packages/server/src/branches.ts, github.ts). If a turn runs
+# `git worktree remove <its own worktree>` (e.g. during post-merge "cleanup"),
+# the directory vanishes mid-session: `worktreeExists()` then returns false and
+# the session is permanently marked "workspace no longer exists — can't be
+# resumed". Worktree lifecycle is Verity's job (it removes trees server-side via
+# packages/server/src/worktree.ts, which does NOT go through this wrapper), so an
+# agent should never remove a session worktree itself.
+#
+# Transparent by default: this wrapper only ever blocks a `git worktree remove`
+# whose target is a live Verity session worktree. Every other git invocation —
+# including `worktree add`, `worktree list`, and `worktree prune` — execs the
+# real git verbatim, so it is safe to put first on PATH unconditionally.
+#
+# Escape hatch: set VERITY_GIT_GUARD_DISABLE=1 to make the wrapper fully
+# transparent (operator-directed removals only).
+set -euo pipefail
+
+# --- locate the real git (never re-enter this wrapper) -----------------------
+self="$(command -v -- "$0" 2>/dev/null || printf '%s' "$0")"
+REAL_GIT=""
+candidates=()
+if [ -n "${VERITY_GIT_REAL:-}" ]; then
+  candidates+=("$VERITY_GIT_REAL")
+fi
+candidates+=(/usr/local/lib/verity/git-real /usr/bin/git /usr/local/bin/git /bin/git)
+for c in "${candidates[@]}"; do
+  if [ -x "$c" ] && [ "$c" != "$self" ]; then
+    REAL_GIT="$c"
+    break
+  fi
+done
+if [ -z "$REAL_GIT" ]; then
+  echo "verity git wrapper: real git binary not found" >&2
+  exit 127
+fi
+
+# Fully transparent when explicitly disabled.
+if [ "${VERITY_GIT_GUARD_DISABLE:-}" = "1" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+args=("$@")
+n=${#args[@]}
+
+# --- find the subcommand, skipping git's global options ----------------------
+# Global options that consume the following argument when given separately.
+# Anything else starting with '-' is treated as a valueless flag. Misparsing
+# only ever fails OPEN (we exec real git), never falsely blocks.
+i=0
+subcmd=""
+subidx=-1
+while [ "$i" -lt "$n" ]; do
+  a="${args[$i]}"
+  case "$a" in
+    -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env)
+      i=$((i + 2))
+      continue
+      ;;
+    --)
+      i=$((i + 1))
+      if [ "$i" -lt "$n" ]; then
+        subcmd="${args[$i]}"
+        subidx=$i
+      fi
+      break
+      ;;
+    -*)
+      i=$((i + 1))
+      continue
+      ;;
+    *)
+      subcmd="$a"
+      subidx=$i
+      break
+      ;;
+  esac
+done
+
+if [ "$subcmd" != "worktree" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# --- find the worktree action (first non-option after "worktree") ------------
+j=$((subidx + 1))
+action=""
+actidx=-1
+while [ "$j" -lt "$n" ]; do
+  a="${args[$j]}"
+  case "$a" in
+    -*)
+      j=$((j + 1))
+      continue
+      ;;
+    *)
+      action="$a"
+      actidx=$j
+      break
+      ;;
+  esac
+done
+
+if [ "$action" != "remove" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# --- collect target path(s) after "remove" -----------------------------------
+targets=()
+k=$((actidx + 1))
+while [ "$k" -lt "$n" ]; do
+  a="${args[$k]}"
+  case "$a" in
+    --)
+      k=$((k + 1))
+      while [ "$k" -lt "$n" ]; do
+        targets+=("${args[$k]}")
+        k=$((k + 1))
+      done
+      break
+      ;;
+    -*)
+      k=$((k + 1))
+      continue
+      ;;
+    *)
+      targets+=("$a")
+      k=$((k + 1))
+      ;;
+  esac
+done
+
+# No target given (`git worktree remove` with no path is a usage error): let the
+# real git report it. Also avoids expanding an empty array under `set -u`.
+if [ "${#targets[@]}" -eq 0 ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# --- resolve paths and decide -------------------------------------------------
+resolve() {
+  local p="$1"
+  [ -z "$p" ] && return 0
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -m -- "$p" 2>/dev/null || printf '%s' "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+# The worktree we are currently standing in (deployment-independent self-check).
+current="$("$REAL_GIT" rev-parse --show-toplevel 2>/dev/null || true)"
+current="$(resolve "$current")"
+
+for t in "${targets[@]}"; do
+  rt="$(resolve "$t")"
+  blocked=""
+  # 1) Self-removal: removing the worktree this process is running inside.
+  if [ -n "$current" ] && [ "$rt" = "$current" ]; then
+    blocked="self"
+  fi
+  # 2) Any Verity session worktree (.verity-sessions/agent-<id>), regardless of cwd.
+  case "$rt" in
+    */.verity-sessions/agent-*) blocked="session" ;;
+  esac
+
+  if [ -n "$blocked" ]; then
+    {
+      echo "verity git guard: refusing 'git worktree remove' on a Verity session worktree"
+      echo "  target: $rt"
+      echo
+      echo "A session must not remove its own (or another session's) worktree. Verity"
+      echo "owns worktree lifecycle and removes the tree server-side after the PR merges;"
+      echo "self-removal permanently breaks the session ('workspace no longer exists')."
+      echo "If this is an operator-directed removal, re-run with VERITY_GIT_GUARD_DISABLE=1."
+    } >&2
+    exit 1
+  fi
+done
+
+exec "$REAL_GIT" "$@"

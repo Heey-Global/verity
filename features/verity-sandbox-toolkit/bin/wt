@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# wt - Worktree manager for parallel dev worktrees.
+#
+# Usage:
+#   wt <branch> [base]   Create a new worktree + a tmux window (login shell) for it
+#   wt list              Show active worktrees + their tmux windows
+#   wt status            git status per worktree (short form)
+#   wt close <branch>    Kill the tmux window + remove the worktree
+#
+# From the host:   docker exec -it <container> wt ...
+#
+# The tmux window is a plain login shell in the worktree dir — agent-neutral.
+# Verity runs agent sessions via the server (`docker exec … <agent>`), so `wt`
+# does not launch an agent itself; attach to the window and run whatever you
+# need. Shares the entrypoint's session (TMUX_SESSION, default `verity`).
+#
+# Home-agnostic: all paths derive from $WORKSPACE / env, never a baked home.
+set -euo pipefail
+
+SESSION="${TMUX_SESSION:-verity}"
+ROOT="${WORKSPACE:-/work}"
+
+sanitize() {
+  # feature/rate-limit -> feature-rate-limit (tmux-/path-safe)
+  echo "${1//\//-}"
+}
+
+cmd_new() {
+  local BRANCH="${1:?Usage: wt <branch> [base-branch]}"
+  local BASE="${2:-HEAD}"
+  local SAFE_BRANCH WT_DIR
+  SAFE_BRANCH="$(sanitize "$BRANCH")"
+  WT_DIR="$ROOT/.worktrees/$SAFE_BRANCH"
+
+  if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git -C "$ROOT" worktree add "$WT_DIR" "$BRANCH"
+  else
+    git -C "$ROOT" worktree add -b "$BRANCH" "$WT_DIR" "$BASE"
+  fi
+
+  tmux new-window -t "$SESSION" -n "$SAFE_BRANCH" -c "$WT_DIR" "exec bash -l"
+
+  cat <<EOF
+Worktree '$BRANCH' created: $WT_DIR
+tmux window:           $SAFE_BRANCH  (in session '$SESSION')
+EOF
+}
+
+cmd_list() {
+  echo "=== Worktrees ==="
+  git -C "$ROOT" worktree list
+  echo
+  echo "=== tmux windows in session '$SESSION' ==="
+  tmux list-windows -t "$SESSION" -F '#I  #W  (#{pane_current_path})' 2>/dev/null \
+    || echo "(no tmux session active)"
+}
+
+cmd_status() {
+  while IFS= read -r line; do
+    local path="${line%% *}"
+    [ -d "$path" ] || continue
+    echo "=== $path ==="
+    git -C "$path" status --short --branch || true
+    echo
+  done < <(git -C "$ROOT" worktree list)
+}
+
+cmd_close() {
+  local BRANCH="${1:?Usage: wt close <branch>}"
+  local SAFE_BRANCH WT_DIR
+  SAFE_BRANCH="$(sanitize "$BRANCH")"
+  WT_DIR="$ROOT/.worktrees/$SAFE_BRANCH"
+
+  # Kill the tmux window if present.
+  if tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$SAFE_BRANCH"; then
+    tmux kill-window -t "$SESSION:$SAFE_BRANCH"
+    echo "tmux window '$SAFE_BRANCH' killed."
+  else
+    echo "No tmux window named '$SAFE_BRANCH'."
+  fi
+
+  # Remove the worktree.
+  if [ -d "$WT_DIR" ]; then
+    git -C "$ROOT" worktree remove "$WT_DIR" --force
+    echo "Worktree $WT_DIR removed."
+  else
+    echo "No worktree under $WT_DIR."
+  fi
+}
+
+show_help() {
+  sed -n '2,/^set -e/p' "$0" | sed -e 's/^# \{0,1\}//' -e '/^set -e/d'
+}
+
+case "${1:-}" in
+  list|ls)      cmd_list ;;
+  status|st)    cmd_status ;;
+  close|rm)     shift; cmd_close "$@" ;;
+  -h|--help|"") show_help ;;
+  *)            cmd_new "$@" ;;
+esac

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Verity per-project agent memory client (ADR 0008).
+#
+# Appends a short, durable note to THIS project's agent memory via the Verity
+# memory broker (POST /internal/project/memory). The note is stored server-side
+# (project_settings.memory) and injected into the runtime system prompt of every
+# future session of this project, on any backend — so "remember this" survives the
+# ephemeral session worktree instead of being lost with it.
+#
+# Auth mirrors the git-token broker: it presents the per-container CAPABILITY and
+# the server resolves that capability to this project server-side, so a sandbox can
+# only ever write its OWN project's memory, and only over the internal network.
+#
+# Usage:
+#   verity-memory append "<note>"        # append a note …
+#   echo "<note>" | verity-memory append # … or pass it on stdin
+#
+# Unlike the credential-helper wrappers (which fail silently so git degrades
+# cleanly), this is operator/agent-invoked, so it reports failures LOUDLY on
+# stderr and exits non-zero — a dropped "remember this" must never look like a save.
+set -euo pipefail
+
+fail() {
+  echo "verity-memory: $*" >&2
+  exit 1
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  append)
+    shift
+    ;;
+  '' | -h | --help)
+    echo 'usage: verity-memory append "<note>"   (note may also be piped on stdin)' >&2
+    exit 2
+    ;;
+  *)
+    fail "unknown command '$cmd' (expected: append)"
+    ;;
+esac
+
+# Note text: the remaining arguments joined, or stdin when none were given.
+if [ "$#" -gt 0 ]; then
+  note="$*"
+else
+  note="$(cat)"
+fi
+[ -n "${note//[[:space:]]/}" ] || fail "refusing to append empty memory"
+
+url="${VERITY_PROJECT_MEMORY_URL:-}"
+[ -n "$url" ] || fail "memory broker is not configured for this sandbox (VERITY_PROJECT_MEMORY_URL unset) — project memory is a broker-mode feature"
+
+cap_file="${VERITY_GH_TOKEN_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
+[ -r "$cap_file" ] || fail "capability file '$cap_file' is missing or unreadable — project memory needs broker mode"
+cap="$(tr -d '[:space:]' <"$cap_file")"
+[ -n "$cap" ] || fail "capability file '$cap_file' is empty"
+
+payload="$(jq -cn --arg text "$note" '{ text: $text }')"
+
+urls=("$url")
+
+body=''
+http_code=''
+post() {
+  local out
+  out="$(curl -sS --max-time 15 -w '\n%{http_code}' -X POST "$1" \
+    -H "authorization: Bearer $cap" \
+    -H 'content-type: application/json' \
+    --data "$payload" 2>/dev/null)" || return 1
+  http_code="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  return 0
+}
+
+for u in "${urls[@]}"; do
+  if post "$u"; then
+    if [ "$http_code" = '200' ]; then
+      echo 'verity-memory: saved to project memory' >&2
+      exit 0
+    fi
+    # A definitive HTTP response (e.g. 413 over the size limit, 401 bad capability):
+    # the broker was reached and rejected the write — surface it, don't retry.
+    fail "broker rejected the append (HTTP ${http_code})${body:+: $body}"
+  fi
+done
+fail 'could not reach the memory broker'

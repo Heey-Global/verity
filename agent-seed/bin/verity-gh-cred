@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Verity git credential helper backed by the GitHub-token broker.
+#
+# Wired as `credential.helper` for github.com HTTPS remotes (see verity-agent-run
+# / the devcontainer Feature). On `get`, it redeems the container capability for a
+# fresh repo-scoped token via verity-gh-token and hands git the standard
+# username/password pair. `store`/`erase` are no-ops — there is nothing to cache
+# or forget, since every token is minted on demand and never persisted.
+set -euo pipefail
+
+[ "${1:-}" = "get" ] || exit 0
+
+token="$(verity-gh-token 2>/dev/null)" || exit 0
+[ -n "$token" ] || exit 0
+
+printf 'username=x-access-token\n'
+printf 'password=%s\n' "$token"

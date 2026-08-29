@@ -1,0 +1,374 @@
+#!/usr/bin/env sh
+# docker compose wrapper for Verity deploys.
+#
+# Docker socket group IDs are host-local. Debian, Ubuntu, Docker Desktop, and
+# distro packages do not agree on one fixed "docker" GID, so infer the mounted
+# socket owner group at runtime unless the operator explicitly sets
+# VERITY_DOCKER_SOCKET_GID.
+
+set -eu
+
+socket="${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+deploy_dir="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+base_compose="$deploy_dir/docker-compose.yml"
+supervisor_compose="$deploy_dir/docker-compose.runner-supervisor.yml"
+
+compose_base() {
+  if [ "${VERITY_RUNNER_SUPERVISOR:-1}" = "0" ]; then
+    docker compose -f "$base_compose" "$@"
+  else
+    docker compose -f "$base_compose" -f "$supervisor_compose" "$@"
+  fi
+}
+
+compose_managed() {
+  if [ "${VERITY_RUNNER_SUPERVISOR:-1}" = "0" ]; then
+    docker compose -f "$base_compose" -f "$managed_compose" "$@"
+  else
+    docker compose -f "$base_compose" -f "$supervisor_compose" -f "$managed_compose" "$@"
+  fi
+}
+
+if [ "${VERITY_GVISOR_REQUIRED:-0}" = "1" ]; then
+  "$script_dir/verity-gvisor-smoke"
+fi
+
+if [ -z "${VERITY_DOCKER_SOCKET_GID:-}" ] && [ -S "$socket" ]; then
+  gid="$(stat -c '%g' "$socket" 2>/dev/null || stat -f '%g' "$socket" 2>/dev/null || true)"
+  if [ -n "$gid" ]; then
+    export VERITY_DOCKER_SOCKET_GID="$gid"
+  fi
+fi
+
+prepare_host_dir() {
+  path="$1"
+  mode="$2"
+  [ -n "$path" ] || return 0
+  case "$path" in
+    /*) ;;
+    *) return 0 ;;
+  esac
+  [ "$path" != "/" ] || return 0
+
+  uid="${VERITY_RUNNER_UID:-1000}"
+  gid="${VERITY_RUNNER_GID:-1000}"
+  mkdir -p "$path"
+  if [ "$(id -u)" = "0" ]; then
+    chown "$uid:$gid" "$path"
+    chmod "$mode" "$path"
+  elif [ -w "$path" ]; then
+    chmod "$mode" "$path" 2>/dev/null || true
+  else
+    printf '%s\n' "verity-compose: warning: $path is not writable; run as root or chown it to $uid:$gid" >&2
+  fi
+}
+
+prepare_host_dirs() {
+  prepare_host_dir "${VERITY_HOST_CLONE_ROOT:-/srv/verity/workspaces}" 0755
+  prepare_host_dir "${VERITY_SECRET_MATERIALIZATION_ROOT:-/srv/verity/secrets}" 0700
+}
+
+if [ "${1:-}" = "managed-up" ]; then
+  shift
+  if [ "$#" -ne 0 ]; then
+    printf '%s\n' 'verity-compose: managed-up does not accept Compose arguments; use COMPOSE_PROJECT_NAME for a custom project' >&2
+    exit 64
+  fi
+
+  image_prefix='ghcr.io/heey-global/verity/verity-server@sha256:'
+  case "${VERITY_SERVER_IMAGE:-}" in
+    "$image_prefix"*) image_digest="${VERITY_SERVER_IMAGE#"$image_prefix"}" ;;
+    *) image_digest='' ;;
+  esac
+  case "$image_digest" in
+    *[!a-f0-9]*|'') image_valid=0 ;;
+    *)
+      if [ "${#image_digest}" -eq 64 ]; then image_valid=1; else image_valid=0; fi
+      ;;
+  esac
+  if [ "$image_valid" -ne 1 ]; then
+    printf '%s\n' 'verity-compose: managed-up requires the official digest-pinned VERITY_SERVER_IMAGE' >&2
+    exit 64
+  fi
+  case "${VERITY_MANAGED_DEPLOYMENT_ID:-}" in
+    ''|*[!a-zA-Z0-9_.-]*|-*|.*|_*)
+      printf '%s\n' 'verity-compose: managed-up requires a stable VERITY_MANAGED_DEPLOYMENT_ID' >&2
+      exit 64
+      ;;
+  esac
+  if [ "${#VERITY_MANAGED_DEPLOYMENT_ID}" -gt 128 ]; then
+    printf '%s\n' 'verity-compose: VERITY_MANAGED_DEPLOYMENT_ID must be at most 128 characters' >&2
+    exit 64
+  fi
+
+  updater_token="${VERITY_UPDATER_TOKEN_HOST_PATH:-}"
+  if [ -z "$updater_token" ] || [ ! -f "$updater_token" ] || [ -L "$updater_token" ]; then
+    printf '%s\n' 'verity-compose: VERITY_UPDATER_TOKEN_HOST_PATH must name a private regular file' >&2
+    exit 64
+  fi
+  canonical_token="$(readlink -f -- "$updater_token" 2>/dev/null || true)"
+  if [ -z "$canonical_token" ] || [ "$canonical_token" != "$updater_token" ]; then
+    printf '%s\n' 'verity-compose: updater token path must be absolute, canonical, and free of symlinks' >&2
+    exit 64
+  fi
+  token_parent="$(dirname -- "$canonical_token")"
+  while :; do
+    parent_mode="$(stat -c '%a' "$token_parent" 2>/dev/null || true)"
+    parent_uid="$(stat -c '%u' "$token_parent" 2>/dev/null || true)"
+    case "$parent_mode" in
+      *[!0-7]*|'') parent_private=0 ;;
+      *)
+        group_mode=$((parent_mode / 10 % 10))
+        other_mode=$((parent_mode % 10))
+        case "$group_mode$other_mode" in
+          *2*|*3*|*6*|*7*) parent_private=0 ;;
+          *) parent_private=1 ;;
+        esac
+        ;;
+    esac
+    if [ "$parent_uid" != 0 ] || [ "$parent_private" -ne 1 ] || [ ! -d "$token_parent" ] || [ -L "$token_parent" ]; then
+      printf '%s\n' 'verity-compose: updater token ancestors must be root-owned directories without group/world write access' >&2
+      exit 64
+    fi
+    [ "$token_parent" = / ] && break
+    token_parent="$(dirname -- "$token_parent")"
+  done
+  token_mode="$(stat -c '%a' "$updater_token" 2>/dev/null || stat -f '%Lp' "$updater_token" 2>/dev/null || true)"
+  token_uid="$(stat -c '%u' "$updater_token" 2>/dev/null || stat -f '%u' "$updater_token" 2>/dev/null || true)"
+  if [ "$token_mode" != 600 ] || [ "$token_uid" != 0 ]; then
+    printf '%s\n' 'verity-compose: updater token must be mode 0600 and owned by root' >&2
+    exit 64
+  fi
+  updater_token_size="$(wc -c < "$updater_token" 2>/dev/null || true)"
+  updater_token_value="$(dd if="$updater_token" bs=64 count=1 2>/dev/null)"
+  case "$updater_token_value" in
+    *[!a-f0-9]*|'') token_valid=0 ;;
+    *)
+      if [ "$updater_token_size" = 64 ] && [ "${#updater_token_value}" -eq 64 ]; then token_valid=1; else token_valid=0; fi
+      ;;
+  esac
+  unset updater_token_value
+  if [ "$token_valid" -ne 1 ]; then
+    printf '%s\n' 'verity-compose: updater token file must contain exactly 32 random bytes encoded as lowercase hex' >&2
+    exit 64
+  fi
+
+  if [ -z "${VERITY_HOST_ARCHITECTURE:-}" ]; then
+    case "$(uname -m)" in
+      x86_64|amd64) VERITY_HOST_ARCHITECTURE=amd64 ;;
+      aarch64|arm64) VERITY_HOST_ARCHITECTURE=arm64 ;;
+      *)
+        printf '%s\n' 'verity-compose: managed-up supports only amd64 and arm64 hosts' >&2
+        exit 64
+        ;;
+    esac
+    export VERITY_HOST_ARCHITECTURE
+  fi
+  case "$VERITY_HOST_ARCHITECTURE" in
+    amd64|arm64) ;;
+    *)
+      printf '%s\n' 'verity-compose: VERITY_HOST_ARCHITECTURE must be amd64 or arm64' >&2
+      exit 64
+      ;;
+  esac
+
+  if ! command -v flock >/dev/null 2>&1; then
+    printf '%s\n' 'verity-compose: managed-up requires the host flock utility' >&2
+    exit 69
+  fi
+  migration_lock="$(dirname -- "$canonical_token")/.verity-managed-up.lock"
+  if [ -L "$migration_lock" ] || { [ -e "$migration_lock" ] && [ ! -f "$migration_lock" ]; }; then
+    printf '%s\n' 'verity-compose: managed migration lock path is not a regular file' >&2
+    exit 70
+  fi
+  exec 9>"$migration_lock"
+  chmod 0600 "$migration_lock"
+  if ! flock -n 9; then
+    printf '%s\n' 'verity-compose: another managed migration is already running' >&2
+    exit 75
+  fi
+
+  managed_compose="$script_dir/../docker-compose.managed.yml"
+  remove_managed_on_rollback=1
+  # The container this run reconciles. A first migration creates the unsuffixed
+  # bootstrap name; once the Updater has cut over at least once, the live Server
+  # is the generation container it promoted instead, and rollback must fence that
+  # one rather than a name that no longer exists.
+  managed_server_name=verity-managed-server
+  rollback_managed() {
+    transition_active=0
+    if ! compose_managed --profile managed stop verity-managed-gateway verity-updater; then
+      printf '%s\n' 'verity-compose: rollback could not stop managed control services; legacy Server remains disabled' >&2
+      return 1
+    fi
+    if [ "$remove_managed_on_rollback" -eq 1 ]; then
+      docker rm -f verity-managed-server 2>/dev/null || true
+      if ! remaining_managed="$(docker ps -a --filter name=^/verity-managed-server$ --format '{{.Names}}')" || [ -n "$remaining_managed" ]; then
+        printf '%s\n' 'verity-compose: rollback could not remove the new managed Server; legacy Server remains disabled' >&2
+        return 1
+      fi
+    else
+      docker stop "$managed_server_name" >/dev/null 2>&1 || true
+      if ! remaining_state="$(docker inspect -f '{{.State.Running}}' "$managed_server_name" 2>/dev/null)" || [ "$remaining_state" != false ]; then
+        printf '%s\n' 'verity-compose: rollback could not fence the existing managed Server; legacy Server remains disabled' >&2
+        return 1
+      fi
+    fi
+    compose_base up -d verity
+  }
+  transition_active=0
+  transition_exit() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    if [ "$transition_active" -eq 1 ]; then rollback_managed || true; fi
+    exit "$status"
+  }
+  transition_signal() {
+    trap - EXIT HUP INT TERM
+    if [ "$transition_active" -eq 1 ]; then rollback_managed || true; fi
+    exit 130
+  }
+  # Bootstrap is fail-closed and idempotent. The legacy Server remains running if
+  # validation or authority sealing fails; only a successful bootstrap reaches
+  # the ownership-changing Compose invocation below.
+  prepare_host_dirs
+  compose_base --profile managed-migration run --rm managed-bootstrap
+  # Match the bootstrap name and the generation names the Updater promotes to
+  # (`verity-managed-server-g<n>`), because after a self-update the live Server is
+  # one of the latter. Treating that host as a first migration would fence the
+  # legacy Server, and on failure restore it beside a still-running managed
+  # Server — two Servers sharing the socket, the data volume and the database.
+  if ! managed_candidates="$(docker ps -a --filter name=^/verity-managed-server --format '{{.Names}}')"; then
+    printf '%s\n' 'verity-compose: Docker state could not be inspected; refusing managed migration' >&2
+    exit 70
+  fi
+  managed_name=''
+  for candidate in $managed_candidates; do
+    suffix="${candidate#verity-managed-server}"
+    case "$suffix" in
+      '') ;;
+      -g*)
+        digits="${suffix#-g}"
+        case "$digits" in
+          '' | *[!0-9]* | 0*) continue ;;
+        esac
+        # The bound managed-gateway.ts:84 puts on a routable generation host. A name
+        # it would refuse to route to is not this deployment's Server.
+        [ "${#digits}" -le 10 ] && [ "$digits" -le 2147483647 ] || continue
+        ;;
+      # Anything else merely shares the prefix and is not ours.
+      *) continue ;;
+    esac
+    if [ -n "$managed_name" ]; then
+      printf '%s\n' 'verity-compose: managed Server name lookup returned conflicting containers' >&2
+      exit 70
+    fi
+    managed_name="$candidate"
+  done
+  if [ -n "$managed_name" ]; then
+    managed_server_name="$managed_name"
+    remove_managed_on_rollback=0
+    if ! managed_identity="$(docker inspect -f '{{index .Config.Labels "verity.managed-deployment-id"}} {{index .Config.Labels "verity.managed-role"}} {{.State.Running}}' "$managed_name")"; then
+      printf '%s\n' 'verity-compose: existing managed Server could not be inspected' >&2
+      exit 70
+    fi
+    case "$managed_identity" in
+      "$VERITY_MANAGED_DEPLOYMENT_ID server true"|"$VERITY_MANAGED_DEPLOYMENT_ID server false") ;;
+      *)
+        printf '%s\n' 'verity-compose: existing managed Server identity conflicts with this deployment' >&2
+        exit 70
+        ;;
+    esac
+    if ! legacy_running="$(compose_base ps --status running -q verity)"; then
+      printf '%s\n' 'verity-compose: legacy Server state could not be inspected before managed reconciliation' >&2
+      exit 70
+    fi
+    if [ -n "$legacy_running" ]; then
+      trap transition_exit EXIT
+      trap transition_signal HUP INT TERM
+      if ! compose_base stop verity; then
+        printf '%s\n' 'verity-compose: legacy Server could not be fenced before managed reconciliation' >&2
+        compose_base up -d verity || true
+        transition_active=0
+        exit 70
+      fi
+      transition_active=1
+    fi
+    if ! compose_managed --profile managed up -d; then
+      printf '%s\n' 'verity-compose: existing managed topology could not be reconciled' >&2
+      if [ "$transition_active" -eq 1 ]; then rollback_managed || exit 71; fi
+      exit 70
+    fi
+    readiness_attempt=0
+    while [ "$readiness_attempt" -lt 30 ]; do
+      if compose_managed --profile managed exec -T verity-managed-gateway \
+        node -e "fetch('http://127.0.0.1:8082/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+        transition_active=0
+        exit 0
+      fi
+      readiness_attempt=$((readiness_attempt + 1))
+      sleep 2
+    done
+    printf '%s\n' 'verity-compose: existing managed topology failed readiness' >&2
+    if [ "$transition_active" -eq 1 ]; then rollback_managed || exit 71; fi
+    exit 70
+  fi
+
+  transition_active=1
+  trap transition_exit EXIT
+  trap transition_signal HUP INT TERM
+  if ! compose_base stop verity; then
+    printf '%s\n' 'verity-compose: could not stop the legacy Server; managed ownership was not activated' >&2
+    compose_base up -d verity || true
+    transition_active=0
+    exit 70
+  fi
+  if ! compose_managed --profile managed up -d --remove-orphans; then
+    printf '%s\n' 'verity-compose: managed topology failed to start; restoring the legacy Server' >&2
+    rollback_managed || exit 71
+    exit 70
+  fi
+  readiness_attempt=0
+  while [ "$readiness_attempt" -lt 30 ]; do
+    if compose_managed --profile managed exec -T verity-managed-gateway \
+      node -e "fetch('http://127.0.0.1:8082/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+      transition_active=0
+      exit 0
+    fi
+    readiness_attempt=$((readiness_attempt + 1))
+    sleep 2
+  done
+  printf '%s\n' 'verity-compose: managed topology failed readiness; restoring the legacy Server' >&2
+  rollback_managed || exit 71
+  exit 70
+fi
+
+prepare_host_dirs
+compose_global_value=0
+for compose_arg in "$@"; do
+  if [ "$compose_global_value" = "1" ]; then
+    compose_global_value=0
+    continue
+  fi
+  case "$compose_arg" in
+    -f|--file)
+      # Preserve the old generic-wrapper contract for callers that explicitly
+      # own their Compose file stack. The documented default omits -f and receives
+      # the ACP supervisor overlay automatically; an explicit stack is forwarded
+      # byte-for-byte and must name every overlay it wants.
+      exec docker compose "$@"
+      ;;
+    -f?*|--file=*) exec docker compose "$@" ;;
+    -p|--project-name|--profile|--env-file|--project-directory|--parallel|--progress|--ansi)
+      compose_global_value=1
+      ;;
+    --) break ;;
+    -*) ;;
+    *) break ;;
+  esac
+done
+if [ "${VERITY_RUNNER_SUPERVISOR:-1}" = "0" ]; then
+  exec docker compose -f "$base_compose" "$@"
+fi
+exec docker compose -f "$base_compose" -f "$supervisor_compose" "$@"

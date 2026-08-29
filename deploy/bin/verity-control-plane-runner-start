@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Dedicated Claude ACP runner for Verity control-plane sessions.
+set -euo pipefail
+umask 0077
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo 'verity-control-plane-runner-start must run as root' >&2
+  exit 1
+fi
+
+IDENTITY_DIR="${VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR:-/run/verity-control-identity}"
+for file in ca.crt client.crt client.key generation; do
+  for _attempt in $(seq 1 300); do
+    [ -s "$IDENTITY_DIR/$file" ] && break
+    sleep 0.1
+  done
+  if [ ! -s "$IDENTITY_DIR/$file" ]; then
+    echo "control-plane runner identity is unavailable: $file" >&2
+    exit 1
+  fi
+done
+
+export VERITY_RUNNER_RUNTIME="${VERITY_RUNNER_RUNTIME:-/run/verity-runner}"
+export VERITY_RUNNER_FOREGROUND=1
+# Control-plane session worktrees do NOT live under this container's /work (the
+# `verity-control` clone). The Server allocates them under `workspacesDir`
+# (/srv/verity/sessions) and `runnerSandboxPath` deliberately leaves that shared
+# namespace unrewritten, which is why both topologies mount `verity-data:sessions`
+# there beside /work (docker-compose.runner-supervisor.yml and the managed
+# `desiredSpec`). Tell the spawn broker about that second tree; without it every
+# control-plane turn dies with "agent cwd escaped the worktree root".
+#
+# Set HERE rather than in either container spec so the two cannot drift: this
+# launcher is the single entrypoint of the Runner in both. A project Sandbox never
+# runs it and keeps the one /work tree it has always had. The value is a flag —
+# the broker holds the path itself as a constant, so this cannot name a directory.
+export VERITY_AGENT_SHARED_SESSION_ROOT=1
+
+export VERITY_RUNNER_RUNTIME_UID="${VERITY_RUNNER_RUNTIME_UID:-1101}"
+export VERITY_RUNNER_RUNTIME_GID="${VERITY_RUNNER_RUNTIME_GID:-1101}"
+export VERITY_AGENT_UID="${VERITY_AGENT_UID:-1000}"
+export VERITY_AGENT_GID="${VERITY_AGENT_GID:-1000}"
+
+# ADR 0006 Amendment 1: hand the control-plane agent the host Docker daemon, for
+# DIAGNOSIS.
+#
+# This is where the grant is decided for both topologies at once — the managed
+# `desiredSpec` and the Compose overlay each mount the socket, but a mount alone
+# reaches nobody. The agent runs as a `setpriv` child at uid 1000 with
+# `--clear-groups`, so it holds no supplementary group and a 0660 root:docker
+# socket answers EACCES. The broker swaps in `--groups=<gid>` when the variable
+# below is set (`privilegeDropFlags`), and nothing else sets it. A project
+# Sandbox never runs this script, so none of this reaches one.
+#
+# The decision itself lives in a sibling script because THIS one cannot be run
+# outside a real control-plane container — it demands uid 0 and a mounted
+# identity directory before it reaches any of this — and a decision that cannot
+# be executed in a test can only be asserted about as text. It is called after
+# VERITY_AGENT_UID and VERITY_AGENT_GID are resolved on purpose: the identity the
+# agent will run under is an input to the refusal, not a detail — it decides
+# which permission class of the socket applies. A non-zero exit is that refusal,
+# and must stay fatal.
+if ! DOCKER_GRANT_GID="$(/usr/local/bin/verity-control-plane-docker-grant /var/run/docker.sock "$VERITY_AGENT_UID" "$VERITY_AGENT_GID" "$VERITY_RUNNER_RUNTIME_GID")"; then
+  exit 1
+fi
+if [ -n "$DOCKER_GRANT_GID" ]; then
+  export VERITY_AGENT_DOCKER_GID="$DOCKER_GRANT_GID"
+fi
+unset DOCKER_GRANT_GID
+# The shared stack initializes both adapters. Keep Codex's otherwise-unused state
+# inside this private runtime instead of the Server image's root-owned /run tree.
+export CODEX_HOME="${CODEX_HOME:-$VERITY_RUNNER_RUNTIME/codex-home}"
+export VERITY_CODEX_GATEWAY_CONFIG_WRITE=1
+export VERITY_CLAUDE_CONNECTOR_PORT="${VERITY_CLAUDE_CONNECTOR_PORT:-47821}"
+export VERITY_CLAUDE_CONNECTOR_AUTHORITY="127.0.0.1:${VERITY_CLAUDE_CONNECTOR_PORT}"
+export VERITY_CLAUDE_EGRESS_URL="${VERITY_CLAUDE_EGRESS_URL:-https://verity-agent-gateway:9443}"
+export VERITY_CLAUDE_EGRESS_AUTHORITY="${VERITY_CLAUDE_EGRESS_AUTHORITY:-verity-agent-gateway:9443}"
+export VERITY_CLAUDE_EGRESS_SERVERNAME="${VERITY_CLAUDE_EGRESS_SERVERNAME:-verity-agent-gateway}"
+export VERITY_CLAUDE_EGRESS_CA="$IDENTITY_DIR/ca.crt"
+export VERITY_CLAUDE_EGRESS_CERT="$IDENTITY_DIR/client.crt"
+export VERITY_CLAUDE_EGRESS_KEY="$IDENTITY_DIR/client.key"
+export VERITY_CODEX_EGRESS_URL="${VERITY_CODEX_EGRESS_URL:-https://verity-agent-gateway:9444}"
+export VERITY_CODEX_EGRESS_AUTHORITY="${VERITY_CODEX_EGRESS_AUTHORITY:-verity-agent-gateway:9444}"
+# The CONTROL-PLANE variant of the loopback MCP gateway route, not /internal/mcp. This
+# container is a fixed peer on the control network with no per-project broker socket, so its
+# connection carries no project identity and /internal/mcp answers 401 before the MCP
+# handshake completes — which left every control-plane turn with no brokered tool at all.
+# Both container specs pass this explicitly; the default here is what a hand-run Runner gets,
+# and the three must not drift (docker-compose.runner-supervisor.yml, the managed
+# `desiredSpec` in packages/server/src/self-update/managed-control-plane-runner.ts).
+export VERITY_MCP_GATEWAY_URL="${VERITY_MCP_GATEWAY_URL:-http://verity:8083/internal/control-plane/mcp}"
+
+# Point the agent's git at a signer that explains itself.
+#
+# `materializeControlPlaneGitSigner` does this for the in-process control-plane path, on the
+# Server host — but a sealed-runner turn returns before that code runs, and the script it
+# writes lives on a filesystem this container does not mount. So the agent here saw the raw
+# fallback instead: `ssh-keygen: No private key found for public key …`, which reads as a lost
+# or misconfigured key and invites exactly the improvisations the project forbids. The image
+# ships the refusal at a fixed path; this is where git is told to use it.
+#
+# The spawn broker forwards GIT_CONFIG_COUNT and every GIT_CONFIG_{KEY,VALUE}_n to the agent
+# child (`childEnvironment` in verity-agent-spawn-broker.mjs), which is what makes the agent
+# see it. APPEND rather than claim index 0: GIT_CONFIG_COUNT addresses one shared list, so
+# overwriting the count would silently drop every entry already in the environment. Appending
+# also puts this last, and git lets the last entry for a key win — so a stale
+# `gpg.ssh.program` in a checked-out repo cannot restore the puzzling failure.
+GIT_CONFIG_INDEX="${GIT_CONFIG_COUNT:-0}"
+case "$GIT_CONFIG_INDEX" in
+  '' | *[!0-9]*) GIT_CONFIG_INDEX=0 ;;
+esac
+export "GIT_CONFIG_KEY_${GIT_CONFIG_INDEX}=gpg.ssh.program"
+export "GIT_CONFIG_VALUE_${GIT_CONFIG_INDEX}=/usr/local/bin/verity-control-plane-git-sign"
+export GIT_CONFIG_COUNT="$((GIT_CONFIG_INDEX + 1))"
+
+exec /usr/local/bin/verity-runner-stack-start

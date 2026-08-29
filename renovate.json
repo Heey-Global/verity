@@ -1,0 +1,195 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
+    ":timezone(Europe/Berlin)"
+  ],
+  "assignees": ["h-teske"],
+  "rangeStrategy": "pin",
+  "description": "Schedules are evaluated in Europe/Berlin (`:timezone`). Without that preset Renovate uses UTC, so the previous `before 6am on monday` actually fired until 08:00 local — inside working hours. The nightly 01:00-06:00 window applies to branch creation AND rebases: since ci.yml moved onto the self-hosted runners (2026-07-12) every Renovate push competes with interactive work for the same four runners, so keeping those pushes out of the day is what protects CI latency. `rebaseWhen: conflicted` replaces the `auto` default, which rebased every open PR on each push to main and re-ran the full matrix per rebase.",
+  "schedule": ["* 1-5 * * *"],
+  "automergeSchedule": ["* 1-5 * * *"],
+  "rebaseWhen": "conflicted",
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Group all @types/* type-definition devDependencies into one PR. They are type-only, so a bad bump fails typecheck (never runtime); batching them avoids a separate full CI matrix per @types package.",
+      "matchPackageNames": ["/^@types//"],
+      "groupName": "type definitions"
+    },
+    {
+      "description": "Group lint/format/type tooling into a single PR",
+      "matchPackageNames": ["eslint", "@eslint/js", "typescript-eslint", "prettier", "typescript"],
+      "groupName": "lint & type tooling"
+    },
+    {
+      "description": "Group Vitest packages together",
+      "matchPackageNames": ["vitest", "@vitest/coverage-v8"],
+      "groupName": "vitest"
+    },
+    {
+      "description": "Internal Heey-Org images - immediate PRs, deliberately exempt from the repo-wide nightly window. Only EXTERNAL dependencies are batched into 01:00-06:00; our own images are published continuously and must be picked up same-day. Currently matches ghcr.io/heey-global/verity/verity-server; the pattern covers any future internal image without a further config change. Mirrors the equivalent rules in Heey-Global/k8s.",
+      "matchPackageNames": ["/ghcr.io/heey-global/.*/"],
+      "schedule": ["at any time"]
+    },
+    {
+      "description": "Keep the Verity repository devcontainer on the moving verity-sandbox tag. This repository is the integration consumer for the fleet image; digest-pinning its Dockerfile ARG would silently detach it from toolkit and base-image releases that every other project receives. Deployment images and GitHub Actions remain covered by the repo-wide docker:pinDigests preset.",
+      "matchFileNames": [".devcontainer/Dockerfile"],
+      "matchPackageNames": ["ghcr.io/heey-global/verity/verity-sandbox"],
+      "pinDigests": false
+    },
+    {
+      "description": "Type the website's base-image bumps `fix` rather than the `chore` a Docker dependency otherwise gets. The Verity website has its own release-please train (`website-vX.Y.Z`), and the cluster pins that version — a `chore(deps)` nginx bump would land on main, publish a `sha-<commit>` image, and never produce a released version for the k8s pin to move to, so the deployed site would keep serving the old base image until something unrelated happened to release the website. `fix` makes the security bump its own patch release, which is what it is.",
+      "matchFileNames": ["docs/website/Dockerfile"],
+      "semanticCommitType": "fix"
+    },
+    {
+      "description": "The agent CLIs (claude-code, codex, opencode, pi) and their ACP transport adapters ship ~daily. Group patch/minor bumps into ONE PR instead of a PR per release. Merge is MANUAL and stability days apply via the org-wide Renovate policy — this rule deliberately sets no `automerge`. It previously carried `schedule: [\"at any time\"]` to escape the repo-wide WEEKLY Monday schedule and keep these ~daily releases on their own cadence (ADR 0004 D1). The repo-wide schedule is now nightly-daily, so that intent is satisfied without an override: the daily cadence is preserved, the PR just appears overnight instead of mid-workday. The explicit window is kept here so the ADR-0004-D1 intent stays visible at the rule. Runtime self-update is disabled in the Feature (updates arrive via image rebuild / Feature republish), so these pins are the single version channel. For each tool the install.sh shell-default pin and the Feature-manifest default share the depName, so both bump in lock-step within the one branch. Majors fall through to a normal, visible PR for manual review.",
+      "matchPackageNames": [
+        "@anthropic-ai/claude-code",
+        "@agentclientprotocol/claude-agent-acp",
+        "@openai/codex",
+        "@agentclientprotocol/codex-acp",
+        "opencode-ai",
+        "@earendil-works/pi-coding-agent"
+      ],
+      "matchUpdateTypes": ["patch", "minor"],
+      "schedule": ["* 1-5 * * *"],
+      "groupName": "agent CLIs"
+    },
+    {
+      "description": "Never bump React independently. `react`, `react-dom`, and `react-test-renderer` (apps/mobile) are dictated by the Expo SDK / react-native version: React must EXACTLY match react-native's embedded `react-native-renderer` (NOT a separate npm package) or the app crashes at boot with 'Incompatible React versions'. PR #723 did exactly this — bumped react to 19.2.7 while RN 0.85.3 ships renderer 19.2.3. These move ONLY when the Expo SDK / react-native is bumped (via `expo install`), never on their own.",
+      "matchPackageNames": ["react", "react-dom", "react-test-renderer"],
+      "enabled": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track globally-installed CLIs pinned via `RUN npm install -g pkg@ver` in the deploy Dockerfiles — the stock dockerfile manager only parses FROM/ARG image lines, not RUN, so without this the pin silently freezes. Covers deploy/Dockerfile (Server image) and deploy/verity-sandbox.Dockerfile (Sandbox base).",
+      "managerFilePatterns": [
+        "/(^|/)deploy/Dockerfile$/",
+        "/(^|/)deploy/verity-sandbox\\.Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+RUN npm install -g \\S+@(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Track version pins declared as shell `VAR=\"${OVERRIDE:-VERSION}\"` in features/verity-sandbox-toolkit/install.sh (the single source of truth for the gh/doppler/claude-code/codex/opencode/pi versions). The stock managers don't parse shell-default expansions, so without this the annotated pins silently freeze. The captured value is the literal default after `:-`.",
+      "managerFilePatterns": ["/(^|/)features/verity-sandbox-toolkit/install\\.sh$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+\\w+=\"\\$\\{\\w+:-(?<currentValue>[^\"}]+)\\}\""
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Track the version DEFAULTS in the verity-sandbox-toolkit Feature manifest so the CLI pins stay in lock-step with install.sh. Matches the JSON `\"<opt>Version\": { ... \"default\": \"<ver>\" }` blocks; the depName is mapped per option id below.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": [
+        "\"claudeCodeVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@anthropic-ai/claude-code"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the claudeAcpVersion default in the verity-sandbox-toolkit Feature manifest, in lock-step with install.sh's @agentclientprotocol/claude-agent-acp pin.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": [
+        "\"claudeAcpVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@agentclientprotocol/claude-agent-acp"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the codexVersion default in the verity-sandbox-toolkit Feature manifest, in lock-step with install.sh's @openai/codex pin.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": ["\"codexVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@openai/codex"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the codexAcpVersion default in the verity-sandbox-toolkit Feature manifest, in lock-step with install.sh's @agentclientprotocol/codex-acp pin.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": [
+        "\"codexAcpVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@agentclientprotocol/codex-acp"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the opencodeVersion default in the verity-sandbox-toolkit Feature manifest, in lock-step with install.sh's opencode-ai pin.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": [
+        "\"opencodeVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "opencode-ai"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the piVersion default in the verity-sandbox-toolkit Feature manifest, in lock-step with install.sh's @earendil-works/pi-coding-agent pin.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": ["\"piVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@earendil-works/pi-coding-agent"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the ghVersion default in the verity-sandbox-toolkit Feature manifest (cli/cli). No extractVersion: the pin form is bare `2.95.0` and Renovate's semver versioning strips the release tag's leading `v` on compare — matches install.sh's manager + the dev-server precedent, so both cli/cli managers bump in lock-step.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": ["\"ghVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "cli/cli"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the dopplerVersion default in the verity-sandbox-toolkit Feature manifest (DopplerHQ/cli).",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": [
+        "\"dopplerVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "DopplerHQ/cli"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the gitleaksVersion default in the verity-sandbox-toolkit Feature manifest (gitleaks/gitleaks), in lock-step with install.sh's gitleaks pin. Same bare-version form as the cli/cli manager: releases are tagged v<version> and Renovate's semver versioning strips the leading v on compare.",
+      "managerFilePatterns": [
+        "/(^|/)features/verity-sandbox-toolkit/devcontainer-feature\\.json$/"
+      ],
+      "matchStrings": [
+        "\"gitleaksVersion\":\\s*\\{[^}]*?\"default\":\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "gitleaks/gitleaks"
+    }
+  ]
+}

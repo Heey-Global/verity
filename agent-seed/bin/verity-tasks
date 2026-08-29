@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# verity-tasks — a thin CLI over the Verity control-plane `/tasks` API (ADR 0007), so an
+# agent session can manage the "Verity" Projects v2 board from chat via Bash (like it
+# uses `verity-code-review`). It is a WRAPPER, not a reimplementation: every command maps
+# to a server route, so board logic/auth/owner-resolution stay in one place
+# (packages/server). Self-configuring: the server URL is `VERITY_API_URL`, else
+# `http://<docker-default-gateway>:8082` (session containers reach the host-run server
+# over the bridge gateway).
+#
+# The logic is an embedded ESM node script run via a temp `.mjs`, so module resolution is
+# deterministic wherever the tool is installed (an extensionless node file is CJS or ESM
+# depending on the nearest package.json — a `.mjs` is always ESM).
+set -euo pipefail
+
+_bt_base="$(mktemp)"
+_bt_js="$_bt_base.mjs"
+trap 'rm -f "$_bt_base" "$_bt_js"' EXIT
+mv "$_bt_base" "$_bt_js"
+
+cat > "$_bt_js" <<'VERITY_TASKS_JS'
+import { readFileSync } from 'node:fs';
+
+/** Default-gateway IP from /proc/net/route (the bridge host that runs the server). */
+function defaultGateway() {
+  try {
+    const rows = readFileSync('/proc/net/route', 'utf8').trim().split('\n').slice(1);
+    for (const r of rows) {
+      const f = r.split(/\s+/);
+      if (f[1] === '00000000' && f[2] && f[2] !== '00000000') {
+        const h = f[2]; // little-endian hex, e.g. 0100112AC -> 172.17.0.1
+        return [6, 4, 2, 0].map((i) => parseInt(h.substr(i, 2), 16)).join('.');
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return '127.0.0.1';
+}
+
+const BASE = (process.env.VERITY_API_URL || `http://${defaultGateway()}:8082`).replace(/\/+$/, '');
+
+async function api(method, path, body) {
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let json;
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = { raw: text };
+  }
+  if (!res.ok) throw new Error(`${method} ${path} -> ${json && json.error ? json.error : `HTTP ${res.status}`}`);
+  return json;
+}
+
+// Flags that never take a value, so `create --issue "my title"` keeps "my title" as the
+// positional title instead of consuming it as the flag's value.
+const BOOLEAN_FLAGS = new Set(['issue']);
+
+/** Parse `--flag value` / `--flag=value` / boolean `--flag` / positional args. */
+function parseArgs(argv) {
+  const flags = {};
+  const pos = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const name = eq >= 0 ? a.slice(2, eq) : a.slice(2);
+      if (eq >= 0) flags[name] = a.slice(eq + 1);
+      else if (!BOOLEAN_FLAGS.has(name) && i + 1 < argv.length && !argv[i + 1].startsWith('--'))
+        flags[name] = argv[++i];
+      else flags[name] = true;
+    } else pos.push(a);
+  }
+  return { flags, pos };
+}
+
+/** Seed prompt for a spawn-from-issue session (mirrors @verity/mobile buildIssuePrompt). */
+function issuePrompt(number, title, body) {
+  const parts = [`Work on GitHub issue #${number}: ${String(title).trim()}`];
+  const b = String(body || '').trim();
+  if (b) parts.push(b);
+  parts.push(
+    `Implement it end-to-end following this repo's conventions (branch, tests, ` +
+      `verity-code-review mark), and open a PR that closes #${number}.`,
+  );
+  return parts.join('\n\n');
+}
+
+const fieldsStr = (fields) => (fields || []).map((f) => `${f.field}:${f.value}`).join(' ');
+
+async function cmdList() {
+  const { board } = await api('GET', '/tasks');
+  if (!board) {
+    console.log('Task board not available (task management not configured, or GitHub unreachable).');
+    return;
+  }
+  const drafts = board.items.filter((i) => i.type === 'DRAFT_ISSUE');
+  const backlog = board.items.filter((i) => i.type !== 'DRAFT_ISSUE');
+  console.log(`Board "${board.title}" (#${board.number})  —  ${board.items.length} item(s)\n`);
+  console.log(`INBOX (drafts): ${drafts.length}`);
+  for (const d of drafts) console.log(`  • ${d.title}   [itemId ${d.id}]`);
+  console.log(`\nBACKLOG: ${backlog.length}`);
+  backlog.forEach((it, i) => {
+    const f = fieldsStr(it.fields);
+    console.log(
+      `  ${i + 1}. #${it.number ?? '?'} ${it.title}${f ? `   {${f}}` : ''}` +
+        `   [itemId ${it.id}${it.contentId ? `, issueId ${it.contentId}` : ''}]`,
+    );
+  });
+}
+
+async function cmdCreate(flags, pos) {
+  const title = flags.title || pos.join(' ');
+  if (!title) throw new Error('create: a title is required (positional or --title)');
+  const body = flags.body ? String(flags.body) : undefined;
+  if (flags.issue) {
+    // --repo owner/repo targets a specific repo; else the server's origin repo.
+    const { issue } = await api('POST', '/tasks/issues', {
+      title,
+      ...(body ? { body } : {}),
+      ...(flags.repo ? { repo: String(flags.repo) } : {}),
+    });
+    console.log(`Created issue #${issue.number} (${issue.url})  [itemId ${issue.itemId}]`);
+  } else {
+    const { item } = await api('POST', '/tasks/drafts', { title, ...(body ? { body } : {}) });
+    console.log(`Created draft "${item.title}"  [itemId ${item.id}]`);
+  }
+}
+
+async function cmdEdit(flags, pos) {
+  const issueId = flags.issueId || pos[0];
+  if (!issueId) throw new Error('edit: an issueId is required (from `list`)');
+  const patch = {};
+  if (flags.title) patch.title = String(flags.title);
+  if (flags.body) patch.body = String(flags.body);
+  if (flags.state) patch.state = String(flags.state).toUpperCase();
+  if (Object.keys(patch).length === 0) throw new Error('edit: nothing to change (--title/--body/--state)');
+  await api('PATCH', `/tasks/issues/${encodeURIComponent(issueId)}`, patch);
+  console.log('Issue updated.');
+}
+
+async function cmdReorder(flags, pos) {
+  const itemId = flags.itemId || pos[0];
+  if (!itemId) throw new Error('reorder: an itemId is required (from `list`)');
+  const afterId = flags.after ? String(flags.after) : null;
+  await api('POST', '/tasks/reorder', { itemId, afterId });
+  console.log(afterId ? `Moved ${itemId} after ${afterId}.` : `Moved ${itemId} to the top.`);
+}
+
+async function cmdRemove(flags, pos) {
+  const itemId = flags.itemId || pos[0];
+  if (!itemId) throw new Error('remove: an itemId is required (from `list`)');
+  await api('DELETE', `/tasks/${encodeURIComponent(itemId)}`);
+  console.log(`Removed ${itemId} from the board.`);
+}
+
+async function cmdConvert(flags, pos) {
+  const itemId = flags.itemId || pos[0];
+  if (!itemId) throw new Error('convert: a draft itemId is required (from `list`)');
+  const body = {
+    ...(flags.repo ? { repo: String(flags.repo) } : {}),
+    ...(flags.repositoryId ? { repositoryId: String(flags.repositoryId) } : {}),
+  };
+  const { result } = await api('POST', `/tasks/${encodeURIComponent(itemId)}/convert`, body);
+  console.log(`Converted to issue #${result.number} (${result.url}).`);
+}
+
+async function cmdImplement(flags, pos) {
+  const number = Number(flags.number || pos[0]);
+  if (!Number.isInteger(number) || number <= 0) throw new Error('implement: an issue number is required');
+  const title = flags.title ? String(flags.title) : `issue-${number}`;
+  const res = await api('POST', '/sessions', {
+    prompt: issuePrompt(number, title, flags.body || ''),
+    name: String(title).trim().slice(0, 80) || `issue-${number}`,
+    issue: number,
+    ...(flags.repo ? { project: String(flags.repo) } : {}),
+  });
+  if (res.awaitingProvisioning) {
+    console.log(`Provisioning ${res.project.owner}/${res.project.repo} — try again shortly.`);
+    return;
+  }
+  console.log(`Started implementation session ${res.sessionId} for issue #${number}.`);
+}
+
+async function cmdFields() {
+  const { board } = await api('GET', '/tasks');
+  if (!board) {
+    console.log('Task board not available.');
+    return;
+  }
+  const single = (board.fields || []).filter((f) => f.options && f.options.length > 0);
+  console.log(`Settable single-select fields on "${board.title}":`);
+  if (single.length === 0) {
+    console.log('  (none)');
+    return;
+  }
+  for (const f of single) console.log(`  ${f.name}: ${f.options.map((o) => o.name).join(', ')}`);
+}
+
+async function cmdSetField(flags, pos) {
+  const itemId = flags.itemId || pos[0];
+  const field = flags.field;
+  const value = flags.value;
+  if (!itemId || !field || !value)
+    throw new Error('set: requires <itemId> --field <name> --value <option> (see `fields`)');
+  await api('POST', `/tasks/${encodeURIComponent(itemId)}/field`, {
+    field: String(field),
+    value: String(value),
+  });
+  console.log(`Set ${field} = ${value} on ${itemId}.`);
+}
+
+const USAGE = `usage: verity-tasks <command> [args]
+
+  list                                             show the board (inbox + backlog)
+  fields                                           list settable fields + their options
+  create <title> [--body B] [--issue] [--repo o/r]   add a draft (or a real issue with --issue)
+  edit <issueId> [--title T --body B --state open|closed]
+  reorder <itemId> [--after <itemId>]              move a backlog item (omit --after = to top)
+  remove <itemId>                                  remove an item from the board (keeps issue)
+  convert <itemId> [--repo o/r]                    draft -> real issue (into a chosen repo)
+  set <itemId> --field <name> --value <option>     set a single-select field (Priority/Status)
+  implement <number> [--title T --body B --repo o/r]   spawn an agent session on the issue
+
+Server: VERITY_API_URL, else the docker default-gateway:8082.`;
+
+async function main() {
+  const [cmd, ...rest] = process.argv.slice(2);
+  const { flags, pos } = parseArgs(rest);
+  switch (cmd) {
+    case 'list': return cmdList();
+    case 'create': return cmdCreate(flags, pos);
+    case 'edit': return cmdEdit(flags, pos);
+    case 'reorder': return cmdReorder(flags, pos);
+    case 'remove': return cmdRemove(flags, pos);
+    case 'convert': return cmdConvert(flags, pos);
+    case 'fields': return cmdFields();
+    case 'set': return cmdSetField(flags, pos);
+    case 'implement': return cmdImplement(flags, pos);
+    case undefined: case '-h': case '--help': case 'help': console.log(USAGE); return;
+    default:
+      console.error(`verity-tasks: unknown command "${cmd}"\n`);
+      console.log(USAGE);
+      process.exit(2);
+  }
+}
+
+main().catch((err) => {
+  console.error(`verity-tasks: ${err.message}`);
+  process.exit(1);
+});
+VERITY_TASKS_JS
+
+exec node "$_bt_js" "$@"
