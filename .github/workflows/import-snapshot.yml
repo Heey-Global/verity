@@ -1,0 +1,39 @@
+name: Import sanitized snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Lowercase GHCR package coordinate (owner/package)
+        required: true
+        type: string
+      digest:
+        description: Immutable OCI sha256 digest (tags are rejected)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Verity
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Verify immutable private snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_USER: ${{ github.actor }}
+          PACKAGE: ${{ inputs.package }}
+          DIGEST: ${{ inputs.digest }}
+        run: python3 scripts/import_snapshot.py verify --package "$PACKAGE" --digest "$DIGEST"
+      - name: Run importer tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

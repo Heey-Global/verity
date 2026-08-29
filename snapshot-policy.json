@@ -1,0 +1,22 @@
+{
+  "schema": "https://github.com/Heey-Global/verity/snapshot-policy/v1",
+  "allowed_packages": [],
+  "allowed_paths": [],
+  "allowed_prefixes": [],
+  "max_files": 10000,
+  "max_config_bytes": 10485760,
+  "max_layer_bytes": 1073741824,
+  "max_file_bytes": 52428800,
+  "max_total_bytes": 1073741824,
+  "protected_prefixes": [
+    ".git",
+    ".github",
+    "scripts",
+    "LICENSE",
+    "README",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "snapshot-policy.json",
+    ".verity-snapshot.json"
+  ]
+}
