@@ -21,10 +21,15 @@ export function projectSettingsEnv(
 
 /** A secret whose VALUE must not appear on the `docker exec` command line (audit
  *  M8): actual tokens/secrets/keys, but NOT the reference/path vars that merely
- *  point at them (`*_REF`, `*_FILE`, `*_URL`, …), which are non-secret and stay
+ *  point at them (`*_REF`, `*_FILE`, …), which are non-secret and stay
  *  inline so they can't accidentally clobber the docker CLI's own env (e.g. PATH). */
 export function isSensitiveEnvKey(key: string): boolean {
-  if (/_(REF|FILE|PATH|URL|DIR|HOME|NAME|ID)$/i.test(key)) return false;
+  // URLs routinely contain user-info, signed query parameters, or capability
+  // tokens. Treat them as sensitive even when the variable name itself does not
+  // say TOKEN/SECRET; exposing the value in docker's argv would expose those
+  // credentials through /proc/<pid>/cmdline.
+  if (/_URL$/i.test(key)) return true;
+  if (/_(REF|FILE|PATH|DIR|HOME|NAME|ID)$/i.test(key)) return false;
   return /(TOKEN|SECRET|PASSWORD|PRIVATE|CREDENTIAL|API_KEY)/i.test(key);
 }
 

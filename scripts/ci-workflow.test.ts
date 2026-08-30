@@ -137,6 +137,30 @@ describe('Verity website publication smoke', () => {
     }
   });
 
+  it('builds and smokes the website image on pull requests', () => {
+    const website = workflow('.github/workflows/verity-website.yml');
+    const job = website.jobs['pr-image-smoke'];
+    expect(job?.if).toBe("github.event_name == 'pull_request'");
+    expect(job?.needs).toBe('static-checks');
+    const build = job?.steps?.find((step) => step.uses?.startsWith('docker/build-push-action@'));
+    expect(build?.with?.file).toBe('docs/website/Dockerfile');
+    expect(build?.with?.load).toBe(true);
+    expect(job?.steps?.some((step) => step.run?.includes('deploy/bin/verity-website-smoke'))).toBe(
+      true,
+    );
+  });
+
+  it('ships the public installer in the website image', () => {
+    const dockerfile = readFileSync('docs/website/Dockerfile', 'utf8');
+    expect(dockerfile).toContain(
+      'COPY --chown=101:101 docs/website/site/install.sh /usr/share/nginx/html/install.sh',
+    );
+    const nginx = readFileSync('docs/website/nginx.conf', 'utf8');
+    expect(nginx).toMatch(/location = \/install\.sh \{[\s\S]*?try_files \$uri =404;/u);
+    expect(nginx).toContain('Content-Security-Policy');
+    expect(nginx).toContain("script-src 'self' https://stats.heey.global");
+  });
+
   it('tags the release build off the website train, not the backend one', () => {
     const job = workflow('.github/workflows/release.yml').jobs['publish-website'];
     expect(job?.if).toBe("needs.release-please.outputs.website-release-created == 'true'");
@@ -358,6 +382,29 @@ describe('mobile native patch CI', () => {
   });
 });
 
+describe('native iOS compile gate', () => {
+  it('delegates a non-publishing simulator build from GitHub to EAS', () => {
+    const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      jobs: Record<string, { 'runs-on': string; steps: WorkflowStep[] }>;
+    };
+    const eas = parse(readFileSync('apps/mobile/.eas/workflows/verify-ios.yml', 'utf8')) as {
+      jobs: Record<string, { type: string; params: Record<string, string> }>;
+    };
+    const job = github.jobs['verify-ios'];
+    expect(job?.['runs-on']).toBe('ubuntu-24.04');
+    const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
+    expect(commands).toContain('eas-cli@21.0.1 workflow:run');
+    expect(commands).toContain('.eas/workflows/verify-ios.yml');
+    expect(commands).toContain('--wait');
+    expect(commands).not.toMatch(/testflight|submit/iu);
+    expect(eas.jobs['build_ios_simulator']).toMatchObject({
+      type: 'build',
+      params: { platform: 'ios', profile: 'simulator' },
+    });
+    expect(JSON.stringify(eas)).not.toMatch(/testflight|submit/iu);
+  });
+});
+
 describe('specialized smoke workflow overhead', () => {
   it('builds only the Server dependency closure for host-side harnesses', () => {
     for (const file of ['project-relay.yml', 'secret-job-worker.yml']) {
@@ -521,6 +568,16 @@ describe('self-update release gate', () => {
     jobs: Record<string, { 'timeout-minutes'?: number }>;
   };
 
+  it('labels backend release images with the checked-out source revision', () => {
+    const release = readFileSync('.github/workflows/release.yml', 'utf8');
+    expect(release).not.toContain('org.opencontainers.image.revision=${{ github.sha }}');
+    expect(
+      release.match(
+        /org\.opencontainers\.image\.revision=\$\{\{ needs\.release-please\.outputs\.backend-sha \}\}/g,
+      ),
+    ).toHaveLength(4);
+  });
+
   it('runs for actual release candidates and manual recovery, not every main commit', () => {
     expect(workflow.on.push).toBeUndefined();
     // This smoke exercises a live Docker cutover and belongs after merge. Pull
@@ -616,6 +673,16 @@ describe('self-update release gate', () => {
     expect(source).toContain('finalize-maintenance-backend:');
     expect(source).not.toContain('gh workflow run self-update.yml');
     expect(source).toContain('candidate-sha: ${{ needs.release-please.outputs.backend-sha }}');
+  });
+
+  it('fails closed when the immutable website tag cannot be authorized', () => {
+    const source = readFileSync('.github/workflows/release.yml', 'utf8');
+    const promotion = source.slice(source.indexOf('- name: Promote tested digest'));
+    expect(promotion).toContain("grep -qiE 'not found|manifest unknown|404'");
+    expect(promotion).not.toMatch(/grep[^\n]*(denied|unauthorized)/iu);
+    expect(promotion).toContain(
+      'Refusing to tag without knowing whether one is already published.',
+    );
   });
 
   it('keeps the live smoke itself bounded', () => {
@@ -912,10 +979,7 @@ describe('GitHub-hosted runner boundary', () => {
     const cleanInstall = serverImageSteps.find(
       (step) => step.name === 'Verify clean Compose installation on an empty Docker host',
     );
-    expect(releaseBuildCache?.run).toBe('docker buildx rm --force verity-ci-bounded-v1');
-    expect(serverImageSteps.indexOf(releaseBuildCache!)).toBe(
-      serverImageSteps.indexOf(serverImageReclaim!) - 1,
-    );
+    expect(releaseBuildCache).toBeUndefined();
     expect(serverImageReclaim?.with?.['minimum-free-gib']).toBe('25');
     expect(serverImageSteps.indexOf(serverImageReclaim!)).toBe(
       serverImageSteps.indexOf(cleanInstall!) - 1,
@@ -1253,6 +1317,8 @@ describe('live cutover smoke daemon guard', () => {
       : `    printf '%s\\n' ${quote(answers.isolated)} ;;\n`) +
     '  *" ps "*)\n' +
     `    printf '%s' ${quote(answers.adopted.map((id) => `${id}\n`).join(''))} ;;\n` +
+    '  *" volume ls "*|*" network ls "*)\n' +
+    '    exit 0 ;;\n' +
     // The drift stage's own precondition, asked between the guard and the first
     // container. Answered rather than refused so the accepting case below still
     // proves what it says: that execution reached a real command.
@@ -2984,7 +3050,11 @@ describe('changed-area detector', () => {
 
     // Executable website assets live below docs for static hosting and have an
     // explicit active arm before the inert prose fallback.
-    const activeDocumentation = ['docs/website/site/install.sh'];
+    const activeDocumentation = [
+      'docs/website/Dockerfile',
+      'docs/website/nginx.conf',
+      'docs/website/site/install.sh',
+    ];
     const documentation = tracked.filter(
       (file) =>
         !activeDocumentation.includes(file) &&

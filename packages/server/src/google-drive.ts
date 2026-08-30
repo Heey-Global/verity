@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const GOOGLE_DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DEFAULT_TIMEOUT_MS = 20_000;
+const DEFAULT_MAX_DOWNLOAD_BYTES = 50_000_000;
 
 /** Minimal structural subset of the WHATWG `fetch` response this module needs.
  *  Narrower than `HttpResponse` in github.ts because Drive downloads/exports need
@@ -29,6 +30,8 @@ export interface GoogleHttpResponse {
   json(): Promise<unknown>;
   text(): Promise<string>;
   arrayBuffer(): Promise<ArrayBuffer>;
+  headers?: { get(name: string): string | null } | undefined;
+  body?: ReadableStream<Uint8Array> | null | undefined;
 }
 
 export type GoogleFetch = (
@@ -44,6 +47,8 @@ export type GoogleFetch = (
 interface GoogleTransportOptions {
   fetch?: GoogleFetch | undefined;
   timeoutMs?: number | undefined;
+  /** Hard cap for a downloaded or exported file. */
+  maxDownloadBytes?: number | undefined;
 }
 
 /** Tokens returned by the OAuth token endpoint. `refreshToken` is present only on
@@ -376,7 +381,35 @@ async function driveGetBytes(
       `http_${String(res.status)}`,
     );
   }
-  return new Uint8Array(await res.arrayBuffer());
+  const maxBytes = opts.maxDownloadBytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
+  const declared = Number(res.headers?.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new GoogleDriveError('Google Drive file is too large', 'too_large');
+  }
+  if (res.body === undefined || res.body === null)
+    throw new GoogleDriveError('Google Drive returned no file body', 'malformed');
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = res.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes)
+        throw new GoogleDriveError('Google Drive file is too large', 'too_large');
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 /** Raw bytes of a regular (non-native) Drive file (`?alt=media`). */
@@ -523,21 +556,25 @@ export function createCachedGoogleAccessToken(
 ): () => Promise<string | undefined> {
   const ttlMs = opts.ttlMs ?? 50 * 60_000;
   const now = opts.now ?? ((): number => Date.now());
-  let cache: { token: string; at: number; refreshToken: string } | undefined;
-  let inflight: Promise<string | undefined> | undefined;
-  return (): Promise<string | undefined> => {
-    if (inflight !== undefined) return inflight;
-    inflight = (async (): Promise<string | undefined> => {
+  let cache:
+    { token: string; expiresAt: number; clientId: string; refreshToken: string } | undefined;
+  const inflight = new Map<string, Promise<string | undefined>>();
+  return async (): Promise<string | undefined> => {
+    const creds = await resolveCreds().catch(() => undefined);
+    if (creds === undefined) {
+      cache = undefined;
+      return undefined;
+    }
+    const key = `${creds.clientId}\0${creds.refreshToken}`;
+    const existing = inflight.get(key);
+    if (existing !== undefined) return existing;
+    const operation = (async (): Promise<string | undefined> => {
       try {
-        const creds = await resolveCreds();
-        if (creds === undefined) {
-          cache = undefined;
-          return undefined;
-        }
         if (
           cache !== undefined &&
+          cache.clientId === creds.clientId &&
           cache.refreshToken === creds.refreshToken &&
-          now() - cache.at < ttlMs
+          now() < cache.expiresAt
         ) {
           return cache.token;
         }
@@ -545,14 +582,22 @@ export function createCachedGoogleAccessToken(
           { clientId: creds.clientId, refreshToken: creds.refreshToken },
           { fetch: opts.fetch },
         );
-        cache = { token: tokens.accessToken, at: now(), refreshToken: creds.refreshToken };
+        const providerTtlMs = Math.max(0, tokens.expiresInSeconds * 1000 - 30_000);
+        cache = {
+          token: tokens.accessToken,
+          expiresAt: now() + Math.min(ttlMs, providerTtlMs),
+          clientId: creds.clientId,
+          refreshToken: creds.refreshToken,
+        };
         return tokens.accessToken;
       } catch {
         return undefined;
-      } finally {
-        inflight = undefined;
       }
     })();
-    return inflight;
+    inflight.set(key, operation);
+    void operation.then(() => {
+      if (inflight.get(key) === operation) inflight.delete(key);
+    });
+    return operation;
   };
 }

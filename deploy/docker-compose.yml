@@ -4,9 +4,8 @@
 #
 #     docker compose -f deploy/docker-compose.yml up -d
 #
-# Then open the Expo mobile app, point it at http://<host>:8082, set a master
-# password, and enter your GitHub App credentials. Everything else is configured
-# in the app — no host-mounted secret files.
+# The guarded installer provisions the local TLS identity and prints a one-time QR
+# code. Scan it in the app before setting the master password.
 services:
   verity:
     # The product runs a PREBUILT image — it never builds from source here, so the
@@ -26,11 +25,9 @@ services:
     cpus: ${VERITY_SERVER_CPUS:-4}
     pids_limit: ${VERITY_SERVER_PIDS_LIMIT:-512}
     ports:
-      # Published on the host's 0.0.0.0 (all interfaces = LAN-reachable) so the
-      # mobile app can connect. To restrict the API — and with it the opt-in
-      # signing-broker route — to a trusted interface, prefix the host bind, e.g.
-      # `127.0.0.1:${VERITY_API_HOST_PORT:-8082}:8082` (loopback only) or a specific
-      # LAN IP, and reach it through a TLS reverse proxy for remote devices.
+      # Published on all host interfaces so the mobile app can connect. The API
+      # must stay on a trusted LAN or sit behind TLS/VPN because its application
+      # credentials otherwise cross that network in cleartext.
       - '${VERITY_API_HOST_PORT:-8082}:8082'
     # REMOVING A NAME FROM THIS BLOCK IS A COMPATIBILITY CHANGE, not a cleanup.
     # `managed-bootstrap` seals these names into the deployment spec as env SOURCES,
@@ -73,6 +70,11 @@ services:
       # is expected in a container, so the server's startup "open bind" warning is
       # normal here.) Restrict exposure via the `ports:` host bind above or a proxy.
       HOST: 0.0.0.0
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
+      VERITY_PAIRING_IDENTITY_KEY_PATH: /run/verity-pairing/pairing-identity.pem
+      VERITY_PAIRING_CODE_PATH: /run/verity-pairing/pairing-code
+      VERITY_PAIRING_EXPIRES_AT_PATH: /run/verity-pairing/pairing-expires-at
 
       # Remote push works through Expo without a server credential by default.
       # Set this to 0 to disable device registration and notification delivery.
@@ -209,7 +211,7 @@ services:
       # password is a fixed internal value on an unpublished network (postgres is
       # not exposed to the host), so it is deliberately NOT configurable. Reaches
       # postgres by service DNS on the compose network below.
-      DATABASE_URL: postgres://verity@postgres:5432/verity
+      DATABASE_URL: postgres://verity:${VERITY_POSTGRES_PASSWORD:?set by verity-install}@postgres:5432/verity
 
       # Disable the repo-root "human session" mode. That mode is a dev-container
       # artifact (a checkout the server never provisions); in the runner it has no
@@ -337,6 +339,7 @@ services:
       # on first use. `verity-data` is declared under the top-level `volumes:` key.
       - verity-data:/srv/verity
       - verity-agent-gateway-control:/run/verity-agent-gateway
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
 
     # Grant the non-root `node` user access to the mounted socket without running
     # the container as root. Set this to the GID that owns /var/run/docker.sock
@@ -367,7 +370,7 @@ services:
         - CMD
         - node
         - -e
-        - "const internalPort=process.env.VERITY_INTERNAL_PORT||'8083';Promise.all(['http://127.0.0.1:8082/healthz','http://127.0.0.1:'+internalPort+'/healthz'].map(u=>fetch(u).then(r=>r.ok))).then(ok=>ok.every(Boolean)?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+        - "const https=require('node:https');const internalPort=process.env.VERITY_INTERNAL_PORT||'8083';const publicHealth=new Promise((resolve,reject)=>https.get('https://127.0.0.1:8082/healthz',{rejectUnauthorized:false},r=>{r.resume();resolve(r.statusCode>=200&&r.statusCode<300)}).on('error',reject));Promise.all([publicHealth,fetch('http://127.0.0.1:'+internalPort+'/healthz').then(r=>r.ok)]).then(ok=>ok.every(Boolean)?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 5
@@ -517,7 +520,8 @@ services:
     environment:
       POSTGRES_USER: verity
       POSTGRES_DB: verity
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_PASSWORD: ${VERITY_POSTGRES_PASSWORD:?set by verity-install}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     volumes:
       # postgres:18 stores data in a major-version subdir and expects a single
       # mount at /var/lib/postgresql (NOT /var/lib/postgresql/data). Mounting the
@@ -558,8 +562,10 @@ services:
       VERITY_DOCKER_SOCKET_PATH: ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
       VERITY_PROJECT_RELAY_GID: ${VERITY_PROJECT_RELAY_GID:-65532}
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
+      VERITY_PAIRING_STATE_HOST_PATH: ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}
     volumes:
       - verity-managed-deployment:/var/lib/verity/updater/managed-deployment
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
 
   # Managed topology is opt-in through docker-compose.managed.yml. Keeping these
   # services profiled means the legacy one-file deployment remains unchanged.
@@ -581,6 +587,10 @@ services:
     volumes:
       # Read-write: the Gateway binds the control socket here on every start.
       - verity-managed-gateway-control:/run/verity-gateway
+      # Least privilege: TLS termination does not need the stable Ed25519 identity
+      # key or the installer pairing capability held in the same host directory.
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}/tls-key.pem:/run/verity-pairing/tls-key.pem:ro
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}/tls-cert.pem:/run/verity-pairing/tls-cert.pem:ro
 
   verity-updater:
     profiles: [managed]

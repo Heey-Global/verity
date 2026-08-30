@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createGitWorktreeProvisioner,
@@ -931,11 +931,15 @@ describe('createGitWorktreeProvisioner', () => {
     expect(realpathSync(mirrored)).not.toBe(
       realpathSync(join(repo, 'platform', 'node_modules', 'next')),
     );
-    // The file data is still shared — same inode, no second copy on disk.
+    // The dependency is isolated: an in-place agent edit must not mutate the source
+    // checkout (or another session). A reflink may share blocks initially, but never
+    // the inode.
     const bin = join('dist', 'bin', 'next');
-    expect(statSync(join(mirrored, bin)).ino).toBe(
-      statSync(join(repo, 'platform', 'node_modules', 'next', bin)).ino,
-    );
+    const mirroredBin = join(mirrored, bin);
+    const sourceBin = join(repo, 'platform', 'node_modules', 'next', bin);
+    expect(statSync(mirroredBin).ino).not.toBe(statSync(sourceBin).ino);
+    writeFileSync(mirroredBin, 'worktree-only\n');
+    expect(readFileSync(sourceBin, 'utf8')).toBe('#!/usr/bin/env node\n');
     // Which is the whole point: the compiled binding comes along, so the app that
     // needs it boots without a rebuild the sandbox's ignore-scripts would skip.
     expect(
@@ -953,23 +957,29 @@ describe('createGitWorktreeProvisioner', () => {
     ).toBe(true);
   });
 
-  it('falls back to a symlink for a package it cannot reproduce faithfully', () => {
+  it('omits a package it cannot reproduce faithfully instead of sharing it by symlink', () => {
     const { repo, worktree } = repoWithNestedModules();
     // An absolute internal symlink would not survive the bind mount into the
-    // sandbox, so the package cannot be hardlinked entry-for-entry. Half a tree
-    // is worse than the old symlink — take the symlink.
+    // sandbox, so the package cannot be copied entry-for-entry. A source symlink
+    // would let an agent mutate the main checkout, so fail closed for this package.
     symlinkSync(tmpdir(), join(repo, 'platform', 'node_modules', 'next', 'absolute'));
 
     mirrorNestedNodeModules(repo, worktree);
 
     const mirrored = join(worktree, 'platform', 'node_modules', 'next');
-    expect(lstatSync(mirrored).isSymbolicLink()).toBe(true);
-    expect(isAbsolute(readlinkSync(mirrored))).toBe(false);
-    expect(realpathSync(mirrored)).toBe(
-      realpathSync(join(repo, 'platform', 'node_modules', 'next')),
-    );
-    // No half-built tree left behind next to it.
-    expect(readdirSync(join(worktree, 'platform', 'node_modules')).sort()).toContain('next');
+    expect(existsSync(mirrored)).toBe(false);
+    // No half-built tree survives.
+    expect(readdirSync(join(worktree, 'platform', 'node_modules')).sort()).not.toContain('next');
+  });
+
+  it('omits a package whose relative internal symlink escapes the package tree', () => {
+    const { repo, worktree } = repoWithNestedModules();
+    const pkg = join(repo, 'platform', 'node_modules', 'next');
+    symlinkSync('../../outside-secret', join(pkg, 'relative-escape'));
+
+    mirrorNestedNodeModules(repo, worktree);
+
+    expect(existsSync(join(worktree, 'platform', 'node_modules', 'next'))).toBe(false);
   });
 
   it('reproduces .bin shims verbatim so they resolve through the mirrored packages', () => {
@@ -983,13 +993,13 @@ describe('createGitWorktreeProvisioner', () => {
     expect(readlinkSync(shim)).toBe('../next/dist/bin/next');
     const target = join(worktree, 'platform', 'node_modules', 'next', 'dist', 'bin', 'next');
     expect(realpathSync(shim)).toBe(realpathSync(target));
-    // Same file as the source checkout's, reached without leaving the worktree.
-    expect(statSync(shim).ino).toBe(
+    // Isolated from the source checkout even though the shim resolves locally.
+    expect(statSync(shim).ino).not.toBe(
       statSync(join(repo, 'platform', 'node_modules', 'next', 'dist', 'bin', 'next')).ino,
     );
     // Scope directories are recreated so their members are mirrored individually.
     const scoped = join(worktree, 'platform', 'node_modules', '@scope', 'pkg', 'package.json');
-    expect(statSync(scoped).ino).toBe(
+    expect(statSync(scoped).ino).not.toBe(
       statSync(join(repo, 'platform', 'node_modules', '@scope', 'pkg', 'package.json')).ino,
     );
     // npm's install state stays out: a later install must not trust a tree it
@@ -1009,7 +1019,7 @@ describe('createGitWorktreeProvisioner', () => {
     expect(existsSync(join(worktree, 'platform', 'node_modules', 'next'))).toBe(false);
   });
 
-  it('links .bin shims that are real files, as pnpm and yarn write them', () => {
+  it('copies real .bin shims so a worktree cannot mutate the shared install', () => {
     const { repo, worktree } = repoWithNestedModules();
     // npm symlinks its shims; pnpm/yarn write shell scripts. Dropping those would
     // leave the dependency's CLI off the `npm run` PATH.
@@ -1021,9 +1031,11 @@ describe('createGitWorktreeProvisioner', () => {
     mirrorNestedNodeModules(repo, worktree);
 
     const shim = join(worktree, 'platform', 'node_modules', '.bin', 'vite');
-    expect(realpathSync(shim)).toBe(
-      realpathSync(join(repo, 'platform', 'node_modules', '.bin', 'vite')),
-    );
+    const source = join(repo, 'platform', 'node_modules', '.bin', 'vite');
+    expect(realpathSync(shim)).not.toBe(realpathSync(source));
+    expect(readFileSync(shim, 'utf8')).toBe(readFileSync(source, 'utf8'));
+    writeFileSync(shim, '# isolated\n');
+    expect(readFileSync(source, 'utf8')).toContain('exec node');
   });
 
   it('mirrors nested node_modules up to the documented depth bound, and no deeper', () => {

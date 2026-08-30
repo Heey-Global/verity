@@ -21,6 +21,14 @@ const server = {
 } satisfies DevServer;
 
 describe('devServerUrl', () => {
+  it.each(['http://0.0.0.0:3000', 'http://[::]:3000'])(
+    'rewrites wildcard bind URL %s to the published Verity host',
+    (url) => {
+      expect(devServerUrl('https://verity.example.test:8082', { ...server, url })).toBe(
+        'http://verity.example.test:3099/',
+      );
+    },
+  );
   it('uses the Verity host and the published Dev Server port', () => {
     expect(devServerUrl('https://verity.example.test:8082', server)).toBe(
       'http://verity.example.test:3099/',
@@ -50,5 +58,22 @@ describe('devServerUrl', () => {
       devServerUrl('http://192.168.1.20:8082', { ...server, url: 'javascript:alert(1)' }),
     ).toBe(null);
     expect(devServerUrl('file:///tmp/verity', server)).toBe(null);
+  });
+
+  it('validates configured URLs even without a published host port', () => {
+    expect(
+      devServerUrl('https://verity.example.test', {
+        ...server,
+        hostPort: null,
+        url: 'https://preview.example.test/app',
+      }),
+    ).toBe('https://preview.example.test/app');
+    expect(
+      devServerUrl('https://verity.example.test', {
+        ...server,
+        hostPort: null,
+        url: 'javascript:alert(1)',
+      }),
+    ).toBeNull();
   });
 });

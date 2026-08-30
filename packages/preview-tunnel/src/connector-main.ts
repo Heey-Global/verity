@@ -1,4 +1,4 @@
-import { CONNECTOR_MAX_RECONNECT_ATTEMPTS, PreviewConnector, reconnectDelayMs } from './index.js';
+import { PreviewConnector, supervisePreviewConnector } from './index.js';
 import { startStaticPreviewServer } from './static-server.js';
 
 const maxBodyBytes = optionalPositiveInteger('VERITY_PREVIEW_MAX_BODY_BYTES');
@@ -24,22 +24,11 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
-let attempt = 0;
-while (!stopping) {
-  try {
-    await connector.connect();
-    attempt = 0;
-    process.stdout.write('preview connector established\n');
-    await connector.waitForDisconnect();
-    if (stopping) break;
-    process.stderr.write('preview connector disconnected; reconnecting\n');
-  } catch (error) {
-    if (stopping) break;
-    attempt += 1;
-    if (attempt >= CONNECTOR_MAX_RECONNECT_ATTEMPTS) throw error;
-  }
-  await new Promise((resolve) => setTimeout(resolve, reconnectDelayMs(attempt)));
-}
+await supervisePreviewConnector(connector, {
+  stopping: () => stopping,
+  established: () => process.stdout.write('preview connector established\n'),
+  disconnected: () => process.stderr.write('preview connector disconnected; reconnecting\n'),
+});
 
 function required(name: string): string {
   const value = process.env[name]?.trim();

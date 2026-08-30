@@ -1,0 +1,63 @@
+name: verity-mobile-native-verify
+
+# Manual and non-publishing. GitHub orchestrates the run; Expo/EAS performs the
+# native build on its hosted iOS infrastructure. No developer Mac is involved.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to compile
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-native-verify-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-ios:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      - name: Install and verify the mobile sources
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run -w @verity/mobile-app patch:native
+          npm run -w @verity/mobile build
+          npm run -w @verity/mobile-app typecheck
+
+      - name: Require Expo authentication
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPO_TOKEN:-}" ]]; then
+            echo '::error::EXPO_TOKEN is required for the EAS native compile gate.' >&2
+            exit 1
+          fi
+
+      - name: Compile iOS in EAS Cloud
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GOOGLE_AUTH_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+        run: >-
+          npx --yes eas-cli@21.0.1 workflow:run
+          .eas/workflows/verify-ios.yml
+          --non-interactive
+          --wait

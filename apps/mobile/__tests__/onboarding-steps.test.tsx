@@ -251,7 +251,9 @@ describe('onboarding master-password step', () => {
     fireEvent.changeText(screen.getByLabelText('Confirm password'), 'super-secret-pw');
     fireEvent.press(screen.getByLabelText('Set master password'));
 
-    await waitFor(() => expect(initSecretPassword).toHaveBeenCalledWith('super-secret-pw'));
+    await waitFor(() =>
+      expect(initSecretPassword).toHaveBeenCalledWith('super-secret-pw', undefined, undefined),
+    );
     // After a successful init the status refetch flips to `ready` and Next appears.
     await waitFor(() => expect(screen.getByLabelText('Next')).toBeOnTheScreen());
   });
@@ -292,7 +294,9 @@ describe('onboarding master-password step', () => {
     fireEvent.changeText(screen.getByLabelText('Master password'), 'wrong-pw');
     fireEvent.press(screen.getByLabelText('Unlock secret store'));
 
-    expect(await screen.findByText('Incorrect password.')).toBeOnTheScreen();
+    expect(
+      await screen.findByText('Incorrect password or a new pairing code is required.'),
+    ).toBeOnTheScreen();
     expect(screen.queryByLabelText('Next')).toBeNull();
   });
 
@@ -310,7 +314,9 @@ describe('onboarding master-password step', () => {
     fireEvent.changeText(screen.getByLabelText('Master password'), 'correct-pw');
     fireEvent.press(screen.getByLabelText('Unlock secret store'));
 
-    await waitFor(() => expect(unlockSecret).toHaveBeenCalledWith('correct-pw'));
+    await waitFor(() =>
+      expect(unlockSecret).toHaveBeenCalledWith('correct-pw', undefined, undefined),
+    );
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/'));
   });
 
@@ -333,7 +339,9 @@ describe('onboarding master-password step', () => {
     fireEvent.changeText(screen.getByLabelText('Master password'), 'correct-pw');
     fireEvent.press(screen.getByLabelText('Unlock secret store'));
 
-    await waitFor(() => expect(unlockSecret).toHaveBeenCalledWith('correct-pw'));
+    await waitFor(() =>
+      expect(unlockSecret).toHaveBeenCalledWith('correct-pw', undefined, undefined),
+    );
     await waitFor(() =>
       expect(mockSetAuthToken).toHaveBeenCalledWith('http://verity.example:8082', 'dogfood-token'),
     );
@@ -408,7 +416,9 @@ describe('onboarding master-password step', () => {
     fireEvent.changeText(await screen.findByLabelText('Master password'), 'right-pw');
     fireEvent.press(screen.getByLabelText('Unlock secret store'));
 
-    await waitFor(() => expect(unlockSecret).toHaveBeenCalledWith('right-pw'));
+    await waitFor(() =>
+      expect(unlockSecret).toHaveBeenCalledWith('right-pw', undefined, undefined),
+    );
     await waitFor(() => expect(screen.getByLabelText('Next')).toBeOnTheScreen());
   });
 

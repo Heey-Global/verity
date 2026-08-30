@@ -74,7 +74,7 @@ export function GithubConnectPanel({
       const owner = organization.trim();
       if (owner.length > 0) startUrl += `&owner=${encodeURIComponent(owner)}`;
       try {
-        const token = await client.prepareGithubManifest();
+        const token = await client.prepareGithubManifest(base);
         startUrl += `&ott=${encodeURIComponent(token)}`;
       } catch (caught) {
         // Older servers predate the single-use token. Only their 404 is safe to
@@ -87,8 +87,17 @@ export function GithubConnectPanel({
           return;
         }
       }
-      await Linking.openURL(startUrl);
-      if (mountedRef.current) setPhase({ kind: 'waiting' });
+      try {
+        await Linking.openURL(startUrl);
+        if (mountedRef.current) setPhase({ kind: 'waiting' });
+      } catch {
+        if (mountedRef.current) {
+          setPhase({
+            kind: 'error',
+            message: 'Could not open GitHub authorization. Check this device and try again.',
+          });
+        }
+      }
     })();
   };
 

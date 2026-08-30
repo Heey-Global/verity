@@ -57,9 +57,9 @@ export interface SecretJobFrameSpool extends SecretJobFrameSink {
    * invalid frame, or a storage failure. On rejection nothing is persisted for that frame.
    */
   persist(frame: SecretJobFrame): Promise<void>;
-  /** Replay a bounded page (≤256 frames, ≤1 MiB) of a job's frames with sequence > `afterSequence`
+  /** Replay a bounded page (≤256 frames, ≤1 MiB) beginning at `nextSequence`
    * (from the start when omitted). */
-  readPage(jobId: string, afterSequence?: number): Promise<SecretJobFrameSpoolPage>;
+  readPage(jobId: string, nextSequence?: number): Promise<SecretJobFrameSpoolPage>;
   /** Delete a job's frames (the W5 reaper hook). Idempotent; returns the number of frames removed. */
   deleteJob(jobId: string): Promise<number>;
   /** Retention sweep: delete frames ingested at or before `before` (ISO). Returns rows removed. */
@@ -110,16 +110,16 @@ function selectPage<T>(
 
 /** Assemble the page envelope (firstSequence/nextSequence) from the selected, ordered frames. */
 function buildPage(
-  afterSequence: number | undefined,
+  nextSequence: number | undefined,
   frames: SecretJobFrame[],
   hasMore: boolean,
 ): SecretJobFrameSpoolPage {
-  const after = afterSequence ?? -1;
+  const cursor = nextSequence ?? 0;
   const last = frames.at(-1);
   const first = frames.at(0);
   const page: SecretJobFrameSpoolPage = {
     frames,
-    nextSequence: last !== undefined ? last.sequence + 1 : after + 1,
+    nextSequence: last !== undefined ? last.sequence + 1 : cursor,
     hasMore,
   };
   if (first !== undefined) page.firstSequence = first.sequence;
@@ -158,13 +158,13 @@ export function createInMemorySecretJobFrameSpool(
       jobs.set(frame.jobId, job);
       return Promise.resolve();
     },
-    readPage(jobId: string, afterSequence?: number): Promise<SecretJobFrameSpoolPage> {
-      const after = afterSequence ?? -1;
-      const rows = (jobs.get(jobId)?.rows ?? []).filter((r) => r.frame.sequence > after);
+    readPage(jobId: string, nextSequence?: number): Promise<SecretJobFrameSpoolPage> {
+      const cursor = nextSequence ?? 0;
+      const rows = (jobs.get(jobId)?.rows ?? []).filter((r) => r.frame.sequence >= cursor);
       const { included, hasMore } = selectPage(rows, (r) => r.byteLength);
       return Promise.resolve(
         buildPage(
-          afterSequence,
+          nextSequence,
           included.map((r) => r.frame),
           hasMore,
         ),
@@ -178,13 +178,13 @@ export function createInMemorySecretJobFrameSpool(
     purge(before: string): Promise<number> {
       let removed = 0;
       for (const [jobId, job] of jobs) {
-        const kept = job.rows.filter((r) => r.createdAt > before);
-        removed += job.rows.length - kept.length;
-        if (kept.length === 0) {
+        // Retention is job-granular. Removing an old prefix from a job that has a
+        // recent continuation destroys attach history while leaving the tail live;
+        // removing its whole history makes the next contiguous sequence look like a
+        // new job at sequence 0. Reap only when the newest frame is old.
+        if ((job.rows.at(-1)?.createdAt ?? '') <= before) {
+          removed += job.rows.length;
           jobs.delete(jobId);
-        } else {
-          job.rows = kept;
-          job.bytes = kept.reduce((total, r) => total + r.byteLength, 0);
         }
       }
       return Promise.resolve(removed);
@@ -249,8 +249,8 @@ export function createPostgresSecretJobFrameSpool(
           .execute();
       });
     },
-    async readPage(jobId: string, afterSequence?: number): Promise<SecretJobFrameSpoolPage> {
-      const after = afterSequence ?? -1;
+    async readPage(jobId: string, nextSequence?: number): Promise<SecretJobFrameSpoolPage> {
+      const cursor = nextSequence ?? 0;
       // Fetch one row past the frame cap so `hasMore` is exact from this single snapshot, then bound
       // the page by frame/byte limits BEFORE decrypting so only the returned frames are decrypted.
       const rows = await db
@@ -266,7 +266,7 @@ export function createPostgresSecretJobFrameSpool(
           'emitted_at',
         ])
         .where('job_id', '=', jobId)
-        .where('sequence', '>', after)
+        .where('sequence', '>=', cursor)
         .orderBy('sequence', 'asc')
         .limit(MAX_PAGE_FRAMES + 1)
         .execute();
@@ -282,7 +282,7 @@ export function createPostgresSecretJobFrameSpool(
           emittedAt: row.emitted_at,
         }),
       );
-      return buildPage(afterSequence, frames, hasMore);
+      return buildPage(nextSequence, frames, hasMore);
     },
     async deleteJob(jobId: string): Promise<number> {
       const result = await db
@@ -292,9 +292,14 @@ export function createPostgresSecretJobFrameSpool(
       return Number(result.numDeletedRows ?? 0n);
     },
     async purge(before: string): Promise<number> {
+      const expiredJobs = db
+        .selectFrom('secret_job_frames')
+        .select('job_id')
+        .groupBy('job_id')
+        .having(sql<boolean>`max(created_at) <= ${new Date(before)}`);
       const result = await db
         .deleteFrom('secret_job_frames')
-        .where('created_at', '<=', new Date(before))
+        .where('job_id', 'in', expiredJobs)
         .executeTakeFirst();
       return Number(result.numDeletedRows ?? 0n);
     },

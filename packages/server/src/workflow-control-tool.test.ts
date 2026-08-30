@@ -9,7 +9,7 @@ const view = (state: WorkflowView['state'], version: number): WorkflowView => ({
   state,
   objective: 'Ship OCR update',
   environment: 'staging',
-  serviceId: 'deep-ocr-api',
+  serviceId: 'sample-app-api',
   steps: [],
 });
 
@@ -46,7 +46,7 @@ describe('control-plane delivery tool', () => {
         projectId: 'verity-control',
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callId: 'call-1',
+        invocationId: 'call-1',
         request: {
           environment: 'production',
           objective: 'Ship the website',
@@ -102,7 +102,7 @@ describe('control-plane delivery tool', () => {
         projectId: 'verity-control',
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callId: 'call-1',
+        invocationId: 'call-1',
         request: {
           environment: 'production',
           objective: 'Ship it',
@@ -158,7 +158,7 @@ describe('control-plane delivery tool', () => {
         projectId: 'verity-control',
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callId: 'call-1',
+        invocationId: 'call-1',
         request: {
           environment: 'production',
           objective: 'Ship it',
@@ -193,9 +193,9 @@ describe('control-plane delivery tool', () => {
         projectId: 'verity-control',
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callId: 'call-1',
+        invocationId: 'call-1',
         request: {
-          serviceId: 'deep-ocr-api',
+          serviceId: 'sample-app-api',
           environment: 'staging',
           objective: 'Ship OCR update',
         },
@@ -203,7 +203,7 @@ describe('control-plane delivery tool', () => {
     ).resolves.toEqual({
       workflowId: 'wf_1',
       state: 'running',
-      serviceId: 'deep-ocr-api',
+      serviceId: 'sample-app-api',
       environment: 'staging',
     });
     expect(createWorkflow).toHaveBeenCalledWith(
@@ -231,7 +231,7 @@ describe('control-plane delivery tool', () => {
       getSession: vi.fn(async () => ({ projectId: null })),
     });
     const request = {
-      serviceId: 'deep-ocr-api',
+      serviceId: 'sample-app-api',
       environment: 'staging',
       objective: 'Ship OCR update',
     };
@@ -240,21 +240,21 @@ describe('control-plane delivery tool', () => {
       projectId: 'verity-control',
       sessionId: 'session-1',
       turnId: 'turn-1',
-      callId: 'call-1',
+      invocationId: 'call-1',
       request,
     });
     await tool({
       projectId: 'verity-control',
       sessionId: 'session-1',
       turnId: 'turn-2',
-      callId: 'call-2',
+      invocationId: 'call-2',
       request,
     });
     await tool({
       projectId: 'verity-control',
       sessionId: 'session-1',
       turnId: 'turn-2',
-      callId: 'call-2',
+      invocationId: 'call-2',
       request,
     });
 
@@ -282,7 +282,7 @@ describe('control-plane delivery tool', () => {
         projectId: 'verity-control',
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callId: 'call-1',
+        invocationId: 'call-1',
         request: { serviceId: 'api', environment: 'staging', objective: 'Ship it' },
       }),
     ).resolves.toMatchObject({ workflowId: 'wf_1', state: 'running' });
@@ -306,7 +306,7 @@ describe('control-plane delivery tool', () => {
         projectId: 'verity-control',
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callId: 'call-1',
+        invocationId: 'call-1',
         request: { serviceId: 'api', environment: 'staging', objective: 'Ship it' },
       }),
     ).resolves.toMatchObject({ workflowId: 'wf_1', state: 'succeeded' });
@@ -329,7 +329,7 @@ describe('control-plane delivery tool', () => {
         projectId: 'source-project',
         sessionId: 'session-1',
         turnId: 'turn-1',
-        callId: 'call-1',
+        invocationId: 'call-1',
         request: { serviceId: 'api', environment: 'staging', objective: 'Ship it' },
       }),
     ).rejects.toThrow('restricted to Verity Control sessions');

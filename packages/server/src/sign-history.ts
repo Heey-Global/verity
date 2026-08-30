@@ -76,6 +76,8 @@ export interface SignHistoryOptions {
  * here.
  */
 const FORBIDDEN_IN_IDENTITY = /[\n\r<>]/u;
+const SAFE_PUBLISHED_REF = /^(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/u;
+const OBJECT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 
 /** One header of a commit object, kept verbatim so a rebuild can reproduce the
  *  ones this module has no opinion about. */
@@ -264,9 +266,12 @@ export async function signHistoryForPush(
     ['committer name', identity.committerName],
     ['committer email', identity.committerEmail],
   ] as const) {
-    if (FORBIDDEN_IN_IDENTITY.test(value)) {
+    if (value.trim() === '' || value.length > 254 || FORBIDDEN_IN_IDENTITY.test(value)) {
       throw new Error(`the configured ${field} contains a character a commit header cannot carry`);
     }
+  }
+  if (opts.publishedRef !== undefined && !SAFE_PUBLISHED_REF.test(opts.publishedRef)) {
+    throw new Error('published history ref is invalid');
   }
 
   // Anything the remote already published is excluded outright rather than
@@ -278,6 +283,9 @@ export async function signHistoryForPush(
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '');
+  if (listed.some((sha) => !OBJECT_ID.test(sha))) {
+    throw new Error('git returned an invalid commit object id');
+  }
   if (listed.length === 0) return 0;
 
   const commits: RawCommit[] = [];

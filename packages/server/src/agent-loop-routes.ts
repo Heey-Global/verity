@@ -222,7 +222,19 @@ export function registerAgentLoopRoutes(
       return { error: 'Agent Loop execution is not configured' };
     }
     const run = await deps.eventStore.startAgentLoopRun(loop.id);
-    const result = await deps.testAgentLoop(loop);
+    let result: AgentLoopTestResult;
+    try {
+      result = await deps.testAgentLoop(loop);
+    } catch (error) {
+      await deps.eventStore.finishAgentLoopRun(run.id, {
+        outcome: 'error',
+        exitCode: null,
+        detail: error instanceof Error ? error.message : 'Agent Loop test failed',
+        sessionId: null,
+        isTest: true,
+      });
+      throw error;
+    }
     await deps.eventStore.finishAgentLoopRun(run.id, { ...result, isTest: true });
     if (result.outcome === 'ok' || result.outcome === 'acted') {
       const testedLoop = await deps.eventStore.markAgentLoopTestPassed(loop.id, loop);

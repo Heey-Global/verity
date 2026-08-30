@@ -83,6 +83,8 @@ if ! command -v jq >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
   if try_docker_fallback; then
     exit 0
   fi
+  echo "verity-git-sign: jq and curl are required when Docker fallback is unavailable" >&2
+  exit 1
 fi
 body="$(jq -nc --arg namespace "$namespace" --arg payload "$payload" \
   '{namespace: $namespace, payload: $payload}')"

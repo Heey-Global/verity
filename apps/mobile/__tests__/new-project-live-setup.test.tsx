@@ -316,6 +316,40 @@ describe('new project live setup', () => {
     expect(mockReplace).toHaveBeenCalledWith('/project/project-1');
   });
 
+  it('rebuilds a resumed project before treating persisted secrets as mounted', async () => {
+    mockParams = { projectId: 'project-1' };
+    const pendingProject = { ...project('active'), setupStatus: 'pending' as const };
+    const boundSettings = {
+      ...unboundSettings,
+      dopplerProject: 'website',
+      dopplerConfig: 'development',
+    };
+    const recreateProjectContainer = jest.fn().mockResolvedValue(pendingProject);
+    mockCreateClient.mockReturnValue(
+      client({
+        getProject: jest.fn().mockResolvedValue({
+          project: pendingProject,
+          settings: boundSettings,
+          sessions: [],
+        }),
+        getDevServerDetection: jest.fn().mockResolvedValue(reviewedDetection),
+        listDopplerConfigs: jest.fn().mockResolvedValue({
+          configs: [{ name: 'development', environment: 'Development', root: '/' }],
+        }),
+        recreateProjectContainer,
+      }),
+    );
+
+    render(<NewProjectScreen />);
+
+    await waitFor(() =>
+      expect(recreateProjectContainer).toHaveBeenCalledWith('project-1', {
+        confirmWarnings: false,
+      }),
+    );
+    expect(await screen.findByLabelText('Project setup complete')).toBeOnTheScreen();
+  });
+
   it('allows finishing setup without project secrets', async () => {
     mockCreateClient.mockReturnValue(
       client({ getDevServerDetection: jest.fn().mockResolvedValue(reviewedDetection) }),

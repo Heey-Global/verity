@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { createServer } from 'node:net';
 import { open, readdir, realpath, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -351,28 +351,37 @@ async function readPinned(root: string): Promise<UpdateJournal | null> {
 
 /** Hold a crash-released, host-wide single-writer lease for one journal root. */
 export async function withUpdateJournalLease<T>(root: string, run: () => Promise<T>): Promise<T> {
-  const identity = createHash('sha256')
-    .update(await realpath(root))
-    .digest('hex');
-  const server = createServer();
-  const socket = `\0verity-update-journal-${identity}`;
+  const canonicalRoot = await realpath(root);
+  const lockPath = join(canonicalRoot, '.update-journal.lock');
+  // Abstract Unix sockets are scoped to a network namespace. Two updater
+  // containers can therefore bind the same name while sharing (and corrupting)
+  // one host journal volume. `flock` attaches the lease to an inode on that
+  // shared volume, and the kernel releases it when this child/process dies.
+  const holder = spawn(
+    'flock',
+    ['--nonblock', lockPath, 'sh', '-c', 'printf "locked\\n"; cat >/dev/null'],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
   await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(socket, () => {
-      server.off('error', reject);
-      resolve();
+    let output = '';
+    const fail = (error: unknown): void => {
+      reject(new Error('another updater process owns the update journal', { cause: error }));
+    };
+    holder.once('error', fail);
+    holder.once('exit', (code, signal) =>
+      fail(new Error(`flock exited: ${String(code ?? signal)}`)),
+    );
+    holder.stdout.setEncoding('utf8');
+    holder.stdout.on('data', (chunk: string) => {
+      output += chunk;
+      if (output.includes('locked\n')) resolve();
     });
-  }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'EADDRINUSE')
-      throw new Error('another updater process owns the update journal', { cause: error });
-    throw error;
   });
   try {
     return await run();
   } finally {
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error === undefined ? resolve() : reject(error))),
-    );
+    holder.stdin.end();
+    await new Promise<void>((resolve) => holder.once('exit', () => resolve()));
   }
 }
 

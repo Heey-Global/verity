@@ -169,10 +169,15 @@ export function createInMemorySecretAuditLog(): SecretAuditLog {
       return Promise.resolve(event);
     },
     query(unparsed) {
-      const filter = secretAuditQuerySchema.parse(unparsed);
-      const chain = chains.get(filter.projectId) ?? [];
-      const matched = chain.filter((event) => secretAuditEventMatchesQuery(event, filter));
-      return Promise.resolve(matched.slice(0, filter.limit));
+      // Match the durable implementation's Promise contract even when validation
+      // fails. Parsing before constructing the Promise throws synchronously and
+      // bypasses callers' ordinary rejection handling.
+      return Promise.resolve().then(() => {
+        const filter = secretAuditQuerySchema.parse(unparsed);
+        const chain = chains.get(filter.projectId) ?? [];
+        const matched = chain.filter((event) => secretAuditEventMatchesQuery(event, filter));
+        return matched.slice(0, filter.limit);
+      });
     },
     verifyChain(projectId, expectedHead) {
       const chain = chains.get(projectId) ?? [];
@@ -196,30 +201,41 @@ export function createPostgresSecretAuditLog(db: Kysely<Database>): SecretAuditL
     },
     async query(unparsed) {
       const filter = secretAuditQuerySchema.parse(unparsed);
-      let statement = db
-        .selectFrom('secret_audit_events')
-        .select('event_json')
-        .where('project_id', '=', filter.projectId);
-      if (filter.kind !== undefined) statement = statement.where('kind', '=', filter.kind);
-      if (filter.grantId !== undefined)
-        statement = statement.where('grant_id', '=', filter.grantId);
-      if (filter.jobId !== undefined) statement = statement.where('job_id', '=', filter.jobId);
-      if (filter.requestHash !== undefined) {
-        statement = statement.where('request_hash', '=', filter.requestHash);
-      }
-      if (filter.requestMac !== undefined) {
-        statement = statement.where('request_mac', '=', filter.requestMac);
-      }
-      if (filter.sinceSequence !== undefined) {
-        statement = statement.where('sequence', '>', filter.sinceSequence);
-      }
-      const rows = await statement.orderBy('sequence', 'asc').limit(filter.limit).execute();
       // The SQL WHERE only accelerates the read via the denormalized index columns; authority is the
       // hash-covered event_json. Re-apply the predicate to the parsed events so a tampered index
-      // column can never surface a row whose true content does not match the filter.
-      return rows
-        .map((row) => rowToEvent(row.event_json))
-        .filter((event) => secretAuditEventMatchesQuery(event, filter));
+      // column can never surface a row whose true content does not match the filter. Validate before
+      // applying the caller's limit: a forged false-positive index row must not consume the page and
+      // hide a later authentic match. Read bounded candidate batches until the page is full or the
+      // indexed result is exhausted.
+      const matched: SecretAuditEvent[] = [];
+      let cursor = filter.sinceSequence ?? -1;
+      while (matched.length < filter.limit) {
+        let statement = db
+          .selectFrom('secret_audit_events')
+          .select(['sequence', 'event_json'])
+          .where('project_id', '=', filter.projectId)
+          .where('sequence', '>', cursor);
+        if (filter.kind !== undefined) statement = statement.where('kind', '=', filter.kind);
+        if (filter.grantId !== undefined)
+          statement = statement.where('grant_id', '=', filter.grantId);
+        if (filter.jobId !== undefined) statement = statement.where('job_id', '=', filter.jobId);
+        if (filter.requestHash !== undefined) {
+          statement = statement.where('request_hash', '=', filter.requestHash);
+        }
+        if (filter.requestMac !== undefined) {
+          statement = statement.where('request_mac', '=', filter.requestMac);
+        }
+        const rows = await statement.orderBy('sequence', 'asc').limit(filter.limit).execute();
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          cursor = row.sequence;
+          const event = rowToEvent(row.event_json);
+          if (secretAuditEventMatchesQuery(event, filter)) matched.push(event);
+          if (matched.length === filter.limit) break;
+        }
+        if (rows.length < filter.limit) break;
+      }
+      return matched;
     },
     async verifyChain(projectId, expectedHead) {
       const rows = await db

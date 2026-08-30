@@ -52,4 +52,24 @@ describe('writeReferenceDocFile', () => {
     expect((await lstat(target)).isFile()).toBe(true);
     expect(await readFile(target, 'utf8')).toBe('imported');
   });
+
+  it('refuses a symlink in place of the validated reference directory', async () => {
+    const outside = join(root, 'outside');
+    const linked = join(root, 'linked-reference');
+    await mkdir(outside);
+    await symlink(outside, linked);
+    await expect(
+      writeReferenceDocFile(linked, 'spec-abcd1234.md', Buffer.from('nope')),
+    ).rejects.toThrow();
+    await expect(readFile(join(outside, 'spec-abcd1234.md'))).rejects.toThrow();
+  });
+
+  it.each(['../outside.md', 'nested/spec.md', 'nested\\spec.md', '.', '..', ''])(
+    'refuses non-basename filename %j',
+    async (fileName) => {
+      await expect(
+        writeReferenceDocFile(referenceDir, fileName, Buffer.from('nope')),
+      ).rejects.toThrow(/bare filename/);
+    },
+  );
 });

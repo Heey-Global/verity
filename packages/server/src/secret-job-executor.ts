@@ -262,6 +262,7 @@ type JobRecord = {
   requestHash: string;
   grantId: string;
   profile: ExecutionProfileRef;
+  absoluteDeadline: string;
   state: SecretJobState;
   cleanupAttempts: number;
   workload?: ExecutorWorkloadIdentity;
@@ -338,14 +339,33 @@ export function createSecretJobExecutor(options: {
   }
 
   async function drive(record: JobRecord, sandbox: LaunchedSandbox): Promise<void> {
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      const remaining = Date.parse(record.absoluteDeadline) - now().getTime();
+      deadlineTimer = setTimeout(
+        () => reject(new SecretJobRejectedError('job absolute deadline elapsed')),
+        Math.max(0, remaining),
+      );
+      deadlineTimer.unref?.();
+    });
     try {
-      for await (const frame of sandbox.frames) {
+      const iterator = sandbox.frames[Symbol.asyncIterator]();
+      while (true) {
+        const next = await Promise.race([iterator.next(), deadline]);
+        if (next.done) break;
+        const frame = next.value;
         if (frame.jobId !== record.jobId) {
           throw new SecretJobRejectedError('sandbox emitted a foreign job frame');
         }
         await options.frames.persist(secretJobFrameSchema.parse(frame));
       }
-      record.terminalResult = secretJobTerminalResultSchema.parse(await sandbox.result);
+      const terminalResult = secretJobTerminalResultSchema.parse(
+        await Promise.race([sandbox.result, deadline]),
+      );
+      if (terminalResult.jobId !== record.jobId) {
+        throw new SecretJobRejectedError('sandbox emitted a foreign terminal result');
+      }
+      record.terminalResult = terminalResult;
       transition(record, 'terminal');
     } catch {
       // Any failure driving a secret-bearing sandbox must still tear it down: a sandbox that just
@@ -362,6 +382,8 @@ export function createSecretJobExecutor(options: {
       if (record.state === 'pending' || record.state === 'running') {
         transition(record, 'terminal');
       }
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     }
     if (record.state === 'terminal') {
       // drive() runs once per job, so the terminal outcome is recorded exactly once, before reap.
@@ -421,6 +443,7 @@ export function createSecretJobExecutor(options: {
         requestHash: request.requestHash,
         grantId: request.grantId,
         profile: request.profile,
+        absoluteDeadline: request.absoluteDeadline,
         state: 'pending',
         cleanupAttempts: 0,
       };
@@ -437,20 +460,64 @@ export function createSecretJobExecutor(options: {
         ...(request.snapshotId !== undefined ? { snapshotId: request.snapshotId } : {}),
       };
       let sandbox: LaunchedSandbox;
+      const launch = options.launcher.launch(spec);
+      const remainingMs = Date.parse(request.absoluteDeadline) - now().getTime();
+      let launchTimer: ReturnType<typeof setTimeout> | undefined;
+      let launchTimedOut = false;
       try {
-        sandbox = await options.launcher.launch(spec);
+        sandbox = await Promise.race([
+          launch,
+          new Promise<never>((_resolve, reject) => {
+            launchTimer = setTimeout(
+              () => {
+                launchTimedOut = true;
+                reject(new SecretJobRejectedError('job deadline elapsed during launch'));
+              },
+              Math.max(0, remainingMs),
+            );
+            launchTimer.unref?.();
+          }),
+        ]);
       } catch (error) {
         // The launch is secret-free and happens before the sandbox redeems the capability, so a
         // failed launch consumed nothing. Drop the record so the failure is observable and an
         // idempotent replay re-launches cleanly instead of returning a masked, never-started job.
-        jobs.delete(request.jobId);
+        if (launchTimedOut) {
+          // The launcher contract is keyed by job id. Keep that id consumed so a
+          // late resolution can never tear down a retry's replacement sandbox.
+          // Teardown immediately as well: a launcher stuck after allocating its
+          // resources may never resolve its promise at all.
+          record.terminalResult = secretJobTerminalResultSchema.parse({
+            protocolVersion: 1,
+            jobId: request.jobId,
+            outcome: 'failed',
+            finishedAt: isoNow(now),
+          });
+          transition(record, 'terminal');
+          const cleanup = options.launcher.teardown(request.jobId);
+          record.driver = cleanup.then(() => {
+            if (record.state === 'terminal') transition(record, 'reaping');
+            if (record.state === 'reaping') transition(record, 'reaped');
+          });
+          void record.driver.catch(() => undefined);
+          void launch.then(() => options.launcher.teardown(request.jobId)).catch(() => undefined);
+        } else {
+          jobs.delete(request.jobId);
+          void launch.then(() => options.launcher.teardown(request.jobId)).catch(() => undefined);
+        }
         throw error;
+      } finally {
+        if (launchTimer !== undefined) clearTimeout(launchTimer);
       }
       record.workload = sandbox.workload;
       transition(record, 'running');
       // Drive the sandbox to completion and reap. Surfaced to the caller so a test can await the
       // full lifecycle; production would supervise this independently of the start ack.
       record.driver = drive(record, sandbox);
+      // Production start returns before the lifecycle settles. Attach a handler
+      // immediately so a recorder/cleanup failure cannot become a process-level
+      // unhandled rejection; `settle()` still observes the original promise.
+      void record.driver.catch(() => undefined);
 
       return secretJobStartResponseSchema.parse({
         protocolVersion: 1,
@@ -481,8 +548,9 @@ export function createSecretJobExecutor(options: {
       if (record === undefined) throw new SecretJobRejectedError('unknown job');
       record.cleanupAttempts += 1;
       if (record.state === 'reaped') {
-        // Already reaped by the normal drive path or a prior cleanup — teardown is idempotent.
-        await options.launcher.teardown(jobId);
+        // Already reaped by the normal drive path or a prior cleanup. Do not call
+        // the external teardown again: idempotency is this boundary's guarantee,
+        // not an assumption imposed on every launcher implementation.
         return secretJobCleanupResponseSchema.parse({
           protocolVersion: 1,
           jobId,

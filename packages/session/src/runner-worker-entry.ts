@@ -1,6 +1,8 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { AttachmentUpload } from '@verity/events';
+import { constants } from 'node:fs';
+import { open, unlink } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { attachmentUploadSchema } from '@verity/events';
+import { z } from 'zod';
 import {
   isRunnerSupervisorBackend,
   type Backend,
@@ -12,49 +14,83 @@ import { AcpOpenCodeBackend } from './acp-opencode-backend.js';
 import { createBrokerSpawner } from './broker-spawner.js';
 import { RunnerServer } from './runner-server.js';
 
-type StartTurnRequest = {
-  protocolVersion: 1;
-  kind: 'start-turn';
-  turnId: string;
-  startCommandId: string;
-  sessionId: string;
-  backend: RunnerSupervisorBackend;
-  worktree: string;
-  cwd: string;
-  prompt: string;
-  attachments?: AttachmentUpload[];
-  model?: string;
-  steerable: boolean;
-  permissionControl: boolean;
-  appendSystemPrompt?: string;
-  resumeSessionId?: string;
-  permissionMode?: string;
-  allowedTools?: string[];
-  disallowedTools?: string[];
-  timeoutMs?: number;
-  trustedCliExecution?: boolean;
-  /** Per-turn bearer for the loopback MCP gateway (ADR 0014 D1). ACP only: the
-   *  endpoint itself comes from the Sandbox's own broker environment. */
-  mcpGatewayToken?: string;
-  /** Verity's own per-turn runtime context (VERITY_SESSION_*), allowlisted by the
-   *  client. Never the Server's ambient environment — the worker keeps the Sandbox's
-   *  own env as the base and merges only these keys on top. */
-  sessionEnv?: Record<string, string>;
-};
+const safeIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
+const boundedString = (max: number): z.ZodString => z.string().max(max);
+const startTurnRequestSchema = z
+  .strictObject({
+    protocolVersion: z.literal(1),
+    kind: z.literal('start-turn'),
+    turnId: safeIdSchema,
+    startCommandId: safeIdSchema,
+    sessionId: safeIdSchema,
+    backend: z.enum(['claude-acp', 'codex-acp', 'opencode-acp']),
+    worktree: boundedString(4096).refine((value) => value.startsWith('/')),
+    cwd: boundedString(4096).refine((value) => value.startsWith('/')),
+    prompt: boundedString(1024 * 1024),
+    attachments: z.array(attachmentUploadSchema).max(20).optional(),
+    model: boundedString(256).optional(),
+    steerable: z.boolean(),
+    permissionControl: z.boolean(),
+    appendSystemPrompt: boundedString(1024 * 1024).optional(),
+    resumeSessionId: boundedString(256).optional(),
+    permissionMode: boundedString(128).optional(),
+    allowedTools: z.array(boundedString(4096)).max(256).optional(),
+    disallowedTools: z.array(boundedString(4096)).max(256).optional(),
+    timeoutMs: z.number().int().min(1).max(86_400_000).optional(),
+    trustedCliExecution: z.boolean().optional(),
+    mcpGatewayToken: boundedString(512).min(1).optional(),
+    sessionEnv: z
+      .strictObject({
+        VERITY_SESSION_BACKEND: boundedString(256).optional(),
+        VERITY_SESSION_MODEL: boundedString(256).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((request, context) => {
+    const worktree = resolve(request.worktree);
+    const cwd = resolve(request.cwd);
+    if (cwd !== worktree && !cwd.startsWith(`${worktree}/`)) {
+      context.addIssue({ code: 'custom', message: 'cwd outside worktree', path: ['cwd'] });
+    }
+  });
+
+type StartTurnRequest = z.infer<typeof startTurnRequestSchema>;
+
+async function consumeStartRequest(path: string): Promise<StartTurnRequest> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stats = await handle.stat();
+    const uid = process.getuid?.();
+    if (!stats.isFile() || (uid !== undefined && stats.uid !== uid) || (stats.mode & 0o022) !== 0) {
+      throw new Error('runner worker received an insecure request file');
+    }
+    if (stats.size > 16 * 1024 * 1024) {
+      throw new Error('runner worker request exceeds size limit');
+    }
+    // Remove the pathname while retaining the verified inode. No later path lookup
+    // can swap the request between validation and use.
+    await unlink(path);
+    const raw: unknown = JSON.parse(await handle.readFile('utf8'));
+    return startTurnRequestSchema.parse(raw);
+  } finally {
+    await handle.close();
+  }
+}
 
 const requestPath = process.argv[2];
 const turnDir = process.env.VERITY_RUNNER_TURN_DIR;
 if (requestPath === undefined || turnDir === undefined) {
   throw new Error('runner worker requires request path and turn directory');
 }
-const request = JSON.parse(await readFile(requestPath, 'utf8')) as StartTurnRequest;
-if (
-  request.protocolVersion !== 1 ||
-  request.kind !== 'start-turn' ||
-  !isRunnerSupervisorBackend(request.backend)
-) {
-  throw new Error('runner worker received an unsupported request');
-}
+const request = await consumeStartRequest(requestPath);
+if (!isRunnerSupervisorBackend(request.backend)) throw new Error('unsupported runner backend');
+// The ACP SDK logs malformed wire messages verbatim through the global console.
+// Those frames can contain prompts, tool inputs, or credentials. Keep diagnostics
+// useful without ever copying dependency-controlled payloads to supervisor logs.
+const originalConsoleError = console.error.bind(console);
+const originalConsoleWarn = console.warn.bind(console);
+console.error = (): void => originalConsoleError('runner worker dependency reported an error');
+console.warn = (): void => originalConsoleWarn('runner worker dependency reported a warning');
 if (
   request.trustedCliExecution === true &&
   request.backend !== 'claude-acp' &&
@@ -114,6 +150,7 @@ const backends: Readonly<Record<RunnerSupervisorBackend, () => Backend>> = {
 const server = new RunnerServer(backends[request.backend]());
 const turn = await server.run(join(turnDir, 'events.jsonl'), {
   turnId: request.turnId,
+  controlCapability: request.startCommandId,
   controlSocketPath: join(turnDir, 'control.sock'),
   exclusiveEventFile: true,
   terminalizeErrors: true,

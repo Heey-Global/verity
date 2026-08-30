@@ -896,6 +896,25 @@ function devcontainerMountBind(mount: string): string | undefined {
   return readonly === 'true' ? `${source}:${containerTarget}:ro` : `${source}:${containerTarget}`;
 }
 
+/** Read and decode one JSON string token inside JSONC. Comments are handled by
+ * callers; string escape semantics must remain exactly JSON semantics so an
+ * unsupported key cannot hide behind `\u` or another escape. */
+function readJsonString(raw: string, start: number): { value: string; end: number } {
+  let pos = start + 1;
+  while (pos < raw.length) {
+    if (raw[pos] === '\\') {
+      pos += 2;
+      continue;
+    }
+    if (raw[pos] === '"') {
+      const end = pos + 1;
+      return { value: JSON.parse(raw.slice(start, end)) as string, end };
+    }
+    pos += 1;
+  }
+  throw new SyntaxError('unterminated JSON string');
+}
+
 function topLevelStringArray(raw: string, targetKey: string): string[] | undefined {
   let i = 0;
   let objectDepth = 0;
@@ -921,22 +940,7 @@ function topLevelStringArray(raw: string, targetKey: string): string[] | undefin
     }
     return pos;
   };
-  const readString = (start: number): { value: string; end: number } => {
-    let pos = start + 1;
-    let value = '';
-    while (pos < raw.length) {
-      const ch = raw[pos];
-      if (ch === '\\') {
-        value += raw[pos + 1] ?? '';
-        pos += 2;
-        continue;
-      }
-      if (ch === '"') return { value, end: pos + 1 };
-      value += ch;
-      pos += 1;
-    }
-    return { value, end: pos };
-  };
+  const readString = (start: number): { value: string; end: number } => readJsonString(raw, start);
   const readStringArray = (start: number): string[] | undefined => {
     const values: string[] = [];
     let pos = start + 1;
@@ -1016,22 +1020,7 @@ function topLevelJsonValue(
     }
     return pos;
   };
-  const readString = (start: number): { value: string; end: number } => {
-    let pos = start + 1;
-    let value = '';
-    while (pos < raw.length) {
-      const ch = raw[pos];
-      if (ch === '\\') {
-        value += raw[pos + 1] ?? '';
-        pos += 2;
-        continue;
-      }
-      if (ch === '"') return { value, end: pos + 1 };
-      value += ch;
-      pos += 1;
-    }
-    return { value, end: pos };
-  };
+  const readString = (start: number): { value: string; end: number } => readJsonString(raw, start);
   while (i < raw.length) {
     i = skipTrivia(i);
     if (raw[i] === '{') {
@@ -1093,22 +1082,7 @@ function devcontainerPropertyKeys(raw: string): Set<string> {
     }
     return pos;
   };
-  const readString = (start: number): { value: string; end: number } => {
-    let pos = start + 1;
-    let value = '';
-    while (pos < raw.length) {
-      const ch = raw[pos];
-      if (ch === '\\') {
-        value += raw[pos + 1] ?? '';
-        pos += 2;
-        continue;
-      }
-      if (ch === '"') return { value, end: pos + 1 };
-      value += ch;
-      pos += 1;
-    }
-    return { value, end: pos };
-  };
+  const readString = (start: number): { value: string; end: number } => readJsonString(raw, start);
   while (i < raw.length) {
     i = skipTrivia(i);
     if (raw[i] === '{') {
@@ -4182,33 +4156,12 @@ export class ProvisionerImpl implements Provisioner {
         : this.opts.sandboxCapAdd?.length
           ? { capAdd: this.opts.sandboxCapAdd }
           : {}),
-      // seccomp=unconfined + apparmor=unconfined are what let an agent's own
-      // bubblewrap sandbox run inside this container. Docker's default seccomp
-      // profile blocks the unprivileged user-namespace clone, and the
-      // docker-default AppArmor profile blocks bwrap's mount-propagation setup
-      // ("Failed to make / slave"). IS_SANDBOX=1 (set in env above) was meant to
-      // make the agents skip bwrap entirely — but Claude does NOT honor it
-      // reliably: where bwrap exists it runs before every command and fails
-      // ("No permissions to create a new namespace"), which made the whole
-      // sandbox unusable. cap-drop ALL + no-new-privileges are kept, so the
-      // container still cannot gain capabilities or escalate via setuid; only
-      // the seccomp + AppArmor syscall/LSM filters are lifted (the container +
-      // per-project network isolation + pidsLimit remain the boundary).
-      // Verified: cap-drop ALL + no-new-privileges + these two unconfines is the
-      // minimal combo under which `bwrap --unshare-user` succeeds.
-      //
-      // That verification dates from the retired dev-base image, which shipped
-      // bubblewrap. The current verity-sandbox image does not, so on the default
-      // image these two relaxations currently guard nobody — they still matter
-      // for a project devcontainer that installs bubblewrap itself. Re-confining
-      // seccomp/AppArmor is therefore a live option, but it is a deliberate
-      // security decision (and would break exactly those projects), not a
-      // cleanup to fold into an unrelated change.
-      securityOpt: [
-        ...(this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true']),
-        'seccomp=unconfined',
-        'apparmor=unconfined',
-      ],
+      // Keep Docker's default seccomp and AppArmor confinement. The managed image
+      // does not ship bubblewrap, and weakening both host-kernel boundaries for a
+      // devcontainer that happens to install it is the wrong default for adversarial
+      // agent workloads. Such a devcontainer must be adapted to the outer sandbox.
+      securityOpt:
+        this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? 512,
       memoryBytes: sandboxMemoryBytes,
       // Pin the combined memory+swap ceiling TO the memory ceiling, which is how a
@@ -4245,7 +4198,13 @@ export class ProvisionerImpl implements Provisioner {
           const inspect = await this.opts.docker
             .inspectContainer(dirs.containerName)
             .catch(() => null);
-          containerId = inspect?.id ?? dirs.containerName;
+          if (inspect?.labels?.['verity.project-id'] !== project.id) {
+            throw new ProvisioningError(
+              `docker container name conflict is not owned by project ${project.id}`,
+              cause,
+            );
+          }
+          containerId = inspect.id;
         } else {
           throw cause;
         }
@@ -4261,12 +4220,22 @@ export class ProvisionerImpl implements Provisioner {
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
-      await this.opts.docker.removeContainer(dirs.containerName).catch(() => undefined);
+      let removalFailure: unknown;
+      try {
+        await this.opts.docker.removeContainer(dirs.containerName);
+      } catch (error) {
+        removalFailure = error;
+      }
       // sandboxMaterial() may have issued a client certificate before container
       // creation. Once the running container is rolled back, revoke that identity
       // too so a failed/nonexistent sandbox cannot remain authorized.
       await this.opts.claudeEgressIdentity?.revokeProject(project.id).catch(() => undefined);
       await this.opts.store.updateProjectState(project.id, 'failed', message);
+      if (removalFailure !== undefined) {
+        throw new AggregateError([cause, removalFailure], `${message}; container removal failed`, {
+          cause,
+        });
+      }
       throw new ProvisioningError(message, cause);
     }
     if (runnerRuntimePath !== undefined || egressConnectorEnv.length > 0) {
@@ -4301,9 +4270,23 @@ export class ProvisionerImpl implements Provisioner {
           runnerRuntimePath !== undefined ? 'Runner supervisor' : 'Sandbox egress connector';
         const message = `${component} failed to start: ${commandFailureMessage(cause)}`;
         await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
-        await this.opts.docker.removeContainer(dirs.containerName).catch(() => undefined);
+        let removalFailure: unknown;
+        try {
+          await this.opts.docker.removeContainer(dirs.containerName);
+        } catch (error) {
+          removalFailure = error;
+        }
         await this.opts.claudeEgressIdentity?.revokeProject(project.id).catch(() => undefined);
         await this.opts.store.updateProjectState(project.id, 'failed', message);
+        if (removalFailure !== undefined) {
+          throw new AggregateError(
+            [cause, removalFailure],
+            `${message}; container removal failed`,
+            {
+              cause,
+            },
+          );
+        }
         throw new ProvisioningError(message, cause);
       }
     }
@@ -4368,9 +4351,19 @@ export class ProvisionerImpl implements Provisioner {
     } catch (cause) {
       const message = `devcontainer ${lifecycleFailureLabel} failed: ${commandFailureMessage(cause)}`;
       await this.opts.docker.stopContainer(dirs.containerName).catch(() => undefined);
-      await this.opts.docker.removeContainer(dirs.containerName).catch(() => undefined);
+      let removalFailure: unknown;
+      try {
+        await this.opts.docker.removeContainer(dirs.containerName);
+      } catch (error) {
+        removalFailure = error;
+      }
       await this.opts.claudeEgressIdentity?.revokeProject(project.id).catch(() => undefined);
       await this.opts.store.updateProjectState(project.id, 'failed', message);
+      if (removalFailure !== undefined) {
+        throw new AggregateError([cause, removalFailure], `${message}; container removal failed`, {
+          cause,
+        });
+      }
       throw new ProvisioningError(message, cause);
     }
     await this.opts.store.deleteProjectSessionBackendStates(project.id);

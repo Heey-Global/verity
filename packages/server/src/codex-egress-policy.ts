@@ -1,6 +1,7 @@
 import type { CodexGatewayCredential } from './codex-credential-authority.js';
 
 export const CODEX_EGRESS_ORIGIN = 'https://chatgpt.com';
+export const CODEX_EGRESS_PLACEHOLDER = 'Bearer verity-codex-gateway-placeholder-v1';
 
 const ROUTES = new Map<string, { method: string; upstreamPath: string }>([
   ['/codex/models', { method: 'GET', upstreamPath: '/backend-api/codex/models' }],
@@ -47,7 +48,7 @@ export function validateCodexEgress(input: {
     const name = rawName.toLowerCase();
     if (/[\r\n]/u.test(value)) throw new CodexEgressPolicyError('Codex egress header is invalid');
     if (name === 'authorization') {
-      if (!/^Bearer [A-Za-z0-9._~-]{1,256}$/u.test(value)) {
+      if (value !== CODEX_EGRESS_PLACEHOLDER) {
         throw new CodexEgressPolicyError('Codex egress placeholder credential is invalid');
       }
       placeholderSeen = true;

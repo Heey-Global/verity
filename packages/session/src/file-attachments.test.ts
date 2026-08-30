@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { AttachmentUpload } from '@verity/events';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -48,14 +48,15 @@ describe('materializeFileAttachments', () => {
     expect(result.promptSuffix).toContain('report.pdf');
     expect(result.promptSuffix).toContain('application/pdf');
     const match = /- (\S+) \(application\/pdf\)/.exec(result.promptSuffix);
-    const relPath = match?.[1] ?? '';
-    expect(relPath).not.toBe('');
-    expect(existsSync(join(cwd, relPath))).toBe(true);
-    expect(readFileSync(join(cwd, relPath)).toString()).toBe('PDF-BYTES');
+    const path = match?.[1] ?? '';
+    expect(path).not.toBe('');
+    expect(path.startsWith(`${cwd}/.verity-sessions/attachments/turn-`)).toBe(true);
+    expect(existsSync(path)).toBe(true);
+    expect(readFileSync(path).toString()).toBe('PDF-BYTES');
 
     // cleanup removes the scratch dir entirely.
     await result.cleanup();
-    expect(readdirSync(cwd)).toHaveLength(0);
+    expect(existsSync(dirname(path))).toBe(false);
   });
 
   it('separates images (inline) from files (materialized)', async () => {
@@ -93,15 +94,30 @@ describe('materializeFileAttachments', () => {
     };
     const result = await materializeFileAttachments(cwd, [traversal, dupeA, dupeB]);
 
-    // No path escapes cwd: the scratch dir is the only new entry.
-    const roots = readdirSync(cwd);
-    expect(roots).toHaveLength(1);
-    const scratch = join(cwd, roots[0] ?? '');
+    expect(readdirSync(cwd)).toHaveLength(1);
+    const path = /- (\S+) \(text\/plain\)/.exec(result.promptSuffix)?.[1] ?? '';
+    const scratch = dirname(path);
     const names = readdirSync(scratch).sort();
     // basename strips the traversal; the duplicate is suffixed.
     expect(names).toContain('passwd');
     expect(names).toContain('notes.txt');
     expect(names).toContain('notes-1.txt');
     await result.cleanup();
+  });
+
+  it('cleans through the held parent when the visible parent path is replaced', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'verity-file-attach-outside-'));
+    await writeFile(join(outside, 'keep'), 'safe');
+    const result = await materializeFileAttachments(cwd, [
+      { kind: 'file', mediaType: 'text/plain', fileName: 'note.txt', data: b64('note') },
+    ]);
+    const attachments = join(cwd, '.verity-sessions', 'attachments');
+    const moved = `${attachments}-moved`;
+    await rename(attachments, moved);
+    await symlink(outside, attachments);
+    await result.cleanup();
+    expect(existsSync(join(outside, 'keep'))).toBe(true);
+    expect(readdirSync(moved)).toEqual([]);
+    await rm(outside, { recursive: true, force: true });
   });
 });

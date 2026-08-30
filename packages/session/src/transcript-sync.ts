@@ -1,7 +1,8 @@
 import { constants as fsConstants } from 'node:fs';
-import { access, chmod, mkdir, open, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, mkdir, open, realpath, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { TranscriptStore } from '@verity/store';
 
@@ -22,6 +23,7 @@ import type { TranscriptStore } from '@verity/store';
  */
 
 const LF = 0x0a;
+const MAX_READ_BYTES = 1024 * 1024;
 const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
@@ -70,6 +72,83 @@ export interface TailState {
 
 export const initialTailState: TailState = { offset: 0, pending: Buffer.alloc(0) };
 
+function within(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+async function ensureTranscriptParent(
+  filePath: string,
+  rootDir: string | undefined,
+): Promise<void> {
+  if (rootDir === undefined) {
+    await mkdir(dirname(filePath), { recursive: true });
+    return;
+  }
+  const root = await realpath(rootDir);
+  const parentPath = dirname(filePath);
+  const rel = relative(root, parentPath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw Object.assign(new Error('transcript path escapes its runtime root'), { code: 'EXDEV' });
+  }
+  let parent = await open(root, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+  try {
+    for (const component of rel.split('/').filter(Boolean)) {
+      const parentFd = `/proc/self/fd/${parent.fd}`;
+      try {
+        await mkdir(join(parentFd, component), { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      const child = await open(
+        join(parentFd, component),
+        fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+      );
+      await parent.close();
+      parent = child;
+    }
+  } finally {
+    await parent.close();
+  }
+}
+
+function isTransientTailError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    code === 'ENOENT' ||
+    code === 'EINTR' ||
+    code === 'EAGAIN' ||
+    code === 'EBUSY' ||
+    code === 'ESTALE'
+  );
+}
+
+/** Open the final file through a held, validated parent-directory descriptor.
+ * O_NOFOLLOW on the file alone does not protect an ancestor swapped to a symlink. */
+async function openTranscriptFile(
+  filePath: string,
+  flags: number,
+  mode: number | undefined,
+  rootDir: string | undefined,
+): Promise<FileHandle> {
+  if (rootDir === undefined) return open(filePath, flags, mode);
+  const root = await realpath(rootDir);
+  const parent = await open(
+    dirname(filePath),
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  const parentFd = `/proc/self/fd/${parent.fd}`;
+  try {
+    const actualParent = await realpath(parentFd);
+    if (!within(root, actualParent)) {
+      throw Object.assign(new Error('transcript path escapes its runtime root'), { code: 'EXDEV' });
+    }
+    return await open(join(parentFd, basename(filePath)), flags, mode);
+  } finally {
+    await parent.close();
+  }
+}
+
 /**
  * Read the bytes appended since `fromOffset`. If the file shrank (a rewrite /
  * `/compact` / reset) the read restarts from 0 — the returned `offset` is then
@@ -80,13 +159,27 @@ export const initialTailState: TailState = { offset: 0, pending: Buffer.alloc(0)
 export async function readAppended(
   filePath: string,
   fromOffset: number,
+  rootDir?: string,
 ): Promise<{ chunk: Buffer; offset: number }> {
-  const { size } = await stat(filePath);
+  // Open first and inspect that descriptor. A sandbox controls this path and can
+  // replace the final component with a symlink between a path-based stat and open;
+  // O_NOFOLLOW makes that swap a refusal rather than an arbitrary host-file read.
+  const fd = await openTranscriptFile(
+    filePath,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    undefined,
+    rootDir,
+  );
+  const stats = await fd.stat();
+  if (!stats.isFile()) {
+    await fd.close();
+    throw new Error('transcript is not a regular file');
+  }
+  const { size } = stats;
   const start = size < fromOffset ? 0 : fromOffset;
-  if (size <= start) return { chunk: Buffer.alloc(0), offset: start };
-  const fd = await open(filePath, 'r');
   try {
-    const length = size - start;
+    if (size <= start) return { chunk: Buffer.alloc(0), offset: start };
+    const length = Math.min(size - start, MAX_READ_BYTES);
     const buf = Buffer.alloc(length);
     const { bytesRead } = await fd.read(buf, 0, length, start);
     return { chunk: buf.subarray(0, bytesRead), offset: start + bytesRead };
@@ -106,8 +199,9 @@ export async function syncOnce(
   state: TailState,
   transcript: TranscriptStore,
   sessionId: string,
+  rootDir?: string,
 ): Promise<TailState> {
-  const { chunk, offset } = await readAppended(filePath, state.offset);
+  const { chunk, offset } = await readAppended(filePath, state.offset, rootDir);
   // A rewrite (offset rewound below the prior offset) means claude rewrote /
   // compacted the file: discard the pending partial, and REPLACE the stored
   // transcript with the new content rather than appending it (which would
@@ -166,18 +260,23 @@ export async function syncTranscript(
   filePath: string,
   transcript: TranscriptStore,
   sessionId: string,
-  opts: { pollMs?: number; signal?: AbortSignal; startOffset?: number } = {},
+  opts: { pollMs?: number; signal?: AbortSignal; startOffset?: number; rootDir?: string } = {},
 ): Promise<void> {
   const pollMs = opts.pollMs ?? 200;
   let state: TailState = { offset: opts.startOffset ?? 0, pending: Buffer.alloc(0) };
-  const tick = async (): Promise<void> => {
+  const tick = async (): Promise<boolean> => {
     if (await fileExists(filePath)) {
       try {
-        state = await syncOnce(filePath, state, transcript, sessionId);
-      } catch {
-        // Transient — keep polling rather than terminating the sync.
+        const previousOffset = state.offset;
+        state = await syncOnce(filePath, state, transcript, sessionId, opts.rootDir);
+        return state.offset !== previousOffset;
+      } catch (error) {
+        if (!isTransientTailError(error)) throw error;
+        // A rotation or temporarily busy overlay file is retried. Store failures
+        // and path-integrity refusals must propagate rather than lose transcripts.
       }
     }
+    return false;
   };
   for (;;) {
     if (opts.signal?.aborted) break;
@@ -193,7 +292,12 @@ export async function syncTranscript(
   // short turn can emit its session and result frames back-to-back, causing the
   // owner to start and immediately stop this tail. Skipping the only read in that
   // window would silently lose the complete transcript.
-  await tick();
+  // Drain the complete remaining tail in bounded chunks. A single bounded read
+  // here would avoid the allocation spike but silently lose a >1 MiB shutdown
+  // backlog that no later poll can recover after the turn closes.
+  while (await tick()) {
+    // Continue until the descriptor reports no unread bytes.
+  }
 }
 
 /**
@@ -205,6 +309,7 @@ export async function materializeToDisk(
   transcript: TranscriptStore,
   sessionId: string,
   filePath: string,
+  opts: { rootDir?: string } = {},
 ): Promise<boolean> {
   const content = await transcript.materialize(sessionId);
   // An EMPTY transcript is not a harmless no-op to write: `claude --resume` reads
@@ -214,9 +319,46 @@ export async function materializeToDisk(
   // `restoreIfMissing` a no-op, so the session can never recover. Leave the path
   // absent instead — nothing to restore is not the same as an empty transcript.
   if (content.length === 0) return false;
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, content, { mode: 0o600 });
-  await chmod(filePath, 0o600);
+  await ensureTranscriptParent(filePath, opts.rootDir);
+  // Publish a complete file in one rename. Truncating the live path exposed a
+  // zero/partial transcript to a concurrently starting resume.
+  const parent = await open(
+    dirname(filePath),
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  const parentFd = `/proc/self/fd/${parent.fd}`;
+  if (opts.rootDir !== undefined) {
+    const [root, actualParent] = await Promise.all([realpath(opts.rootDir), realpath(parentFd)]);
+    if (!within(root, actualParent)) {
+      await parent.close();
+      throw Object.assign(new Error('transcript path escapes its runtime root'), { code: 'EXDEV' });
+    }
+  }
+  const tempName = `.${basename(filePath)}.${randomUUID()}.tmp`;
+  const tempPath = join(parentFd, tempName);
+  const targetPath = join(parentFd, basename(filePath));
+  let handle: FileHandle | undefined;
+  let published = false;
+  try {
+    handle = await open(
+      tempPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    const stats = await handle.stat();
+    if (!stats.isFile()) throw new Error('transcript is not a regular file');
+    await handle.chmod(0o600);
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(tempPath, targetPath);
+    published = true;
+  } finally {
+    await handle?.close().catch(() => undefined);
+    if (!published) await unlink(tempPath).catch(() => undefined);
+    await parent.close();
+  }
   return true;
 }
 
@@ -238,7 +380,23 @@ export async function restoreIfMissing(
   transcript: TranscriptStore,
   sessionId: string,
   filePath: string,
+  opts: { rootDir?: string } = {},
 ): Promise<boolean> {
-  if (await fileExists(filePath)) return false;
-  return materializeToDisk(transcript, sessionId, filePath);
+  try {
+    const handle = await openTranscriptFile(
+      filePath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+      undefined,
+      opts.rootDir,
+    );
+    try {
+      if (!(await handle.stat()).isFile()) throw new Error('transcript is not a regular file');
+    } finally {
+      await handle.close();
+    }
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return materializeToDisk(transcript, sessionId, filePath, opts);
 }

@@ -46,12 +46,18 @@ function project(overrides: Partial<ProjectRecord>): ProjectRecord {
 
 const defaultProjects = [
   project({ id: 'proj_1', owner: 'heey-global', repo: 'verity', state: 'absent' }),
-  project({ id: 'proj_2', owner: 'heey-global', repo: 'deep-ocr', state: 'absent' }),
+  project({ id: 'proj_2', owner: 'example-org', repo: 'sample-app', state: 'absent' }),
 ];
 
 const baseClient = (overrides: Partial<VerityClient>): VerityClient =>
   fakeClient({
     listAvailableRepositories: jest.fn().mockResolvedValue(defaultProjects),
+    createProject: jest.fn().mockImplementation(({ repo }: { repo: string }) => {
+      const found = defaultProjects.find(
+        (candidate) => `${candidate.owner}/${candidate.repo}` === repo,
+      );
+      return Promise.resolve(found ?? project({ id: 'created-project' }));
+    }),
     repairProject: jest.fn().mockResolvedValue(project({ id: 'proj_1', state: 'active' })),
     getProject: jest
       .fn()
@@ -71,20 +77,26 @@ describe('onboarding first-project step (required)', () => {
 
     expect(screen.getByText('Add your first project')).toBeOnTheScreen();
     expect(await screen.findByLabelText('heey-global/verity')).toBeOnTheScreen();
-    expect(screen.getByLabelText('heey-global/deep-ocr')).toBeOnTheScreen();
+    expect(screen.getByLabelText('example-org/sample-app')).toBeOnTheScreen();
     expect(screen.getByLabelText('Prepare selected project')).toBeOnTheScreen();
   });
 
   it('prepares the selected repository project and advances to /onboarding/done', async () => {
+    const createProject = jest
+      .fn()
+      .mockResolvedValue(project({ id: 'created-proj-2', state: 'absent' }));
     const repairProject = jest.fn().mockResolvedValue(project({ id: 'proj_2', state: 'active' }));
-    mockCreateVerityClient.mockReturnValue(baseClient({ repairProject }));
+    mockCreateVerityClient.mockReturnValue(baseClient({ createProject, repairProject }));
     render(<OnboardingFirstProject />);
 
-    fireEvent.press(await screen.findByLabelText('heey-global/deep-ocr'));
+    fireEvent.press(await screen.findByLabelText('example-org/sample-app'));
     fireEvent.press(screen.getByLabelText('Prepare selected project'));
 
     await waitFor(() =>
-      expect(repairProject).toHaveBeenCalledWith('proj_2', { confirmWarnings: true }),
+      expect(createProject).toHaveBeenCalledWith({ repo: 'example-org/sample-app' }),
+    );
+    await waitFor(() =>
+      expect(repairProject).toHaveBeenCalledWith('created-proj-2', { confirmWarnings: false }),
     );
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/onboarding/done'));
   });

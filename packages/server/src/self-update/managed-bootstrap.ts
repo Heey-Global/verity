@@ -32,6 +32,7 @@ export interface ManagedBootstrapEnvironment {
   readonly VERITY_PROJECT_RELAY_GID?: string;
   readonly VERITY_RUNNER_RUNTIME_GID?: string;
   readonly VERITY_HOST_ARCHITECTURE?: string;
+  readonly VERITY_PAIRING_STATE_HOST_PATH?: string;
 }
 
 function uint(name: string, value: string | undefined, fallback: number): number {
@@ -87,6 +88,15 @@ export async function runManagedBootstrap(
     throw new Error('VERITY_ROOT must be /srv/verity for managed bootstrap');
   if (env.VERITY_DOCKER_BASE_URL !== 'unix:///var/run/docker.sock')
     throw new Error('VERITY_DOCKER_BASE_URL must use the managed /var/run/docker.sock endpoint');
+  const pairingStatePath = env.VERITY_PAIRING_STATE_HOST_PATH;
+  if (
+    pairingStatePath === undefined ||
+    !isAbsolute(pairingStatePath) ||
+    normalize(pairingStatePath) !== pairingStatePath ||
+    pairingStatePath === '/'
+  ) {
+    throw new Error('VERITY_PAIRING_STATE_HOST_PATH must be a normalized absolute directory');
+  }
   const forwardedEnvironment = Object.keys(env)
     .filter(
       (name) =>
@@ -119,6 +129,7 @@ export async function runManagedBootstrap(
             'VERITY_SERVER_GID',
             'VERITY_DOCKER_SOCKET_GID',
             'VERITY_HOST_ARCHITECTURE',
+            'VERITY_PAIRING_STATE_HOST_PATH',
           ].includes(name)),
     )
     .sort()
@@ -150,6 +161,11 @@ export async function runManagedBootstrap(
         source: { kind: 'bind', path: dockerSocketPath },
         target: '/var/run/docker.sock',
         readOnly: false,
+      },
+      {
+        source: { kind: 'bind', path: pairingStatePath },
+        target: '/run/verity-pairing',
+        readOnly: true,
       },
       ...(env.VERITY_RUNNER_SUPERVISOR === '1'
         ? [

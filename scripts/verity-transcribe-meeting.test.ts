@@ -554,6 +554,36 @@ describe('verity-transcribe-meeting', () => {
     expect(stderr.trim()).not.toBe('fetch failed');
   });
 
+  it('redacts the API credential from remote error bodies', async () => {
+    const dir = makeTmp();
+    const audio = join(dir, 'meeting.mp3');
+    writeFileSync(audio, 'audio');
+    const apiKey = 'remote-secret-key';
+    const server = await listen(async (_req, res) => {
+      res.statusCode = 401;
+      res.end(`credential rejected: ${apiKey}`);
+    });
+    try {
+      let stderr = '';
+      try {
+        await execFileAsync(process.execPath, [script, audio], {
+          encoding: 'utf8',
+          env: {
+            ...testEnv(),
+            VERITY_PARAKEET_BASE_URL: server.baseUrl,
+            VERITY_PARAKEET_API_KEY: apiKey,
+          },
+        });
+      } catch (error) {
+        stderr = (error as { stderr?: string }).stderr ?? '';
+      }
+      expect(stderr).toContain('credential rejected: [REDACTED]');
+      expect(stderr).not.toContain(apiKey);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('refuses to run when no transcription backend is configured', async () => {
     const dir = makeTmp();
     const audio = join(dir, 'meeting.mp3');

@@ -1,6 +1,7 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, request, type Server } from 'node:http';
 import { chmod, chown, lstat, mkdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { readManagedDeployment, type ManagedDeploymentState } from './managed-deployment.js';
 import type { ManagedServerReconcileVerdict } from './managed-server-owner.js';
@@ -35,6 +36,7 @@ import {
   parseKeyHandoffEnvelope,
   parseKeyHandoffOffer,
   parseKeyHandoffPublicKey,
+  sameKeyHandoffBinding,
   type KeyHandoffBinding,
   type KeyHandoffEnvelope,
   type KeyHandoffOffer,
@@ -97,12 +99,20 @@ function authorized(header: string | undefined, token: string): boolean {
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
-async function removeOwnedSocket(path: string): Promise<void> {
+function sameEntry(a: Stats, b: Pick<Stats, 'dev' | 'ino' | 'ctimeMs'>): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.ctimeMs === b.ctimeMs;
+}
+
+async function removeOwnedSocket(
+  path: string,
+  instance?: Pick<Stats, 'dev' | 'ino' | 'ctimeMs'>,
+): Promise<void> {
   try {
     const info = await lstat(path);
     if (!info.isSocket()) throw new Error('updater control path exists and is not a socket');
     if (info.uid !== process.geteuid?.())
       throw new Error('updater control socket is not owned by this process');
+    if (instance !== undefined && !sameEntry(info, instance)) return;
     await unlink(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -119,15 +129,38 @@ async function removeOwnedSocket(path: string): Promise<void> {
  * file belonging to someone else — so the type and owner are checked first and a
  * mismatch fails the startup rather than being cleaned away.
  */
-async function removeOwnedFile(path: string): Promise<void> {
+async function removeOwnedFile(
+  path: string,
+  instance?: Pick<Stats, 'dev' | 'ino' | 'ctimeMs'>,
+): Promise<void> {
   try {
     const info = await lstat(path);
     if (!info.isFile()) throw new Error('updater control token path is not a regular file');
     if (info.uid !== process.geteuid?.())
       throw new Error('updater control token is not owned by this process');
+    if (instance !== undefined && !sameEntry(info, instance)) return;
     await unlink(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+async function closeWithoutUnlinkingSuccessor(
+  server: Server,
+  path: string,
+  instance: Pick<Stats, 'dev' | 'ino' | 'ctimeMs'>,
+): Promise<void> {
+  const current = await lstat(path).catch(() => undefined);
+  if (current === undefined || sameEntry(current, instance)) {
+    await closeServer(server);
+    return;
+  }
+  const protectedPath = `${path}.successor-${randomUUID()}`;
+  await rename(path, protectedPath);
+  try {
+    await closeServer(server);
+  } finally {
+    await rename(protectedPath, path);
   }
 }
 
@@ -152,7 +185,11 @@ export function updaterControlTokenPath(socketPath: string): string {
  * with it. Anything that goes wrong after the write therefore removes it before
  * the failure propagates.
  */
-export async function publishControlToken(path: string, token: string, gid: number): Promise<void> {
+export async function publishControlToken(
+  path: string,
+  token: string,
+  gid: number,
+): Promise<Stats> {
   const temporary = `${path}.tmp`;
   await removeOwnedFile(temporary);
   await writeFile(temporary, token, { mode: 0o640, flag: 'wx' });
@@ -160,6 +197,7 @@ export async function publishControlToken(path: string, token: string, gid: numb
     await chown(temporary, process.geteuid?.() ?? 0, gid);
     await chmod(temporary, 0o640);
     await rename(temporary, path);
+    return await lstat(path);
   } catch (error) {
     await removeOwnedFile(temporary);
     throw error;
@@ -185,7 +223,7 @@ export interface UpdaterStatusServerOptions {
    * The Updater process uses this to start the crash-resumable execution; the
    * control boundary itself never touches Docker.
    */
-  readonly onOperationAccepted?: (journal: UpdateJournal) => void;
+  readonly onOperationAccepted?: (journal: UpdateJournal) => void | Promise<void>;
   /**
    * The Updater's memory of the standby exchange (ADR 0008 D9), shared with the
    * cutover executor: it writes the one request the journal cannot express, and
@@ -274,7 +312,10 @@ export async function startUpdaterStatusServer(
   const mailbox = createSecretKeyHandoffMailbox();
   const fence: JournalFence = { generation: 0, stage: 0 };
   const server = createServer((req, res) => {
-    void serveUpdaterRequest(req, res, options, mailbox, fence);
+    void serveUpdaterRequest(req, res, options, mailbox, fence).catch(() => {
+      if (!res.headersSent) res.writeHead(503).end(JSON.stringify({ error: 'unavailable' }));
+      else res.destroy();
+    });
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -283,6 +324,7 @@ export async function startUpdaterStatusServer(
       resolve();
     });
   });
+  let publishedToken: Stats | undefined;
   // Everything from here on runs with the listener already bound, so a failure
   // is not just a rejected promise: it would leave a socket that accepts
   // requests behind a caller who believes the boundary never opened, and the
@@ -295,22 +337,25 @@ export async function startUpdaterStatusServer(
       await chown(options.socketPath, process.geteuid?.() ?? 0, peerGid);
       await chmod(options.socketPath, 0o660);
       // Published last: a peer that can read the token can also reach the socket.
-      await publishControlToken(tokenPath, options.token, peerGid);
+      publishedToken = await publishControlToken(tokenPath, options.token, peerGid);
     }
   } catch (error) {
     await closeServer(server);
     await removeOwnedSocket(options.socketPath);
     throw error;
   }
+  // chmod/chown change ctime. Capture ownership only after publication is fully
+  // configured, otherwise normal shutdown mistakes its own socket for a successor.
+  const boundSocket = await lstat(options.socketPath);
   return {
     async close() {
       mailbox.discard();
       // An acknowledgement describes a process that is running right now; it may
       // not outlive the boundary that collected it.
       options.standby?.discard();
-      await closeServer(server);
-      await removeOwnedSocket(options.socketPath);
-      await removeOwnedFile(tokenPath);
+      await closeWithoutUnlinkingSuccessor(server, options.socketPath, boundSocket);
+      await removeOwnedSocket(options.socketPath, boundSocket);
+      if (publishedToken !== undefined) await removeOwnedFile(tokenPath, publishedToken);
     },
   };
 }
@@ -662,6 +707,12 @@ function parseStandbyAcknowledgement(raw: string | null): StandbyAcknowledgement
   )
     return null;
   const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    !Object.hasOwn(record, 'operationId') ||
+    !Object.hasOwn(record, 'state')
+  )
+    return null;
   const state = parseStandbyDirective(record.state);
   const operationId = record.operationId;
   if (state === null || typeof operationId !== 'string' || !IDEMPOTENCY_KEY.test(operationId))
@@ -706,6 +757,7 @@ async function serveStandbyRequest(
   const recorded =
     standby !== null &&
     standby.operationId === acknowledgement.operationId &&
+    standby.directive === acknowledgement.state &&
     options.standby !== undefined;
   if (recorded) options.standby?.acknowledge(acknowledgement.operationId, acknowledgement.state);
   res.writeHead(recorded ? 202 : 409).end(JSON.stringify({ recorded }));
@@ -835,7 +887,15 @@ async function serveUpdaterRequest(
     res.writeHead(202).end(JSON.stringify({ operation }));
     // Execution starts only after the lease is released and the caller has its
     // answer; a failure to start is recorded in the journal by the runner.
-    if (accepted !== null) options.onOperationAccepted?.(accepted);
+    if (accepted !== null) {
+      // The acceptance is already durable and the caller already has 202. Run
+      // the callback on a detached, rejection-contained chain: a synchronous
+      // throw or rejected promise must neither trigger a second response nor an
+      // unhandled rejection that terminates the Updater.
+      void Promise.resolve()
+        .then(() => options.onOperationAccepted?.(accepted))
+        .catch(() => undefined);
+    }
   } catch (error) {
     if (error instanceof UpdaterRequestError) {
       res.writeHead(error.status).end(JSON.stringify({ error: error.code }));
@@ -946,7 +1006,13 @@ export interface UpdaterAgentSeed {
  * the mount, which is the honest reading — neither can tell us.
  */
 export async function readUpdaterAgentSeed(options: UpdaterCallOptions): Promise<UpdaterAgentSeed> {
-  const { status, value } = await call(options, { method: 'GET', path: '/v1/agent-seed' });
+  let response: { readonly status: number; readonly value: unknown };
+  try {
+    response = await call(options, { method: 'GET', path: '/v1/agent-seed' });
+  } catch {
+    return { visible: false, stamp: null };
+  }
+  const { status, value } = response;
   if (status !== 200) return { visible: false, stamp: null };
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     return { visible: false, stamp: null };
@@ -1001,13 +1067,28 @@ export async function readUpdaterPostgres(
   if (status !== 200) return UNKNOWN_POSTGRES;
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return UNKNOWN_POSTGRES;
   const record = value as Record<string, unknown>;
-  const text = (field: unknown): string | null => (typeof field === 'string' ? field : null);
-  return {
-    running: text(record.running),
-    bundled: text(record.bundled),
-    upToDate: typeof record.upToDate === 'boolean' ? record.upToDate : null,
-    blocked: record.blocked === 'major-version-change' ? 'major-version-change' : null,
-  };
+  if (Object.keys(record).sort().join(',') !== 'blocked,bundled,running,upToDate')
+    return UNKNOWN_POSTGRES;
+  const image = (field: unknown): string | null | undefined =>
+    field === null
+      ? null
+      : typeof field === 'string' && /@sha256:[0-9a-f]{64}$/u.test(field)
+        ? field
+        : undefined;
+  const running = image(record.running);
+  const bundled = image(record.bundled);
+  const upToDate = record.upToDate;
+  const blocked = record.blocked;
+  if (
+    running === undefined ||
+    bundled === undefined ||
+    (upToDate !== null && typeof upToDate !== 'boolean') ||
+    (blocked !== null && blocked !== 'major-version-change') ||
+    (upToDate === true && (running === null || bundled === null || running !== bundled)) ||
+    (upToDate === true && blocked !== null)
+  )
+    return UNKNOWN_POSTGRES;
+  return { running, bundled, upToDate, blocked };
 }
 
 function parseOperationEnvelope(value: unknown): UpdateOperation | null | undefined {
@@ -1078,7 +1159,7 @@ function parseHandoffEnvelopeState(value: unknown): UpdaterHandoffState | null |
   }
   if (fields.offer !== undefined) {
     const offer = parseKeyHandoffOffer(fields.offer);
-    if (offer === null) return undefined;
+    if (offer === null || !sameKeyHandoffBinding(binding, offer)) return undefined;
     state.offer = offer;
   }
   return state;
@@ -1156,6 +1237,7 @@ function parseStandbyEnvelope(value: unknown): StandbyDirectiveState | null | un
     directive === null ||
     (acknowledged === null && fields.acknowledged !== null) ||
     typeof fields.operationId !== 'string' ||
+    !IDEMPOTENCY_KEY.test(fields.operationId) ||
     Object.keys(fields).length !== 3
   )
     return undefined;
@@ -1188,6 +1270,9 @@ export async function acknowledgeUpdaterStandby(
     readonly state: StandbyDirective;
   },
 ): Promise<boolean> {
+  if (!IDEMPOTENCY_KEY.test(options.operationId)) {
+    throw new Error('updater standby operation id is invalid');
+  }
   const { status } = await call(options, {
     method: 'POST',
     path: '/v1/standby',

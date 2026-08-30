@@ -271,6 +271,24 @@ describe('WorkflowStore', () => {
     });
   });
 
+  it('returns current workflow state when a create command is retried later', async () => {
+    const request = {
+      idempotencyKey: 'create-current-replay',
+      controlProjectId: 'control',
+      actorId: 'device-1',
+      objective: 'ship it',
+      environment: 'staging',
+      serviceId: 'api',
+    };
+    const created = await workflows.createWorkflow(request);
+    const authorized = await workflows.authorizeWorkflow(created.id, created.version, {
+      id: 'device-1',
+      authorizationHash: 'a'.repeat(64),
+    });
+
+    await expect(workflows.createWorkflow(request)).resolves.toEqual(authorized);
+  });
+
   it('rejects an idempotency key reused for another request', async () => {
     const request = {
       idempotencyKey: 'create-1',
@@ -619,6 +637,11 @@ describe('WorkflowStore', () => {
       evidence: [],
     });
     expect(submitted.steps[0]?.state).toBe('waiting_for_gate');
+    await ctx.db
+      .updateTable('workflow_handoffs')
+      .set({ expires_at: new Date(0).toISOString() })
+      .where('id', '=', issued.handoffId)
+      .execute();
     await expect(
       workflows.submitResult(productionAuthentication, {
         status: 'completed',
@@ -832,6 +855,9 @@ describe('WorkflowStore', () => {
       .where('id', '=', created.id)
       .execute();
     const gate = (await workflows.listDueGates()).find(({ stepId }) => stepId === mergeStep.id)!;
+    await expect(
+      workflows.completeGate(gate, { ...(gate.expectedEvidence as object), approved: true }),
+    ).rejects.toThrow(/authenticated decision actor/);
     const approved = await workflows.completeGate(
       gate,
       { ...(gate.expectedEvidence as object), approved: true },

@@ -124,7 +124,13 @@ export function createRestrictedHttpGetConnector(options: {
     profile: {
       id: profile.id,
       projectId: profile.projectId,
-      secretPolicy: { mode: 'allowlist', aliases: [profile.auth.secretAlias] },
+      secretPolicy: {
+        mode: 'allowlist',
+        aliases: [profile.auth.secretAlias],
+        destinations: [
+          { hostname: new URL(profile.origin).hostname, pathPrefixes: profile.pathPrefixes },
+        ],
+      },
       timeoutMs: profile.timeoutMs,
       maxRequestBytes: 65_536,
       maxResponseBytes: profile.maxResponseBytes,

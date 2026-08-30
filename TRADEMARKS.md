@@ -24,10 +24,8 @@ identity. Descriptive wording such as “compatible with Verity” should be les
 prominent than the third party's own brand and must not create confusion.
 
 “Official Verity” refers only to builds, services, accounts, and releases
-published or explicitly authorized by the Verity project owner. A durable
-public trademark contact has not yet been published, so new permission requests
-cannot currently be accepted. Publishing and testing that channel is an
-open-source release gate.
+published or explicitly authorized by the Verity project owner. Send trademark
+permission requests to `hello@verity.build`.
 
 This policy concerns branding only. It does not change the permissions granted
 for source code under Apache-2.0.

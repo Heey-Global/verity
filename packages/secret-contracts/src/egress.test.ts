@@ -45,6 +45,8 @@ describe('restricted egress policy contracts', () => {
     expect(restrictedHttpEgressPolicySchema.parse(policy).protocol).toBe('https-json'));
   it.each([
     { destination: { hostname: '127.0.0.1', port: 443 } },
+    { destination: { hostname: '192.0.2.1', port: 443 } },
+    { destination: { hostname: '2001:db8::1', port: 443 } },
     { redirects: 'follow' },
     { denyConnect: false },
     { stripProxyEnvironment: false },

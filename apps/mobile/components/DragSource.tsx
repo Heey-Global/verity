@@ -20,6 +20,8 @@ interface NativeDragZoneProps extends ViewProps {
   enabled: boolean;
   items: DragFileItem[];
   authorization: string;
+  tlsPin: string;
+  origin: string;
   onDragBegin?: (event: DragBeginEvent) => void;
   onDragEnd?: (event: DragEndEvent) => void;
   onModifiers?: (event: ModifiersEvent) => void;
@@ -46,6 +48,8 @@ export function DragSource({
   enabled,
   items,
   authorization,
+  tlsPin,
+  origin,
   onDelivered,
   onModifiers,
   ...viewProps
@@ -55,6 +59,10 @@ export function DragSource({
   items: DragFileItem[];
   /** `Bearer …` header value for the download the drop triggers. */
   authorization: string;
+  /** Public-key pin required for the direct self-hosted HTTPS endpoint. */
+  tlsPin: string;
+  /** Expected control-plane origin; native pinning rejects redirects elsewhere. */
+  origin: string;
   onDelivered?: () => void;
   /** Modifier keys held at touch down, reported before this row's own `onPress`
    * so the press can read them. Never fires without a hardware keyboard, and
@@ -71,6 +79,8 @@ export function DragSource({
       enabled={enabled && items.length > 0}
       items={items}
       authorization={authorization}
+      tlsPin={tlsPin}
+      origin={origin}
       onModifiers={
         onModifiers
           ? (event) => {

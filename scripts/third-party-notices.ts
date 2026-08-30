@@ -89,9 +89,10 @@ separately by \`TRADEMARKS.md\`.
 
 - Material Symbols is supplied by \`@expo-google-fonts/material-symbols\`; its
   package code is MIT and its bundled font files are Apache-2.0.
-- The product website requests Inter from Google Fonts at runtime. Inter is
-  licensed under the SIL Open Font License 1.1 and is not stored in this source
-  tree.
+- The product website bundles Inter locally under
+  \`docs/website/site/assets/inter-latin-variable.woff2\`. Inter is licensed
+  under the SIL Open Font License 1.1; its license text is stored alongside the
+  font.
 - Product screenshots and Verity artwork in this repository are project-authored.
   Their source availability does not grant trademark rights; see
   \`TRADEMARKS.md\`.

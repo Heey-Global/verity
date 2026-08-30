@@ -178,13 +178,17 @@ function acpSpawner(
           } else if (method === 'session/load') {
             push({ jsonrpc: '2.0', id, result: sessionResult('opencode-session-existing') });
           } else if (method === 'session/set_config_option') {
-            // Echoing nothing is the other half of the contract: `applySelectOption`
-            // has nothing to read back and keeps the plain ack's meaning, which is
-            // what every other test here exercises.
+            const params = message.params as { configId: string; value: string };
+            const applied = sessionResult('opencode-session-1');
+            applied.configOptions = (applied.configOptions as Array<Record<string, unknown>>).map(
+              (option) =>
+                option.id === params.configId ? { ...option, currentValue: params.value } : option,
+            );
             push({
               jsonrpc: '2.0',
               id,
-              result: behavior.echoStaleMode === true ? sessionResult('opencode-session-1') : {},
+              result:
+                behavior.echoStaleMode === true ? sessionResult('opencode-session-1') : applied,
             });
           } else if (method === undefined && 'result' in message && id === 'permission-1') {
             // The client's answer. Only now does the prompt finish, which is what

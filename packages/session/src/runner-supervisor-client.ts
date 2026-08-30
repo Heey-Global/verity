@@ -679,9 +679,17 @@ export class SupervisorRunnerClient implements RunnerClient {
     const startTail = (sessionId: string): void => {
       if (tailDone !== undefined || tailAbort.signal.aborted) return;
       const startOffset = this.resumeOffsets.get(mappedOpts.turnId ?? '') ?? 0;
-      tailDone = sink
-        .tail(sessionId, mappedOpts.cwd, storeSessionId, startOffset, tailAbort.signal)
-        .catch(() => undefined);
+      tailDone = sink.tail(
+        sessionId,
+        mappedOpts.cwd,
+        storeSessionId,
+        startOffset,
+        tailAbort.signal,
+      );
+      // Attach a rejection observer immediately. The original promise remains
+      // the value settle awaits, but a fast tail failure cannot spend the whole
+      // turn as an unhandled rejection before that happens.
+      void tailDone.catch(() => undefined);
     };
     const wrappedHooks: StartTurnHooks = {
       ...hooks,
@@ -1822,6 +1830,12 @@ export async function requestRunnerSupervisorStart(
             (parsed.startCommandId !== undefined &&
               parsed.startCommandId !== request.startCommandId)
           ) {
+            // This may be a delayed acknowledgement for another request on a
+            // reused/broken peer. Do not let it arm the long timeout or license a
+            // resend; reconcile this turn against supervisor state instead.
+            // Treat the peer as having accepted *a* start for resend-fencing, while
+            // reconciliation determines whether our durable turn exists.
+            accepted = true;
             finish(new Error('runner supervisor acknowledged a different start'));
             return;
           }
@@ -1920,6 +1934,7 @@ export class SupervisorRunnerRecovery implements RunnerRecovery {
           protocolVersion: state.protocolVersion,
           eventFilePath,
           controlSocketPath,
+          controlCapability: marker.startCommandId,
         },
       };
     } catch {

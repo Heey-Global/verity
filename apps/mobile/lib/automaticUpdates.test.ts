@@ -136,3 +136,21 @@ describe('applyStartupUpdate', () => {
     expect(client.checkForUpdateAsync).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('foreground update download', () => {
+  it('downloads an available update without reloading the interactive app', async () => {
+    const client = makeClient({
+      checkForUpdateAsync: jest.fn().mockResolvedValue({
+        isAvailable: true,
+        isRollBackToEmbedded: false,
+      }),
+      fetchUpdateAsync: jest.fn().mockResolvedValue({
+        isNew: true,
+        isRollBackToEmbedded: false,
+      }),
+    });
+    const check = createSerialUpdateChecker(client, false);
+    await expect(check()).resolves.toBe('downloaded');
+    expect(client.reloadAsync).not.toHaveBeenCalled();
+  });
+});

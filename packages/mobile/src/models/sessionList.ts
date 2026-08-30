@@ -115,7 +115,7 @@ export class SessionListModel {
       attentionCount: attentionCount(this._sessions),
       loading: this._loading,
       error: this._error,
-      rateLimitNotice: overviewRateLimitNotice(this._sessions, Date.now()),
+      rateLimitNotice: overviewRateLimitNotice(this._sessions, this._providerLimits, Date.now()),
       providerLimitRows: overviewProviderLimitRows(
         this._sessions,
         this._providerLimits,
@@ -370,6 +370,8 @@ function strongerLimit(
   b: ProviderLimitState,
 ): ProviderLimitState {
   if (a === undefined) return b;
+  if (a.observedAt === undefined && b.observedAt !== undefined) return b;
+  if (a.observedAt !== undefined && b.observedAt === undefined) return a;
   if (a.observedAt !== undefined && b.observedAt !== undefined && b.observedAt !== a.observedAt)
     return b.observedAt > a.observedAt ? b : a;
   if (a.status === 'allowed' && b.status !== 'allowed') return b;
@@ -433,20 +435,15 @@ function defaultSchedule(poll: () => void, intervalMs: number): CancelPoll {
 
 function overviewRateLimitNotice(
   sessions: readonly SessionSummary[],
+  providerLimits: readonly RateLimit[],
   nowMs: number,
 ): RateLimitNotice | null {
   let latest: RateLimitNotice | null = null;
   const nowSeconds = Math.floor(nowMs / 1000);
-  for (const session of sessions) {
-    // Overview is an account/provider-level memory: keep a provider limit visible
-    // until its reset even if this session has since switched to another model.
-    const rateLimits = session.rateLimits ?? (session.rateLimit ? [session.rateLimit] : []);
-    for (const rateLimit of rateLimits) {
-      if (rateLimit.scope !== undefined && rateLimit.scope !== 'all_models') continue;
-      const notice = rateLimitNotice(
-        { ...rateLimit, window: providerLimitWindow(rateLimit) },
-        nowMs,
-      );
+  for (const row of overviewProviderLimitRows(sessions, providerLimits, nowMs)) {
+    for (const rateLimit of [row.fiveHour, row.weekly]) {
+      if (rateLimit === null) continue;
+      const notice = rateLimitNotice({ ...rateLimit, providerLabel: row.providerLabel }, nowMs);
       if (!notice || notice.resetsAt <= nowSeconds) continue;
       if (!latest || notice.resetsAt > latest.resetsAt) latest = notice;
     }

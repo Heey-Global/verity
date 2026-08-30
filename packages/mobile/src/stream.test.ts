@@ -55,26 +55,22 @@ describe('SessionStream', () => {
     expect(sockets[0]?.url).toBe('ws://host:3000/sessions/s1/stream?sinceSeq=0');
   });
 
-  it('appends the bearer token as an access_token query param (audit C1)', () => {
+  it('uses a one-time stream ticket as a subprotocol, never in the URL', async () => {
     const { connect, sockets } = recordingConnect();
+    const protocols: Array<string | string[] | undefined> = [];
+    const recording = (url: string, protocol?: string | string[]): FakeSocket => {
+      protocols.push(protocol);
+      return connect(url);
+    };
     new SessionStream({
       baseUrl: 'http://host',
       sessionId: 's1',
-      connect,
-      getToken: () => 'tok-xyz',
+      connect: recording,
+      getStreamTicket: async () => 'ticket-xyz',
     }).start();
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0&access_token=tok-xyz');
-  });
-
-  it('omits access_token when the token provider returns null', () => {
-    const { connect, sockets } = recordingConnect();
-    new SessionStream({
-      baseUrl: 'http://host',
-      sessionId: 's1',
-      connect,
-      getToken: () => null,
-    }).start();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0');
+    expect(protocols).toEqual(['verity-stream-ticket.ticket-xyz']);
   });
 
   it('decodes event frames into the reducer and tracks the seq', () => {
@@ -183,6 +179,17 @@ describe('SessionStream', () => {
     stream.prependHistory([{ seq: 5, event: { t: 'text', delta: 'dup' } }]); // not older → no-op
     expect(stream.oldestSeq).toBe(5);
     expect(updates.length).toBe(before);
+  });
+
+  it('ignores duplicate and out-of-order live sequence frames', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ baseUrl: 'http://host', sessionId: 's1', connect });
+    stream.start();
+    sockets[0]?.emitEvent(2, { t: 'text', delta: 'new' });
+    sockets[0]?.emitEvent(2, { t: 'text', delta: 'duplicate' });
+    sockets[0]?.emitEvent(1, { t: 'text', delta: 'old' });
+    expect(stream.newestSeq).toBe(2);
+    expect(stream.state.messages).toHaveLength(1);
   });
 
   it('forwards a caught_up watermark as an update without advancing the cursor', () => {
@@ -383,31 +390,33 @@ describe('SessionStream', () => {
     stream.stop();
   });
 
-  it('reports reconnect lifecycle and reads a rotated token on every attempt', () => {
+  it('reports reconnect lifecycle and mints a fresh ticket on every attempt', async () => {
     const { connect, sockets } = recordingConnect();
     const states: string[] = [];
-    let token = 'old';
+    let ticket = 'old';
     let retry = (): void => undefined;
     const stream = new SessionStream({
       baseUrl: 'http://host',
       sessionId: 's1',
       connect,
-      getToken: () => token,
+      getStreamTicket: async () => ticket,
       onConnectionStateChange: (state) => states.push(state),
       scheduleReconnect: (next) => {
         retry = next;
       },
     });
     stream.start();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
     sockets[0]?.emitClose();
-    token = 'rotated';
+    ticket = 'rotated';
     retry();
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
     sockets[1]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
     stream.stop();
 
-    expect(sockets[0]?.url).toContain('access_token=old');
-    expect(sockets[1]?.url).toContain('access_token=rotated');
+    expect(sockets[0]?.url).not.toContain('access_token');
+    expect(sockets[1]?.url).not.toContain('access_token');
     expect(states).toEqual(['connecting', 'connected', 'reconnecting', 'connected', 'stopped']);
   });
 

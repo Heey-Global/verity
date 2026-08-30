@@ -28,4 +28,4 @@ COPY --from=builder --chown=65532:65532 /app/packages/project-relay/dist ./dist
 
 USER 65532:65532
 EXPOSE 8080 8443
-ENTRYPOINT ["/nodejs/bin/node", "--max-old-space-size=12", "/app/dist/main.js"]
+ENTRYPOINT ["/nodejs/bin/node", "/app/dist/main.js"]

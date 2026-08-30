@@ -5,6 +5,7 @@ import type { SpawnedProcess, Spawner } from './backend-contract.js';
 const PROTOCOL_VERSION = 1;
 const MAX_STDERR_CHARS = 64 * 1024;
 const STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
+const MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
 
 /**
  * The only part of {@link SpawnOptions.env} that crosses to the broker. The
@@ -44,8 +45,8 @@ class AsyncTextQueue implements AsyncIterable<string> {
     private readonly resume: () => void,
   ) {}
 
-  push(value: string): void {
-    if (this.ended) return;
+  push(value: string): boolean {
+    if (this.ended) return false;
     const waiter = this.waiters.shift();
     if (waiter) waiter({ done: false, value });
     else {
@@ -53,6 +54,7 @@ class AsyncTextQueue implements AsyncIterable<string> {
       this.queuedBytes += Buffer.byteLength(value);
       if (this.queuedBytes >= STDOUT_HIGH_WATER_BYTES) this.pause();
     }
+    return this.queuedBytes < STDOUT_HIGH_WATER_BYTES;
   }
 
   end(): void {
@@ -86,15 +88,21 @@ function decode(data: string): string {
 }
 
 function send(socket: Socket, frame: object): boolean {
-  return !socket.destroyed && socket.write(`${JSON.stringify(frame)}\n`);
+  if (socket.destroyed || !socket.writable) return false;
+  socket.write(`${JSON.stringify(frame)}\n`);
+  return true;
 }
 
 export function createBrokerSpawner(socketPath: string): Spawner {
   const spawner: Spawner = (command, args, options): SpawnedProcess => {
     const socket = createConnection(socketPath);
+    let processBuffered = (): void => undefined;
     const stdout = new AsyncTextQueue(
       () => socket.pause(),
-      () => socket.resume(),
+      () => {
+        socket.resume();
+        queueMicrotask(processBuffered);
+      },
     );
     let stderrTail = '';
     let pid: number | undefined;
@@ -135,20 +143,30 @@ export function createBrokerSpawner(socketPath: string): Spawner {
         ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
       });
     });
-    socket.on('data', (chunk) => {
-      buffered += chunk.toString('utf8');
+    processBuffered = (): void => {
+      if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES && !buffered.includes('\n')) {
+        stderrTail = 'spawn broker frame exceeded the size limit';
+        settle(1);
+        return;
+      }
       for (;;) {
+        if (settled) break;
         const newline = buffered.indexOf('\n');
         if (newline < 0) break;
         const line = buffered.slice(0, newline);
         buffered = buffered.slice(newline + 1);
+        if (Buffer.byteLength(line) > MAX_BROKER_FRAME_BYTES) {
+          stderrTail = 'spawn broker frame exceeded the size limit';
+          settle(1);
+          break;
+        }
         let frame: Record<string, unknown>;
         try {
           frame = JSON.parse(line) as Record<string, unknown>;
         } catch {
           stderrTail = 'spawn broker returned malformed JSON';
           settle(1);
-          continue;
+          break;
         }
         if (frame.ok !== true) {
           const error = typeof frame.error === 'string' ? frame.error : 'spawn broker failed';
@@ -159,7 +177,7 @@ export function createBrokerSpawner(socketPath: string): Spawner {
           pid = typeof frame.pid === 'number' ? frame.pid : undefined;
           flushInput();
         } else if (frame.kind === 'stdout' && typeof frame.data === 'string') {
-          stdout.push(decode(frame.data));
+          if (!stdout.push(decode(frame.data))) break;
         } else if (frame.kind === 'stderr' && typeof frame.data === 'string') {
           stderrTail = `${stderrTail}${decode(frame.data)}`.slice(-MAX_STDERR_CHARS);
         } else if (frame.kind === 'exit') {
@@ -170,6 +188,11 @@ export function createBrokerSpawner(socketPath: string): Spawner {
           settle(typeof frame.code === 'number' ? frame.code : 128 + (signalNumber ?? 0));
         }
       }
+    };
+    socket.on('data', (chunk) => {
+      if (settled) return;
+      buffered += chunk.toString('utf8');
+      processBuffered();
     });
     socket.once('error', (error) => {
       stderrTail = `${stderrTail}${stderrTail ? '\n' : ''}${error.message}`.slice(
@@ -178,7 +201,12 @@ export function createBrokerSpawner(socketPath: string): Spawner {
       settle(1);
     });
     socket.once('close', () => {
-      if (!settled) settle(1);
+      if (!settled) {
+        if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES) {
+          stderrTail = 'spawn broker frame exceeded the size limit';
+        }
+        settle(1);
+      }
     });
 
     return {
@@ -196,7 +224,12 @@ export function createBrokerSpawner(socketPath: string): Spawner {
       writeStdin: (data) => {
         if (stdinClosed || settled) return false;
         if (!spawned) pendingInput.push(data);
-        else send(socket, { protocolVersion: PROTOCOL_VERSION, kind: 'stdin', data: encode(data) });
+        else
+          return send(socket, {
+            protocolVersion: PROTOCOL_VERSION,
+            kind: 'stdin',
+            data: encode(data),
+          });
         return true;
       },
       closeStdin: () => {

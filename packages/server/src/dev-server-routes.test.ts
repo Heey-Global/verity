@@ -350,6 +350,32 @@ describe('Dev server routes', () => {
     expect((await app.inject({ method: 'DELETE', url: '/dev-servers/nope' })).statusCode).toBe(404);
   });
 
+  it('hides every CRUD view of dev servers belonging to a hidden project', async () => {
+    await store.updateProjectState('p1', 'absent');
+    const devServer = await store.createDevServer({ projectId: 'p1', name: 'Web' });
+    await store.hideProject('p1');
+
+    expect((await app.inject({ method: 'GET', url: '/projects/p1/dev-servers' })).statusCode).toBe(
+      404,
+    );
+    expect(
+      (await app.inject({ method: 'GET', url: `/dev-servers/${devServer.id}` })).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: `/dev-servers/${devServer.id}`,
+          payload: { name: 'Leaked' },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (await app.inject({ method: 'DELETE', url: `/dev-servers/${devServer.id}` })).statusCode,
+    ).toBe(404);
+    await expect(store.getDevServer(devServer.id)).resolves.toMatchObject({ name: 'Web' });
+  });
+
   it('rejects caller-selected host ports', async () => {
     const res = await app.inject({
       method: 'POST',

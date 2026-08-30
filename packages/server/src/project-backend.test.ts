@@ -195,7 +195,7 @@ describe('DockerExecBackend (#174)', () => {
         '-e',
         'VERITY_DOPPLER_TOKEN_REF=doppler://verity/prod',
         '-e',
-        'VERITY_PROJECT_DEV_SERVER_URL=http://localhost:8081',
+        'VERITY_PROJECT_DEV_SERVER_URL',
         '-e',
         'CLAUDE_CODE_OAUTH_TOKEN',
       ]),

@@ -27,6 +27,12 @@ import type { HttpFetch, HttpResponse } from './github.js';
 // ── Pure helpers ──────────────────────────────────────────────────────────
 
 describe('buildManifest', () => {
+  it('requests package read access needed for private GHCR artifacts', () => {
+    expect(buildManifest('https://verity.example').default_permissions).toMatchObject({
+      packages: 'read',
+    });
+  });
+
   it('disables the webhook (Verity is pull-based)', () => {
     const m = buildManifest('https://verity.example');
     expect(m.hook_attributes).toEqual({
@@ -74,6 +80,8 @@ describe('buildManifest', () => {
       // Create issues from task-board drafts / inbox items.
       issues: 'write',
       metadata: 'read',
+      // Pull digest-pinned private runner/toolkit images during provisioning.
+      packages: 'read',
       // Org Projects v2 read+write so the App can provision + manage the task board (ADR 0007).
       organization_projects: 'write',
     });
@@ -119,6 +127,20 @@ describe('manifest state store', () => {
     const token = store.issueState();
     now += 10_000; // exactly the TTL (not past it)
     expect(store.consumeState(token)).toBe(true);
+  });
+
+  it('purges expired states and caps abandoned live states', () => {
+    let now = 1_000;
+    const store = createManifestStateStore({ now: () => now, ttlMs: 100, maxStates: 2 });
+    const expired = store.issueState();
+    now += 101;
+    const oldestLive = store.issueState();
+    const newestLive = store.issueState();
+    const replacement = store.issueState();
+    expect(store.consumeState(expired)).toBe(false);
+    expect(store.consumeState(oldestLive)).toBe(false);
+    expect(store.consumeState(newestLive)).toBe(true);
+    expect(store.consumeState(replacement)).toBe(true);
   });
 });
 
@@ -238,13 +260,14 @@ function build(
   return { app, store };
 }
 
-async function unlock(app: FastifyInstance): Promise<void> {
+async function unlock(app: FastifyInstance): Promise<string> {
   const res = await app.inject({
     method: 'POST',
     url: '/secret/init',
     payload: { password: PASSWORD },
   });
   expect(res.statusCode).toBe(200);
+  return res.json<{ token: string }>().token;
 }
 
 describe('GET /github/app/manifest/start', () => {
@@ -649,6 +672,7 @@ describe('manifest /start one-time-token auth (gate armed)', () => {
         method: 'POST',
         url: '/github/app/manifest/prepare',
         headers: { authorization: `Bearer ${token}` },
+        payload: { baseUrl: 'https://verity.example' },
       });
       expect(prep.statusCode).toBe(200);
       const startToken = prep.json().startToken as string;
@@ -657,10 +681,11 @@ describe('manifest /start one-time-token auth (gate armed)', () => {
       // start with the token → 200 (renders the auto-submit form).
       const ok = await app.inject({
         method: 'GET',
-        url: `/github/app/manifest/start?base=https://verity.example&ott=${startToken}`,
+        url: `/github/app/manifest/start?base=https://attacker.example&ott=${startToken}`,
       });
       expect(ok.statusCode).toBe(200);
       expect(ok.body).toContain('document.forms[0].submit()');
+      expect(ok.body).toContain('https://verity.example/github/app/manifest/callback');
 
       // The token is single-use → a replay is refused.
       const reused = await app.inject({
@@ -744,7 +769,7 @@ describe('manifest refuse-overwrite lock', () => {
       Promise.resolve({ appId: '123', slug: 'verity-ok', privateKey: pemString() });
     const { app } = build(cipher, { manifestConvert: okConvert });
     try {
-      await unlock(app);
+      const token = await unlock(app);
       const startRes = await app.inject({
         method: 'GET',
         url: '/github/app/manifest/start?base=https://verity.example',
@@ -764,7 +789,13 @@ describe('manifest refuse-overwrite lock', () => {
       });
       expect(inst.statusCode).toBe(200);
       expect(
-        (await app.inject({ method: 'GET', url: '/onboarding/status' })).json().githubAppConfigured,
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/onboarding/status',
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).json().githubAppConfigured,
       ).toBe(true);
     } finally {
       await app.close();
@@ -777,14 +808,20 @@ describe('POST /settings/github/disconnect', () => {
     const cipher = createSealableSecretCipher();
     const { app, store } = build(cipher);
     try {
-      await unlock(app);
+      const token = await unlock(app);
       await store.updateVeritySettings({
         githubAppId: '99',
         githubAppInstallationId: '5',
         githubAppPrivateKey: pemString(),
       });
       expect(
-        (await app.inject({ method: 'GET', url: '/onboarding/status' })).json().githubAppConfigured,
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/onboarding/status',
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).json().githubAppConfigured,
       ).toBe(true);
 
       const dis = await app.inject({ method: 'POST', url: '/settings/github/disconnect' });
@@ -792,7 +829,13 @@ describe('POST /settings/github/disconnect', () => {
       expect(dis.json()).toEqual({ disconnected: true });
 
       expect(
-        (await app.inject({ method: 'GET', url: '/onboarding/status' })).json().githubAppConfigured,
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/onboarding/status',
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).json().githubAppConfigured,
       ).toBe(false);
       const settings = await store.getVeritySettings();
       expect(settings?.githubAppId ?? null).toBeNull();

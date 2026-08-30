@@ -344,9 +344,17 @@ jobs:
                   test=true
                   server_image=true
                   ;;
+                docs/website/Dockerfile|docs/website/nginx.conf)
+                  lint=true
+                  test=true
+                  ;;
                 docs/website/site/install.sh)
                   lint=true
                   test=true
+                  # The public bootstrap executes the payload baked into the
+                  # Server image. A PR that changes it must rebuild and inspect
+                  # that image rather than passing only the mocked shell test.
+                  server_image=true
                   ;;
                 # Same reason for `test`: verity-git-guard.test.ts executes
                 # `agent-seed/bin/git`, and the drift job compares the two copies
@@ -1210,9 +1218,6 @@ jobs:
       - name: Verify isolated control-plane Runner lifecycle
         shell: bash
         run: deploy/bin/verity-control-plane-runner-deployment-smoke "$VERITY_CI_IMAGE"
-
-      - name: Release build cache before isolated daemon
-        run: docker buildx rm --force verity-ci-bounded-v1
 
       - uses: ./.github/actions/reclaim-runner-disk
         with:

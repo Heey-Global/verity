@@ -155,6 +155,17 @@ describe('VerityClient auth (bearer token)', () => {
     expect(authHeader(calls[1])).toBe('Bearer second');
   });
 
+  it('mints a stream ticket over authenticated HTTP', async () => {
+    const expiresAt = '2026-08-30T18:00:00.000Z';
+    const ticket = 'A'.repeat(43);
+    const { fetch, calls } = fakeFetch(json({ ticket, expiresAt }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch, getToken: () => 'device' });
+    await expect(client.createStreamTicket('session/1')).resolves.toEqual({ ticket, expiresAt });
+    expect(calls[0]?.url).toBe('http://host/sessions/session%2F1/stream-ticket');
+    expect(calls[0]?.init?.method).toBe('POST');
+    expect(authHeader(calls[0])).toBe('Bearer device');
+  });
+
   it('unlockSecret returns the minted token and sends the device label', async () => {
     const { fetch, calls } = fakeFetch(json({ status: 'unlocked', token: 'T', tokenId: 'id1' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -173,6 +184,42 @@ describe('VerityClient auth (bearer token)', () => {
       'correct-horse-battery',
     );
     expect(result.token).toBe('T2');
+  });
+
+  it('performs pairing and presents the one-use bootstrap only to the password on-ramp', async () => {
+    const responses = [
+      json({
+        serverId: 'srv_0123456789abcdef',
+        identityKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        signature: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+      }),
+      json({
+        bootstrapToken: 'abcdefghijklmnopqrstuvwxyz_0123456789',
+        expiresAt: '2026-08-29T12:05:00.000Z',
+      }),
+      json({ status: 'unlocked', token: 'device-token' }),
+    ];
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: input instanceof Request ? input.url : input.toString(),
+        ...(init === undefined ? {} : { init }),
+      });
+      return responses.shift()!;
+    }) as unknown as typeof globalThis.fetch;
+    const client = new VerityClient({ baseUrl: 'https://host', fetch });
+    await client.fetchPairingIdentity('abcdefghijklmnopqrstuvwxyz_012345');
+    const redeemed = await client.redeemPairingCode('abcdefghijklmnopqrstuvwxyz_0123456789');
+    await client.initSecretPassword(
+      'correct horse battery staple',
+      'iPhone',
+      redeemed.bootstrapToken,
+    );
+    expect(calls[2]?.init?.headers).toMatchObject({
+      'x-verity-pairing': redeemed.bootstrapToken,
+    });
+    expect(calls[0]?.init?.headers).toBeUndefined();
+    expect(calls[1]?.init?.headers).not.toHaveProperty('x-verity-pairing');
   });
 
   it('tolerates a gate-off deployment (no token in the unlock response)', async () => {
@@ -1009,7 +1056,7 @@ describe('VerityClient.settings', () => {
   const settings = {
     advancedModeEnabled: false,
     gitUserName: 'h-teske',
-    gitUserEmail: 'holger+github@heey.global',
+    gitUserEmail: 'developer@example.com',
     gitSshPrivateKeyPath: '/data/dev/.shared/github/id_ed25519',
     gitSshPublicKeyPath: '/data/dev/.shared/github/id_ed25519.pub',
     gitKnownHostsPath: '/data/dev/.shared/github/known_hosts',
@@ -1116,7 +1163,7 @@ describe('VerityClient.settings', () => {
   it('updates central Verity settings without sending key material', async () => {
     const patch = {
       gitUserName: 'h-teske',
-      gitUserEmail: 'holger+github@heey.global',
+      gitUserEmail: 'developer@example.com',
       gitSshPrivateKeyPath: '/data/dev/.shared/github/id_ed25519',
     };
     const { fetch, calls } = fakeFetch(json({ settings }));
@@ -2329,7 +2376,7 @@ describe('VerityClient agent login flows', () => {
     const settings = {
       advancedModeEnabled: false,
       gitUserName: 'h-teske',
-      gitUserEmail: 'holger+github@heey.global',
+      gitUserEmail: 'developer@example.com',
       gitSshPrivateKeyPath: '/data/dev/.shared/github/id_ed25519',
       gitSshPublicKeyPath: '/data/dev/.shared/github/id_ed25519.pub',
       gitKnownHostsPath: '/data/dev/.shared/github/known_hosts',
@@ -2719,10 +2766,13 @@ describe('VerityClient Doppler binding picker (#320)', () => {
 describe('VerityClient GitHub onboarding hardening', () => {
   it('prepareGithubManifest posts and returns the start token', async () => {
     const { fetch, calls } = fakeFetch(json({ startToken: 'ott-xyz' }));
-    const token = await new VerityClient({ baseUrl: 'http://host', fetch }).prepareGithubManifest();
+    const token = await new VerityClient({ baseUrl: 'http://host', fetch }).prepareGithubManifest(
+      'https://verity.example',
+    );
     expect(token).toBe('ott-xyz');
     expect(calls[0]?.url).toBe('http://host/github/app/manifest/prepare');
     expect(calls[0]?.init?.method).toBe('POST');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ baseUrl: 'https://verity.example' }));
   });
 
   it('disconnectGithub posts to the disconnect endpoint', async () => {

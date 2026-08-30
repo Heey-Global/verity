@@ -125,6 +125,7 @@ export interface AgentSeedProvenanceClient {
 
 export async function createAgentSeedProvenanceClient(
   serverVersion: string,
+  serverImage: string | undefined,
   socketPath: string = UPDATER_CONTROL_SOCKET,
 ): Promise<AgentSeedProvenanceClient | undefined> {
   const channel = await openControlChannel(socketPath);
@@ -138,7 +139,7 @@ export async function createAgentSeedProvenanceClient(
           reason:
             'the Updater does not have the agent seed mounted, so this deployment cannot tell which release the sandboxes are running',
         };
-      return compareAgentSeed(seed.stamp, serverVersion);
+      return compareAgentSeed(seed.stamp, serverVersion, serverImage);
     },
   };
 }

@@ -44,7 +44,8 @@ review confirmed:
    muted grey text = optional. Meaning never conveyed by colour alone.
 2. **Auto-save, no Save button. [decided]** Every change persists on its own; the screen
    never batches edits behind a Save gate.
-3. **Right altitude.** Broker-first reality up front; file-path plumbing under Advanced.
+3. **Right altitude.** Broker-first reality up front; deployment file-path plumbing stays out of
+   the mobile UI.
 4. **Honest signing status.** Never claim more than the client can observe.
 5. **Destructive stays explicit.** Saving a setting is silent; *applying* it to active
    containers (reprovision) is a deliberate, confirmed action.
@@ -188,28 +189,10 @@ CONNECTED SERVICES
 
 ### Group 4 · Maintenance
 
-**Superseded.** This group originally specified a server-wide **Sandbox auto-updates**
-policy — `Security fixes` / `Normal updates` toggles that recreated project containers at
-03:00 server time. Both toggles and the nightly pass have been removed.
-
-The reason is that the policy never described what actually happens. Verity recreates every
-sandbox after a Server restart (the relays a new process serves are new, so the previous
-generation's sandboxes are orphaned and the reconciler rebuilds them onto the current
-default image), and on a released Server that image is pinned to the Server's own version.
-So every Server update rolled the whole fleet onto the new sandbox image within about a
-minute — **whether the toggles were on or off**. A nightly pass could only ever find what
-that path had already done, and an operator who deliberately turned "Normal updates" off got
-them anyway. Keeping a switch that does not switch anything is worse than having no switch.
-
-The nightly pass was not a safety net for the case that path misses, either. The reconciler
-is not image-aware — it classifies sandboxes by relay generation and network topology — so on
-a deployment whose target image moves without a Server restart, the rebuild simply does not
-happen. Restoring the toggles would not fix that; reporting it does. The Server marks such a
-sandbox **stuck** rather than pretending a repair is under way.
-
-What remains in this group is the Server self-update panel and reprovision-all. The sandbox
-side is reported, not configured: see **Sandbox update stuck** in
-[`design-language.md`](./design-language.md#wording-glossary).
+This group contains the Server self-update panel and reprovision-all. Sandbox update state is
+reported, not configured: see **Sandbox update stuck** in
+[`design-language.md`](./design-language.md#wording-glossary). There are no server-wide Sandbox
+update-policy controls.
 
 ### Footer
 
@@ -225,9 +208,8 @@ No Save/Reset bar. Persistence is per-change:
 
 | Control type | When it saves | Feedback |
 | --- | --- | --- |
-| Toggles (Security/Normal updates) | immediately on flip | row shows brief `saving…` → settles |
-| Text (name, email, paths) | on blur (field loses focus), debounced | per-field `saving… → saved ✓`; invalid values (e.g. half-typed email) are **not** persisted — only on valid |
-| Secret paste (SSH key, Doppler) | on blur | per-field `saving… → saved ✓`; write-only, never echoed back |
+| Text (commit-author name and email) | on blur (field loses focus), debounced | per-field `saving… → saved ✓`; invalid values (e.g. half-typed email) are **not** persisted — only on valid |
+| Secret paste (Doppler token) | on blur | per-field `saving… → saved ✓`; write-only, never echoed back |
 
 - A subtle global line reflects aggregate state: `Saving…` / `✓ All changes saved`.
 - Saves are partial `PATCH /settings` (already partial-friendly via `patchFromDraft` /
@@ -249,6 +231,7 @@ colour at ≥ 4.5:1** and carries a **leading glyph**; the tone only drives dot/
 | Ready / done | `tone.done` (green) `#3aa657` / `#28e6a4` | ✓ | `Signing ready`, `Connected`, `Unlocked` |
 | Needs setup | `tone.danger` (**Himbeere**) `#d84f74` / `#ff5c8a` | ! | `Needs setup` |
 | Optional / empty | muted `textMuted` detail text, **no pill** | – | `Optional`, `Not configured` |
+| Transient / in progress | neutral, no tone | spinner | `Saving…`, `Checking`, `Reprovisioning 2/5` |
 
 - **Amber (`tone.attention`) is retired from this screen. [decided]** It fails WCAG 1.4.3
   in light (`#e8a33d` ≈ 2.2:1) and in dark mode was set to the exact accent magenta
@@ -305,7 +288,7 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 ## 8. Accessibility  (fold-in, not optional)
 
 - Explicit `accessibilityLabel` on every `TextInput`.
-- `accessibilityRole`/`State` on pills, disclosures, toggles, and the write-only key rows.
+- `accessibilityRole`/`State` on pills, disclosures, actions, and the write-only Doppler row.
 - Live-region announcements for save state, reprovision progress, and `Copied`.
 - Per-group loading **skeletons** (no full-page spinner, no `0 to do` during load);
   distinguish `couldn't load` from `loaded-and-empty`.
@@ -319,10 +302,10 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 
 | # | Change | Effort |
 | --- | --- | --- |
-| 1 | `2/6` → green/himbeer from `gitSshPrivateKeyConfigured \|\| path`; copy "Commits will be signed" / "No signing method configured" | quick-win |
+| 1 | `2/6` → green/himbeer from `gitSshPrivateKeyConfigured`; copy "Commits will be signed" / "No signing method configured" | quick-win |
 | 2 | Adopt the shared [`apps/mobile/components/StatusPill.tsx`](../apps/mobile/components/StatusPill.tsx) (word in text colour ≥ 4.5:1 + glyph); retire amber; drop the dark-mode magenta collision | quick-win |
 | 3 | Regroup flat ScrollView into 3 sections; combine GitHub access + verified commits; version → footer | medium |
-| 4 | Auto-save: toggles on flip, text/secret on blur, per-field feedback; remove Save/Reset bar | medium |
+| 4 | Auto-save: text/secret on blur, per-field feedback; remove Save/Reset bar | medium |
 | 5 | Header as tappable required-items checklist from one tested helper; suppress count on load-failure | medium |
 | 6 | Reprovision as its own card + state machine (0 / running X-N / partial-failure + retry) | medium |
 | 7 | Claude + Codex one card, per-backend rows | medium |

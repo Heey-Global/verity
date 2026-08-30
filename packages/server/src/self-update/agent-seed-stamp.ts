@@ -13,6 +13,7 @@
  * statement from "stale" and is kept distinct all the way to the operator.
  */
 
+import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -103,7 +104,10 @@ export function parseAgentSeedStamp(text: string): AgentSeedStamp | null {
 export async function readAgentSeedStamp(seedPath: string): Promise<AgentSeedStamp | null> {
   let handle;
   try {
-    handle = await open(join(seedPath, AGENT_SEED_STAMP_FILE), 'r');
+    handle = await open(
+      join(seedPath, AGENT_SEED_STAMP_FILE),
+      constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+    );
   } catch {
     return null;
   }
@@ -130,26 +134,25 @@ export const DEV_VERSION_SENTINEL = '0.0.0-dev';
 export type AgentSeedProvenance =
   | { readonly state: 'unknown'; readonly reason: string }
   | { readonly state: 'matched'; readonly stamp: AgentSeedStamp }
-  | { readonly state: 'skewed'; readonly stamp: AgentSeedStamp; readonly serverVersion: string };
+  | {
+      readonly state: 'skewed';
+      readonly stamp: AgentSeedStamp;
+      readonly serverVersion: string;
+      readonly serverImage: string;
+    };
 
 /**
  * Compares a seed stamp against the release the Server itself is.
  *
- * On version rather than image digest, deliberately. The stamp records the
- * reference Compose resolved, which may be a tag, while a managed deployment
- * always runs a digest — comparing those two would report skew on every
- * deployment that pins by tag, which is most of them. Version is what both
- * sides can state about themselves, and because releases come from
- * semantic-release, a Server digest that differs from the seed's across an
- * update differs in version too.
- *
- * The exception is a rebuild of the same version, which this cannot see. That
- * is a dev-harness situation, not a released one, and it lands in `unknown`
- * anyway whenever either side carries the dev sentinel.
+ * Both version and immutable image digest must agree. A release can be rebuilt
+ * without changing its semantic version, so version equality alone is not
+ * provenance. Legacy/tag-based stamps remain observable as `unknown` rather
+ * than being promoted to a match they cannot prove.
  */
 export function compareAgentSeed(
   stamp: AgentSeedStamp | null,
   serverVersion: string,
+  serverImage: string | undefined,
 ): AgentSeedProvenance {
   if (stamp === null)
     return {
@@ -162,6 +165,15 @@ export function compareAgentSeed(
       state: 'unknown',
       reason: `a development build reports no release version, so the seed (${stamp.version}) and the Server (${serverVersion}) cannot be compared`,
     };
-  if (stamp.version === serverVersion) return { state: 'matched', stamp };
-  return { state: 'skewed', stamp, serverVersion };
+  const seedDigest = /@sha256:([a-f0-9]{64})$/.exec(stamp.image)?.[1];
+  const serverDigest =
+    serverImage === undefined ? undefined : /@sha256:([a-f0-9]{64})$/.exec(serverImage)?.[1];
+  if (seedDigest === undefined || serverDigest === undefined || serverImage === undefined)
+    return {
+      state: 'unknown',
+      reason: 'the agent seed or running Server does not identify an immutable image digest',
+    };
+  if (stamp.version === serverVersion && seedDigest === serverDigest)
+    return { state: 'matched', stamp };
+  return { state: 'skewed', stamp, serverVersion, serverImage };
 }

@@ -20,7 +20,6 @@ import type {
 import { createSecretEnvelopeSealer } from './secret-envelope-crypto.js';
 import type { RawJobChunk, SecretJobFrameSink } from './secret-job-executor.js';
 import type { SecretJobGrant } from './secret-job-grant-resolver.js';
-import { createSecretWorkerChannelAuthenticator } from './secret-worker-channel-auth.js';
 import { createSecretWorkerRecipientKeyRegistry } from './secret-worker-recipient-key-registry.js';
 import {
   decodeSecretWorkerMessages,
@@ -284,7 +283,7 @@ function composeWithWorker(opts: { runJob?: RunJob; tamperProof?: boolean } = {}
     now,
     seams: {
       openAttach: () => Promise.resolve(attach),
-      authenticator: createSecretWorkerChannelAuthenticator({ now }),
+      authenticatorOptions: { now },
       scheduleDeadline: () => ({ cancel: () => undefined }),
     },
   });
@@ -357,7 +356,7 @@ describe('brokered secret job executor', () => {
       now,
       seams: {
         openAttach: () => Promise.reject(new Error('attach must not be opened on a failed launch')),
-        authenticator: createSecretWorkerChannelAuthenticator({ now }),
+        authenticatorOptions: { now },
         scheduleDeadline: () => ({ cancel: () => undefined }),
       },
     });

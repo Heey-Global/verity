@@ -4088,6 +4088,13 @@ describe('Conductor.startSession', () => {
     });
 
     const { sessionId } = await conductor.startSession({ worktree: '/wt/new', prompt: 'start' });
+    const [marker] = await ctx.store.listRunningTurns();
+    expect(marker).toMatchObject({
+      sessionId,
+      promptSeq: expect.any(Number),
+      turnId: expect.any(String),
+      startCommandId: expect.any(String),
+    });
     bus.subscribe(sessionId, (se) => {
       if (se.event.t === 'prompt') prompts.push(se.event.text);
     });
@@ -4106,6 +4113,33 @@ describe('Conductor.startSession', () => {
       expect(conductor.queuedCount(sessionId)).toBe(0);
       expect(conductor.isBusy(sessionId)).toBe(false);
     });
+  });
+
+  it('persists an initial cancellation before draining a queued successor', async () => {
+    const fake = scriptedBackend((_opts, attempt) =>
+      attempt === 1 ? { sessionId: 's-initial-cancel', abortable: true } : {},
+    );
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+
+    const { sessionId } = await conductor.startSession({
+      worktree: '/wt/initial-cancel',
+      prompt: 'first',
+    });
+    expect(await conductor.dispatchTurn(sessionId, 'second')).toEqual({ queued: true });
+    await conductor.cancelTurn(sessionId);
+    await waitFor(() => !conductor.isBusy(sessionId));
+
+    const events = await ctx.store.getEvents(sessionId);
+    const interrupted = events.findIndex((event) => event.t === 'interrupted');
+    const secondPrompt = events.findIndex(
+      (event) => event.t === 'prompt' && event.text === 'second',
+    );
+    expect(interrupted).toBeGreaterThanOrEqual(0);
+    expect(secondPrompt).toBeGreaterThan(interrupted);
   });
 
   it('persists the operator prompt ordered before the agent output on a fresh start', async () => {
@@ -4605,7 +4639,7 @@ describe('Conductor.startSession', () => {
       backend: scriptedBackend({ sessionId: null, omitResult: true }).backend,
     });
     await expect(conductor.startSession({ worktree: '/wt/none', prompt: 'x' })).rejects.toThrow(
-      /no session event/,
+      /no session (?:event|init)/,
     );
   });
 
@@ -8260,6 +8294,7 @@ describe('brokeredGrantTarget — what a standing grant is allowed to cover', ()
     };
     const target = brokeredGrantTarget('verity_secret_run', input);
     expect(target).toMatchObject({ secretAlias: 'KEY_ID', toolName: 'verity_secret_run' });
+    expect(target?.secretAliases).toEqual(['KEY_ID', 'TOKEN']);
     expect(target?.target).toMatch(/^v1:\/usr\/bin\/python3#[a-f0-9]{64}$/u);
     expect(
       brokeredGrantTarget('verity_secret_run', {
@@ -8804,6 +8839,9 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     await vi.waitFor(() => {
       expect(fake.decisions()).toEqual([{ behavior: 'allow' }]);
     });
+    await vi.waitFor(() => {
+      expect(conductor.isBusy('sg5')).toBe(false);
+    });
   });
 });
 
@@ -9071,6 +9109,79 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
     });
+  });
+
+  it('associates a multi-secret run grant with every alias and requires every association', async () => {
+    const input = {
+      secrets: [
+        { secretAlias: 'TOKEN', env: 'TOKEN' },
+        { secretAlias: 'KEY_ID', env: 'KEY_ID' },
+      ],
+      command: ['/usr/bin/python3', '/work/project/deploy.py'],
+      entryScript: {
+        path: '/work/project/deploy.py',
+        projectPath: 'deploy.py',
+        sha256: 'a'.repeat(64),
+        loading: 'isolated',
+      },
+    };
+    await createProjectSession('x5-multi');
+    const persist = vi.fn(async (): Promise<void> => undefined);
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      persistBrokeredHttpGrant: persist,
+    });
+    const answered = conductor.requestExternalPermission({
+      sessionId: 'x5-multi',
+      toolUseId: 'toolu_multi',
+      toolName: 'verity_secret_run',
+      input,
+      channel: 'acp',
+      allowStandingGrant: true,
+    });
+    await vi.waitFor(() =>
+      expect(conductor.pendingPermissions('x5-multi')).toEqual(['toolu_multi']),
+    );
+    await conductor.decidePermission(
+      'x5-multi',
+      'toolu_multi',
+      { behavior: 'allow' },
+      { scope: 'session' },
+    );
+    await expect(answered).resolves.toMatchObject({ decidedBy: 'card' });
+    expect(persist).toHaveBeenNthCalledWith(1, expect.objectContaining({ secretAlias: 'KEY_ID' }));
+    expect(persist).toHaveBeenNthCalledWith(2, expect.objectContaining({ secretAlias: 'TOKEN' }));
+
+    await createProjectSession('x5-multi-check');
+    const check = vi.fn(
+      async ({ secretAlias }: { secretAlias: string }) => secretAlias === 'KEY_ID',
+    );
+    const checking = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+    });
+    const pending = checking.requestExternalPermission({
+      sessionId: 'x5-multi-check',
+      toolUseId: 'toolu_multi_check',
+      toolName: 'verity_secret_run',
+      input,
+      channel: 'acp',
+      allowStandingGrant: true,
+    });
+    await vi.waitFor(() =>
+      expect(check.mock.calls.map(([grant]) => grant.secretAlias).sort()).toEqual([
+        'KEY_ID',
+        'TOKEN',
+      ]),
+    );
+    expect(checking.pendingPermissions('x5-multi-check')).toEqual(['toolu_multi_check']);
+    await checking.decidePermission('x5-multi-check', 'toolu_multi_check', {
+      behavior: 'deny',
+      message: 'not now',
+    });
+    await expect(pending).resolves.toMatchObject({ decidedBy: 'card' });
   });
 
   it('rejects a second prompt reusing a parked tool_use_id', async () => {

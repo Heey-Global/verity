@@ -154,14 +154,15 @@ async function completeLegacyDopplerCutoverOnce(input: {
         }
         await input.provisioner.recreateContainer(row.project_id, { confirmWarnings: true });
       }
-      if (row.token_slug !== null) {
-        await sql`
-          update project_settings set doppler_minted_token_slug = null
-          where project_id = ${row.project_id}
-        `.execute(input.db);
-      }
-      if (row.catalog_credential) {
-        await sql`
+      await input.db.transaction().execute(async (tx) => {
+        if (row.token_slug !== null) {
+          await sql`
+            update project_settings set doppler_minted_token_slug = null
+            where project_id = ${row.project_id}
+          `.execute(tx);
+        }
+        if (row.catalog_credential) {
+          await sql`
           delete from secret_provider_credentials credentials
           where exists (
             select 1 from secret_provider_bindings bindings
@@ -177,23 +178,24 @@ async function completeLegacyDopplerCutoverOnce(input: {
                   or bindings.project_id <> ${row.project_id}
                 )
             )
-        `.execute(input.db);
-        await sql`
-          update secret_provider_bindings
-          set credential_ref = 'secretref:broker/doppler'
-          where project_id = ${row.project_id} and provider = 'doppler'
-        `.execute(input.db);
-      }
-      if (!row.manual_credential) {
-        await sql`delete from doppler_legacy_cutovers where project_id = ${row.project_id}`.execute(
-          input.db,
-        );
-      } else {
-        await sql`
+          `.execute(tx);
+          await sql`
+            update secret_provider_bindings
+            set credential_ref = 'secretref:broker/doppler'
+            where project_id = ${row.project_id} and provider = 'doppler'
+          `.execute(tx);
+        }
+        if (!row.manual_credential) {
+          await sql`delete from doppler_legacy_cutovers where project_id = ${row.project_id}`.execute(
+            tx,
+          );
+        } else {
+          await sql`
           update doppler_legacy_cutovers set runtime_cutover_at = now()
           where project_id = ${row.project_id}
-        `.execute(input.db);
-      }
+          `.execute(tx);
+        }
+      });
       completed += 1;
     }
     return completed;

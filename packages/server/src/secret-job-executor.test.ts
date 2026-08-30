@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type {
   ExecutorWorkloadIdentity,
@@ -515,6 +515,38 @@ describe('secret job executor', () => {
     ).rejects.toThrow(/deadline already elapsed/);
   });
 
+  it('tears down a running sandbox when its absolute deadline elapses', async () => {
+    vi.useFakeTimers();
+    const recipient = generateRecipientKeyPair();
+    const secrets = new Map<string, Uint8Array>([
+      ['TOKEN', new Uint8Array(Buffer.from(SECRET_VALUE))],
+    ]);
+    const broker = setupBroker(secrets, recipient);
+    const issued = await broker.issue(claims());
+    const context = sandboxContext(broker, issued.capability, recipient, echoJob());
+    const teardown = vi.fn(async () => 'reaped' as const);
+    const executor = createSecretJobExecutor({
+      launcher: {
+        async launch() {
+          return {
+            workload: context.workload,
+            frames: { [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }) },
+            result: new Promise(() => {}),
+          };
+        },
+        teardown,
+      },
+      frames: { persist: () => {} },
+      runtime: 'docker-gvisor',
+      now,
+    });
+    await executor.start(startRequest({ absoluteDeadline: '2026-07-19T00:02:00Z' }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(executor.settle('job-1')).resolves.toMatchObject({ outcome: 'failed' });
+    expect(teardown).toHaveBeenCalledWith('job-1');
+    vi.useRealTimers();
+  });
+
   it('reaps deterministically and idempotently', async () => {
     const recipient = generateRecipientKeyPair();
     const secrets = new Map<string, Uint8Array>([
@@ -536,7 +568,7 @@ describe('secret job executor', () => {
 
     const cleanup = await executor.cleanup('job-1');
     expect(cleanup.disposition).toBe('already_reaped');
-    expect(launcher.teardowns).toEqual(['job-1', 'job-1']);
+    expect(launcher.teardowns).toEqual(['job-1']);
   });
 
   it('tears down a secret-bearing sandbox even when driving it throws', async () => {
@@ -610,6 +642,32 @@ describe('secret job executor', () => {
     expect(retry.disposition).toBe('created');
     const result = await executor.settle('job-1');
     expect(result.outcome).toBe('succeeded');
+  });
+
+  it('owns and tears down a launch that never settles without admitting a replacement', async () => {
+    vi.useFakeTimers();
+    try {
+      const teardown = vi.fn(() => Promise.resolve<'reaped'>('reaped'));
+      const executor = createSecretJobExecutor({
+        launcher: {
+          launch: () => new Promise<LaunchedSandbox>(() => undefined),
+          teardown,
+        },
+        frames: { persist: () => {} },
+        runtime: 'docker-gvisor',
+        now,
+      });
+      const request = startRequest({ absoluteDeadline: '2026-07-19T00:01:01Z' });
+      const started = executor.start(request);
+      const rejected = expect(started).rejects.toThrow(/deadline elapsed during launch/);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await rejected;
+      expect(teardown).toHaveBeenCalledWith('job-1');
+      expect(executor.jobState('job-1')).toBe('reaped');
+      await expect(executor.start(request)).rejects.toThrow(/job already consumed/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('recovers via cleanup when an initial teardown fails', async () => {

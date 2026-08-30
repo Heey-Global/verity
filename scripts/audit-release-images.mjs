@@ -35,6 +35,7 @@
 // rule for every script in the directory; an import costs nothing and is local.
 import { Buffer } from 'node:buffer';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { URL } from 'node:url';
 
 /**
  * Every image release.yml pushes at the BACKEND release version.
@@ -396,14 +397,15 @@ export async function fetchTagCatalogue({
   // Paginated because the catalogue is ordered oldest-first: a truncated read
   // loses the NEWEST releases, which is exactly the half this check is about, and
   // it would lose them silently.
-  let next = `/v2/${repository}/tags/list?n=1000`;
+  let next = new URL(`/v2/${repository}/tags/list?n=1000`, registry).href;
   for (let page = 0; next !== ''; page += 1) {
     if (page >= maxPages) {
       throw new Error(
         `ghcr.io kept paginating ${repository}'s tag catalogue past ${maxPages} pages`,
       );
     }
-    const response = await httpGet(`${registry}${next}`, {
+    const requestedUrl = next;
+    const response = await httpGet(requestedUrl, {
       headers: { authorization: `Bearer ${pullToken}` },
       fetchImpl,
     });
@@ -420,7 +422,20 @@ export async function fetchTagCatalogue({
     // `<…>` in a line that also says `rel="next"`, where getting it wrong costs a
     // page rather than a wrong answer.
     const link = response.headers.get('link') ?? '';
-    const relNext = link.includes('rel="next"') ? /<([^>]+)>/.exec(link)?.[1] : undefined;
+    let relNext;
+    for (const match of link.matchAll(/<([^>]*)>((?:\s*;\s*[^,]*)*)/gu)) {
+      const parameters = match[2] ?? '';
+      const rel = /(?:^|;)\s*rel\s*=\s*(?:"([^"]*)"|([^;\s,]+))/iu.exec(parameters);
+      const relations = (rel?.[1] ?? rel?.[2] ?? '').split(/\s+/u);
+      if (relations.some((relation) => relation.toLowerCase() === 'next')) {
+        const resolved = new URL(match[1] ?? '', requestedUrl);
+        if (resolved.origin !== new URL(registry).origin) {
+          throw new Error(`ghcr.io returned a cross-origin next link for ${repository}`);
+        }
+        relNext = resolved.href;
+        break;
+      }
+    }
     next = relNext ?? '';
   }
   return tags;

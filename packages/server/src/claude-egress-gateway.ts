@@ -22,6 +22,10 @@ const FORBIDDEN_RESPONSE_HEADERS = new Set([
   'trailer',
   'transfer-encoding',
   'upgrade',
+  'location',
+  'set-cookie',
+  'set-cookie2',
+  'www-authenticate',
 ]);
 const CONSUMED_REQUEST_HEADERS = new Set([
   'connection',

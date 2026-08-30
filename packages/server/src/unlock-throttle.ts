@@ -50,8 +50,6 @@ const DEFAULTS = {
   maxLockoutMs: 15 * 60_000,
   globalThreshold: 100,
   globalWindowMs: 60_000,
-  // Delay applied to every attempt once the global failure floor is tripped.
-  globalDelayMs: 2_000,
 } as const;
 
 /** Evict idle IP entries after this long with no activity, bounding memory. */
@@ -93,7 +91,8 @@ export function createUnlockThrottle(options: UnlockThrottleOptions = {}): Unloc
       }
       trimGlobal(t);
       if (globalFailures.length >= globalThreshold) {
-        return { allowed: false, retryAfterMs: DEFAULTS.globalDelayMs };
+        const oldest = globalFailures[0] ?? t;
+        return { allowed: false, retryAfterMs: Math.max(oldest + globalWindowMs - t, 1) };
       }
       return { allowed: true };
     },

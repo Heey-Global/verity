@@ -9,6 +9,7 @@ import {
   handlePushResponse,
 } from '../lib/pushNotifications';
 import { getAuthTokenId, getStoredAuthTokenId } from '../lib/authToken';
+import { createPushRegistrationAttempt } from '../lib/pushRegistrationAttempt';
 
 /**
  * Mount push notifications once from the root authenticated screen. Registers this
@@ -25,7 +26,6 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
   useEffect(() => {
     if (client === null) return;
     let active = true;
-    let registered = false;
     // A cold-start response can also arrive through the live listener on some Expo
     // versions; dedup by notification id so a reply is never enqueued twice (the
     // permission path is idempotent, but a future AGENT_QUESTION reply would post
@@ -44,14 +44,9 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
     // Retry until it sticks: a launch while offline (or a transient /healthz blip)
     // leaves the device unregistered, and re-running only when it hasn't yet
     // succeeded avoids re-prompting or re-POSTing on every foreground.
-    const attemptRegistration = async (): Promise<void> => {
-      if (registered) return;
-      try {
-        if ((await ensurePushRegistration(client, baseUrl)) === 'registered') registered = true;
-      } catch {
-        // Best effort — a push failure must never disrupt the app.
-      }
-    };
+    const attemptRegistration = createPushRegistrationAttempt(() =>
+      ensurePushRegistration(client, baseUrl),
+    );
 
     const route = async (response: Notifications.NotificationResponse): Promise<void> => {
       const key = response.notification.request.identifier;

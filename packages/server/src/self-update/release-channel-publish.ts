@@ -1,5 +1,6 @@
 import { SERVER_COMPAT, type ServerCompat } from './compat.js';
 import {
+  isRfc3339Timestamp,
   OFFICIAL_SERVER_IMAGE,
   parseReleaseChannelMetadata,
   RELEASE_CHANNEL_SCHEMA_VERSION,
@@ -80,7 +81,7 @@ export function releaseChannelMetadataFromEnv(
   if (!ARCHITECTURES.includes(architecture)) {
     throw new Error(`VERITY_RELEASE_ARCHITECTURE must be one of ${ARCHITECTURES.join(', ')}`);
   }
-  if (!Number.isFinite(Date.parse(publishedAt))) {
+  if (!isRfc3339Timestamp(publishedAt)) {
     throw new Error('VERITY_RELEASE_PUBLISHED_AT must be an RFC 3339 timestamp');
   }
   // The image stamps its own version at build time (deploy/Dockerfile:

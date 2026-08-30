@@ -11,7 +11,6 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { getAuthToken } from '../lib/authToken';
 import { pendingSession } from '../lib/pendingSessions';
 import { createWebSocket } from '../lib/socket';
 
@@ -64,7 +63,7 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
       sessionId,
       baseUrl,
       connect: createWebSocket,
-      getToken: () => getAuthToken(baseUrl),
+      getStreamTicket: async () => (await client.createStreamTicket(sessionId)).ticket,
       onChange: (s) => setState(s),
       onPermissionSettled: (toolUseId, accepted) => {
         if (accepted) publishSessionStatusMutation(sessionId, 'running');

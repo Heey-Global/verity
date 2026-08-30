@@ -231,8 +231,14 @@ export function startSecretKeyAdoption(deps: SecretKeyAdoptionDeps): SecretKeyAd
 
   return {
     async claim(timeoutMs = DEFAULT_CLAIM_TIMEOUT_MS): Promise<string | undefined> {
+      let claimTimer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const sealed = await Promise.race([adopted, sleep(timeoutMs).then(() => undefined)]);
+        const timeout = new Promise<undefined>((resolve) => {
+          // This timeout is part of an explicitly awaited startup claim, so it
+          // remains referenced. Clear it when the envelope wins the race.
+          claimTimer = setTimeout(() => resolve(undefined), timeoutMs);
+        });
+        const sealed = await Promise.race([adopted, timeout]);
         // Here and nowhere earlier: the caller only calls this once it holds the
         // control-plane generation, so this is the first moment the key may
         // exist in this process at all.
@@ -244,6 +250,7 @@ export function startSecretKeyAdoption(deps: SecretKeyAdoptionDeps): SecretKeyAd
         deps.onError?.(error);
         return undefined;
       } finally {
+        if (claimTimer !== undefined) clearTimeout(claimTimer);
         stopped = true;
         forget();
       }

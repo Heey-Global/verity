@@ -23,13 +23,15 @@ describe('dockerEnvPassthrough (M8)', () => {
     expect(isSensitiveEnvKey('VERITY_DOPPLER_TOKEN_REF')).toBe(false);
     expect(isSensitiveEnvKey('VERITY_GH_TOKEN_FILE')).toBe(false);
     expect(isSensitiveEnvKey('PATH')).toBe(false);
-    expect(isSensitiveEnvKey('VERITY_PROJECT_DEV_SERVER_URL')).toBe(false);
+    expect(isSensitiveEnvKey('VERITY_PROJECT_DEV_SERVER_URL')).toBe(true);
+    expect(isSensitiveEnvKey('DATABASE_URL')).toBe(true);
   });
 
   it('passes secrets by reference (value in env, not argv) and inlines the rest', () => {
     const { args, env } = dockerEnvPassthrough({
       PATH: '/opt/agent-seed/bin',
       VERITY_DOPPLER_TOKEN_REF: 'doppler://verity/prod',
+      DATABASE_URL: 'postgres://user:password@db/verity',
       DOPPLER_TOKEN: 'super-secret',
     });
     // Non-secrets inline.
@@ -38,8 +40,12 @@ describe('dockerEnvPassthrough (M8)', () => {
     // Secret by reference only — the value is nowhere on the command line.
     expect(args).toContain('DOPPLER_TOKEN');
     expect(args.join(' ')).not.toContain('super-secret');
+    expect(args.join(' ')).not.toContain('postgres://');
     // Its value rides the process env instead.
-    expect(env).toEqual({ DOPPLER_TOKEN: 'super-secret' });
+    expect(env).toEqual({
+      DATABASE_URL: 'postgres://user:password@db/verity',
+      DOPPLER_TOKEN: 'super-secret',
+    });
   });
 
   it('returns empty args/env for undefined input', () => {

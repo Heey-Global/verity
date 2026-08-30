@@ -7,6 +7,7 @@ import {
   type RunGrantClaims,
   type SecretAuditEvent,
   type SecretAuditEventInput,
+  type SecretAuditQuery,
 } from '@verity/secret-contracts';
 
 import {
@@ -102,6 +103,16 @@ describe.each<[string, () => SecretAuditLog]>([
 
     const firstPage = await log.query({ projectId: 'project-1', limit: 2 });
     expect(firstPage.map((e) => e.sequence)).toEqual([0, 1]);
+  });
+
+  it('rejects malformed query cursors and unknown filter keys', async () => {
+    const log = makeLog();
+    await expect(log.query({ projectId: 'project-1', sinceSequence: -1 })).rejects.toThrow();
+    await expect(
+      log.query({ projectId: 'project-1', untrustedIndex: 'value' } as SecretAuditQuery & {
+        untrustedIndex: string;
+      }),
+    ).rejects.toThrow();
   });
 
   it('keeps project chains independent, each anchored at genesis', async () => {
@@ -248,6 +259,21 @@ describe('secret audit log (postgres durability)', () => {
     // The query re-applies the hash-covered predicate, so only the genuine grant-2 row is returned.
     const rows = await log.query({ projectId: 'project-1', grantId: 'grant-2' });
     expect(rows.map((e) => e.sequence)).toEqual([1]);
+  });
+
+  it('validates indexed candidates before applying the page limit', async () => {
+    const log = createPostgresSecretAuditLog(ctx.db);
+    await log.append(event({ kind: 'grant_issued', grantId: 'grant-1' }));
+    await log.append(event({ kind: 'grant_issued', grantId: 'grant-2' }));
+    await ctx.db
+      .updateTable('secret_audit_events')
+      .set({ grant_id: 'grant-2' })
+      .where('project_id', '=', 'project-1')
+      .where('sequence', '=', 0)
+      .execute();
+
+    const rows = await log.query({ projectId: 'project-1', grantId: 'grant-2', limit: 1 });
+    expect(rows.map((item) => item.sequence)).toEqual([1]);
   });
 
   it('rejects a duplicated event hash at the storage boundary', async () => {

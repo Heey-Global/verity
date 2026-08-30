@@ -1078,6 +1078,12 @@ describe('GET /server/updates', () => {
       const anonymous = await gated.inject({ method: 'GET', url: '/server/updates' });
       expect(anonymous.statusCode).toBe(401);
 
+      const queryToken = await gated.inject({
+        method: 'GET',
+        url: `/server/updates?access_token=${token}`,
+      });
+      expect(queryToken.statusCode).toBe(401);
+
       const authenticated = await gated.inject({
         method: 'GET',
         url: '/server/updates',
@@ -1406,6 +1412,8 @@ describe('GET /attachments/:hash', () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('image/png');
     expect(res.headers['cache-control']).toContain('immutable');
+    expect(res.headers['cache-control']).toContain('private');
+    expect(res.headers['cache-control']).not.toContain('public');
     expect(res.rawPayload.toString('utf8')).toBe('hi');
   });
 
@@ -2409,6 +2417,20 @@ describe('session worktree files', () => {
     });
     expect(duplicate.statusCode).toBe(409);
     expect(readFileSync(join(worktree, 'docs', 'note.txt'), 'utf8')).toBe('hello');
+  });
+
+  it('rejects a declared file above the fixed per-file upload ceiling', async () => {
+    const worktree = mkdtempSync(join(worktreeRoot, 'files-'));
+    mkdirSync(join(worktree, 'docs'));
+    await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/files?path=docs&fileName=huge.bin',
+      headers: { 'content-type': 'application/octet-stream', 'content-length': '50000001' },
+      payload: Buffer.alloc(0),
+    });
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toEqual({ error: 'file exceeds the 50 MB upload limit' });
   });
 
   it('accepts uploads under the media type the picked file carries', async () => {
@@ -4720,8 +4742,8 @@ describe('GET /projects (#174)', () => {
     await ctx.store.upsertProject({
       id: 'p-async-rel',
       owner: 'heey-global',
-      repo: 'deep-ocr-n8n',
-      containerName: 'dev-heey-global-deep-ocr-n8n',
+      repo: 'sample-app-automation',
+      containerName: 'dev-example-org-sample-app-automation',
       state: 'active',
     });
     const withRelease = buildServer({
@@ -4733,7 +4755,7 @@ describe('GET /projects (#174)', () => {
         Promise.resolve({
           tag: 'v1.12.7',
           name: 'Release 1.12.7',
-          url: 'https://github.com/heey-global/deep-ocr-n8n/releases/tag/v1.12.7',
+          url: 'https://github.com/example-org/sample-app-automation/releases/tag/v1.12.7',
           publishedAt: '2026-07-04T10:00:00Z',
         }),
     });
@@ -5232,7 +5254,7 @@ describe('GET/PATCH /settings', () => {
       url: '/settings',
       payload: {
         gitUserName: 'h-teske',
-        gitUserEmail: 'holger+github@heey.global',
+        gitUserEmail: 'developer@example.com',
         gitSshPrivateKeyPath: '/data/dev/.shared/github/id_ed25519',
         gitSshPrivateKey: 'not-a-real-private-key-fixture',
         gitSshPublicKeyPath: '/data/dev/.shared/github/id_ed25519.pub',
@@ -5247,7 +5269,7 @@ describe('GET/PATCH /settings', () => {
     expect(patch.json()).toMatchObject({
       settings: {
         gitUserName: 'h-teske',
-        gitUserEmail: 'holger+github@heey.global',
+        gitUserEmail: 'developer@example.com',
         gitSshPrivateKeyPath: '/data/dev/.shared/github/id_ed25519',
         gitSshPrivateKeyConfigured: true,
         gitSshPublicKeyPath: '/data/dev/.shared/github/id_ed25519.pub',
@@ -5265,7 +5287,7 @@ describe('GET/PATCH /settings', () => {
     expect(updated.json()).toMatchObject({
       settings: {
         gitUserName: 'h-teske',
-        gitUserEmail: 'holger+github@heey.global',
+        gitUserEmail: 'developer@example.com',
         gitSshPrivateKeyConfigured: true,
       },
     });
@@ -6577,10 +6599,15 @@ describe('DELETE /sessions/:id', () => {
     const a = buildServer({ eventStore: ctx.store, bus, conductor, worktrees: provisioner });
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/agent-s1', model: 'm' });
     isBusy.mockReturnValue(true);
+    runBackendHandoff.mockImplementationOnce(async (sessionId, fn) => {
+      cancelTurn(sessionId);
+      return fn();
+    });
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1?force=true' });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ sessionId: 's1' });
+      expect(runBackendHandoff).toHaveBeenCalledWith('s1', expect.any(Function));
       // The agent is reaped, not merely detached — and reaping happens BEFORE the
       // worktree is removed, so the process is never orphaned against a deleted cwd.
       expect(cancelTurn).toHaveBeenCalledWith('s1');
@@ -6617,6 +6644,10 @@ describe('DELETE /sessions/:id', () => {
     isBusy.mockReturnValue(true);
     cancelTurn.mockImplementationOnce(() => {
       throw new Error('failed to signal agent');
+    });
+    runBackendHandoff.mockImplementationOnce(async (sessionId, fn) => {
+      cancelTurn(sessionId);
+      return fn();
     });
     try {
       const res = await a.inject({ method: 'DELETE', url: '/sessions/s1?force=true' });
@@ -9308,6 +9339,20 @@ describe('POST /sessions/:id/branch', () => {
     expect(branchSvc.switch).not.toHaveBeenCalled();
   });
 
+  it('holds the turn fence across branch switching instead of sampling busy state', async () => {
+    isBusy.mockReturnValue(false);
+    tryRunExclusive.mockResolvedValueOnce({ ran: false });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/branch',
+      payload: { newBranch: 'race' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: expect.stringContaining('busy') });
+    expect(tryRunExclusive).toHaveBeenCalledWith('s1', expect.any(Function));
+    expect(branchSvc.switch).not.toHaveBeenCalled();
+  });
+
   it('maps a dirty worktree to 409', async () => {
     branchSvc.switch.mockRejectedValue(new DirtyWorktreeError('/wt/s1'));
     const res = await app.inject({
@@ -9397,8 +9442,8 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     closed: Promise<{ code: number }>;
   }
 
-  async function connect(atPort: number, path: string): Promise<Conn> {
-    const ws = new WebSocket(`ws://127.0.0.1:${String(atPort)}${path}`);
+  async function connect(atPort: number, path: string, protocol?: string): Promise<Conn> {
+    const ws = new WebSocket(`ws://127.0.0.1:${String(atPort)}${path}`, protocol);
     const queue: Frame[] = [];
     const waiters: ((f: Frame) => void)[] = [];
     ws.addEventListener('message', (e) => {
@@ -9507,7 +9552,7 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     }
   });
 
-  it('rejects the WS upgrade without a valid access_token once the gate is armed', async () => {
+  it('requires a session-bound, single-use stream ticket once the gate is armed', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const { token } = await registry.mint('test-device');
     const gated = buildServer({
@@ -9520,16 +9565,52 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     await gated.listen({ port: 0, host: '127.0.0.1' });
     const gatedPort = (gated.server.address() as AddressInfo).port;
     try {
-      // No token → the WS handler closes the stream with 1008.
+      const mint = async (sessionId: string): Promise<string> => {
+        const response = await gated.inject({
+          method: 'POST',
+          url: `/sessions/${sessionId}/stream-ticket`,
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.statusCode).toBe(200);
+        return response.json<{ ticket: string }>().ticket;
+      };
       const noToken = await connect(gatedPort, '/sessions/s1/stream');
       expect((await noToken.closed).code).toBe(1008);
-      // A wrong token is closed the same way.
-      const badToken = await connect(gatedPort, '/sessions/s1/stream?access_token=nope');
-      expect((await badToken.closed).code).toBe(1008);
-      // The minted token via access_token → the upgrade stays open (caught_up).
-      const ok = await connect(gatedPort, `/sessions/s1/stream?access_token=${token}`);
+      const bearerInUrl = await connect(gatedPort, `/sessions/s1/stream?access_token=${token}`);
+      expect((await bearerInUrl.closed).code).toBe(1008);
+
+      const wrongSessionTicket = await mint('other-session');
+      const wrongSession = await connect(
+        gatedPort,
+        '/sessions/s1/stream',
+        `verity-stream-ticket.${wrongSessionTicket}`,
+      );
+      expect((await wrongSession.closed).code).toBe(1008);
+
+      const ticket = await mint('s1');
+      const ok = await connect(gatedPort, '/sessions/s1/stream', `verity-stream-ticket.${ticket}`);
       expect(await ok.next()).toMatchObject({ k: 'caught_up' });
       ok.ws.close();
+      const replay = await connect(
+        gatedPort,
+        '/sessions/s1/stream',
+        `verity-stream-ticket.${ticket}`,
+      );
+      expect((await replay.closed).code).toBe(1008);
+
+      const expiringTicket = await mint('s1');
+      const now = Date.now();
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 31_000);
+      try {
+        const expired = await connect(
+          gatedPort,
+          '/sessions/s1/stream',
+          `verity-stream-ticket.${expiringTicket}`,
+        );
+        expect((await expired.closed).code).toBe(1008);
+      } finally {
+        clock.mockRestore();
+      }
     } finally {
       await gated.close();
     }
@@ -11162,9 +11243,9 @@ describe('POST /projects/:id/link-github', () => {
   it('409s before pushing when the target project has sessions', async () => {
     await ctx.store.upsertProject({
       id: 'p-worked-in',
-      owner: 'heey-global',
-      repo: 'deep-ocr',
-      containerName: 'verity-heey-global--deep-ocr',
+      owner: 'example-org',
+      repo: 'sample-app',
+      containerName: 'verity-example-org--sample-app',
       state: 'absent',
     });
     await ctx.store.createSession({
@@ -11186,12 +11267,12 @@ describe('POST /projects/:id/link-github', () => {
       const res = await a.inject({
         method: 'POST',
         url: '/projects/p-collide/link-github',
-        payload: { repo: 'heey-global/deep-ocr' },
+        payload: { repo: 'example-org/sample-app' },
       });
 
       expect(res.statusCode).toBe(409);
       expect(res.json()).toEqual({
-        error: 'heey-global/deep-ocr is already registered as a project',
+        error: 'example-org/sample-app is already registered as a project',
       });
       expect(provisioner.linkCloneToGitHub).not.toHaveBeenCalled();
       expect(await ctx.store.getProject('p-worked-in')).toBeDefined();
@@ -11379,6 +11460,35 @@ describe('POST /projects/:id/deprovision (#174)', () => {
       });
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'project unknown not found' });
+      expect(d.deprovision).not.toHaveBeenCalled();
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('refuses to deprovision while a project session is busy', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-busy-deprovision',
+      owner: 'acme',
+      repo: 'busy',
+      containerName: 'verity-acme--busy',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'busy-deprovision-session',
+      worktree: '/work/busy-deprovision-session',
+      model: 'claude-sonnet',
+      projectId: 'p-busy-deprovision',
+    });
+    isBusy.mockImplementation((id) => id === 'busy-deprovision-session');
+    const d = fakeDeprovisioner();
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, deprovisioner: d });
+    try {
+      const res = await a.inject({
+        method: 'POST',
+        url: '/projects/p-busy-deprovision/deprovision',
+      });
+      expect(res.statusCode).toBe(409);
       expect(d.deprovision).not.toHaveBeenCalled();
     } finally {
       await a.close();
@@ -12491,6 +12601,50 @@ describe('POST /projects/:id/repair', () => {
 });
 
 describe('POST /projects/:id/setup-dev-servers', () => {
+  it('refuses reconfiguration while a project session is busy', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-busy-dev-setup',
+      owner: 'acme',
+      repo: 'website',
+      containerName: 'verity-acme--website',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'busy-dev-setup-session',
+      worktree: '/work/busy-dev-setup-session',
+      model: 'claude-sonnet',
+      projectId: 'p-busy-dev-setup',
+    });
+    await ctx.store.recordDevServerDetection('p-busy-dev-setup', 'busy-fingerprint');
+    isBusy.mockImplementation((id) => id === 'busy-dev-setup-session');
+    const deprovisioner = { deprovision: vi.fn() };
+    const provisioner = { provision: vi.fn() };
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, deprovisioner, provisioner });
+    try {
+      const res = await a.inject({
+        method: 'POST',
+        url: '/projects/p-busy-dev-setup/setup-dev-servers',
+        payload: {
+          fingerprint: 'busy-fingerprint',
+          devServers: [
+            {
+              sourceKey: '.:dev',
+              name: 'Website',
+              command: 'npm run dev',
+              workdir: null,
+              containerPort: '3000',
+            },
+          ],
+        },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(deprovisioner.deprovision).not.toHaveBeenCalled();
+      expect(provisioner.provision).not.toHaveBeenCalled();
+    } finally {
+      await a.close();
+    }
+  });
+
   it('applies a same-port detected change live without restarting the project container', async () => {
     await ctx.store.upsertProject({
       id: 'p-live-update',

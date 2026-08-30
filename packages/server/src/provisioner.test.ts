@@ -23,6 +23,7 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { VeritySettingsRecord, ProjectRecord } from '@verity/store';
 import {
   RUNNER_BOUNDARY_BINARIES,
+  RUNNER_BOUNDARY_PROTECTED_FILES,
   trustedToolkitIdentity,
   type ImageEvidenceCollector,
   type ImageFileEvidence,
@@ -1914,6 +1915,7 @@ describe('ProvisionerImpl (#174)', () => {
     function binarySource(path: string): string {
       if (path.endsWith('supervisor')) return 'verity-runner-supervisor.mjs';
       if (path.endsWith('worker')) return 'verity-runner-worker.mjs';
+      if (path.endsWith('spawn-broker')) return 'verity-agent-spawn-broker.mjs';
       return path.slice(path.lastIndexOf('/') + 1);
     }
 
@@ -1961,6 +1963,18 @@ describe('ProvisionerImpl (#174)', () => {
             [
               path,
               file(path, readFileSync(`features/verity-sandbox-toolkit/bin/${binarySource(path)}`)),
+            ] as const,
+        ),
+        ...RUNNER_BOUNDARY_PROTECTED_FILES.map(
+          (path) =>
+            [
+              path,
+              file(
+                path,
+                readFileSync(
+                  `features/verity-sandbox-toolkit/prebuilt/linux-${process.arch === 'x64' ? 'amd64' : process.arch}/verity-script-sandbox`,
+                ),
+              ),
             ] as const,
         ),
       ]);
@@ -2502,8 +2516,8 @@ describe('ProvisionerImpl (#174)', () => {
       ghTokenFilePath: '/etc/gh-token',
       hostCloneRoot: '/var/lib/verity-dev',
       veritySettings: async () => ({
-        gitUserName: 'h-teske',
-        gitUserEmail: 'holger+github@heey.global',
+        gitUserName: 'Example Developer',
+        gitUserEmail: 'developer@example.com',
         gitSshPrivateKeyPath: '/data/dev/.shared/github/id_ed25519',
         gitSshPrivateKey: null,
         gitSshPublicKeyPath: '/data/dev/.shared/github/id_ed25519.pub',
@@ -2533,7 +2547,10 @@ describe('ProvisionerImpl (#174)', () => {
     const created = dockerCalls.find((c) => c.method === 'createContainer');
     const spec = created?.payload as ContainerSpec;
     expect(spec.env).toEqual(
-      expect.arrayContaining(['GIT_USER_NAME=h-teske', 'GIT_USER_EMAIL=holger+github@heey.global']),
+      expect.arrayContaining([
+        'GIT_USER_NAME=Example Developer',
+        'GIT_USER_EMAIL=developer@example.com',
+      ]),
     );
     expect(spec.binds).toEqual(
       expect.arrayContaining([
@@ -2575,7 +2592,7 @@ describe('ProvisionerImpl (#174)', () => {
         gitSecretRoot: secretRoot,
         veritySettings: async () => ({
           gitUserName: 'h-teske',
-          gitUserEmail: 'holger+github@heey.global',
+          gitUserEmail: 'developer@example.com',
           gitSshPrivateKeyPath: null,
           gitSshPrivateKey: 'private-key',
           gitSshPublicKeyPath: null,
@@ -2892,6 +2909,10 @@ describe('ProvisionerImpl (#174)', () => {
     try {
       const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
       const { client: docker, calls: dockerCalls } = fakeDocker({});
+      let projectionFailed = false;
+      const removeContainer = vi.spyOn(docker, 'removeContainer').mockImplementation(async () => {
+        if (projectionFailed) throw new Error('daemon removal failed');
+      });
       const { service, revoked } = fakeEgressIdentity();
       const provisioner = createProvisioner({
         store: ctx.store,
@@ -2906,6 +2927,7 @@ describe('ProvisionerImpl (#174)', () => {
         claudeEgressGatewayUrl: 'https://relay:8443',
         claudeConnectorPort: 9443,
         onContainerStarted: async () => {
+          projectionFailed = true;
           throw new Error('gateway unavailable');
         },
         chownRunnerFile: () => {},
@@ -2914,10 +2936,10 @@ describe('ProvisionerImpl (#174)', () => {
       });
 
       await expect(provisioner.provision(id)).rejects.toThrow(
-        /post-start projection failed: gateway unavailable/,
+        /post-start projection failed: gateway unavailable; container removal failed/,
       );
       expect(dockerCalls.some((call) => call.method === 'stopContainer')).toBe(true);
-      expect(dockerCalls.some((call) => call.method === 'removeContainer')).toBe(true);
+      expect(removeContainer).toHaveBeenCalledWith(expect.any(String));
       expect(revoked).toEqual([id]);
       expect((await ctx.store.getProject(id))?.state).toBe('failed');
     } finally {
@@ -4304,7 +4326,11 @@ describe('ProvisionerImpl (#174)', () => {
     const id = await seedProject('active');
     const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
     const pullImage = vi.fn(async () => {});
-    const inspectMock = vi.fn(async () => ({ id: 'existing-cid', running: false }));
+    const inspectMock = vi.fn(async () => ({
+      id: 'existing-cid',
+      running: false,
+      labels: { 'verity.project-id': id },
+    }));
     const startMock = vi.fn(async () => {});
     const { client: docker } = fakeDocker({
       pullImage,
@@ -4890,7 +4916,7 @@ describe('ProvisionerImpl (#174)', () => {
     // container OR a sticky Verity restart). Worker inspects + starts.
     const inspectMock = vi.fn(async (cid: string) => {
       expect(cid).toBe('dev-example-org-example-repo');
-      return { id: 'existing-cid', running: false };
+      return { id: 'existing-cid', running: false, labels: { 'verity.project-id': id } };
     });
     const startMock = vi.fn(async (cid: string) => {
       expect(cid).toBe('existing-cid');
@@ -6054,6 +6080,21 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       expect(row?.provisionError).not.toMatch(/postCreateCommand/);
       expect(build).not.toHaveBeenCalled();
       expect(dockerCalls.find((c) => c.method === 'createContainer')).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let JSON escapes hide unsupported devcontainer keys', () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-jsonc-escaped-key-'));
+    const devcontainerDir = join(root, '.devcontainer');
+    mkdirSync(devcontainerDir);
+    try {
+      writeFileSync(
+        join(devcontainerDir, 'devcontainer.json'),
+        '{ "image": "node:24", "\\u0072unArgs": ["--privileged"] }',
+      );
+      expect(unsupportedDevcontainerRuntimeKeys(devcontainerDir)).toContain('runArgs');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

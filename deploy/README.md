@@ -54,13 +54,15 @@ For a host-managed or development deployment from a checkout:
 
 ```sh
 export VERITY_SERVER_IMAGE=<verity-server-image@sha256:digest>
+sudo install -d -m 0711 -o root -g root /etc/verity
+sudo ./deploy/bin/verity-pairing-material
 ./deploy/bin/verity-compose up -d
 ```
 
 That's it — the API comes up on port **8082**. Verify:
 
 ```sh
-curl http://localhost:8082/healthz    # -> {"status":"ok"}
+curl --insecure https://localhost:8082/healthz    # -> {"status":"ok"}
 ```
 
 To run a second clean runner next to an existing Verity dev/dogfood stack, give
@@ -68,10 +70,13 @@ it a different Compose project and host port:
 
 ```sh
 VERITY_API_HOST_PORT=8090 \
+VERITY_PAIRING_STATE_HOST_PATH=/etc/verity-onboarding \
 ./deploy/bin/verity-compose -p verity-onboarding up -d --build
 ```
 
-Then point the mobile app at `http://<host>:8090`. This is the same runner image
+Create pairing material in `/etc/verity-onboarding` first, with
+`VERITY_STATE_DIR=/etc/verity-onboarding VERITY_API_HOST_PORT=8090`. Then scan
+the generated URI in the mobile app. This is the same runner image
 and first-run flow, just with independent DB/data state from the default stack:
 the `-p verity-onboarding` Compose project namespaces its own `verity-db` and
 `verity-data` volumes (and its own `postgres` container), so the two stacks never
@@ -90,10 +95,13 @@ host directory to prepare.
 
 ## First-run setup (in the app)
 
-The runner ships **no** secret files. On first run, in the mobile app:
+The installer creates a stable local TLS/server identity and a short-lived pairing
+capability under `/etc/verity`. On first run, in the mobile app:
 
-1. Point the app at `http://<host>:8082`.
-2. **Set a master password.** This derives the at-rest encryption key for DB
+1. Scan the QR code printed by `verity-install`. It pre-fills the detected
+   `https://<host>:8082` address, which you may edit to use a DNS name. The app
+   verifies both the pinned TLS certificate and the stable signed server identity.
+2. **Set or unlock the master password.** This derives the at-rest encryption key for DB
    secrets (ADR 0002 D3). The secret store starts sealed until you do this — the
    server logs `secret store is UNINITIALIZED and SEALED` on boot, which is
    expected.
@@ -658,7 +666,7 @@ and allowed by any host firewall when remote preview access is required.
 
 | Variable                               | Default                                                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | -------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VERITY_API_HOST_PORT`                 | `8082`                                                               | Host port published to the operator/mobile app. Container `PORT` remains `8082`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `VERITY_API_HOST_PORT`                 | `8082`                                                               | Host port published to the mobile app. Container `PORT` remains `8082`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `PORT`                                 | `8082`                                                               | API listen port.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `VERITY_DOCKER_BASE_URL`               | `unix:///var/run/docker.sock`                                        | Docker access (mounted socket, or proxy URL).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `VERITY_DOCKER_SOCKET_PATH`            | `/var/run/docker.sock`                                               | Host socket path mounted into the runner for the default raw-socket mode.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -670,6 +678,7 @@ and allowed by any host firewall when remote preview access is required.
 | `VERITY_DATA_VOLUME`                   | `verity-data` (compose)                                              | Required name of the data volume shared with sibling sandboxes and project relays. Custom deployments must set it explicitly; there is no host-bind fallback.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `VERITY_TRANSCRIPT_SWEEP`              | `on`                                                                 | `on`, `dry`, or `off` — the startup sweep of orphaned backend transcripts; see [below](#startup-transcript-sweep). `1`/`true`/`0`/`false` also accepted; any other value fails the boot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `DATABASE_URL`                         | _(required)_                                                         | PostgreSQL connection string for the control-plane DB (pglite is removed from the runtime).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `VERITY_POSTGRES_PASSWORD`             | _(installer-generated)_                                              | Internal PostgreSQL SCRAM credential. `verity-install` generates 32 random bytes, persists them root-only under `/etc/verity/postgres-password`, and supplies the same value to PostgreSQL and every normal/managed Server generation. Do not set or rotate it by hand.                                                                                                                                                                                                                                                                                                                                                                                              |
 | `VERITY_DEFAULT_PROJECT_IMAGE`         | unset / empty                                                        | Base image for repos without `.devcontainer/`, and base input for derived devcontainer images. Empty lazily resolves `verity-sandbox` at this server's own release version (`VERITY_SERVER_VERSION`, baked in at build time) to a pinned digest during provisioning/recreate/update checks, so the server hands out the sandbox image it was published with rather than whatever `:latest` moved to; builds without a release version fall back to the `:latest` channel. Set only for local/private overrides.                                                                                                                                                      |
 | `VERITY_ENABLE_PROJECT_RUNTIME`        | `1` (compose)                                                        | Enables Dev Server start/stop/status/log/health operations inside project containers. Set to `0` only when process control is intentionally disabled deployment-wide.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `VERITY_SANDBOX_TOOLKIT_FEATURE_REF`   | unset / empty                                                        | Devcontainer Feature injected into project devcontainer builds. Empty lazily resolves `verity-sandbox-toolkit` at this server's release version to a pinned digest (`:latest` without a release version). The Feature BAKED into the server image still outranks that resolved ref — it is the trust root the runner-boundary attestation compares each sandbox against — so only an explicit digest set here overrides the bundle, and doing so will fail that attestation unless it matches.                                                                                                                                                                       |

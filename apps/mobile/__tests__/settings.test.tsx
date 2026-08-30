@@ -122,6 +122,7 @@ function makeClient(
     getSecretStatus?: jest.Mock;
     settings?: VeritySettings;
     startAgentLogin?: jest.Mock;
+    getAgentLogin?: jest.Mock;
     updateVeritySettings?: jest.Mock;
     getServerUpdates?: jest.Mock;
     requestServerUpdate?: jest.Mock;
@@ -140,7 +141,7 @@ function makeClient(
     updateVeritySettings:
       opts.updateVeritySettings ?? jest.fn(notImplemented('updateVeritySettings')),
     startAgentLogin: opts.startAgentLogin ?? jest.fn(notImplemented('startAgentLogin')),
-    getAgentLogin: jest.fn(notImplemented('getAgentLogin')),
+    getAgentLogin: opts.getAgentLogin ?? jest.fn(notImplemented('getAgentLogin')),
     submitAgentLoginCode: jest.fn(notImplemented('submitAgentLoginCode')),
     disconnectAgentLogin: jest.fn(notImplemented('disconnectAgentLogin')),
     listProjects: jest.fn(notImplemented('listProjects')),
@@ -422,6 +423,21 @@ describe('SettingsScreen — secret store onboarding', () => {
     expect(screen.queryByText('78901234')).toBeNull();
     fireEvent.press(manage);
     expect(mockPush).toHaveBeenCalledWith('/github-connect');
+  });
+
+  it('does not report a partial GitHub credential tuple as connected', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({
+          githubAppId: null,
+          githubAppInstallationId: null,
+          githubAppPrivateKeyConfigured: true,
+        }),
+      }),
+    );
+    render(<SettingsScreen />);
+    await screen.findByLabelText('Manage GitHub connection');
+    expect(screen.getAllByText('Not connected').length).toBeGreaterThan(0);
   });
 
   it('renders a not-connected message when no server URL is configured', () => {

@@ -1,8 +1,9 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
+  constants,
+  copyFileSync,
   existsSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -805,16 +806,17 @@ const MAX_NESTED_MODULES_DEPTH = 3;
  * session run its own install later, npm replaces individual entries inside the
  * worktree instead of writing through into the source checkout's tree.
  *
- * Package directories are HARDLINKED, not symlinked. A symlink resolves to a
+ * Package directories are copied with copy-on-write reflinks when supported, not symlinked. A symlink resolves to a
  * realpath in the SOURCE checkout, outside the worktree, and bundlers that
  * canonicalize before deciding what they may compile then refuse the dependency
  * outright — Turbopack (the Next 16 default) fails the build with "We couldn't
  * find the Next.js package (next/package.json) from the project directory", so a
  * session preview of a Next app dies at startup while the same code serves fine
- * from the main checkout. A hardlink keeps every dependency path inside the
- * worktree, shares the file data (no second copy on disk), and is safer on write:
- * only an in-place edit reaches the source, where a symlinked directory handed
- * through every create and delete as well.
+ * from the main checkout. A real copied tree keeps every dependency path inside the
+ * worktree. A hardlink is not an isolation boundary: an in-place write by an agent
+ * mutates the source checkout and every sibling worktree. Reflinks retain the cheap
+ * initial sharing while copy-on-write gives each worktree its own inode; ordinary
+ * copies are the portable fallback.
  *
  * Symlinked entries are still reproduced with their RELATIVE targets (like the
  * workspace links above) so the result stays bind-mount portable (#207): the
@@ -903,7 +905,7 @@ function nestedModuleDirs(repoDir: string): string[] {
 
 /**
  * Recreate one `node_modules` level in the worktree. Real package directories
- * become HARDLINKED trees of the source copy (see {@link hardlinkTree}); entries
+ * become isolated copied trees of the source copy (see {@link copyModuleTree}); entries
  * that are ALREADY symlinks (npm's `.bin` shims, hoisted workspace links) are
  * reproduced verbatim so their relative targets resolve inside the worktree;
  * `.bin` and `@scope` directories are recreated as real directories so their
@@ -932,14 +934,15 @@ function mirrorModuleEntries(srcDir: string, dstDir: string, linkFiles = false):
         mirrorModuleEntries(src, dst, entry.name === '.bin');
       } else if (entry.isDirectory()) {
         mkdirSync(dirname(dst), { recursive: true });
-        if (!hardlinkTree(src, dst)) {
-          // Nothing partial may survive: the fallback needs the name free.
+        if (!copyModuleTree(src, dst)) {
+          // Nothing partial may survive. Do not fall back to a package symlink:
+          // that would restore the cross-worktree write primitive this isolation
+          // boundary exists to remove.
           rmSync(dst, { force: true, recursive: true });
-          symlinkSync(relative(dirname(dst), src), dst);
         }
       } else if (linkFiles && entry.isFile()) {
         mkdirSync(dirname(dst), { recursive: true });
-        symlinkSync(relative(dirname(dst), src), dst);
+        copyFileSync(src, dst, constants.COPYFILE_FICLONE);
       }
     } catch {
       // A single unlinkable package must not fail the spawn.
@@ -948,14 +951,13 @@ function mirrorModuleEntries(srcDir: string, dstDir: string, linkFiles = false):
 }
 
 /**
- * Reproduce one package directory under `dst` as real directories whose files are
- * HARDLINKS to the source copy: the same inodes (no second copy of the data), at
- * paths that stay inside the worktree.
+ * Reproduce one package directory under `dst` as real directories with isolated
+ * file inodes. COPYFILE_FICLONE requests a copy-on-write reflink; filesystems that
+ * do not support it transparently fall back to an ordinary copy.
  *
  * Returns false when the tree cannot be reproduced faithfully, leaving the caller
- * to fall back to the symlink this code used before. That covers a mirror across
- * a device boundary (`link(2)` → EXDEV), a filesystem that refuses hardlinks at
- * all, a source we may not read — and, deliberately, an entry we cannot
+ * to omit that package rather than breach isolation. That covers a source we may
+ * not read and, deliberately, an entry we cannot
  * reproduce exactly: an ABSOLUTE internal symlink (which would not survive the
  * bind mount) or anything that is not a file, directory, or symlink. Half a
  * package is worse than a symlinked one, so an incomplete tree is never kept.
@@ -963,7 +965,7 @@ function mirrorModuleEntries(srcDir: string, dstDir: string, linkFiles = false):
  * Directory modes are carried over, so a package the source checkout keeps
  * private does not become world-readable in the worktree.
  */
-function hardlinkTree(src: string, dst: string): boolean {
+function copyModuleTree(src: string, dst: string, sourceRoot = resolve(src)): boolean {
   try {
     mkdirSync(dst, { recursive: true, mode: lstatSync(src).mode & 0o7777 });
     for (const entry of readdirSync(src, { withFileTypes: true })) {
@@ -972,11 +974,15 @@ function hardlinkTree(src: string, dst: string): boolean {
       if (entry.isSymbolicLink()) {
         const target = readlinkSync(from);
         if (isAbsolute(target)) return false;
+        const resolvedTarget = resolve(dirname(from), target);
+        if (resolvedTarget !== sourceRoot && !resolvedTarget.startsWith(`${sourceRoot}${sep}`)) {
+          return false;
+        }
         symlinkSync(target, to);
       } else if (entry.isDirectory()) {
-        if (!hardlinkTree(from, to)) return false;
+        if (!copyModuleTree(from, to, sourceRoot)) return false;
       } else if (entry.isFile()) {
-        linkSync(from, to);
+        copyFileSync(from, to, constants.COPYFILE_FICLONE);
       } else {
         return false;
       }
@@ -1067,6 +1073,15 @@ export function createGitWorktreeProvisioner(opts: GitWorktreeOptions): Worktree
       return worktreePath;
     },
     remove: async (worktreePath) => {
+      const rel = relative(resolve(opts.worktreeRoot), resolve(worktreePath));
+      if (
+        rel === '' ||
+        rel.startsWith('..') ||
+        isAbsolute(rel) ||
+        (existsSync(worktreePath) && lstatSync(worktreePath).isSymbolicLink())
+      ) {
+        throw new Error('refusing to remove an invalid or symlinked worktree path');
+      }
       // Read the branch before removal — `worktree remove` deletes the admin
       // dir we read it from.
       const branch = branchOfWorktree(worktreePath);
@@ -1103,6 +1118,17 @@ export function createScratchProvisioner(opts: { worktreeRoot: string }): Worktr
       return Promise.resolve(worktreePath);
     },
     remove: (worktreePath) => {
+      const rel = relative(resolve(opts.worktreeRoot), resolve(worktreePath));
+      if (
+        rel === '' ||
+        rel.startsWith('..') ||
+        isAbsolute(rel) ||
+        (existsSync(worktreePath) && lstatSync(worktreePath).isSymbolicLink())
+      ) {
+        return Promise.reject(
+          new Error('refusing to remove an invalid or symlinked worktree path'),
+        );
+      }
       rmSync(worktreePath, { recursive: true, force: true });
       return Promise.resolve();
     },

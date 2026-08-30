@@ -1,4 +1,5 @@
-import { readdir, readFile, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readdir, realpath } from 'node:fs/promises';
 import { basename, join, sep } from 'node:path';
 
 const MEETING_DIR = 'docs/meetings';
@@ -6,6 +7,7 @@ const MAX_FILES = 30;
 const MAX_SNIPPETS = 6;
 const MAX_SNIPPET_CHARS = 1_200;
 const MAX_CONTEXT_CHARS = 6_000;
+const MAX_MEETING_FILE_BYTES = 1024 * 1024;
 
 const STOP_WORDS = new Set([
   'about',
@@ -104,28 +106,43 @@ export async function retrieveMeetingContext(
     .slice(0, MAX_FILES);
 
   const snippets: MeetingSnippet[] = [];
-  for (const name of files) {
-    const relPath = `${MEETING_DIR}/${name}`;
-    let markdown: string;
-    try {
-      const absPath = join(worktree, relPath);
-      const realFile = await realpath(absPath);
-      if (realFile !== realMeetingDir && !realFile.startsWith(`${realMeetingDir}${sep}`)) continue;
-      markdown = await readFile(realFile, 'utf8');
-    } catch {
-      continue;
+  const meetingHandle = await open(
+    realMeetingDir,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    for (const name of files) {
+      const relPath = `${MEETING_DIR}/${name}`;
+      let markdown: string;
+      try {
+        const handle = await open(
+          join(`/proc/self/fd/${meetingHandle.fd}`, name),
+          constants.O_RDONLY | constants.O_NOFOLLOW,
+        );
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > MAX_MEETING_FILE_BYTES) continue;
+          markdown = await handle.readFile('utf8');
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        continue;
+      }
+      const title = firstHeading(markdown) ?? basename(name, '.md');
+      for (const chunk of meetingChunks(markdown)) {
+        const score = scoreText(chunk, query);
+        if (score <= 0) continue;
+        snippets.push({
+          path: relPath,
+          title,
+          text: preview(chunk, MAX_SNIPPET_CHARS),
+          score,
+        });
+      }
     }
-    const title = firstHeading(markdown) ?? basename(name, '.md');
-    for (const chunk of meetingChunks(markdown)) {
-      const score = scoreText(chunk, query);
-      if (score <= 0) continue;
-      snippets.push({
-        path: relPath,
-        title,
-        text: preview(chunk, MAX_SNIPPET_CHARS),
-        score,
-      });
-    }
+  } finally {
+    await meetingHandle.close();
   }
 
   snippets.sort((a, b) => b.score - a.score || b.path.localeCompare(a.path));

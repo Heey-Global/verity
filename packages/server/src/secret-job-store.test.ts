@@ -44,6 +44,7 @@ describe('postgres secret job store', () => {
     });
     // A concurrent cleanup state write without a result must never clear the terminal outcome.
     await store.update('job-1', 'reaped');
+    await store.update('job-1', 'pending');
     await expect(store.get('job-1')).resolves.toMatchObject({
       actorId: 'device-1',
       state: 'reaped',

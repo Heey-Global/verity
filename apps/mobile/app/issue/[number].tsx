@@ -20,12 +20,33 @@ function param(value: string | string[] | undefined): string {
   return Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
 }
 
+export function verifiedGitHubIssueUrl(raw: string, number: number): string | null {
+  try {
+    const parsed = new URL(raw);
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname !== 'github.com' ||
+      parsed.username !== '' ||
+      parsed.password !== '' ||
+      parsed.port !== '' ||
+      parsed.search !== '' ||
+      parsed.hash !== '' ||
+      !new RegExp(`^/[^/]+/[^/]+/issues/${String(number)}$`, 'u').test(parsed.pathname)
+    )
+      return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
 export default function IssueDetailScreen() {
   const params = useLocalSearchParams<{
     number: string;
     title?: string;
     body?: string;
     url?: string;
+    projectId?: string;
   }>();
   const client = useMemo(() => createVerityClient(), []);
   const number = Number(param(params.number));
@@ -49,6 +70,7 @@ export default function IssueDetailScreen() {
       title={param(params.title)}
       body={param(params.body)}
       url={param(params.url)}
+      projectId={param(params.projectId) || undefined}
     />
   );
 }
@@ -59,17 +81,20 @@ function IssueDetail({
   title,
   body,
   url,
+  projectId,
 }: {
   client: VerityClient;
   number: number;
   title: string;
   body: string;
   url: string;
+  projectId?: string;
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const issueUrl = verifiedGitHubIssueUrl(url, number);
 
   const onWork = useCallback(() => {
     if (starting) return;
@@ -80,6 +105,7 @@ function IssueDetail({
         const prompt = buildIssuePrompt({ number, title, body });
         const result = await client.createSession({
           prompt,
+          ...(projectId ? { projectId } : {}),
           // The session name (header + branch slug) is the issue title, capped to the
           // server's 80-char limit; the issue # makes the branch `feat/<n>-…`.
           name: title.trim().slice(0, 80) || `issue-${String(number)}`,
@@ -103,7 +129,7 @@ function IssueDetail({
         setStarting(false);
       }
     })();
-  }, [client, number, title, body, starting]);
+  }, [client, number, title, body, projectId, starting]);
 
   return (
     <View style={styles.flex}>
@@ -116,8 +142,12 @@ function IssueDetail({
         ) : (
           <Text style={styles.bodyEmpty}>No description.</Text>
         )}
-        {url.length > 0 ? (
-          <Pressable onPress={() => void Linking.openURL(url)} accessibilityRole="link" hitSlop={8}>
+        {issueUrl !== null ? (
+          <Pressable
+            onPress={() => void Linking.openURL(issueUrl)}
+            accessibilityRole="link"
+            hitSlop={8}
+          >
             <Text style={styles.link}>Open on GitHub ↗</Text>
           </Pressable>
         ) : null}

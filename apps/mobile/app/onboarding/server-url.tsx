@@ -13,10 +13,12 @@ import {
   type OnboardingStatus,
 } from '@verity/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -29,6 +31,9 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getAuthToken } from '../../lib/authToken';
 import { getVerityBaseUrl, setVerityBaseUrl } from '../../lib/client';
+import { parsePairingUri, type VerityPairingPayload } from '../../lib/pairing';
+import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairingSession';
+import { getServerProfile } from '../../lib/serverProfile';
 
 function onboardingRoute(status: OnboardingStatus): string {
   return status.complete ? '/' : `/onboarding/${resumeStep(status)}`;
@@ -54,6 +59,16 @@ export default function OnboardingServerUrl() {
   // reconfigure starts from the existing address rather than a blank field.
   const [url, setUrl] = useState(getVerityBaseUrl() ?? '');
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
+  const [pairing, setPairing] = useState<VerityPairingPayload | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
 
   const canSubmit = url.trim().length > 0 && test.kind !== 'testing';
 
@@ -65,17 +80,23 @@ export default function OnboardingServerUrl() {
     const probeUrl = normalizeServerUrl(url);
     if (probeUrl === null) return;
     setTest({ kind: 'testing' });
-    // A throwaway client on the candidate URL — we don't persist until it answers.
-    const probe = new VerityClient({ baseUrl: probeUrl });
-    void probe
-      .fetchOnboardingStatus()
+    // QR pairing uses the native pinned transport for every request. A manually
+    // entered public/Uplink endpoint uses the platform trust store.
+    const existingProfile = getServerProfile();
+    const statusPromise = pairing
+      ? establishPairing(pairing, probeUrl)
+      : existingProfile
+        ? verifyAndSaveDirectEndpoint(probeUrl)
+        : new VerityClient({ baseUrl: probeUrl }).fetchOnboardingStatus();
+    void statusPromise
       .then((status) => {
         // Reachable AND it parsed as a Verity onboarding-status payload → persist
         // the normalized URL, then advance. (`setVerityBaseUrl` re-normalizes; same
         // input → same result.)
-        return setVerityBaseUrl(probeUrl).then(() => status);
+        return pairing || existingProfile ? status : setVerityBaseUrl(probeUrl).then(() => status);
       })
       .then((status) => {
+        if (!mounted.current) return;
         setTest({ kind: 'ok' });
         // Reconfigure (from Settings) → back home. First-run/preflight → route
         // from the server's actual setup state, so an interrupted onboarding flow
@@ -90,6 +111,7 @@ export default function OnboardingServerUrl() {
         }
       })
       .catch((caught: unknown) => {
+        if (!mounted.current) return;
         // Distinguish "couldn't reach it at all" from "reached something that isn't
         // a Verity server" (a non-2xx or a schema-parse failure lands here too).
         const message =
@@ -122,6 +144,35 @@ export default function OnboardingServerUrl() {
         </Text>
 
         <View style={styles.card}>
+          <Pressable
+            style={({ pressed }) => [styles.scanButton, pressed ? styles.pressed : null]}
+            onPress={() => {
+              void (async () => {
+                const permission =
+                  cameraPermission?.granted === true
+                    ? cameraPermission
+                    : await requestCameraPermission();
+                if (!mounted.current) return;
+                if (permission.granted) setScannerOpen(true);
+                else
+                  setTest({
+                    kind: 'error',
+                    message: 'Camera access is required to scan the installer pairing code.',
+                  });
+              })();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Scan secure pairing code"
+          >
+            <Text style={styles.scanButtonLabel}>Scan secure pairing code</Text>
+          </Pressable>
+
+          {pairing !== null ? (
+            <Text style={styles.connected} accessibilityRole="alert">
+              Pairing code loaded. You may adjust the address; Verity will still verify the same
+              server identity.
+            </Text>
+          ) : null}
           <View style={styles.field}>
             <Text style={styles.label}>Verity server address</Text>
             <TextInput
@@ -186,6 +237,44 @@ export default function OnboardingServerUrl() {
           ) : null}
         </View>
       </ScrollView>
+      <Modal
+        visible={scannerOpen}
+        animationType="slide"
+        onRequestClose={() => setScannerOpen(false)}
+      >
+        <View style={styles.scannerRoot}>
+          <CameraView
+            style={styles.scannerCamera}
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            onBarcodeScanned={({ data }) => {
+              try {
+                const parsed = parsePairingUri(data);
+                setPairing(parsed);
+                setUrl(parsed.suggestedUrl);
+                setTest({ kind: 'idle' });
+                setScannerOpen(false);
+              } catch (error) {
+                setScannerOpen(false);
+                setTest({
+                  kind: 'error',
+                  message: error instanceof Error ? error.message : 'Invalid pairing code.',
+                });
+              }
+            }}
+          />
+          <View style={styles.scannerOverlay} pointerEvents="box-none">
+            <Text style={styles.scannerTitle}>Scan the code shown by verity-install</Text>
+            <View style={styles.scannerFrame} />
+            <Pressable
+              style={({ pressed }) => [styles.cancelScanner, pressed ? styles.pressed : null]}
+              onPress={() => setScannerOpen(false)}
+              accessibilityRole="button"
+            >
+              <Text style={styles.primaryButtonLabel}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -225,6 +314,53 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
+  },
+  scanButton: {
+    minHeight: 48,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+  },
+  scanButtonLabel: {
+    color: theme.colors.accent,
+    fontSize: theme.text.sm,
+    fontWeight: '800',
+  },
+  scannerRoot: { flex: 1, backgroundColor: '#000' },
+  scannerCamera: { flex: 1 },
+  scannerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 80,
+    paddingBottom: 56,
+  },
+  scannerTitle: {
+    color: '#fff',
+    fontSize: theme.text.md,
+    fontWeight: '800',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+  },
+  scannerFrame: {
+    width: 260,
+    height: 260,
+    borderWidth: 3,
+    borderColor: theme.colors.accent,
+    borderRadius: theme.radius.lg,
+  },
+  cancelScanner: {
+    minWidth: 160,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
   },
   field: {
     gap: theme.spacing.xs,

@@ -6,17 +6,13 @@ and every external document an agent reads as untrusted input.
 
 ## Reporting a vulnerability
 
-The repository is not yet public and its durable public security intake channel
-has not been activated. **Do not publish this repository until GitHub private
-vulnerability reporting is enabled and a report from an external account has
-been tested end to end.** Existing authorized collaborators should use the
-project's current private maintainer channel. Do not open a public issue for a
-suspected vulnerability.
+Report suspected vulnerabilities through this repository's GitHub **Security →
+Report a vulnerability** flow. If that flow is unavailable, email
+`security@verity.build`. Do not open a public issue for a suspected
+vulnerability.
 
-Once activated, the public reporting path will be this repository's GitHub
-**Security → Report a vulnerability** flow. A report should include the affected
-version or commit, deployment topology, impact, and the smallest safe
-reproduction available.
+A report should include the affected version or commit, deployment topology,
+impact, and the smallest safe reproduction available.
 
 We will acknowledge a complete report, investigate it, and coordinate a fix and
 disclosure. Do not access data or infrastructure that you do not own or have

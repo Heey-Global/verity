@@ -2008,23 +2008,21 @@ export class Conductor {
     }
   }
 
-  private reportBackgroundTurnFailure(sessionId: string, error: unknown): void {
+  private async reportBackgroundTurnFailure(sessionId: string, error: unknown): Promise<void> {
     const normalized = error instanceof Error ? error : new Error(String(error));
-    void (async () => {
-      try {
-        const event: AgentEvent = {
-          t: 'error',
-          kind: 'run_failed',
-          message: normalized.message,
-        };
-        const persisted = await this.deps.store.appendEvent(sessionId, event);
-        this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
-      } catch {
-        // Best-effort only: the original failure should still reach the logging sink,
-        // and reporting must never create a second failure path.
-      }
-      this.reportTurnError(sessionId, normalized);
-    })();
+    try {
+      const event: AgentEvent = {
+        t: 'error',
+        kind: 'run_failed',
+        message: normalized.message,
+      };
+      const persisted = await this.deps.store.appendEvent(sessionId, event);
+      this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
+    } catch {
+      // Best-effort only: the original failure should still reach the logging sink,
+      // and reporting must never create a second failure path.
+    }
+    this.reportTurnError(sessionId, normalized);
   }
 
   /**
@@ -2670,7 +2668,19 @@ export class Conductor {
         const session = await this.deps.store.getSession(sessionId);
         const projectId = session?.projectId;
         if (projectId == null) return;
-        if (!(await check({ projectId, sessionId, channel, ...target }))) return;
+        const covered = await Promise.all(
+          target.secretAliases.map((secretAlias) =>
+            check({
+              projectId,
+              sessionId,
+              channel,
+              secretAlias,
+              toolName: target.toolName,
+              target: target.target,
+            }),
+          ),
+        );
+        if (!covered.every(Boolean)) return;
         await this.decidePermission(
           sessionId,
           request.toolUseId,
@@ -2706,7 +2716,17 @@ export class Conductor {
     const session = await this.deps.store.getSession(sessionId);
     const projectId = session?.projectId;
     if (projectId == null) throw new Error('brokered secret session has no project');
-    await persist({ projectId, sessionId, scope, channel, ...target });
+    for (const secretAlias of target.secretAliases) {
+      await persist({
+        projectId,
+        sessionId,
+        scope,
+        channel,
+        secretAlias,
+        toolName: target.toolName,
+        target: target.target,
+      });
+    }
   }
 
   /** Drop all parked permission prompts for a settled turn (#27). Anything the
@@ -3201,7 +3221,7 @@ export class Conductor {
         if (!hadQueued) this.flushDeferredWhenIdle(sessionId);
       })
       .catch((error: unknown) => {
-        this.reportBackgroundTurnFailure(sessionId, error);
+        void this.reportBackgroundTurnFailure(sessionId, error);
       });
   }
 
@@ -4390,6 +4410,12 @@ export class Conductor {
     }
     return new Promise<{ sessionId: string }>((resolve, reject) => {
       let boundId: string | undefined;
+      let markerSeq: number | undefined;
+      // Allocate the Runner recovery identity before startTurn. A fresh session
+      // used to omit both ids, making a live first turn undiscoverable after a
+      // Server restart even once its public session id had bound.
+      const turnId = randomUUID();
+      const startCommandId = randomUUID();
       const runOpts = {
         ...this.buildStartOpts(opts, localProject, (sessionId) => {
           if (boundId !== undefined) return;
@@ -4398,7 +4424,6 @@ export class Conductor {
           this.starting.delete(opts.worktree); // bound → release the start lock
           this.inFlight.add(publicSessionId); // serialize turns against the still-running spawn
           this.turns.set(publicSessionId, handle); // operator can cancel/steer now (#79/#101)
-          resolve({ sessionId: publicSessionId });
           // The session row exists now (either preallocated by the server or
           // created by ingest from the backend `session` event), so persist the
           // operator's first prompt → it shows in the transcript.
@@ -4416,6 +4441,16 @@ export class Conductor {
                     this.emitPrompt(publicSessionId, opts.prompt, attachments),
                   )
             )
+              .catch((error: unknown) => {
+                this.reportTurnError(publicSessionId, error);
+              })
+              .then(async () => {
+                const seq = await this.deps.store.latestEventSeq(publicSessionId);
+                markerSeq = seq;
+                handle.markerSeq = seq;
+                await this.markTurnRunning(publicSessionId, seq);
+                await this.bindTurnIdentity(publicSessionId, turnId, startCommandId);
+              })
               .then(() =>
                 this.persistBackendSessionState(
                   publicSessionId,
@@ -4429,10 +4464,13 @@ export class Conductor {
               .catch((error: unknown) => {
                 this.reportTurnError(publicSessionId, error);
               })
+              .then(() => resolve({ sessionId: publicSessionId }))
           );
         }),
         signal: handle.controller.signal, // operator-cancel for the initial run (#79)
         steerable: true, // hold stdin open so the operator can steer the first turn (#101)
+        turnId,
+        startCommandId,
       };
       // Route the fresh run through the Runner contract (ADR 0006 Stage 1). The
       // RunnerTurn adopts the handle's cancel signal and surfaces the steer channel
@@ -4503,13 +4541,30 @@ export class Conductor {
           await cleanup();
         }
       })()
-        .then((result) => {
+        .then(async (result) => {
+          if (!handle.claimSettle('run')) return;
           const id = boundId; // capture for the nested closure (boundId is mutable)
           if (id !== undefined) {
-            // Release the locks FIRST (synchronously), then append any terminal
-            // marker — so a failed marker insert can't strand the lock or be
-            // misread as a background run failure. Drain any turns the operator
-            // sent during the initial run (the id is known the moment it binds).
+            // Persist a cancellation's terminal marker before releasing the turn
+            // fence. Otherwise a queued successor can start and append its prompt
+            // first, after which this old turn's `interrupted` event terminalizes
+            // the new turn. The write is best-effort, but its ordering is strict.
+            if (result.aborted) {
+              try {
+                await this.emitInterrupted(id);
+              } catch (error) {
+                this.reportTurnError(id, error);
+              }
+            } else if (result.exitCode !== 0) {
+              try {
+                await this.ensureTerminalMarker(id, markerSeq ?? 0, result);
+              } catch (error) {
+                this.reportTurnError(id, error);
+              }
+            }
+            await this.clearRunningTurn(id, markerSeq).catch((clearError: unknown) => {
+              this.reportTurnError(id, clearError);
+            });
             this.turns.delete(id);
             this.clearPermissions(id);
             this.releaseInFlight(id);
@@ -4517,30 +4572,32 @@ export class Conductor {
             this.drainNext(id);
             this.maybeAutoTitle(id);
             if (!hadQueued) this.flushDeferredWhenIdle(id);
-            // Operator-cancelled the initial run (#79): partial output stays in the
-            // log; append the `interrupted` marker (best effort). `result.aborted`
-            // is set by the runner at kill time, immune to a late cancel.
-            if (result.aborted) {
-              void this.emitInterrupted(id).catch((error: unknown) => {
-                this.reportTurnError(id, error);
-              });
-            }
             return;
           }
           // Ran to completion without ever binding a session (no `session` event).
           this.starting.delete(opts.worktree);
           reject(new Error('session did not start: no session event'));
         })
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
+          if (!handle.claimSettle('run')) return;
           const err = error instanceof Error ? error : new Error(String(error));
           if (boundId !== undefined) {
-            this.turns.delete(boundId);
-            this.clearPermissions(boundId);
-            this.releaseInFlight(boundId);
-            const hadQueued = (this.queues.get(boundId)?.length ?? 0) > 0;
-            this.drainNext(boundId); // same: don't strand turns queued during the run
-            if (!hadQueued) this.flushDeferredWhenIdle(boundId);
-            this.reportBackgroundTurnFailure(boundId, err); // background failure after acceptance
+            const id = boundId;
+            // Persist the failure and clear its recovery marker while the old turn
+            // still owns the fence. A queued successor must never append its prompt
+            // before this terminal event.
+            await this.reportBackgroundTurnFailure(id, err).catch((reportError: unknown) => {
+              this.reportTurnError(id, reportError);
+            });
+            await this.clearRunningTurn(id, markerSeq).catch((clearError: unknown) => {
+              this.reportTurnError(id, clearError);
+            });
+            this.turns.delete(id);
+            this.clearPermissions(id);
+            this.releaseInFlight(id);
+            const hadQueued = (this.queues.get(id)?.length ?? 0) > 0;
+            this.drainNext(id); // same: don't strand turns queued during the run
+            if (!hadQueued) this.flushDeferredWhenIdle(id);
             return;
           }
           this.starting.delete(opts.worktree);

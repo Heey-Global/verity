@@ -112,16 +112,20 @@ ARG DOCKER_CLI_VERSION=29.6.1
 # Published SHA256 of docker-${DOCKER_CLI_VERSION}.tgz (linux x86_64 static
 # stable). Verified at author time; bump alongside DOCKER_CLI_VERSION.
 ARG DOCKER_CLI_SHA256=b0df4a43a98d7ecb708acbdb5a34a3416e13b6e39bcbbdf296f51f0f3442b29f
+ARG DOCKER_CLI_SHA256_ARM64=917a4bb83565bcacb38c430f08daae8b59db3256331ac23f22394f0542509881
 # renovate: datasource=github-releases depName=docker/buildx
 ARG DOCKER_BUILDX_VERSION=0.35.0
 # Published release digest of buildx-v${DOCKER_BUILDX_VERSION}.linux-amd64.
 # Verified at author time; bump alongside DOCKER_BUILDX_VERSION.
 ARG DOCKER_BUILDX_SHA256=d41ece72044243b4f58b343441ae37446d9c29a7d6b5e11c61847bbcf8f7dfda
+ARG DOCKER_BUILDX_SHA256_ARM64=c4248d6cbc4a619a7e0b4609c11e509ad4ac0b475e1c64817c0ac20c5d90c766
 # renovate: datasource=github-releases depName=docker/compose
 ARG DOCKER_COMPOSE_VERSION=2.40.3
 # Published release digest of docker-compose-linux-x86_64.
 # Verified at author time; bump alongside DOCKER_COMPOSE_VERSION.
 ARG DOCKER_COMPOSE_SHA256=dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372
+ARG DOCKER_COMPOSE_SHA256_ARM64=d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137
+ARG TARGETARCH
 
 # `--retry-all-errors` rather than `--retry-connrefused`: plain `--retry` covers
 # timeouts, 5xx and (with that flag) a refused connection, and none of those is what
@@ -133,25 +137,30 @@ ARG DOCKER_COMPOSE_SHA256=dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61
 # `--retry-delay` budget. Every artifact below is checked against a pinned digest, so
 # a retry that returns something else fails the build rather than shipping it.
 RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) docker_arch=x86_64; buildx_arch=amd64; compose_arch=x86_64; docker_sha="${DOCKER_CLI_SHA256}"; buildx_sha="${DOCKER_BUILDX_SHA256}"; compose_sha="${DOCKER_COMPOSE_SHA256}" ;; \
+      arm64) docker_arch=aarch64; buildx_arch=arm64; compose_arch=aarch64; docker_sha="${DOCKER_CLI_SHA256_ARM64}"; buildx_sha="${DOCKER_BUILDX_SHA256_ARM64}"; compose_sha="${DOCKER_COMPOSE_SHA256_ARM64}" ;; \
+      *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 64 ;; \
+    esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
     rm -rf /var/lib/apt/lists/*; \
     curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
       -o /tmp/docker.tgz \
-      "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz"; \
-    echo "${DOCKER_CLI_SHA256}  /tmp/docker.tgz" | sha256sum -c -; \
+      "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz"; \
+    echo "${docker_sha}  /tmp/docker.tgz" | sha256sum -c -; \
     tar -xzf /tmp/docker.tgz -C /tmp docker/docker; \
     install -m 0755 /tmp/docker/docker /usr/local/bin/docker; \
     mkdir -p /usr/local/lib/docker/cli-plugins; \
     curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
       -o /tmp/docker-buildx \
-      "https://github.com/docker/buildx/releases/download/v${DOCKER_BUILDX_VERSION}/buildx-v${DOCKER_BUILDX_VERSION}.linux-amd64"; \
-    echo "${DOCKER_BUILDX_SHA256}  /tmp/docker-buildx" | sha256sum -c -; \
+      "https://github.com/docker/buildx/releases/download/v${DOCKER_BUILDX_VERSION}/buildx-v${DOCKER_BUILDX_VERSION}.linux-${buildx_arch}"; \
+    echo "${buildx_sha}  /tmp/docker-buildx" | sha256sum -c -; \
     install -m 0755 /tmp/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx; \
     curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
       -o /tmp/docker-compose \
-      "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64"; \
-    echo "${DOCKER_COMPOSE_SHA256}  /tmp/docker-compose" | sha256sum -c -; \
+      "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${compose_arch}"; \
+    echo "${compose_sha}  /tmp/docker-compose" | sha256sum -c -; \
     install -m 0755 /tmp/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose; \
     ln -s /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose; \
     rm -rf /tmp/docker.tgz /tmp/docker; \

@@ -45,6 +45,7 @@ export function createTrustedCliTool(options: {
         env: string;
         injection?: 'env' | 'file';
         secret: string;
+        encoding?: 'base64';
       }[];
       command: readonly string[];
       entryScript?: TrustedCliEntryScript;
@@ -89,13 +90,19 @@ export function createTrustedCliTool(options: {
           secretName: entry.secretAlias,
         });
         resolved.push(raw);
-        let decoded: string;
-        try {
-          decoded = fatalUtf8Decoder.decode(raw);
-        } catch {
-          throw new Error(`trusted CLI secret ${entry.secretAlias} is not valid UTF-8`);
+        let secret: string;
+        let encoding: 'base64' | undefined;
+        if (entry.injection === 'file') {
+          secret = Buffer.from(raw).toString('base64');
+          encoding = 'base64';
+        } else {
+          try {
+            secret = fatalUtf8Decoder.decode(raw);
+          } catch {
+            throw new Error(`trusted CLI secret ${entry.secretAlias} is not valid UTF-8`);
+          }
         }
-        if (decoded.length === 0 || decoded.includes('\0')) {
+        if (secret.length === 0 || (encoding === undefined && secret.includes('\0'))) {
           throw new Error(
             `trusted CLI secret ${entry.secretAlias} is not valid for environment injection`,
           );
@@ -104,7 +111,8 @@ export function createTrustedCliTool(options: {
           secretAlias: entry.secretAlias,
           env: entry.env,
           ...(entry.injection === undefined ? {} : { injection: entry.injection }),
-          secret: decoded,
+          secret,
+          ...(encoding === undefined ? {} : { encoding }),
         });
       }
       return await execute({

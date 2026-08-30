@@ -262,6 +262,7 @@ function SessionList({ client }: { client: VerityClient }) {
   const dragStartPageY = useRef<number | null>(null);
   const [refreshingOverview, setRefreshingOverview] = useState(false);
   const [updatingProjectIds, setUpdatingProjectIds] = useState<Set<string>>(() => new Set());
+  const updatingProjectIdsRef = useRef(new Set<string>());
   const [repairingProjectIds, setRepairingProjectIds] = useState<Set<string>>(() => new Set());
   // State drives rendering; the ref is the synchronous mutex. Two native press
   // events can arrive before React commits the first state update.
@@ -349,16 +350,15 @@ function SessionList({ client }: { client: VerityClient }) {
     async (project: ProjectRecord) => {
       // Guard per project, not globally: a recreation in flight for one project
       // must not swallow "Update" presses on other projects.
-      if (updatingProjectIds.has(project.id)) return;
+      if (updatingProjectIdsRef.current.has(project.id)) return;
+      updatingProjectIdsRef.current.add(project.id);
       setUpdatingProjectIds((prev) => new Set(prev).add(project.id));
       try {
         await client.recreateProjectContainer(project.id, { confirmWarnings: true });
         await Promise.allSettled([refreshProjects(), refresh()]);
       } catch (caught) {
-        if (!(caught instanceof VerityApiError)) {
-          const refreshed = await Promise.allSettled([refreshProjects(), refresh()]);
-          if (refreshed.some((result) => result.status === 'fulfilled')) return;
-        }
+        if (!(caught instanceof VerityApiError))
+          await Promise.allSettled([refreshProjects(), refresh()]);
         Alert.alert(
           'Update failed',
           caught instanceof VerityApiError
@@ -366,6 +366,7 @@ function SessionList({ client }: { client: VerityClient }) {
             : 'Could not update the project sandbox.',
         );
       } finally {
+        updatingProjectIdsRef.current.delete(project.id);
         setUpdatingProjectIds((prev) => {
           const next = new Set(prev);
           next.delete(project.id);
@@ -373,7 +374,7 @@ function SessionList({ client }: { client: VerityClient }) {
         });
       }
     },
-    [client, refresh, refreshProjects, updatingProjectIds],
+    [client, refresh, refreshProjects],
   );
 
   // Repair straight from the overview row: a project whose container is gone is
@@ -911,6 +912,10 @@ function useProjects(client: VerityClient) {
               pendingDevServerMutations.current.delete(projectId);
             }
           }
+          // Mutation callbacks run between renders and consult the ref. Keep it
+          // in lockstep with the committed cache instead of waiting for the next
+          // render, which could otherwise merge a fresh event into stale data.
+          devServersByProjectRef.current = next;
           return next;
         });
         setDetectionsByProject((current) => {
@@ -1595,6 +1600,7 @@ function IssueRow({ issue }: { issue: IssueSummary }) {
             title: issue.title,
             body: issue.body,
             url: issue.url,
+            ...(issue.projectId ? { projectId: issue.projectId } : {}),
           },
         })
       }

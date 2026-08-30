@@ -209,7 +209,7 @@ describe('agent child stdio isolation', () => {
    * is the property to pin, for every command the broker will launch.
    */
   onLinux('and the shipped broker asks for the same stdio for every agent', async () => {
-    for (const command of ['claude-agent-acp', 'codex-acp'] as const) {
+    for (const command of ['claude-agent-acp', 'codex-acp', 'opencode-acp'] as const) {
       const spec = agentLaunchSpec(
         { command, args: [], cwd: tmpdir() },
         { agentUid: 1000, agentGid: 1000 },

@@ -112,5 +112,14 @@ describe('githubRefUrl (#161)', () => {
     expect(githubRefUrl('issue', { owner: 'a b', repo: 'c/d' }, 1)).toBe(
       'https://github.com/a%20b/c%2Fd/issues/1',
     );
+    const crafted = githubRefUrl(
+      'issue',
+      { owner: 'evil.example/redirect?next=', repo: '#fragment' },
+      7,
+    );
+    expect(crafted).toBe(
+      'https://github.com/evil.example%2Fredirect%3Fnext%3D/%23fragment/issues/7',
+    );
+    expect(new URL(crafted!).origin).toBe('https://github.com');
   });
 });

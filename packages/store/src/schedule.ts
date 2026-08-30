@@ -47,7 +47,8 @@ export function computeNextRun(schedule: ScheduleConfig, from: Date): Date {
 export function validateSchedule(schedule: ScheduleConfig): string | null {
   switch (schedule.kind) {
     case 'interval':
-      return schedule.everyMinutes >= MIN_INTERVAL_MINUTES
+      return Number.isSafeInteger(schedule.everyMinutes) &&
+        schedule.everyMinutes >= MIN_INTERVAL_MINUTES
         ? null
         : `interval must be at least ${MIN_INTERVAL_MINUTES} minutes`;
     case 'daily':

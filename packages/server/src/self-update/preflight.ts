@@ -271,8 +271,11 @@ export function isPreflightCommand(
 
 function parsePortValue(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === '') return fallback;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535 ? parsed : fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+    throw new Error(`invalid port "${value}": expected an integer in 0-65535`);
+  }
+  return parsed;
 }
 
 /**
@@ -283,7 +286,7 @@ function parsePortValue(value: string | undefined, fallback: number): number {
 export function preflightConfigFromEnv(env: NodeJS.ProcessEnv = process.env): PreflightConfig {
   const verityRoot = env.VERITY_ROOT ?? '/srv/verity';
   const host = env.HOST ?? '127.0.0.1';
-  const publicPort = parsePortValue(env.PORT, 8080);
+  const publicPort = parsePortValue(env.PORT, 8787);
   const internalPort = parsePortValue(env.VERITY_INTERNAL_PORT, 8083);
   const config: PreflightConfig = {
     host,

@@ -66,7 +66,9 @@ export class ServerTranscript implements RunnerTranscriptSink {
     storeSessionId: string,
   ): Promise<number> {
     const file = this.transcriptFile(backendSessionId, cwd);
-    await restoreIfMissing(this.options.transcript, storeSessionId, file);
+    await restoreIfMissing(this.options.transcript, storeSessionId, file, {
+      rootDir: this.options.runtimeDir,
+    });
     // Seed the tail past the bytes already durable, so a resume never re-appends
     // the restored prefix (mirrors the in-process worker's `startOffset`).
     return await fileSize(file);
@@ -86,6 +88,7 @@ export class ServerTranscript implements RunnerTranscriptSink {
       {
         signal,
         startOffset,
+        rootDir: this.options.runtimeDir,
         ...(this.options.pollMs !== undefined ? { pollMs: this.options.pollMs } : {}),
       },
     );
@@ -213,7 +216,9 @@ export class ServerCodexTranscript implements RunnerTranscriptSink {
     const existing = await findCodexRollout(this.sessionsDir(), backendSessionId);
     const file = existing ?? this.restoredFile(backendSessionId);
     if (existing === undefined)
-      await materializeToDisk(this.options.transcript, storeSessionId, file);
+      await materializeToDisk(this.options.transcript, storeSessionId, file, {
+        rootDir: this.options.runtimeDir,
+      });
     return await fileSize(file);
   }
 
@@ -234,6 +239,7 @@ export class ServerCodexTranscript implements RunnerTranscriptSink {
     await syncTranscript(file, this.options.transcript, storeSessionId, {
       signal,
       startOffset,
+      rootDir: this.options.runtimeDir,
       ...(this.options.pollMs !== undefined ? { pollMs: this.options.pollMs } : {}),
     });
   }

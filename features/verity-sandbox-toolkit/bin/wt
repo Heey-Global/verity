@@ -5,7 +5,7 @@
 #   wt <branch> [base]   Create a new worktree + a tmux window (login shell) for it
 #   wt list              Show active worktrees + their tmux windows
 #   wt status            git status per worktree (short form)
-#   wt close <branch>    Kill the tmux window + remove the worktree
+#   wt close [--force] <branch>  Remove a clean worktree; --force discards changes
 #
 # From the host:   docker exec -it <container> wt ...
 #
@@ -56,36 +56,80 @@ cmd_list() {
 }
 
 cmd_status() {
-  while IFS= read -r line; do
-    local path="${line%% *}"
-    [ -d "$path" ] || continue
-    echo "=== $path ==="
-    git -C "$path" status --short --branch || true
-    echo
-  done < <(git -C "$ROOT" worktree list)
+  local field path
+  while IFS= read -r -d '' field; do
+    case "$field" in
+      'worktree '*)
+        path="${field#worktree }"
+        [ -d "$path" ] || continue
+        echo "=== $path ==="
+        git -C "$path" status --short --branch || true
+        echo
+        ;;
+    esac
+  done < <(git -C "$ROOT" worktree list --porcelain -z)
 }
 
 cmd_close() {
-  local BRANCH="${1:?Usage: wt close <branch>}"
-  local SAFE_BRANCH WT_DIR
+  local FORCE=false
+  if [ "${1:-}" = '--force' ]; then FORCE=true; shift; fi
+  local BRANCH="${1:?Usage: wt close [--force] <branch>}"
+  local SAFE_BRANCH WT_DIR='' FIELD CURRENT_PATH='' CURRENT_BRANCH=''
   SAFE_BRANCH="$(sanitize "$BRANCH")"
-  WT_DIR="$ROOT/.worktrees/$SAFE_BRANCH"
 
-  # Kill the tmux window if present.
-  if tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$SAFE_BRANCH"; then
-    tmux kill-window -t "$SESSION:$SAFE_BRANCH"
+  # The display/path slug is not injective (`feature/a-b` and `feature-a/b`
+  # collide). Resolve the exact branch through Git's own worktree metadata,
+  # then verify the resulting path is inside the managed worktree directory.
+  while IFS= read -r -d '' FIELD; do
+    case "$FIELD" in
+      worktree\ *) CURRENT_PATH="${FIELD#worktree }" ;;
+      branch\ *) CURRENT_BRANCH="${FIELD#branch }" ;;
+      '')
+        if [ "$CURRENT_BRANCH" = "refs/heads/$BRANCH" ]; then
+          [ -z "$WT_DIR" ] || { echo "More than one worktree is registered for '$BRANCH'." >&2; return 1; }
+          WT_DIR="$CURRENT_PATH"
+        fi
+        CURRENT_PATH=''
+        CURRENT_BRANCH=''
+        ;;
+    esac
+  done < <(git -C "$ROOT" worktree list --porcelain -z)
+
+  if [ -z "$WT_DIR" ]; then
+    echo "No worktree registered for branch '$BRANCH'."
+    return 0
+  fi
+  local MANAGED_ROOT RESOLVED_WT
+  MANAGED_ROOT="$(realpath -m -- "$ROOT/.worktrees")"
+  RESOLVED_WT="$(realpath -m -- "$WT_DIR")"
+  case "$RESOLVED_WT" in
+    "$MANAGED_ROOT/"*) WT_DIR="$RESOLVED_WT" ;;
+    *) echo "Refusing to remove worktree outside $MANAGED_ROOT: $RESOLVED_WT" >&2; return 1 ;;
+  esac
+
+  if [ "$FORCE" != true ] && [ -n "$(git -C "$WT_DIR" status --porcelain --untracked-files=all)" ]; then
+    echo "Refusing to remove dirty worktree $WT_DIR; commit/stash changes or use wt close --force '$BRANCH'." >&2
+    return 1
+  fi
+
+  # Match the window by its pane cwd, not the colliding display slug.
+  local WINDOW=''
+  WINDOW="$(tmux list-windows -t "$SESSION" -F '#I	#{pane_current_path}' 2>/dev/null \
+    | awk -F '\t' -v path="$WT_DIR" '$2 == path { print $1; exit }' || true)"
+  if [ -n "$WINDOW" ]; then
+    tmux kill-window -t "$SESSION:$WINDOW"
     echo "tmux window '$SAFE_BRANCH' killed."
   else
-    echo "No tmux window named '$SAFE_BRANCH'."
+    echo "No tmux window for $WT_DIR."
   fi
 
   # Remove the worktree.
-  if [ -d "$WT_DIR" ]; then
+  if [ "$FORCE" = true ]; then
     git -C "$ROOT" worktree remove "$WT_DIR" --force
-    echo "Worktree $WT_DIR removed."
   else
-    echo "No worktree under $WT_DIR."
+    git -C "$ROOT" worktree remove "$WT_DIR"
   fi
+  echo "Worktree $WT_DIR removed."
 }
 
 show_help() {

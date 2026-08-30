@@ -1,5 +1,6 @@
-import { rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { constants } from 'node:fs';
+import { open, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -25,15 +26,34 @@ export async function writeReferenceDocFile(
   fileName: string,
   bytes: Uint8Array,
 ): Promise<void> {
-  const finalPath = join(referenceDir, fileName);
-  const tmpPath = join(referenceDir, `.${randomUUID()}.tmp`);
-  // `wx` on the temp file guarantees we never clobber an unrelated entry while
-  // staging; the random name makes a collision effectively impossible.
-  await writeFile(tmpPath, bytes, { mode: 0o600, flag: 'wx' });
+  if (
+    fileName.length === 0 ||
+    fileName === '.' ||
+    fileName === '..' ||
+    basename(fileName) !== fileName ||
+    fileName.includes('/') ||
+    fileName.includes('\\') ||
+    fileName.includes('\0')
+  ) {
+    throw new Error('reference document filename must be a bare filename');
+  }
+  const directory = await open(
+    referenceDir,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  const anchoredDir = `/proc/self/fd/${String(directory.fd)}`;
+  const finalPath = join(anchoredDir, fileName);
+  const tmpPath = join(anchoredDir, `.${randomUUID()}.tmp`);
   try {
+    // Both entries are resolved relative to the already-open directory handle.
+    // Renaming an ancestor after this point therefore cannot redirect either
+    // the staging write or the final replacement outside the validated tree.
+    await writeFile(tmpPath, bytes, { mode: 0o600, flag: 'wx' });
     await rename(tmpPath, finalPath);
   } catch (err) {
     await rm(tmpPath, { force: true });
     throw err;
+  } finally {
+    await directory.close();
   }
 }

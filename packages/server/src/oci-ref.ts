@@ -103,6 +103,7 @@ export async function registryFetch(
   path: string,
   headers: Record<string, string> = {},
   signal?: AbortSignal,
+  trustedTokenHosts: readonly string[] = [],
 ): Promise<Response> {
   const init: RequestInit = signal === undefined ? {} : { signal };
   const url = `https://${registry}/v2/${repo}/${path}`;
@@ -149,6 +150,21 @@ export async function registryFetch(
   if (params.realm === undefined)
     throw new Error(`registry auth realm missing for ${registry}/${repo}`);
   const tokenUrl = new URL(params.realm);
+  const registryHost = registry.split(':', 1)[0]!.toLowerCase();
+  const tokenHost = tokenUrl.hostname.toLowerCase();
+  const allowedTokenHosts = new Set([
+    registryHost,
+    ...trustedTokenHosts.map((host) => host.toLowerCase()),
+  ]);
+  if (
+    tokenUrl.protocol !== 'https:' ||
+    tokenUrl.username !== '' ||
+    tokenUrl.password !== '' ||
+    tokenUrl.port !== '' ||
+    !allowedTokenHosts.has(tokenHost)
+  ) {
+    throw new Error(`registry auth realm is not trusted for ${registry}/${repo}`);
+  }
   if (params.service !== undefined) tokenUrl.searchParams.set('service', params.service);
   tokenUrl.searchParams.set('scope', params.scope ?? `repository:${repo}:pull`);
   const tokenResponse = await fetch(tokenUrl, init);
@@ -328,7 +344,21 @@ export function createCachedImageVersionResolver(
     const cached = cache.get(imageRef);
     if (cached !== undefined && cached.expiresAt > Date.now()) return cached.result;
     const walk = resolve(imageRef, AbortSignal.timeout(timeoutMs));
-    const result = walk.then(
+    let timeout: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    const bounded = Promise.race([
+      walk,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          reject(new Error('OCI version resolution timed out'));
+        }, timeoutMs);
+        timeout.unref();
+      }),
+    ]).finally(() => {
+      if (timeout !== undefined) clearTimeout(timeout);
+    });
+    const result = bounded.then(
       (version) => {
         // Only a real version is worth falling back to. Remembering "this ref
         // has no version label" would make every later failure look like that
@@ -343,21 +373,17 @@ export function createCachedImageVersionResolver(
       },
     );
     // Concurrent callers join this walk instead of each starting their own —
-    // the fan-out across a project list is exactly that shape. The window is
-    // the walk's own bound rather than "until it settles", so a resolver that
-    // neither settles nor honours its signal cannot wedge this ref for the
-    // lifetime of the process. That frees the slot for the next caller only:
-    // whoever is already awaiting a hung walk stays awaiting it, since the
-    // signal is all the leverage there is over an injected `resolve`.
+    // the fan-out across a project list is exactly that shape. The explicit race
+    // also bounds resolvers that ignore their AbortSignal.
     const entry = { result, expiresAt: Date.now() + timeoutMs };
     cache.set(imageRef, entry);
     try {
-      await walk;
+      await bounded;
       entry.expiresAt = Date.now() + ttlMs;
     } catch {
       // Short TTL even when a last-good answer covers the failure: the point is
       // to retry soon, just not on every poll.
-      entry.expiresAt = Date.now() + failureTtlMs;
+      entry.expiresAt = timedOut ? Date.now() : Date.now() + failureTtlMs;
     }
     return result;
   };

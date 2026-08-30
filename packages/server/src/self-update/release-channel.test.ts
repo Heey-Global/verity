@@ -252,6 +252,23 @@ describe('createReleaseChannelResolver', () => {
     });
   });
 
+  it('tracks a valid incompatible newer release for rollback protection', async () => {
+    let time = 0;
+    const incompatible = envelope({ ...metadata('3.0.0'), architecture: 'arm64' });
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(incompatible)
+      .mockResolvedValueOnce(channel('2.0.0'));
+    const subject = resolver({ load, now: () => time, cacheTtlMs: 0 });
+    await expect(subject.resolve()).resolves.toMatchObject({ state: 'incompatible' });
+    time = 1;
+    await expect(subject.resolve()).resolves.toMatchObject({
+      state: 'unreachable',
+      reason: expect.stringMatching(/rolled back/),
+      lastGood: { version: '3.0.0' },
+    });
+  });
+
   it('retries transient channel failures before the successful-result cache expires', async () => {
     let time = 0;
     const load = vi

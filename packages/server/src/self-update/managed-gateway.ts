@@ -1,5 +1,6 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer, type Server } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import {
   chmodSync,
   closeSync,
@@ -14,6 +15,10 @@ import { dirname } from 'node:path';
 import type { Duplex } from 'node:stream';
 
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from '../mcp-gateway.js';
+import {
+  MANAGED_CLIENT_IDENTITY_HEADER,
+  signManagedClientIdentity,
+} from '../managed-client-identity.js';
 
 interface Destroyable {
   destroy(error?: Error): void;
@@ -30,6 +35,7 @@ export interface ManagedGatewayBackend {
 }
 
 export interface ManagedGatewayConfig {
+  readonly tls?: { readonly key: string | Buffer; readonly cert: string | Buffer };
   readonly publicHost?: string;
   readonly publicPort: number;
   readonly internalHost?: string;
@@ -42,6 +48,8 @@ export interface ManagedGatewayConfig {
   /** Durable backend selection, on the Gateway-owned control volume. */
   readonly backendStatePath?: string;
   readonly requestTimeoutMs?: number;
+  /** Shared only with the managed Server; authenticates the original socket peer. */
+  readonly clientIdentitySecret?: Buffer;
 }
 
 export interface ManagedGatewayStatus {
@@ -188,9 +196,21 @@ function proxyHttp(
   timeoutMs: number,
   upstreamRequests: Set<Destroyable>,
   upstreamSockets: Set<Socket>,
+  backendClientIdentitySecret: Buffer | undefined,
 ): void {
   const headers = { ...request.headers };
   for (const header of HOP_BY_HOP) delete headers[header];
+  delete headers[MANAGED_CLIENT_IDENTITY_HEADER];
+  if (backendClientIdentitySecret !== undefined) {
+    headers[MANAGED_CLIENT_IDENTITY_HEADER] = signManagedClientIdentity(
+      backendClientIdentitySecret,
+      {
+        address: request.socket.remoteAddress ?? 'unknown',
+        method: request.method ?? 'GET',
+        url: request.url ?? '/',
+      },
+    );
+  }
   headers.host = `${backend.host}:${String(port)}`;
   const upstream = httpRequest(
     {
@@ -262,13 +282,26 @@ function proxyUpgrade(
   timeoutMs: number,
   upstreamRequests: Set<Destroyable>,
   upstreamSockets: Set<Socket>,
+  backendClientIdentitySecret: Buffer | undefined,
 ): void {
+  const headers = { ...request.headers };
+  delete headers[MANAGED_CLIENT_IDENTITY_HEADER];
+  if (backendClientIdentitySecret !== undefined) {
+    headers[MANAGED_CLIENT_IDENTITY_HEADER] = signManagedClientIdentity(
+      backendClientIdentitySecret,
+      {
+        address: request.socket.remoteAddress ?? 'unknown',
+        method: request.method ?? 'GET',
+        url: request.url ?? '/',
+      },
+    );
+  }
   const upstream = httpRequest({
     host: backend.host,
     port,
     method: request.method,
     path: request.url,
-    headers: { ...request.headers, host: `${backend.host}:${String(port)}` },
+    headers: { ...headers, host: `${backend.host}:${String(port)}` },
     timeout: timeoutMs,
   });
   upstreamRequests.add(upstream);
@@ -361,15 +394,20 @@ export async function startManagedGateway(
       requestTimeoutMs,
       upstreamRequests,
       upstreamSockets,
+      config.clientIdentitySecret,
     );
   };
-  const publicServer = createServer((request, response) => {
+  const publicHandler = (request: IncomingMessage, response: ServerResponse): void => {
     if (!publicPathAllowed(request.url)) {
       response.writeHead(404).end();
       return;
     }
     route(request, response, (value) => value.publicPort);
-  });
+  };
+  const publicServer =
+    config.tls === undefined
+      ? createServer(publicHandler)
+      : createHttpsServer({ key: config.tls.key, cert: config.tls.cert }, publicHandler);
   const internalServer = createServer((request, response) =>
     route(
       request,
@@ -378,11 +416,11 @@ export async function startManagedGateway(
       internalRequestTimeout(request.url, timeoutMs),
     ),
   );
-  publicServer.on('connection', (socket) => {
+  publicServer.on('connection', (socket: Socket) => {
     publicSockets.add(socket);
     socket.once('close', () => publicSockets.delete(socket));
   });
-  internalServer.on('connection', (socket) => {
+  internalServer.on('connection', (socket: Socket) => {
     internalSockets.add(socket);
     socket.once('close', () => internalSockets.delete(socket));
   });
@@ -401,6 +439,7 @@ export async function startManagedGateway(
       timeoutMs,
       upstreamRequests,
       upstreamSockets,
+      config.clientIdentitySecret,
     );
   });
   internalServer.on('upgrade', (request, socket, head) => {
@@ -417,6 +456,7 @@ export async function startManagedGateway(
       timeoutMs,
       upstreamRequests,
       upstreamSockets,
+      config.clientIdentitySecret,
     );
   });
 

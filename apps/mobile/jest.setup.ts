@@ -23,6 +23,11 @@ jest.mock(
 // image lightbox's pinch/pan gestures.
 import 'react-native-gesture-handler/jestSetup';
 
+// Reanimated's real hooks require its Babel worklet transform and native UI
+// runtime. Use the package's supported Jest implementation so gesture-heavy
+// components can exercise their render contract without booting either runtime.
+jest.mock('react-native-reanimated', () => require('react-native-reanimated/mock'));
+
 // Expo 57 resolves vector-icon fonts through the runtime asset registry, where
 // Jest's numeric font module has no registered Metro asset. Tests exercise our
 // icon wrapper's layout and interaction, not the native font loader, so keep a

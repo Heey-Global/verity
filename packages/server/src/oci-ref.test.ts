@@ -281,7 +281,7 @@ describe('selectLatestSemverTag', () => {
 
 describe('registryFetch', () => {
   const CHALLENGE =
-    'Bearer realm="https://auth.example/token",service="ghcr.io",scope="repository:o/r:pull"';
+    'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:o/r:pull"';
   const unauthorized = (challenge?: string) =>
     new Response(null, {
       status: 401,
@@ -299,6 +299,22 @@ describe('registryFetch', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    'http://ghcr.io/token',
+    'https://127.0.0.1/token',
+    'https://metadata.google.internal/token',
+    'https://auth.example.com/token',
+  ])('rejects an untrusted registry token realm before fetching it: %s', async (realm) => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(unauthorized(`Bearer realm="${realm}"`));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(registryFetch('ghcr.io', 'o/r', 'tags/list')).rejects.toThrow(
+      /auth realm is not trusted/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('exchanges the challenge for a pull token and replays the read with it', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -313,7 +329,7 @@ describe('registryFetch', () => {
     await expect(response.text()).resolves.toBe('manifest-body');
     expect(requestedUrls(fetchMock)).toEqual([
       'https://ghcr.io/v2/o/r/manifests/latest',
-      'https://auth.example/token?service=ghcr.io&scope=repository%3Ao%2Fr%3Apull',
+      'https://ghcr.io/token?service=ghcr.io&scope=repository%3Ao%2Fr%3Apull',
       'https://ghcr.io/v2/o/r/manifests/latest',
     ]);
     // The retry must carry BOTH the caller's headers and the bearer token —
@@ -324,10 +340,36 @@ describe('registryFetch', () => {
     });
   });
 
+  it('accepts only an explicitly configured alternate token service', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        unauthorized(
+          'Bearer realm="https://auth.example.com/token",service="registry.example.com"',
+        ),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'pull-token' })))
+      .mockResolvedValueOnce(new Response('manifest-body'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await registryFetch(
+      'registry.example.com',
+      'o/r',
+      'manifests/latest',
+      {},
+      undefined,
+      ['auth.example.com'],
+    );
+    await expect(response.text()).resolves.toBe('manifest-body');
+    expect(requestedUrls(fetchMock)[1]).toBe(
+      'https://auth.example.com/token?service=registry.example.com&scope=repository%3Ao%2Fr%3Apull',
+    );
+  });
+
   it('asks for a repository pull scope when the challenge names none', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(unauthorized('Bearer realm="https://auth.example/token"'))
+      .mockResolvedValueOnce(unauthorized('Bearer realm="https://ghcr.io/token"'))
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'oauth-token' })))
       .mockResolvedValueOnce(new Response('manifest-body'));
     vi.stubGlobal('fetch', fetchMock);
@@ -335,7 +377,7 @@ describe('registryFetch', () => {
     await registryFetch('ghcr.io', 'o/r', 'tags/list');
     // No service param, and the scope defaults to a pull on the repo we asked for.
     expect(requestedUrls(fetchMock)[1]).toBe(
-      'https://auth.example/token?scope=repository%3Ao%2Fr%3Apull',
+      'https://ghcr.io/token?scope=repository%3Ao%2Fr%3Apull',
     );
     // `access_token` is the OAuth2 spelling some registries answer with; a
     // reader that only understands `token` would fail against them.
@@ -377,7 +419,7 @@ describe('registryFetch', () => {
 
     expect(requestedUrls(fetchMock)).toEqual([
       'https://ghcr.io/v2/o/r/manifests/latest',
-      'https://auth.example/token?service=ghcr.io&scope=repository%3Ao%2Fr%3Apull',
+      'https://ghcr.io/token?service=ghcr.io&scope=repository%3Ao%2Fr%3Apull',
       'https://ghcr.io/v2/o/r/manifests/latest',
       'https://ghcr.io/v2/o/r/blobs/sha256:config',
     ]);
@@ -1083,13 +1125,15 @@ describe('createCachedImageVersionResolver', () => {
     const resolve = vi.fn(() => new Promise<string | undefined>(() => undefined));
     const resolver = createCachedImageVersionResolver({ resolve, timeoutMs: 10_000 });
 
-    void resolver('ghcr.io/o/r@sha256:a');
-    void resolver('ghcr.io/o/r@sha256:a');
+    const first = resolver('ghcr.io/o/r@sha256:a');
+    const second = resolver('ghcr.io/o/r@sha256:a');
     expect(resolve).toHaveBeenCalledTimes(1);
     // A resolver that ignores its signal would otherwise pin this ref to a walk
     // that never answers for the process lifetime — and `GET /projects` awaits it.
     vi.advanceTimersByTime(10_001);
-    void resolver('ghcr.io/o/r@sha256:a');
+    await expect(first).rejects.toThrow(/timed out/u);
+    await expect(second).rejects.toThrow(/timed out/u);
+    void resolver('ghcr.io/o/r@sha256:a').catch(() => undefined);
     expect(resolve).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });

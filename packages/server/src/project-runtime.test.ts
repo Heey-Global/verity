@@ -395,7 +395,25 @@ describe('DockerProjectRuntime', () => {
       error: null,
     });
     expect(healthFetch).toHaveBeenCalledWith(
-      'http://localhost:8081',
+      'http://localhost:8081/',
+      expect.objectContaining({ method: 'HEAD', redirect: 'manual' }),
+    );
+  });
+
+  it('probes the Docker host rather than its own loopback when Docker is remote', async () => {
+    const healthFetch = vi.fn(async () => ({ status: 204 }));
+    const runtime = new DockerProjectRuntime({
+      dockerBaseUrl: 'http://host.docker.internal:9234/v1.41',
+      healthFetch,
+    });
+    await runtime.devServerHealth(project, {
+      defaultBranch: null,
+      defaultModel: null,
+      devServerCommand: 'pnpm dev',
+      devServerUrl: 'http://localhost:8081',
+    });
+    expect(healthFetch).toHaveBeenCalledWith(
+      'http://host.docker.internal:8081/',
       expect.objectContaining({ method: 'HEAD' }),
     );
   });
@@ -426,8 +444,57 @@ describe('DockerProjectRuntime', () => {
     });
     expect(healthFetch).toHaveBeenNthCalledWith(
       2,
-      'http://localhost:8081',
-      expect.objectContaining({ method: 'GET' }),
+      'http://localhost:8081/',
+      expect.objectContaining({ method: 'GET', redirect: 'manual' }),
+    );
+  });
+
+  it('rejects non-loopback and credential-bearing health URLs without fetching', async () => {
+    const healthFetch = vi.fn(async () => ({ status: 204 }));
+    const runtime = new DockerProjectRuntime({
+      runner: vi.fn<RuntimeRunner>(async () => undefined),
+      healthFetch,
+    });
+
+    for (const devServerUrl of [
+      'http://169.254.169.254/latest/meta-data',
+      'http://10.0.0.2:3000',
+      'https://user:secret@localhost:3000',
+      'file:///etc/passwd',
+    ]) {
+      await expect(
+        runtime.devServerHealth(project, {
+          defaultBranch: null,
+          defaultModel: null,
+          devServerCommand: 'pnpm dev',
+          devServerUrl,
+        }),
+      ).resolves.toMatchObject({
+        reachable: false,
+        status: null,
+        error: expect.stringMatching(/loopback/),
+      });
+    }
+    expect(healthFetch).not.toHaveBeenCalled();
+  });
+
+  it('does not follow health-check redirects', async () => {
+    const healthFetch = vi.fn(async () => ({ status: 302 }));
+    const runtime = new DockerProjectRuntime({
+      runner: vi.fn<RuntimeRunner>(async () => undefined),
+      healthFetch,
+    });
+    await expect(
+      runtime.devServerHealth(project, {
+        defaultBranch: null,
+        defaultModel: null,
+        devServerCommand: 'pnpm dev',
+        devServerUrl: 'http://localhost:3000',
+      }),
+    ).resolves.toMatchObject({ reachable: true, status: 302 });
+    expect(healthFetch).toHaveBeenCalledWith(
+      'http://localhost:3000/',
+      expect.objectContaining({ redirect: 'manual' }),
     );
   });
 });

@@ -207,7 +207,7 @@ export type ToolResultRef = z.infer<typeof toolResultRefSchema>;
  * `recommended` pre-highlights the agent's default pick (at most one per choice).
  */
 export const choicesOptionSchema = z.object({
-  label: z.string().min(1),
+  label: z.string().min(1).max(200),
   recommended: z.boolean().optional(),
 });
 export type ChoicesOption = z.infer<typeof choicesOptionSchema>;
@@ -218,11 +218,16 @@ export type ChoicesOption = z.infer<typeof choicesOptionSchema>;
  * end-of-turn contract parser ({@link ./choices}); the agent emits this JSON in a
  * ` ```verity:choices ` fence, the adapter lifts it onto the event.
  */
-export const choicesPayloadSchema = z.object({
-  question: z.string().optional(),
-  options: z.array(choicesOptionSchema).min(1),
-  multiSelect: z.boolean().optional(),
-});
+export const choicesPayloadSchema = z
+  .object({
+    question: z.string().max(1_000).optional(),
+    options: z.array(choicesOptionSchema).min(1).max(20),
+    multiSelect: z.boolean().optional(),
+  })
+  .refine(
+    (payload) => payload.options.filter((option) => option.recommended === true).length <= 1,
+    { message: 'at most one choice option may be recommended', path: ['options'] },
+  );
 export type ChoicesPayload = z.infer<typeof choicesPayloadSchema>;
 
 export const agentLoopScheduleSchema = z.discriminatedUnion('kind', [
@@ -462,16 +467,21 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     // Terminal outcome on phase `ended` (backend string, e.g. `completed`/`failed`).
     status: z.string().min(1).optional(),
   }),
-  z.object({
-    // A decision point the agent posed at end-of-turn (issue #97). The adapter
-    // lifts this off a ` ```verity:choices ` contract block the agent appends to
-    // its final text (see {@link ./choices}); the app renders the options as
-    // tappable Quick-Action chips and a tap sends the chosen label as a new turn.
-    t: z.literal('choices'),
-    question: z.string().optional(),
-    options: z.array(choicesOptionSchema).min(1),
-    multiSelect: z.boolean().optional(),
-  }),
+  z
+    .object({
+      // A decision point the agent posed at end-of-turn (issue #97). The adapter
+      // lifts this off a ` ```verity:choices ` contract block the agent appends to
+      // its final text (see {@link ./choices}); the app renders the options as
+      // tappable Quick-Action chips and a tap sends the chosen label as a new turn.
+      t: z.literal('choices'),
+      question: z.string().max(1_000).optional(),
+      options: z.array(choicesOptionSchema).min(1).max(20),
+      multiSelect: z.boolean().optional(),
+    })
+    .refine((event) => event.options.filter((option) => option.recommended === true).length <= 1, {
+      message: 'at most one choice option may be recommended',
+      path: ['options'],
+    }),
   z.object({
     t: z.literal('agent_loop_proposal'),
     proposal: agentLoopProposalSchema,

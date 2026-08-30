@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,7 +18,8 @@ import {
   type UpdaterStatusServer,
 } from './updater-status.js';
 
-const image = 'ghcr.io/heey-global/verity/verity-server:1.2.3';
+const image = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
+const otherImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
 
 /** Exactly what the `verity-agent-seed` one-shot's `printf` writes. */
 const published = (version: string): string =>
@@ -192,27 +194,52 @@ describe('agent seed stamp', () => {
     await mkdir(join(seedPath, AGENT_SEED_STAMP_FILE));
     await expect(readAgentSeedStamp(seedPath)).resolves.toBeNull();
   });
+
+  it('refuses a FIFO without waiting for a writer', async () => {
+    const seedPath = await mkdtemp(join(tmpdir(), 'verity-agent-seed-'));
+    execFileSync('mkfifo', [join(seedPath, AGENT_SEED_STAMP_FILE)]);
+    await expect(readAgentSeedStamp(seedPath)).resolves.toBeNull();
+  });
 });
 
 describe('agent seed comparison', () => {
   it('matches a seed published from the release the Server is', () => {
     const stamp = parseAgentSeedStamp(published('1.2.3'));
-    expect(compareAgentSeed(stamp, '1.2.3')).toEqual({ state: 'matched', stamp });
+    expect(compareAgentSeed(stamp, '1.2.3', image)).toEqual({ state: 'matched', stamp });
   });
 
   /** A skew remains observable while managed companion convergence is pending,
    * and in standalone deployments where publication is independently owned. */
   it('reports skew when the Server moved and the seed did not', () => {
     const stamp = parseAgentSeedStamp(published('1.2.3'));
-    expect(compareAgentSeed(stamp, '1.3.0')).toEqual({
+    expect(compareAgentSeed(stamp, '1.3.0', image)).toEqual({
       state: 'skewed',
       stamp,
       serverVersion: '1.3.0',
+      serverImage: image,
     });
   });
 
+  it('reports skew when the image digest changed without a version change', () => {
+    const stamp = parseAgentSeedStamp(published('1.2.3'));
+    expect(compareAgentSeed(stamp, '1.2.3', otherImage)).toEqual({
+      state: 'skewed',
+      stamp,
+      serverVersion: '1.2.3',
+      serverImage: otherImage,
+    });
+  });
+
+  it('does not claim a match when either image lacks an immutable digest', () => {
+    const tagStamp = parseAgentSeedStamp(published('1.2.3').replace(image, 'server:1.2.3'));
+    expect(compareAgentSeed(tagStamp, '1.2.3', image)).toMatchObject({ state: 'unknown' });
+    expect(
+      compareAgentSeed(parseAgentSeedStamp(published('1.2.3')), '1.2.3', undefined),
+    ).toMatchObject({ state: 'unknown' });
+  });
+
   it('says unknown, not matched, for a seed that carries no stamp', () => {
-    const provenance = compareAgentSeed(null, '1.2.3');
+    const provenance = compareAgentSeed(null, '1.2.3', image);
     expect(provenance.state).toBe('unknown');
   });
 
@@ -225,7 +252,7 @@ describe('agent seed comparison', () => {
     // decline to say what they are, and reporting "matched" would be a claim
     // neither side made.
     expect(
-      compareAgentSeed(parseAgentSeedStamp(published(seedVersion)), serverVersion),
+      compareAgentSeed(parseAgentSeedStamp(published(seedVersion)), serverVersion, image),
     ).toMatchObject({ state: 'unknown' });
   });
 });
@@ -282,14 +309,14 @@ describe('agent seed provenance client', () => {
   it('is absent for a deployment with no updater control mount', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-agent-seed-'));
     await expect(
-      createAgentSeedProvenanceClient('1.2.3', join(root, 'control', 'updater.sock')),
+      createAgentSeedProvenanceClient('1.2.3', image, join(root, 'control', 'updater.sock')),
     ).resolves.toBeUndefined();
   });
 
   it('carries the skew across the control socket to the Server', async () => {
     const seedPath = await seedDirectory(published('1.2.3'));
     const { socketPath } = await updater({ agentSeedPath: seedPath });
-    const client = await createAgentSeedProvenanceClient('1.3.0', socketPath);
+    const client = await createAgentSeedProvenanceClient('1.3.0', image, socketPath);
     await expect(client?.read()).resolves.toMatchObject({
       state: 'skewed',
       serverVersion: '1.3.0',
@@ -298,7 +325,7 @@ describe('agent seed provenance client', () => {
 
   it('reports an Updater without the mount as unknown rather than as agreement', async () => {
     const { socketPath } = await updater();
-    const client = await createAgentSeedProvenanceClient('1.3.0', socketPath);
+    const client = await createAgentSeedProvenanceClient('1.3.0', image, socketPath);
     await expect(client?.read()).resolves.toMatchObject({ state: 'unknown' });
   });
 
@@ -306,7 +333,7 @@ describe('agent seed provenance client', () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-agent-seed-transition-'));
     const current = join(root, '.current');
     const { socketPath } = await updater({ agentSeedPath: current });
-    const client = await createAgentSeedProvenanceClient('1.2.3', socketPath);
+    const client = await createAgentSeedProvenanceClient('1.2.3', image, socketPath);
 
     await expect(client?.read()).resolves.toMatchObject({ state: 'unknown' });
 

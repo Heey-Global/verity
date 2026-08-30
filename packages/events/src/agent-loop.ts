@@ -20,7 +20,16 @@ export function parseAgentLoopProposal(input: string): ParsedAgentLoopProposal {
     }
   }
   if (!proposal) return { text: input };
-  return { text: input.replace(AGENT_LOOP_FENCE_RE, '').trimEnd(), proposal };
+  const text = input
+    .replace(AGENT_LOOP_FENCE_RE, (fence, body: string) => {
+      try {
+        return agentLoopProposalSchema.safeParse(JSON.parse(body)).success ? '' : fence;
+      } catch {
+        return fence;
+      }
+    })
+    .trimEnd();
+  return { text, proposal };
 }
 
 export const AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT = `# Agent Loop proposals (Verity)

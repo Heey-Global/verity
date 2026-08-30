@@ -205,8 +205,15 @@ describe('POST /devices/:id/push-token', () => {
     });
     await app.listen({ port: 0, host: '127.0.0.1' });
     const port = (app.server.address() as AddressInfo).port;
+    const ticketResponse = await app.inject({
+      method: 'POST',
+      url: '/sessions/session-1/stream-ticket',
+      headers: { authorization: `Bearer ${device.token}` },
+    });
+    const ticket = ticketResponse.json<{ ticket: string }>().ticket;
     const socket = new WebSocket(
-      `ws://127.0.0.1:${String(port)}/sessions/session-1/stream?access_token=${device.token}`,
+      `ws://127.0.0.1:${String(port)}/sessions/session-1/stream`,
+      `verity-stream-ticket.${ticket}`,
     );
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener('open', () => resolve(), { once: true });

@@ -140,7 +140,11 @@ export function createInMemorySecretApprovalStore(): SecretApprovalStore {
   const pending = new Map<string, BoundPendingApproval>();
   const decided = new Map<
     string,
-    DecidedApproval & { grantIssueReserved: boolean; requesterAuthorizationHash: string }
+    DecidedApproval & {
+      grantIssueReserved: boolean;
+      requesterAuthorizationHash: string;
+      deciderAuthorizationHash: string;
+    }
   >();
   return {
     insert(record, requesterAuthorizationHash) {
@@ -199,6 +203,7 @@ export function createInMemorySecretApprovalStore(): SecretApprovalStore {
           prior !== undefined &&
           !prior.grantIssueReserved &&
           prior.approval.actorId === actorId &&
+          prior.deciderAuthorizationHash === authorizationHash &&
           prior.approval.decision === (approved ? 'approved' : 'denied')
         ) {
           // Idempotent replay: the decision (and its audit event) already happened — do not re-emit.
@@ -226,6 +231,7 @@ export function createInMemorySecretApprovalStore(): SecretApprovalStore {
         claims: finalizedClaims,
         grantIssueReserved: false,
         requesterAuthorizationHash: record.requesterAuthorizationHash,
+        deciderAuthorizationHash: authorizationHash,
       };
       decided.set(id, terminal);
       // No transaction in memory; pass undefined so the recorder appends best-effort. This store is

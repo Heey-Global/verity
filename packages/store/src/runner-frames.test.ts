@@ -493,6 +493,9 @@ describe('EventStore.fenceRunningTurnIfSilent', () => {
     await ctx.store.appendEvent('s1', { t: 'text', delta: 'unrelated server event' });
 
     await ctx.store.releaseRunningTurnFence(anchor, fenced!.noticeSeq, fenced!.fenceSeq);
+    await ctx.store.waitForMessageProjectionIdle();
+    expect(await ctx.store.searchMessages({ query: 'stalled' })).toEqual([]);
+    expect(await ctx.store.searchMessages({ query: 'work' })).toHaveLength(1);
     await expect(ctx.store.ingestRunnerFrame('s1', slot(1))).resolves.toMatchObject({
       outcome: 'accepted',
     });

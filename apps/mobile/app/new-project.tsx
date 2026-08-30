@@ -83,6 +83,7 @@ function NewProject({
   const [dopplerConfigs, setDopplerConfigs] = useState<DopplerConfigSummary[]>([]);
   const [dopplerProject, setDopplerProject] = useState<string | null>(null);
   const [secretsMountAttempted, setSecretsMountAttempted] = useState(false);
+  const [secretsMountConfirmed, setSecretsMountConfirmed] = useState(false);
   const [secretsMountFailed, setSecretsMountFailed] = useState(false);
   const [secretsVerified, setSecretsVerified] = useState(false);
   const [completionSaveFailed, setCompletionSaveFailed] = useState(false);
@@ -205,6 +206,7 @@ function NewProject({
           verification.configs.some((candidate) => candidate.name === dopplerConfig);
         setSecretsVerified(verified);
         if (secretsMountAttempted) {
+          setSecretsMountConfirmed(verified);
           setSecretsMountAttempted(false);
           setSecretsMountFailed(!verified);
         }
@@ -213,6 +215,7 @@ function NewProject({
         if (generation !== settingsGeneration.current) return;
         setSecretsVerified(false);
         if (!secretsMountAttempted) return;
+        setSecretsMountConfirmed(false);
         setSecretsMountAttempted(false);
         setSecretsMountFailed(true);
       });
@@ -481,11 +484,31 @@ function NewProject({
     run();
   }, [client, creating, setupProject]);
 
+  const resumeSecretsMountAttempted = useRef(false);
+  useEffect(() => {
+    if (
+      !resumeProjectId ||
+      !setupProject ||
+      setupProject.state !== 'active' ||
+      setupProject.setupStatus !== 'pending' ||
+      !projectSettings?.dopplerProject ||
+      !projectSettings.dopplerConfig ||
+      resumeSecretsMountAttempted.current
+    )
+      return;
+    resumeSecretsMountAttempted.current = true;
+    retrySecretsMount();
+  }, [projectSettings, resumeProjectId, retrySecretsMount, setupProject]);
+
   const baseSetupStatus = setupProject ? projectSetupStatus(setupProject, detection) : null;
   const devServersReady = detection !== null && !hasUnreviewedDevServers(detection);
   const secretsBound = Boolean(projectSettings?.dopplerProject && projectSettings.dopplerConfig);
   const secretsReady =
-    secretsBound && secretsVerified && !secretsMountAttempted && !secretsMountFailed;
+    secretsBound &&
+    secretsVerified &&
+    secretsMountConfirmed &&
+    !secretsMountAttempted &&
+    !secretsMountFailed;
   const setupComplete =
     setupProject?.state === 'active' &&
     devServersReady &&

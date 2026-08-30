@@ -31,7 +31,7 @@ no per-repo dev-container configuration.
 
 **Validated feasibility (2026-07-01):** Verity already spawns project containers
 from the **standard base image directly** — the original Verity-provisioned
-deep-ocr container ran `ghcr.io/heey-global/dev-base:latest` (labelled
+sample application container ran `ghcr.io/example-org/dev-base:latest` (labelled
 `verity.project-id`); the product default is now
 `ghcr.io/heey-global/verity/verity-sandbox:1.10.1`. `ProvisionerImpl` **runs,
 never builds** (`resolveImage() = imageRef ?? default` →

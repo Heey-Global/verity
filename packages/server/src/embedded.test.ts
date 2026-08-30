@@ -183,12 +183,12 @@ function secretJobsConfig(): NonNullable<EmbeddedServerConfig['secretJobs']> {
   };
 }
 
-function deepOcrProject(): ProjectRecord {
+function sampleAppProject(): ProjectRecord {
   return {
-    id: 'p-deep-ocr',
+    id: 'p-sample-app',
     owner: 'Heey-Global',
     repo: 'Deep-OCR',
-    containerName: 'dev-heey-global--deep-ocr',
+    containerName: 'dev-example-org--sample-app',
     state: 'active',
     imageRef: null,
     provisionError: null,
@@ -210,7 +210,7 @@ describe('branchRenameAppliesToSession', () => {
     // the failure used to reach the operator as an aborted turn.
     await expect(
       branchRenameAppliesToSession({ projectId: 'verity-control' }, async () => ({
-        ...deepOcrProject(),
+        ...sampleAppProject(),
         id: 'verity-control',
         kind: 'control_plane',
       })),
@@ -219,7 +219,7 @@ describe('branchRenameAppliesToSession', () => {
 
   it('still renames for ordinary project and project-less sessions', async () => {
     await expect(
-      branchRenameAppliesToSession({ projectId: 'p-deep-ocr' }, async () => deepOcrProject()),
+      branchRenameAppliesToSession({ projectId: 'p-sample-app' }, async () => sampleAppProject()),
     ).resolves.toBe(true);
     await expect(
       branchRenameAppliesToSession({ projectId: null }, () => {
@@ -596,6 +596,8 @@ describe('sandbox hardening env parsers (C1)', () => {
     expect(parseByteSize('4g')).toBe(4 * 1024 ** 3);
     expect(parseByteSize('2gb')).toBe(2 * 1024 ** 3);
     expect(() => parseByteSize('lots')).toThrow(/invalid byte size/);
+    expect(() => parseByteSize('999999999999999999999t')).toThrow(/supported range/);
+    expect(() => parseByteSize('0')).toThrow(/supported range/);
   });
 
   it('parseCpuCores: cores → nano-CPUs, invalid throws', () => {
@@ -627,7 +629,7 @@ describe('createProjectAwareGitHubTokenSource', () => {
   it('prefers the project-local token for project session worktrees', () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-project-pr-token-'));
     try {
-      const projectRoot = join(root, 'heey-global-deep-ocr');
+      const projectRoot = join(root, 'example-org-sample-app');
       const worktree = join(projectRoot, '.verity-sessions', 'agent-abc');
       mkdirSync(worktree, { recursive: true });
       writeFileSync(join(projectRoot, '.gh-token'), 'project-token\n');
@@ -643,7 +645,7 @@ describe('createProjectAwareGitHubTokenSource', () => {
   it('falls back when the project-local token file is empty', () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-project-empty-pr-token-'));
     try {
-      const projectRoot = join(root, 'heey-global-deep-ocr');
+      const projectRoot = join(root, 'example-org-sample-app');
       const worktree = join(projectRoot, '.verity-sessions', 'agent-abc');
       mkdirSync(worktree, { recursive: true });
       writeFileSync(join(projectRoot, '.gh-token'), '\n');
@@ -677,7 +679,7 @@ describe('refreshProjectGitHubToken', () => {
     try {
       const repoDir = join(root, 'Heey-Global-Deep-OCR');
       mkdirSync(repoDir, { recursive: true });
-      const project = deepOcrProject();
+      const project = sampleAppProject();
       const mint = vi.fn(async () => 'fresh-project-token');
 
       await refreshProjectGitHubToken(project, mint);
@@ -696,7 +698,7 @@ describe('refreshProjectGitHubToken', () => {
     try {
       const repoDir = join(root, 'Heey-Global-Deep-OCR');
       mkdirSync(repoDir, { recursive: true });
-      const project = deepOcrProject();
+      const project = sampleAppProject();
 
       await refreshProjectGitHubToken(project, async () => undefined);
       await refreshProjectGitHubToken(project, async () => '');
@@ -726,7 +728,7 @@ describe('createProjectWorktreeFactory', () => {
       calls.push([...args]);
     };
     const factory = createProjectWorktreeFactory(async () => 'secret-project-token');
-    const provisioner = factory(deepOcrProject(), clone, { refreshBase: true, git });
+    const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
 
     await provisioner.add('agent/wired');
 
@@ -760,7 +762,7 @@ describe('createProjectWorktreeFactory', () => {
     const git: GitRunner = async (args) => {
       calls.push([...args]);
     };
-    const provisioner = factory(deepOcrProject(), clone, { refreshBase: true, git });
+    const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
 
     await provisioner.add('agent/one');
     await provisioner.add('agent/two');
@@ -784,7 +786,7 @@ describe('createProjectWorktreeFactory', () => {
       calls.push([...args]);
     };
     const factory = createProjectWorktreeFactory(async () => undefined);
-    const provisioner = factory(deepOcrProject(), clone, { refreshBase: true, git });
+    const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
 
     await provisioner.add('agent/notoken');
 
@@ -801,7 +803,7 @@ describe('createProjectWorktreeFactory', () => {
       calls.push([...args]);
     };
     const factory = createProjectWorktreeFactory(async () => undefined);
-    const provisioner = factory(deepOcrProject(), clone, { refreshBase: true, git });
+    const provisioner = factory(sampleAppProject(), clone, { refreshBase: true, git });
 
     await provisioner.add('agent/filetoken');
 
@@ -1431,10 +1433,16 @@ describe('control-plane agent credentials', () => {
       store: {} as never,
       worktree: '/wt',
       cwd: '/wt',
-      env: { CLAUDE_TEST_LEAK: 'server-env' },
+      env: {
+        CLAUDE_TEST_LEAK: 'server-env',
+        DATABASE_URL: 'postgres://server-secret',
+        PATH: '/safe/bin',
+      },
     });
 
     expect(seen?.CLAUDE_TEST_LEAK).toBeUndefined();
+    expect(seen?.DATABASE_URL).toBeUndefined();
+    expect(seen?.PATH).toBe('/safe/bin');
     expect(seen?.CLAUDE_CONFIG_DIR).toBe('/db/claude');
     expect(seen?.CODEX_HOME).toBe('/db/codex');
   });

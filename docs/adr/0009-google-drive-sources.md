@@ -124,6 +124,10 @@ credentials server-only.
   provided to the app (server-configurable). Only the operator can create the Google
   Cloud OAuth client — Verity cannot self-provision it. Android needs its own client +
   signing-cert SHA-1 later; MVP is iOS-first.
+- **Initial consent status**: Testing mode, with an explicit test-user allowlist. This avoids
+  blocking the first TestFlight validation on Google's restricted-scope verification, at the
+  cost of seven-day refresh-token expiry and periodic reconnects. Public rollout still requires
+  verification for `drive.readonly`.
 - **Per-connection refresh token**: obtained by the server's code exchange, stored
   `SecretCipher`-encrypted on `VeritySettingsTable` (like the GitHub App private key /
   Doppler token).

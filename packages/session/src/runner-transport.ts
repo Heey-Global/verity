@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { open, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type { PermissionRequest } from '@verity/adapter-claude';
-import type { AgentEvent } from '@verity/events';
+import { agentEventSchema, type AgentEvent } from '@verity/events';
 import { RUNNER_FRAME_PROTOCOL_VERSION } from '@verity/store';
 import type { RunResult } from './backend-contract.js';
 
@@ -25,6 +26,7 @@ import type { RunResult } from './backend-contract.js';
  */
 
 const LF = 0x0a;
+const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
 /**
  * The body of one event-stream line: the discriminated union whose `kind` tag
@@ -149,14 +151,54 @@ function parseFrame(line: string): RunnerFrame {
   }
   const f = parsed as Record<string, unknown>;
   if (
-    typeof f.protocolVersion !== 'number' ||
+    f.protocolVersion !== RUNNER_FRAME_PROTOCOL_VERSION ||
     typeof f.runnerInstanceId !== 'string' ||
+    f.runnerInstanceId.length === 0 ||
     typeof f.turnId !== 'string' ||
-    typeof f.frameSeq !== 'number' ||
-    typeof f.payloadHash !== 'string'
+    f.turnId.length === 0 ||
+    !Number.isSafeInteger(f.frameSeq) ||
+    (f.frameSeq as number) < 1 ||
+    typeof f.payloadHash !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(f.payloadHash)
   ) {
     throw new Error(`invalid runner frame envelope: ${line}`);
   }
+  let body: RunnerFrameBody;
+  if (kind === 'session') {
+    if (typeof f.id !== 'string' || f.id.length === 0) throw new Error('invalid session frame');
+    body = { kind, id: f.id };
+  } else if (kind === 'event') {
+    const event = agentEventSchema.safeParse(f.event);
+    if (!event.success) throw new Error('invalid event frame');
+    body = { kind, event: event.data };
+  } else if (kind === 'permission-request') {
+    const request = f.request;
+    if (
+      typeof request !== 'object' ||
+      request === null ||
+      typeof (request as Record<string, unknown>).requestId !== 'string' ||
+      typeof (request as Record<string, unknown>).toolUseId !== 'string' ||
+      typeof (request as Record<string, unknown>).toolName !== 'string' ||
+      typeof (request as Record<string, unknown>).input !== 'object' ||
+      (request as Record<string, unknown>).input === null
+    ) {
+      throw new Error('invalid permission-request frame');
+    }
+    body = { kind, request: request as PermissionRequest };
+  } else {
+    const result = f.result;
+    if (
+      typeof result !== 'object' ||
+      result === null ||
+      !Number.isInteger((result as Record<string, unknown>).exitCode) ||
+      typeof (result as Record<string, unknown>).stderr !== 'string' ||
+      typeof (result as Record<string, unknown>).aborted !== 'boolean'
+    ) {
+      throw new Error('invalid result frame');
+    }
+    body = { kind, result: result as RunResult };
+  }
+  if (frameBodyHash(body) !== f.payloadHash) throw new Error('invalid runner frame payload hash');
   return parsed as RunnerFrame;
 }
 
@@ -166,15 +208,21 @@ function parseFrame(line: string): RunnerFrame {
 async function readAppended(
   filePath: string,
   fromOffset: number,
-): Promise<{ chunk: Buffer; offset: number }> {
-  const { size } = await stat(filePath);
-  if (size <= fromOffset) return { chunk: Buffer.alloc(0), offset: fromOffset };
-  const fd = await open(filePath, 'r');
+): Promise<{ chunk: Buffer; offset: number; atEnd: boolean }> {
+  const fd = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const length = size - fromOffset;
+    const stat = await fd.stat();
+    if (!stat.isFile()) throw new Error('runner event stream is not a regular file');
+    const { size } = stat;
+    if (size <= fromOffset) return { chunk: Buffer.alloc(0), offset: fromOffset, atEnd: true };
+    // One tick reads a bounded chunk. A worker can append faster than the poller;
+    // allocating `size - offset` made an attacker-controlled event file an
+    // unbounded single allocation.
+    const length = Math.min(size - fromOffset, 1024 * 1024);
     const buf = Buffer.alloc(length);
     const { bytesRead } = await fd.read(buf, 0, length, fromOffset);
-    return { chunk: buf.subarray(0, bytesRead), offset: fromOffset + bytesRead };
+    const offset = fromOffset + bytesRead;
+    return { chunk: buf.subarray(0, bytesRead), offset, atEnd: offset >= size };
   } finally {
     await fd.close();
   }
@@ -193,25 +241,33 @@ async function tailOnce(
   state: FrameTailState,
   onFrame: (frame: RunnerFrame) => void | Promise<void>,
 ): Promise<{ state: FrameTailState; sawResult: boolean }> {
-  const { chunk, offset } = await readAppended(filePath, state.offset);
+  const { chunk, offset, atEnd } = await readAppended(filePath, state.offset);
   const data = Buffer.concat([state.pending, chunk]);
   let start = 0;
   let sawResult = false;
   let nl = data.indexOf(LF, start);
   while (nl !== -1) {
+    if (nl - start > MAX_FRAME_BYTES) throw new Error('runner frame exceeded the size limit');
     const line = data.subarray(start, nl).toString('utf8');
     start = nl + 1;
     if (line.trim() !== '') {
       const frame = parseFrame(line);
-      await onFrame(frame);
       if (frame.kind === 'result') {
         // The result is terminal (last frame of the turn). Stop here — anything the
         // file holds after it is not part of this turn and must not be delivered.
         sawResult = true;
+        if (!atEnd || data.subarray(start).toString('utf8').trim() !== '') {
+          throw new Error('runner result frame must be terminal');
+        }
+        await onFrame(frame);
         break;
       }
+      await onFrame(frame);
     }
     nl = data.indexOf(LF, start);
+  }
+  if (!sawResult && data.length - start > MAX_FRAME_BYTES) {
+    throw new Error('runner frame exceeded the size limit');
   }
   return { state: { offset, pending: data.subarray(start) }, sawResult };
 }

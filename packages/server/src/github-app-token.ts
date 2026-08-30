@@ -243,14 +243,29 @@ export function createGitHubAppInstallationTokenMint(
  */
 export function createCachedProjectTokenMint(
   mint: GitHubProjectTokenMint,
-  opts: { ttlMs?: number | undefined; now?: (() => number) | undefined } = {},
+  opts: {
+    ttlMs?: number | undefined;
+    now?: (() => number) | undefined;
+    authorityKey?: (() => Promise<string | undefined>) | undefined;
+  } = {},
 ): GitHubProjectTokenMint {
   const ttlMs = opts.ttlMs ?? 50 * 60_000;
   const now = opts.now ?? ((): number => Date.now());
   const cache = new Map<string, { token: string; at: number }>();
   const inflight = new Map<string, Promise<string | undefined>>();
-  return (project): Promise<string | undefined> => {
-    const key = `${project.owner}/${project.repo}`;
+  return async (project): Promise<string | undefined> => {
+    let authority: string | undefined;
+    try {
+      authority = opts.authorityKey === undefined ? '' : await opts.authorityKey();
+    } catch {
+      cache.clear();
+      return undefined;
+    }
+    if (authority === undefined) {
+      cache.clear();
+      return undefined;
+    }
+    const key = `${authority}\0${project.owner}/${project.repo}`;
     const hit = cache.get(key);
     if (hit !== undefined && now() - hit.at < ttlMs) return Promise.resolve(hit.token);
     const existing = inflight.get(key);
@@ -273,27 +288,45 @@ export function createCachedProjectTokenMint(
 
 export function createCachedInstallationTokenMint(
   mint: GitHubInstallationTokenMint,
-  opts: { ttlMs?: number | undefined; now?: (() => number) | undefined } = {},
+  opts: {
+    ttlMs?: number | undefined;
+    now?: (() => number) | undefined;
+    authorityKey?: (() => Promise<string | undefined>) | undefined;
+  } = {},
 ): GitHubInstallationTokenMint {
   const ttlMs = opts.ttlMs ?? 50 * 60_000;
   const now = opts.now ?? ((): number => Date.now());
-  let cache: { token: string; at: number } | undefined;
-  let inflight: Promise<string | undefined> | undefined;
-  return (): Promise<string | undefined> => {
-    if (cache !== undefined && now() - cache.at < ttlMs) return Promise.resolve(cache.token);
-    if (inflight !== undefined) return inflight;
-    inflight = (async (): Promise<string | undefined> => {
+  let cache: { token: string; at: number; authority: string } | undefined;
+  let inflight: { authority: string; promise: Promise<string | undefined> } | undefined;
+  return async (): Promise<string | undefined> => {
+    let authority: string | undefined;
+    try {
+      authority = opts.authorityKey === undefined ? '' : await opts.authorityKey();
+    } catch {
+      cache = undefined;
+      return undefined;
+    }
+    if (authority === undefined) {
+      cache = undefined;
+      return undefined;
+    }
+    if (cache !== undefined && cache.authority === authority && now() - cache.at < ttlMs)
+      return cache.token;
+    if (inflight?.authority === authority) return inflight.promise;
+    const promise = (async (): Promise<string | undefined> => {
       try {
         const token = await mint();
-        if (token !== undefined) cache = { token, at: now() };
+        if (token !== undefined) cache = { token, at: now(), authority };
         return token;
       } catch {
         return undefined;
-      } finally {
-        inflight = undefined;
       }
     })();
-    return inflight;
+    inflight = { authority, promise };
+    void promise.then(() => {
+      if (inflight?.promise === promise) inflight = undefined;
+    });
+    return promise;
   };
 }
 

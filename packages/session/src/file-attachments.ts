@@ -1,7 +1,14 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import type { AttachmentUpload } from '@verity/events';
+type FileAttachment = AttachmentUpload & {
+  kind: 'file';
+  fileName: string;
+  mediaType: string;
+  data: string;
+};
 
 /**
  * Result of materializing a turn's `file`-kind attachments to disk.
@@ -53,7 +60,7 @@ function uniqueName(name: string, used: Set<string>): string {
 }
 
 /**
- * Write every `file`-kind attachment into a fresh scratch dir under `cwd` and build
+ * Write every `file`-kind attachment into a fresh scratch dir inside the Runner-visible worktree and build
  * the prompt suffix that points the agent at them. Image-kind attachments pass
  * through untouched in {@link MaterializedFileAttachments.imageAttachments}.
  *
@@ -66,34 +73,88 @@ export async function materializeFileAttachments(
   attachments: readonly AttachmentUpload[] | undefined,
 ): Promise<MaterializedFileAttachments> {
   const images = (attachments ?? []).filter((a) => a.kind === 'image');
-  const files = (attachments ?? []).filter((a) => a.kind === 'file');
+  const files = (attachments ?? []).filter(
+    (a): a is FileAttachment => a.kind === 'file' && typeof a.fileName === 'string',
+  );
   const imageAttachments = images.length > 0 ? images : undefined;
   if (files.length === 0) {
     return { promptSuffix: '', imageAttachments, cleanup: () => Promise.resolve() };
   }
 
-  const dir = await mkdtemp(join(cwd, '.verity-attachments-'));
-  const relativeDir = basename(dir);
+  // The Runner sees the worktree bind, not the Server container's /tmp. Keep
+  // the fresh, non-followed directory inside that shared boundary so the path
+  // placed in the prompt denotes the same bytes in both processes.
+  // `.verity-sessions` is the repository's checked-in ignored runtime boundary,
+  // so a routine `git add -A` cannot capture user attachments while the Runner
+  // still sees them through the worktree mount.
+  const cwdHandle = await open(
+    cwd,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  let parent = cwdHandle;
+  try {
+    for (const component of ['.verity-sessions', 'attachments']) {
+      const base = `/proc/self/fd/${parent.fd}`;
+      await mkdir(join(base, component), { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EEXIST') throw error;
+      });
+      const child = await open(
+        join(base, component),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      if (parent !== cwdHandle) await parent.close();
+      parent = child;
+    }
+    const created = await mkdtemp(join(`/proc/self/fd/${parent.fd}`, 'turn-'));
+    const dir = join(cwd, '.verity-sessions', 'attachments', basename(created));
+    const cleanupPath = join(`/proc/self/fd/${parent.fd}`, basename(created));
+    const result = await materializeIntoDirectory(
+      created,
+      dir,
+      files,
+      imageAttachments,
+      async () => {
+        try {
+          await rm(cleanupPath, { recursive: true, force: true });
+        } finally {
+          await parent.close().catch(() => undefined);
+          await cwdHandle.close().catch(() => undefined);
+        }
+      },
+    );
+    return result;
+  } catch (error) {
+    if (parent !== cwdHandle) await parent.close().catch(() => undefined);
+    await cwdHandle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function materializeIntoDirectory(
+  storageDir: string,
+  visibleDir: string,
+  files: readonly FileAttachment[],
+  imageAttachments: AttachmentUpload[] | undefined,
+  cleanup: () => Promise<void>,
+): Promise<MaterializedFileAttachments> {
   try {
     const used = new Set<string>();
     const lines: string[] = [];
     for (const f of files) {
-      const relativePath = join(relativeDir, uniqueName(safeFileName(f.fileName), used));
-      await writeFile(join(cwd, relativePath), Buffer.from(f.data, 'base64'), { mode: 0o600 });
-      lines.push(`- ${relativePath} (${f.mediaType})`);
+      const name = uniqueName(safeFileName(f.fileName), used);
+      await writeFile(join(storageDir, name), Buffer.from(f.data, 'base64'), { mode: 0o600 });
+      lines.push(`- ${join(visibleDir, name)} (${f.mediaType})`);
     }
     const promptSuffix =
-      '\n\nThe user attached the following file(s), saved in your working directory. ' +
+      '\n\nThe user attached the following file(s), saved in temporary files in the worktree. ' +
       `Read them as needed:\n${lines.join('\n')}`;
     return {
       promptSuffix,
       imageAttachments,
-      cleanup: async () => {
-        await rm(dir, { recursive: true, force: true });
-      },
+      cleanup,
     };
   } catch (error) {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(storageDir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
 }

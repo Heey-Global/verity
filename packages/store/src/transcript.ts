@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from './schema.js';
 
 /** Rows per INSERT — keeps bind params well under Postgres's 65535 cap. */
@@ -18,11 +18,33 @@ const APPEND_CHUNK = 1000;
  * byte on reconstruction.
  */
 export class TranscriptStore {
+  private readonly writes = new Map<string, Promise<void>>();
   constructor(private readonly db: Kysely<Database>) {}
+
+  private async lock(tx: Transaction<Database>, sessionId: string): Promise<void> {
+    await sql`select pg_advisory_xact_lock(hashtext(${'transcript:' + sessionId}))`.execute(tx);
+  }
+
+  private serialize(sessionId: string, operation: () => Promise<void>): Promise<void> {
+    const previous = this.writes.get(sessionId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(operation);
+    this.writes.set(sessionId, next);
+    void next
+      .finally(() => {
+        if (this.writes.get(sessionId) === next) this.writes.delete(sessionId);
+      })
+      .catch(() => undefined);
+    return next;
+  }
 
   /** Append one verbatim line (without its trailing newline). */
   async appendLine(sessionId: string, line: string): Promise<void> {
-    await this.db.insertInto('transcript_lines').values({ session_id: sessionId, line }).execute();
+    await this.serialize(sessionId, async () => {
+      await this.db.transaction().execute(async (tx) => {
+        await this.lock(tx, sessionId);
+        await tx.insertInto('transcript_lines').values({ session_id: sessionId, line }).execute();
+      });
+    });
   }
 
   /**
@@ -33,15 +55,18 @@ export class TranscriptStore {
    */
   async appendLines(sessionId: string, lines: readonly string[]): Promise<void> {
     if (lines.length === 0) return;
-    await this.db.transaction().execute(async (tx) => {
-      for (let i = 0; i < lines.length; i += APPEND_CHUNK) {
-        const batch = lines.slice(i, i + APPEND_CHUNK);
-        await tx
-          .insertInto('transcript_lines')
-          .values(batch.map((line) => ({ session_id: sessionId, line })))
-          .execute();
-      }
-    });
+    await this.serialize(sessionId, () =>
+      this.db.transaction().execute(async (tx) => {
+        await this.lock(tx, sessionId);
+        for (let i = 0; i < lines.length; i += APPEND_CHUNK) {
+          const batch = lines.slice(i, i + APPEND_CHUNK);
+          await tx
+            .insertInto('transcript_lines')
+            .values(batch.map((line) => ({ session_id: sessionId, line })))
+            .execute();
+        }
+      }),
+    );
   }
 
   /**
@@ -52,16 +77,19 @@ export class TranscriptStore {
    * log. Clears then re-inserts in one transaction.
    */
   async replaceLines(sessionId: string, lines: readonly string[]): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await tx.deleteFrom('transcript_lines').where('session_id', '=', sessionId).execute();
-      for (let i = 0; i < lines.length; i += APPEND_CHUNK) {
-        const batch = lines.slice(i, i + APPEND_CHUNK);
-        await tx
-          .insertInto('transcript_lines')
-          .values(batch.map((line) => ({ session_id: sessionId, line })))
-          .execute();
-      }
-    });
+    await this.serialize(sessionId, () =>
+      this.db.transaction().execute(async (tx) => {
+        await this.lock(tx, sessionId);
+        await tx.deleteFrom('transcript_lines').where('session_id', '=', sessionId).execute();
+        for (let i = 0; i < lines.length; i += APPEND_CHUNK) {
+          const batch = lines.slice(i, i + APPEND_CHUNK);
+          await tx
+            .insertInto('transcript_lines')
+            .values(batch.map((line) => ({ session_id: sessionId, line })))
+            .execute();
+        }
+      }),
+    );
   }
 
   /** The session's verbatim lines in append order. */

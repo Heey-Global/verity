@@ -93,8 +93,30 @@ export type RuntimeRunner = (
 
 export type RuntimeHealthFetch = (
   input: string,
-  init: { method: 'HEAD' | 'GET'; signal: AbortSignal },
+  init: { method: 'HEAD' | 'GET'; signal: AbortSignal; redirect: 'manual' },
 ) => Promise<{ status: number }>;
+
+function safeHealthCheckUrl(value: string): URL {
+  const url = new URL(value);
+  const hostname = url.hostname.toLowerCase();
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.username !== '' ||
+    url.password !== '' ||
+    (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '[::1]')
+  ) {
+    throw new Error('project dev server health URL must use HTTP(S) loopback without credentials');
+  }
+  return url;
+}
+
+function dockerHostHealthCheckUrl(value: string, dockerBaseUrl: string | undefined): URL {
+  const url = safeHealthCheckUrl(value);
+  if (dockerBaseUrl === undefined) return url;
+  const docker = new URL(dockerBaseUrl);
+  if (docker.protocol === 'http:' || docker.protocol === 'https:') url.hostname = docker.hostname;
+  return url;
+}
 
 const defaultRunner: RuntimeRunner = async (command, args, opts) => {
   const { stdout, stderr } = await execFileAsync(command, [...args], {
@@ -326,14 +348,26 @@ export class DockerProjectRuntime implements ProjectRuntime {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.opts.healthTimeoutMs ?? 2500);
     try {
-      let response = await this.healthFetch(url, { method: 'HEAD', signal: controller.signal });
+      // This probe runs in the privileged control-plane process. Only probe the
+      // explicitly supported loopback dev-server surface and never follow a
+      // redirect into cloud metadata, the Docker API, or another internal host.
+      const checkedUrl = dockerHostHealthCheckUrl(url, this.opts.dockerBaseUrl).href;
+      let response = await this.healthFetch(checkedUrl, {
+        method: 'HEAD',
+        signal: controller.signal,
+        redirect: 'manual',
+      });
       if (response.status === 405) {
-        response = await this.healthFetch(url, { method: 'GET', signal: controller.signal });
+        response = await this.healthFetch(checkedUrl, {
+          method: 'GET',
+          signal: controller.signal,
+          redirect: 'manual',
+        });
       }
       return {
         projectId: project.id,
         url,
-        reachable: response.status >= 200 && response.status < 500,
+        reachable: response.status >= 200 && response.status < 400,
         status: response.status,
         checkedAt,
         error: null,
@@ -388,6 +422,7 @@ function adoptionScript(project: ProjectRecord, stem: string, enabled: boolean):
   const dir = shellQuote(runtimeDir(project));
   return [
     `if [ ! -e ${dir}/${stem}.pid ] && [ -e ${dir}/dev-server.pid ]; then mv ${dir}/dev-server.pid ${dir}/${stem}.pid; fi`,
+    `if [ ! -e ${dir}/${stem}.start ] && [ -e ${dir}/dev-server.start ]; then mv ${dir}/dev-server.start ${dir}/${stem}.start; fi`,
     `if [ ! -e ${dir}/${stem}.log ] && [ -e ${dir}/dev-server.log ]; then mv ${dir}/dev-server.log ${dir}/${stem}.log; fi`,
   ];
 }
@@ -403,13 +438,18 @@ function startScript(
   return [
     `dir=${dir}`,
     `pidfile="$dir/${stem}.pid"`,
+    `identityfile="$dir/${stem}.start"`,
     `logfile="$dir/${stem}.log"`,
     'mkdir -p "$dir"',
     ...adoptionScript(project, stem, adoptLegacy),
-    'if [ -s "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then exit 0; fi',
-    'rm -f "$pidfile"',
-    `if command -v setsid >/dev/null 2>&1; then setsid sh -lc ${shellQuote(command)} >"$logfile" 2>&1 & else sh -lc ${shellQuote(command)} >"$logfile" 2>&1 & fi`,
+    'pid="$(cat "$pidfile" 2>/dev/null || true)"',
+    'case "$pid" in ""|*[!0-9]*|0) pid="" ;; esac',
+    'if [ -n "$pid" ] && [ -s "$identityfile" ] && [ "$(awk \'{print $22}\' "/proc/$pid/stat" 2>/dev/null)" = "$(cat "$identityfile")" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi',
+    'rm -f "$pidfile" "$identityfile"',
+    'command -v setsid >/dev/null 2>&1 || { echo "setsid is required to isolate the dev server process group" >&2; exit 1; }',
+    `setsid sh -lc ${shellQuote(command)} >"$logfile" 2>&1 &`,
     'echo $! > "$pidfile"',
+    'awk \'{print $22}\' "/proc/$!/stat" > "$identityfile"',
   ].join('\n');
 }
 
@@ -423,9 +463,11 @@ function statusScript(
   return [
     ...adoptionScript(project, stem, adoptLegacy),
     `pidfile=${dir}/${stem}.pid`,
+    `identityfile=${dir}/${stem}.start`,
     'if [ -s "$pidfile" ]; then',
     'pid="$(cat "$pidfile")"',
-    'if kill -0 "$pid" 2>/dev/null; then echo "running $pid"; exit 0; fi',
+    'case "$pid" in ""|*[!0-9]*|0) pid="" ;; esac',
+    'if [ -n "$pid" ] && [ -s "$identityfile" ] && [ "$(awk \'{print $22}\' "/proc/$pid/stat" 2>/dev/null)" = "$(cat "$identityfile")" ] && kill -0 "$pid" 2>/dev/null; then echo "running $pid"; exit 0; fi',
     'fi',
     'echo stopped',
   ].join('\n');
@@ -441,8 +483,11 @@ function stopScript(
   return [
     ...adoptionScript(project, stem, adoptLegacy),
     `pidfile=${dir}/${stem}.pid`,
+    `identityfile=${dir}/${stem}.start`,
     'if [ -s "$pidfile" ]; then',
     'pid="$(cat "$pidfile")"',
+    'case "$pid" in ""|*[!0-9]*|0) pid="" ;; esac',
+    'if [ -z "$pid" ] || [ ! -s "$identityfile" ] || [ "$(awk \'{print $22}\' "/proc/$pid/stat" 2>/dev/null)" != "$(cat "$identityfile")" ]; then rm -f "$pidfile" "$identityfile"; exit 0; fi',
     'if kill -0 "$pid" 2>/dev/null; then',
     'kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true',
     'for _ in 1 2 3 4 5; do',
@@ -453,7 +498,7 @@ function stopScript(
     'else',
     'kill -TERM "-$pid" 2>/dev/null || true',
     'fi',
-    'rm -f "$pidfile"',
+    'rm -f "$pidfile" "$identityfile"',
     'fi',
   ].join('\n');
 }

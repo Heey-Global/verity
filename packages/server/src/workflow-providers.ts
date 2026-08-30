@@ -18,7 +18,26 @@ const gitHubEvidence = z.object({
   repo: z.string().min(1),
   pullRequest: z.number().int().positive(),
   headSha: z.string().regex(/^[0-9a-f]{40}$/i),
-  allowedPathPrefixes: z.array(z.string().min(1)).optional(),
+  allowedPathPrefixes: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .refine((value) => {
+          const normalized = value.replace(/\/+$/u, '');
+          return (
+            normalized.length > 0 &&
+            !normalized.startsWith('/') &&
+            !normalized.includes('\\') &&
+            !normalized
+              .split('/')
+              .some((segment) => segment === '' || segment === '.' || segment === '..')
+          );
+        }, 'path prefix must be a canonical repository-relative path'),
+    )
+    .min(1)
+    .optional(),
+  approved: z.literal(true).optional(),
 });
 
 interface GitHubPullRequestResponse {
@@ -96,6 +115,9 @@ export function createGitHubWorkflowGate(options: {
         return { status: 'blocked', reason: 'pull request base branch is missing' };
       }
       if (candidate.completionGate === 'pull_request.merged') {
+        if (expected.data.approved !== true) {
+          return { status: 'blocked', reason: 'pull request merge approval evidence is missing' };
+        }
         return pull.merged === true && /^[0-9a-f]{40}$/i.test(pull.merge_commit_sha ?? '')
           ? {
               status: 'satisfied',
@@ -146,7 +168,10 @@ export function createGitHubWorkflowGate(options: {
           filenames.length === 0 ||
           filenames.some(
             (filename) =>
-              !expected.data.allowedPathPrefixes!.some((prefix) => filename.startsWith(prefix)),
+              !expected.data.allowedPathPrefixes!.some((prefix) => {
+                const boundary = prefix.replace(/\/+$/u, '');
+                return filename === boundary || filename.startsWith(`${boundary}/`);
+              }),
           )
         ) {
           return {

@@ -59,6 +59,8 @@ jobs:
           done < <(grep -oE 'assets/[A-Za-z0-9._-]+' "$page" | sort -u)
           grep -Fq 'listen 8080;' docs/website/nginx.conf
           grep -Fq 'location = /healthz' docs/website/nginx.conf
+          grep -Fq 'Content-Security-Policy' docs/website/nginx.conf
+          grep -Fq "script-src 'self' https://stats.heey.global" docs/website/nginx.conf
           grep -Fq 'src="https://stats.heey.global/api/script.js"' "$page"
           grep -Fq 'data-site-id="2895f37c1a49"' "$page"
           ! grep -Eqi 'fonts\.(googleapis|gstatic)\.com' "$page"
@@ -66,6 +68,37 @@ jobs:
             echo 'Website contains a non-persisting signup confirmation' >&2
             exit 1
           fi
+
+  pr-image-smoke:
+    if: github.event_name == 'pull_request'
+    needs: static-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+      - name: Build pull-request website image
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docs/website/Dockerfile
+          load: true
+          tags: verity-website-pr:${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Smoke-test pull-request website image
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy/bin/verity-website-smoke \
+            "verity-website-pr:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "$TEST_CONTAINER"
 
   publish:
     if: >-

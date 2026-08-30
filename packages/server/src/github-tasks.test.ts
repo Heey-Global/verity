@@ -45,14 +45,18 @@ const githubRemote: GitOutput = () =>
 const gitlabRemote: GitOutput = () => Promise.resolve('git@gitlab.com:o/r.git\n');
 
 /** A board where the project resolved under the ORG branch (user branch errored). */
-const orgBoard = (items: unknown[], fields: unknown[] = []): unknown => ({
+const orgBoard = (
+  items: unknown[],
+  fields: unknown[] = [],
+  pageInfo?: { hasNextPage: boolean; endCursor: string | null },
+): unknown => ({
   organization: {
     projectV2: {
       id: 'PVT_1',
       number: 7,
       title: 'Roadmap',
       fields: { nodes: fields },
-      items: { nodes: items },
+      items: { nodes: items, ...(pageInfo === undefined ? {} : { pageInfo }) },
     },
   },
   user: null,
@@ -152,6 +156,7 @@ describe('createGitHubTaskService.getBoard', () => {
     expect(JSON.parse(calls[0]?.body ?? '{}').variables).toEqual({
       owner: 'Example-Org',
       number: 7,
+      after: null,
     });
   });
 
@@ -171,6 +176,27 @@ describe('createGitHubTaskService.getBoard', () => {
       fetch,
     });
     expect((await svc.getBoard())?.projectId).toBe('PVT_u');
+  });
+
+  it('paginates beyond the first 100 board items in stable order', async () => {
+    const second = { ...draftItem, id: 'PVTI_second' };
+    const { fetch, calls } = fakeFetch(
+      gql(orgBoard([issueItem], [priorityField], { hasNextPage: true, endCursor: 'cursor-1' })),
+      gql(orgBoard([second], [priorityField], { hasNextPage: false, endCursor: null })),
+    );
+    const svc = createGitHubTaskService({
+      repoDir: '/r',
+      projectNumber: 7,
+      token: 'tok',
+      git: githubRemote,
+      fetch,
+    });
+
+    expect((await svc.getBoard())?.items.map((item) => item.id)).toEqual([
+      'PVTI_issue',
+      'PVTI_second',
+    ]);
+    expect(JSON.parse(calls[1]?.body ?? '{}').variables.after).toBe('cursor-1');
   });
 
   it('drops garbled items rather than crashing the board', async () => {
@@ -440,7 +466,7 @@ describe('createGitHubTaskService writes', () => {
     });
   });
 
-  it('createIssue uses the chosen repo token for issue writes and board add', async () => {
+  it('createIssue uses the repo token for issue writes and board token for the add', async () => {
     const { fetch, calls } = fakeFetch(
       gql(orgBoard([])), // getBoard
       gql({ createIssue: { issue: { id: 'I_new', number: 100, url: 'u100' } } }),
@@ -460,9 +486,10 @@ describe('createGitHubTaskService writes', () => {
     ).toMatchObject({ issueId: 'I_new', itemId: 'PVTI_new' });
     expect(asyncToken).toHaveBeenNthCalledWith(1, { owner: 'acme', repo: 'widgets' });
     expect(asyncToken).toHaveBeenNthCalledWith(2, { owner: 'Example-Org', repo: 'Example-Repo' });
+    expect(asyncToken).toHaveBeenNthCalledWith(3, { owner: 'Example-Org', repo: 'Example-Repo' });
     expect(calls[0]?.headers?.Authorization).toBe('Bearer Example-Org/Example-Repo');
     expect(calls[1]?.headers?.Authorization).toBe('Bearer acme/widgets');
-    expect(calls[2]?.headers?.Authorization).toBe('Bearer acme/widgets');
+    expect(calls[2]?.headers?.Authorization).toBe('Bearer Example-Org/Example-Repo');
   });
 
   it('updateIssue reports success and passes only the given fields', async () => {

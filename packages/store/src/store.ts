@@ -1256,9 +1256,26 @@ export class EventStore implements EventSink {
    * the project re-resolved via GitHub sync).
    */
   async setSessionProject(sessionId: string, projectId: string | null): Promise<boolean> {
+    if (projectId !== null) {
+      return await this.db.transaction().execute(async (tx) => {
+        const project = await tx
+          .selectFrom('projects')
+          .select('hidden_at')
+          .forShare()
+          .where('id', '=', projectId)
+          .executeTakeFirst();
+        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
+        const result = await tx
+          .updateTable('sessions')
+          .set({ project_id: projectId })
+          .where('session_id', '=', sessionId)
+          .executeTakeFirst();
+        return result.numUpdatedRows > 0n;
+      });
+    }
     const result = await this.db
       .updateTable('sessions')
-      .set({ project_id: projectId })
+      .set({ project_id: null })
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
@@ -1908,7 +1925,9 @@ export class EventStore implements EventSink {
     // the visible images, not the whole backlog. The caller's `event` is left
     // untouched (only a copy is stored), so the live broadcast still ships the
     // inline bytes the client already has and can render without a round-trip.
-    const toStore = event.t === 'tool_result' ? await this.externalizeToolResult(event) : event;
+    const canonical = parsed.data;
+    const toStore =
+      canonical.t === 'tool_result' ? await this.externalizeToolResult(canonical) : canonical;
     // Redact recognized credentials from the PERSISTED copy (audit M9). Token
     // characters never include JSON structural chars, so redacting the serialized
     // payload keeps it valid JSON. The caller's live `event` is left untouched, so
@@ -1917,7 +1936,7 @@ export class EventStore implements EventSink {
     // document that carries one, which used to abort the whole turn on any agent
     // output echoing a NUL. Runs after redaction so both rewrites see the same
     // serialized string; the caller's live `event` again stays untouched.
-    return { type: event.t, payload: scrubNulEscapes(redactSecrets(JSON.stringify(toStore))) };
+    return { type: canonical.t, payload: scrubNulEscapes(redactSecrets(JSON.stringify(toStore))) };
   }
 
   /**
@@ -2338,6 +2357,7 @@ export class EventStore implements EventSink {
   ): Promise<void> {
     if (anchor.turnId === null) return;
     const turnId = anchor.turnId;
+    let projectionInvalidated = false;
     await this.withSessionEventAppend(anchor.sessionId, () =>
       this.withRunnerFrameTurn(turnId, () =>
         this.db.transaction().execute(async (tx) => {
@@ -2351,15 +2371,29 @@ export class EventStore implements EventSink {
             .executeTakeFirst();
           if (removed.numDeletedRows === 0n) return;
           if (noticeSeq !== null) {
-            await tx
+            const deleted = await tx
               .deleteFrom('events')
               .where('session_id', '=', anchor.sessionId)
               .where('id', '=', noticeSeq)
-              .execute();
+              .executeTakeFirst();
+            if (deleted.numDeletedRows > 0n) {
+              // The search view may already contain this provisional notice and its
+              // cursor may point beyond the now-removed event. Reset it in the same
+              // transaction, then rebuild from the surviving canonical log after
+              // commit. A rollback therefore restores both canonical and projected
+              // state together.
+              await tx.deleteFrom('messages').where('session_id', '=', anchor.sessionId).execute();
+              await tx
+                .deleteFrom('message_projection_state')
+                .where('session_id', '=', anchor.sessionId)
+                .execute();
+              projectionInvalidated = true;
+            }
           }
         }),
       ),
     );
+    if (projectionInvalidated) this.scheduleMessageProjection();
   }
 
   /** Rewrite a `tool_result`'s heavy inline payloads to content-addressed refs:
@@ -2649,7 +2683,8 @@ export class EventStore implements EventSink {
     if (!parsed.success) {
       throw new Error(`refusing to persist invalid event: ${parsed.error.message}`);
     }
-    return this.withSessionEventAppend(sessionId, () =>
+    const payload = scrubNulEscapes(redactSecrets(JSON.stringify(event)));
+    const persisted = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
         await this.sessionEventAppendLock(tx, sessionId);
         const del = await tx.deleteFrom('queued_turns').where('id', '=', id).executeTakeFirst();
@@ -2659,13 +2694,26 @@ export class EventStore implements EventSink {
           .values({
             session_id: sessionId,
             type: event.t,
-            payload: redactSecrets(JSON.stringify(event)),
+            payload,
           })
           .returning(['id', 'created_at'])
           .executeTakeFirstOrThrow();
         return { seq: Number(row.id), ts: row.created_at.getTime() };
       }),
     );
+    // Enqueue only AFTER the transaction commits. Doing this inside the callback
+    // could project a prompt from a transaction that subsequently rolled back;
+    // omitting it entirely left successfully drained prompts absent from search
+    // until an unrelated backfill happened to run.
+    if (persisted !== undefined) {
+      this.enqueuePersistedMessageEvent(
+        sessionId,
+        persisted.seq,
+        new Date(persisted.ts),
+        JSON.parse(payload) as AgentEvent,
+      );
+    }
+    return persisted;
   }
 
   // ─── Multi-repo fleet registry (concept §19, #174) ─────────────────────────

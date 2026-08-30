@@ -16,9 +16,10 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, sep, join } from 'node:path';
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
+import type { Server as HttpsServer, ServerOptions as HttpsServerOptions } from 'node:https';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   ALLOWED_PERMISSION_MODES,
@@ -74,6 +75,7 @@ import {
   toSessionFileEntry,
   type SessionFileEntry,
 } from './session-files.js';
+import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
 import type {
   VeritySettingsPatch,
   VeritySettingsRecord,
@@ -105,6 +107,7 @@ import Fastify, {
   type FastifyReply,
   type FastifyRequest,
   type FastifyServerOptions,
+  type FastifyHttpsOptions,
 } from 'fastify';
 import { z, ZodError } from 'zod';
 import { deriveSessionStatus, type SessionStatus } from './status.js';
@@ -116,13 +119,7 @@ import {
   type UpdaterProbe,
 } from './attention.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
-import {
-  accessTokenQuery,
-  bearerToken,
-  redactAccessTokenInUrl,
-  wsOriginAllowed,
-  type AuthTokenRegistry,
-} from './auth.js';
+import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
 import { createUnlockThrottle } from './unlock-throttle.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
@@ -584,6 +581,7 @@ class MeetingTranscriptionCancelledError extends Error {
 }
 
 class MeetingAudioTooLargeError extends Error {}
+class SessionFileTooLargeError extends Error {}
 
 interface VeritySettingsStore extends EventStore {
   getVeritySettings(): Promise<VeritySettingsRecord | undefined>;
@@ -911,6 +909,11 @@ export interface ServerUpdateController {
 }
 
 export interface ServerDeps {
+  /** TLS termination for direct/non-managed deployments. Managed deployments
+   * terminate at the dedicated Gateway instead. */
+  https?: HttpsServerOptions | undefined;
+  /** Authenticated original-client identity supplied by the managed TLS gateway. */
+  unlockClientIdentity?: ((request: FastifyRequest) => string | undefined) | undefined;
   eventStore: EventStore;
   authorizeWorkflowAction?:
     | ((
@@ -971,6 +974,9 @@ export interface ServerDeps {
    *  valid `Authorization: Bearer` token on every route outside the pre-auth
    *  allowlist. Omit → the gate is disabled (tests / unmanaged deployments). */
   authRegistry?: AuthTokenRegistry | undefined;
+  /** Installer-issued, TLS-bound device pairing. When present, a fresh
+   * `/secret/init` additionally requires a one-time bootstrap capability. */
+  devicePairing?: DevicePairingManager | undefined;
   /** Enable Expo push-token registration and sender. Off by default. */
   pushEnabled?: boolean | undefined;
   /** Standing brokered-secret grants for a project (ADR 0011 D2), backing
@@ -1408,6 +1414,7 @@ const DEFAULT_MEETING_TRANSCRIBE_COMMAND = 'verity-transcribe-meeting';
 const MAX_SESSION_DIRECTORY_ENTRIES = 1_000;
 const MAX_SESSION_TEXT_FILE_BYTES = 1_000_000;
 const MAX_SESSION_DOWNLOAD_BYTES = 50_000_000;
+const MAX_SESSION_UPLOAD_BYTES = 50_000_000;
 export const VERITY_CONTROL_SESSION_NAME = 'Verity Control';
 export const LEGACY_VERITY_CONTROL_SESSION_NAME = 'Verity Control';
 export const VERITY_CONTROL_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
@@ -1700,6 +1707,30 @@ async function emitMeetingTranscriptCancelled(input: {
 const meetingIndexUpdates = new Map<string, Promise<void>>();
 const meetingTranscriptCommits = new Map<string, Promise<void>>();
 
+async function updateMeetingIndexFile(
+  indexAbs: string,
+  transform: (content: string) => string,
+): Promise<void> {
+  const handle = await open(
+    indexAbs,
+    fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('invalid meeting index');
+    const content = await handle.readFile('utf8');
+    const next = transform(content);
+    if (next === content) return;
+    const bytes = Buffer.from(next);
+    await handle.truncate(0);
+    await handle.write(bytes, 0, bytes.length, 0);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 async function withMeetingTranscriptCommitLock<T>(
   meetingDir: string,
   relPath: string,
@@ -1734,12 +1765,12 @@ async function appendMeetingIndex(
   const update = previous
     .catch(() => undefined)
     .then(async () => {
-      const existing = await lstat(indexAbs).catch(() => undefined);
-      if (existing?.isSymbolicLink()) throw new Error('invalid meeting index');
-      let content = await readFile(indexAbs, 'utf8').catch(() => '# Meetings\n\n');
-      if (!content.endsWith('\n')) content += '\n';
       const entry = `- [${title}](${basename(relPath)})\n`;
-      if (!content.includes(entry)) await writeFile(indexAbs, `${content}${entry}`);
+      await updateMeetingIndexFile(indexAbs, (existing) => {
+        let content = existing === '' ? '# Meetings\n\n' : existing;
+        if (!content.endsWith('\n')) content += '\n';
+        return content.includes(entry) ? content : `${content}${entry}`;
+      });
     });
   meetingIndexUpdates.set(indexAbs, update);
   try {
@@ -1849,8 +1880,7 @@ async function removeCancelledMeetingTranscript(input: {
     .catch(() => undefined)
     .then(async () => {
       const entry = `- [${input.title}](${basename(input.relPath)})\n`;
-      const content = await readFile(indexAbs, 'utf8').catch(() => '');
-      if (content.includes(entry)) await writeFile(indexAbs, content.replace(entry, ''));
+      await updateMeetingIndexFile(indexAbs, (content) => content.replace(entry, ''));
     });
   meetingIndexUpdates.set(indexAbs, update);
   try {
@@ -2846,8 +2876,8 @@ export function redactScrollDiagnosticData(data: Record<string, unknown>): Recor
  * and tests can use `inject()`.
  */
 /** The one `{ websocket: true }` route (`GET /sessions/:id/stream`). The auth gate
- *  lets a genuine upgrade to it bypass its HTTP-401 send (that handler enforces the
- *  token itself); `:id` never contains a slash. Keep in sync with the route below. */
+ * lets a genuine upgrade reach the handler, which consumes its one-use stream
+ * ticket; `:id` never contains a slash. Keep in sync with the route below. */
 const WS_STREAM_PATH = /^\/sessions\/[^/]+\/stream$/;
 
 /** The routes that stream a request body straight to disk without ever
@@ -2859,6 +2889,32 @@ const BINARY_UPLOAD_ROUTES = new Set([
 ]);
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
+  const streamTickets = new Map<string, { sessionId: string; expiresAt: number }>();
+  const streamTicketTtlMs = 30_000;
+  const streamTicketProtocolPrefix = 'verity-stream-ticket.';
+  const mintStreamTicket = (sessionId: string): { ticket: string; expiresAt: string } => {
+    const now = Date.now();
+    for (const [ticket, record] of streamTickets) {
+      if (record.expiresAt <= now) streamTickets.delete(ticket);
+    }
+    while (streamTickets.size >= 1024) streamTickets.delete(streamTickets.keys().next().value!);
+    const ticket = randomBytes(32).toString('base64url');
+    const expiresAt = now + streamTicketTtlMs;
+    streamTickets.set(ticket, { sessionId, expiresAt });
+    return { ticket, expiresAt: new Date(expiresAt).toISOString() };
+  };
+  const consumeStreamTicket = (sessionId: string, protocolHeader: string | undefined): boolean => {
+    const offered = (protocolHeader ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .find((value) => value.startsWith(streamTicketProtocolPrefix));
+    if (offered === undefined) return false;
+    const ticket = offered.slice(streamTicketProtocolPrefix.length);
+    const record = streamTickets.get(ticket);
+    if (record === undefined) return false;
+    streamTickets.delete(ticket);
+    return record.expiresAt > Date.now() && record.sessionId === sessionId;
+  };
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
   // which a concurrent local create could steal the slug and block rollback.
@@ -2926,8 +2982,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // silently never dispatches. Headroom added for the prompt + JSON envelope.
   const bodyLimit =
     Math.max(MAX_ATTACHMENTS * MAX_ATTACHMENT_BASE64_LEN, MAX_MEETING_AUDIO_BASE64_LEN) + 1_000_000;
-  // When logging is on, scrub the WS `?access_token=` bearer from the logged URL
-  // (audit M4) — it must ride the query string but must not land in request logs.
   const loggerOption: NonNullable<FastifyServerOptions['logger']> = deps.logger
     ? {
         serializers: {
@@ -2940,7 +2994,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }) {
             return {
               method: request.method,
-              url: redactAccessTokenInUrl(request.url),
+              url: request.url,
               hostname: request.hostname ?? '',
               remoteAddress: request.ip ?? '',
               remotePort: request.socket?.remotePort ?? 0,
@@ -2949,8 +3003,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         },
       }
     : false;
-  const fastifyOptions: FastifyServerOptions = { logger: loggerOption, bodyLimit };
-  const app = Fastify(fastifyOptions);
+  const app: FastifyInstance =
+    deps.https === undefined
+      ? Fastify({ logger: loggerOption, bodyLimit })
+      : Fastify({
+          logger: loggerOption,
+          bodyLimit,
+          https: deps.https,
+        } satisfies FastifyHttpsOptions<HttpsServer>);
   const githubWebhookDigests = new WeakMap<FastifyRequest, Promise<string>>();
   if (deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined) {
     app.addHook('preParsing', (request, _reply, payload, done) => {
@@ -3801,6 +3861,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     '/secret/init',
     '/secret/unlock',
     '/onboarding/status',
+    ...(deps.devicePairing !== undefined ? (['/pair/identity', '/pair/redeem'] as const) : []),
     '/github/app/manifest/start',
     '/github/app/manifest/callback',
     '/github/app/manifest/installed',
@@ -3861,11 +3922,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const registry = deps.authRegistry;
     if (registry === undefined || !registry.isEnabled()) return; // gate off
     if (preAuthPaths.has(pathname)) return;
-    // The bearer token normally rides the Authorization header. Browsers/RN
-    // cannot set headers on a WebSocket handshake, so the live-stream upgrade
-    // may instead present it as an `access_token` query param (Origin is
-    // additionally checked in the WS route itself).
-    const token = bearerToken(request.headers.authorization) ?? accessTokenQuery(request.url);
+    const websocketStream =
+      (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
+      WS_STREAM_PATH.test(pathname);
+    const token = bearerToken(request.headers.authorization);
     if (registry.verify(token)) return;
     // A genuine WebSocket upgrade to the live-stream route cannot take a normal HTTP
     // 401 from here — reply.send() on an in-flight `@fastify/websocket` handshake
@@ -3873,10 +3933,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // same token check itself (1008 close; see GET /sessions/:id/stream), so let it
     // through. Scoped to the actual WS path AND a real upgrade so a spoofed
     // `Upgrade: websocket` header on any other route still gets the 401 below.
-    if (
-      (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
-      WS_STREAM_PATH.test(pathname)
-    ) {
+    if (websocketStream) {
       return;
     }
     // send()+return — a bare `return { error }` from an async onRequest hook is
@@ -5134,6 +5191,41 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }),
     deviceLabel: deviceLabelField,
   });
+  const pairingRedeemBody = z.object({ code: z.string().min(32).max(128) }).strict();
+  const pairingIdentityQuery = z.object({ challenge: z.string().min(32).max(128) }).strict();
+
+  app.get('/pair/identity', (request, reply) => {
+    if (deps.devicePairing === undefined) {
+      reply.code(404);
+      return { error: 'not found' };
+    }
+    try {
+      const { challenge } = pairingIdentityQuery.parse(request.query);
+      return { ...deps.devicePairing.identity(), ...deps.devicePairing.signChallenge(challenge) };
+    } catch (error) {
+      if (error instanceof DevicePairingRejectedError) {
+        reply.code(400);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  });
+
+  app.post('/pair/redeem', { bodyLimit: 1_024 }, (request, reply) => {
+    if (deps.devicePairing === undefined) {
+      reply.code(404);
+      return { error: 'not found' };
+    }
+    try {
+      return deps.devicePairing.redeem(pairingRedeemBody.parse(request.body).code);
+    } catch (error) {
+      if (error instanceof DevicePairingRejectedError) {
+        reply.code(401);
+        return { error: error.message };
+      }
+      throw error;
+    }
+  });
 
   // Brute-force throttle for /secret/unlock (audit C2): per-IP lockout with
   // exponential backoff + a coarse global cap. In-memory (online-attack defence).
@@ -5174,6 +5266,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'secret store is not managed by this deployment' };
       }
       const { password, deviceLabel } = secretInitBody.parse(request.body);
+      if (deps.devicePairing !== undefined) {
+        const bootstrap = request.headers['x-verity-pairing'];
+        if (typeof bootstrap !== 'string' || !deps.devicePairing.consumeBootstrap(bootstrap)) {
+          reply.code(401);
+          return { error: 'valid device pairing is required' };
+        }
+      }
       // Refuse if already unlocked (a password was already set + entered this run)
       // — re-initializing would derive a DIFFERENT key than the one secrets were
       // encrypted under (re-key is a follow-up).
@@ -5231,9 +5330,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: 'secret store is not managed by this deployment' };
       }
+      if (deps.devicePairing !== undefined) {
+        const existingDeviceToken = bearerToken(request.headers.authorization);
+        const existingDevice = deps.authRegistry?.verify(existingDeviceToken) === true;
+        const bootstrap = request.headers['x-verity-pairing'];
+        if (!existingDevice && typeof bootstrap !== 'string') {
+          reply.code(401);
+          return { error: 'valid device pairing is required' };
+        }
+      }
       // Brute-force gate (C2): reject before deriving if this IP is locked out
       // or the global failure floor is tripped. Cheap and runs before scrypt.
-      const gate = unlockThrottle.check(request.ip);
+      const throttleIdentity = deps.unlockClientIdentity?.(request) ?? request.ip;
+      const gate = unlockThrottle.check(throttleIdentity);
       if (!gate.allowed) {
         reply.code(429);
         if (gate.retryAfterMs !== undefined) {
@@ -5249,11 +5358,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const key = deriveKeyFromPassword(password, meta.salt);
       if (!keyMatchesVerifier(key, meta.verifier)) {
-        unlockThrottle.recordFailure(request.ip);
+        unlockThrottle.recordFailure(throttleIdentity);
         reply.code(401);
         return { error: 'incorrect master password' };
       }
-      unlockThrottle.recordSuccess(request.ip);
+      if (deps.devicePairing !== undefined) {
+        const existingDeviceToken = bearerToken(request.headers.authorization);
+        const existingDevice = deps.authRegistry?.verify(existingDeviceToken) === true;
+        const bootstrap = request.headers['x-verity-pairing'];
+        if (!existingDevice && !deps.devicePairing.consumeBootstrap(bootstrap as string)) {
+          reply.code(401);
+          return { error: 'valid device pairing is required' };
+        }
+      }
+      unlockThrottle.recordSuccess(throttleIdentity);
       cipher.unlock(key);
       try {
         await deps.onSecretUnlocked?.();
@@ -5421,6 +5539,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.manifestStateNow ? { now: deps.manifestStateNow } : {}),
     ttlMs: 10 * 60 * 1000,
   });
+  const manifestStartBases = new Map<string, string>();
 
   // Browser-facing GitHub onboarding pages. Text is caller-supplied but always a
   // fixed, non-secret string chosen at the call site (never GitHub body / PEM).
@@ -5466,8 +5585,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // allowlist): mint a single-use token the app hangs on the `start` URL it opens
   // in the browser. This is how `start` gets authenticated despite being a
   // browser navigation that carries no Authorization header.
-  app.post('/github/app/manifest/prepare', (): { startToken: string } => {
-    return { startToken: manifestStartTokens.issueState() };
+  app.post('/github/app/manifest/prepare', (request, reply): { startToken: string } | void => {
+    const body = request.body as { baseUrl?: unknown } | undefined;
+    const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl : '';
+    if (!isHttpUrl(baseUrl)) {
+      reply.code(400).send({ error: 'a valid http(s) baseUrl is required' });
+      return;
+    }
+    const startToken = manifestStartTokens.issueState();
+    manifestStartBases.set(startToken, baseUrl);
+    return { startToken };
   });
 
   // `GET /github/app/manifest/start` — issue a CSRF state and render an auto-
@@ -5481,9 +5608,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // armed, require a valid single-use token minted by the authenticated
     // `/prepare` — so only the operator's app can begin the manifest flow. When
     // the gate is off (env-key/headless), preserve the previous open behaviour.
+    let base: string;
     if (deps.authRegistry?.isEnabled() === true) {
       const ott = typeof query.ott === 'string' ? query.ott : '';
-      if (ott.length === 0 || !manifestStartTokens.consumeState(ott)) {
+      const validStartToken = ott.length > 0 && manifestStartTokens.consumeState(ott);
+      const preparedBase = ott.length > 0 ? manifestStartBases.get(ott) : undefined;
+      if (ott.length > 0) manifestStartBases.delete(ott);
+      if (!validStartToken) {
         reply.code(403).type('text/html; charset=utf-8');
         return manifestPage({
           title: 'Onboarding link expired',
@@ -5493,15 +5624,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             'Open the Verity app, choose Create GitHub App again, and a fresh link will be generated.',
         });
       }
-    }
-    const base = typeof query.base === 'string' ? query.base : '';
-    if (base.length === 0 || !isHttpUrl(base)) {
-      reply.code(400).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'Invalid request',
-        message: 'A valid http(s) "base" URL is required to start GitHub App onboarding.',
-        detail: 'Return to Verity and check the server address before trying again.',
-      });
+      if (preparedBase === undefined) {
+        reply.code(403).type('text/html; charset=utf-8');
+        return manifestPage({
+          title: 'Onboarding link expired',
+          message:
+            'This GitHub App onboarding link is invalid or has expired. Return to Verity and start again.',
+        });
+      }
+      base = preparedBase;
+    } else {
+      // In headless/gate-off deployments no authenticated prepare step exists.
+      // Derive the callback authority from the request rather than accepting a
+      // caller-selected redirect target.
+      const requestedBase = typeof query.base === 'string' ? query.base : '';
+      if (!isHttpUrl(requestedBase)) {
+        reply.code(400).type('text/html; charset=utf-8');
+        return manifestPage({
+          title: 'Invalid request',
+          message: 'A valid http(s) "base" URL is required to start GitHub App onboarding.',
+          detail: 'Return to Verity and check the server address before trying again.',
+        });
+      }
+      base = `${request.protocol}://${request.hostname}`;
     }
     const owner = typeof query.owner === 'string' && query.owner.length > 0 ? query.owner : null;
 
@@ -6306,7 +6451,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // ── First-run onboarding gate (#320) ──────────────────────────────────────
   // `GET /onboarding/status` — the pre-unlock gate the app polls on launch. Uses
   // ONLY non-decrypting reads so it answers while the store is sealed.
-  registerOnboardingRoutes(app, { eventStore: deps.eventStore, secretCipher: deps.secretCipher });
+  registerOnboardingRoutes(app, {
+    eventStore: deps.eventStore,
+    secretCipher: deps.secretCipher,
+    isAuthenticated: (request) =>
+      deps.authRegistry === undefined ||
+      deps.authRegistry.verify(bearerToken(request.headers.authorization)) === true,
+  });
   registerAgentLoopRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.provisioner && deps.projectCloneRoot && deps.projectBackend
@@ -6677,6 +6828,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const expected = await githubWebhookDigests.get(request);
       if (
         typeof supplied !== 'string' ||
+        !/^sha256=[0-9a-f]{64}$/u.test(supplied) ||
         typeof expected !== 'string' ||
         supplied.length !== expected.length ||
         !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))
@@ -7641,6 +7793,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: `project ${id} not found` };
       }
+      const busySession = (await deps.eventStore.listSessions()).find(
+        (session) =>
+          session.projectId === id &&
+          (conductor.isBusy(session.sessionId) || hasMeetingJob(session.sessionId)),
+      );
+      if (busySession !== undefined) {
+        reply.code(409);
+        return { error: `project session ${busySession.sessionId} is busy` };
+      }
       try {
         const updated = await deps.deprovisioner.deprovision(id, { purge: purge ?? false });
         return { project: updated };
@@ -7796,6 +7957,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) {
         reply.code(202);
         return { project };
+      }
+
+      const busySession = (await deps.eventStore.listSessions()).find(
+        (session) =>
+          session.projectId === id &&
+          (conductor.isBusy(session.sessionId) || hasMeetingJob(session.sessionId)),
+      );
+      if (busySession !== undefined) {
+        reply.code(409);
+        return { error: `project session ${busySession.sessionId} is busy` };
       }
 
       const alreadyReviewed = detectionState.reviewedFingerprint === body.fingerprint;
@@ -8768,9 +8939,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(400);
         return { error: 'invalid path' };
       }
+      let directoryHandle;
       try {
-        await assertSessionRealPath(session.worktree, target.abs);
+        directoryHandle = await open(
+          target.abs,
+          fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+        );
+        await assertSessionRealPath(
+          session.worktree,
+          await realpath(`/proc/self/fd/${String(directoryHandle.fd)}`),
+        );
       } catch (error) {
+        await directoryHandle?.close().catch(() => undefined);
         if (error instanceof Error && error.message === 'invalid path') {
           reply.code(400);
           return { error: 'invalid path' };
@@ -8779,40 +8959,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'path not found' };
       }
 
-      let stats;
       try {
-        stats = await lstat(target.abs);
-      } catch {
-        reply.code(404);
-        return { error: 'path not found' };
+        const descriptorPath = `/proc/self/fd/${String(directoryHandle.fd)}`;
+        const dirents = await readdir(descriptorPath, { withFileTypes: true });
+        const visible = dirents.filter((entry) => entry.name !== '.git');
+        const entries = await Promise.all(
+          visible.slice(0, MAX_SESSION_DIRECTORY_ENTRIES).map(async (entry) => {
+            const rel = normalizeSessionRelativePath(
+              [target.rel, entry.name].filter(Boolean).join('/'),
+            );
+            const childStats = await lstat(resolve(descriptorPath, entry.name));
+            return toSessionFileEntry(rel, entry.name, childStats);
+          }),
+        );
+        entries.sort((a, b) => {
+          if (a.kind === 'directory' && b.kind !== 'directory') return -1;
+          if (a.kind !== 'directory' && b.kind === 'directory') return 1;
+          return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        });
+        return {
+          path: target.rel,
+          entries,
+          truncated: visible.length > MAX_SESSION_DIRECTORY_ENTRIES,
+        };
+      } finally {
+        await directoryHandle.close();
       }
-      if (!stats.isDirectory()) {
-        reply.code(400);
-        return { error: 'path is not a directory' };
-      }
-
-      const dirents = await readdir(target.abs, { withFileTypes: true });
-      const visible = dirents.filter((entry) => entry.name !== '.git');
-      const entries = await Promise.all(
-        visible.slice(0, MAX_SESSION_DIRECTORY_ENTRIES).map(async (entry) => {
-          const rel = normalizeSessionRelativePath(
-            [target.rel, entry.name].filter(Boolean).join('/'),
-          );
-          const child = resolve(target.abs, entry.name);
-          const childStats = await lstat(child);
-          return toSessionFileEntry(rel, entry.name, childStats);
-        }),
-      );
-      entries.sort((a, b) => {
-        if (a.kind === 'directory' && b.kind !== 'directory') return -1;
-        if (a.kind !== 'directory' && b.kind === 'directory') return 1;
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-      });
-      return {
-        path: target.rel,
-        entries,
-        truncated: visible.length > MAX_SESSION_DIRECTORY_ENTRIES,
-      };
     },
   );
 
@@ -8825,6 +8997,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!Number.isSafeInteger(declaredSize) || declaredSize < 0) {
         reply.code(411);
         return { error: 'file size is required' };
+      }
+      if (declaredSize > MAX_SESSION_UPLOAD_BYTES) {
+        reply.code(413);
+        return { error: 'file exceeds the 50 MB upload limit' };
       }
       const session = await deps.eventStore.getSession(id);
       if (!session) {
@@ -8875,8 +9051,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // Resolve through the stable open directory descriptor. Even if an agent
         // concurrently renames the directory and replaces its old path with a
         // symlink, this still writes to the originally validated directory inode.
+        let receivedBytes = 0;
+        const limiter = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            receivedBytes += chunk.length;
+            callback(
+              receivedBytes > declaredSize
+                ? new SessionFileTooLargeError('uploaded bytes exceed the declared Content-Length')
+                : undefined,
+              chunk,
+            );
+          },
+        });
         await pipeline(
           request.body as NodeJS.ReadableStream,
+          limiter,
           createWriteStream(temporaryPath, { flags: 'wx' }),
         );
         const uploaded = await lstat(temporaryPath);
@@ -8885,6 +9074,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { path: target.rel, size: Number(uploaded.size) };
       } catch (error) {
         await unlink(temporaryPath).catch(() => undefined);
+        if (error instanceof SessionFileTooLargeError) {
+          reply.code(413);
+          return { error: error.message };
+        }
         if (
           typeof error === 'object' &&
           error !== null &&
@@ -8922,9 +9115,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(400);
         return { error: 'invalid path' };
       }
+      let fileHandle;
       try {
-        await assertSessionRealPath(session.worktree, target.abs);
+        fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        await assertSessionRealPath(
+          session.worktree,
+          await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
+        );
       } catch (error) {
+        await fileHandle?.close().catch(() => undefined);
         if (error instanceof Error && error.message === 'invalid path') {
           reply.code(400);
           return { error: 'invalid path' };
@@ -8932,21 +9131,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: 'file not found' };
       }
-      const stats = await lstat(target.abs).catch(() => undefined);
-      if (!stats || !stats.isFile()) {
-        reply.code(404);
-        return { error: 'file not found' };
+      try {
+        const stats = await fileHandle.stat();
+        if (!stats.isFile()) {
+          reply.code(404);
+          return { error: 'file not found' };
+        }
+        if (stats.size > MAX_SESSION_TEXT_FILE_BYTES) {
+          reply.code(413);
+          return { error: 'file is too large for text preview' };
+        }
+        const bytes = await fileHandle.readFile();
+        if (!isProbablyText(bytes)) {
+          reply.code(415);
+          return { error: 'file is not a text file' };
+        }
+        return { path: target.rel, content: bytes.toString('utf8'), size: stats.size };
+      } finally {
+        await fileHandle.close();
       }
-      if (stats.size > MAX_SESSION_TEXT_FILE_BYTES) {
-        reply.code(413);
-        return { error: 'file is too large for text preview' };
-      }
-      const bytes = await readFile(target.abs);
-      if (!isProbablyText(bytes)) {
-        reply.code(415);
-        return { error: 'file is not a text file' };
-      }
-      return { path: target.rel, content: bytes.toString('utf8'), size: stats.size };
     },
   );
 
@@ -8968,9 +9171,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(400);
         return { error: 'invalid path' };
       }
+      let fileHandle;
       try {
-        await assertSessionRealPath(session.worktree, target.abs);
+        fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        await assertSessionRealPath(
+          session.worktree,
+          await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
+        );
       } catch (error) {
+        await fileHandle?.close().catch(() => undefined);
         if (error instanceof Error && error.message === 'invalid path') {
           reply.code(400);
           return { error: 'invalid path' };
@@ -8978,25 +9187,28 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: 'file not found' };
       }
-      const stats = await lstat(target.abs).catch(() => undefined);
-      if (!stats || !stats.isFile()) {
-        reply.code(404);
-        return { error: 'file not found' };
+      try {
+        const stats = await fileHandle.stat();
+        if (!stats.isFile()) {
+          reply.code(404);
+          return { error: 'file not found' };
+        }
+        if (stats.size > MAX_SESSION_DOWNLOAD_BYTES) {
+          reply.code(413);
+          return { error: 'file is too large to download' };
+        }
+        const name = basename(target.rel) || 'download';
+        // Read through the already validated descriptor: an agent may rename or replace
+        // the original path, but it cannot redirect this read outside the worktree.
+        const body = await fileHandle.readFile();
+        reply
+          .header('Content-Type', contentTypeForDownload(name))
+          .header('Content-Length', String(body.byteLength))
+          .header('Content-Disposition', attachmentDisposition(name));
+        return body;
+      } finally {
+        await fileHandle.close();
       }
-      if (stats.size > MAX_SESSION_DOWNLOAD_BYTES) {
-        reply.code(413);
-        return { error: 'file is too large to download' };
-      }
-      const name = basename(target.rel) || 'download';
-      // Read before the headers go on: a failure here then still reaches the error
-      // handler with a clean reply, instead of a truncated body under a
-      // already-committed Content-Length.
-      const body = await readFile(target.abs);
-      reply
-        .header('Content-Type', contentTypeForDownload(name))
-        .header('Content-Length', String(body.byteLength))
-        .header('Content-Disposition', attachmentDisposition(name));
-      return body;
     },
   );
 
@@ -9118,7 +9330,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     reply
       .header('Content-Type', blob.mediaType)
-      .header('Cache-Control', 'public, max-age=31536000, immutable');
+      .header('Cache-Control', 'private, max-age=31536000, immutable');
     return blob.bytes;
   });
 
@@ -9366,94 +9578,105 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-      // Don't delete a session mid-turn — finish or let it settle first.
-      if (conductor.isBusy(id)) {
-        if (!force) {
-          reply.code(409);
-          return { error: `session ${id} is busy — finish the turn before deleting it` };
+      const deleteClaimed = async (): Promise<{ sessionId: string } | { error: string }> => {
+        // The ownership barrier has either settled the live turn (forced delete) or
+        // atomically proved the session idle (ordinary delete). Close every retained
+        // backend handle while that same fence is still held, before its worktree and
+        // durable state disappear.
+        conductor.closeSession?.(id);
+        const previewedServers =
+          session.projectId === null
+            ? []
+            : (await deps.eventStore.listDevServers(session.projectId)).filter(
+                (server) => server.previewSessionId === id,
+              );
+        const runningPreviewServerIds =
+          previewedServers.length > 0 && session.projectId !== null && deps.projectRuntime
+            ? await runningDevServerIds(
+                deps.eventStore,
+                deps.projectRuntime,
+                deps.projectCloneRoot,
+                session.projectId,
+                previewedServers.map(({ id: devServerId }) => devServerId),
+              )
+            : [];
+        if (previewedServers.length > 0 && deps.provisioner?.syncProjectCheckout) {
+          // Keep the session and its worktree intact if main cannot be refreshed.
+          await deps.provisioner.syncProjectCheckout(session.projectId!);
         }
-        // Force-deleting a busy session: reap the in-flight turn (SIGTERM the agent)
-        // BEFORE tearing down its worktree below. `closeSession` only closes IDLE
-        // backend handles — it does NOT signal a live agent — so without this the
-        // process is orphaned: it keeps running against a now-removed worktree (its
-        // cwd shows `(deleted)`), makes no progress, and blocks the project from
-        // recreating ("turn in flight"). No-op if the turn already settled.
-        await conductor.cancelTurn(id);
-      }
-      conductor.closeSession?.(id);
-      const previewedServers =
-        session.projectId === null
-          ? []
-          : (await deps.eventStore.listDevServers(session.projectId)).filter(
-              (server) => server.previewSessionId === id,
-            );
-      const runningPreviewServerIds =
-        previewedServers.length > 0 && session.projectId !== null && deps.projectRuntime
-          ? await runningDevServerIds(
+        let cleanupWorktrees = worktrees;
+        if (session.projectId !== null && deps.projectCloneRoot !== undefined) {
+          const project = await deps.eventStore.getProject(session.projectId);
+          if (project !== undefined && !isControlPlaneProject(project)) {
+            const projectClone = projectClonePath(deps.projectCloneRoot, project);
+            cleanupWorktrees =
+              deps.projectWorktrees?.(project, projectClone) ??
+              createGitWorktreeProvisioner({
+                repoDir: projectClone,
+                worktreeRoot: join(projectClone, '.verity-sessions'),
+              });
+          }
+        }
+        const deleted = await deleteSessionEverywhere(id);
+        if (!deleted) {
+          // Raced with another delete between the lookup and here — already gone.
+          reply.code(404);
+          return { error: `session ${id} not found` };
+        }
+        if (previewedServers.length > 0 && session.projectId !== null && deps.projectRuntime) {
+          try {
+            // The FK cleared each preview pointer. Restore the persisted desired
+            // runtime state against the freshly synchronized main checkout before
+            // removing the old worktree.
+            await startAutoDevServers(
               deps.eventStore,
               deps.projectRuntime,
               deps.projectCloneRoot,
               session.projectId,
-              previewedServers.map(({ id: devServerId }) => devServerId),
-            )
-          : [];
-      if (previewedServers.length > 0 && deps.provisioner?.syncProjectCheckout) {
-        // Keep the session and its worktree intact if main cannot be refreshed.
-        await deps.provisioner.syncProjectCheckout(session.projectId!);
-      }
-      let cleanupWorktrees = worktrees;
-      if (session.projectId !== null && deps.projectCloneRoot !== undefined) {
-        const project = await deps.eventStore.getProject(session.projectId);
-        if (project !== undefined && !isControlPlaneProject(project)) {
-          const projectClone = projectClonePath(deps.projectCloneRoot, project);
-          cleanupWorktrees =
-            deps.projectWorktrees?.(project, projectClone) ??
-            createGitWorktreeProvisioner({
-              repoDir: projectClone,
-              worktreeRoot: join(projectClone, '.verity-sessions'),
-            });
+              runningPreviewServerIds,
+            );
+          } catch (error) {
+            request.log.warn(
+              { err: error, projectId: session.projectId, sessionId: id },
+              'verity: failed to restore Dev Servers to main after session deletion',
+            );
+          }
         }
-      }
-      const deleted = await deleteSessionEverywhere(id);
-      if (!deleted) {
-        // Raced with another delete between the lookup and here — already gone.
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      if (previewedServers.length > 0 && session.projectId !== null && deps.projectRuntime) {
+        // Best-effort filesystem cleanup. The session is already gone from the
+        // store; a worktree-removal failure (e.g. it was already removed) must not
+        // turn a successful delete into an error — log and move on. Never remove the
+        // repo-root checkout (guards a stale row whose worktree is the main tree).
+        if (session.worktree !== deps.workspaceDir) {
+          try {
+            await cleanupWorktrees.remove(session.worktree);
+          } catch (error) {
+            request.log.error(
+              { err: error, sessionId: id, worktree: session.worktree },
+              'verity: failed to remove worktree on session delete',
+            );
+          }
+        }
+        return { sessionId: id };
+      };
+
+      if (force) {
         try {
-          // The FK cleared each preview pointer. Restore the persisted desired
-          // runtime state against the freshly synchronized main checkout before
-          // removing the old worktree.
-          await startAutoDevServers(
-            deps.eventStore,
-            deps.projectRuntime,
-            deps.projectCloneRoot,
-            session.projectId,
-            runningPreviewServerIds,
-          );
+          return await conductor.runBackendHandoff(id, deleteClaimed);
         } catch (error) {
-          request.log.warn(
-            { err: error, projectId: session.projectId, sessionId: id },
-            'verity: failed to restore Dev Servers to main after session deletion',
-          );
+          if (error instanceof BackendTerminationUnconfirmedError) {
+            reply.code(503);
+            reply.header('retry-after', '5');
+            return { error: `session ${id} still has an unterminated backend; try again` };
+          }
+          throw error;
         }
       }
-      // Best-effort filesystem cleanup. The session is already gone from the
-      // store; a worktree-removal failure (e.g. it was already removed) must not
-      // turn a successful delete into an error — log and move on. Never remove the
-      // repo-root checkout (guards a stale row whose worktree is the main tree).
-      if (session.worktree !== deps.workspaceDir) {
-        try {
-          await cleanupWorktrees.remove(session.worktree);
-        } catch (error) {
-          request.log.error(
-            { err: error, sessionId: id, worktree: session.worktree },
-            'verity: failed to remove worktree on session delete',
-          );
-        }
+      const claimed = await conductor.tryRunExclusive(id, deleteClaimed);
+      if (!claimed.ran) {
+        reply.code(409);
+        return { error: `session ${id} is busy — finish the turn before deleting it` };
       }
-      return { sessionId: id };
+      return claimed.value;
     },
   );
 
@@ -10619,19 +10842,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(503);
         return { error: 'branch switching is not configured' };
       }
-      // Don't move the branch out from under a running turn.
-      if (conductor.isBusy(id)) {
-        reply.code(409);
-        return { error: `session ${id} is busy — finish the turn before switching branches` };
-      }
       try {
-        const branch = await branches.switch(session.worktree, {
-          ...(body.newBranch !== undefined ? { newBranch: body.newBranch } : {}),
-          ...(body.branch !== undefined ? { branch: body.branch } : {}),
-          ...(body.preview !== undefined ? { preview: body.preview } : {}),
-          ...(body.onDirty !== undefined ? { onDirty: body.onDirty } : {}),
-        });
-        return { branch };
+        // Sampling `isBusy` leaves a gap in which a turn can start before git
+        // checkout. Claim the same per-session fence turns use and hold it for
+        // the complete switch, or refuse without touching the worktree.
+        const attempt = await conductor.tryRunExclusive(id, () =>
+          branches.switch(session.worktree, {
+            ...(body.newBranch !== undefined ? { newBranch: body.newBranch } : {}),
+            ...(body.branch !== undefined ? { branch: body.branch } : {}),
+            ...(body.preview !== undefined ? { preview: body.preview } : {}),
+            ...(body.onDirty !== undefined ? { onDirty: body.onDirty } : {}),
+          }),
+        );
+        if (!attempt.ran) {
+          reply.code(409);
+          return { error: `session ${id} is busy — finish the turn before switching branches` };
+        }
+        return { branch: attempt.value };
       } catch (error) {
         if (error instanceof DirtyWorktreeError) {
           reply.code(409);
@@ -10666,24 +10893,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // sent twice (the backlog-vs-tail race).
   app.register(websocketPlugin);
   app.register((instance, _opts, done) => {
+    instance.post('/sessions/:id/stream-ticket', async (request, reply) => {
+      const parsed = sessionParams.safeParse(request.params);
+      if (!parsed.success) return reply.code(400).send({ error: 'invalid session id' });
+      return mintStreamTicket(parsed.data.id);
+    });
+
     instance.get('/sessions/:id/stream', { websocket: true }, (socket: WebSocket, request) => {
-      // Auth gate for the WS upgrade (audit C1). The global onRequest hook does
-      // NOT reliably abort a WebSocket handshake under @fastify/websocket, so the
-      // token MUST be verified here, in the handler — this is the authoritative
-      // check for the stream, not defence-in-depth. A WebSocket can't carry an
-      // Authorization header, so the token rides the `access_token` query param
-      // (the header form is still accepted for non-browser clients). Enforced
-      // only once the gate is armed (a master password exists); a 1008 close
-      // aborts the stream exactly like an invalid session id.
-      const registry = deps.authRegistry;
-      const presentedToken =
-        accessTokenQuery(request.url) ?? bearerToken(request.headers.authorization);
-      if (registry !== undefined && registry.isEnabled()) {
-        if (!registry.verify(presentedToken)) {
-          socket.close(1008, 'unauthorized');
-          return;
-        }
-      }
       // Defence-in-depth against cross-site WebSocket hijacking: when an Origin
       // allowlist is configured, a browser-supplied Origin must match it. A
       // native client sends no Origin and passes.
@@ -10697,6 +10913,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return;
       }
       const sessionId = parsedId.data.id;
+      const registry = deps.authRegistry;
+      if (
+        registry !== undefined &&
+        registry.isEnabled() &&
+        !consumeStreamTicket(sessionId, request.headers['sec-websocket-protocol'])
+      ) {
+        socket.close(1008, 'unauthorized');
+        return;
+      }
       const detachPresence = pushPresence?.attach(sessionId);
       const parsedQuery = streamQuery.safeParse(request.query);
       const sinceSeq = parsedQuery.success ? (parsedQuery.data.sinceSeq ?? 0) : 0;

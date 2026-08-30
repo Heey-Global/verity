@@ -64,6 +64,14 @@ describe('TranscriptStore', () => {
     expect(await transcript.getLines('s1')).toEqual([]);
   });
 
+  it('serializes replace and append operations for one session', async () => {
+    await transcript.appendLines('s1', ['old']);
+    const replace = transcript.replaceLines('s1', ['replacement']);
+    const append = transcript.appendLine('s1', 'after');
+    await Promise.all([replace, append]);
+    expect(await transcript.getLines('s1')).toEqual(['replacement', 'after']);
+  });
+
   it('materializes a line-faithful newline-delimited .jsonl', async () => {
     await transcript.appendLines('s1', rawLines);
     const materialized = await transcript.materialize('s1');

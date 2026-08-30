@@ -133,6 +133,7 @@ function inspectFromSpec(spec: ContainerSpec, status: string): ContainerInspect 
     securityOpt: spec.securityOpt,
     capAdd: spec.capAdd,
     env: [...env].map(([name, value]) => `${name}=${value}`),
+    entrypoint: spec.entrypoint,
     command: spec.command,
     ...(spec.memoryBytes === undefined ? {} : { memoryBytes: spec.memoryBytes }),
     ...(spec.memorySwapBytes === undefined ? {} : { memorySwapBytes: spec.memorySwapBytes }),

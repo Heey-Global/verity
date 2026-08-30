@@ -310,6 +310,31 @@ export async function reconcileManagedCompanions(
     );
 
   if (updaterInspect.image !== options.journal.targetDigest) {
+    const socketPath = options.environment?.VERITY_DOCKER_SOCKET_PATH ?? '/var/run/docker.sock';
+    const seedMount = updaterInspect.mounts?.find(
+      (mount) =>
+        mount.type === 'bind' &&
+        mount.destination === '/opt/agent-seed' &&
+        mount.readWrite === false &&
+        typeof mount.source === 'string',
+    );
+    if (seedMount?.source === undefined)
+      throw new Error('managed Updater has no read-only agent-seed host mount');
+    const seedName = basename(seedMount.source);
+    if (!/^[a-zA-Z0-9._-]+$/.test(seedName))
+      throw new Error('managed Updater agent-seed mount has an invalid directory name');
+    const seedTarget = join(AGENT_SEED_PARENT, seedName);
+    const expectedEnv = [
+      `VERITY_HANDOFF_UPDATER_ID=${updater.item.id}`,
+      `VERITY_HANDOFF_TARGET_IMAGE=${options.journal.targetDigest}`,
+      `VERITY_HANDOFF_DEPLOYMENT_ID=${options.journal.deploymentId}`,
+      `VERITY_DOCKER_SOCKET_PATH=${socketPath}`,
+      `VERITY_HANDOFF_AGENT_SEED_TARGET=${seedTarget}`,
+    ];
+    const expectedMounts = new Set([
+      `${socketPath}\0/var/run/docker.sock`,
+      `${dirname(seedMount.source)}\0${AGENT_SEED_PARENT}`,
+    ]);
     let existing = summaries.find(
       (item) =>
         item.names?.includes(handoffName(options.journal.generation)) &&
@@ -317,42 +342,46 @@ export async function reconcileManagedCompanions(
     );
     if (existing !== undefined) {
       const state = await options.docker.inspectContainer(existing.id);
-      if (!state.running) {
+      const exact =
+        state.image === options.journal.targetDigest &&
+        state.labels?.[MANAGED_DEPLOYMENT_LABEL] === options.journal.deploymentId &&
+        state.labels?.[MANAGED_ROLE_LABEL] === HANDOFF_ROLE &&
+        state.labels?.['verity.update-generation'] === String(options.journal.generation) &&
+        state.command?.length === 1 &&
+        state.command[0] === 'managed-companion-handoff' &&
+        state.env?.length === expectedEnv.length &&
+        expectedEnv.every((entry) => state.env?.includes(entry)) &&
+        state.user === '0:0' &&
+        state.networkMode === 'none' &&
+        state.restartPolicy === 'on-failure' &&
+        state.securityOpt?.includes('no-new-privileges:true') === true &&
+        state.mounts?.length === expectedMounts.size &&
+        state.mounts.every(
+          (mount) =>
+            mount.type === 'bind' &&
+            mount.readWrite === true &&
+            typeof mount.source === 'string' &&
+            typeof mount.destination === 'string' &&
+            expectedMounts.has(`${mount.source}\0${mount.destination}`),
+        );
+      if (!exact || !state.running) {
+        if (state.running) await options.docker.stopContainer(existing.id);
         await options.docker.removeContainer(existing.id);
         existing = undefined;
       }
     }
     let helperId = existing?.id;
     if (existing === undefined) {
-      const socketPath = options.environment?.VERITY_DOCKER_SOCKET_PATH ?? '/var/run/docker.sock';
-      const seedMount = updaterInspect.mounts?.find(
-        (mount) =>
-          mount.type === 'bind' &&
-          mount.destination === '/opt/agent-seed' &&
-          mount.readWrite === false &&
-          typeof mount.source === 'string',
-      );
-      if (seedMount?.source === undefined)
-        throw new Error('managed Updater has no read-only agent-seed host mount');
-      const seedName = basename(seedMount.source);
-      if (!/^[a-zA-Z0-9._-]+$/.test(seedName))
-        throw new Error('managed Updater agent-seed mount has an invalid directory name');
-      const seedTarget = join(AGENT_SEED_PARENT, seedName);
       const spec: ContainerSpec = {
         image: options.journal.targetDigest,
         name: handoffName(options.journal.generation),
         labels: {
           [MANAGED_DEPLOYMENT_LABEL]: options.journal.deploymentId,
           [MANAGED_ROLE_LABEL]: HANDOFF_ROLE,
+          'verity.update-generation': String(options.journal.generation),
         },
         command: ['managed-companion-handoff'],
-        env: [
-          `VERITY_HANDOFF_UPDATER_ID=${updater.item.id}`,
-          `VERITY_HANDOFF_TARGET_IMAGE=${options.journal.targetDigest}`,
-          `VERITY_HANDOFF_DEPLOYMENT_ID=${options.journal.deploymentId}`,
-          `VERITY_DOCKER_SOCKET_PATH=${socketPath}`,
-          `VERITY_HANDOFF_AGENT_SEED_TARGET=${seedTarget}`,
-        ],
+        env: expectedEnv,
         binds: [
           `${socketPath}:/var/run/docker.sock`,
           `${dirname(seedMount.source)}:${AGENT_SEED_PARENT}`,

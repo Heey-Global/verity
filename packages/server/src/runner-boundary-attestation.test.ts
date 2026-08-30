@@ -14,6 +14,7 @@ import {
   parseDockerArchive,
   resetTrustedToolkitIdentityCache,
   RUNNER_BOUNDARY_BINARIES,
+  RUNNER_BOUNDARY_PROTECTED_FILES,
   trustedToolkitIdentity,
   type ImageEvidenceCollector,
   type ImageFileEvidence,
@@ -60,7 +61,9 @@ const BINARY_BYTES = Buffer.from('trusted supervisor');
 const hash = createHash('sha256').update(BINARY_BYTES).digest('hex');
 const bundledToolkit = {
   label: 'this Server bundled toolkit',
-  hashes: new Map(RUNNER_BOUNDARY_BINARIES.map((path) => [path, hash])),
+  hashes: new Map(
+    [...RUNNER_BOUNDARY_BINARIES, ...RUNNER_BOUNDARY_PROTECTED_FILES].map((path) => [path, hash]),
+  ),
 };
 const trustedToolkits = [bundledToolkit];
 
@@ -113,6 +116,7 @@ function evidence(
     ['/usr/local', entry('/usr/local', 'directory')],
     ['/usr/local/bin', entry('/usr/local/bin', 'directory')],
     ...RUNNER_BOUNDARY_BINARIES.map((path) => [path, entry(path, 'file')] as const),
+    ...RUNNER_BOUNDARY_PROTECTED_FILES.map((path) => [path, entry(path, 'file')] as const),
   ]);
   for (const [path, value] of overrides) files.set(path, value);
   return { configuredUser, files };
@@ -132,6 +136,18 @@ describe('evaluateRunnerBoundaryEvidence (ADR 0006 D1)', () => {
       ok: true,
       toolkitIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u) as unknown,
     }));
+
+  it('rejects a replaced native script sandbox even when ownership remains protected', () => {
+    const path = RUNNER_BOUNDARY_PROTECTED_FILES[0];
+    const result = evaluate(
+      evidence(new Map([[path, entry(path, 'file', { content: Buffer.from('foreign helper') })]])),
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason:
+        'the boundary binaries come from different toolkit builds — no release this Server accepts published this combination',
+    });
+  });
 
   it.each([
     ['root agent', evidence(new Map(), 'root'), /runs as root/u],
@@ -366,7 +382,9 @@ describe('attestRunnerSupervisorBoundary', () => {
         ? 'verity-runner-supervisor.mjs'
         : path.endsWith('worker')
           ? 'verity-runner-worker.mjs'
-          : path.slice(path.lastIndexOf('/') + 1);
+          : path.endsWith('spawn-broker')
+            ? 'verity-agent-spawn-broker.mjs'
+            : path.slice(path.lastIndexOf('/') + 1);
       files.set(
         path,
         entry(path, 'file', {
@@ -374,6 +392,14 @@ describe('attestRunnerSupervisorBoundary', () => {
         }),
       );
     }
+    files.set(
+      RUNNER_BOUNDARY_PROTECTED_FILES[0],
+      entry(RUNNER_BOUNDARY_PROTECTED_FILES[0], 'file', {
+        content: await readFile(
+          'features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox',
+        ),
+      }),
+    );
     const collector = vi.fn<ImageEvidenceCollector>(async () => ({
       configuredUser: 'vscode',
       files,
@@ -419,17 +445,41 @@ describe('attestRunnerSupervisorBoundary', () => {
  * the warning becomes noise; no less, or a changed binary reads as current.
  */
 describe('trustedToolkitIdentity', () => {
+  it('ships hash-linked static ELF artifacts for both supported architectures', async () => {
+    const sums = await readFile('features/verity-sandbox-toolkit/prebuilt/sha256sums.txt', 'utf8');
+    for (const [architecture, machine] of [
+      ['amd64', 62],
+      ['arm64', 183],
+    ] as const) {
+      const bytes = await readFile(
+        `features/verity-sandbox-toolkit/prebuilt/linux-${architecture}/verity-script-sandbox`,
+      );
+      expect(bytes.subarray(0, 4)).toEqual(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      expect(bytes.readUInt16LE(18)).toBe(machine);
+      expect(sums).toContain(
+        `${createHash('sha256').update(bytes).digest('hex')}  linux-${architecture}/verity-script-sandbox`,
+      );
+    }
+  });
+
   async function bundle(
     contents: Partial<Record<string, string>> = {},
   ): Promise<{ dir: string; cleanup: () => Promise<void> }> {
     const dir = mkdtempSync(join(tmpdir(), 'toolkit-identity-'));
     await mkdir(join(dir, 'bin'), { recursive: true });
+    await mkdir(join(dir, 'prebuilt'), { recursive: true });
+    await writeFile(
+      join(dir, 'prebuilt', 'sha256sums.txt'),
+      `${hash}  linux-amd64/verity-script-sandbox\n`,
+    );
     for (const path of RUNNER_BOUNDARY_BINARIES) {
       const name = path.endsWith('supervisor')
         ? 'verity-runner-supervisor.mjs'
         : path.endsWith('worker')
           ? 'verity-runner-worker.mjs'
-          : path.slice(path.lastIndexOf('/') + 1);
+          : path.endsWith('spawn-broker')
+            ? 'verity-agent-spawn-broker.mjs'
+            : path.slice(path.lastIndexOf('/') + 1);
       await writeFile(join(dir, 'bin', name), contents[name] ?? `${name} v1\n`);
     }
     return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
@@ -441,6 +491,18 @@ describe('trustedToolkitIdentity', () => {
       const first = await trustedToolkitIdentity(dir);
       expect(first).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(await trustedToolkitIdentity(dir)).toBe(first);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('fails closed when the architecture-specific helper hash is absent', async () => {
+    const { dir, cleanup } = await bundle();
+    try {
+      await writeFile(join(dir, 'prebuilt', 'sha256sums.txt'), '');
+      await expect(trustedToolkitIdentity(dir)).rejects.toThrow(
+        /missing or ambiguous trusted hash/u,
+      );
     } finally {
       await cleanup();
     }
@@ -616,7 +678,7 @@ describe('acceptedToolkits (ADR 0006 D9)', () => {
    *  publishes; `label` varies the hashes so two entries differ. */
   const build = (label: string): Record<string, string> =>
     Object.fromEntries(
-      RUNNER_BOUNDARY_BINARIES.map((path) => [
+      [...RUNNER_BOUNDARY_BINARIES, ...RUNNER_BOUNDARY_PROTECTED_FILES].map((path) => [
         path,
         createHash('sha256').update(`${label}:${path}`).digest('hex'),
       ]),
@@ -627,12 +689,19 @@ describe('acceptedToolkits (ADR 0006 D9)', () => {
   ): Promise<{ dir: string; own: string; cleanup: () => Promise<void> }> {
     const dir = mkdtempSync(join(tmpdir(), 'toolkit-ledger-'));
     await mkdir(join(dir, 'bin'), { recursive: true });
+    await mkdir(join(dir, 'prebuilt'), { recursive: true });
+    await writeFile(
+      join(dir, 'prebuilt', 'sha256sums.txt'),
+      `${hash}  linux-amd64/verity-script-sandbox\n`,
+    );
     for (const path of RUNNER_BOUNDARY_BINARIES) {
       const name = path.endsWith('supervisor')
         ? 'verity-runner-supervisor.mjs'
         : path.endsWith('worker')
           ? 'verity-runner-worker.mjs'
-          : path.slice(path.lastIndexOf('/') + 1);
+          : path.endsWith('spawn-broker')
+            ? 'verity-agent-spawn-broker.mjs'
+            : path.slice(path.lastIndexOf('/') + 1);
       await writeFile(join(dir, 'bin', name), `${name} own\n`);
     }
     if (ledger !== undefined) {
@@ -793,8 +862,7 @@ describe('acceptedToolkits (ADR 0006 D9)', () => {
     expect(Array.isArray(shipped.releases)).toBe(true);
     const accepted = await labels('features/verity-sandbox-toolkit');
     expect(accepted[0]).toBe('this Server bundled toolkit');
-    expect(accepted).toContain('release 11.0.0');
-    expect(accepted).toContain('release 12.0.0');
+    expect(accepted).toContain('release 16.3.1 (amd64)');
   });
 });
 
@@ -1115,6 +1183,10 @@ describe('defaultImageEvidenceCollector (ADR 0006 D1 evidence gathering)', () =>
       (path) =>
         [path, fileArchive(path.slice(path.lastIndexOf('/') + 1), BINARY_BYTES, 0o755)] as const,
     ),
+    ...RUNNER_BOUNDARY_PROTECTED_FILES.map(
+      (path) =>
+        [path, fileArchive(path.slice(path.lastIndexOf('/') + 1), BINARY_BYTES, 0o755)] as const,
+    ),
   ]);
 
   interface ArchiveServer {
@@ -1206,7 +1278,9 @@ describe('defaultImageEvidenceCollector (ADR 0006 D1 evidence gathering)', () =>
       expect(server.endpoints).toContain(
         `/containers/${CONTAINER_ID}/archive?path=${encodeURIComponent('/usr/local/bin')}`,
       );
-      expect(server.endpoints).toHaveLength(6 + RUNNER_BOUNDARY_BINARIES.length);
+      expect(server.endpoints).toHaveLength(
+        6 + RUNNER_BOUNDARY_BINARIES.length + RUNNER_BOUNDARY_PROTECTED_FILES.length,
+      );
 
       expect(collected.configuredUser).toBe('vscode');
       expect(collected.files.get('/etc/passwd')).toEqual({

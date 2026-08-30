@@ -63,13 +63,27 @@ export async function createSessionConfirmingWarnings(
  * if they cancel — so the caller's chain simply fails and the chat reports it. */
 function confirmProjectWarnings(warnings: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    Alert.alert('Review project warning', warnings.join('\n\n'), [
-      {
-        text: 'Cancel',
-        style: 'cancel',
-        onPress: () => reject(new Error('Cancelled at the project warning')),
-      },
-      { text: 'Continue', onPress: () => resolve() },
-    ]);
+    let settled = false;
+    const cancel = (): void => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Cancelled at the project warning'));
+    };
+    Alert.alert(
+      'Review project warning',
+      warnings.join('\n\n'),
+      [
+        { text: 'Cancel', style: 'cancel', onPress: cancel },
+        {
+          text: 'Continue',
+          onPress: () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          },
+        },
+      ],
+      { cancelable: true, onDismiss: cancel },
+    );
   });
 }

@@ -99,6 +99,24 @@ afterEach(() => {
 });
 
 describe('deploy/bin/verity-compose', () => {
+  it('keeps PostgreSQL reachable from managed Server generations on verity-net', () => {
+    const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
+      services: Record<string, { networks?: unknown; environment?: Record<string, string> }>;
+    };
+    // A generated managed Server is single-homed on verity-net. PostgreSQL must
+    // therefore retain the default network rather than an isolated Compose-only
+    // bridge that managed generations cannot join.
+    expect(compose.services['postgres']?.networks).toBeUndefined();
+    expect(compose.services['postgres']?.environment).not.toHaveProperty(
+      'POSTGRES_HOST_AUTH_METHOD',
+    );
+    expect(compose.services['postgres']?.environment?.['POSTGRES_PASSWORD']).toContain(
+      'VERITY_POSTGRES_PASSWORD',
+    );
+    expect(compose.services['verity']?.environment?.['DATABASE_URL']).toContain(
+      '${VERITY_POSTGRES_PASSWORD:',
+    );
+  });
   it('gives bootstrap and the Updater the same managed ACP environment sources', () => {
     const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
       services: Record<string, { environment?: Record<string, string> }>;

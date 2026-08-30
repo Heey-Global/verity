@@ -21,7 +21,7 @@ associated storage, permissions, and rotation lifecycle.
 
 The product website is its own release train, `website-vX.Y.Z`, tracked in
 `docs/website`. A release publishes one image, `verity-website:vX.Y.Z`, and that
-tag is what the ArgoCD manifest in `Heey-Global/k8s` pins. There is deliberately
+tag is what the downstream deployment manifest pins. There is deliberately
 no `latest`: the cluster should have exactly one way in, and it should be a pin
 somebody moved on purpose.
 

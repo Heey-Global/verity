@@ -1,4 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   CompiledQuery,
   Kysely,
@@ -10,6 +11,7 @@ import {
   type Dialect,
   type DialectAdapter,
   type Driver,
+  type MigrationLockOptions,
   type QueryCompiler,
   type QueryResult,
 } from 'kysely';
@@ -29,12 +31,71 @@ import type { Database } from './schema.js';
  * index. Keep it that way: a production import would resolve fine in the
  * monorepo and fail in the `npm ci --omit=dev` runtime image.
  */
+class PgliteTransactionCoordinator {
+  private tail: Promise<void> = Promise.resolve();
+  private readonly releases = new WeakMap<DatabaseConnection, () => void>();
+  private owner: DatabaseConnection | undefined;
+  private ownerMigration: MigrationScope | undefined;
+
+  async execute<R>(
+    connection: DatabaseConnection,
+    query: () => Promise<QueryResult<R>>,
+  ): Promise<QueryResult<R>> {
+    const migration = migrationScope.getStore();
+    if (
+      this.owner === connection ||
+      (migration?.active === true && migration === this.ownerMigration)
+    ) {
+      return await query();
+    }
+    const release = await this.lock();
+    try {
+      return await query();
+    } finally {
+      release();
+    }
+  }
+
+  async acquire(connection: DatabaseConnection): Promise<void> {
+    const release = await this.lock();
+    this.releases.set(connection, release);
+    this.owner = connection;
+    this.ownerMigration = migrationScope.getStore();
+  }
+
+  release(connection: DatabaseConnection): void {
+    const release = this.releases.get(connection);
+    this.releases.delete(connection);
+    if (this.owner === connection) {
+      this.owner = undefined;
+      this.ownerMigration = undefined;
+    }
+    release?.();
+  }
+
+  private async lock(): Promise<() => void> {
+    const previous = this.tail;
+    let release!: () => void;
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.tail = previous.then(() => done);
+    await previous;
+    return release;
+  }
+}
+
 class PgliteConnection implements DatabaseConnection {
-  constructor(private readonly client: PGlite) {}
+  constructor(
+    private readonly client: PGlite,
+    private readonly coordinator: PgliteTransactionCoordinator,
+  ) {}
 
   async executeQuery<R>(compiledQuery: CompiledQuery): Promise<QueryResult<R>> {
-    const result = await this.client.query<R>(compiledQuery.sql, [...compiledQuery.parameters]);
-    return { rows: result.rows, numAffectedRows: BigInt(result.affectedRows ?? 0) };
+    return await this.coordinator.execute(this, async () => {
+      const result = await this.client.query<R>(compiledQuery.sql, [...compiledQuery.parameters]);
+      return { rows: result.rows, numAffectedRows: BigInt(result.affectedRows ?? 0) };
+    });
   }
 
   streamQuery(): AsyncIterableIterator<never> {
@@ -42,7 +103,9 @@ class PgliteConnection implements DatabaseConnection {
   }
 }
 
-class PgliteDriver implements Driver {
+export class PgliteDriver implements Driver {
+  private readonly transactions = new PgliteTransactionCoordinator();
+
   constructor(private readonly client: PGlite) {}
 
   init(): Promise<void> {
@@ -50,19 +113,33 @@ class PgliteDriver implements Driver {
   }
 
   acquireConnection(): Promise<DatabaseConnection> {
-    return Promise.resolve(new PgliteConnection(this.client));
+    return Promise.resolve(new PgliteConnection(this.client, this.transactions));
   }
 
   async beginTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('begin'));
+    await this.transactions.acquire(connection);
+    try {
+      await connection.executeQuery(CompiledQuery.raw('begin'));
+    } catch (error) {
+      this.transactions.release(connection);
+      throw error;
+    }
   }
 
   async commitTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('commit'));
+    try {
+      await connection.executeQuery(CompiledQuery.raw('commit'));
+    } finally {
+      this.transactions.release(connection);
+    }
   }
 
   async rollbackTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('rollback'));
+    try {
+      await connection.executeQuery(CompiledQuery.raw('rollback'));
+    } finally {
+      this.transactions.release(connection);
+    }
   }
 
   releaseConnection(): Promise<void> {
@@ -74,11 +151,44 @@ class PgliteDriver implements Driver {
   }
 }
 
+interface MigrationScope {
+  active: boolean;
+}
+
+const migrationScope = new AsyncLocalStorage<MigrationScope>();
+
+class PgliteAdapter extends PostgresAdapter {
+  override async acquireMigrationLock(
+    db: Kysely<unknown>,
+    options: MigrationLockOptions,
+  ): Promise<void> {
+    // PGlite has one physical session, so the transaction coordinator is the
+    // migration lock. Mark this async branch as deliberately re-entrant: Kysely
+    // asks the migration provider to read the ledger through the root `db`
+    // while its migration transaction is open. Only descendants of this branch
+    // may share that transaction; unrelated queries still wait for commit.
+    migrationScope.enterWith({ active: true });
+    await super.acquireMigrationLock(db, options);
+  }
+
+  override async releaseMigrationLock(
+    db: Kysely<unknown>,
+    options: MigrationLockOptions,
+  ): Promise<void> {
+    try {
+      await super.releaseMigrationLock(db, options);
+    } finally {
+      const scope = migrationScope.getStore();
+      if (scope) scope.active = false;
+    }
+  }
+}
+
 class PgliteDialect implements Dialect {
   constructor(private readonly client: PGlite) {}
 
   createAdapter(): DialectAdapter {
-    return new PostgresAdapter();
+    return new PgliteAdapter();
   }
 
   createDriver(): Driver {

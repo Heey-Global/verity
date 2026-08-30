@@ -888,6 +888,15 @@ describe('EventStore — append-only event log', () => {
     await expect(ctx.store.appendEvent('s1', invalid)).rejects.toThrow(/invalid event/);
   });
 
+  it('persists canonical parsed events without unknown adapter fields', async () => {
+    await ctx.store.appendEvent('s1', {
+      t: 'text',
+      delta: 'safe',
+      unexpectedSecret: 'must-not-persist',
+    } as AgentEvent);
+    expect(await ctx.store.getEvents('s1')).toEqual([{ t: 'text', delta: 'safe' }]);
+  });
+
   it('rejects appending to a non-existent session (foreign key)', async () => {
     await expect(ctx.store.appendEvent('ghost', { t: 'text', delta: 'x' })).rejects.toThrow();
   });
@@ -937,11 +946,9 @@ describe('EventStore — append-only event log', () => {
   });
 
   // One schema guards both directions, so the tolerance reaches appends as well: a peer still
-  // naming the retired channel across a rollout boundary is accepted rather than refused —
-  // refusing would fail the turn, accepting costs only a standing grant this build would
-  // decline to resolve anyway. What lands on disk is the caller's object, not the parse
-  // output, so the row stays honest about what the peer said and only the read drops it.
-  it('accepts an appended event naming a retired grantChannel and drops it on read', async () => {
+  // naming the retired channel across a rollout boundary is accepted rather than refused.
+  // Persist the canonical parsed shape so retired/unknown fields cannot survive on disk.
+  it('accepts an appended event naming a retired grantChannel and drops it before persistence', async () => {
     await ctx.store.appendEvent('s1', {
       t: 'permission',
       id: 'p2',
@@ -951,11 +958,9 @@ describe('EventStore — append-only event log', () => {
       grantChannel: 'native',
     } as unknown as AgentEvent);
 
-    // Straight from the column, bypassing the tolerant read schema: what the peer said is
-    // still on the row, even though the select type says it cannot be.
     const rows = await ctx.db.selectFrom('events').select('payload').execute();
     expect(rows).toHaveLength(1);
-    expect((rows[0]?.payload as { grantChannel?: string }).grantChannel).toBe('native');
+    expect((rows[0]?.payload as { grantChannel?: string }).grantChannel).toBeUndefined();
 
     const [stored] = await ctx.store.getEvents('s1');
     expect(stored?.t === 'permission' && stored.grantChannel).toBe(undefined);
@@ -1033,6 +1038,10 @@ describe('EventStore — durable queued turns (#80)', () => {
     // Row gone AND the prompt is now in the durable event log — both, in one txn.
     expect(await ctx.store.listQueuedTurns()).toHaveLength(0);
     expect((await ctx.store.getEvents('s1')).map((e) => e.t)).toEqual(['prompt']);
+    await ctx.store.waitForMessageProjectionIdle();
+    expect(await ctx.store.searchMessages({ query: 'run me' })).toMatchObject([
+      { sessionId: 's1', role: 'user', kind: 'prompt', text: 'run me' },
+    ]);
   });
 
   it('drainQueuedTurn is a run-once latch: a second drain persists nothing', async () => {

@@ -1,5 +1,12 @@
 export type StandingSecretGrantScope = 'session' | 'project' | 'forever';
 
+const TRUSTED_SCRIPT_INTERPRETERS = new Set([
+  '/usr/bin/node',
+  '/usr/local/bin/node',
+  '/usr/bin/python3',
+  '/usr/local/bin/python3',
+]);
+
 /**
  * Standing grant scopes the approval card may offer for `toolName`.
  *
@@ -35,7 +42,7 @@ export function secretGrantScopes(
         .some((component) => component === '' || component === '.' || component === '..') ||
       command[1] !== path ||
       typeof command[0] !== 'string' ||
-      (!command[0].startsWith('/bin/') && !command[0].startsWith('/usr/')) ||
+      !TRUSTED_SCRIPT_INTERPRETERS.has(command[0]) ||
       loading !== 'isolated' ||
       typeof sha256 !== 'string' ||
       !/^[a-f0-9]{64}$/u.test(sha256)

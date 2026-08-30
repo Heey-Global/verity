@@ -30,24 +30,6 @@ export function bearerToken(header: string | undefined): string | undefined {
   return match ? match[1] : undefined;
 }
 
-/** Pull an `access_token` query param from a raw request URL. WebSocket
- *  handshakes can't set the Authorization header, so the live stream presents
- *  its token here instead. */
-export function accessTokenQuery(url: string): string | undefined {
-  const q = url.indexOf('?');
-  if (q < 0) return undefined;
-  return new URLSearchParams(url.slice(q + 1)).get('access_token') ?? undefined;
-}
-
-/** Replace the value of an `access_token` query param with `REDACTED`, leaving the
- *  rest of the URL byte-identical (audit M4). The WS bearer token must ride the
- *  query string — a WebSocket handshake can't set headers — so without this it
- *  lands verbatim in the request log (and any upstream access log), where a valid,
- *  long-lived credential must never sit. No-op when there is no such param. */
-export function redactAccessTokenInUrl(url: string): string {
-  return url.replace(/([?&]access_token=)[^&#]*/gi, '$1REDACTED');
-}
-
 /** Decide whether a WebSocket upgrade may proceed given an optional Origin
  *  allowlist and the request's `Origin` header (anti-CSWSH, defence-in-depth).
  *  Permissive by design: no allowlist configured → always allowed; a MISSING

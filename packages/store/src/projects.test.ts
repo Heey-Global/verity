@@ -701,10 +701,33 @@ describe('EventStore — projects', () => {
     expect(ok).toBe(false);
   });
 
+  it('setSessionProject refuses a soft-deleted project', async () => {
+    const projectId = sampleProject.id();
+    await ctx.store.upsertProject({
+      id: projectId,
+      owner: 'heey-global',
+      repo: 'hidden-binding',
+      containerName: 'dev-heey-global-hidden-binding',
+      state: 'active',
+    });
+    const sessionId = randomUUID();
+    await ctx.store.createSession({
+      sessionId,
+      worktree: `/wt/${sessionId}`,
+      model: 'claude-sonnet-4-6',
+    });
+    await ctx.store.hideProject(projectId);
+
+    await expect(ctx.store.setSessionProject(sessionId, projectId)).rejects.toBeInstanceOf(
+      DeletedProjectError,
+    );
+    expect((await ctx.store.getSession(sessionId))?.projectId).toBeNull();
+  });
+
   it('stores global Verity git identity and signing paths', async () => {
     const created = await ctx.store.updateVeritySettings({
       gitUserName: ' h-teske ',
-      gitUserEmail: ' holger+github@heey.global ',
+      gitUserEmail: ' developer@example.com ',
       gitSshPrivateKeyPath: ' /data/dev/.shared/github/id_ed25519 ',
       gitSshPrivateKey: ' private-key ',
       gitSshPublicKeyPath: ' /data/dev/.shared/github/id_ed25519.pub ',
@@ -717,7 +740,7 @@ describe('EventStore — projects', () => {
 
     expect(created).toMatchObject({
       gitUserName: 'h-teske',
-      gitUserEmail: 'holger+github@heey.global',
+      gitUserEmail: 'developer@example.com',
       gitSshPrivateKeyPath: '/data/dev/.shared/github/id_ed25519',
       gitSshPrivateKey: 'private-key',
       gitSshPublicKeyPath: '/data/dev/.shared/github/id_ed25519.pub',
@@ -736,7 +759,7 @@ describe('EventStore — projects', () => {
 
     expect(updated).toMatchObject({
       gitUserName: 'Holger',
-      gitUserEmail: 'holger+github@heey.global',
+      gitUserEmail: 'developer@example.com',
       gitKnownHostsPath: null,
       gitKnownHosts: null,
       gitAllowedSignersPath: '/data/dev/.shared/github/allowed_signers',
@@ -1250,9 +1273,9 @@ describe('EventStore — projects', () => {
       const worked = randomUUID();
       await ctx.store.upsertProject({
         id: worked,
-        owner: 'heey-global',
-        repo: 'deep-ocr',
-        containerName: 'verity-heey-global--deep-ocr',
+        owner: 'example-org',
+        repo: 'sample-app',
+        containerName: 'verity-example-org--sample-app',
         state: 'absent',
       });
       const sessionId = randomUUID();
@@ -1265,10 +1288,10 @@ describe('EventStore — projects', () => {
       const id = await createLocal();
 
       await expect(
-        ctx.store.reserveProjectIdentity(id, { owner: 'heey-global', repo: 'deep-ocr' }),
+        ctx.store.reserveProjectIdentity(id, { owner: 'example-org', repo: 'sample-app' }),
       ).resolves.toBe(false);
       await expect(
-        ctx.store.linkProjectToGitHub(id, { owner: 'heey-global', repo: 'deep-ocr' }),
+        ctx.store.linkProjectToGitHub(id, { owner: 'example-org', repo: 'sample-app' }),
       ).rejects.toThrow();
       expect(await ctx.store.getProject(worked)).toBeDefined();
       expect((await ctx.store.getSession(sessionId))?.projectId).toBe(worked);

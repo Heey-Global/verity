@@ -97,4 +97,9 @@ describe('deriveSessionStatus', () => {
       ]),
     ).toBe('running');
   });
+
+  it('does not inherit a terminal status across a fresh prompt boundary', () => {
+    expect(deriveSessionStatus([result, { t: 'prompt', text: 'new turn' }, text])).toBe('running');
+    expect(deriveSessionStatus([error, { t: 'prompt', text: 'new turn' }])).toBe('running');
+  });
 });

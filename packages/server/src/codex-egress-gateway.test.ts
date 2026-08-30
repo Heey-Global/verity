@@ -58,7 +58,7 @@ describe('Codex egress gateway handler', () => {
       method: 'POST',
       headers: {
         host: AUTHORITY,
-        authorization: 'Bearer verity-placeholder',
+        authorization: 'Bearer verity-codex-gateway-placeholder-v1',
         'content-type': 'application/json',
       },
       body: '{"input":"hello"}',
@@ -85,7 +85,7 @@ describe('Codex egress gateway handler', () => {
       path: '/codex/models',
       headers: {
         host: AUTHORITY,
-        authorization: 'Bearer verity-placeholder',
+        authorization: 'Bearer verity-codex-gateway-placeholder-v1',
         'chatgpt-account-id': 'attacker-account',
       },
     });
@@ -106,7 +106,10 @@ describe('Codex egress gateway handler', () => {
     await expect(
       call(port, {
         path: '/codex/models',
-        headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+        headers: {
+          host: AUTHORITY,
+          authorization: 'Bearer verity-codex-gateway-placeholder-v1',
+        },
       }),
     ).resolves.toEqual({ status: 401, body: 'unauthorized', quota: undefined });
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
@@ -123,7 +126,7 @@ describe('Codex egress gateway handler', () => {
 
     await call(port, {
       path: '/codex/models',
-      headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+      headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
     await vi.waitFor(() => expect(events).toHaveLength(1));
     expect(events[0]).toMatchObject({
@@ -156,7 +159,7 @@ describe('Codex egress gateway handler', () => {
       port,
       path: '/codex/responses',
       method: 'POST',
-      headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+      headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
     request.once('error', () => undefined);
     request.once('response', (response) => {
@@ -226,7 +229,7 @@ describe('Codex egress gateway handler', () => {
 
     await call(port, {
       path: '/codex/models',
-      headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+      headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
 
     expect(events).toHaveLength(1);
@@ -258,7 +261,7 @@ describe('Codex egress gateway handler', () => {
       port,
       path: '/codex/responses',
       method: 'POST',
-      headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+      headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
     aborted.once('error', () => undefined);
     aborted.once('response', (response) => {
@@ -340,7 +343,7 @@ describe('Codex egress gateway handler', () => {
     const result = await call(port, {
       path: '/codex/responses',
       method: 'POST',
-      headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+      headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
 
     expect(result.body).toBe('data: 0\n\ndata: 1\n\ndata: 2\n\ndata: 3\n\ndata: 4\n\n');
@@ -394,7 +397,7 @@ describe('Codex egress gateway handler', () => {
       port,
       path: '/codex/responses',
       method: 'POST',
-      headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+      headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
     cancelled.once('error', () => undefined);
     cancelled.end();
@@ -424,7 +427,10 @@ describe('Codex egress gateway handler', () => {
     await expect(
       call(port, {
         path: '/codex/models',
-        headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+        headers: {
+          host: AUTHORITY,
+          authorization: 'Bearer verity-codex-gateway-placeholder-v1',
+        },
       }),
     ).resolves.toEqual({ status: 200, body: 'ok', quota: undefined });
   });
@@ -441,7 +447,7 @@ describe('Codex egress gateway handler', () => {
     await call(port, {
       path: '/codex/secret-value?value=secret',
       method: 'PURGE',
-      headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+      headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
 
     expect(events[0]).toMatchObject({ method: '<other>', path: '<other>', projectId: '<other>' });
@@ -488,7 +494,7 @@ function stream(port: number): {
     port,
     path: '/codex/responses',
     method: 'POST',
-    headers: { host: AUTHORITY, authorization: 'Bearer verity-placeholder' },
+    headers: { host: AUTHORITY, authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
   });
   const ended = new Promise<'broken' | 'complete'>((resolve) => {
     request.once('error', () => resolve('broken'));

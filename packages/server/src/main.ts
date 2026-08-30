@@ -3,6 +3,8 @@
 // cleanly on a signal. The testable wiring lives in ./embedded.ts; this file is
 // just the process glue (excluded from coverage — validated by running it).
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -67,6 +69,10 @@ import { createReleaseChannelVerifier } from './self-update/release-channel-veri
 import { releaseChannelMetadataFromEnv } from './self-update/release-channel-publish.js';
 import { startManagedGateway } from './self-update/managed-gateway.js';
 import {
+  MANAGED_CLIENT_IDENTITY_HEADER,
+  verifyManagedClientIdentity,
+} from './managed-client-identity.js';
+import {
   agentSeedPublicationKey,
   publishAgentSeedAtomically,
   readPublishedAgentSeedDigest,
@@ -122,6 +128,7 @@ import {
 } from './agent-gateway-unseal-key.js';
 import { resolveProjectRelayImage } from './project-relay-image.js';
 import { UPLINK_CONTROL_URL } from './uplink-control-client.js';
+import { createDevicePairingManager } from './device-pairing.js';
 
 /** Fixed internal port for the non-published `/internal/*` (signing-broker)
  *  listener. Container-internal only, never on `ports:` — no host conflict, so it
@@ -451,9 +458,26 @@ function gitToplevel(): string | undefined {
   }
 }
 
+async function tlsFromEnvironment(): Promise<{ key: Buffer; cert: Buffer } | undefined> {
+  const keyPath = process.env.VERITY_TLS_KEY_PATH?.trim();
+  const certPath = process.env.VERITY_TLS_CERT_PATH?.trim();
+  if (!keyPath && !certPath) return undefined;
+  if (!keyPath || !certPath) {
+    throw new Error('VERITY_TLS_KEY_PATH and VERITY_TLS_CERT_PATH must be configured together');
+  }
+  return { key: await readFile(keyPath), cert: await readFile(certPath) };
+}
+
+function managedClientIdentitySecret(key: Buffer): Buffer {
+  return createHash('sha256').update('verity.managed-client-identity.v1\0').update(key).digest();
+}
+
 async function main(): Promise<void> {
   if (process.argv[2] === 'managed-gateway') {
+    const tls = await tlsFromEnvironment();
     const gateway = await startManagedGateway({
+      ...(tls === undefined ? {} : { tls }),
+      ...(tls === undefined ? {} : { clientIdentitySecret: managedClientIdentitySecret(tls.key) }),
       publicHost: process.env.HOST ?? '0.0.0.0',
       publicPort: parsePort(process.env.PORT),
       internalHost: process.env.VERITY_INTERNAL_HOST ?? '0.0.0.0',
@@ -786,7 +810,10 @@ async function main(): Promise<void> {
   const serverUpdateController = await createServerUpdateController();
   const secretKeyHandoffClient = await createSecretKeyHandoffClient();
   const standbyDirectiveClient = await createStandbyDirectiveClient();
-  const agentSeedProvenance = await createAgentSeedProvenanceClient(SERVER_VERSION);
+  const agentSeedProvenance = await createAgentSeedProvenanceClient(
+    SERVER_VERSION,
+    process.env.VERITY_SERVER_IMAGE,
+  );
   if (await stopStartupIfRequested()) return;
 
   /**
@@ -895,6 +922,78 @@ async function main(): Promise<void> {
     }
   };
 
+  const pairingIdentityPath = process.env.VERITY_PAIRING_IDENTITY_KEY_PATH;
+  const pairingCodePath = process.env.VERITY_PAIRING_CODE_PATH;
+  const pairingExpiresAt = process.env.VERITY_PAIRING_EXPIRES_AT;
+  const pairingExpiresAtPath = process.env.VERITY_PAIRING_EXPIRES_AT_PATH;
+  if (pairingExpiresAt && pairingExpiresAtPath) {
+    throw new Error(
+      'VERITY_PAIRING_EXPIRES_AT and VERITY_PAIRING_EXPIRES_AT_PATH are mutually exclusive',
+    );
+  }
+  const resolvedPairingExpiresAt = pairingExpiresAtPath
+    ? (await readFile(pairingExpiresAtPath, 'utf8')).trim()
+    : pairingExpiresAt;
+  const pairingParts = [pairingIdentityPath, pairingCodePath, resolvedPairingExpiresAt].filter(
+    (value) => value !== undefined && value !== '',
+  );
+  if (pairingParts.length !== 0 && pairingParts.length !== 3) {
+    throw new Error(
+      'VERITY_PAIRING_IDENTITY_KEY_PATH, VERITY_PAIRING_CODE_PATH and one pairing expiry source must be configured together',
+    );
+  }
+  const devicePairing =
+    pairingParts.length === 3
+      ? createDevicePairingManager({
+          privateKeyPem: await readFile(pairingIdentityPath!, 'utf8'),
+          loadPairingMaterial: () => ({
+            pairingCode: readFileSync(pairingCodePath!, 'utf8').trim(),
+            expiresAt: pairingExpiresAtPath
+              ? readFileSync(pairingExpiresAtPath, 'utf8').trim()
+              : resolvedPairingExpiresAt!,
+          }),
+          loadConsumedCodeHash: () => {
+            const hashes = new Set<string>();
+            try {
+              for (const hash of readFileSync(join(verityRoot, '.pairing-code-consumed'), 'utf8')
+                .split(/\r?\n/)
+                .map((value) => value.trim())
+                .filter(Boolean)) {
+                hashes.add(hash);
+              }
+            } catch (error: unknown) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            }
+            try {
+              for (const hash of readdirSync(join(verityRoot, '.pairing-code-consumed.d'))) {
+                hashes.add(hash);
+              }
+            } catch (error: unknown) {
+              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            }
+            return [...hashes];
+          },
+          storeConsumedCodeHash: (hash) => {
+            const directory = join(verityRoot, '.pairing-code-consumed.d');
+            mkdirSync(directory, { recursive: true, mode: 0o700 });
+            try {
+              const fd = openSync(join(directory, hash), 'wx', 0o600);
+              closeSync(fd);
+              return true;
+            } catch (error: unknown) {
+              if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+              throw error;
+            }
+          },
+        })
+      : undefined;
+  // In managed mode the public Gateway terminates TLS; its backend remains on
+  // the private Compose network over HTTP. Direct deployments terminate here.
+  const https = process.env.VERITY_MANAGED_DEPLOYMENT_ID ? undefined : await tlsFromEnvironment();
+  const managedTls = process.env.VERITY_MANAGED_DEPLOYMENT_ID
+    ? await tlsFromEnvironment()
+    : undefined;
+
   /** The build itself, split out only so the failure unwind above can wrap it. */
   const buildAndListen = async (context: {
     controlPlane: ClaimedControlPlane | undefined;
@@ -905,6 +1004,18 @@ async function main(): Promise<void> {
     const { controlPlane, adoptedSecretKeyMaterial } = context;
     const serverPromise = buildEmbeddedServer({
       databaseUrl,
+      ...(managedTls === undefined
+        ? {}
+        : {
+            unlockClientIdentity: (request) =>
+              verifyManagedClientIdentity(
+                managedClientIdentitySecret(managedTls.key),
+                request.headers[MANAGED_CLIENT_IDENTITY_HEADER],
+                { method: request.method, url: request.raw.url ?? '/' },
+              ),
+          }),
+      ...(https === undefined ? {} : { https }),
+      ...(devicePairing === undefined ? {} : { devicePairing }),
       ...(controlPlane === undefined ? {} : { controlPlaneFence: controlPlane.held }),
       ...(adoptedSecretKeyMaterial === undefined ? {} : { adoptedSecretKeyMaterial }),
       secretMaterializationRoot: join(verityRoot, 'secrets'),

@@ -9,7 +9,7 @@ type UpdatesClient = Pick<
 >;
 
 export type StartupUpdateResult = 'disabled' | 'current' | 'reloading' | 'failed';
-export type SerialUpdateResult = StartupUpdateResult | 'busy';
+export type SerialUpdateResult = StartupUpdateResult | 'downloaded' | 'busy';
 
 function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -45,6 +45,20 @@ export async function applyStartupUpdate(
   }
 }
 
+/** Download a foreground update without restarting an interactive app. Expo will
+ * apply the downloaded bundle on the next cold start, preserving unsaved work. */
+async function downloadForegroundUpdate(client: UpdatesClient): Promise<SerialUpdateResult> {
+  if (!client.isEnabled) return 'disabled';
+  try {
+    const check = await withTimeout(client.checkForUpdateAsync(), CHECK_TIMEOUT_MS);
+    if (!check.isAvailable && !check.isRollBackToEmbedded) return 'current';
+    const fetched = await withTimeout(client.fetchUpdateAsync(), FETCH_TIMEOUT_MS);
+    return fetched.isNew || fetched.isRollBackToEmbedded ? 'downloaded' : 'current';
+  } catch {
+    return 'failed';
+  }
+}
+
 /**
  * Serializes foreground/poll-triggered update checks. Expo update fetch/reload
  * calls are process-global; if a foreground event and a timer tick overlap, only
@@ -52,13 +66,14 @@ export async function applyStartupUpdate(
  */
 export function createSerialUpdateChecker(
   client: UpdatesClient = Updates,
+  reload = true,
 ): () => Promise<SerialUpdateResult> {
   let inFlight = false;
   return async () => {
     if (inFlight) return 'busy';
     inFlight = true;
     try {
-      return await applyStartupUpdate(client);
+      return reload ? await applyStartupUpdate(client) : await downloadForegroundUpdate(client);
     } finally {
       inFlight = false;
     }
@@ -69,3 +84,4 @@ export function createSerialUpdateChecker(
 // Settings action. Expo update operations are global, so separate callers must
 // never fetch or reload concurrently.
 export const checkForAppUpdate = createSerialUpdateChecker();
+export const downloadAppUpdate = createSerialUpdateChecker(Updates, false);

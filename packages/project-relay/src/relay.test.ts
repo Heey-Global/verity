@@ -280,6 +280,12 @@ describe('broker relay', () => {
       ),
     ).toContain('405 Method Not Allowed');
     expect(
+      await rawCall(
+        port,
+        'POST /internal/github/token HTTP/1.1\r\nHost: relay\r\nConnection: authorization\r\nAuthorization: Bearer secret\r\nContent-Length: 0\r\n\r\n',
+      ),
+    ).toContain('400 Bad Request');
+    expect(
       (
         await httpCall(port, {
           method: 'POST',

@@ -92,7 +92,7 @@ describe('PushFirePoints', () => {
 
     expect(sender.send).toHaveBeenCalledWith({
       title: 'Verity · Permission needed',
-      body: 'A session wants to run Bash.',
+      body: 'A session requests permission to continue.',
       categoryId: 'PERMISSION_PROMPT',
       data: { sessionId: 'session-1', kind: 'permission', toolUseId: 'tool-use-1' },
       priority: 'high',
@@ -123,10 +123,11 @@ describe('PushFirePoints', () => {
     expect(sender.send).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'heey-global/verity · Permission needed',
-        body: 'Push polish wants to run Bash.',
+        body: 'Push polish requests permission to continue.',
       }),
     );
     expect(JSON.stringify(sender.send.mock.calls)).not.toContain('secret command');
+    expect(JSON.stringify(sender.send.mock.calls)).not.toContain('Bash');
     await firePoints.close();
   });
 
@@ -243,6 +244,25 @@ describe('PushFirePoints', () => {
     await firePoints.close();
   });
 
+  it('lets an authoritative crash replace a pending optimistic result notification', async () => {
+    const sender = fakeSender();
+    const firePoints = createPushFirePoints({
+      sender,
+      presence: createPushForegroundPresence(),
+      debounceMs: 100,
+    });
+
+    firePoints.observe('session-1', event(resultEvent(), 1));
+    firePoints.observe('session-1', event({ t: 'status', state: 'crashed' }, 2));
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(sender.send).toHaveBeenCalledOnce();
+    expect(sender.send).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { sessionId: 'session-1', kind: 'crashed' } }),
+    );
+    await firePoints.close();
+  });
+
   it('cancels a stale completion when the next turn starts during debounce', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
@@ -276,6 +296,21 @@ describe('PushFirePoints', () => {
       event({ t: 'task', id: 'task-1', phase: 'ended', status: 'completed' }, 3),
     );
     firePoints.observe('session-1', event({ t: 'status', state: 'completed' }, 4));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sender.send).toHaveBeenCalledOnce();
+    await firePoints.close();
+  });
+
+  it('does not let a stale task id suppress completion of a later turn', async () => {
+    const sender = fakeSender();
+    const firePoints = createPushFirePoints({
+      sender,
+      presence: createPushForegroundPresence(),
+      debounceMs: 10,
+    });
+    firePoints.observe('session-1', event({ t: 'task', id: 'old-task', phase: 'started' }));
+    firePoints.observe('session-1', event({ t: 'prompt', text: 'new turn' }, 2));
+    firePoints.observe('session-1', event(resultEvent(), 3));
     await vi.advanceTimersByTimeAsync(10);
     expect(sender.send).toHaveBeenCalledOnce();
     await firePoints.close();

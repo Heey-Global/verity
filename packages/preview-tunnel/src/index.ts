@@ -143,6 +143,34 @@ export function reconnectDelayMs(attempt: number): number {
   return Math.min(1_000 * 2 ** attempt, 15_000);
 }
 
+export async function supervisePreviewConnector(
+  connector: { connect(): Promise<void>; waitForDisconnect(): Promise<void> },
+  options: {
+    stopping: () => boolean;
+    sleep?: (ms: number) => Promise<void>;
+    established?: () => void;
+    disconnected?: () => void;
+  },
+): Promise<void> {
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let attempt = 0;
+  while (!options.stopping()) {
+    try {
+      await connector.connect();
+      attempt = 0;
+      options.established?.();
+      await connector.waitForDisconnect();
+      if (options.stopping()) break;
+      options.disconnected?.();
+    } catch (error) {
+      if (options.stopping()) break;
+      attempt += 1;
+      if (attempt >= CONNECTOR_MAX_RECONNECT_ATTEMPTS) throw error;
+    }
+    await sleep(reconnectDelayMs(attempt));
+  }
+}
+
 export function hashPreviewSecret(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }

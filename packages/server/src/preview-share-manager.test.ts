@@ -555,6 +555,24 @@ describe('PreviewShareManager', () => {
     expect(store.createPublicPreviewShare).not.toHaveBeenCalled();
   });
 
+  it('removes a bounded Uplink share when its returned id is invalid', async () => {
+    const { manager, edge, store } = fixture();
+    edge.create.mockResolvedValueOnce({
+      shareId: 'INVALID/SHARE',
+      publicOrigin: 'https://invalid.preview.example',
+      edgeUrl: 'wss://invalid.preview.example/__verity/connector',
+      connectorToken: 'c'.repeat(32),
+      sessionSecret: 's'.repeat(32),
+      expiresAt: new Date('2030-01-01T01:00:00Z'),
+    });
+
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow('invalid share id');
+    expect(edge.remove).toHaveBeenCalledWith('INVALID/SHARE');
+    expect(store.createPublicPreviewShare).not.toHaveBeenCalled();
+  });
+
   it('marks disabled shares revoking before Docker cleanup and retries locally', async () => {
     const { manager, store, docker, edge, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([{ ...record, state: 'active' }]);

@@ -109,6 +109,7 @@ export interface RunnerAttachTarget {
   protocolVersion?: number;
   eventFilePath: string;
   controlSocketPath: string;
+  controlCapability?: string;
 }
 
 /**

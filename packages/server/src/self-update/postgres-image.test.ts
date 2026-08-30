@@ -339,6 +339,18 @@ describe('reconciling the control-plane PostgreSQL image', () => {
     expect(h.created).toEqual([]);
   });
 
+  it('fails closed when the no-network updater cannot inspect local image presence', async () => {
+    const h = harness();
+    delete h.docker.imageExists;
+    const outcome = await reconcile(h);
+    expect(outcome).toEqual({
+      kind: 'refused',
+      reason: 'the no-network updater cannot verify that the target PostgreSQL image is present',
+    });
+    expect(h.created).toEqual([]);
+    expect(h.replaced).toEqual([]);
+  });
+
   it('refuses when the deployment has no single matching database container', async () => {
     for (const containers of [[], [pgSummary('pg-1'), pgSummary('pg-2')]]) {
       const h = harness();

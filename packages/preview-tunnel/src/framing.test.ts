@@ -80,6 +80,10 @@ describe('stream.open', () => {
     ).toBe(false);
   });
 
+  it('rejects array metadata for websocket acceptance', () => {
+    expect(validStreamFrame(open({ channel: 'ws', meta: [] }), MAX_BODY_BYTES)).toBe(false);
+  });
+
   // The wire protocol document makes member tolerance normative — its `channels[]`
   // forward-compatibility argument rests on it entirely — so a validator tightened to
   // reject unknown members has to fail here rather than only break peers in the field.
@@ -216,6 +220,12 @@ describe('stream.data', () => {
 describe('stream.end', () => {
   it('accepts a bare half-close', () => {
     expect(validStreamFrame({ kind: 'stream.end', streamId: 'a1' }, MAX_BODY_BYTES)).toBe(true);
+  });
+
+  it('rejects array close metadata', () => {
+    expect(validStreamFrame({ kind: 'stream.end', streamId: 'a1', meta: [] }, MAX_BODY_BYTES)).toBe(
+      false,
+    );
   });
 
   it('accepts a websocket close status and reason', () => {

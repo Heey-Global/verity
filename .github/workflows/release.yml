@@ -277,10 +277,22 @@ jobs:
             exit 1
           fi
 
+      - name: Require Google Drive OAuth client
+        env:
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${GOOGLE_AUTH_ID:-}" =~ ^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$ ]]; then
+            echo "::error::GOOGLE_AUTH_ID must contain a Google iOS OAuth client ID." >&2
+            exit 1
+          fi
+
       - name: Build and upload native TestFlight release
         working-directory: apps/mobile
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         run: npx --yes eas-cli@21.0.1 workflow:run .eas/workflows/deploy-testflight.yml --non-interactive --wait
 
       - name: Publish verified native GitHub release
@@ -325,6 +337,9 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24.19.0'
+
+      - name: Build attested script sandbox artifacts
+        run: scripts/build-script-sandbox-prebuilts.sh
 
       # Build the Feature with every published boundary build at or above the
       # downgrade floor. This runs only after release-please has merged and tagged
@@ -462,6 +477,8 @@ jobs:
       # The Server image is the runtime trust root. Assemble the ledger again in
       # this job's checkout so the Docker build context contains the same complete
       # release history as the Feature published by its sibling job.
+      - name: Build attested script sandbox artifacts
+        run: scripts/build-script-sandbox-prebuilts.sh
       - name: Assemble toolkit compatibility ledger
         run: node scripts/update-toolkit-ledger.mjs
 
@@ -534,18 +551,17 @@ jobs:
           # the Dockerfile ARG falls back to the `0.0.0-dev` sentinel.
           # Bake the Google Drive OAuth client id (ADR 0009) into the image so the
           # deployed server has it without runtime Doppler access. Non-secret; set
-          # the GOOGLE_AUTH_ID Actions secret directly, or auto-sync it from Doppler
-          # via Doppler's GitHub Actions integration. Empty → the Drive feature
-          # reports "not configured" until set.
+          # GOOGLE_AUTH_ID can override the official public client id committed
+          # in app.config.ts (for example, in a fork).
           build-args: |
             VERITY_SERVER_VERSION=${{ env.VERSION }}
             VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.publish-project-relay.outputs.image }}
             VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
-            GOOGLE_AUTH_ID=${{ secrets.GOOGLE_AUTH_ID }}
+            GOOGLE_AUTH_ID=${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ env.VERSION }}
           # `scope` and `ignore-error`: see the note on the `Build Verity server
           # image` step in ci.yml. The scope name follows the Dockerfile, not the
@@ -593,6 +609,7 @@ jobs:
           # from the current reviewed publisher, so checkout remains pinned to
           # backend-sha while the signed revision is this workflow commit.
           REVISION: ${{ github.sha }}
+          SOURCE_REVISION: ${{ needs.release-please.outputs.backend-sha }}
         run: |
           set -euo pipefail
           if [[ ! "$SERVER_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
@@ -604,8 +621,9 @@ jobs:
           # in the document. If release-please ever tagged a commit other than
           # the one this run was triggered by, the two would disagree and every
           # deployment would refuse the release — fail here instead.
-          if [[ "$REVISION" != "$GITHUB_SHA" ]]; then
-            echo "release commit $REVISION is not the commit this run was triggered by ($GITHUB_SHA)" >&2
+          checkout_revision="$(git rev-parse HEAD)"
+          if [[ "$checkout_revision" != "$SOURCE_REVISION" ]]; then
+            echo "release checkout $checkout_revision is not the selected backend source $SOURCE_REVISION" >&2
             exit 1
           fi
           image="${REGISTRY}/${IMAGE_NAME}@${SERVER_DIGEST}"
@@ -750,7 +768,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ env.VERSION }}
             org.opencontainers.image.title=heey-global/verity-sandbox
             org.opencontainers.image.description=Verity project base image (plain base + verity-sandbox-toolkit Feature)
@@ -873,7 +891,7 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ env.VERSION }}
             org.opencontainers.image.title=heey-global/verity-project-relay
             org.opencontainers.image.description=Fixed-destination per-project Verity relay
@@ -1184,12 +1202,10 @@ jobs:
           }
           if inspect_tag "$version_target"; then
             existing="$inspect_output"
-          elif grep -qiE 'not found|manifest unknown|404|denied|unauthorized' <<<"$inspect_output"; then
-            # `denied` is in here because GHCR answers a read for something that
-            # is not there with a permission error as readily as with a 404, and
-            # a first publish must not need a human. Reading it as "absent" is
-            # safe in the direction that matters: if the credentials are the real
-            # problem, the create below fails on the same credentials.
+          elif grep -qiE 'not found|manifest unknown|404' <<<"$inspect_output"; then
+            # Only an explicit absence is safe to promote. Authentication and
+            # authorization failures leave the existing digest unknown and must
+            # fail closed before the immutable version tag can be touched.
             existing=''
           else
             # Treating an unreadable registry as an absent tag is how a guard

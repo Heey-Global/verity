@@ -1,9 +1,19 @@
-import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  access,
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { TranscriptStore } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   encodeCwd,
   materializeToDisk,
@@ -97,6 +107,16 @@ describe('readAppended', () => {
     const result = await readAppended(file, big);
     expect(result.chunk.toString('utf8')).toBe('x\n');
     expect(result.offset).toBe(2);
+  });
+
+  it('bounds each read even when the unread tail is multi-megabyte', async () => {
+    const file = join(dir, 'large.jsonl');
+    await writeFile(file, Buffer.alloc(3 * 1024 * 1024, 0x61));
+    const first = await readAppended(file, 0);
+    expect(first.chunk.length).toBe(1024 * 1024);
+    expect(first.offset).toBe(1024 * 1024);
+    const second = await readAppended(file, first.offset);
+    expect(second.chunk.length).toBe(1024 * 1024);
   });
 });
 
@@ -209,6 +229,29 @@ describe('syncTranscript (polling loop)', () => {
     expect(await transcript.getLines('s1')).toEqual(['a']);
   });
 
+  it('propagates durable-store failures instead of silently dropping transcript data', async () => {
+    const file = join(dir, 's1.jsonl');
+    await writeFile(file, 'a\n');
+    vi.spyOn(transcript, 'appendLines').mockRejectedValueOnce(new Error('database unavailable'));
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      syncTranscript(file, transcript, 's1', { signal: controller.signal, rootDir: dir }),
+    ).rejects.toThrow('database unavailable');
+  });
+
+  it('drains a multi-chunk backlog during the final flush', async () => {
+    const file = join(dir, 's1.jsonl');
+    const line = 'x'.repeat(600_000);
+    await writeFile(file, `${line}\n${line}\n${line}\n`);
+    const controller = new AbortController();
+    controller.abort();
+    await syncTranscript(file, transcript, 's1', { signal: controller.signal, rootDir: dir });
+    expect((await transcript.getLines('s1')).map((item) => item.length)).toEqual([
+      600_000, 600_000, 600_000,
+    ]);
+  });
+
   it('skips bytes before startOffset (resume — prior lines already in the store)', async () => {
     const file = join(dir, 's1.jsonl');
     await writeFile(file, 'prior\nnew\n');
@@ -241,6 +284,42 @@ describe('syncTranscript (polling loop)', () => {
 });
 
 describe('materializeToDisk / restoreIfMissing', () => {
+  it('refuses an ancestor symlink that escapes the declared runtime root', async () => {
+    await transcript.appendLines('s1', ['{"db":1}']);
+    const outside = await mkdtemp(join(tmpdir(), 'verity-transcript-outside-'));
+    await mkdir(join(dir, 'projects'));
+    await symlink(outside, join(dir, 'projects', 'cwd'));
+    const file = join(dir, 'projects', 'cwd', 'nested', 's1.jsonl');
+    try {
+      await expect(readAppended(file, 0, dir)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
+        restoreIfMissing(transcript, 's1', file, { rootDir: dir }),
+      ).rejects.toMatchObject({ code: 'ENOTDIR' });
+      await expect(
+        materializeToDisk(transcript, 's1', file, { rootDir: dir }),
+      ).rejects.toMatchObject({ code: 'ENOTDIR' });
+      await expect(access(join(outside, 'nested'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to read or restore through a transcript symlink', async () => {
+    await transcript.appendLines('s1', ['{"db":1}']);
+    const outside = join(dir, 'outside.jsonl');
+    const file = join(dir, 's1.jsonl');
+    await writeFile(outside, 'HOST-SECRET\n');
+    await symlink(outside, file);
+
+    await expect(readAppended(file, 0)).rejects.toMatchObject({ code: 'ELOOP' });
+    await expect(restoreIfMissing(transcript, 's1', file)).rejects.toMatchObject({
+      code: 'ELOOP',
+    });
+    await expect(materializeToDisk(transcript, 's1', file)).resolves.toBe(true);
+    expect(await readFile(outside, 'utf8')).toBe('HOST-SECRET\n');
+    expect(await readFile(file, 'utf8')).toBe('{"db":1}\n');
+  });
+
   it('writes the durable transcript to disk (0600), reconstructing the .jsonl', async () => {
     await transcript.appendLines('s1', ['{"type":"system"}', '{"type":"result"}']);
     const file = join(dir, 'nested', 's1.jsonl');

@@ -16,7 +16,10 @@ import {
   type ClaudeEgressIdentityStore,
 } from './claude-egress-identity.js';
 import { CLAUDE_EGRESS_PLACEHOLDER } from './claude-egress-policy.js';
-import { startClaudeEgressMtlsGateway } from './claude-egress-mtls.js';
+import {
+  startClaudeEgressMtlsGateway,
+  type ClaudeEgressMtlsMaterial,
+} from './claude-egress-mtls.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SERVER_NAME = 'localhost';
@@ -28,11 +31,16 @@ class FakeStore implements ClaudeEgressIdentityStore {
   ca: ClaudeEgressCaRecord | undefined;
   readonly clients = new Map<string, ClaudeEgressClientCertRecord>();
   caWrites = 0;
+  failNextCaWrite = false;
 
   async getClaudeEgressCa(): Promise<ClaudeEgressCaRecord | undefined> {
     return this.ca;
   }
   async upsertClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void> {
+    if (this.failNextCaWrite) {
+      this.failNextCaWrite = false;
+      throw new Error('CA store unavailable');
+    }
     this.ca = record;
     this.caWrites += 1;
   }
@@ -169,9 +177,10 @@ describe('Claude egress identity service', () => {
 
     expect(store.ca?.caCertPem).not.toBe(staleCaCert); // fresh CA minted
     expect(store.clients.size).toBe(0); // stale client certs dropped
-    // A new CA cannot replace the live trust bundle until old/new client
-    // certificates overlap; only same-CA leaf rotation is live today.
-    expect(onGatewayLeafChanged).not.toHaveBeenCalled();
+    expect(onGatewayLeafChanged).toHaveBeenCalledOnce();
+    expect(onGatewayLeafChanged).toHaveBeenCalledWith(
+      expect.objectContaining({ ca: store.ca?.caCertPem, cert: store.ca?.gatewayCertPem }),
+    );
   });
 
   it('refreshes only the gateway leaf when the server name changes, keeping client certs', async () => {
@@ -246,6 +255,31 @@ describe('Claude egress identity service', () => {
     });
   });
 
+  it('rolls live gateway activation back when leaf persistence fails', async () => {
+    const store = new FakeStore();
+    await seedFreshCa(store);
+    store.ca = store.ca ? { ...store.ca, gatewayServerName: 'stale-name' } : undefined;
+    const original = store.ca;
+    store.failNextCaWrite = true;
+    const onGatewayLeafChanged = vi.fn(async (material: ClaudeEgressMtlsMaterial) => {
+      void material;
+    });
+    const service = createClaudeEgressIdentityService({
+      store,
+      serverName: SERVER_NAME,
+      onGatewayLeafChanged,
+    });
+
+    await expect(service.gatewayMaterial()).rejects.toThrow('CA store unavailable');
+    expect(store.ca).toEqual(original);
+    expect(onGatewayLeafChanged).toHaveBeenCalledTimes(2);
+    expect(onGatewayLeafChanged.mock.calls[1]?.[0]).toMatchObject({
+      ca: original?.caCertPem,
+      cert: original?.gatewayCertPem,
+      key: original?.gatewayKeyPem,
+    });
+  });
+
   it('serializes concurrent leaf rotation so listener and storage cannot diverge', async () => {
     const store = new FakeStore();
     await seedFreshCa(store);
@@ -288,6 +322,33 @@ describe('Claude egress identity service', () => {
     expect(store.clients.has('project-1')).toBe(true);
 
     await service.revokeProject('project-1');
+    expect(store.clients.has('project-1')).toBe(false);
+  });
+
+  it('serializes same-project issuance so concurrent callers share one leaf', async () => {
+    const store = new FakeStore();
+    await seedFreshCa(store);
+    const upsert = vi.spyOn(store, 'upsertClaudeEgressClientCert');
+    const service = createClaudeEgressIdentityService({ store, serverName: SERVER_NAME });
+
+    const [first, second] = await Promise.all([
+      service.sandboxMaterial('project-1'),
+      service.sandboxMaterial('project-1'),
+    ]);
+
+    expect(upsert).toHaveBeenCalledOnce();
+    expect(first.clientCertPem).toBe(second.clientCertPem);
+  });
+
+  it('orders same-project revocation after an in-flight issuance', async () => {
+    const store = new FakeStore();
+    await seedFreshCa(store);
+    const service = createClaudeEgressIdentityService({ store, serverName: SERVER_NAME });
+
+    const issuance = service.sandboxMaterial('project-1');
+    const revocation = service.revokeProject('project-1');
+    await Promise.all([issuance, revocation]);
+
     expect(store.clients.has('project-1')).toBe(false);
   });
 

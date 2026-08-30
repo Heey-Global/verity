@@ -368,7 +368,12 @@ export async function reconcileControlPlanePostgres(
     return { kind: 'up-to-date', image: running };
   }
 
-  if (docker.imageExists !== undefined && !(await docker.imageExists(target)))
+  if (docker.imageExists === undefined)
+    return {
+      kind: 'refused',
+      reason: 'the no-network updater cannot verify that the target PostgreSQL image is present',
+    };
+  if (!(await docker.imageExists(target)))
     return {
       kind: 'refused',
       reason: `${target} was not pulled before the maintenance window opened`,

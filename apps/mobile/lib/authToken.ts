@@ -1,5 +1,6 @@
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
+import { CryptoDigestAlgorithm, digestStringAsync } from 'expo-crypto';
 
 // Per-device API bearer token for the control-plane auth gate (audit C1). The
 // token is minted server-side when the operator proves the master password
@@ -17,18 +18,14 @@ const LEGACY_TOKEN_KEY = 'verity.authToken';
 const BIOMETRIC_ENABLED_VALUE = '1';
 const BIOMETRIC_DISABLED_VALUE = '0';
 
-function tokenKey(baseUrl: string | null): string | null {
+async function tokenKey(baseUrl: string | null): Promise<string | null> {
   if (baseUrl === null) return null;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < baseUrl.length; i += 1) {
-    hash ^= baseUrl.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return `verity.authToken.${hash.toString(16).padStart(8, '0')}`;
+  const hash = await digestStringAsync(CryptoDigestAlgorithm.SHA256, baseUrl);
+  return `verity.authToken.v2.${hash}`;
 }
 
-function biometricPreferenceKey(baseUrl: string | null): string | null {
-  const key = tokenKey(baseUrl);
+async function biometricPreferenceKey(baseUrl: string | null): Promise<string | null> {
+  const key = await tokenKey(baseUrl);
   return key === null ? null : `${key}.biometric`;
 }
 
@@ -36,13 +33,13 @@ function biometricPreferenceKey(baseUrl: string | null): string | null {
 // this device's OWN identifier — the `:id` the push-token endpoint matches against
 // the bearer. It is NOT secret (it authorizes nothing on its own), but it is stored
 // next to the bearer so both are cleared together on forget.
-function tokenIdKey(baseUrl: string | null): string | null {
-  const key = tokenKey(baseUrl);
+async function tokenIdKey(baseUrl: string | null): Promise<string | null> {
+  const key = await tokenKey(baseUrl);
   return key === null ? null : `${key}.id`;
 }
 
-function masterPasswordKey(baseUrl: string | null): string | null {
-  const key = tokenKey(baseUrl);
+async function masterPasswordKey(baseUrl: string | null): Promise<string | null> {
+  const key = await tokenKey(baseUrl);
   return key === null ? null : `${key}.masterPassword`;
 }
 
@@ -69,7 +66,7 @@ export function getAuthTokenId(baseUrl: string | null): string | null {
  *  whether the bearer has been loaded into memory this session — the push
  *  registration needs it even on a biometric-unlock launch. */
 export async function getStoredAuthTokenId(baseUrl: string | null): Promise<string | null> {
-  const key = tokenIdKey(baseUrl);
+  const key = await tokenIdKey(baseUrl);
   if (key === null) return null;
   try {
     return await SecureStore.getItemAsync(key);
@@ -91,7 +88,7 @@ export async function setAuthToken(
   token: string,
   tokenId?: string,
 ): Promise<void> {
-  const key = tokenKey(baseUrl);
+  const key = await tokenKey(baseUrl);
   if (key === null) return;
   currentTokenBaseUrl = baseUrl;
   currentToken = token;
@@ -99,10 +96,12 @@ export async function setAuthToken(
   // URL's id readable under the new URL's now-passing base-URL guard.
   currentTokenId = tokenId ?? null;
   try {
-    await SecureStore.setItemAsync(key, token, {
+    await SecureStore.setItemAsync(key, JSON.stringify({ origin: baseUrl, secret: token }), {
       keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+      requireAuthentication: await isBiometricUnlockEnabled(baseUrl),
+      authenticationPrompt: 'Unlock Verity',
     });
-    const idKey = tokenIdKey(baseUrl);
+    const idKey = await tokenIdKey(baseUrl);
     if (idKey !== null && tokenId !== undefined) {
       await SecureStore.setItemAsync(idKey, tokenId, {
         keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
@@ -112,6 +111,40 @@ export async function setAuthToken(
   } catch {
     // Keep the in-memory token; persistence is a convenience, not a requirement.
   }
+}
+
+/** Copy the currently unlocked device credential to another verified endpoint of
+ * the same server. Call only after the stable server identity was verified. The
+ * old endpoint remains usable so switching routes is recoverable. */
+export async function copyAuthTokenToEndpoint(
+  fromBaseUrl: string,
+  toBaseUrl: string,
+): Promise<void> {
+  if (fromBaseUrl === toBaseUrl) return;
+  if (currentTokenBaseUrl !== fromBaseUrl || currentToken === null) return;
+  const key = await tokenKey(toBaseUrl);
+  if (key === null) return;
+  const biometric = await isBiometricUnlockEnabled(fromBaseUrl);
+  await SecureStore.setItemAsync(key, JSON.stringify({ origin: toBaseUrl, secret: currentToken }), {
+    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+    requireAuthentication: biometric,
+    authenticationPrompt: 'Unlock Verity',
+  });
+  const idKey = await tokenIdKey(toBaseUrl);
+  if (idKey !== null && currentTokenId !== null) {
+    await SecureStore.setItemAsync(idKey, currentTokenId, {
+      keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+    });
+  }
+  const preferenceKey = await biometricPreferenceKey(toBaseUrl);
+  if (preferenceKey !== null) {
+    await SecureStore.setItemAsync(
+      preferenceKey,
+      biometric ? BIOMETRIC_ENABLED_VALUE : BIOMETRIC_DISABLED_VALUE,
+      { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK },
+    );
+  }
+  currentTokenBaseUrl = toBaseUrl;
 }
 
 /** Whether this device can present a biometric/passcode prompt for Verity. */
@@ -131,7 +164,7 @@ export async function enableBiometricUnlock(
   baseUrl: string | null,
   masterPassword?: string,
 ): Promise<boolean> {
-  const key = biometricPreferenceKey(baseUrl);
+  const key = await biometricPreferenceKey(baseUrl);
   if (key === null) return false;
   try {
     if (!(await canUseBiometricUnlock())) return false;
@@ -139,15 +172,35 @@ export async function enableBiometricUnlock(
       promptMessage: 'Enable Face ID for Verity',
     });
     if (!result.success) return false;
+    const tokenStoreKey = await tokenKey(baseUrl);
+    if (tokenStoreKey !== null && currentTokenBaseUrl === baseUrl && currentToken !== null) {
+      await SecureStore.setItemAsync(
+        tokenStoreKey,
+        JSON.stringify({ origin: baseUrl, secret: currentToken }),
+        {
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+          requireAuthentication: true,
+          authenticationPrompt: 'Unlock Verity',
+        },
+      );
+    }
+    const passwordKey = await masterPasswordKey(baseUrl);
+    if (passwordKey !== null && masterPassword !== undefined) {
+      await SecureStore.setItemAsync(
+        passwordKey,
+        JSON.stringify({ origin: baseUrl, secret: masterPassword }),
+        {
+          keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+          requireAuthentication: true,
+          authenticationPrompt: 'Unlock Verity',
+        },
+      );
+    }
+    // Publish the non-secret preference last. If either protected write fails, the
+    // launch flow must not believe a usable biometric credential exists.
     await SecureStore.setItemAsync(key, BIOMETRIC_ENABLED_VALUE, {
       keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
     });
-    const passwordKey = masterPasswordKey(baseUrl);
-    if (passwordKey !== null && masterPassword !== undefined) {
-      await SecureStore.setItemAsync(passwordKey, masterPassword, {
-        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-      });
-    }
     return true;
   } catch {
     return false;
@@ -156,13 +209,13 @@ export async function enableBiometricUnlock(
 
 /** Explicitly disable biometric auto-unlock for this server on this device. */
 export async function disableBiometricUnlock(baseUrl: string | null): Promise<void> {
-  const key = biometricPreferenceKey(baseUrl);
+  const key = await biometricPreferenceKey(baseUrl);
   if (key === null) return;
   try {
     await SecureStore.setItemAsync(key, BIOMETRIC_DISABLED_VALUE, {
       keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
     });
-    const passwordKey = masterPasswordKey(baseUrl);
+    const passwordKey = await masterPasswordKey(baseUrl);
     if (passwordKey !== null) await SecureStore.deleteItemAsync(passwordKey);
   } catch {
     // Best effort; the absence of an enabled preference already means disabled.
@@ -173,9 +226,13 @@ export async function disableBiometricUnlock(baseUrl: string | null): Promise<vo
  *  (independent of whether it's been loaded into memory this session) — lets the
  *  launch flow choose between a biometric unlock and master-password entry. */
 export async function hasStoredAuthToken(baseUrl: string | null): Promise<boolean> {
-  const key = tokenKey(baseUrl);
+  const key = await tokenKey(baseUrl);
   if (key === null) return false;
   try {
+    // Do not read an authentication-bound item merely to test existence: that read
+    // would itself display the native prompt. The preference is the launch-time
+    // marker; unlock performs the authoritative protected read immediately after.
+    if (await isBiometricUnlockEnabled(baseUrl)) return true;
     return (await SecureStore.getItemAsync(key)) !== null;
   } catch {
     return false;
@@ -184,7 +241,7 @@ export async function hasStoredAuthToken(baseUrl: string | null): Promise<boolea
 
 /** Whether biometric unlock has already been explicitly enabled for this server. */
 export async function isBiometricUnlockEnabled(baseUrl: string | null): Promise<boolean> {
-  const key = biometricPreferenceKey(baseUrl);
+  const key = await biometricPreferenceKey(baseUrl);
   if (key === null) return false;
   try {
     return (await SecureStore.getItemAsync(key)) === BIOMETRIC_ENABLED_VALUE;
@@ -203,12 +260,18 @@ export async function refreshBiometricUnlockSecret(
   masterPassword: string,
 ): Promise<boolean> {
   if (!(await isBiometricUnlockEnabled(baseUrl))) return false;
-  const key = masterPasswordKey(baseUrl);
+  const key = await masterPasswordKey(baseUrl);
   if (key === null) return false;
   try {
-    await SecureStore.setItemAsync(key, masterPassword, {
-      keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-    });
+    await SecureStore.setItemAsync(
+      key,
+      JSON.stringify({ origin: baseUrl, secret: masterPassword }),
+      {
+        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+        requireAuthentication: true,
+        authenticationPrompt: 'Unlock Verity',
+      },
+    );
     return true;
   } catch {
     return false;
@@ -223,21 +286,22 @@ export async function refreshBiometricUnlockSecret(
  * prompt and trust the device-passcode protection already on the keychain item.
  */
 export async function unlockAuthTokenWithBiometrics(baseUrl: string | null): Promise<boolean> {
-  const key = tokenKey(baseUrl);
-  const preferenceKey = biometricPreferenceKey(baseUrl);
+  const key = await tokenKey(baseUrl);
+  const preferenceKey = await biometricPreferenceKey(baseUrl);
   if (key === null || preferenceKey === null) return false;
   try {
-    const stored = await SecureStore.getItemAsync(key);
-    if (stored === null) return false;
     if (!(await isBiometricUnlockEnabled(baseUrl))) return false;
     await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
     if (!(await canUseBiometricUnlock())) return false;
-    const result = await LocalAuthentication.authenticateAsync({
-      promptMessage: 'Unlock Verity',
+    const stored = await SecureStore.getItemAsync(key, {
+      requireAuthentication: true,
+      authenticationPrompt: 'Unlock Verity',
     });
-    if (!result.success) return false;
+    if (stored === null) return false;
+    const record = JSON.parse(stored) as { origin?: unknown; secret?: unknown };
+    if (record.origin !== baseUrl || typeof record.secret !== 'string') return false;
     currentTokenBaseUrl = baseUrl;
-    currentToken = stored;
+    currentToken = record.secret;
     currentTokenId = await getStoredAuthTokenId(baseUrl);
     return true;
   } catch {
@@ -252,18 +316,19 @@ export async function unlockServerSecretWithBiometrics(
     password: string,
   ) => Promise<{ token?: string | undefined; tokenId?: string | undefined }>,
 ): Promise<boolean> {
-  const passwordKey = masterPasswordKey(baseUrl);
+  const passwordKey = await masterPasswordKey(baseUrl);
   if (passwordKey === null) return false;
   try {
     if (!(await isBiometricUnlockEnabled(baseUrl))) return false;
     if (!(await canUseBiometricUnlock())) return false;
-    const result = await LocalAuthentication.authenticateAsync({
-      promptMessage: 'Unlock Verity',
+    const stored = await SecureStore.getItemAsync(passwordKey, {
+      requireAuthentication: true,
+      authenticationPrompt: 'Unlock Verity',
     });
-    if (!result.success) return false;
-    const password = await SecureStore.getItemAsync(passwordKey);
-    if (password === null) return false;
-    const unlocked = await unlockSecret(password);
+    if (stored === null) return false;
+    const record = JSON.parse(stored) as { origin?: unknown; secret?: unknown };
+    if (record.origin !== baseUrl || typeof record.secret !== 'string') return false;
+    const unlocked = await unlockSecret(record.secret);
     if (unlocked.token) await setAuthToken(baseUrl, unlocked.token, unlocked.tokenId);
     return true;
   } catch {
@@ -271,11 +336,14 @@ export async function unlockServerSecretWithBiometrics(
   }
 }
 
-/** Forget the token for this server URL (on a 401 re-auth signal, or an explicit
- *  disconnect) — forcing the operator to re-enter the master password. */
+/** Forget only the rejected bearer for this server URL. A 401 means that bearer
+ * was revoked or expired; it does not revoke the device's biometric enrollment
+ * or its protected master-password credential. Keeping those lets the normal
+ * unlock flow mint a replacement without silently disabling an explicit user
+ * preference. */
 export async function clearAuthToken(baseUrl: string | null): Promise<void> {
-  const key = tokenKey(baseUrl);
-  const idKey = tokenIdKey(baseUrl);
+  const key = await tokenKey(baseUrl);
+  const idKey = await tokenIdKey(baseUrl);
   if (baseUrl === null || baseUrl === currentTokenBaseUrl) {
     currentTokenBaseUrl = null;
     currentToken = null;
@@ -285,7 +353,6 @@ export async function clearAuthToken(baseUrl: string | null): Promise<void> {
     if (key !== null) await SecureStore.deleteItemAsync(key);
     if (idKey !== null) await SecureStore.deleteItemAsync(idKey);
     await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
-    await disableBiometricUnlock(baseUrl);
   } catch {
     // Best effort — the in-memory token is already cleared.
   }

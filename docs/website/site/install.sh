@@ -21,6 +21,14 @@ as_root() {
   if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
 }
 as_root docker version >/dev/null 2>&1 || die 'cannot reach the root Docker daemon'
+docker_server_version=$(as_root docker version --format '{{.Server.Version}}' 2>/dev/null) ||
+  die 'cannot determine the Docker server version'
+docker_server_major=${docker_server_version%%.*}
+case "$docker_server_major" in
+  ''|*[!0-9]*) die "cannot parse Docker server version: $docker_server_version" ;;
+esac
+[ "$docker_server_major" -ge 25 ] ||
+  die "Docker 25 or newer is required (found $docker_server_version)"
 run_docker() {
   as_root docker "$@"
 }

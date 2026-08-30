@@ -120,5 +120,5 @@ uses are correct. Renaming things that are named right is churn, not cleanup.
 ## Related
 
 - [ADR 0005 — Naming & Layering](0005-naming-and-layering.md) — the conceptual roles this builds on.
-- [ADR 0012 — Subscription Uplink](0012-subscription-uplink-for-sharing-and-remote-control.md) — the
-  trust boundary that D4 splits packages along.
+- ADR 0012 — Subscription Uplink (maintained separately) — the trust boundary that D4 splits
+  packages along.

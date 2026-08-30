@@ -89,7 +89,7 @@ describe('createUnlockThrottle', () => {
     // A brand-new IP is now throttled purely by the global floor.
     const decision = throttle.check('fresh-ip');
     expect(decision.allowed).toBe(false);
-    expect(decision.retryAfterMs).toBe(2_000);
+    expect(decision.retryAfterMs).toBe(59_950);
 
     // Once the window slides past the failures, the floor lifts.
     t += 60_001;

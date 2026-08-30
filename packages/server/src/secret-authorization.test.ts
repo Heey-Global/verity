@@ -72,7 +72,12 @@ function invocation(overrides: Partial<SecretToolInvocation> = {}): SecretToolIn
   };
 }
 
-function setup(issueFailures = 0, claimsActive = true) {
+function setup(
+  issueFailures = 0,
+  claimsActive = true,
+  authorizeApproval: (candidate: { authorizationHash: string }) => boolean = (candidate) =>
+    candidate.authorizationHash === hash,
+) {
   const issued: RunGrantClaims[] = [];
   let currentTime = '2026-07-19T00:01:00Z';
   const authorization = createFakeSecretAuthorization({
@@ -80,7 +85,7 @@ function setup(issueFailures = 0, claimsActive = true) {
     catalogVersion: 1,
     entries: [{ profile, aliases: [alias] }],
     approvals: createInMemorySecretApprovalStore(),
-    authorizeApproval: async (_approvalId, candidate) => candidate.authorizationHash === hash,
+    authorizeApproval: async (_approvalId, candidate) => authorizeApproval(candidate),
     authorizeCurrentClaims: async () => claimsActive,
     grants: {
       async issue(claims, recordInTx) {
@@ -133,6 +138,21 @@ describe('fake secret authorization', () => {
     });
     expect(issued).toHaveLength(0);
     await expect(service.decide(pending.approvalId, actor, true)).rejects.toThrow(/decided/);
+  });
+
+  it('binds an in-memory idempotent decision replay to its authorization hash', async () => {
+    const { service } = setup(0, true, () => true);
+    const pending = await service.request(invocation());
+    await expect(service.decide(pending.approvalId, actor, false)).resolves.toEqual({
+      decision: 'denied',
+    });
+    await expect(
+      service.decide(
+        pending.approvalId,
+        { actorId: actor.actorId, authorizationHash: 'b'.repeat(64) },
+        false,
+      ),
+    ).rejects.toThrow(/decided/);
   });
 
   it('rejects an unauthenticated actor without consuming the pending approval', async () => {

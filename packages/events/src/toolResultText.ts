@@ -84,8 +84,15 @@ export async function externalizeToolResultText(
   store: (jsonText: string) => Promise<string>,
 ): Promise<{ output: unknown; ref?: ToolResultRef }> {
   if (toolResultTextLength(output) <= TOOL_TEXT_EXTERNALIZE_THRESHOLD) return { output };
-  const jsonText = JSON.stringify(output);
-  if (jsonText === undefined) return { output }; // non-serializable — leave inline
+  let jsonText: string | undefined;
+  try {
+    jsonText = JSON.stringify(output);
+  } catch {
+    // Circular values and BigInt are not JSON serializable. Tool output is
+    // untrusted adapter data, so an oversized value must not fail the event append.
+    return { output: '[non-serializable tool output omitted]' };
+  }
+  if (jsonText === undefined) return { output: '[non-serializable tool output omitted]' };
   const id = await store(jsonText);
   return { output: truncateOutput(output), ref: { id, bytes: utf8ByteLength(jsonText) } };
 }
@@ -98,8 +105,14 @@ function utf8ByteLength(text: string): number {
     const code = text.charCodeAt(i);
     if (code < 0x80) bytes += 1;
     else if (code < 0x800) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff) {
-      bytes += 4; // a surrogate pair encodes one 4-byte code point
+    else if (
+      code >= 0xd800 &&
+      code <= 0xdbff &&
+      i + 1 < text.length &&
+      text.charCodeAt(i + 1) >= 0xdc00 &&
+      text.charCodeAt(i + 1) <= 0xdfff
+    ) {
+      bytes += 4;
       i++;
     } else bytes += 3;
   }

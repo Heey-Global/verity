@@ -159,4 +159,10 @@ describe('normalizeServerUrl', () => {
     expect(normalizeServerUrl('')).toBeNull();
     expect(normalizeServerUrl('   ')).toBeNull();
   });
+
+  it('rejects non-HTTP and malformed addresses', () => {
+    expect(normalizeServerUrl('javascript://example')).toBeNull();
+    expect(normalizeServerUrl('mailto://user@example.com')).toBeNull();
+    expect(normalizeServerUrl('http://')).toBeNull();
+  });
 });

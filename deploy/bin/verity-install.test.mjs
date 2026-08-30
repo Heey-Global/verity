@@ -78,6 +78,11 @@ function makeHost({ docker = [], state = {} } = {}) {
 
   writeFileSync(join(binDir, 'verity-install'), readFileSync(join(here, 'verity-install')));
   chmodSync(join(binDir, 'verity-install'), 0o755);
+  writeFileSync(
+    join(binDir, 'verity-pairing-material'),
+    readFileSync(join(here, 'verity-pairing-material')),
+  );
+  chmodSync(join(binDir, 'verity-pairing-material'), 0o755);
   writeFileSync(join(checkout, 'deploy', 'docker-compose.yml'), 'services: {}\n');
 
   // Records the handover instead of performing it, so a test can assert on exactly
@@ -87,7 +92,7 @@ function makeHost({ docker = [], state = {} } = {}) {
     join(binDir, 'verity-compose'),
     `#!/usr/bin/env bash\n{\n` +
       `  printf 'argv=%s\\n' "$*"\n` +
-      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED COMPOSE_PROJECT_NAME; do\n` +
+      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD COMPOSE_PROJECT_NAME; do\n` +
       `    printf '%s=%s\\n' "$v" "\${!v-}"\n` +
       `  done\n} > ${JSON.stringify(handover)}\n`,
     { mode: 0o755 },
@@ -109,6 +114,7 @@ function makeHost({ docker = [], state = {} } = {}) {
     `#!/usr/bin/env bash\nargv="$*"\n` +
       `if [[ $argv == version* ]]; then echo '27.1.0'; exit 0; fi\n` +
       branches +
+      `if [[ $argv == ps*label=com.docker.compose.service=postgres* ]]; then echo 'verity-postgres-1'; exit 0; fi\n` +
       `exit 0\n`,
     { mode: 0o755 },
   );
@@ -127,6 +133,10 @@ function run(host, args = [], env = {}) {
       PATH: `${host.stubDir}:${process.env.PATH}`,
       HOME: host.root,
       VERITY_STATE_DIR: host.stateDir,
+      // The fake root user namespace maps only uid/gid 0. Production defaults
+      // to the Server image's 1000:1000 identity.
+      VERITY_SERVER_UID: '0',
+      VERITY_SERVER_GID: '0',
       ...env,
     },
   });
@@ -239,11 +249,14 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(readFileSync(join(host.stateDir, 'updater-token'), 'utf8').length, 64);
     assert.equal(stateFile(host, 'compose-project'), 'verity');
     assert.equal(stateFile(host, 'runner-supervisor'), '1');
+    assert.match(stateFile(host, 'postgres-password'), /^[a-f0-9]{64}$/);
+    assert.equal(statSync(join(host.stateDir, 'postgres-password')).mode & 0o777, 0o600);
 
     const env = handoverEnv(host);
     assert.equal(env.argv, 'managed-up');
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_A);
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
+    assert.equal(env.VERITY_POSTGRES_PASSWORD, stateFile(host, 'postgres-password'));
     assert.equal(env.COMPOSE_PROJECT_NAME, 'verity');
     assert.equal(env.VERITY_MANAGED_DEPLOYMENT_ID, stateFile(host, 'deployment-id'));
     assert.match(env.VERITY_MANAGED_DEPLOYMENT_ID, /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
@@ -289,6 +302,55 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     // brokered-secret runtime requirement, and the migration never objects.
     assert.equal(env.VERITY_GVISOR_REQUIRED, '1');
     assert.equal(stateFile(host, 'updater-token'), 'f'.repeat(64));
+  });
+
+  test('reuses the persisted PostgreSQL credential and rejects malformed state', () => {
+    const password = 'a'.repeat(64);
+    const host = makeHost({
+      docker: [{ match: 'image inspect', out: DIGEST_A }],
+      state: { 'postgres-password': `${password}\n` },
+    });
+    const result = run(host);
+    assert.equal(result.status, 0, result.output);
+    assert.equal(handoverEnv(host).VERITY_POSTGRES_PASSWORD, password);
+    assert.equal(stateFile(host, 'postgres-password'), password);
+
+    writeFileSync(join(host.stateDir, 'postgres-password'), 'not-a-password\n');
+    const refused = run(host, ['--image', DIGEST_A]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /postgres-password is malformed/);
+  });
+
+  test('fails closed when the post-migration PostgreSQL container is ambiguous', () => {
+    const host = makeHost({
+      docker: [
+        { match: 'image inspect', out: DIGEST_A },
+        {
+          match:
+            'ps --filter label=com.docker.compose.project=verity --filter label=com.docker.compose.service=postgres',
+          out: 'verity-postgres-1\nverity-postgres-2',
+        },
+      ],
+    });
+    const result = run(host);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /expected exactly one running PostgreSQL container.*found 2/);
+  });
+
+  test('fails closed when PostgreSQL discovery errors after managed-up', () => {
+    const host = makeHost({
+      docker: [
+        { match: 'image inspect', out: DIGEST_A },
+        {
+          match:
+            'ps --filter label=com.docker.compose.project=verity --filter label=com.docker.compose.service=postgres',
+          status: 1,
+        },
+      ],
+    });
+    const result = run(host);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /could not ask Docker for the Compose PostgreSQL container/);
   });
 
   test('persists the gVisor requirement and reports a change to it', () => {
@@ -663,13 +725,12 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(statSync(host.stateDir).mode & 0o777, 0o720);
     assert.throws(() => stateFile(host, 'updater-token'));
 
-    // ...and once the operator has reviewed the contents and tightened it, it runs —
-    // leaving the mode exactly as found. A directory that passed both checks is
-    // already safe, and VERITY_STATE_DIR points this script anywhere, so narrowing
-    // one it did not create would be `chmod 0700 /etc` on a mistyped override.
+    // ...and once the contents have been reviewed and the directory tightened, it
+    // runs. Pairing material normalises it to execute-only for non-root users so
+    // uid 1000 containers can traverse the bind mount without listing host state.
     chmodSync(host.stateDir, 0o750);
     assert.equal(run(host, []).status, 0);
-    assert.equal(statSync(host.stateDir).mode & 0o777, 0o750);
+    assert.equal(statSync(host.stateDir).mode & 0o777, 0o711);
     // The token is what has to be unreadable, and it is created that way regardless.
     assert.equal(statSync(join(host.stateDir, 'updater-token')).mode & 0o777, 0o600);
   });

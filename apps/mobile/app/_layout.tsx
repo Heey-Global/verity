@@ -6,7 +6,7 @@
 import '../unistyles';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -26,7 +26,7 @@ import { WindowControlsProbe } from '../components/WindowControls';
 import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
-import { applyStartupUpdate, checkForAppUpdate } from '../lib/automaticUpdates';
+import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { hydrateVerityBaseUrl } from '../lib/client';
 import { TASKS_ENABLED } from '../lib/featureFlags';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
@@ -194,12 +194,12 @@ function ForegroundUpdateSync() {
   useEffect(() => {
     let appState = AppState.currentState;
     const checkIfActive = (): void => {
-      if (AppState.currentState === 'active') void checkForAppUpdate();
+      if (AppState.currentState === 'active') void downloadAppUpdate();
     };
     const subscription = AppState.addEventListener('change', (nextState) => {
       const becameActive = nextState === 'active' && appState !== 'active';
       appState = nextState;
-      if (becameActive) void checkForAppUpdate();
+      if (becameActive) void downloadAppUpdate();
     });
     const timer = setInterval(checkIfActive, FOREGROUND_UPDATE_POLL_MS);
     return () => {
@@ -219,7 +219,10 @@ function AppHeader({
 }: {
   navigation: { goBack: () => void };
   route: { name: string; params?: object };
-  options: { title?: string };
+  options: {
+    title?: string;
+    headerRight?: (props: { canGoBack: boolean; tintColor?: string }) => ReactNode;
+  };
   back?: { title?: string };
 }) {
   const insets = useSafeAreaInsets();
@@ -332,6 +335,7 @@ function AppHeader({
           {title}
         </Text>
         <View style={[styles.headerSide, styles.headerSideRight]}>
+          {options.headerRight?.({ canGoBack: back !== undefined, tintColor: theme.colors.text })}
           {showMessageSearch ? (
             <>
               <Link

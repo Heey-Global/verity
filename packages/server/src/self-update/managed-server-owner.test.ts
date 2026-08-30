@@ -136,7 +136,8 @@ function owned(running: boolean): ContainerInspect {
       'VERITY_MANAGED_DEPLOYMENT_ID=deployment-1',
       'TOKEN=secret',
     ],
-    command: ['node', 'dist/main.js'],
+    entrypoint: ['/usr/bin/tini', '--', 'node', 'packages/server/dist/main.js'],
+    command: [],
     mounts: [
       {
         type: 'volume',
@@ -920,6 +921,12 @@ describe('managed Server environment drift', () => {
       ['a writable root filesystem expectation', { readOnlyRootfs: true }],
       ['another restart policy', { restartPolicy: 'always' }],
       ['no no-new-privileges', { securityOpt: [] }],
+      [
+        'an extra security relaxation',
+        { securityOpt: ['no-new-privileges:true', 'seccomp=unconfined'] },
+      ],
+      ['another entrypoint', { entrypoint: ['/bin/sh'] }],
+      ['another command', { command: ['--unexpected'] }],
       ['another capability set', { capAdd: ['CHOWN', 'SYS_ADMIN'] }],
       ['a dropped mount', { mounts: owned(true).mounts!.slice(1) }],
       ['no init', { init: false }],

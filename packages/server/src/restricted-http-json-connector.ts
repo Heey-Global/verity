@@ -44,6 +44,17 @@ export const restrictedHttpJsonProfileSchema = z
             .array(z.string().regex(/^[A-Z][A-Z0-9_]*$/))
             .min(1)
             .max(64),
+          destinations: z
+            .array(
+              z
+                .object({
+                  hostname: dnsNameSchema,
+                  pathPrefixes: z.array(canonicalPathSchema).min(1).max(64),
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(64),
         })
         .strict(),
     ]),
@@ -416,15 +427,23 @@ function redactAllSecretForms(
   // be escaped independently (for example `a%21b` or `%61!b`). Decode valid
   // percent-byte runs tolerantly, then fail closed for the whole visible field
   // if the decoded representation reconstructs any credential.
-  const decoded = redacted.replace(/\+/gu, ' ').replace(/(?:%[0-9a-f]{2})+/giu, (encodedRun) => {
-    try {
-      return decodeURIComponent(encodedRun);
-    } catch {
-      return encodedRun;
+  let decoded = redacted;
+  // Decode repeatedly: `%2520` is a valid double-encoding of `%20`. A single pass leaves the
+  // credential encoded and visible. Eight rounds cover realistic nested encodings while keeping
+  // hostile response work strictly bounded.
+  for (let round = 0; round < 8; round++) {
+    const next = decoded.replace(/\+/gu, ' ').replace(/(?:%[0-9a-f]{2})+/giu, (encodedRun) => {
+      try {
+        return decodeURIComponent(encodedRun);
+      } catch {
+        return encodedRun;
+      }
+    });
+    for (const { value, alias } of credentials) {
+      if (value.length > 0 && next.includes(value)) return `[REDACTED:${alias}]`;
     }
-  });
-  for (const { value, alias } of credentials) {
-    if (value.length > 0 && decoded.includes(value)) return `[REDACTED:${alias}]`;
+    if (next === decoded) break;
+    decoded = next;
   }
   return redacted;
 }
@@ -482,6 +501,20 @@ export function createRestrictedHttpJsonConnector(options: {
       throw rejected();
     }
     const url = canonicalRequestUrl(parsed.data.url);
+    if (
+      policy.mode === 'allowlist' &&
+      !policy.destinations.some(
+        ({ hostname, pathPrefixes }) =>
+          hostname.toLowerCase() === url.hostname &&
+          pathPrefixes.some(
+            (prefix) =>
+              url.pathname === prefix ||
+              url.pathname.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`),
+          ),
+      )
+    ) {
+      throw rejected();
+    }
     let body: Buffer | undefined;
     if (parsed.data.body !== undefined) {
       body = Buffer.from(JSON.stringify(parsed.data.body), 'utf8');

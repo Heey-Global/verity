@@ -90,7 +90,7 @@ const ANONYMOUS_VOLUME_NAME = /^[0-9a-f]{64}$/;
  *  builder container mounting it and is therefore orphaned. The active `default`
  *  builder uses the `docker` driver and has no such volume, so it is never at
  *  risk. */
-const BUILDER_STATE_VOLUME_NAME = /^buildx_buildkit_builder-.+_state$/;
+const BUILDER_STATE_VOLUME_NAME = /^buildx_buildkit_[a-z0-9][a-z0-9_.-]{1,127}_state$/i;
 
 /** `verity.component` value every project relay carries. Owned by
  *  `project-relay-docker.ts`; duplicated as a constant here rather than imported
@@ -243,25 +243,28 @@ export function planImageSweep(input: {
   inUseImageIds: ReadonlySet<string>;
   keepPerRepo: number;
 }): ImageSweepPlan[] {
-  const byRepository = new Map<string, Array<{ image: DockerImageSummary; ref: string }>>();
+  const byRepository = new Map<string, Map<string, DockerImageSummary>>();
   for (const image of input.images) {
     for (const ref of image.repoTags) {
       const repository = repositoryOf(ref);
       if (repository === undefined) continue;
       if (!repository.startsWith(DEVCONTAINER_IMAGE_PREFIX)) continue;
-      const group = byRepository.get(repository) ?? [];
-      group.push({ image, ref });
+      const group = byRepository.get(repository) ?? new Map<string, DockerImageSummary>();
+      group.set(image.id, image);
       byRepository.set(repository, group);
     }
   }
   const plan: ImageSweepPlan[] = [];
-  for (const group of byRepository.values()) {
-    const ordered = [...group].sort(
-      (a, b) => b.image.created - a.image.created || a.image.id.localeCompare(b.image.id),
+  for (const [repository, group] of byRepository) {
+    const ordered = [...group.values()].sort(
+      (a, b) => b.created - a.created || a.id.localeCompare(b.id),
     );
-    for (const { image, ref } of ordered.slice(Math.max(0, input.keepPerRepo))) {
+    for (const image of ordered.slice(Math.max(0, input.keepPerRepo))) {
       if (input.inUseImageIds.has(image.id)) continue;
-      plan.push({ ref, imageId: image.id, size: image.size });
+      for (const ref of image.repoTags) {
+        if (repositoryOf(ref) !== repository) continue;
+        plan.push({ ref, imageId: image.id, size: image.size });
+      }
     }
   }
   return plan;
@@ -288,10 +291,10 @@ export function planVolumeSweep(input: {
     .filter((volume) => {
       if (!(ANONYMOUS_VOLUME_LABEL in volume.labels)) return false;
       if (!ANONYMOUS_VOLUME_NAME.test(volume.name)) return false;
-      if (input.minAgeMs <= 0) return true;
-      if (volume.createdAt === undefined) return true;
+      if (volume.createdAt === undefined) return false;
       const created = Date.parse(volume.createdAt);
-      if (Number.isNaN(created)) return true;
+      if (Number.isNaN(created)) return false;
+      if (input.minAgeMs <= 0) return true;
       return input.nowMs - created >= input.minAgeMs;
     })
     .map((volume) => volume.name);
@@ -318,10 +321,10 @@ export function planBuilderVolumeSweep(input: {
   return input.volumes
     .filter((volume) => {
       if (!BUILDER_STATE_VOLUME_NAME.test(volume.name)) return false;
-      if (input.minAgeMs <= 0) return true;
-      if (volume.createdAt === undefined) return true;
+      if (volume.createdAt === undefined) return false;
       const created = Date.parse(volume.createdAt);
-      if (Number.isNaN(created)) return true;
+      if (Number.isNaN(created)) return false;
+      if (input.minAgeMs <= 0) return true;
       return input.nowMs - created >= input.minAgeMs;
     })
     .map((volume) => volume.name);
@@ -434,7 +437,10 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
     freeBytes !== undefined &&
     freeBytes < policy.lowDiskFreeBytes;
   const keepPerRepo = lowDisk ? policy.lowDiskKeepImagesPerRepo : policy.keepImagesPerRepo;
-  const volumeMinAgeMs = lowDisk ? 0 : policy.volumeMinAgeMs;
+  // Disk pressure may reduce retained image generations, but never remove the
+  // create-to-attach grace window for volumes: a fresh volume is not reclaimable
+  // merely because the host is low on space.
+  const volumeMinAgeMs = policy.volumeMinAgeMs;
 
   const report: DockerGcReport = {
     imagesRemoved: [],

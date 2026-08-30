@@ -1,6 +1,6 @@
 # Uplink Channel Protocol
 
-Companion specification to [ADR 0012](adr/0012-subscription-uplink-for-sharing-and-remote-control.md).
+Companion specification to the separately maintained Subscription Uplink ADR (ADR 0012).
 It defines the connections a Verity installation opens to the Uplink to use the paid Public Sharing
 and Remote Control features.
 
@@ -350,7 +350,7 @@ while a `stream.open` on `channel: "raw"` is an unimplemented channel and is an 
 that closes the connection. A peer that advertises `raw` today is non-conforming, but a receiver
 does not drop its control connection over it. Specifying it is what lifts that restriction — the reservation is a placeholder for a
 future section of this document, not a permanent prohibition, and shipping the mode
-[ADR 0012 Amendment 1](adr/0012-subscription-uplink-for-sharing-and-remote-control.md#amendment-1-2026-08-28--remote-web-access-over-the-uplink)
+ADR 0012 Amendment 1
 describes means writing that section rather than contradicting this one.
 
 **Proposed, not specified here:** serving the web client remotely over the Uplink requires a fourth
@@ -361,7 +361,7 @@ invalid frame under the rule above — on a `stream.open`, reserved means reject
 defaulted to some fallback mode, while in `channels[]` it stays merely ignored, as the paragraph
 above splits them. The design behind it is
 not disclosed here beyond that sentence; it is already public in
-[ADR 0012 Amendment 1](adr/0012-subscription-uplink-for-sharing-and-remote-control.md#amendment-1-2026-08-28--remote-web-access-over-the-uplink),
+ADR 0012 Amendment 1,
 together with the L4 SNI listener it needs. Nothing in `http`, `ws` or `remote` changes; the note
 exists so that this specification does not read as a closed set while a further mode is under
 consideration.

@@ -20,6 +20,7 @@ const mockBack = jest.fn<void, []>();
 const mockCanGoBack = jest.fn<boolean, []>(() => false);
 let mockSegments: string[] = [];
 let mockPathname = '/';
+let mockSearchParams: Record<string, string | string[]> = {};
 
 jest.mock('expo-router', () => ({
   router: {
@@ -30,6 +31,7 @@ jest.mock('expo-router', () => ({
   },
   useSegments: () => mockSegments,
   usePathname: () => mockPathname,
+  useGlobalSearchParams: () => mockSearchParams,
   // Screens use <OnboardingStepScaffold> which imports only `router`; the layout's
   // <Stack> isn't rendered in these unit tests.
   Stack: Object.assign(() => null, { Screen: () => null }),
@@ -91,6 +93,7 @@ beforeEach(() => {
   mockCanGoBack.mockReturnValue(false);
   mockSegments = [];
   mockPathname = '/';
+  mockSearchParams = {};
   mockCreateVerityClient.mockReset();
   mockGetVerityBaseUrl.mockReset();
   mockHasConfiguredVerityBaseUrl.mockReset();
@@ -224,6 +227,29 @@ describe('onboarding first-run gate', () => {
       await screen.findByText('gate:done:/unlock-device?returnTo=%2F&serverSecret=1'),
     ).toBeOnTheScreen();
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('preserves the requested deep link through device unlock', async () => {
+    mockPathname = '/session/deep-link';
+    mockSegments = ['session', 'deep-link'];
+    mockSearchParams = { targetMessageId: 'message-42', targetSearchQuery: 'hello world' };
+    mockGetAuthToken.mockReturnValue(null);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient(
+        jest
+          .fn()
+          .mockResolvedValue(
+            makeStatus({ sealed: false, masterPasswordSet: true, complete: true, nextStep: null }),
+          ),
+      ),
+    );
+    render(<GateProbe />);
+
+    expect(
+      await screen.findByText(
+        'gate:done:/unlock-device?returnTo=%2Fsession%2Fdeep-link%3FtargetMessageId%3Dmessage-42%26targetSearchQuery%3Dhello%2Bworld',
+      ),
+    ).toBeOnTheScreen();
   });
 
   it('does not self-redirect when already on the device unlock route', async () => {

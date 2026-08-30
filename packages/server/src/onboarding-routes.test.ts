@@ -33,10 +33,24 @@ function buildWithCipher(cipher: SealableSecretCipher): FastifyInstance {
   });
 }
 
-async function getStatus(app: FastifyInstance): Promise<OnboardingStatus> {
-  const res = await app.inject({ method: 'GET', url: '/onboarding/status' });
+async function getStatus(app: FastifyInstance, token?: string): Promise<OnboardingStatus> {
+  const res = await app.inject({
+    method: 'GET',
+    url: '/onboarding/status',
+    ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+  });
   expect(res.statusCode).toBe(200);
   return res.json();
+}
+
+async function initialize(app: FastifyInstance): Promise<string> {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/secret/init',
+    payload: { password: PASSWORD },
+  });
+  expect(res.statusCode).toBe(200);
+  return res.json<{ token: string }>().token;
 }
 
 const PASSWORD = 'correct-horse-battery';
@@ -101,7 +115,7 @@ describe('GET /onboarding/status', () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);
     try {
-      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+      const token = await initialize(app);
       await app.inject({
         method: 'PATCH',
         url: '/settings',
@@ -112,7 +126,7 @@ describe('GET /onboarding/status', () => {
         },
       });
 
-      const status = await getStatus(app);
+      const status = await getStatus(app, token);
       expect(status.claudeConfigured).toBe(true);
     } finally {
       await app.close();
@@ -124,8 +138,8 @@ describe('GET /onboarding/status', () => {
     const app = buildWithCipher(cipher);
     try {
       // 1. Set the master password (init) → unlocked; nextStep advances to github.
-      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
-      let status = await getStatus(app);
+      const token = await initialize(app);
+      let status = await getStatus(app, token);
       expect(status.sealed).toBe(false); // init unlocks the cipher
       expect(status.masterPasswordSet).toBe(true);
       expect(status.nextStep).toBe('github');
@@ -142,7 +156,7 @@ describe('GET /onboarding/status', () => {
           githubAppPrivateKey: PEM,
         },
       });
-      status = await getStatus(app);
+      status = await getStatus(app, token);
       expect(status.githubAppConfigured).toBe(true);
       expect(status.nextStep).toBe('github');
 
@@ -152,7 +166,7 @@ describe('GET /onboarding/status', () => {
         url: '/settings',
         payload: { gitSshPrivateKey: PEM },
       });
-      status = await getStatus(app);
+      status = await getStatus(app, token);
       expect(status.signingKeyConfigured).toBe(true);
       expect(status.nextStep).toBe('first-project');
       expect(status.complete).toBe(false);
@@ -162,7 +176,7 @@ describe('GET /onboarding/status', () => {
       const project = await ctx.store.getProjectByOwnerRepo('octo', 'repo');
       expect(project).toMatchObject({ state: 'absent' });
       await ctx.store.updateProjectState(project!.id, 'active');
-      status = await getStatus(app);
+      status = await getStatus(app, token);
       expect(status.hasProject).toBe(true);
       expect(status.complete).toBe(true);
       expect(status.nextStep).toBeNull();
@@ -175,14 +189,14 @@ describe('GET /onboarding/status', () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);
     try {
-      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+      const token = await initialize(app);
       // Only id + installation id, no private key → still not configured.
       await app.inject({
         method: 'PATCH',
         url: '/settings',
         payload: { githubAppId: '123', githubAppInstallationId: '456' },
       });
-      const status = await getStatus(app);
+      const status = await getStatus(app, token);
       expect(status.githubAppConfigured).toBe(false);
       expect(status.nextStep).toBe('github');
     } finally {
@@ -194,13 +208,13 @@ describe('GET /onboarding/status', () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);
     try {
-      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+      const token = await initialize(app);
       await app.inject({
         method: 'PATCH',
         url: '/settings',
         payload: { gitSshPrivateKeyPath: '/data/keys/id' },
       });
-      const status = await getStatus(app);
+      const status = await getStatus(app, token);
       expect(status.signingKeyConfigured).toBe(true);
     } finally {
       await app.close();
@@ -211,9 +225,9 @@ describe('GET /onboarding/status', () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);
     try {
-      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+      const token = await initialize(app);
       // Before any token: informational flag is false.
-      let status = await getStatus(app);
+      let status = await getStatus(app, token);
       expect(status.dopplerConfigured).toBe(false);
       // nextStep is still driven by the required steps (github first, unconfigured).
       const nextStepBefore = status.nextStep;
@@ -225,7 +239,7 @@ describe('GET /onboarding/status', () => {
         url: '/settings',
         payload: { dopplerServiceToken: 'doppler-service-token-fixture-value' },
       });
-      status = await getStatus(app);
+      status = await getStatus(app, token);
       // Presence flips the informational flag...
       expect(status.dopplerConfigured).toBe(true);
       // ...but does NOT change complete or nextStep (Doppler is optional).
@@ -240,7 +254,7 @@ describe('GET /onboarding/status', () => {
     // Init a password under a first cipher (persists salt + verifier).
     const first = createSealableSecretCipher();
     const app1 = buildWithCipher(first);
-    await app1.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+    const token = await initialize(app1);
     await app1.close();
 
     // "Restart": a brand-new sealed cipher over the SAME db. The gate still answers
@@ -249,7 +263,7 @@ describe('GET /onboarding/status', () => {
     const app2 = buildWithCipher(second);
     try {
       expect(second.isSealed()).toBe(true);
-      const status = await getStatus(app2);
+      const status = await getStatus(app2, token);
       expect(status.sealed).toBe(true);
       expect(status.masterPasswordSet).toBe(true);
       expect(status.nextStep).toBe('github');

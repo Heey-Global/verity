@@ -93,4 +93,31 @@ describe('externalizeToolResultText', () => {
     await externalizeToolResultText(output, async () => 'hash');
     expect(output).toEqual(before);
   });
+
+  it('replaces cyclic and BigInt output with a serializable fallback', async () => {
+    const cyclic: { text: string; self?: unknown } = {
+      text: big(TOOL_TEXT_EXTERNALIZE_THRESHOLD + 1),
+    };
+    cyclic.self = cyclic;
+    const store = vi.fn(async () => 'hash');
+    expect((await externalizeToolResultText([cyclic], store)).output).toBe(
+      '[non-serializable tool output omitted]',
+    );
+    expect(
+      (
+        await externalizeToolResultText(
+          [{ text: big(TOOL_TEXT_EXTERNALIZE_THRESHOLD + 1), value: 1n }],
+          store,
+        )
+      ).output,
+    ).toBe('[non-serializable tool output omitted]');
+    expect(store).not.toHaveBeenCalled();
+  });
+
+  it('counts lone UTF-16 surrogates as replacement characters', async () => {
+    const full = `\ud800${big(TOOL_TEXT_EXTERNALIZE_THRESHOLD)}`;
+    const result = await externalizeToolResultText(full, async () => 'hash');
+    // JSON.stringify escapes the lone surrogate as six ASCII characters.
+    expect(result.ref?.bytes).toBe(TOOL_TEXT_EXTERNALIZE_THRESHOLD + 8);
+  });
 });

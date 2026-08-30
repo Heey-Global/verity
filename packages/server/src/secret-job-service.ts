@@ -168,6 +168,10 @@ export function createSecretJobService(options: {
       const absoluteDeadline = new Date(
         Math.min(deadlineMs, Date.parse(decision.claims.expiresAt)),
       ).toISOString();
+      if (Date.parse(absoluteDeadline) <= now().getTime()) {
+        await store.delete(jobId);
+        throw new SecretJobServiceRejectedError('job deadline elapsed during approval');
+      }
 
       let request;
       try {
@@ -259,7 +263,7 @@ export function createSecretJobService(options: {
     async readFrames(
       jobId: string,
       actor: AuthenticatedApprovalActor,
-      afterSequence?: number,
+      nextSequence?: number,
     ): Promise<SecretJobFrameSpoolPage> {
       await ready;
       await recoverStale();
@@ -273,7 +277,7 @@ export function createSecretJobService(options: {
       ) {
         return Promise.reject(new SecretJobServiceRejectedError('secret job not found'));
       }
-      return options.frames.readPage(validatedJobId, afterSequence);
+      return options.frames.readPage(validatedJobId, nextSequence);
     },
 
     async cleanup(jobId: string, actor: AuthenticatedApprovalActor) {

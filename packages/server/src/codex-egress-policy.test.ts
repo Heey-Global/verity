@@ -7,7 +7,7 @@ describe('Codex egress policy', () => {
     const models = validateCodexEgress({
       method: 'GET',
       url: new URL('https://chatgpt.com/codex/models'),
-      headers: { authorization: 'Bearer verity-placeholder' },
+      headers: { authorization: 'Bearer verity-codex-gateway-placeholder-v1' },
     });
     expect(models.url.href).toBe('https://chatgpt.com/backend-api/codex/models');
 
@@ -16,7 +16,7 @@ describe('Codex egress policy', () => {
         method: 'POST',
         url: new URL('https://chatgpt.com/codex/responses'),
         headers: {
-          authorization: 'Bearer verity-placeholder',
+          authorization: 'Bearer verity-codex-gateway-placeholder-v1',
           'content-type': 'application/json',
         },
       }),
@@ -38,7 +38,10 @@ describe('Codex egress policy', () => {
       validateCodexEgress({
         method,
         url: new URL(path, 'https://chatgpt.com'),
-        headers: { authorization: 'Bearer verity-placeholder', ...extraHeaders },
+        headers: {
+          authorization: 'Bearer verity-codex-gateway-placeholder-v1',
+          ...extraHeaders,
+        },
       }),
     ).toThrow();
   });
@@ -49,6 +52,21 @@ describe('Codex egress policy', () => {
         method: 'GET',
         url: new URL('https://chatgpt.com/codex/models'),
         headers: {},
+      }),
+    ).toThrow();
+  });
+
+  it.each([
+    'Bearer attacker-token',
+    'bearer verity-placeholder',
+    'Bearer verity-placeholder-extra',
+    'Bearer  verity-placeholder',
+  ])('rejects a credential other than the exact configured placeholder: %s', (authorization) => {
+    expect(() =>
+      validateCodexEgress({
+        method: 'GET',
+        url: new URL('https://chatgpt.com/codex/models'),
+        headers: { authorization },
       }),
     ).toThrow();
   });

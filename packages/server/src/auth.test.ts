@@ -4,10 +4,8 @@ import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
-  accessTokenQuery,
   bearerToken,
   createAuthTokenRegistry,
-  redactAccessTokenInUrl,
   hashAuthToken,
   wsOriginAllowed,
   type AuthTokenStore,
@@ -31,35 +29,13 @@ function fakeStore(): AuthTokenStore & { rows: { id: string; tokenHash: string }
   };
 }
 
-describe('bearerToken / accessTokenQuery parsing', () => {
+describe('bearerToken parsing', () => {
   it('extracts the token from a Bearer header (case-insensitive), else undefined', () => {
     expect(bearerToken('Bearer abc.def')).toBe('abc.def');
     expect(bearerToken('bearer   xyz')).toBe('xyz');
     expect(bearerToken('Basic abc')).toBeUndefined();
     expect(bearerToken(undefined)).toBeUndefined();
     expect(bearerToken('Bearer')).toBeUndefined();
-  });
-
-  it('extracts access_token from a raw URL query, else undefined', () => {
-    expect(accessTokenQuery('/sessions/x/stream?access_token=tok123')).toBe('tok123');
-    expect(accessTokenQuery('/sessions/x/stream?sinceSeq=4&access_token=tok')).toBe('tok');
-    expect(accessTokenQuery('/sessions/x/stream')).toBeUndefined();
-    expect(accessTokenQuery('/x?other=1')).toBeUndefined();
-  });
-
-  it('redacts the access_token value in a URL, leaving the rest intact (M4)', () => {
-    expect(redactAccessTokenInUrl('/s/x/stream?access_token=secret123')).toBe(
-      '/s/x/stream?access_token=REDACTED',
-    );
-    // Only the token value changes; sibling params and their order are preserved.
-    expect(redactAccessTokenInUrl('/s/x/stream?sinceSeq=4&access_token=secret&foo=bar')).toBe(
-      '/s/x/stream?sinceSeq=4&access_token=REDACTED&foo=bar',
-    );
-    // No token → unchanged.
-    expect(redactAccessTokenInUrl('/s/x/stream?sinceSeq=4')).toBe('/s/x/stream?sinceSeq=4');
-    expect(redactAccessTokenInUrl('/healthz')).toBe('/healthz');
-    // The real token string never survives in the output.
-    expect(redactAccessTokenInUrl('/s?access_token=abc.def-ghi')).not.toContain('abc.def-ghi');
   });
 });
 
@@ -208,10 +184,11 @@ describe('global auth gate (onRequest)', () => {
         ).statusCode,
       ).toBe(200);
 
-      // Valid token via the access_token query param (the WebSocket path) → allowed.
+      // Query credentials are reserved for the actual WebSocket stream handshake;
+      // accepting them on HTTP routes would leak bearer tokens through URLs.
       expect(
         (await app.inject({ method: 'GET', url: `/settings?access_token=${token}` })).statusCode,
-      ).toBe(200);
+      ).toBe(401);
     } finally {
       await app.close();
     }
@@ -249,6 +226,59 @@ describe('global auth gate (onRequest)', () => {
       });
       expect(locked.statusCode).toBe(429);
       expect(locked.headers['retry-after']).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps managed-gateway unlock throttles separate per authenticated client', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      unlockClientIdentity: (request) =>
+        typeof request.headers['x-test-verified-client'] === 'string'
+          ? request.headers['x-test-verified-client']
+          : undefined,
+    });
+    try {
+      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+      cipher.seal();
+      for (let i = 0; i < 5; i++) {
+        expect(
+          (
+            await app.inject({
+              method: 'POST',
+              url: '/secret/unlock',
+              headers: { 'x-test-verified-client': 'device-a' },
+              payload: { password: 'definitely-wrong' },
+            })
+          ).statusCode,
+        ).toBe(401);
+      }
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/secret/unlock',
+            headers: { 'x-test-verified-client': 'device-a' },
+            payload: { password: 'definitely-wrong' },
+          })
+        ).statusCode,
+      ).toBe(429);
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/secret/unlock',
+            headers: { 'x-test-verified-client': 'device-b' },
+            payload: { password: 'definitely-wrong' },
+          })
+        ).statusCode,
+      ).toBe(401);
     } finally {
       await app.close();
     }

@@ -13,7 +13,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /src/packages/preview-tunnel/package.json ./package.json
 COPY --from=build /src/packages/preview-tunnel/dist ./dist
-COPY --from=build /src/packages/preview-tunnel/node_modules/ws ./node_modules/ws
+COPY --from=build /src/node_modules/ws ./node_modules/ws
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["node", "dist/edge-main.js"]

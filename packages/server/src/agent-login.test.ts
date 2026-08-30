@@ -304,6 +304,23 @@ describe('createProcessAgentLoginService', () => {
     expect(updates).toEqual([{ codexAuthJson: '{"refresh_token":"codex-refresh"}' }]);
   });
 
+  it('keeps an expired session retrievable with its terminal timeout state', async () => {
+    const shortLived = createProcessAgentLoginService({
+      updateSettings: async () => undefined,
+      sessionTtlMs: 20,
+    });
+    try {
+      const started = await shortLived.start('claude');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await expect(shortLived.get(started.sessionId)).resolves.toMatchObject({
+        status: 'failed',
+        message: 'Login timed out. Start a new login and try again.',
+      });
+    } finally {
+      shortLived.close();
+    }
+  });
+
   it('waits for the complete streamed Claude OAuth URL before becoming ready', async () => {
     process.env.VERITY_FAKE_AGENT_LOGIN_MODE = 'wrapped-claude-url';
 

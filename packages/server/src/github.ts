@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { GitOutput } from './branches.js';
@@ -168,11 +169,18 @@ export interface GitHubPrServiceOptions {
 export function parseGitHubRemote(remoteUrl: string): { owner: string; repo: string } | null {
   let url = remoteUrl.trim();
   if (url.endsWith('.git')) url = url.slice(0, -4);
-  // Match the `github.com` HOST specifically (anchored to a `^`/`@`/`/` boundary so
-  // `evilgithub.com` / a `github.com.evil.com` suffix don't match), and from the host
-  // on — so an embedded `user:token@` prefix (https remotes can carry a credential) is
-  // skipped and never captured. Separator after the host is `:` (SCP-style) or `/`.
-  const match = /(?:^|[@/])github\.com[/:]([^/]+)\/([^/]+?)\/?$/.exec(url);
+  const scp = /^(?:[^@/]+@)?github\.com:([^/]+)\/([^/]+?)\/?$/.exec(url);
+  let match = scp;
+  if (match === null) {
+    try {
+      const parsed = new URL(url);
+      if (!['https:', 'ssh:', 'git:'].includes(parsed.protocol) || parsed.hostname !== 'github.com')
+        return null;
+      match = /^\/([^/]+)\/([^/]+?)\/?$/.exec(parsed.pathname);
+    } catch {
+      return null;
+    }
+  }
   if (match === null) return null;
   const [, owner, repo] = match;
   if (owner === undefined || repo === undefined || owner === '' || repo === '') return null;
@@ -325,17 +333,21 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
   const identity = makeIdentityResolver(git, opts.repoDir);
 
   const cache = new Map<string, { status: PullRequestStatus | null; at: number }>();
+  const lastCacheByBranch = new Map<string, { status: PullRequestStatus | null; at: number }>();
   const localFailureCooldown: { until: number; inFlight?: Promise<void> } = { until: 0 };
   // Conditional REST responses do not consume the primary GitHub rate limit when
   // GitHub answers 304. PR polling repeatedly reads the same small set of URLs, so
   // retaining each response's ETag avoids spending several requests per session on
   // unchanged data while preserving the existing refresh cadence.
   const responseCache = new Map<string, { etag: string; body: unknown }>();
+  const credentialId = (token: string): string =>
+    createHash('sha256').update(token).digest('base64url');
   const emptyChecks = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
 
   const fetchJson = async (url: string, token: string): Promise<{ ok: boolean; body: unknown }> => {
     try {
-      const cachedResponse = responseCache.get(url);
+      const responseKey = `${credentialId(token)}\0${url}`;
+      const cachedResponse = responseCache.get(responseKey);
       const res = await doFetch(url, {
         headers: {
           ...githubHeaders(token),
@@ -350,7 +362,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       const body = await res.json();
       const etag = res.headers?.get('etag');
       if (etag !== undefined && etag !== null && etag !== '') {
-        responseCache.set(url, { etag, body });
+        responseCache.set(responseKey, { etag, body });
       }
       return { ok: true, body };
     } catch {
@@ -442,15 +454,23 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     sha: string,
     token: string,
   ): Promise<CheckCountsResult> => {
-    const url =
-      `https://api.github.com/repos/${id.owner}/${id.repo}/commits/${encodeURIComponent(sha)}` +
-      '/check-runs?per_page=100';
-    const res = await fetchJson(url, token);
-    if (!res.ok || res.body === null || typeof res.body !== 'object' || Array.isArray(res.body)) {
-      return { ok: false };
+    const runs: unknown[] = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const url =
+        `https://api.github.com/repos/${id.owner}/${id.repo}/commits/${encodeURIComponent(sha)}` +
+        `/check-runs?per_page=100${page === 1 ? '' : `&page=${String(page)}`}`;
+      const res = await fetchJson(url, token);
+      if (!res.ok || res.body === null || typeof res.body !== 'object' || Array.isArray(res.body)) {
+        return { ok: false };
+      }
+      const pageRuns = (res.body as Record<string, unknown>).check_runs;
+      if (!Array.isArray(pageRuns)) return { ok: false };
+      for (const run of pageRuns) runs.push(run);
+      const total = (res.body as Record<string, unknown>).total_count;
+      if (pageRuns.length < 100 || (typeof total === 'number' && runs.length >= total)) break;
+      if (page === 100) return { ok: false };
     }
-    const runs = (res.body as Record<string, unknown>).check_runs;
-    return Array.isArray(runs) ? { ok: true, checks: countsFromRuns(runs) } : { ok: false };
+    return { ok: true, checks: countsFromRuns(runs) };
   };
 
   const commitStatusCounts = async (
@@ -458,20 +478,25 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     sha: string,
     token: string,
   ): Promise<CheckCountsResult> => {
-    const url =
-      `https://api.github.com/repos/${id.owner}/${id.repo}/commits/${encodeURIComponent(sha)}` +
-      '/status?per_page=100';
-    const res = await fetchJson(url, token);
-    if (!res.ok || res.body === null || typeof res.body !== 'object' || Array.isArray(res.body)) {
-      return { ok: false };
-    }
+    const statuses: unknown[] = [];
     // `statuses` is empty when the repo uses no legacy statuses; the endpoint's own
     // rollup `state` is 'pending' in that case, so we count the array (0 → no-op),
     // never the rollup — otherwise a check-runs-only repo would look forever pending.
-    const statuses = (res.body as Record<string, unknown>).statuses;
-    return Array.isArray(statuses)
-      ? { ok: true, checks: countsFromStatuses(statuses) }
-      : { ok: false };
+    for (let page = 1; page <= 100; page += 1) {
+      const url =
+        `https://api.github.com/repos/${id.owner}/${id.repo}/commits/${encodeURIComponent(sha)}` +
+        `/status?per_page=100${page === 1 ? '' : `&page=${String(page)}`}`;
+      const res = await fetchJson(url, token);
+      if (!res.ok || res.body === null || typeof res.body !== 'object' || Array.isArray(res.body)) {
+        return { ok: false };
+      }
+      const pageStatuses = (res.body as Record<string, unknown>).statuses;
+      if (!Array.isArray(pageStatuses)) return { ok: false };
+      for (const status of pageStatuses) statuses.push(status);
+      if (pageStatuses.length < 100) break;
+      if (page === 100) return { ok: false };
+    }
+    return { ok: true, checks: countsFromStatuses(statuses) };
   };
 
   const checkCounts = async (
@@ -498,15 +523,23 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     sha: string,
     token: string,
   ): Promise<CheckCountsResult> => {
-    const url =
-      `https://api.github.com/repos/${id.owner}/${id.repo}/actions/runs` +
-      `?head_sha=${encodeURIComponent(sha)}&per_page=100`;
-    const res = await fetchJson(url, token);
-    if (!res.ok || res.body === null || typeof res.body !== 'object' || Array.isArray(res.body)) {
-      return { ok: false };
+    const runs: unknown[] = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const url =
+        `https://api.github.com/repos/${id.owner}/${id.repo}/actions/runs` +
+        `?head_sha=${encodeURIComponent(sha)}&per_page=100${page === 1 ? '' : `&page=${String(page)}`}`;
+      const res = await fetchJson(url, token);
+      if (!res.ok || res.body === null || typeof res.body !== 'object' || Array.isArray(res.body)) {
+        return { ok: false };
+      }
+      const pageRuns = (res.body as Record<string, unknown>).workflow_runs;
+      if (!Array.isArray(pageRuns)) return { ok: false };
+      for (const run of pageRuns as unknown[]) runs.push(run);
+      const total = (res.body as Record<string, unknown>).total_count;
+      if (pageRuns.length < 100 || (typeof total === 'number' && runs.length >= total)) break;
+      if (page === 100) return { ok: false };
     }
-    const runs = (res.body as Record<string, unknown>).workflow_runs;
-    return Array.isArray(runs) ? { ok: true, checks: countsFromRuns(runs) } : { ok: false };
+    return { ok: true, checks: countsFromRuns(runs) };
   };
 
   const MERGE_STATES: readonly NonNullable<PullRequestStatus['mergeState']>[] = [
@@ -558,13 +591,20 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       const head = encodeURIComponent(`${id.owner}:${branch}`);
       const url =
         `https://api.github.com/repos/${id.owner}/${id.repo}/pulls` +
-        `?head=${head}&state=all&sort=updated&direction=desc&per_page=1`;
+        `?head=${head}&state=all&sort=updated&direction=desc&per_page=100`;
       const res = await fetchJson(url, token);
       if (!res.ok) return { ok: false, status: null };
       const body = res.body;
       if (!Array.isArray(body) || body.length === 0) return { ok: true, status: null };
       const rows: unknown[] = body;
-      const raw = rows[0];
+      const raw =
+        rows.find(
+          (candidate) =>
+            candidate !== null &&
+            typeof candidate === 'object' &&
+            !Array.isArray(candidate) &&
+            (candidate as Record<string, unknown>).state === 'open',
+        ) ?? rows[0];
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         return { ok: true, status: null };
       }
@@ -682,7 +722,9 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
 
   const prStatusForBranch = async (branch: string): Promise<PullRequestStatus | null> => {
     if (branch === '') return null;
-    const cached = cache.get(branch);
+    const id = await identity();
+    if (id === null) return null;
+    let cached = lastCacheByBranch.get(branch);
     const unavailableCachedStatus = (): PullRequestStatus | null => {
       if (cached?.status === undefined || cached.status === null) return null;
       // Drop every live signal, `mergeState` included: while GitHub is unreachable we
@@ -697,14 +739,6 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
         mergeable: null,
       };
     };
-    if (cached !== undefined) {
-      // A "no PR" answer expires fast (negativeTtlMs) so a freshly created PR is
-      // discovered within seconds; a found PR holds the full ttlMs to spare the API.
-      const ttl = cached.status === null ? negativeTtlMs : ttlMs;
-      if (now() - cached.at < ttl) return cached.status;
-    }
-    const id = await identity();
-    if (id === null) return cached?.status ?? null;
     const failureCooldown = opts.failureCooldownFor?.(id.owner, id.repo) ?? localFailureCooldown;
     if (now() < failureCooldown.until) {
       return unavailableCachedStatus();
@@ -732,25 +766,30 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
         failureCooldown.until = Math.max(failureCooldown.until, now() + failureBackoffMs);
         return unavailableCachedStatus();
       };
-      let token = resolveToken();
-      if (token === undefined && opts.asyncToken !== undefined) {
+      let token: string | undefined;
+      if (opts.asyncToken !== undefined) {
         try {
           token = await opts.asyncToken(id.owner, id.repo);
         } catch {
-          return tokenUnavailable();
+          // Fall through to the explicitly configured legacy token source.
         }
       }
+      token ??= resolveToken();
       if (token === undefined) {
-        // No configured async provider is an intentionally inert service. Once a
-        // provider exists (embedded GitHub App mode), an absent token is an outage:
-        // hide stale live-looking checks and stop retrying on every UI poll.
-        if (opts.asyncToken === undefined && probe === undefined) return cached?.status ?? null;
-        return tokenUnavailable();
+        return opts.asyncToken === undefined ? (cached?.status ?? null) : tokenUnavailable();
+      }
+      const cacheKey = `${credentialId(token)}\0${branch}`;
+      cached = cache.get(cacheKey);
+      if (cached !== undefined) {
+        const ttl = cached.status === null ? negativeTtlMs : ttlMs;
+        if (now() - cached.at < ttl) return cached.status;
       }
       const result = await lookup(id, branch, token);
       if (result.ok) {
         if (probe !== undefined) failureCooldown.until = 0;
-        cache.set(branch, { status: result.status, at: now() });
+        const entry = { status: result.status, at: now() };
+        cache.set(cacheKey, entry);
+        lastCacheByBranch.set(branch, entry);
         return result.status;
       }
       // Do not keep presenting an old in-progress count as live forever when GitHub
@@ -807,14 +846,15 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     prStatusForBranches,
     async mergePr(number: number, expectedHeadSha?: string): Promise<boolean> {
       const id = await identity();
-      let token = resolveToken();
-      if (token === undefined && id !== null && opts.asyncToken !== undefined) {
+      let token: string | undefined;
+      if (id !== null && opts.asyncToken !== undefined) {
         try {
           token = await opts.asyncToken(id.owner, id.repo);
         } catch {
-          return false;
+          // Fall through to the explicitly configured legacy token source.
         }
       }
+      token ??= resolveToken();
       if (token === undefined || id === null || !Number.isInteger(number) || number <= 0) {
         return false;
       }
@@ -919,6 +959,8 @@ export interface GitHubIssueServiceOptions {
   repoDir: string;
   /** GitHub token or token provider — see {@link GitHubTokenSource}. */
   token?: GitHubTokenSource | undefined;
+  /** Async repo-scoped token mint, used by DB-backed GitHub App credentials. */
+  asyncToken?: ((owner: string, repo: string) => Promise<string | undefined>) | undefined;
   /** Injected git runner (tests); defaults to the real `git`. */
   git?: GitOutput;
   /** Injected fetch (tests); defaults to the global `fetch`. */
@@ -991,8 +1033,19 @@ export function createGitHubIssueService(opts: GitHubIssueServiceOptions): GitHu
 
   return {
     async listOpenIssues(): Promise<IssueSummary[]> {
-      // Inert without a currently-resolvable token (GitHub not configured).
-      const token = resolveToken();
+      const id = await identity();
+      if (id === null) return [];
+      // Prefer the scoped, freshly minted App credential. The synchronous source
+      // is only a legacy fallback and may be a stale fleet token.
+      let token: string | undefined;
+      if (opts.asyncToken !== undefined) {
+        try {
+          token = await opts.asyncToken(id.owner, id.repo);
+        } catch {
+          // Fall through to the explicitly configured legacy token source.
+        }
+      }
+      token ??= resolveToken();
       if (token === undefined) return [];
       if (cache !== undefined && now() - cache.at < ttlMs) return cache.issues;
       const result = await lookup(token);
@@ -1142,6 +1195,15 @@ export function createGitHubReleaseService(
           }
         }
         nextUrl = nextLink(extractLinkHeader(res));
+        if (nextUrl !== null) {
+          const parsed = new URL(nextUrl);
+          if (
+            parsed.protocol !== 'https:' ||
+            parsed.hostname !== 'api.github.com' ||
+            parsed.pathname !== `/repos/${owner}/${repo}/releases`
+          )
+            return;
+        }
       }
       cache.set(key, { release: null, at: now() });
     } catch {
@@ -1186,14 +1248,15 @@ export function createGitHubReleaseService(
       repo: string,
     ): Promise<ReleaseSummary | null | undefined> {
       if (owner === '' || repo === '') return undefined;
-      let token = resolveToken();
-      if (token === undefined && opts.asyncToken !== undefined) {
+      let token: string | undefined;
+      if (opts.asyncToken !== undefined) {
         try {
           token = await opts.asyncToken(owner, repo);
         } catch {
-          return undefined;
+          // Fall through to the explicitly configured legacy token source.
         }
       }
+      token ??= resolveToken();
       if (token === undefined) return undefined;
       const o = owner.toLowerCase();
       const r = repo.toLowerCase();
@@ -1343,6 +1406,16 @@ export function createGitHubInstallationService(
         // Follow the `Link` header's `rel="next"` URL if present.
         const linkHeader = extractLinkHeader(res);
         nextUrl = nextLink(linkHeader);
+        if (nextUrl !== null) {
+          const parsed = new URL(nextUrl);
+          if (
+            parsed.protocol !== 'https:' ||
+            parsed.hostname !== 'api.github.com' ||
+            parsed.pathname !== '/installation/repositories'
+          ) {
+            return { ok: false, repos: [] };
+          }
+        }
       }
       return { ok: true, repos };
     } catch {
@@ -1353,7 +1426,15 @@ export function createGitHubInstallationService(
   return {
     async listInstallationRepos(): Promise<InstallationRepo[]> {
       // Inert without a currently-resolvable token (GitHub not configured).
-      const token = resolveToken() ?? (await resolveAsyncToken?.());
+      let token: string | undefined;
+      if (resolveAsyncToken !== undefined) {
+        try {
+          token = await resolveAsyncToken();
+        } catch {
+          // Fall through to the explicitly configured legacy token source.
+        }
+      }
+      token ??= resolveToken();
       if (token === undefined || token.trim().length === 0) return [];
       if (cache !== undefined && now() - cache.at < ttlMs) return cache.repos;
       const result = await walkAllPages(token);

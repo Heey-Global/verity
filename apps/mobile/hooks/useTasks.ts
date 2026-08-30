@@ -21,7 +21,7 @@ export interface UseTasks {
   /** Re-fetch the board (pull-to-refresh / retry / after a mutation). */
   refresh: () => Promise<void>;
   /** Capture a draft task (the inbox) and refresh. No-op on an empty title. */
-  createDraft: (title: string) => Promise<void>;
+  createDraft: (title: string) => Promise<boolean>;
   /** Create a real backlog issue with the given title + markdown body and refresh.
    *  `repo` (`owner/repo`, the repo picker) targets a specific repo; omitted files into
    *  the server's origin repo. Returns whether it succeeded (so the caller can close a
@@ -51,36 +51,40 @@ export function useTasks(client: VerityClient): UseTasks {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
+  const requestSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
     setLoading(true);
     setError(undefined);
     try {
       const next = await client.getTasks();
-      if (mounted.current) {
+      if (mounted.current && sequence === requestSequence.current) {
         setBoard(next);
         setLoaded(true);
       }
     } catch (caught) {
-      if (mounted.current) {
+      if (mounted.current && sequence === requestSequence.current) {
         setError(caught instanceof VerityApiError ? caught.message : 'Could not load tasks');
       }
     } finally {
-      if (mounted.current) setLoading(false);
+      if (mounted.current && sequence === requestSequence.current) setLoading(false);
     }
   }, [client]);
 
   const createDraft = useCallback(
     async (title: string) => {
       const trimmed = title.trim();
-      if (trimmed.length === 0) return;
+      if (trimmed.length === 0) return false;
       try {
         await client.createTaskDraft({ title: trimmed });
         await load();
+        return true;
       } catch (caught) {
         if (mounted.current) {
           setError(caught instanceof VerityApiError ? caught.message : 'Could not create the task');
         }
+        return false;
       }
     },
     [client, load],

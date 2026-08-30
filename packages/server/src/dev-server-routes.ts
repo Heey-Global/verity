@@ -100,7 +100,7 @@ export function registerDevServerRoutes(
     const devServer = await deps.eventStore.getDevServer(devServerId);
     if (!devServer) return undefined;
     const project = await deps.eventStore.getProject(devServer.projectId);
-    if (!project) return undefined;
+    if (!project || project.hiddenAt !== null) return undefined;
     const projectSettings = decryptSecrets
       ? await deps.eventStore.getProjectSettings(project.id)
       : await deps.eventStore.getProjectSettingsRaw(project.id);
@@ -147,7 +147,7 @@ export function registerDevServerRoutes(
   app.get('/projects/:projectId/dev-servers', async (request, reply) => {
     const { projectId } = projectParams.parse(request.params);
     const project = await deps.eventStore.getProject(projectId);
-    if (project === undefined) {
+    if (project === undefined || project.hiddenAt !== null) {
       reply.code(404);
       return { error: 'project not found' };
     }
@@ -313,6 +313,11 @@ export function registerDevServerRoutes(
       reply.code(404);
       return { error: 'dev server not found' };
     }
+    const project = await deps.eventStore.getProject(devServer.projectId);
+    if (!project || project.hiddenAt !== null) {
+      reply.code(404);
+      return { error: 'dev server not found' };
+    }
     return { devServer };
   });
 
@@ -324,12 +329,12 @@ export function registerDevServerRoutes(
       reply.code(404);
       return { error: 'dev server not found' };
     }
+    const project = await deps.eventStore.getProject(current.projectId);
+    if (!project || project.hiddenAt !== null) {
+      reply.code(404);
+      return { error: 'project not found' };
+    }
     if (body.containerPort !== undefined) {
-      const project = await deps.eventStore.getProject(current.projectId);
-      if (!project || project.hiddenAt !== null) {
-        reply.code(404);
-        return { error: 'project not found' };
-      }
       if (project.state !== 'absent') {
         reply.code(409);
         return { error: 'pause the project environment before changing its published port' };

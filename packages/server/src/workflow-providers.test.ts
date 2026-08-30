@@ -101,6 +101,35 @@ describe('workflow provider gates', () => {
     });
   });
 
+  it('requires merge approval evidence to be literal true', async () => {
+    const gate = createGitHubWorkflowGate({
+      token: async () => 'token',
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              head: { sha: 'a'.repeat(40) },
+              base: { ref: 'main' },
+              merged: true,
+              merge_commit_sha: 'b'.repeat(40),
+            }),
+            { status: 200 },
+          ),
+      ),
+    });
+    await expect(
+      gate.reconcile(
+        candidate('pull_request.merged', {
+          owner: 'example',
+          repo: 'app',
+          pullRequest: 1,
+          headSha: 'a'.repeat(40),
+          approved: 'true',
+        }),
+      ),
+    ).resolves.toEqual({ status: 'blocked', reason: 'verified PR coordinates are missing' });
+  });
+
   it('rejects GitHub CI evidence after the PR head changed', async () => {
     const fetchMock = vi.fn(
       async () => new Response(JSON.stringify({ head: { sha: 'b'.repeat(40) } }), { status: 200 }),
@@ -282,6 +311,34 @@ describe('workflow provider gates', () => {
           pullRequest: 2,
           headSha: 'a'.repeat(40),
           allowedPathPrefixes: ['apps/api/staging/'],
+        }),
+      ),
+    ).resolves.toEqual({
+      status: 'blocked',
+      reason: 'pull request changes exceed the registered manifest scope',
+    });
+  });
+
+  it('enforces registered path scopes at a repository path boundary', async () => {
+    const responses = [
+      { head: { sha: 'a'.repeat(40) }, base: { ref: 'main' }, changed_files: 1 },
+      { check_runs: [{ name: 'test', status: 'completed', conclusion: 'success' }] },
+      { statuses: [] },
+      { contexts: ['test'], checks: [] },
+      [{ filename: 'apps/api/staging-escape/deployment.yaml' }],
+    ];
+    const gate = createGitHubWorkflowGate({
+      token: async () => 'token',
+      fetch: vi.fn(async () => new Response(JSON.stringify(responses.shift()), { status: 200 })),
+    });
+    await expect(
+      gate.reconcile(
+        candidate('pull_request.ci_passed', {
+          owner: 'example',
+          repo: 'cluster',
+          pullRequest: 2,
+          headSha: 'a'.repeat(40),
+          allowedPathPrefixes: ['apps/api/staging'],
         }),
       ),
     ).resolves.toEqual({

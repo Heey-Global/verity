@@ -268,16 +268,25 @@ export async function pickFiles(remaining: number): Promise<AttachmentUpload[]> 
   if (result.canceled) return [];
   const uploads: AttachmentUpload[] = [];
   for (const asset of result.assets.slice(0, remaining)) {
-    const data = await new FsFile(asset.uri).base64();
-    if (data.length > MAX_ATTACHMENT_BASE64_LEN) {
-      throw new Error(`"${asset.name}" is too large to attach (max ~5 MB per file).`);
+    const file = new FsFile(asset.uri);
+    try {
+      const data = await file.base64();
+      if (data.length > MAX_ATTACHMENT_BASE64_LEN) {
+        throw new Error(`"${asset.name}" is too large to attach (max ~5 MB per file).`);
+      }
+      uploads.push({
+        kind: 'file',
+        mediaType: asset.mimeType ?? 'application/octet-stream',
+        fileName: asset.name,
+        data,
+      });
+    } finally {
+      try {
+        file.delete();
+      } catch {
+        // Best-effort cleanup of the document picker's private cache copy.
+      }
     }
-    uploads.push({
-      kind: 'file',
-      mediaType: asset.mimeType ?? 'application/octet-stream',
-      fileName: asset.name,
-      data,
-    });
   }
   return uploads;
 }

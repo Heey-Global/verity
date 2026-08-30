@@ -41,6 +41,7 @@ describe('parseGitHubRemote', () => {
     expect(parseGitHubRemote('git@evilgithub.com:o/r.git')).toBeNull();
     expect(parseGitHubRemote('https://notgithub.com/o/r')).toBeNull();
     expect(parseGitHubRemote('https://github.com.evil.com/o/r')).toBeNull();
+    expect(parseGitHubRemote('https://evil.example/github.com/o/r')).toBeNull();
   });
 });
 
@@ -110,7 +111,7 @@ describe('createGitHubPrService', () => {
     expect(await svc.prForBranch('feat/122-x')).toBe(119);
     expect(calls[0]?.url).toBe(
       'https://api.github.com/repos/Example-Org/Example-Repo/pulls' +
-        '?head=Example-Org%3Afeat%2F122-x&state=all&sort=updated&direction=desc&per_page=1',
+        '?head=Example-Org%3Afeat%2F122-x&state=all&sort=updated&direction=desc&per_page=100',
     );
     expect(calls[0]?.headers?.Authorization).toBe('Bearer tok');
     // A timeout signal is passed so a hung connection can't stall the endpoint.
@@ -188,6 +189,26 @@ describe('createGitHubPrService', () => {
       pipeline: 'failure',
       checks: { completed: 3, total: 3, successful: 2, failed: 1, pending: 0 },
       mergeable: null,
+    });
+  });
+
+  it('aggregates check runs and commit statuses beyond the first 100 rows', async () => {
+    const hundredChecks = Array.from({ length: 100 }, () => ({
+      status: 'completed',
+      conclusion: 'success',
+    }));
+    const hundredStatuses = Array.from({ length: 100 }, () => ({ state: 'success' }));
+    const { fetch } = fakeFetch(
+      ok([{ number: 126, state: 'open', title: 'Many checks', head: { sha: 'many' } }]),
+      ok({ total_count: 101, check_runs: hundredChecks }),
+      ok({ statuses: hundredStatuses }),
+      ok({ total_count: 101, check_runs: [{ status: 'completed', conclusion: 'failure' }] }),
+      ok({ statuses: [{ state: 'failure' }] }),
+    );
+    const svc = createGitHubPrService({ repoDir: '/r', token: 'tok', git: githubRemote, fetch });
+    await expect(svc.prStatusForBranch('feat/many')).resolves.toMatchObject({
+      pipeline: 'failure',
+      checks: { completed: 202, total: 202, successful: 200, failed: 2, pending: 0 },
     });
   });
 
@@ -1278,6 +1299,25 @@ describe('createGitHubPrService', () => {
     await svc.prForBranch('feat/2-y'); // different branch → cache miss → fresh lookup
     expect(calls[1]?.headers?.Authorization).toBe('Bearer new');
   });
+
+  it('partitions branch and ETag caches by credential identity', async () => {
+    let current = 'old';
+    const { fetch, calls } = fakeFetch(ok([{ number: 1 }]), ok([{ number: 2 }]));
+    const svc = createGitHubPrService({
+      repoDir: '/r',
+      token: () => current,
+      git: githubRemote,
+      fetch,
+      ttlMs: 60_000,
+    });
+
+    expect(await svc.prForBranch('feat/1-x')).toBe(1);
+    current = 'new';
+    expect(await svc.prForBranch('feat/1-x')).toBe(2);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.headers?.Authorization).toBe('Bearer new');
+    expect(calls[1]?.headers?.['If-None-Match']).toBeUndefined();
+  });
 });
 
 describe('createGhTokenReader (#131)', () => {
@@ -1384,6 +1424,32 @@ describe('createGitHubIssueService (#137)', () => {
     const { fetch, calls } = fakeFetch(ok(page));
     const svc = createGitHubIssueService({ repoDir: '/r', git: githubRemote, fetch });
     expect(await svc.listOpenIssues()).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('mints an async installation token when no legacy token is configured', async () => {
+    const { fetch, calls } = fakeFetch(ok(page));
+    const asyncToken = vi.fn().mockResolvedValue('installation-token');
+    const svc = createGitHubIssueService({
+      repoDir: '/r',
+      asyncToken,
+      git: githubRemote,
+      fetch,
+    });
+    expect(await svc.listOpenIssues()).toHaveLength(2);
+    expect(asyncToken).toHaveBeenCalledWith('Example-Org', 'Example-Repo');
+    expect(calls[0]?.headers?.Authorization).toBe('Bearer installation-token');
+  });
+
+  it('never throws when async token minting fails', async () => {
+    const { fetch, calls } = fakeFetch(ok(page));
+    const svc = createGitHubIssueService({
+      repoDir: '/r',
+      asyncToken: () => Promise.reject(new Error('mint failed')),
+      git: githubRemote,
+      fetch,
+    });
+    await expect(svc.listOpenIssues()).resolves.toEqual([]);
     expect(calls).toHaveLength(0);
   });
 
@@ -1501,6 +1567,18 @@ describe('createGitHubReleaseService', () => {
       'https://api.github.com/repos/heey-global/verity/releases?per_page=100',
       'https://api.github.com/repos/heey-global/verity/releases?per_page=100&page=2',
     ]);
+  });
+
+  it('refuses a release pagination Link outside the exact GitHub API repository path', async () => {
+    const { fetch, calls } = fakeFetch({
+      ...ok([{ ...release, draft: true }]),
+      headers: {
+        get: () => '<https://evil.example/repos/heey-global/verity/releases?page=2>; rel="next"',
+      },
+    });
+    const svc = createGitHubReleaseService({ token: 'tok', fetch });
+    await expect(svc.refreshLatestRelease('heey-global', 'verity')).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
   });
 
   it('can await a cold refresh when a caller needs an immediate answer', async () => {

@@ -49,6 +49,7 @@ import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
   eventStore: EventStore;
+  unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
   workflowStore?: WorkflowStore | undefined;
   workflowGithubWebhookSecret?: string | undefined;
   authorizeWorkflowAction?: ServerDeps['authorizeWorkflowAction'];
@@ -288,6 +289,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
 
   return buildServer({
     eventStore: deps.eventStore,
+    ...(deps.unlockClientIdentity !== undefined
+      ? { unlockClientIdentity: deps.unlockClientIdentity }
+      : {}),
     ...(deps.workflowStore !== undefined ? { workflowStore: deps.workflowStore } : {}),
     ...(deps.workflowGithubWebhookSecret !== undefined
       ? { workflowGithubWebhookSecret: deps.workflowGithubWebhookSecret }

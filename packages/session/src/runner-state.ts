@@ -1,5 +1,6 @@
-import { rename, readFile, writeFile } from 'node:fs/promises';
+import { chmod, open, rename, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { dirname } from 'node:path';
 import { RUNNER_FRAME_PROTOCOL_VERSION } from '@verity/store';
 
 /**
@@ -56,7 +57,22 @@ function isEnoent(err: unknown): boolean {
 export async function writeRunnerState(path: string, state: RunnerTurnState): Promise<void> {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(state), 'utf8');
+  await chmod(tmp, 0o640);
+  const file = await open(tmp, 'r');
+  try {
+    await file.sync();
+  } finally {
+    await file.close();
+  }
   await rename(tmp, path);
+  // Persist the directory entry replacement too. Without this fsync, a power loss
+  // after rename may resurrect the previous state or lose the file altogether.
+  const directory = await open(dirname(path), 'r');
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
   // NOTE: a crash BETWEEN the write and the rename leaves an orphan `*.tmp` sibling.
   // It never corrupts a read (`readRunnerState` opens only the exact state path), but a
   // later runtime-dir sweep / discovery scan should ignore the `*.tmp` suffix.

@@ -236,7 +236,7 @@ function validPath(value: unknown): value is string {
 }
 
 export function isHttpResponseMeta(value: unknown): value is HttpResponseMeta {
-  if (typeof value !== 'object' || value === null) return false;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const meta = value as Partial<HttpResponseMeta>;
   return (
     Number.isInteger(meta.status) &&
@@ -280,7 +280,7 @@ export function isSubprotocolToken(value: string): boolean {
 /** A selected subprotocol is one token from the dial's own offer, so it is
  * bounded by what a header value may hold and may not contain a separator. */
 export function isWsAcceptMeta(value: unknown): value is WsAcceptMeta {
-  if (typeof value !== 'object' || value === null) return false;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   // Unknown members are tolerated by design, but members that belong to another
   // meta are not: an acceptance carrying a status line or a path is a frame
   // whose sender confused two channels, and reading it as an empty accept would
@@ -330,7 +330,8 @@ export function validStreamFrame(value: unknown, maxBodyBytes: number): value is
     case 'stream.end': {
       const end = value as Partial<StreamEnd>;
       if (end.meta === undefined) return true;
-      if (typeof end.meta !== 'object' || end.meta === null) return false;
+      if (typeof end.meta !== 'object' || end.meta === null || Array.isArray(end.meta))
+        return false;
       const { code, reason } = end.meta as { code?: unknown; reason?: unknown };
       if (code !== undefined && (typeof code !== 'number' || !sendableCloseCode(code))) {
         return false;

@@ -30,6 +30,7 @@ const gate = vi.hoisted(() => {
     /** uid the host would give a file this process creates (0 = running as root). */
     createUid: 0,
     openError: undefined as NodeJS.ErrnoException | undefined,
+    raceWinner: undefined as Inode | undefined,
   };
 });
 
@@ -44,6 +45,14 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...actual,
     open: async (path: unknown, ...rest: unknown[]) => {
+      if (path === '/run/verity-updater/control') {
+        return {
+          sync: async () => {
+            gate.events.push('dirsync');
+          },
+          close: async () => undefined,
+        };
+      }
       if (!owned(path)) return actual.open(path as string, ...(rest as []));
       if (gate.openError !== undefined) throw gate.openError;
       const inode = gate.files.get(path);
@@ -86,12 +95,14 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       });
       return undefined;
     },
-    rename: async (from: unknown, to: unknown) => {
-      if (!owned(from)) return actual.rename(from as string, to as string);
+    link: async (from: unknown, to: unknown) => {
+      if (!owned(from)) return actual.link(from as string, to as string);
       const inode = gate.files.get(from);
       if (inode === undefined) throw enoent(from);
-      gate.events.push(`rename:${String(to)}`);
-      gate.files.delete(from);
+      if (gate.raceWinner !== undefined) gate.files.set(to as string, gate.raceWinner);
+      if (gate.files.has(to as string))
+        throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+      gate.events.push(`link:${String(to)}`);
       gate.files.set(to as string, inode);
       return undefined;
     },
@@ -130,6 +141,7 @@ beforeEach(() => {
   gate.events.length = 0;
   gate.createUid = 0;
   gate.openError = undefined;
+  gate.raceWinner = undefined;
 });
 
 describe('standby activation gate', () => {
@@ -216,7 +228,7 @@ describe('standby activation gate', () => {
 
   it('publishes the marker as a private root-owned file before it appears at its name', async () => {
     // Ordering is the point: the waiting Server opens the gate by name, so the
-    // ownership and mode have to be final BEFORE the rename makes it visible.
+    // ownership and mode have to be final BEFORE the link makes it visible.
     // Publishing first and tightening afterwards would leave a window in which a
     // peer-writable marker is a valid activation authority.
     await expect(openActivationGate('update-7', PEER_GID)).resolves.toBeUndefined();
@@ -227,7 +239,9 @@ describe('standby activation gate', () => {
       'chown',
       'chmod',
       'sync',
-      'rename',
+      'link',
+      'dirsync',
+      'unlink',
     ]);
     expect(gate.events).toContain(`chown:0:${String(PEER_GID)}`);
     expect(gate.events).toContain('chmod:640');
@@ -238,6 +252,14 @@ describe('standby activation gate', () => {
       gid: PEER_GID,
       mode: 0o100640,
     });
+  });
+
+  it('adopts a valid concurrent winner without replacing its inode', async () => {
+    const winner = published();
+    gate.raceWinner = winner;
+    await expect(openActivationGate('update-7', PEER_GID)).resolves.toBeUndefined();
+    expect(gate.files.get(GATE)).toBe(winner);
+    expect(gate.events).not.toContain(`link:${GATE}`);
   });
 
   it('adopts an already published marker instead of republishing it', async () => {

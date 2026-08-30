@@ -115,6 +115,12 @@ host_daemon_id="$(docker --host unix:///var/run/docker.sock info --format '{{.ID
 adopted="$(docker --host "$DOCKER_HOST" ps --all --quiet --filter 'name=^verity-' | wc -l | tr -d '[:space:]')"
 [[ "$adopted" == 0 ]] ||
   refuse_daemon "the daemon already holds $adopted verity-* container(s), which the cleanup below would force-remove"
+adopted_volumes="$(docker --host "$DOCKER_HOST" volume ls --quiet --filter 'name=^verity-' | wc -l | tr -d '[:space:]')"
+[[ "$adopted_volumes" == 0 ]] ||
+  refuse_daemon "the daemon already holds $adopted_volumes verity-* volume(s), which this smoke could adopt"
+adopted_networks="$(docker --host "$DOCKER_HOST" network ls --quiet --filter 'name=^verity-' | wc -l | tr -d '[:space:]')"
+[[ "$adopted_networks" == 0 ]] ||
+  refuse_daemon "the daemon already holds $adopted_networks verity-* network(s), which this smoke could adopt"
 
 # Checked AFTER the daemon guard and before the cleanup trap, in that order and
 # for two different reasons. After the guard, because a missing argument is a
@@ -169,6 +175,11 @@ cleanup() {
     verity-postgres verity-postgres-unmigrated >/dev/null 2>&1 || true
   docker ps -aq --filter 'name=^verity-managed-' --filter 'name=^verity-smoke-' |
     xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker volume rm -f verity-data verity-agent-gateway-control verity-updater-control \
+    verity-managed-gateway-control verity-smoke-standby verity-smoke-agent-seed \
+    verity-smoke-drift-deployment verity-smoke-drift-control \
+    verity-smoke-drift-secrets >/dev/null 2>&1 || true
+  docker network rm verity-net >/dev/null 2>&1 || true
   rm -rf "$managed_parent"
 }
 trap cleanup EXIT

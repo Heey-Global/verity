@@ -596,6 +596,7 @@ describe('FileTailRunnerClient (ADR 0006 Stage 2.1 roundtrip)', () => {
     await fb.started;
     // The grant answers it: the backend sees an allow without any operator action.
     await waitFor(() => fb.permissionAnswers.length === 1);
+    await waitFor(() => store.claimedCount >= 4);
 
     expect(gateSaw).toEqual([PERMISSION_REQUEST]);
     expect(fb.permissionAnswers).toEqual([{ behavior: 'allow' }]);
@@ -868,7 +869,9 @@ describe('FileTailRunnerClient.attach control (ADR 0006 D7)', () => {
       {},
     );
 
-    await expect(turn.forceCancel?.()).resolves.toBe(true);
+    // Closing a Server-side tail is not a termination certificate for the
+    // external worker. SupervisorRunnerClient supplies the real kill wrapper.
+    await expect(turn.forceCancel?.()).resolves.toBe(false);
     await expect(turn.result).resolves.toEqual({
       sessionId: 'sess-gone',
       exitCode: 143,

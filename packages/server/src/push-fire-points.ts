@@ -12,6 +12,7 @@ const QUESTION_TAIL_MAX_CHARS = 512;
 interface SessionFireState {
   readonly openTasks: Set<string>;
   terminalHandled: boolean;
+  terminalOutcome: 'completed' | 'crashed' | 'question' | undefined;
   readonly handledPermissions: Set<string>;
   /** Rolling tail of the current turn's top-level agent prose (Block 0). At turn
    * end it decides whether a completion fires the ordinary SESSION_STATUS or the
@@ -105,17 +106,20 @@ class DefaultPushFirePoints implements PushFirePoints {
 
     if (event.t === 'session' || event.t === 'prompt') {
       state.terminalHandled = false;
+      state.terminalOutcome = undefined;
       state.questionTail = '';
       this.cancel(`terminal:${sessionId}`);
       this.cancel(`cleanup:${sessionId}`);
       this.cancelPermissions(sessionId, state);
       state.handledPermissions.clear();
+      state.openTasks.clear();
       return;
     }
     if (event.t === 'task') {
       if (event.phase === 'started') {
         state.openTasks.add(event.id);
         state.terminalHandled = false;
+        state.terminalOutcome = undefined;
       } else if (event.phase === 'ended') {
         state.openTasks.delete(event.id);
       }
@@ -137,7 +141,7 @@ class DefaultPushFirePoints implements PushFirePoints {
         const context = await this.describeSession(sessionId);
         return this.options.sender.send({
           title: pushHeading(context, 'Permission needed'),
-          body: `${pushSessionName(context)} wants to run ${event.tool}.`,
+          body: `${pushSessionName(context)} requests permission to continue.`,
           categoryId: 'PERMISSION_PROMPT',
           data: { sessionId, kind: 'permission', toolUseId: event.id },
           priority: 'high',
@@ -148,6 +152,7 @@ class DefaultPushFirePoints implements PushFirePoints {
     if (event.t === 'status') {
       if (event.state === 'running') {
         state.terminalHandled = false;
+        state.terminalOutcome = undefined;
         state.questionTail = '';
         this.cancel(`terminal:${sessionId}`);
       } else if (event.state === 'completed') {
@@ -185,6 +190,7 @@ class DefaultPushFirePoints implements PushFirePoints {
       state = {
         openTasks: new Set(),
         terminalHandled: false,
+        terminalOutcome: undefined,
         handledPermissions: new Set(),
         questionTail: '',
       };
@@ -210,8 +216,12 @@ class DefaultPushFirePoints implements PushFirePoints {
     outcome: 'completed' | 'crashed' | 'question',
     state: SessionFireState,
   ): void {
-    if (state.terminalHandled) return;
+    if (state.terminalHandled) {
+      if (outcome !== 'crashed' || state.terminalOutcome === 'crashed') return;
+      this.cancel(`terminal:${sessionId}`);
+    }
     state.terminalHandled = true;
+    state.terminalOutcome = outcome;
     this.cancelPermissions(sessionId, state);
     this.scheduleStateCleanup(sessionId, state);
     this.schedule(`terminal:${sessionId}`, sessionId, outcome, async () => {

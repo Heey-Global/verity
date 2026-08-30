@@ -26,6 +26,7 @@ const environment = async (): Promise<ManagedBootstrapEnvironment> => ({
   VERITY_ROOT: '/srv/verity',
   VERITY_DATA_VOLUME: 'verity-data',
   VERITY_REPO_DIR: '',
+  VERITY_PAIRING_STATE_HOST_PATH: '/etc/verity',
 });
 
 describe('runManagedBootstrap', () => {
@@ -58,6 +59,17 @@ describe('runManagedBootstrap', () => {
       source: { kind: 'volume', name: 'verity-updater-control' },
       target: '/run/verity-updater/control',
       readOnly: false,
+    });
+  });
+
+  it('seals the read-only pairing material mount', async () => {
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    expect(state.managed && state.spec.mounts).toContainEqual({
+      source: { kind: 'bind', path: '/etc/verity' },
+      target: '/run/verity-pairing',
+      readOnly: true,
     });
   });
 

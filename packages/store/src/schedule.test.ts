@@ -91,6 +91,8 @@ describe('validateSchedule', () => {
   const cases: Array<[ScheduleConfig, boolean]> = [
     [{ kind: 'interval', everyMinutes: 15 }, true],
     [{ kind: 'interval', everyMinutes: 5 }, false],
+    [{ kind: 'interval', everyMinutes: 15.5 }, false],
+    [{ kind: 'interval', everyMinutes: Number.POSITIVE_INFINITY }, false],
     [{ kind: 'daily', hour: 9, minute: 30 }, true],
     [{ kind: 'daily', hour: 24, minute: 0 }, false],
     [{ kind: 'daily', hour: 9, minute: 60 }, false],

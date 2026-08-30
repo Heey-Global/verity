@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { chmodSync, linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 /** Default control-socket path. The gateway process already defaults to exactly this
@@ -30,12 +30,20 @@ export function resolveAgentGatewayUnsealKey(
   environment: NodeJS.ProcessEnv = process.env,
 ): string {
   const configured = environment.VERITY_AGENT_GATEWAY_UNSEAL_KEY?.trim();
-  if (configured !== undefined && configured.length > 0) return configured;
+  if (configured !== undefined && configured.length > 0) {
+    if (!UNSEAL_KEY_PATTERN.test(configured)) {
+      throw new Error(
+        'VERITY_AGENT_GATEWAY_UNSEAL_KEY must be exactly 64 lowercase hex characters',
+      );
+    }
+    return configured;
+  }
 
   const keyPath = join(dataVolumeRoot, UNSEAL_KEY_RELATIVE_PATH);
   try {
     const existing = readFileSync(keyPath, 'utf8').trim();
     if (UNSEAL_KEY_PATTERN.test(existing)) return existing;
+    unlinkSync(keyPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
@@ -44,9 +52,24 @@ export function resolveAgentGatewayUnsealKey(
   mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 });
   // Write-then-rename so a crash mid-write cannot leave a truncated key behind, and
   // create the temp file 0600 so the secret is never briefly world-readable.
-  const stagedPath = `${keyPath}.tmp`;
-  writeFileSync(stagedPath, `${generated}\n`, { mode: 0o600 });
-  chmodSync(stagedPath, 0o600);
-  renameSync(stagedPath, keyPath);
-  return generated;
+  const stagedPath = `${keyPath}.tmp-${randomUUID()}`;
+  writeFileSync(stagedPath, `${generated}\n`, { mode: 0o600, flag: 'wx' });
+  try {
+    chmodSync(stagedPath, 0o600);
+    try {
+      linkSync(stagedPath, keyPath);
+      return generated;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const winner = readFileSync(keyPath, 'utf8').trim();
+      if (!UNSEAL_KEY_PATTERN.test(winner)) {
+        throw new Error('concurrent Agent Gateway unseal key creation produced an invalid key', {
+          cause: error,
+        });
+      }
+      return winner;
+    }
+  } finally {
+    unlinkSync(stagedPath);
+  }
 }

@@ -24,6 +24,16 @@ set -euo pipefail
 # the Feature dir.
 FEATURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Apply the Feature option to the container itself. Merely receiving `TZ` during
+# this build step does not persist it into later shells or processes.
+TIMEZONE="${TZ:-UTC}"
+[ -f "/usr/share/zoneinfo/$TIMEZONE" ] || {
+  echo "!! verity-sandbox-toolkit: unknown timezone '$TIMEZONE'." >&2
+  exit 1
+}
+ln -snf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+printf '%s\n' "$TIMEZONE" > /etc/timezone
+
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.241}"
@@ -103,8 +113,13 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ] && command -v groupadd >/dev/null 2
     groupadd --gid "$RUNTIME_GID" verity-runtime
   fi
   if getent passwd "$RUNNER_UID" >/dev/null 2>&1; then
-    [ "$(getent passwd "$RUNNER_UID" | cut -d: -f1)" = 'verity-runner' ] || {
+    runner_passwd="$(getent passwd "$RUNNER_UID")"
+    [ "$(printf '%s' "$runner_passwd" | cut -d: -f1)" = 'verity-runner' ] || {
       echo "!! runner UID $RUNNER_UID is already owned by another user" >&2
+      exit 1
+    }
+    [ "$(printf '%s' "$runner_passwd" | cut -d: -f4)" = "$RUNTIME_GID" ] || {
+      echo "!! existing verity-runner does not use runtime GID $RUNTIME_GID" >&2
       exit 1
     }
   else
@@ -113,25 +128,35 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ] && command -v groupadd >/dev/null 2
   fi
 elif [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
   echo "!! groupadd/useradd unavailable; restart-surviving Runner mode cannot be enabled." >&2
+  exit 1
 fi
 
 # Track every path we write so the chown at the end is precise (never a
 # giant recursive tree over the whole home).
 WRITTEN_PATHS=()
 
-# The gh/doppler/gitleaks release URLs below are pinned to the amd64 tarballs, so
-# this Feature only produces a working image on amd64. Reject anything else HERE,
-# before the first package is installed: the downloads themselves would succeed
-# (the URL does not depend on the host arch) and the build would instead die on
-# an "exec format error" from the first `--version` smoke test, halfway through a
-# mutated image. Supporting arm64 means per-arch URLs for all three CLIs, which
-# is a deliberate follow-up, not something to half-do per binary.
-ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
-if [ "$ARCH" != "amd64" ]; then
+ARCH="$(dpkg --print-architecture 2>/dev/null)" || {
+  echo "!! verity-sandbox-toolkit: could not determine the Debian architecture." >&2
+  exit 1
+}
+if [ "$ARCH" != "amd64" ] && [ "$ARCH" != "arm64" ]; then
   echo "!! verity-sandbox-toolkit: unsupported architecture '$ARCH'." >&2
-  echo "!!                 The gh/doppler/gitleaks tarballs are pinned to amd64." >&2
   exit 1
 fi
+case "$ARCH" in
+  amd64)
+    GH_ARCH=amd64; DOPPLER_ARCH=amd64; GITLEAKS_ARCH=x64
+    GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
+    DOPPLER_SHA256=1b2f412d984920d665daf233ab6c15b364df9339b5c5b5224d5e8ee4e0a70154
+    GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    ;;
+  arm64)
+    GH_ARCH=arm64; DOPPLER_ARCH=arm64; GITLEAKS_ARCH=arm64
+    GH_SHA256=cf689084f3a3618f7eae4a2420d335d74626d65f5e594b9828d125d69f800d86
+    DOPPLER_SHA256=567f051c4c334b79a37ee44c9373671c451dd8a4945ed49288a8f3fd0b73ec89
+    GITLEAKS_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+    ;;
+esac
 
 # ─── F1. apt packages ─────────────────────────────────────────────────────
 # Core tooling shared by every agent container. GUARD on apt-get so a
@@ -157,7 +182,7 @@ fi
 # See the env and securityOpt comments in packages/server/src/provisioner.ts.
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  APT_PACKAGES=(tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux gcc libc6-dev)
+  APT_PACKAGES=(tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
   apt-get update
   apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
   rm -rf /var/lib/apt/lists/*
@@ -210,16 +235,21 @@ fetch_release_tarball() {
   curl -fsSL --retry 5 --retry-delay 3 --retry-connrefused --retry-all-errors \
     -o "$dest" "$url"
 }
+verify_release_tarball() {
+  local expected="$1" archive="$2"
+  printf '%s  %s\n' "$expected" "$archive" | sha256sum --check --strict
+}
 
 # ─── F2. GitHub CLI (pinned tarball) ──────────────────────────────────────
-# The tarball nests the binary under gh_<ver>_linux_amd64/bin/gh.
+# The tarball nests the binary under its architecture-specific directory.
 echo ">> verity-sandbox-toolkit: installing gh $GH_VERSION"
 install -d /usr/local/lib/verity
 fetch_release_tarball \
-  "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+  "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" \
   "$DOWNLOAD_DIR/gh.tar.gz"
+verify_release_tarball "$GH_SHA256" "$DOWNLOAD_DIR/gh.tar.gz"
 tar --no-same-owner -xzf "$DOWNLOAD_DIR/gh.tar.gz" -C /usr/local/lib/verity \
-  --strip-components=2 "gh_${GH_VERSION}_linux_amd64/bin/gh"
+  --strip-components=2 "gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh"
 mv /usr/local/lib/verity/gh /usr/local/lib/verity/gh-real
 install_trusted_cli_ownership /usr/local/lib/verity/gh-real
 /usr/local/lib/verity/gh-real --version
@@ -228,8 +258,9 @@ install_trusted_cli_ownership /usr/local/lib/verity/gh-real
 # The tarball ships `doppler` at its root.
 echo ">> verity-sandbox-toolkit: installing doppler $DOPPLER_VERSION"
 fetch_release_tarball \
-  "https://github.com/DopplerHQ/cli/releases/download/${DOPPLER_VERSION}/doppler_${DOPPLER_VERSION}_linux_amd64.tar.gz" \
+  "https://github.com/DopplerHQ/cli/releases/download/${DOPPLER_VERSION}/doppler_${DOPPLER_VERSION}_linux_${DOPPLER_ARCH}.tar.gz" \
   "$DOWNLOAD_DIR/doppler.tar.gz"
+verify_release_tarball "$DOPPLER_SHA256" "$DOWNLOAD_DIR/doppler.tar.gz"
 tar --no-same-owner -xzf "$DOWNLOAD_DIR/doppler.tar.gz" -C /usr/local/bin doppler
 install_trusted_cli_ownership /usr/local/bin/doppler
 doppler --version
@@ -240,22 +271,36 @@ doppler --version
 # AFTER it reached GitHub — by then the credential is burned and must be rotated.
 # Scanning in the sandbox keeps it local. The tarball ships `gitleaks` at its
 # root; releases are tagged `v<version>` while the pin stays bare, matching the
-# gh/doppler managers. gitleaks names its amd64 asset `linux_x64`, not
-# `linux_amd64` — the ARCH guard above already limited this Feature to amd64.
+# gh/doppler managers. gitleaks names its amd64 asset `linux_x64`.
 echo ">> verity-sandbox-toolkit: installing gitleaks $GITLEAKS_VERSION"
 fetch_release_tarball \
-  "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+  "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${GITLEAKS_ARCH}.tar.gz" \
   "$DOWNLOAD_DIR/gitleaks.tar.gz"
+verify_release_tarball "$GITLEAKS_SHA256" "$DOWNLOAD_DIR/gitleaks.tar.gz"
 tar --no-same-owner -xzf "$DOWNLOAD_DIR/gitleaks.tar.gz" -C /usr/local/bin gitleaks
 install_trusted_cli_ownership /usr/local/bin/gitleaks
 gitleaks version
+
+# Harden npm before the first root-owned global install. Individual pinned agent
+# packages opt into lifecycle scripts explicitly below when their installation
+# requires them; unreviewed installs inherit the fail-closed defaults.
+if command -v npm >/dev/null 2>&1; then
+  NPM_GLOBALCONFIG="$(npm config get globalconfig)"
+  [ -n "$NPM_GLOBALCONFIG" ] && [ "$NPM_GLOBALCONFIG" != "undefined" ] || {
+    echo "!! verity-sandbox-toolkit: could not resolve npm globalconfig path." >&2
+    exit 1
+  }
+  mkdir -p "$(dirname "$NPM_GLOBALCONFIG")"
+  printf '%s\n' 'ignore-scripts=true' 'allow-git=none' 'save-exact=true' 'fund=false' > "$NPM_GLOBALCONFIG"
+  chmod 0644 "$NPM_GLOBALCONFIG"
+fi
 
 # ─── F4. Claude Code CLI (optional, pinned) ───────────────────────────────
 # Needs node on PATH — this Feature declares installsAfter the node Feature.
 if [ "$INSTALL_CLAUDE" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
-    npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    npm install -g --ignore-scripts=false "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
   else
     echo "!! verity-sandbox-toolkit: installClaude=true but npm not on PATH — skipping claude-code." >&2
     echo "!!                 Add the node Feature (installsAfter) or a node base image." >&2
@@ -267,7 +312,7 @@ fi
 if [ "$INSTALL_CLAUDE_ACP" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_VERSION"
-    npm install -g "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}"
+    npm install -g --ignore-scripts=false "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}"
     # Upstream (through 0.66.0) renders tool-call titles from unvalidated model
     # input; one wrong-typed field throws, kills the agent process, and — since
     # loadSession replays history through the same renderer — bricks the session
@@ -312,18 +357,18 @@ fi
 if command -v npm >/dev/null 2>&1; then
   if [ "$INSTALL_CODEX" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @openai/codex@$CODEX_VERSION"
-    npm install -g "@openai/codex@${CODEX_VERSION}"
+    npm install -g --ignore-scripts=false "@openai/codex@${CODEX_VERSION}"
   fi
   # ACP is a separately pinned transport adapter. It ships its own @openai/codex
   # dependency, so the spawn broker pins CODEX_PATH to the root-owned binary
   # installed above — otherwise two Codex versions run in the same image.
   if [ "$INSTALL_CODEX_ACP" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/codex-acp@$CODEX_ACP_VERSION"
-    npm install -g "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}"
+    npm install -g --ignore-scripts=false "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}"
   fi
   if [ "$INSTALL_OPENCODE" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing opencode-ai@$OPENCODE_VERSION"
-    npm install -g "opencode-ai@${OPENCODE_VERSION}"
+    npm install -g --ignore-scripts=false "opencode-ai@${OPENCODE_VERSION}"
     # opencode's updater can target a user-writable dir (unlike the root-owned
     # npm global), so root-ownership alone doesn't stop it. Pin it off via its
     # own config file — persists across both consume paths, chowned to the user
@@ -334,7 +379,7 @@ if command -v npm >/dev/null 2>&1; then
   fi
   if [ "$INSTALL_PI" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @earendil-works/pi-coding-agent@$PI_VERSION"
-    npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
+    npm install -g --ignore-scripts=false "@earendil-works/pi-coding-agent@${PI_VERSION}"
   fi
 else
   echo "!! verity-sandbox-toolkit: npm not on PATH — skipping codex/opencode/pi." >&2
@@ -451,7 +496,12 @@ install -d \
   /run/verity/codex \
   /run/verity/xdg/opencode \
   /run/verity/pi
-WRITTEN_PATHS+=("/run/verity")
+WRITTEN_PATHS+=(
+  "/run/verity/claude"
+  "/run/verity/codex"
+  "/run/verity/xdg/opencode"
+  "/run/verity/pi"
+)
 SSH_DIR="$REMOTE_HOME/.ssh"
 mkdir -p "$SSH_DIR"
 chmod 0700 "$SSH_DIR"
@@ -479,9 +529,24 @@ install -m 0755 "$FEATURE_DIR/bin/verity-agent-run" /usr/local/bin/verity-agent-
 # absolute path, and by the opencode-acp wrapper after it.
 LIFECYCLE_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
-  cc -O2 -Wall -Wextra -Werror \
-    "$FEATURE_DIR/bin/verity-script-sandbox.c" -o /usr/local/bin/verity-script-sandbox
-  chmod 0755 /usr/local/bin/verity-script-sandbox
+  case "$ARCH" in
+    amd64) SANDBOX_ARCH=amd64 ;;
+    arm64) SANDBOX_ARCH=arm64 ;;
+    *) echo "!! no attested verity-script-sandbox for architecture '$ARCH'" >&2; exit 1 ;;
+  esac
+  SANDBOX_ARTIFACT="$FEATURE_DIR/prebuilt/linux-$SANDBOX_ARCH/verity-script-sandbox"
+  SANDBOX_HASHES="$FEATURE_DIR/prebuilt/sha256sums.txt"
+  [ -f "$SANDBOX_ARTIFACT" ] && [ -f "$SANDBOX_HASHES" ] || {
+    echo "!! attested verity-script-sandbox artifacts are missing" >&2
+    exit 1
+  }
+  (cd "$FEATURE_DIR/prebuilt" && sha256sum --check --strict --ignore-missing sha256sums.txt)
+  expected_line="$(grep "  linux-$SANDBOX_ARCH/verity-script-sandbox\$" "$SANDBOX_HASHES" || true)"
+  [ -n "$expected_line" ] || {
+    echo "!! no attested verity-script-sandbox hash for architecture '$SANDBOX_ARCH'" >&2
+    exit 1
+  }
+  install -m 0755 "$SANDBOX_ARTIFACT" /usr/local/bin/verity-script-sandbox
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-supervisor.mjs" \
     /usr/local/bin/verity-runner-supervisor
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-supervisor-start" \

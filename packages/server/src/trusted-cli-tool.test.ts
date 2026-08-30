@@ -76,7 +76,7 @@ describe('trusted CLI tool', () => {
         secrets: readonly { env: string; injection?: 'env' | 'file'; secret: string }[];
       }) => {
         expect(input.secrets.map((entry) => [entry.env, entry.injection, entry.secret])).toEqual([
-          ['ASC_KEY_FILE', 'file', 'p8-key-marker'],
+          ['ASC_KEY_FILE', 'file', 'cDgta2V5LW1hcmtlcg=='],
           ['ASC_KEY_ID', undefined, 'ABCD1234'],
           ['ASC_ISSUER_ID', undefined, '69a6de70-issuer'],
         ]);

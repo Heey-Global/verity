@@ -34,6 +34,12 @@ class VerityDragZone: Module {
       Prop("authorization") { (view: VerityDragZoneView, authorization: String) in
         view.authorization = authorization
       }
+      Prop("tlsPin") { (view: VerityDragZoneView, tlsPin: String) in
+        view.tlsPin = tlsPin
+      }
+      Prop("origin") { (view: VerityDragZoneView, origin: String) in
+        view.origin = origin
+      }
     }
   }
 }
@@ -54,6 +60,8 @@ class VerityDragZoneView: ExpoView, UIDragInteractionDelegate {
   var dragEnabled = true
   var files: [VerityDragFile] = []
   var authorization = ""
+  var tlsPin = ""
+  var origin = ""
 
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
@@ -107,11 +115,13 @@ class VerityDragZoneView: ExpoView, UIDragInteractionDelegate {
       // download anyway.
       fileOptions: [],
       visibility: .all
-    ) { [authorization] completion in
+    ) { [authorization, tlsPin, origin] completion in
       Self.download(
         from: source,
         fileName: file.fileName,
         authorization: authorization,
+        tlsPin: tlsPin,
+        origin: origin,
         completion: completion
       )
     }
@@ -127,13 +137,26 @@ class VerityDragZoneView: ExpoView, UIDragInteractionDelegate {
     from source: URL,
     fileName: String,
     authorization: String,
+    tlsPin: String,
+    origin: String,
     completion: @escaping (URL?, Bool, Error?) -> Void
   ) -> Progress? {
     var request = URLRequest(url: source)
     if !authorization.isEmpty {
       request.setValue(authorization, forHTTPHeaderField: "authorization")
     }
-    let task = URLSession.shared.downloadTask(with: request) { location, response, error in
+    guard let expectedOrigin = URL(string: origin), sameOrigin(source, expectedOrigin) else {
+      completion(nil, false, VerityDragError.unreadable(fileName))
+      return nil
+    }
+    let delegate = tlsPin.isEmpty ? nil : try? CertificatePinDelegate(pin: tlsPin, origin: expectedOrigin)
+    guard tlsPin.isEmpty || delegate != nil else {
+      completion(nil, false, VerityDragError.unreadable(fileName))
+      return nil
+    }
+    let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+    let task = session.downloadTask(with: request) { location, response, error in
+      defer { session.finishTasksAndInvalidate() }
       guard let location else {
         completion(nil, false, error ?? VerityDragError.unreadable(fileName))
         return
@@ -160,6 +183,21 @@ class VerityDragZoneView: ExpoView, UIDragInteractionDelegate {
     }
     task.resume()
     return task.progress
+  }
+
+  private static func sameOrigin(_ lhs: URL, _ rhs: URL) -> Bool {
+    func effectivePort(_ url: URL) -> Int? {
+      if let port = url.port { return port }
+      return url.scheme?.lowercased() == "https" ? 443 : (url.scheme?.lowercased() == "http" ? 80 : nil)
+    }
+    return lhs.scheme?.lowercased() == rhs.scheme?.lowercased()
+      && lhs.host?.lowercased() == rhs.host?.lowercased()
+      && effectivePort(lhs) == effectivePort(rhs)
+      && (rhs.path.isEmpty || rhs.path == "/")
+      && rhs.query == nil
+      && rhs.fragment == nil
+      && rhs.user == nil
+      && rhs.password == nil
   }
 
   private static func copyRoot() -> URL {

@@ -101,7 +101,7 @@ exec /usr/bin/stat "$@"
         join(bin, 'sudo'),
         `#!/bin/sh
 if [ "$1 $2" = "mktemp -d" ]; then mkdir -p "$MOCK_PRIVILEGED"; printf '%s\\n' "$MOCK_PRIVILEGED"; exit 0; fi
-if [ "$1 $2" = "docker version" ]; then exit 0; fi
+if [ "$1 $2" = "docker version" ]; then printf '25.0.0\n'; exit 0; fi
 if [ "$1" = docker ]; then shift; exec env SUDO_MOCK=1 "$MOCK_DOCKER" "$@"; fi
 exec env SUDO_MOCK=1 "$@"
 `,

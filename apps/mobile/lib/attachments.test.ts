@@ -5,6 +5,11 @@ const mockManipulateAsync = jest.fn();
 const mockLaunchImageLibraryAsync = jest.fn();
 const mockLaunchCameraAsync = jest.fn();
 const mockRequestCameraPermissionsAsync = jest.fn();
+const mockGetDocumentAsync = jest.fn();
+
+jest.mock('expo-document-picker', () => ({
+  getDocumentAsync: (...args: unknown[]) => mockGetDocumentAsync(...args),
+}));
 
 jest.mock('expo-file-system', () => ({
   File: jest.fn().mockImplementation((uri: string) => ({
@@ -32,6 +37,7 @@ import {
   captureImage,
   droppedImageMediaType,
   pickImagesFromLibrary,
+  pickFiles,
   readDroppedAttachments,
 } from './attachments';
 
@@ -44,6 +50,27 @@ describe('dragged attachments', () => {
     mockLaunchImageLibraryAsync.mockReset();
     mockLaunchCameraAsync.mockReset();
     mockRequestCameraPermissionsAsync.mockReset();
+    mockGetDocumentAsync.mockReset();
+  });
+
+  it('deletes document-picker cache copies after reading them', async () => {
+    mockFileData.set('file:///cache/private.pdf', 'cGRm');
+    mockGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        { uri: 'file:///cache/private.pdf', name: 'private.pdf', mimeType: 'application/pdf' },
+      ],
+    });
+
+    await expect(pickFiles(1)).resolves.toEqual([
+      {
+        kind: 'file',
+        mediaType: 'application/pdf',
+        fileName: 'private.pdf',
+        data: 'cGRm',
+      },
+    ]);
+    expect(mockDelete).toHaveBeenCalledWith('file:///cache/private.pdf');
   });
 
   it('detects HEIF bytes even when iOS labels the asset as JPEG', () => {

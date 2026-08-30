@@ -309,6 +309,23 @@ describe('SessionModel — stream', () => {
     model.stop();
     expect(sockets[0]?.closed).toBe(true);
   });
+
+  it('does not open the stream when stop wins a slow tail-history probe', async () => {
+    let resolveHistory!: (value: { events: []; hasMore: false }) => void;
+    const client = stubClient();
+    vi.spyOn(client, 'getHistory').mockReturnValue(
+      new Promise((resolve) => {
+        resolveHistory = resolve;
+      }),
+    );
+    const { connect, sockets } = recordingConnect();
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    model.start();
+    model.stop();
+    resolveHistory({ events: [], hasMore: false });
+    await flush();
+    expect(sockets).toHaveLength(0);
+  });
 });
 
 describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
@@ -1803,6 +1820,39 @@ describe('SessionModel — server activity + queued messages', () => {
     // so the message isn't shown twice.
     sockets[0]?.emitEvent(1, { t: 'prompt', text: 'hello there' });
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 }));
+    expect(model.state.waitingMessages).toEqual([]);
+    model.stop();
+  });
+
+  it('does not let an older identical prompt hide a newly observed waiting message', async () => {
+    const { connect, sockets } = recordingConnect();
+    let resolveActivity!: (value: {
+      busy: boolean;
+      queued: Array<{ id: string; text: string }>;
+    }) => void;
+    const activity = new Promise<{
+      busy: boolean;
+      queued: Array<{ id: string; text: string }>;
+    }>((resolve) => {
+      resolveActivity = resolve;
+    });
+    const client = {
+      sendTurn: vi.fn(),
+      getSession: vi.fn().mockResolvedValue({ resumable: true }),
+      getHistory: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+      getActivity: vi.fn().mockReturnValue(activity),
+    } as unknown as VerityClient;
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+    model.start();
+    await flush();
+
+    sockets[0]?.emitEvent(7, { t: 'prompt', text: 'ok' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 7 }));
+    resolveActivity({ busy: true, queued: [{ id: 'q-new', text: 'ok' }] });
+    await flush();
+    expect(model.state.waitingMessages).toEqual([{ id: 'q-new', text: 'ok' }]);
+
+    sockets[0]?.emitEvent(8, { t: 'prompt', text: 'ok' });
     expect(model.state.waitingMessages).toEqual([]);
     model.stop();
   });

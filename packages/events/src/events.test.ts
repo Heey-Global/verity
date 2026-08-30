@@ -123,6 +123,37 @@ describe('agentEventSchema', () => {
     expect(agentEventSchema.safeParse({ t: 'compaction', boundary: false }).success).toBe(false);
   });
 
+  it('rejects choices with more than one recommended option', () => {
+    expect(
+      agentEventSchema.safeParse({
+        t: 'choices',
+        options: [
+          { label: 'A', recommended: true },
+          { label: 'B', recommended: true },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('bounds choice text and option count', () => {
+    expect(
+      agentEventSchema.safeParse({ t: 'choices', options: [{ label: 'x'.repeat(201) }] }).success,
+    ).toBe(false);
+    expect(
+      agentEventSchema.safeParse({
+        t: 'choices',
+        question: 'q'.repeat(1001),
+        options: [{ label: 'ok' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      agentEventSchema.safeParse({
+        t: 'choices',
+        options: Array.from({ length: 21 }, (_, i) => ({ label: String(i) })),
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects negative or fractional token counts in usage', () => {
     const usage = { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheCreationTokens: 1 };
     expect(

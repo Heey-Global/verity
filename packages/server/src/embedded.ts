@@ -499,12 +499,33 @@ export function withControlPlaneAgentCredentials(
    *  to the EFFECTIVE one or it silently drops entries. */
   loadEnv: (inherited: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv>,
 ): Backend {
-  const withoutClaudeEnv = (source: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-    Object.fromEntries(Object.entries(source).filter(([key]) => !key.startsWith('CLAUDE_')));
+  const safeInheritedKeys = new Set([
+    'CI',
+    'COLORTERM',
+    'FORCE_COLOR',
+    'LANG',
+    'LC_ALL',
+    'LC_CTYPE',
+    'NO_COLOR',
+    'PATH',
+    'SHELL',
+    'TERM',
+    'TMPDIR',
+    'TZ',
+  ]);
+  const safeInheritedEnv = (source: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
+    Object.fromEntries(
+      Object.entries(source).filter(
+        ([key]) =>
+          safeInheritedKeys.has(key) ||
+          key === 'GIT_CONFIG_COUNT' ||
+          /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/u.test(key),
+      ),
+    );
   const mergeEnv = async (env: NodeJS.ProcessEnv | undefined): Promise<NodeJS.ProcessEnv> => {
     const inherited = {
-      ...withoutClaudeEnv(process.env),
-      ...withoutClaudeEnv(env ?? {}),
+      ...safeInheritedEnv(process.env),
+      ...safeInheritedEnv(env ?? {}),
     };
     return { ...inherited, ...(await loadEnv(inherited)) };
   };
@@ -528,6 +549,11 @@ import { SERVER_COMPAT } from './self-update/compat.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface EmbeddedServerConfig {
+  /** TLS termination for a direct Server. Managed mode terminates at its Gateway. */
+  https?: ServerDeps['https'];
+  unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
+  /** Optional installer-issued authority that gates first initialization. */
+  devicePairing?: ServerDeps['devicePairing'];
   /** Verified official release channel supplied by the managed deployment bootstrap. */
   serverUpdateResolver?: ReleaseChannelResolver | undefined;
   /** Control boundary to the managed Updater, supplied by the same bootstrap. */
@@ -1607,7 +1633,11 @@ export function parseByteSize(value: string | undefined): number | undefined {
           : unit === 't'
             ? 1024 ** 4
             : 1;
-  return Math.floor(Number(m[1]) * scale);
+  const bytes = Math.floor(Number(m[1]) * scale);
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+    throw new Error(`invalid byte size "${value}": value is outside the supported range`);
+  }
+  return bytes;
 }
 
 /** Parse a CPU-core count (`VERITY_SANDBOX_CPUS`, e.g. `1.5`) into Docker
@@ -2186,7 +2216,7 @@ export async function buildEmbeddedServer(
       : undefined;
   // Open-PR lookup for the header/PR strip (#125): built per SESSION WORKTREE, not
   // globally from config.repoDir. Project sessions live in their own repos, so using
-  // the Verity repo here would miss PRs like deep-ocr-web. The per-worktree services
+  // the Verity repo here would miss PRs like sample-app-web. The per-worktree services
   // keep their own short GitHub TTL caches so the visible PR bar updates quickly
   // while still coalescing repeated app polls; the token provider is re-read per lookup.
   const prStatusTtlMs = 2_000;
@@ -2215,7 +2245,9 @@ export async function buildEmbeddedServer(
         ...(prTokenSource !== undefined
           ? { token: createProjectAwareGitHubTokenSource(repoDir, prTokenSource) }
           : {}),
-        asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
+        ...(prTokenSource === undefined
+          ? { asyncToken: (owner: string, repo: string) => cachedProjectTokenMint({ owner, repo }) }
+          : {}),
         ttlMs: prStatusTtlMs,
         failureCooldownFor: prFailureCooldownFor,
       });
@@ -2223,13 +2255,18 @@ export async function buildEmbeddedServer(
     }
     return svc;
   };
-  // Open-issues list for the overview backlog (#137): same precondition as the PR
-  // lookup (a repo + a token source). Inert until a token resolves; omit `listIssues`
-  // entirely when there's no token source (the overview then hides the Issues section).
-  const issueService =
-    config.repoDir && config.githubToken
-      ? createGitHubIssueService({ repoDir: config.repoDir, token: config.githubToken })
-      : undefined;
+  // Open-issues list for the overview backlog (#137). The legacy host token is
+  // optional: managed installs mint repo-scoped installation tokens from the
+  // encrypted GitHub App settings, just like the PR services above.
+  const issueService = config.repoDir
+    ? createGitHubIssueService({
+        repoDir: config.repoDir,
+        ...(config.githubToken !== undefined ? { token: config.githubToken } : {}),
+        ...(config.githubToken === undefined
+          ? { asyncToken: (owner: string, repo: string) => cachedProjectTokenMint({ owner, repo }) }
+          : {}),
+      })
+    : undefined;
   // Repo identity (owner/repo) for the header's tappable Issue/PR chips (#161). Needs
   // only the repo — owner/repo comes from the `origin` remote, no token required — so
   // it's available even on token-less deployments. Resolves to null (chips stay
@@ -2259,6 +2296,17 @@ export async function buildEmbeddedServer(
     return undefined;
   };
   const baseMintOpts = { resolveCreds: resolveGithubAppCreds };
+  const githubAppAuthorityKey = async (): Promise<string | undefined> => {
+    const credentials = await resolveGithubAppCreds();
+    if (credentials === undefined) return undefined;
+    return createHash('sha256')
+      .update(credentials.appId)
+      .update('\0')
+      .update(credentials.installationId)
+      .update('\0')
+      .update(credentials.privateKey)
+      .digest('hex');
+  };
   // The per-project sandbox token — scoped to a LEAST-PRIVILEGE subset (audit M2)
   // instead of inheriting the full installation grant. The subset lives in
   // PROJECT_GITHUB_TOKEN_PERMISSIONS (push branches incl. `.github/workflows/*` +
@@ -2303,9 +2351,15 @@ export async function buildEmbeddedServer(
   // task board operations use one installation-wide task token. The provisioner /
   // worktree paths keep the raw `projectTokenMint` — they write the token into a
   // `.gh-token` file that must stay valid ~1h, so they need a fresh mint each time.
-  const cachedProjectTokenMint = createCachedProjectTokenMint(projectTokenMint);
-  const cachedTaskTokenMint = createCachedProjectTokenMint(taskTokenMint);
-  const cachedTaskBoardTokenMint = createCachedInstallationTokenMint(taskBoardTokenMint);
+  const cachedProjectTokenMint = createCachedProjectTokenMint(projectTokenMint, {
+    authorityKey: githubAppAuthorityKey,
+  });
+  const cachedTaskTokenMint = createCachedProjectTokenMint(taskTokenMint, {
+    authorityKey: githubAppAuthorityKey,
+  });
+  const cachedTaskBoardTokenMint = createCachedInstallationTokenMint(taskBoardTokenMint, {
+    authorityKey: githubAppAuthorityKey,
+  });
   // GitHub-token broker (security review): the sandbox holds an opaque per-project
   // capability and redeems it at POST /internal/github/token instead of carrying a
   // gh-token file. The provisioner issues capabilities into this SAME registry; the
@@ -2377,7 +2431,9 @@ export async function buildEmbeddedServer(
   // release version (the field is simply null on the wire).
   const releaseService = createGitHubReleaseService({
     token: config.githubToken,
-    asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
+    ...(config.githubToken === undefined
+      ? { asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }) }
+      : {}),
   });
 
   const secretRoot =
@@ -3738,6 +3794,9 @@ export async function buildEmbeddedServer(
 
   const app = buildControlPlane({
     eventStore,
+    ...(config.unlockClientIdentity !== undefined
+      ? { unlockClientIdentity: config.unlockClientIdentity }
+      : {}),
     workflowStore,
     ...(config.workflowGithubWebhookSecret !== undefined
       ? { workflowGithubWebhookSecret: config.workflowGithubWebhookSecret }
@@ -3796,6 +3855,8 @@ export async function buildEmbeddedServer(
       await codexModelCatalog?.refresh();
     },
     authRegistry,
+    ...(config.https !== undefined ? { https: config.https } : {}),
+    ...(config.devicePairing !== undefined ? { devicePairing: config.devicePairing } : {}),
     pushEnabled: config.pushEnabled === true,
     // ADR 0011 D2: the operator's review-and-revoke surface for standing grants. The
     // current binding is passed so each grant can be flagged with whether it would

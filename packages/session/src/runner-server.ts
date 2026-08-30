@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir, open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -12,7 +12,7 @@ import {
 } from '@verity/store';
 import type { RunResult, RunTurnOptions, SteerMessage } from './backend-contract.js';
 import type { Backend } from './backend.js';
-import { LoopbackRunnerClient, type RunnerClient } from './runner-contract.js';
+import { LoopbackRunnerClient, type RunnerClient, type RunnerTurn } from './runner-contract.js';
 import { stampFrame, writeFrame, type RunnerFrameBody } from './runner-transport.js';
 import { serveControl, type ControlSocketServer } from './runner-control.js';
 import { initialRunnerTurnState, writeRunnerState, type RunnerTurnState } from './runner-state.js';
@@ -91,13 +91,25 @@ class SerialFrameWriter {
 class FileEventSink implements EventSink {
   private seq = 0;
   private readonly sessions = new Map<string, SessionRecord>();
+  private pendingSessionEvent: AgentEvent | undefined;
 
   constructor(private readonly writer: SerialFrameWriter) {}
 
   async appendEvent(_sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }> {
-    await this.writer.write({ kind: 'event', event });
+    // Production ingest persists its canonical session event before invoking
+    // onSession. Hold that one event so the protocol's identity frame is always
+    // first; onSession flushes it immediately behind the identity frame.
+    if (event.t === 'session') this.pendingSessionEvent = event;
+    else await this.writer.write({ kind: 'event', event });
     this.seq += 1;
     return { seq: this.seq, ts: Date.now() };
+  }
+
+  async bindSession(id: string): Promise<void> {
+    await this.writer.write({ kind: 'session', id });
+    const event = this.pendingSessionEvent;
+    this.pendingSessionEvent = undefined;
+    if (event !== undefined) await this.writer.write({ kind: 'event', event });
   }
 
   createSession(session: SessionInput): Promise<void> {
@@ -141,6 +153,7 @@ export type RunnerServerRunOptions = Omit<RunTurnOptions, 'store' | 'bus'> & {
   /** Remote worker mode: convert a rejected backend promise into durable terminal
    * frames so a detached Server tail never waits forever. */
   terminalizeErrors?: boolean;
+  controlCapability?: string;
 };
 
 /** A live handle to a turn driven through the {@link RunnerServer}: its terminal
@@ -210,7 +223,14 @@ export class RunnerServer {
     // `controlSocketPath`/`turnId` are RunnerServer-only knobs, not RunTurnOptions
     // fields — strip them before the rest reaches the backend run. `turnId` is stamped
     // onto every frame envelope by the writer.
-    const { controlSocketPath, exclusiveEventFile, terminalizeErrors, turnId, ...runOpts } = opts;
+    const {
+      controlSocketPath,
+      controlCapability,
+      exclusiveEventFile,
+      terminalizeErrors,
+      turnId,
+      ...runOpts
+    } = opts;
     void exclusiveEventFile;
     const writer = new SerialFrameWriter(handle, turnId, runnerInstanceId);
     const sink = new FileEventSink(writer);
@@ -225,20 +245,18 @@ export class RunnerServer {
     const stateFilePath = `${eventFilePath}.state.json`;
     const state: RunnerTurnState = initialRunnerTurnState(turnId, runnerInstanceId, Date.now());
     let stateTail: Promise<void> = Promise.resolve();
-    // Best-effort: the status file is a discovery hint, not the event authority, so a
-    // write failure must never fail the turn or surface as an unhandled rejection. Each
-    // call chains an atomic replace of the latest snapshot and swallows its own error;
-    // the returned promise is always safe to `await` or `void`.
-    const persistState = (): Promise<void> => {
+    // Intermediate session-bind updates are hints and remain best-effort. Initial and
+    // terminal states are lifecycle boundaries, though: pretending either persisted
+    // can make recovery launch a duplicate worker or reattach to a dead one.
+    const persistState = (required = false): Promise<void> => {
       state.updatedAt = Date.now();
       state.lastFrameSeq = writer.frameCount;
       const snapshot: RunnerTurnState = { ...state };
-      stateTail = stateTail
-        .then(() => writeRunnerState(stateFilePath, snapshot))
-        .catch(() => undefined);
-      return stateTail;
+      const write = stateTail.then(() => writeRunnerState(stateFilePath, snapshot));
+      stateTail = write.catch(() => undefined);
+      return required ? write : stateTail;
     };
-    await persistState(); // publish the initial `running` record before the turn drives
+    await persistState(true); // publish the initial `running` record before the turn drives
 
     // Still-open permission prompts (ADR 0006 D6/D8): tracked so a (re)attaching Server
     // gets an accurate outstanding-permission snapshot in the attach handshake, even
@@ -246,15 +264,21 @@ export class RunnerServer {
     // removed when answered through EITHER control surface (socket or in-process).
     const outstandingPermissions = new Map<string, PermissionRequest>();
 
-    const turn = this.client.startTurn(runnerOptions, {
+    const turn: RunnerTurn = this.client.startTurn(runnerOptions, {
       onSession: async (id) => {
-        await writer.write({ kind: 'session', id });
+        await sink.bindSession(id);
         state.sessionId = id;
         void persistState();
       },
       onPermissionRequest: (request) => {
         outstandingPermissions.set(request.toolUseId, request);
-        void writer.write({ kind: 'permission-request', request });
+        // The worker must never continue with a prompt that the Server cannot see.
+        // Convert persistence failure into a cooperative cancellation, and consume
+        // the rejection here so it cannot become an unhandled process failure.
+        void writer.write({ kind: 'permission-request', request }).catch(async () => {
+          outstandingPermissions.delete(request.toolUseId);
+          await turn.cancel().catch(() => undefined);
+        });
       },
       // No bus: events go to the file, not a server-side bus (D2).
     });
@@ -295,7 +319,8 @@ export class RunnerServer {
           // ACQUIRE with a fresh id. Allow it — acquire bumps the monotonic lease
           // epoch, which fences the previous controller's stale-epoch commands, so
           // "highest epoch wins" still holds at most one live controller.
-          authorizeAcquire: () => true,
+          authorizeAcquire: (_controllerId, _current, capability) =>
+            controlCapability === undefined || sameCapability(capability, controlCapability),
           // D6 handshake: report this turn's live disposition at attach time.
           attachSnapshot: () => ({
             protocolVersion: RUNNER_FRAME_PROTOCOL_VERSION,
@@ -312,7 +337,7 @@ export class RunnerServer {
       state.status = 'settled';
       state.aborted = aborted;
       state.settledAt = Date.now();
-      return persistState();
+      return persistState(true);
     };
 
     const result = (async (): Promise<RunResult> => {
@@ -345,7 +370,7 @@ export class RunnerServer {
         // producing one — so this `settled` record has NO terminal frame in the log. The
         // frame log stays authoritative (D3): a reattach consumer must confirm the turn's
         // real disposition from the log, never infer "terminal frame exists" from `settled`.
-        await markSettled(true).catch(() => undefined);
+        await markSettled(true);
         await handle.close().catch(() => undefined);
         await controlServer?.close().catch(() => undefined);
         throw err;
@@ -361,6 +386,10 @@ export class RunnerServer {
       await controlServer?.close().catch(() => undefined);
       return settled;
     })();
+    // The caller still observes rejection by awaiting `result`; this attached
+    // observer only prevents a lifecycle write failure from becoming an unhandled
+    // process rejection when a caller abandons the handle during teardown.
+    void result.catch(() => undefined);
 
     return {
       result,
@@ -369,4 +398,11 @@ export class RunnerServer {
       cancel: () => turn.cancel(),
     };
   }
+}
+
+function sameCapability(candidate: string | undefined, expected: string): boolean {
+  if (candidate === undefined) return false;
+  const left = createHash('sha256').update(candidate).digest();
+  const right = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(left, right);
 }

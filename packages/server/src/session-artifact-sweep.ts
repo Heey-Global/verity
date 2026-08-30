@@ -1,6 +1,6 @@
-import type { Dirent } from 'node:fs';
-import { readdir, realpath, rm, stat } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { constants, type Dirent } from 'node:fs';
+import { open, readdir, realpath, rm, type FileHandle } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { CLAUDE_PROJECTS_DIRNAME } from '@verity/session';
 import { RUNNER_CLAUDE_HOME_DIRNAME, RUNNER_CODEX_SESSIONS_DIRNAME } from './runner-transcript.js';
 import { isWithinRealPath } from './session-artifacts.js';
@@ -82,9 +82,9 @@ import { isWithinRealPath } from './session-artifacts.js';
  * # Containment
  *
  * The runner runtime is written by the Sandbox, so any directory in it may have been
- * replaced with a symlink. `readdir` follows one; the dirent checks below refuse to
- * descend into one; and every scan root the sweep constructs is resolved and re-checked
- * against the runners root before it is read ({@link realDirWithin}). Without that a link
+ * replaced with a symlink. Every directory is opened with `O_NOFOLLOW`, its descriptor
+ * is re-checked against the runners root, and traversal reads through that descriptor;
+ * the dirent checks below also refuse to descend into a link. Without that a link
  * planted at `codex-sessions` or `projects` would have aimed this at any `.jsonl` on the
  * host.
  *
@@ -148,6 +148,9 @@ export interface SweepOptions {
   signal?: AbortSignal | undefined;
   /** Report what would go without removing anything. */
   dryRun?: boolean | undefined;
+  /** Test-only seam invoked after the parent/file descriptors are validated and
+   * before deletion, to exercise hostile directory replacement deterministically. */
+  beforeDelete?: ((file: string) => void | Promise<void>) | undefined;
 }
 
 export interface SweepResult {
@@ -220,13 +223,20 @@ export function isLiveArtifact(file: string, liveIds: ReadonlySet<string>): bool
   return false;
 }
 
-async function listDirs(dir: string): Promise<Dirent<string>[]> {
+async function listDirs(dir: string, root: string): Promise<Dirent<string>[]> {
+  let handle: FileHandle | undefined;
   try {
-    return await readdir(dir, { encoding: 'utf8', withFileTypes: true });
+    handle = await open(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const descriptorPath = `/proc/self/fd/${handle.fd}`;
+    const actual = await realpath(descriptorPath);
+    if (!isWithinRealPath(root, actual)) return [];
+    return await readdir(descriptorPath, { encoding: 'utf8', withFileTypes: true });
   } catch {
     // A runtime that was never provisioned, or one the Server may not traverse. Both
     // mean "nothing to sweep here", not a failed boot.
     return [];
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
@@ -261,13 +271,13 @@ async function realDirWithin(dir: string, root: string): Promise<string | undefi
  * stop. Returning what it has found so far is safe — the caller's own check turns a short
  * list into a halt, and a partial list only ever means fewer files considered.
  */
-async function transcriptFiles(dir: string, stop?: () => boolean): Promise<string[]> {
+async function transcriptFiles(dir: string, root: string, stop?: () => boolean): Promise<string[]> {
   const found: string[] = [];
-  for (const entry of await listDirs(dir)) {
+  for (const entry of await listDirs(dir, root)) {
     if (stop?.() === true) break;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
-      found.push(...(await transcriptFiles(path, stop)));
+      found.push(...(await transcriptFiles(path, root, stop)));
       continue;
     }
     // Symlinks are skipped rather than followed: the runner runtime is writable by the
@@ -313,7 +323,7 @@ async function claudeGroups(
   stop?: () => boolean,
 ): Promise<ClaudeArtifactGroup[]> {
   const groups: ClaudeArtifactGroup[] = [];
-  for (const entry of await listDirs(encodedCwdDir)) {
+  for (const entry of await listDirs(encodedCwdDir, root)) {
     if (stop?.() === true) break;
     const path = join(encodedCwdDir, entry.name);
     if (entry.isFile() && entry.name.endsWith('.jsonl')) {
@@ -323,7 +333,7 @@ async function claudeGroups(
     if (!entry.isDirectory()) continue;
     const subagents = await realDirWithin(join(path, CLAUDE_SESSION_SUBDIR), root);
     if (subagents === undefined) continue;
-    const files = await transcriptFiles(subagents, stop);
+    const files = await transcriptFiles(subagents, root, stop);
     if (files.length > 0) groups.push({ sessionId: entry.name, files });
   }
   return groups;
@@ -336,7 +346,7 @@ async function claudeSessionIds(
   stop?: () => boolean,
 ): Promise<Set<string>> {
   const ids = new Set<string>();
-  for (const entry of await listDirs(encodedCwdDir)) {
+  for (const entry of await listDirs(encodedCwdDir, root)) {
     if (stop?.() === true) break;
     if (entry.isFile() && entry.name.endsWith('.jsonl')) {
       ids.add(entry.name.replace(/\.jsonl$/u, ''));
@@ -404,38 +414,78 @@ export async function sweepOrphanArtifacts(options: SweepOptions): Promise<Sweep
     return result;
   }
 
+  const anchoredFile = async (
+    file: string,
+  ): Promise<
+    | { parent: FileHandle; file: FileHandle; path: string; size: number; mtimeMs: number }
+    | 'absent'
+    | 'outside'
+  > => {
+    let parent: FileHandle;
+    try {
+      parent = await open(
+        dirname(file),
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+    } catch {
+      return 'absent';
+    }
+    const parentFd = `/proc/self/fd/${parent.fd}`;
+    try {
+      const actualParent = await realpath(parentFd);
+      if (!isWithinRealPath(root, actualParent)) {
+        await parent.close();
+        return 'outside';
+      }
+      const anchored = join(parentFd, basename(file));
+      const handle = await open(anchored, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stats = await handle.stat();
+      if (!stats.isFile()) {
+        await handle.close();
+        await parent.close();
+        return 'outside';
+      }
+      return { parent, file: handle, path: anchored, size: stats.size, mtimeMs: stats.mtimeMs };
+    } catch {
+      await parent.close().catch(() => undefined);
+      return 'absent';
+    }
+  };
+
   /** Weigh one file whose owning session is already known to be gone. */
   const consider = async (file: string): Promise<void> => {
     result.scanned += 1;
-    let size: number;
+    const target = await anchoredFile(file);
+    if (target === 'absent') return;
+    if (target === 'outside') {
+      result.failed += 1;
+      return;
+    }
     try {
-      const stats = await stat(file);
-      if (stats.mtimeMs > cutoff) {
+      if (target.mtimeMs > cutoff) {
         result.graceKept += 1;
         return;
       }
-      size = stats.size;
-    } catch {
-      // Vanished between listing and stat — someone else already cleaned it up.
-      return;
-    }
-    if (options.dryRun === true) {
-      result.removed += 1;
-      result.bytes += size;
-      return;
-    }
-    try {
+      if (options.dryRun === true) {
+        result.removed += 1;
+        result.bytes += target.size;
+        return;
+      }
+      await options.beforeDelete?.(file);
       // Files only, never directories: `projects/<cwd>/` also holds `memory/`, whose
       // contents belong to no session. Sweeping files alone means a non-transcript can
       // never be caught by this, at the price of leaving an empty directory behind — a
       // swept session's `<id>/subagents/` outlives every file that was in it. The cost is
       // a dirent and one `readdir` per boot: `claudeGroups` drops a group with no files,
       // so an emptied tree is never re-considered, only re-listed.
-      await rm(file, { force: true });
+      await rm(target.path, { force: true });
       result.removed += 1;
-      result.bytes += size;
+      result.bytes += target.size;
     } catch {
       result.failed += 1;
+    } finally {
+      await target.file.close().catch(() => undefined);
+      await target.parent.close().catch(() => undefined);
     }
   };
 
@@ -465,7 +515,7 @@ export async function sweepOrphanArtifacts(options: SweepOptions): Promise<Sweep
     groups?: Awaited<ReturnType<typeof claudeGroups>>;
   }> = [];
 
-  for (const project of await listDirs(root)) {
+  for (const project of await listDirs(root, root)) {
     if (stopped()) return halt(codexCollectible.length, claudeCollectible.length);
     if (!project.isDirectory()) continue;
     const runtimeDir = join(root, project.name);
@@ -474,7 +524,9 @@ export async function sweepOrphanArtifacts(options: SweepOptions): Promise<Sweep
     // does not apply here — a rollout carries its own thread id — so the id check is the
     // whole verdict; it is only the empty-store check that makes it wait.
     const codexRoot = await realDirWithin(join(runtimeDir, RUNNER_CODEX_SESSIONS_DIRNAME), root);
-    for (const file of codexRoot === undefined ? [] : await transcriptFiles(codexRoot, stopped)) {
+    for (const file of codexRoot === undefined
+      ? []
+      : await transcriptFiles(codexRoot, root, stopped)) {
       if (isLiveArtifact(file, options.liveIds)) {
         result.scanned += 1;
         result.liveKept += 1;
@@ -490,7 +542,7 @@ export async function sweepOrphanArtifacts(options: SweepOptions): Promise<Sweep
       root,
     );
     if (projectsRoot === undefined) continue;
-    for (const encodedCwd of await listDirs(projectsRoot)) {
+    for (const encodedCwd of await listDirs(projectsRoot, root)) {
       if (stopped()) return halt(codexCollectible.length, claudeCollectible.length);
       if (!encodedCwd.isDirectory()) continue;
       result.claudeCwdDirsSeen += 1;

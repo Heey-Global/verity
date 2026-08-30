@@ -110,6 +110,16 @@ describe('createGitHubInstallationService (#174)', () => {
     expect(asyncTokenCalls).toBe(1);
   });
 
+  it('never throws when async installation-token minting fails', async () => {
+    const fetch = fakeFetch({});
+    const svc = createGitHubInstallationService({
+      asyncToken: () => Promise.reject(new Error('mint failed')),
+      fetch,
+    });
+    await expect(svc.listInstallationRepos()).resolves.toEqual([]);
+    expect(fetch.calls).toHaveLength(0);
+  });
+
   it('lists repos from a single page and lowercases owner/repo', async () => {
     const fetch = fakeFetch({
       'https://api.github.com/installation/repositories?per_page=100&sort=full_name&direction=asc':

@@ -56,6 +56,25 @@ describe('SessionReducer', () => {
     expect(r.status).toBe('awaiting_input'); // most recent wins
   });
 
+  it('returns to running when the current awaiting permission is settled', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'status', state: 'awaiting_input' });
+    r.apply(2, { t: 'permission', id: 'tool-1', tool: 'Bash', input: {}, riskClass: 'ask' });
+    r.resolvePermission('tool-1');
+    expect(r.pendingPermission).toBeUndefined();
+    expect(r.status).toBe('running');
+    expect(r.running).toBe(true);
+  });
+
+  it('does not clear unrelated awaiting input when settling a different permission id', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'status', state: 'awaiting_input' });
+    r.apply(2, { t: 'permission', id: 'tool-1', tool: 'Bash', input: {}, riskClass: 'ask' });
+    r.resolvePermission('other-tool');
+    expect(r.pendingPermission?.toolUseId).toBe('tool-1');
+    expect(r.status).toBe('awaiting_input');
+  });
+
   it('renders an operator prompt as a user-text message and closes the open agent block', () => {
     const r = new SessionReducer();
     r.apply(1, { t: 'text', delta: 'partial agent reply' });
@@ -541,6 +560,33 @@ describe('SessionReducer', () => {
     });
   });
 
+  it('drops expired rejected windows when a fresh capacity event arrives', () => {
+    const r = new SessionReducer();
+    r.apply(
+      1,
+      {
+        t: 'rate_limit',
+        status: 'rejected',
+        resetsAt: 100,
+        window: 'five_hour',
+        providerLabel: 'Codex',
+      },
+      99_000,
+    );
+    r.apply(
+      2,
+      {
+        t: 'rate_limit',
+        status: 'allowed',
+        resetsAt: 200,
+        window: 'weekly',
+        providerLabel: 'Codex',
+      },
+      101_000,
+    );
+    expect(r.state.rateLimit).toMatchObject({ status: 'allowed', window: 'weekly' });
+  });
+
   it('does not let a model-scoped live event replace the provider-wide banner', () => {
     const r = new SessionReducer();
     r.apply(1, {
@@ -999,6 +1045,14 @@ describe('SessionReducer — skill body correlation', () => {
     });
     r.apply(3, { t: 'text', delta: 'On it.' }); // prose → the body window closes
     r.apply(4, { t: 'skill', text: 'a much later stray synthetic turn' });
+    expect(skillOf(r.messages)?.tool.skillBody).toBeUndefined();
+  });
+
+  it('abandons a pending skill body when an unrelated tool result intervenes', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'tool_call', id: 'sk1', name: 'Skill', input: { skill: 'code-review' } });
+    r.apply(2, { t: 'tool_result', id: 'other', output: 'done', isError: false });
+    r.apply(3, { t: 'skill', text: 'must not attach' });
     expect(skillOf(r.messages)?.tool.skillBody).toBeUndefined();
   });
 

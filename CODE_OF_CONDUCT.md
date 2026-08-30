@@ -21,12 +21,10 @@ spaces, and public situations where someone represents Verity.
 ## Enforcement
 
 For an immediate safety issue, use the reporting tools of the platform where it
-occurred. The durable public conduct-reporting channel has not yet been
-published. **Do not publish this repository as open for community contributions
-until that channel names a monitored address and a report from an external
-account has been tested.** Existing authorized collaborators should use the
-project's current private maintainer channel. Do not file a public issue
-containing personal or sensitive details.
+occurred. For private conduct reports, email `hello@verity.build`. Do not file
+a public issue containing personal or sensitive details. Include enough context
+for maintainers to understand what happened, but do not send credentials or
+unrelated private information.
 
 Maintainers may edit or remove contributions and may warn, temporarily suspend,
 or permanently exclude participants whose behavior is inconsistent with this

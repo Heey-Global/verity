@@ -30,4 +30,15 @@ describe('parseAgentLoopProposal', () => {
     const input = '```verity:agent-loop\n{"name":"missing loop id"}\n```';
     expect(parseAgentLoopProposal(input)).toEqual({ text: input });
   });
+
+  it('keeps an invalid fence visible beside a valid proposal', () => {
+    const invalid = '```verity:agent-loop\n{"name":"missing loop id"}\n```';
+    const valid = `\`\`\`verity:agent-loop\n${JSON.stringify({
+      loopId: '11111111-1111-4111-8111-111111111111',
+      name: 'Audit',
+      script: 'exit 0',
+      schedule: { kind: 'interval', everyMinutes: 30 },
+    })}\n\`\`\``;
+    expect(parseAgentLoopProposal(`${invalid}\n${valid}`).text).toBe(invalid);
+  });
 });

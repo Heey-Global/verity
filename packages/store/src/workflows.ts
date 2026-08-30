@@ -244,7 +244,7 @@ export class WorkflowStore {
     const execute = async (tx: Transaction<Database>): Promise<WorkflowView> => {
       const replay = await tx
         .selectFrom('workflow_commands')
-        .select(['request_hash', 'response'])
+        .select(['request_hash', 'workflow_id'])
         .where('actor_id', '=', input.actorId)
         .where('idempotency_key', '=', input.idempotencyKey)
         .executeTakeFirst();
@@ -252,7 +252,10 @@ export class WorkflowStore {
         if (replay.request_hash !== hash) {
           throw new WorkflowConflictError('idempotency key was reused with another request');
         }
-        return replay.response as WorkflowView;
+        if (replay.workflow_id === null) {
+          throw new WorkflowConflictError('workflow create replay has no workflow');
+        }
+        return this.getWorkflowFrom(tx, replay.workflow_id);
       }
 
       const service = await tx
@@ -1097,21 +1100,19 @@ export class WorkflowStore {
         .where('capability_hash', '=', capabilityHash(authentication.capability))
         .forUpdate();
       const handoff = await query.executeTakeFirst();
-      if (
-        handoff === undefined ||
-        handoff.expires_at.getTime() <= Date.now() ||
-        handoff.session_id === null ||
-        handoff.dispatched_at === null
-      )
+      if (handoff === undefined || handoff.session_id === null || handoff.dispatched_at === null)
         throw new WorkflowAuthorizationError('invalid or expired handoff capability');
-      if (handoff !== undefined) {
-        const replay = await tx
-          .selectFrom('workflow_results')
-          .selectAll()
-          .where('handoff_id', '=', handoff.id)
-          .executeTakeFirst();
-        if (replay !== undefined) return this.getWorkflowFrom(tx, handoff.workflow_id);
-      }
+      // Check the durable result before expiry. A worker may have committed the
+      // result, lost the HTTP response, and retried after the short-lived handoff
+      // capability expired. That retry is idempotent; it authorizes no new write.
+      const replay = await tx
+        .selectFrom('workflow_results')
+        .selectAll()
+        .where('handoff_id', '=', handoff.id)
+        .executeTakeFirst();
+      if (replay !== undefined) return this.getWorkflowFrom(tx, handoff.workflow_id);
+      if (handoff.expires_at.getTime() <= Date.now())
+        throw new WorkflowAuthorizationError('invalid or expired handoff capability');
       const active = await tx
         .selectFrom('workflow_steps as step')
         .innerJoin('workflows as workflow', 'workflow.id', 'step.workflow_id')
@@ -1404,12 +1405,15 @@ export class WorkflowStore {
         .set({ expected_evidence: evidence, next_reconcile_at: new Date().toISOString() })
         .where('id', '=', row.step_id)
         .execute();
-      await tx
+      const advanced = await tx
         .updateTable('workflows')
         .set({ version: expectedVersion + 1, updated_at: new Date().toISOString() })
         .where('id', '=', workflowId)
         .where('version', '=', expectedVersion)
-        .execute();
+        .executeTakeFirst();
+      if (advanced.numUpdatedRows !== 1n) {
+        throw new WorkflowConflictError('workflow version changed');
+      }
       await tx
         .insertInto('workflow_artifacts')
         .values({
@@ -1568,6 +1572,9 @@ export class WorkflowStore {
       ) {
         throw new WorkflowConflictError('gate candidate is stale');
       }
+      if (candidate.completionGate === 'user.decision' && decisionActor === undefined) {
+        throw new WorkflowConflictError('user decision requires an authenticated decision actor');
+      }
       const policyDecisionId = decisionActor === undefined ? null : `pol_${randomUUID()}`;
       if (decisionActor !== undefined && policyDecisionId !== null) {
         await tx
@@ -1588,6 +1595,7 @@ export class WorkflowStore {
         const pullRequest = current.pullRequest;
         const headSha = current.headSha;
         if (
+          current.approved !== true ||
           !Number.isInteger(pullRequest) ||
           typeof headSha !== 'string' ||
           !/^[0-9a-f]{40}$/i.test(headSha)
@@ -1625,7 +1633,7 @@ export class WorkflowStore {
               pullRequest,
               headSha,
               sessionId: session.session_id,
-              actorId: decisionActor?.id ?? 'unknown',
+              actorId: decisionActor!.id,
               policyDecisionId,
             },
             available_at: new Date().toISOString(),
@@ -1649,7 +1657,7 @@ export class WorkflowStore {
           candidate.workflowId,
           'decision.approved',
           'user',
-          decisionActor?.id ?? 'unknown',
+          decisionActor!.id,
           'awaiting_decision',
           'waiting_for_gate',
           { stepId: candidate.stepId, awaiting: 'pull_request.merged' },

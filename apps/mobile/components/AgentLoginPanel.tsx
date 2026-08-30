@@ -71,6 +71,15 @@ export function AgentLoginPanel({
   });
 
   const autoStartAttempted = useRef(false);
+  const currentSessions = useRef<Partial<Record<AgentLoginProvider, string>>>({});
+  const requestGenerations = useRef<Record<AgentLoginProvider, number>>({ claude: 0, codex: 0 });
+  const pollsInFlight = useRef(new Set<string>());
+  useEffect(
+    () => () => {
+      currentSessions.current = {};
+    },
+    [],
+  );
   const patchProvider = useCallback((provider: AgentLoginProvider, patch: Partial<LoginState>) => {
     setLogins((current) => ({
       ...current,
@@ -95,26 +104,34 @@ export function AgentLoginPanel({
   );
 
   const poll = (provider: AgentLoginProvider, sessionId: string) => {
+    const pollKey = `${provider}:${sessionId}`;
+    if (pollsInFlight.current.has(pollKey)) return;
+    pollsInFlight.current.add(pollKey);
     void client
       .getAgentLogin(sessionId)
       .then((login) => {
+        if (currentSessions.current[provider] !== sessionId) return;
         patchProvider(provider, { login, error: login.status === 'failed' ? login.message : null });
         refreshConfigured(provider, login);
       })
       .catch((caught) => {
+        if (currentSessions.current[provider] !== sessionId) return;
         if (isSealedError(caught)) {
+          delete currentSessions.current[provider];
           patchProvider(provider, { login: null, busy: false, error: null });
           onSealed?.();
           return;
         }
         if (isMissingLoginSession(caught)) {
+          delete currentSessions.current[provider];
           patchProvider(provider, { login: null, busy: false, error: null });
           return;
         }
         patchProvider(provider, {
           error: caught instanceof VerityApiError ? caught.message : 'Could not refresh login.',
         });
-      });
+      })
+      .finally(() => pollsInFlight.current.delete(pollKey));
   };
 
   useEffect(() => {
@@ -140,6 +157,8 @@ export function AgentLoginPanel({
 
   const start = useCallback(
     (provider: AgentLoginProvider) => {
+      const generation = ++requestGenerations.current[provider];
+      delete currentSessions.current[provider];
       patchProvider(provider, {
         login: null,
         busy: true,
@@ -150,10 +169,13 @@ export function AgentLoginPanel({
       void client
         .startAgentLogin(provider)
         .then((login) => {
+          if (requestGenerations.current[provider] !== generation) return;
+          currentSessions.current[provider] = login.sessionId;
           patchProvider(provider, { login, busy: false });
           refreshConfigured(provider, login);
         })
         .catch((caught) => {
+          if (requestGenerations.current[provider] !== generation) return;
           if (isSealedError(caught)) {
             handleSealed(provider);
             return;
@@ -174,14 +196,18 @@ export function AgentLoginPanel({
   }, [autoStartProvider, start]);
 
   const disconnect = (provider: AgentLoginProvider) => {
+    const generation = ++requestGenerations.current[provider];
+    delete currentSessions.current[provider];
     patchProvider(provider, { busy: true, error: null });
     void client
       .disconnectAgentLogin(provider)
       .then(() => {
+        if (requestGenerations.current[provider] !== generation) return;
         patchProvider(provider, emptyLoginState());
         onConfiguredChange?.(provider, false);
       })
       .catch((caught) => {
+        if (requestGenerations.current[provider] !== generation) return;
         if (isSealedError(caught)) {
           handleSealed(provider);
           return;
@@ -197,14 +223,22 @@ export function AgentLoginPanel({
     const state = logins[provider];
     const sessionId = state.login?.sessionId;
     if (!sessionId || state.code.trim().length === 0) return;
+    const generation = requestGenerations.current[provider];
     patchProvider(provider, { busy: true, error: null });
     void client
       .submitAgentLoginCode(sessionId, state.code)
       .then((login) => {
+        if (
+          requestGenerations.current[provider] !== generation ||
+          currentSessions.current[provider] !== sessionId
+        )
+          return;
+        currentSessions.current[provider] = login.sessionId;
         patchProvider(provider, { login, code: '', busy: false });
         refreshConfigured(provider, login);
       })
       .catch((caught) => {
+        if (requestGenerations.current[provider] !== generation) return;
         if (isSealedError(caught)) {
           handleSealed(provider);
           return;

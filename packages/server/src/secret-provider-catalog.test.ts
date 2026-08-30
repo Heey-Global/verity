@@ -316,6 +316,16 @@ describe('Postgres Secret Provider Catalog', () => {
     await expect(
       catalog.checkClaimsPermissions(claims, new Date('2026-07-23T00:00:59Z')),
     ).resolves.toBe(true);
+    const mismatchedProfile = {
+      ...claims,
+      profile: { ...claims.profile, policyHash: 'c'.repeat(64) },
+    };
+    await expect(
+      catalog.checkClaimsPermissions(mismatchedProfile, new Date('2026-07-23T00:00:59Z')),
+    ).resolves.toBe(false);
+    await expect(
+      catalog.authorizeClaimsPermissions(mismatchedProfile, new Date('2026-07-23T00:00:59Z')),
+    ).resolves.toBe(false);
     await expect(
       catalog.authorizeClaimsPermissions(claims, new Date('2026-07-23T00:01:00Z')),
     ).resolves.toBe(true);

@@ -9,6 +9,7 @@ import {
   realpath,
   stat,
   symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -76,7 +77,12 @@ const adoptionSpec = (): Omit<ServerDeploymentSpecBody, 'schemaVersion' | 'deplo
 const servers: UpdaterStatusServer[] = [];
 afterEach(async () => Promise.all(servers.splice(0).map((server) => server.close())));
 
-async function fixture(options: { managed?: boolean } = {}) {
+async function fixture(
+  options: {
+    managed?: boolean;
+    onOperationAccepted?: (journal: UpdateJournal) => void | Promise<void>;
+  } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), 'verity-updater-status-'));
   const managedRoot = join(root, 'managed-deployment');
   await mkdir(managedRoot, { mode: 0o700 });
@@ -95,13 +101,34 @@ async function fixture(options: { managed?: boolean } = {}) {
     socketPath,
     token,
     managedRoot,
-    onOperationAccepted: (journal) => accepted.push(journal),
+    onOperationAccepted:
+      options.onOperationAccepted ??
+      ((journal) => {
+        accepted.push(journal);
+      }),
   });
   servers.push(server);
   return { socketPath, token, managedRoot, accepted };
 }
 
 describe('managed Updater status boundary', () => {
+  it('keeps a post-202 callback rejection contained and the boundary available', async () => {
+    const call = await fixture({
+      managed: true,
+      onOperationAccepted: async () => Promise.reject(new Error('injected callback failure')),
+    });
+    await expect(
+      requestUpdaterOperation({
+        socketPath: call.socketPath,
+        token: call.token,
+        idempotencyKey: 'callback-rejection',
+        targetDigest: image('b'),
+      }),
+    ).resolves.toMatchObject({ targetDigest: image('b') });
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(readUpdaterOperation(call)).resolves.toMatchObject({ targetDigest: image('b') });
+  });
+
   it('reports missing authority as explicitly unmanaged over a private socket', async () => {
     const { socketPath, token } = await fixture();
     await expect(readUpdaterDeployment({ socketPath, token })).resolves.toEqual({
@@ -153,6 +180,39 @@ describe('managed Updater status boundary', () => {
     });
     await servers.splice(servers.indexOf(server), 1)[0]!.close();
     await expect(stat(tokenPath)).rejects.toThrow(/ENOENT/);
+  });
+
+  it('does not remove a successor socket or token when an old instance closes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-updater-successor-'));
+    const managedRoot = join(root, 'managed-deployment');
+    await mkdir(managedRoot, { mode: 0o700 });
+    const socketPath = join(root, 'control', 'updater.sock');
+    const tokenPath = updaterControlTokenPath(socketPath);
+    const old = await startUpdaterStatusServer({
+      socketPath,
+      token: 'o'.repeat(32),
+      managedRoot,
+      peerGid: process.getgid?.() ?? 0,
+    });
+    await unlink(socketPath);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const successor = createHttpServer();
+    await new Promise<void>((resolve, reject) => {
+      successor.once('error', reject);
+      successor.listen(socketPath, resolve);
+    });
+    await unlink(tokenPath);
+    await writeFile(tokenPath, 'successor-token', { mode: 0o640 });
+
+    await old.close();
+    expect((await lstat(socketPath)).isSocket()).toBe(true);
+    expect(await readFile(tokenPath, 'utf8')).toBe('successor-token');
+
+    await new Promise<void>((resolve, reject) =>
+      successor.close((error) => (error === undefined ? resolve() : reject(error))),
+    );
+    await unlink(socketPath).catch(() => undefined);
+    await unlink(tokenPath).catch(() => undefined);
   });
 
   /**
@@ -889,6 +949,12 @@ describe('what a Server concludes from an Updater answer', () => {
     }
   });
 
+  it('degrades an unreachable Updater agent-seed route without throwing', async () => {
+    await expect(
+      readUpdaterAgentSeed({ socketPath: '/does/not/exist/updater.sock', token: 'token' }),
+    ).resolves.toEqual({ visible: false, stamp: null });
+  });
+
   /** The relay is the one route whose payload the Updater never authored, so
    * the reader re-parses all of it — binding, identity key, and offer. */
   it('re-parses relayed handoff material instead of trusting the relay', async () => {
@@ -922,6 +988,12 @@ describe('what a Server concludes from an Updater answer', () => {
       { handoff: { binding: BINDING, unexpected: 'x' } },
       { handoff: { binding: BINDING, senderIdentityPublicKey: 'not-a-key' } },
       { handoff: { binding: BINDING, offer: { ...offer, nonce: 'nope' } } },
+      {
+        handoff: {
+          binding: BINDING,
+          offer: { ...offer, containerId: 'c'.repeat(64) },
+        },
+      },
     ]) {
       stubbed.answer(200, payload);
       await expect(readUpdaterHandoff(call)).rejects.toThrow('updater handoff response is invalid');

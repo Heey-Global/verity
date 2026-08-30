@@ -10,7 +10,6 @@ import {
 } from './docker-gvisor-sandbox-channel.js';
 import { createSecretEnvelopeSealer } from './secret-envelope-crypto.js';
 import type { RawJobChunk } from './secret-job-executor.js';
-import { createSecretWorkerChannelAuthenticator } from './secret-worker-channel-auth.js';
 import { createSecretWorkerRecipientKeyRegistry } from './secret-worker-recipient-key-registry.js';
 import {
   decodeSecretWorkerMessages,
@@ -209,7 +208,7 @@ function channelFor(
     redactorProfile: REDACTOR_PROFILE,
     recipientKeys: createSecretWorkerRecipientKeyRegistry({ now }),
     openAttach: () => Promise.resolve(attach),
-    authenticator: createSecretWorkerChannelAuthenticator({ now }),
+    authenticatorOptions: { now },
     ...(onTerminalOutcome ? { onTerminalOutcome } : {}),
     now,
   });
@@ -285,7 +284,7 @@ describe('docker gvisor sandbox channel', () => {
       redactorProfile: REDACTOR_PROFILE,
       recipientKeys: createSecretWorkerRecipientKeyRegistry({ now }),
       openAttach: () => Promise.resolve(attach),
-      authenticator: createSecretWorkerChannelAuthenticator({ now }),
+      authenticatorOptions: { now },
       now,
     });
 

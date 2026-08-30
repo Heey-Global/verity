@@ -25,7 +25,9 @@ export interface RefinedTask {
 /**
  * Build the one-shot refine prompt. Instructs the model to return ONLY a JSON object
  * with the {@link RefinedTask} shape so {@link parseRefinedTask} can consume it. The
- * transcript is fenced to keep the model from following instructions embedded in it.
+ * The prompt labels the transcript as untrusted input. Delimiters improve structure
+ * but are not a security boundary, so callers must treat the model output as
+ * attacker-influenced and keep the existing user-review step.
  */
 export function buildRefinePrompt(transcript: string): string {
   return [

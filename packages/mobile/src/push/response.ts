@@ -65,6 +65,7 @@ export function resolvePushResponse(input: PushResponseInput): PushReplyAction |
   }
 
   if (actionIdentifier === PUSH_ACTION.reply) {
+    if (payload.kind !== 'question') return null;
     const prompt = userText?.trim();
     if (prompt === undefined || prompt.length === 0) return null;
     return { type: 'send-turn', sessionId: payload.sessionId, prompt };
@@ -129,13 +130,18 @@ export function createPushReplyPerformer(
       }
       return 'done';
     } catch (error) {
+      if (action.type === 'send-turn' && error instanceof VerityApiError && error.status === 409) {
+        // The session is temporarily busy. The idempotency key makes a later
+        // outbox retry safe; dropping it would lose the typed notification reply.
+        return 'retry';
+      }
       if (
         error instanceof VerityApiError &&
         error.status >= 400 &&
         error.status < 500 &&
         !RETRYABLE_CLIENT_STATUS.has(error.status)
       ) {
-        if (action.type === 'decide-permission' && error.status === 409) {
+        if (action.type === 'decide-permission' && (error.status === 404 || error.status === 409)) {
           publishSettledPermission(action.sessionId, action.toolUseId);
         }
         if (action.type === 'merge-pull-request' && error.status === 409) {

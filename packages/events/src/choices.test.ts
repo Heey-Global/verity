@@ -17,47 +17,11 @@ describe('parseChoicesBlock', () => {
     expect(parseChoicesBlock(input)).toEqual({ text: input });
   });
 
-  it('synthesizes yes/no choices for a final go-ahead question when the fence is missing', () => {
+  it('does not synthesize choices from unfenced prose questions', () => {
     const input =
       'Die Checks sind grün.\n\nSoll ich bf07744 pushen und einen PR gegen main öffnen?';
-    expect(parseChoicesBlock(input)).toEqual({
-      text: input,
-      choices: {
-        question: 'Soll ich bf07744 pushen und einen PR gegen main öffnen?',
-        options: [{ label: 'Ja', recommended: true }, { label: 'Nein' }],
-        multiSelect: false,
-      },
-    });
-  });
-
-  it('synthesizes yes/no choices for terse English approval questions', () => {
-    const input = 'Ready.\n\nPush?';
-    expect(parseChoicesBlock(input).choices?.options.map((option) => option.label)).toEqual([
-      'Ja',
-      'Nein',
-    ]);
-  });
-
-  it('synthesizes yes/no choices for English was questions', () => {
-    const input = 'Was this expected?';
-    expect(parseChoicesBlock(input).choices?.question).toBe(input);
-  });
-
-  it('does not synthesize choices for open-ended questions', () => {
-    for (const input of [
-      'Soll ich das umsetzen — und wenn ja, in welchem Scope?',
-      'Was soll ich ändern?',
-      'Soll ich was ändern?',
-    ]) {
-      expect(parseChoicesBlock(input)).toEqual({ text: input });
-    }
-  });
-
-  it('does not synthesize choices for quoted or fenced questions', () => {
-    expect(parseChoicesBlock('> Soll ich pushen?')).toEqual({ text: '> Soll ich pushen?' });
-    expect(parseChoicesBlock('```text\nSoll ich pushen?\n```')).toEqual({
-      text: '```text\nSoll ich pushen?\n```',
-    });
+    expect(parseChoicesBlock(input)).toEqual({ text: input });
+    expect(parseChoicesBlock('Ready.\n\nPush?')).toEqual({ text: 'Ready.\n\nPush?' });
   });
 
   it('lifts a well-formed block off the trailing prose', () => {

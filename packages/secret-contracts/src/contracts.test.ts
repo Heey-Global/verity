@@ -64,7 +64,7 @@ describe('brokered secret catalog contracts', () => {
         command: ['/usr/local/bin/fastlane'],
       }),
     ).toThrow(/unsafe for privileged launch/u);
-    for (const env of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG']) {
+    for (const env of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'NODE_OPTIONS', 'PYTHONPATH']) {
       expect(() =>
         trustedCliRequestSchema.parse({
           secrets: [{ secretAlias: 'APP_STORE_CONNECT_PRIVATE_KEY', env }],
@@ -590,6 +590,7 @@ describe('run grant and envelope contracts', () => {
 
   it('canonicalizes object keys before hashing or signing', () => {
     expect(canonicalJson({ z: 1, a: { y: 2, x: 3 } })).toBe('{"a":{"x":3,"y":2},"z":1}');
+    expect(canonicalJson({ required: 1, optional: undefined })).toBe('{"required":1}');
     expect(() => canonicalJson(Number.NaN)).toThrow(/non-finite/);
   });
 

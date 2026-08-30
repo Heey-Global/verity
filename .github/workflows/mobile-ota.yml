@@ -144,13 +144,18 @@ jobs:
           # from mobile-v1.3.6 onward (a `lint:changed` script did it). What
           # actually matters in the lockfile is a version move inside the app's own
           # dependency closure; the helper reports exactly those.
-          native_changes="$(
-            git diff --name-only "$native_tag"..HEAD -- \
+          if ! native_path_changes="$(git diff --name-only "$native_tag"..HEAD -- \
               apps/mobile/package.json apps/mobile/app.config.ts apps/mobile/eas.json \
               apps/mobile/ios apps/mobile/android apps/mobile/native \
-              apps/mobile/plugins apps/mobile/patches
-            node scripts/mobile-native-lock-changes.mjs "$native_tag" HEAD
-          )"
+              apps/mobile/plugins apps/mobile/patches)"; then
+            echo "::error::Could not compare native-sensitive mobile paths with $native_tag." >&2
+            exit 1
+          fi
+          if ! native_lock_changes="$(node scripts/mobile-native-lock-changes.mjs "$native_tag" HEAD)"; then
+            echo "::error::Could not compare the mobile dependency closure with $native_tag." >&2
+            exit 1
+          fi
+          native_changes="$(printf '%s\n%s\n' "$native_path_changes" "$native_lock_changes" | sed '/^$/d')"
           if [[ -n "$native_changes" ]]; then
             echo "blocked=true" >> "$GITHUB_OUTPUT"
             echo "OTA skipped: native-sensitive changes exist after $native_tag:"

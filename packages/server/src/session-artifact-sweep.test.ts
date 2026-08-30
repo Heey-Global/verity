@@ -1,7 +1,17 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile, utimes } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+  utimes,
+} from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_SWEEP_GRACE_MS,
@@ -634,6 +644,37 @@ describe('sweepOrphanArtifacts', () => {
       expect(existsSync(planted)).toBe(true);
       expect(result).toMatchObject({ scanned: 0, removed: 0 });
     } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps deletion anchored when an archive directory is swapped after validation', async () => {
+    const dead = await rollout('proj-a', 'dead-thread');
+    await parkLiveSession();
+    const archive = dirname(dead);
+    const parked = `${archive}-parked`;
+    const outside = await realpath(await mkdtemp(join(tmpdir(), 'verity-sweep-swap-')));
+    const planted = join(outside, dead.split('/').at(-1)!);
+    await writeFile(planted, 'HOST-DATA', 'utf8');
+    await utimes(planted, new Date(OLD), new Date(OLD));
+
+    try {
+      const result = await sweepOrphanArtifacts({
+        runnersRoot,
+        liveIds: new Set(),
+        liveCwdDirs: new Set([LIVE_CWD]),
+        now: NOW,
+        beforeDelete: async () => {
+          await rename(archive, parked);
+          await symlink(outside, archive, 'dir');
+        },
+      });
+
+      expect(await readFile(planted, 'utf8')).toBe('HOST-DATA');
+      expect(existsSync(join(parked, dead.split('/').at(-1)!))).toBe(false);
+      expect(result).toMatchObject({ removed: 1, failed: 0 });
+    } finally {
+      await rm(archive, { force: true });
       await rm(outside, { recursive: true, force: true });
     }
   });

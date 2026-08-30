@@ -6,12 +6,20 @@
   "type": "module",
   "description": "Open-core, self-hosted mobile control plane for steering coding agents across a development fleet",
   "engines": {
-    "node": "24.19.0"
+    "node": "^24.19.0 || >=26.0.0"
   },
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
+  "overrides": {
+    "metro": "0.84.5",
+    "metro-config": "0.84.5",
+    "metro-transform-worker": "0.84.5",
+    "xcode@3.0.1": {
+      "uuid": "11.1.1"
+    }
+  },
   "scripts": {
     "build": "tsc -b",
     "build:runner-worker": "npm run build && node scripts/build-runner-worker.mjs",
@@ -41,10 +49,17 @@
     "esbuild": "0.28.2",
     "eslint": "10.8.1",
     "ignore": "7.0.5",
+    "metro": "0.84.5",
+    "metro-config": "0.84.5",
+    "metro-transform-worker": "0.84.5",
     "pg-connection-string": "2.14.0",
     "prettier": "3.9.6",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
-    "vitest": "4.1.11"
+    "uuid": "11.1.1",
+    "vitest": "4.1.11",
+    "xcode": "3.0.1"
   }
 }

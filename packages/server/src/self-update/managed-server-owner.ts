@@ -306,12 +306,12 @@ function structureMatches(
     inspect.networkMode === desired.network &&
     inspect.readOnlyRootfs === desired.readOnlyRootfs &&
     inspect.restartPolicy === desired.restartPolicy &&
-    (inspect.securityOpt ?? []).includes('no-new-privileges:true') &&
+    JSON.stringify(sorted(inspect.securityOpt)) === JSON.stringify(sorted(desired.securityOpt)) &&
     JSON.stringify(sorted(inspect.capAdd)) === JSON.stringify(sorted(desired.capAdd)) &&
     JSON.stringify(sorted(inspect.groupAdd)) === JSON.stringify(sorted(desired.groupAdd)) &&
     JSON.stringify(actualMounts) === JSON.stringify(expectedMounts) &&
-    (desired.command === undefined ||
-      JSON.stringify(inspect.command ?? []) === JSON.stringify(desired.command)) &&
+    JSON.stringify(inspect.entrypoint ?? []) === JSON.stringify(desired.entrypoint ?? []) &&
+    JSON.stringify(inspect.command ?? []) === JSON.stringify(desired.command ?? []) &&
     (hostLimits === 'ignored' || hostLimitsMatch(inspect, desired)) &&
     inspect.init === true
   );
@@ -643,6 +643,8 @@ function containerSpecFrom(spec: ServerDeploymentSpec, env: string[]): Container
     platform: `linux/${spec.platform.architecture}`,
     readOnlyRootfs: spec.security.readOnlyRootFilesystem,
     securityOpt: ['no-new-privileges:true'],
+    entrypoint: ['/usr/bin/tini', '--', 'node', 'packages/server/dist/main.js'],
+    command: [],
     capAdd: [...spec.security.capAdd],
     // Host resource guardrails, the ones Compose gives the `verity` service. The
     // managed topology takes the Server away from Compose, so without these the

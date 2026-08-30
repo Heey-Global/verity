@@ -543,6 +543,44 @@ describe('SessionListModel.refresh', () => {
     }
   });
 
+  it('does not let an undated persisted meter override a timestamped provider meter', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_700_000_000_000));
+    try {
+      const { client, listSessions, listProviderLimits } = makeClient();
+      listProviderLimits.mockResolvedValueOnce([
+        {
+          status: 'allowed',
+          resetsAt: 1_700_000_200,
+          window: 'weekly',
+          usedPercent: 12,
+          providerLabel: 'Claude',
+          observedAt: 1_700_000_000_000,
+        },
+      ]);
+      listSessions.mockResolvedValueOnce([
+        {
+          ...session('legacy', 'idle'),
+          rateLimits: [
+            {
+              status: 'rejected',
+              resetsAt: 1_700_000_300,
+              window: 'weekly',
+              usedPercent: 100,
+              providerLabel: 'Claude',
+            },
+          ],
+        },
+      ]);
+      const model = new SessionListModel({ client });
+      await model.refresh();
+      expect(model.state.providerLimitRows[0]?.weekly?.status).toBe('allowed');
+      expect(model.state.providerLimitRows[0]?.weekly?.observedAt).toBe(1_700_000_000_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('repairs Codex weekly meters persisted as five-hour by older servers', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(1_700_000_000_000));
@@ -596,7 +634,7 @@ describe('SessionListModel.refresh', () => {
         window: 'weekly',
         providerLabel: 'Codex',
         level: 'blocked',
-        usedPercent: 8,
+        usedPercent: 24,
       });
     } finally {
       vi.useRealTimers();

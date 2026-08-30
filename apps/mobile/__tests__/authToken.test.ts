@@ -1,5 +1,6 @@
 import {
   clearAuthToken,
+  copyAuthTokenToEndpoint,
   disableBiometricUnlock,
   enableBiometricUnlock,
   getAuthToken,
@@ -37,6 +38,12 @@ jest.mock('expo-local-authentication', () => ({
   authenticateAsync: () => mockAuthenticateAsync(),
 }));
 
+jest.mock('expo-crypto', () => ({
+  CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
+  digestStringAsync: async (_algorithm: string, value: string) =>
+    [...value].map((character) => character.charCodeAt(0).toString(16).padStart(2, '0')).join(''),
+}));
+
 const DOGFOOD = 'http://dev-server:8082';
 const ONBOARDING = 'http://dev-server:8090';
 
@@ -67,6 +74,17 @@ describe('authToken', () => {
     expect(await hasStoredAuthToken(ONBOARDING)).toBe(true);
   });
 
+  it('copies an unlocked device credential after a verified endpoint change', async () => {
+    await setAuthToken(DOGFOOD, 'dogfood-token', 'device-id');
+    await copyAuthTokenToEndpoint(DOGFOOD, ONBOARDING);
+
+    expect(getAuthToken(ONBOARDING)).toBe('dogfood-token');
+    expect(await hasStoredAuthToken(DOGFOOD)).toBe(true);
+    expect(await hasStoredAuthToken(ONBOARDING)).toBe(true);
+    await clearAuthToken(null);
+    expect(await hasStoredAuthToken(ONBOARDING)).toBe(true);
+  });
+
   it('does not load a stored token until biometric unlock is explicitly enabled', async () => {
     await setAuthToken(DOGFOOD, 'dogfood-token');
 
@@ -83,6 +101,11 @@ describe('authToken', () => {
 
     expect(await isBiometricUnlockEnabled(DOGFOOD)).toBe(true);
     expect(await isBiometricUnlockEnabled(ONBOARDING)).toBe(false);
+    expect(mockSetItemAsync).toHaveBeenCalledWith(
+      expect.stringContaining('verity.authToken.v2.'),
+      expect.stringContaining('master-password'),
+      expect.objectContaining({ requireAuthentication: true }),
+    );
   });
 
   it('refreshes the Face ID-protected master password for existing opt-ins', async () => {
@@ -127,6 +150,25 @@ describe('authToken', () => {
     expect(getAuthToken(ONBOARDING)).toBeNull();
   });
 
+  it('rejects a protected token whose embedded server origin does not match', async () => {
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    await setAuthToken(DOGFOOD, 'dogfood-token');
+    await enableBiometricUnlock(DOGFOOD);
+    await clearAuthToken(null);
+    const storedToken = [...secureStore.entries()].find(([key]) =>
+      /^verity\.authToken\.v2\.[^.]+$/.test(key),
+    );
+    expect(storedToken).toBeDefined();
+    secureStore.set(
+      storedToken![0],
+      JSON.stringify({ origin: 'https://attacker.example', secret: 'dogfood-token' }),
+    );
+
+    expect(await unlockAuthTokenWithBiometrics(DOGFOOD)).toBe(false);
+    expect(getAuthToken(DOGFOOD)).toBeNull();
+  });
+
   it('clears only the active server token plus the legacy global key', async () => {
     await setAuthToken(DOGFOOD, 'dogfood-token');
     await setAuthToken(ONBOARDING, 'onboarding-token');
@@ -136,6 +178,17 @@ describe('authToken', () => {
     expect(await hasStoredAuthToken(ONBOARDING)).toBe(false);
     expect(await hasStoredAuthToken(DOGFOOD)).toBe(true);
     expect(mockDeleteItemAsync).toHaveBeenCalledWith('verity.authToken');
+  });
+
+  it('keeps biometric enrollment when a rejected bearer is cleared', async () => {
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    await setAuthToken(DOGFOOD, 'expired-token');
+    expect(await enableBiometricUnlock(DOGFOOD, 'master-password')).toBe(true);
+
+    await clearAuthToken(DOGFOOD);
+
+    expect(await isBiometricUnlockEnabled(DOGFOOD)).toBe(true);
   });
 
   it('does not load the token after biometric unlock is disabled', async () => {

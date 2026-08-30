@@ -29,11 +29,40 @@ function fakeGit(routes: Record<string, () => string>) {
   const git: GitOutput = async (args) => {
     calls.push([...args]);
     const joined = args.join(' ');
+    const commandArgs: string[] = [];
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index]!;
+      if (arg.startsWith('--work-tree=')) continue;
+      if (arg === '-c') {
+        index += 1;
+        continue;
+      }
+      commandArgs.push(arg);
+    }
+    const routable = commandArgs.join(' ');
     const keys = Object.keys(routes)
-      .filter((k) => joined.includes(k))
+      .filter((k) => joined.includes(k) || routable.includes(k))
       .sort((a, b) => b.length - a.length);
     const key = keys[0];
     const handler = key === undefined ? undefined : routes[key];
+    if (
+      handler === undefined &&
+      (joined.includes('status --porcelain --untracked-files=no') ||
+        routable.includes('status --porcelain --untracked-files=no'))
+    ) {
+      return '';
+    }
+    if (
+      handler === undefined &&
+      (/rev-parse refs\/heads\//u.test(joined) || /rev-parse refs\/heads\//u.test(routable))
+    )
+      return 'f'.repeat(40);
+    if (
+      handler === undefined &&
+      (joined.includes('update-ref -d refs/heads/') ||
+        routable.includes('update-ref -d refs/heads/'))
+    )
+      return '';
     if (handler === undefined) throw new Error(`fakeGit: no route for: ${joined}`);
     return handler();
   };
@@ -56,6 +85,12 @@ function pinArgs(repoPath: string): string[] {
     'merge.verifySignatures=false',
     '-c',
     'submodule.recurse=false',
+    '-c',
+    'credential.helper=',
+    '-c',
+    'core.sshCommand=ssh -F /dev/null',
+    '-c',
+    'protocol.ext.allow=never',
   ];
 }
 
@@ -301,13 +336,13 @@ describe('createGitBranchService', () => {
         'status --porcelain': () => '',
         'show-ref --verify --quiet refs/heads/feature/done': () => '',
         'worktree list --porcelain': () => 'worktree /wt\nbranch refs/heads/feature/current\n',
-        'checkout feature/done': () => '',
+        'checkout -- feature/done': () => '',
         'rev-parse --abbrev-ref HEAD': () => 'feature/done\n',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.switch('/wt', { branch: 'feature/done' })).toBe('feature/done');
       const checkout = calls.find((c) => c.at(-1) === 'feature/done' && c.includes('checkout'));
-      expect(checkout).toEqual(['-C', '/wt', 'checkout', 'feature/done']);
+      expect(checkout).toEqual(['-C', '/wt', 'checkout', '--', 'feature/done']);
     });
   });
 
@@ -402,8 +437,8 @@ describe('createGitBranchService', () => {
     it('fetches origin/<preview> and checks it out DETACHED, resolving the branch name', async () => {
       const { git, calls } = fakeGit({
         'status --porcelain': () => '', // clean worktree
-        'fetch origin feat/streaming': () => '',
-        'checkout --detach origin/feat/streaming': () => '',
+        'fetch origin +refs/heads/feat/streaming:refs/remotes/origin/feat/streaming': () => '',
+        'checkout --detach refs/remotes/origin/feat/streaming': () => '',
         'rev-parse --abbrev-ref HEAD': () => 'HEAD\n', // detached after checkout
         '--points-at HEAD --format=%(refname:short) refs/remotes/origin': () =>
           'origin/feat/streaming\n',
@@ -411,9 +446,17 @@ describe('createGitBranchService', () => {
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.switch('/wt', { preview: 'feat/streaming' })).toBe('feat/streaming');
       // fetch then a DETACHED checkout of the remote ref — never a local-branch checkout.
-      expect(calls.some((c) => c.join(' ') === '-C /wt fetch origin feat/streaming')).toBe(true);
       expect(
-        calls.some((c) => c.join(' ') === '-C /wt checkout --detach origin/feat/streaming'),
+        calls.some(
+          (c) =>
+            c.join(' ') ===
+            '-C /wt fetch origin +refs/heads/feat/streaming:refs/remotes/origin/feat/streaming',
+        ),
+      ).toBe(true);
+      expect(
+        calls.some(
+          (c) => c.join(' ') === '-C /wt checkout --detach refs/remotes/origin/feat/streaming',
+        ),
       ).toBe(true);
     });
 
@@ -429,7 +472,7 @@ describe('createGitBranchService', () => {
     it('maps a failed fetch (no such remote branch) to BranchNotFoundError', async () => {
       const { git } = fakeGit({
         'status --porcelain': () => '',
-        'fetch origin nope': fails(),
+        'fetch origin +refs/heads/nope:refs/remotes/origin/nope': fails(),
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       await expect(svc.switch('/wt', { preview: 'nope' })).rejects.toBeInstanceOf(
@@ -441,8 +484,8 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'status --porcelain': () => ' M a\n', // dirty
         'stash push --include-untracked': () => '',
-        'fetch origin feat/streaming': () => '',
-        'checkout --detach origin/feat/streaming': () => '',
+        'fetch origin +refs/heads/feat/streaming:refs/remotes/origin/feat/streaming': () => '',
+        'checkout --detach refs/remotes/origin/feat/streaming': () => '',
         'rev-parse --abbrev-ref HEAD': () => 'HEAD\n',
         '--points-at HEAD --format=%(refname:short) refs/remotes/origin': () =>
           'origin/feat/streaming\n',
@@ -473,7 +516,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'agent/6c7016b5\n',
         'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
-        'checkout -f --detach refs/remotes/origin/main': () => '',
+        'checkout --detach refs/remotes/origin/main': () => '',
         // branchExists(feature) — show-ref against the repo succeeds.
         'show-ref --verify --quiet refs/heads/agent/6c7016b5': () => '',
         'branch -D agent/6c7016b5': () => '',
@@ -486,15 +529,30 @@ describe('createGitBranchService', () => {
       });
       // Never claims the `main` branch (detached) — so a parallel worktree on main
       // can't be blocked.
-      expect(calls).toContainEqual([
-        '-C',
-        '/wt',
-        'checkout',
-        '-f',
-        '--detach',
-        'refs/remotes/origin/main',
-      ]);
-      expect(calls).toContainEqual(['-C', '/wt', 'branch', '-D', 'agent/6c7016b5']);
+      const checkoutCall = calls.find((call) => call.includes('checkout'));
+      expect(checkoutCall).toEqual(
+        expect.arrayContaining([
+          '-C',
+          '/wt',
+          'core.hooksPath=/dev/null',
+          'credential.helper=',
+          'core.sshCommand=ssh -F /dev/null',
+          'protocol.ext.allow=never',
+          'checkout',
+          '--detach',
+          'refs/remotes/origin/main',
+        ]),
+      );
+      const fetchCall = calls.find((call) => call.includes('fetch'));
+      expect(fetchCall).toEqual(
+        expect.arrayContaining([
+          'credential.helper=',
+          'core.sshCommand=ssh -F /dev/null',
+          'protocol.ext.allow=never',
+          'fetch',
+        ]),
+      );
+      expect(calls.some((call) => call.includes('update-ref') && call.includes('-d'))).toBe(true);
       // Fetch runs before the checkout so the detach lands on the merged tip.
       const fetchIdx = calls.findIndex((c) => c.includes('fetch'));
       const checkoutIdx = calls.findIndex((c) => c.includes('checkout'));
@@ -506,7 +564,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'feature/x\n',
         'fetch origin +refs/heads/develop:refs/remotes/origin/develop': () => '',
-        'checkout -f --detach refs/remotes/origin/develop': () => '',
+        'checkout --detach refs/remotes/origin/develop': () => '',
         'show-ref --verify --quiet refs/heads/feature/x': () => '',
         'branch -D feature/x': () => '',
       });
@@ -515,14 +573,15 @@ describe('createGitBranchService', () => {
         base: 'develop',
         deletedBranch: 'feature/x',
       });
-      expect(calls).toContainEqual([
-        '-C',
-        '/wt',
-        'checkout',
-        '-f',
-        '--detach',
-        'refs/remotes/origin/develop',
-      ]);
+      expect(calls.find((call) => call.includes('checkout'))).toEqual(
+        expect.arrayContaining([
+          '-C',
+          '/wt',
+          'checkout',
+          '--detach',
+          'refs/remotes/origin/develop',
+        ]),
+      );
     });
 
     /** A stacked PR merges into another session's branch. Resetting to the project's
@@ -531,7 +590,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'feat/child\n',
         'fetch origin +refs/heads/feat/parent:refs/remotes/origin/feat/parent': () => '',
-        'checkout -f --detach refs/remotes/origin/feat/parent': () => '',
+        'checkout --detach refs/remotes/origin/feat/parent': () => '',
         'show-ref --verify --quiet refs/heads/feat/child': () => '',
         'branch -D feat/child': () => '',
       });
@@ -541,13 +600,15 @@ describe('createGitBranchService', () => {
         base: 'feat/parent',
         deletedBranch: 'feat/child',
       });
-      expect(calls).toContainEqual([
-        '-C',
-        '/wt',
-        'fetch',
-        'origin',
-        '+refs/heads/feat/parent:refs/remotes/origin/feat/parent',
-      ]);
+      expect(calls.find((call) => call.includes('fetch'))).toEqual(
+        expect.arrayContaining([
+          '-C',
+          '/wt',
+          'fetch',
+          'origin',
+          '+refs/heads/feat/parent:refs/remotes/origin/feat/parent',
+        ]),
+      );
       expect(calls.some((c) => c.includes('origin/main'))).toBe(false);
     });
 
@@ -558,7 +619,7 @@ describe('createGitBranchService', () => {
         const { git, calls } = fakeGit({
           'rev-parse --abbrev-ref HEAD': () => `${on}\n`,
           'fetch origin +refs/heads/feat/parent:refs/remotes/origin/feat/parent': () => '',
-          'checkout -f --detach refs/remotes/origin/feat/parent': () => '',
+          'checkout --detach refs/remotes/origin/feat/parent': () => '',
         });
         const svc = createGitBranchService({ repoDir: '/repo', git });
         expect(await svc.resetToMergedBase('/wt', { base: 'feat/parent' })).toEqual({
@@ -592,7 +653,7 @@ describe('createGitBranchService', () => {
         const { git, calls } = fakeGit({
           'rev-parse --abbrev-ref HEAD': () => 'feat/child\n',
           [`fetch origin +refs/heads/${base}:refs/remotes/origin/${base}`]: () => '',
-          [`checkout -f --detach refs/remotes/origin/${base}`]: () => '',
+          [`checkout --detach refs/remotes/origin/${base}`]: () => '',
           'show-ref --verify --quiet refs/heads/feat/child': () => '',
           'branch -D feat/child': () => '',
         });
@@ -602,13 +663,15 @@ describe('createGitBranchService', () => {
           base,
           deletedBranch: 'feat/child',
         });
-        expect(calls).toContainEqual([
-          '-C',
-          '/wt',
-          'fetch',
-          'origin',
-          `+refs/heads/${base}:refs/remotes/origin/${base}`,
-        ]);
+        expect(calls.find((call) => call.includes('fetch'))).toEqual(
+          expect.arrayContaining([
+            '-C',
+            '/wt',
+            'fetch',
+            'origin',
+            `+refs/heads/${base}:refs/remotes/origin/${base}`,
+          ]),
+        );
       }
     });
 
@@ -616,7 +679,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'main\n',
         'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
-        'checkout -f --detach refs/remotes/origin/main': () => '',
+        'checkout --detach refs/remotes/origin/main': () => '',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.resetToMergedBase('/wt')).toEqual({ base: 'main' });
@@ -627,13 +690,41 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'a1b2c3d\n', // a short SHA, not a branch
         'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
-        'checkout -f --detach refs/remotes/origin/main': () => '',
+        'checkout --detach refs/remotes/origin/main': () => '',
         // branchExists(feature) — show-ref finds no such local ref (non-zero exit).
         'show-ref --verify --quiet refs/heads/a1b2c3d': fails(),
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.resetToMergedBase('/wt')).toEqual({ base: 'main' });
       expect(calls.some((c) => c.includes('branch') && c.includes('-D'))).toBe(false);
+    });
+
+    it('leaves a worktree untouched when tracked changes appear before reset', async () => {
+      const { git, calls } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'feat/live\n',
+        'show-ref --verify --quiet refs/heads/feat/live': () => '',
+        'rev-parse refs/heads/feat/live': () => 'a'.repeat(40),
+        'status --porcelain --untracked-files=no': () => ' M src/live.ts\n',
+      });
+      const svc = createGitBranchService({ repoDir: '/repo', git });
+      await expect(svc.resetToMergedBase('/wt')).resolves.toEqual({ base: 'main' });
+      expect(calls.some((call) => call.includes('fetch'))).toBe(false);
+      expect(calls.some((call) => call.includes('checkout'))).toBe(false);
+    });
+
+    it('does not report deletion when the merged branch moves during compare-delete', async () => {
+      const original = 'a'.repeat(40);
+      const { git } = fakeGit({
+        'rev-parse --abbrev-ref HEAD': () => 'feat/live\n',
+        'show-ref --verify --quiet refs/heads/feat/live': () => '',
+        'rev-parse refs/heads/feat/live': () => original,
+        'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
+        'checkout --detach refs/remotes/origin/main': () => '',
+        'update-ref -d refs/heads/feat/live': fails(),
+        'rev-parse --verify refs/heads/feat/live': () => 'b'.repeat(40),
+      });
+      const svc = createGitBranchService({ repoDir: '/repo', git });
+      await expect(svc.resetToMergedBase('/wt')).resolves.toEqual({ base: 'main' });
     });
   });
 

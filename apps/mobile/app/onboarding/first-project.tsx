@@ -1,7 +1,7 @@
 import { VerityApiError, type VerityClient, type ProjectRecord } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold';
@@ -59,6 +59,13 @@ function FirstProjectStep({ client }: { client: VerityClient }) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
 
   const selected = useMemo(
     () => projects.find((project) => project.id === selectedId) ?? projects[0] ?? null,
@@ -93,13 +100,15 @@ function FirstProjectStep({ client }: { client: VerityClient }) {
 
   const waitForActive = async (projectId: string): Promise<void> => {
     for (let attempt = 0; attempt < MAX_POLLS; attempt += 1) {
+      if (!mounted.current) throw new Error('Provisioning view closed.');
       const detail = await client.getProject(projectId);
       const project = detail.project;
       if (project.state === 'active') return;
       if (project.state === 'failed') {
         throw new Error(project.provisionError ?? 'Project provisioning failed.');
       }
-      setPhase({ kind: 'provisioning', message: statusMessage(project.state) });
+      if (mounted.current)
+        setPhase({ kind: 'provisioning', message: statusMessage(project.state) });
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
     throw new Error(
@@ -110,13 +119,46 @@ function FirstProjectStep({ client }: { client: VerityClient }) {
   const provisionSelected = () => {
     if (busy || selected === null) return;
     setPhase({ kind: 'provisioning', message: 'Starting project container...' });
+    const run = (projectId: string, confirmWarnings = false): void => {
+      void client
+        .repairProject(projectId, { confirmWarnings })
+        .then((project) => {
+          if (project.state === 'active') return undefined;
+          return waitForActive(project.id);
+        })
+        .then(() => {
+          if (mounted.current) router.replace(DONE_HREF);
+        })
+        .catch((caught) => {
+          if (!mounted.current) return;
+          if (
+            caught instanceof VerityApiError &&
+            caught.requiresConfirmation &&
+            caught.warnings.length > 0
+          ) {
+            setPhase({ kind: 'selecting' });
+            Alert.alert('Review project warning', caught.warnings.join('\n\n'), [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Continue', onPress: () => run(projectId, true) },
+            ]);
+            return;
+          }
+          if (needsUnlock(caught)) {
+            router.replace(unlockRoute());
+            return;
+          }
+          setPhase({
+            kind: 'error',
+            message: caught instanceof Error ? caught.message : 'Could not create the project.',
+          });
+        });
+    };
     void client
-      .repairProject(selected.id, { confirmWarnings: true })
-      .then((project) => {
-        if (project.state === 'active') return undefined;
-        return waitForActive(project.id);
-      })
-      .then(() => router.replace(DONE_HREF))
+      // Available repositories are discovery records, not projects owned by this
+      // installation yet. Create the project first; repairing the discovery id
+      // either 404s or can target an unrelated pre-existing project.
+      .createProject({ repo: repoName(selected) })
+      .then((created) => run(created.id))
       .catch((caught) => {
         if (needsUnlock(caught)) {
           router.replace(unlockRoute());

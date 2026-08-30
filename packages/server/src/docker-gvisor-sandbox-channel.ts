@@ -75,9 +75,12 @@ export interface DockerGvisorSandboxChannelOptions {
   /** Injectable attach opener (defaults to {@link openDockerUnixAttach}); tests supply an in-memory
    * duplex bridged to a worker runtime. */
   openAttach?: (input: { containerId: string; signal?: AbortSignal }) => Promise<AttachedDuplex>;
-  /** The channel authenticator forwarded to the driver (issues the challenge, verifies the proof).
-   * Omit for a fresh per-session default; injected in tests to fix the clock. */
-  authenticator?: ReturnType<typeof createSecretWorkerChannelAuthenticator>;
+  /** Optional deterministic authenticator inputs for tests. The channel always constructs the
+   * authenticator itself so successful proof verification cannot bypass recipient-key registration. */
+  authenticatorOptions?: Omit<
+    NonNullable<Parameters<typeof createSecretWorkerChannelAuthenticator>[0]>,
+    'onAuthenticatedRecipient'
+  >;
   /** Secret-free terminal observer for integration diagnostics. Payloads and error messages are
    * deliberately excluded; callers can distinguish a validated worker result from a protocol/job
    * fault without gaining access to secret-bearing context. */
@@ -171,12 +174,11 @@ export function createDockerGvisorSandboxChannel(
   options: DockerGvisorSandboxChannelOptions,
 ): GvisorSandboxChannel {
   const now = options.now ?? (() => new Date());
-  const authenticator =
-    options.authenticator ??
-    createSecretWorkerChannelAuthenticator({
-      now,
-      onAuthenticatedRecipient: (recipient) => options.recipientKeys.register(recipient),
-    });
+  const authenticator = createSecretWorkerChannelAuthenticator({
+    ...options.authenticatorOptions,
+    now: options.authenticatorOptions?.now ?? now,
+    onAuthenticatedRecipient: (recipient) => options.recipientKeys.register(recipient),
+  });
   const openAttach =
     options.openAttach ??
     ((input) =>

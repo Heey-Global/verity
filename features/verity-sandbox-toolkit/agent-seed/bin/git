@@ -47,6 +47,7 @@ fi
 
 args=("$@")
 n=${#args[@]}
+effective_cwd="$PWD"
 
 # --- find the subcommand, skipping git's global options ----------------------
 # Global options that consume the following argument when given separately.
@@ -58,7 +59,21 @@ subidx=-1
 while [ "$i" -lt "$n" ]; do
   a="${args[$i]}"
   case "$a" in
-    -C | -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env)
+    -C)
+      next="${args[$((i + 1))]:-}"
+      if [[ "$next" = /* ]]; then effective_cwd="$next"; else effective_cwd="$effective_cwd/$next"; fi
+      effective_cwd="$(realpath -m -- "$effective_cwd" 2>/dev/null || printf '%s' "$effective_cwd")"
+      i=$((i + 2))
+      continue
+      ;;
+    -C?*)
+      next="${a#-C}"
+      if [[ "$next" = /* ]]; then effective_cwd="$next"; else effective_cwd="$effective_cwd/$next"; fi
+      effective_cwd="$(realpath -m -- "$effective_cwd" 2>/dev/null || printf '%s' "$effective_cwd")"
+      i=$((i + 1))
+      continue
+      ;;
+    -c | --git-dir | --work-tree | --namespace | --super-prefix | --config-env)
       i=$((i + 2))
       continue
       ;;
@@ -144,6 +159,7 @@ fi
 resolve() {
   local p="$1"
   [ -z "$p" ] && return 0
+  if [[ "$p" != /* ]]; then p="$effective_cwd/$p"; fi
   if command -v realpath >/dev/null 2>&1; then
     realpath -m -- "$p" 2>/dev/null || printf '%s' "$p"
   else
@@ -152,7 +168,8 @@ resolve() {
 }
 
 # The worktree we are currently standing in (deployment-independent self-check).
-current="$("$REAL_GIT" rev-parse --show-toplevel 2>/dev/null || true)"
+global_args=("${args[@]:0:$subidx}")
+current="$("$REAL_GIT" "${global_args[@]}" rev-parse --show-toplevel 2>/dev/null || true)"
 current="$(resolve "$current")"
 
 for t in "${targets[@]}"; do

@@ -69,6 +69,23 @@ describe('resolvePushResponse', () => {
     ).toBeNull();
   });
 
+  it('refuses a text reply for non-question notifications', () => {
+    expect(
+      resolvePushResponse({
+        actionIdentifier: PUSH_ACTION.reply,
+        payload: { sessionId: 's1', kind: 'completed' },
+        userText: 'unexpected reply',
+      }),
+    ).toBeNull();
+    expect(
+      resolvePushResponse({
+        actionIdentifier: PUSH_ACTION.reply,
+        payload: permission,
+        userText: 'unexpected reply',
+      }),
+    ).toBeNull();
+  });
+
   it('returns null for an unknown action', () => {
     expect(
       resolvePushResponse({ actionIdentifier: 'SOMETHING_ELSE', payload: permission }),
@@ -132,6 +149,19 @@ describe('createPushReplyPerformer', () => {
     expect(sendTurn).toHaveBeenCalledWith('s1', { prompt: 'hi', clientReplyId: 'reply-9' });
   });
 
+  it('retries a busy send-turn conflict because its client reply id is idempotent', async () => {
+    const sendTurn = vi.fn().mockRejectedValue(new VerityApiError(409, 'session busy'));
+    const perform = createPushReplyPerformer({
+      decidePermission: vi.fn(),
+      sendTurn,
+      mergePullRequest: vi.fn(),
+    });
+    expect(await perform({ type: 'send-turn', sessionId: 's1', prompt: 'hi' }, 'reply-9')).toBe(
+      'retry',
+    );
+    expect(sendTurn).toHaveBeenCalledWith('s1', { prompt: 'hi', clientReplyId: 'reply-9' });
+  });
+
   it('treats a 4xx (already resolved) as stale — drop, do not retry', async () => {
     const settled = vi.fn();
     const statusChanged = vi.fn();
@@ -184,6 +214,19 @@ describe('createPushReplyPerformer', () => {
       });
       expect(await perform(permissionAction, 'r1')).toBe('retry');
     }
+  });
+
+  it('settles a permission locally when the server reports it missing', async () => {
+    const settled = vi.fn();
+    const unsubscribe = subscribeSettledPermissions(settled);
+    const perform = createPushReplyPerformer({
+      decidePermission: vi.fn().mockRejectedValue(new VerityApiError(404, 'not pending')),
+      sendTurn: vi.fn(),
+      mergePullRequest: vi.fn(),
+    });
+    expect(await perform(permissionAction, 'r1')).toBe('stale');
+    expect(settled).toHaveBeenCalledWith('s1', 't1');
+    unsubscribe();
   });
 
   it('reports open-session as done without touching the network', async () => {

@@ -19,7 +19,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function brokeredGrantTarget(
   toolName: BrokeredGrantToolName,
   input: Record<string, unknown> | undefined,
-): { secretAlias: string; toolName: BrokeredGrantToolName; target: string } | undefined {
+):
+  | {
+      secretAlias: string;
+      secretAliases: readonly string[];
+      toolName: BrokeredGrantToolName;
+      target: string;
+    }
+  | undefined {
   if (input === undefined) return undefined;
   if (toolName === 'verity_secret_run') {
     const secrets = input['secrets'];
@@ -68,8 +75,9 @@ export function brokeredGrantTarget(
       command[1] !== path
     )
       return undefined;
+    const validMappings = secretMappings.filter((mapping) => mapping !== undefined);
     const commandTokens = command as string[];
-    const sortedMappings = [...secretMappings].sort((left, right) =>
+    const sortedMappings = validMappings.sort((left, right) =>
       canonicalJson(left).localeCompare(canonicalJson(right)),
     );
     const descriptor = createHash('sha256')
@@ -83,6 +91,7 @@ export function brokeredGrantTarget(
       .digest('hex');
     return {
       secretAlias: sortedMappings[0]!.secretAlias,
+      secretAliases: [...new Set(sortedMappings.map((mapping) => mapping.secretAlias))],
       toolName,
       target: `v1:${String(command[0])}#${descriptor}`,
     };
@@ -108,9 +117,14 @@ export function brokeredGrantTarget(
           }),
         )
         .digest('hex');
-      return { secretAlias, toolName, target: `${host}#jwt:${descriptor}` };
+      return {
+        secretAlias,
+        secretAliases: [secretAlias],
+        toolName,
+        target: `${host}#jwt:${descriptor}`,
+      };
     }
-    return { secretAlias, toolName, target: host };
+    return { secretAlias, secretAliases: [secretAlias], toolName, target: host };
   } catch {
     return undefined;
   }

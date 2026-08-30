@@ -21,9 +21,8 @@ beforeEach(async () => {
 afterEach(async () => truncateAll(ctx.db));
 afterAll(async () => ctx.close());
 
-// The attested native relay, which is where every grant below is approved and redeemed
-// unless a test says otherwise. ADR 0014's ceiling applies to `acp` only, so `native`
-// is also the control: it shows the ceiling changed nothing on the shipped path.
+// ACP is the only live grant channel. The former native channel is rejected by the
+// shared event schema before it can reach this store.
 const target = {
   projectId: 'project-1',
   bindingId: 'project-doppler:test-binding',

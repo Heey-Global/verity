@@ -181,7 +181,21 @@ export class PreviewShareManager {
       pinHash,
       durationSeconds: input.ttlSeconds,
     });
-    const shareId = validShareId(binding.shareId);
+    let shareId: string;
+    try {
+      shareId = validShareId(binding.shareId);
+    } catch (error) {
+      // Even a contract-violating id is the only handle for the object the Uplink
+      // just created. Revoke bounded strings before rejecting the response.
+      if (
+        typeof binding.shareId === 'string' &&
+        binding.shareId.length > 0 &&
+        binding.shareId.length <= 256
+      ) {
+        await this.options.edge.remove(binding.shareId).catch(() => undefined);
+      }
+      throw error;
+    }
     let connectorToken: string;
     let sessionSecret: string;
     let publicOrigin: string;
@@ -275,6 +289,10 @@ export class PreviewShareManager {
     this.creations.set(shareId, creationFinished);
     try {
       this.assertEdgeAvailable();
+      // External calls above leave a race window after the initial path check.
+      // Revalidate at the mount boundary so a swapped ancestor cannot be handed
+      // to Docker as the connector's static source.
+      if (staticPath) await this.validateStaticDirectory(project, staticPath);
       connectorId = await this.createConnector(
         record,
         project.containerName,

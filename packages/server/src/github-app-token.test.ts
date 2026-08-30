@@ -98,11 +98,11 @@ describe('createGitHubAppProjectTokenMint', () => {
         now: () => 1_700_000_000_000,
       });
 
-      await expect(mint({ owner: 'Heey-Global', repo: 'deep-ocr' })).resolves.toBe('ghs_project');
+      await expect(mint({ owner: 'Example-Org', repo: 'sample-app' })).resolves.toBe('ghs_project');
       expect(calls).toHaveLength(1);
       expect(calls[0]?.url).toBe('https://github.example/api/app/installations/456/access_tokens');
       expect(calls[0]?.headers?.Authorization).toMatch(/^Bearer [^.]+\.[^.]+\.[^.]+$/);
-      expect(calls[0]?.body).toBe(JSON.stringify({ repositories: ['deep-ocr'] }));
+      expect(calls[0]?.body).toBe(JSON.stringify({ repositories: ['sample-app'] }));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -205,7 +205,7 @@ describe('createGitHubAppProjectTokenMint', () => {
         fetch,
       });
 
-      await expect(mint({ owner: 'Heey-Global', repo: 'deep-ocr' })).rejects.toThrow(
+      await expect(mint({ owner: 'Example-Org', repo: 'sample-app' })).rejects.toThrow(
         'GitHub App token mint failed: HTTP 403',
       );
     } finally {
@@ -224,7 +224,7 @@ describe('createGitHubAppProjectTokenMint', () => {
         fetch,
       });
 
-      await expect(mint({ owner: 'Heey-Global', repo: 'deep-ocr' })).resolves.toBeUndefined();
+      await expect(mint({ owner: 'Example-Org', repo: 'sample-app' })).resolves.toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -399,9 +399,34 @@ describe('createCachedProjectTokenMint', () => {
     await expect(b).resolves.toBe('ghs_shared');
     expect(mints).toBe(1); // only ONE mint despite two concurrent callers
   });
+
+  it('keeps authority-key failures inside the nonthrowing boundary', async () => {
+    let calls = 0;
+    const mint = async () => {
+      calls += 1;
+      return 'token';
+    };
+    const cached = createCachedProjectTokenMint(mint, {
+      authorityKey: async () => Promise.reject(new Error('sealed')),
+    });
+    await expect(cached(R)).resolves.toBeUndefined();
+    expect(calls).toBe(0);
+  });
 });
 
 describe('createCachedInstallationTokenMint', () => {
+  it('keeps authority-key failures inside the nonthrowing boundary', async () => {
+    let calls = 0;
+    const mint = async () => {
+      calls += 1;
+      return 'token';
+    };
+    const cached = createCachedInstallationTokenMint(mint, {
+      authorityKey: async () => Promise.reject(new Error('sealed')),
+    });
+    await expect(cached()).resolves.toBeUndefined();
+    expect(calls).toBe(0);
+  });
   it('memoizes a successful installation token and single-flights concurrent calls', async () => {
     let calls = 0;
     let resolve!: (value: string) => void;

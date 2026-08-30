@@ -91,11 +91,12 @@ function passingSecretScan(): string {
 
 function runHook(
   cwd: string,
-  opts: { path?: string; env?: Record<string, string> } = {},
+  opts: { path?: string; env?: Record<string, string>; input?: string } = {},
 ): ReturnType<typeof spawnSync> {
   return spawnSync(hook, [], {
     cwd,
     encoding: 'utf8',
+    input: opts.input,
     env: { ...process.env, ...hermeticGit, PATH: opts.path ?? process.env.PATH, ...opts.env },
   });
 }
@@ -267,6 +268,29 @@ describe('pre-push review gate message', () => {
     // Not just "exit 0": an early exit added anywhere before the marker check
     // would keep this green without the marker ever being consulted.
     expect(result.stderr).not.toContain('code review required');
+  });
+
+  it('reviews the local SHA being pushed rather than the checked-out HEAD', () => {
+    const repo = emptyRepo();
+    const base = commit(repo, 'base');
+    git(['-C', repo, 'branch', 'review-base', base]);
+    const pushed = commit(repo, 'work on other ref');
+    git(['-C', repo, 'branch', 'other', pushed]);
+    git(['-C', repo, 'reset', '--hard', base]);
+    mkdirSync(join(repo, '.agents'));
+    writeFileSync(join(repo, '.agents/.last-code-review-sha'), `${base}\n`);
+
+    const result = runHook(repo, {
+      input: `refs/heads/other ${pushed} refs/heads/other ${'0'.repeat(40)}\n`,
+      env: {
+        VERITY_SECRET_SCAN_BIN: passingSecretScan(),
+        VERITY_CODE_REVIEW_BASE_REF: 'review-base',
+      },
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('pre-push code review required');
+    expect(result.stderr).toContain(pushed);
   });
 });
 

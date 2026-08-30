@@ -321,6 +321,25 @@ describe('release audit against the registry', () => {
     expect(seen[2]).toBe('/v2/x/tags/list?n=1000&page=2 Bearer');
   });
 
+  it('selects rel=next from multiple RFC Link values and accepts an absolute target', async () => {
+    const base = await serve((url) => {
+      if (url.pathname === '/token') return { status: 200, body: { token: 'pull-token' } };
+      if (url.searchParams.get('page') === '2') {
+        return { status: 200, body: { tags: ['v13.2.13'] } };
+      }
+      return {
+        status: 200,
+        body: { tags: ['v13.2.12'] },
+        link:
+          `</v2/x/tags/list?n=1000&page=0>; rel="prev"; title="old, page", ` +
+          `<${base}/v2/x/tags/list?n=1000&page=2>; type="application/json"; rel="last next"`,
+      };
+    });
+    await expect(
+      fetchTagCatalogue({ repository: 'x', token: 't', registry: base }),
+    ).resolves.toEqual(new Set(['v13.2.12', 'v13.2.13']));
+  });
+
   it('fails on a refusal rather than reading it as an absent image', async () => {
     // The trap #1561 was written to close, in its other form. A 401 from an
     // expired token and a 200 with no tags are the same sentence to `docker pull`

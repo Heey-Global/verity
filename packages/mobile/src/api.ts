@@ -237,6 +237,7 @@ export const issueSummarySchema = z.object({
   title: z.string(),
   body: z.string(),
   url: z.string(),
+  projectId: z.string().nullable().optional(),
 });
 export type IssueSummary = z.infer<typeof issueSummarySchema>;
 
@@ -261,6 +262,7 @@ export const taskItemSchema = z.object({
   state: z.string().nullable(),
   contentId: z.string().nullable(),
   fields: z.array(taskFieldValueSchema),
+  projectId: z.string().nullable().optional(),
 });
 export type TaskItem = z.infer<typeof taskItemSchema>;
 /** A board field DEFINITION (id + name + single-select options), so a picker can offer
@@ -1525,6 +1527,9 @@ export interface VerityClientOptions {
    *  inject `expo/fetch`, which streams `expo-file-system` File instances without
    *  coercing them through React Native's legacy fetch bridge. */
   uploadFetch?: typeof fetch;
+  /** Allow platform background-upload objects to bypass `uploadFetch`. Disable
+   * this when `uploadFetch` enforces transport security such as certificate pinning. */
+  allowBackgroundUpload?: boolean;
   /** Supplies the current per-device bearer token for the `Authorization` header
    *  (audit C1). Called PER REQUEST so a token minted or rotated after the client
    *  was constructed is picked up without rebuilding it. Return null/undefined
@@ -1573,6 +1578,25 @@ export const secretUnlockedSchema = z.object({
 });
 export type SecretUnlocked = z.infer<typeof secretUnlockedSchema>;
 
+export const pairingIdentitySchema = z.object({
+  serverId: z.string().min(16).max(128),
+  identityKey: z.string().min(40).max(128),
+  signature: z.string().min(40).max(128),
+});
+export type PairingIdentity = z.infer<typeof pairingIdentitySchema>;
+
+export const pairingRedeemedSchema = z.object({
+  bootstrapToken: z.string().min(32).max(128),
+  expiresAt: z.string().datetime(),
+});
+export type PairingRedeemed = z.infer<typeof pairingRedeemedSchema>;
+
+const streamTicketSchema = z.object({
+  ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+  expiresAt: z.string().datetime(),
+});
+export type StreamTicket = z.infer<typeof streamTicketSchema>;
+
 export interface MobileScrollDiagnostic {
   event: string;
   seq: number;
@@ -1584,6 +1608,7 @@ export class VerityClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly uploadFetchImpl: typeof fetch;
+  private readonly allowBackgroundUpload: boolean;
   private readonly getToken: () => string | null | undefined;
   private readonly onUnauthorized: (() => void) | undefined;
 
@@ -1591,6 +1616,7 @@ export class VerityClient {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.fetchImpl = opts.fetch ?? fetch;
     this.uploadFetchImpl = opts.uploadFetch ?? this.fetchImpl;
+    this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.onUnauthorized = opts.onUnauthorized;
   }
@@ -1982,14 +2008,39 @@ export class VerityClient {
     return onboardingStatusSchema.parse(await res.json());
   }
 
+  /** Challenge the stable server identity through the already pinned transport. */
+  async fetchPairingIdentity(challenge: string): Promise<PairingIdentity> {
+    const res = await this.request(`/pair/identity?challenge=${encodeURIComponent(challenge)}`, {
+      method: 'GET',
+    });
+    return pairingIdentitySchema.parse(await res.json());
+  }
+
+  /** Exchange the installer secret for the short-lived, one-use password bootstrap. */
+  async redeemPairingCode(code: string): Promise<PairingRedeemed> {
+    const res = await this.request('/pair/redeem', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    return pairingRedeemedSchema.parse(await res.json());
+  }
+
   /** First-run: set the master password (derives + stores the key, unlocks) and
    *  enroll this device — the response carries a per-device bearer token to store
    *  (audit C1). `deviceLabel` names the device in the server's token registry.
    *  Throws {@link VerityApiError} with status 409 if already set/unlocked. */
-  async initSecretPassword(password: string, deviceLabel?: string): Promise<SecretUnlocked> {
+  async initSecretPassword(
+    password: string,
+    deviceLabel?: string,
+    pairingBootstrap?: string,
+  ): Promise<SecretUnlocked> {
     const res = await this.request('/secret/init', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(pairingBootstrap ? { 'x-verity-pairing': pairingBootstrap } : {}),
+      },
       body: JSON.stringify({ password, ...(deviceLabel ? { deviceLabel } : {}) }),
     });
     return secretUnlockedSchema.parse(await res.json());
@@ -1999,10 +2050,17 @@ export class VerityClient {
    *  this device — the response carries a per-device bearer token to store. Throws
    *  {@link VerityApiError} with status 401 on an incorrect password, or 429 when
    *  rate-limited after repeated wrong attempts. */
-  async unlockSecret(password: string, deviceLabel?: string): Promise<SecretUnlocked> {
+  async unlockSecret(
+    password: string,
+    deviceLabel?: string,
+    pairingBootstrap?: string,
+  ): Promise<SecretUnlocked> {
     const res = await this.request('/secret/unlock', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(pairingBootstrap ? { 'x-verity-pairing': pairingBootstrap } : {}),
+      },
       body: JSON.stringify({ password, ...(deviceLabel ? { deviceLabel } : {}) }),
     });
     return secretUnlockedSchema.parse(await res.json());
@@ -2020,8 +2078,12 @@ export class VerityClient {
   /** Mint the single-use token that authenticates the browser-opened manifest
    *  `start` flow (audit C1 follow-up). Call this authenticated endpoint first,
    *  then hang the returned `startToken` on the start URL as `?ott=`. */
-  async prepareGithubManifest(): Promise<string> {
-    const res = await this.request('/github/app/manifest/prepare', { method: 'POST' });
+  async prepareGithubManifest(baseUrl: string): Promise<string> {
+    const res = await this.request('/github/app/manifest/prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ baseUrl }),
+    });
     return manifestPrepareSchema.parse(await res.json()).startToken;
   }
 
@@ -2470,6 +2532,13 @@ export class VerityClient {
     return sessionDetailSchema.parse(await res.json());
   }
 
+  async createStreamTicket(id: string): Promise<StreamTicket> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/stream-ticket`, {
+      method: 'POST',
+    });
+    return streamTicketSchema.parse(await res.json());
+  }
+
   /** Lightweight live activity for a session (cheap to poll): whether a turn is
    * in flight (`busy`) and the prompts of any queued turns. Server-authoritative
    * so the "working" indicator + "waiting" messages survive navigation. */
@@ -2590,6 +2659,7 @@ export class VerityClient {
         : {}),
     };
     if (
+      this.allowBackgroundUpload &&
       typeof body.data === 'object' &&
       body.data !== null &&
       'upload' in body.data &&

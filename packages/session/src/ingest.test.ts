@@ -89,6 +89,10 @@ describe('SessionWriter (turn ingestion)', () => {
     await expect(ingest([textEvent('orphan')])).rejects.toThrow(/no session init/);
   });
 
+  it('throws if an empty turn ends without establishing a session', async () => {
+    await expect(ingest([])).rejects.toThrow(/no session init/);
+  });
+
   it('persists terminal resume errors into the known Verity session even without init', async () => {
     await ctx.store.createSession({
       sessionId: 'verity-session',

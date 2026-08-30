@@ -81,8 +81,10 @@ export function createStandbyFollower(deps: StandbyFollowerDeps): StandbyFollowe
           // Reported, not thrown: a resume usually fails because the successor
           // still holds the process lock, which is a retry rather than a fault.
           deps.onError?.(error);
-          step = 'failed';
-          reached = deps.lifecycle.state === 'quiesced' ? 'quiesced' : 'serving';
+          // A transition can fail after partially closing or binding listeners.
+          // Do not describe that unknown state as safely serving/quiesced; lack
+          // of acknowledgement makes the cutover retry or fall back.
+          return 'failed';
         }
       }
       // Acknowledged even when nothing moved, and even after a failure: the

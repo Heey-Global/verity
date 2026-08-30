@@ -61,6 +61,7 @@ export function buildManifest(base: string): Record<string, unknown> {
     public: false,
     default_permissions: {
       ...REQUIRED_GITHUB_APP_PERMISSIONS,
+      packages: 'read',
       metadata: 'read',
     },
     default_events: [],
@@ -98,17 +99,29 @@ export interface ManifestStateStoreOptions {
   now?: () => number;
   /** State lifetime in ms (default 15 min). */
   ttlMs?: number;
+  /** Maximum number of abandoned, unconsumed states retained in memory. */
+  maxStates?: number;
 }
 
 export function createManifestStateStore(opts: ManifestStateStoreOptions = {}): ManifestStateStore {
   const now = opts.now ?? ((): number => Date.now());
   const ttlMs = opts.ttlMs ?? 15 * 60 * 1000;
+  const maxStates = Math.max(1, opts.maxStates ?? 256);
   const entries = new Map<string, { createdAt: number }>();
 
   return {
     issueState(): string {
+      const issuedAt = now();
+      for (const [token, entry] of entries) {
+        if (issuedAt - entry.createdAt > ttlMs) entries.delete(token);
+      }
+      while (entries.size >= maxStates) {
+        const oldest = entries.keys().next().value;
+        if (oldest === undefined) break;
+        entries.delete(oldest);
+      }
       const token = randomBytes(32).toString('base64url');
-      entries.set(token, { createdAt: now() });
+      entries.set(token, { createdAt: issuedAt });
       return token;
     },
     consumeState(state: string): boolean {

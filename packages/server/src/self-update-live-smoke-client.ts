@@ -13,8 +13,8 @@
  * and holds, across a real generation change:
  *
  *   - long-lived WebSockets on `/sessions/:id/stream`, the one upgraded route,
- *     authenticated the way a device authenticates (a token minted by the master
- *     password, presented in the query string a handshake cannot put in a header);
+ *     authenticated the way a device authenticates (a device bearer exchanged over
+ *     HTTP for a one-use ticket carried as a WebSocket subprotocol);
  *   - HTTP requests whose bodies are still being written when maintenance begins,
  *     so the Gateway's `activeRequests` is non-zero at the moment the drain starts
  *     and the drain has something to actually wait for;
@@ -175,9 +175,8 @@ async function withDeadline<T>(work: Promise<T>, timeoutMs: number, message: str
 
 /**
  * A device token, minted the way the app mints one: prove the master password,
- * get a bearer back. The WebSocket route needs it in the query string, and the
- * in-flight requests need it in the header — a token that only works for one of
- * those would prove nothing about the other.
+ * get a bearer back. WebSocket setup exchanges it over authenticated HTTP for a
+ * one-use stream ticket; ordinary in-flight requests continue to use the header.
  */
 async function mintDeviceToken(password: string): Promise<string> {
   const response = await fetch(`${BASE_URL}/secret/unlock`, {
@@ -222,13 +221,19 @@ interface StreamCursor {
  * answers with a backlog and a `caught_up` watermark, so no session has to exist
  * for the connection to be a real, authenticated, Server-terminated WebSocket.
  */
-function hold(label: string, token: string, cursor: StreamCursor = {}): HeldSocket {
+async function hold(label: string, token: string, cursor: StreamCursor = {}): Promise<HeldSocket> {
   const sessionId = cursor.sessionId ?? `live-smoke-${label}`;
-  const since = cursor.sinceSeq === undefined ? '' : `&sinceSeq=${String(cursor.sinceSeq)}`;
-  const url =
-    `ws://${GATEWAY_HOST}:${String(GATEWAY_PORT)}/sessions/${sessionId}/stream` +
-    `?access_token=${encodeURIComponent(token)}${since}`;
-  const socket = new WebSocket(url);
+  const ticketResponse = await fetch(
+    `${BASE_URL}/sessions/${encodeURIComponent(sessionId)}/stream-ticket`,
+    { method: 'POST', headers: { authorization: `Bearer ${token}` } },
+  );
+  const ticketBody = (await ticketResponse.json()) as { ticket?: unknown };
+  if (!ticketResponse.ok || typeof ticketBody.ticket !== 'string') {
+    fail(`the Gateway would not mint a stream ticket (${String(ticketResponse.status)})`);
+  }
+  const since = cursor.sinceSeq === undefined ? '' : `?sinceSeq=${String(cursor.sinceSeq)}`;
+  const url = `ws://${GATEWAY_HOST}:${String(GATEWAY_PORT)}/sessions/${sessionId}/stream${since}`;
+  const socket = new WebSocket(url, `verity-stream-ticket.${ticketBody.ticket}`);
   const received: number[] = [];
   let announceCaughtUp: (seq: number) => void = () => undefined;
   const caughtUp = new Promise<number>((resolve) => {
@@ -639,7 +644,7 @@ async function runCatchupClient(token: string, deadlineAt: number): Promise<void
   const opened: HeldSocket[] = [];
   try {
     const before = await session.append('before the cutover', SEEDED_BEFORE_CUTOVER);
-    const stream = hold('catchup', token, { sessionId: session.sessionId, sinceSeq: 0 });
+    const stream = await hold('catchup', token, { sessionId: session.sessionId, sinceSeq: 0 });
     opened.push(stream);
     const watermark = await withDeadline(
       stream.caughtUp,
@@ -719,7 +724,7 @@ async function runCatchupClient(token: string, deadlineAt: number): Promise<void
     // Same URL, same token, same cursor, a generation that has never seen this
     // client. Everything written while it was away must arrive, and nothing it
     // already had may arrive again.
-    const resumed = hold('resumed', token, {
+    const resumed = await hold('resumed', token, {
       sessionId: session.sessionId,
       sinceSeq: watermark,
     });
@@ -778,7 +783,9 @@ async function main(): Promise<void> {
   }
 
   const held =
-    mode === 'polite' ? [hold('first', token), hold('second', token)] : [hold('held', token)];
+    mode === 'polite'
+      ? await Promise.all([hold('first', token), hold('second', token)])
+      : [await hold('held', token)];
   for (const socket of held) {
     await withDeadline(
       socket.caughtUp,
@@ -925,7 +932,7 @@ async function main(): Promise<void> {
   );
   report('broker-served-again', { afterMaintenanceMs: Date.now() - refusedAt });
 
-  const reconnected = hold('reconnect', token);
+  const reconnected = await hold('reconnect', token);
   await withDeadline(
     reconnected.caughtUp,
     ATTACH_TIMEOUT_MS,

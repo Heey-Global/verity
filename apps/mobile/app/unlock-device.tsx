@@ -1,16 +1,17 @@
 import { MasterPasswordRoute } from './onboarding/master-password';
-import { router, type Href, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { unlockAuthTokenWithBiometrics, unlockServerSecretWithBiometrics } from '../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
+import { safeReturnTo } from '../lib/safeReturnTo';
 
 export default function UnlockDevice() {
   const { theme } = useUnistyles();
   const params = useLocalSearchParams<{ returnTo?: string; serverSecret?: string }>();
-  const returnTo = safeReturnTo(params.returnTo);
+  const returnTo = safeReturnTo(params.returnTo, '/') ?? '/';
   const mustUnlockServerSecret = params.serverSecret === '1';
   const tryBiometricTokenUnlock = !mustUnlockServerSecret;
   const tryBiometricSecretUnlock = mustUnlockServerSecret;
@@ -60,14 +61,6 @@ export default function UnlockDevice() {
   }
 
   return <MasterPasswordRoute returnTo={returnTo} />;
-}
-
-function safeReturnTo(value: string | string[] | undefined): Href {
-  const candidate = Array.isArray(value) ? value[0] : value;
-  if (candidate === undefined || candidate.length === 0) return '/';
-  if (candidate === '/') return '/';
-  if (candidate.startsWith('/onboarding/')) return candidate as Href;
-  return '/';
 }
 
 const styles = StyleSheet.create(() => ({

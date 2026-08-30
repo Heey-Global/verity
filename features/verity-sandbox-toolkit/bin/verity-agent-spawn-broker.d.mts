@@ -75,6 +75,12 @@ export function trustedCliLaunchSpec(
     args: string[];
     cwd: string;
     secrets: { name: string; value: string; injection?: 'env' | 'file' }[];
+    entrySandbox?: {
+      root: string;
+      cwd: string;
+      loading: 'isolated' | 'dynamic';
+      dynamicRoot?: string;
+    };
   },
   options: AgentSpawnBrokerOptions,
 ): { command: string; args: string[]; spawnOptions: SpawnOptions };
@@ -132,6 +138,7 @@ export function materializeTrustedCliEntryScript(
     root: string;
     cwd: string;
     loading: 'isolated' | 'dynamic';
+    dynamicRoot?: string;
   };
   cleanup: () => Promise<boolean>;
 }>;

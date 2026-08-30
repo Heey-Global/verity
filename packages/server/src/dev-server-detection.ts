@@ -1,5 +1,6 @@
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { minimatch } from 'minimatch';
 
 const MAX_MANIFEST_BYTES = 1_000_000;
 const MAX_WORKSPACE_MANIFESTS = 200;
@@ -61,13 +62,11 @@ async function workspaceManifests(
   for (const pattern of await pnpmWorkspacePatterns(root)) patterns.add(pattern);
   const manifests: FoundManifest[] = [{ path: join(root, 'package.json'), manifest: rootManifest }];
 
-  for (const pattern of patterns) {
-    for (const dir of await expandWorkspacePattern(root, pattern)) {
-      if (manifests.length >= MAX_WORKSPACE_MANIFESTS) break;
-      const path = join(dir, 'package.json');
-      const manifest = await readManifest(path);
-      if (manifest) manifests.push({ path, manifest });
-    }
+  for (const dir of await expandWorkspacePatterns(root, [...patterns])) {
+    if (manifests.length >= MAX_WORKSPACE_MANIFESTS) break;
+    const path = join(dir, 'package.json');
+    const manifest = await readManifest(path);
+    if (manifest) manifests.push({ path, manifest });
   }
   return manifests;
 }
@@ -203,41 +202,41 @@ async function pnpmWorkspacePatterns(root: string): Promise<string[]> {
   }
 }
 
-async function expandWorkspacePattern(root: string, rawPattern: string): Promise<string[]> {
-  const pattern = rawPattern.replace(/^\.\//, '').replace(/\/$/, '');
-  if (!pattern || pattern.startsWith('/') || pattern.split('/').includes('..')) return [];
-  const segments = pattern.split('/');
+async function expandWorkspacePatterns(root: string, rawPatterns: string[]): Promise<string[]> {
+  const patterns = rawPatterns.flatMap((rawPattern) => {
+    const negated = rawPattern.startsWith('!');
+    const pattern = rawPattern
+      .slice(negated ? 1 : 0)
+      .replace(/^\.\//, '')
+      .replace(/\/$/, '');
+    if (!pattern || pattern.startsWith('/') || pattern.split('/').includes('..')) return [];
+    return [{ pattern, negated }];
+  });
+  if (!patterns.some(({ negated }) => !negated)) return [];
   const found: string[] = [];
   let visitedDirectories = 0;
 
-  const visit = async (dir: string, index: number): Promise<void> => {
+  const visit = async (dir: string): Promise<void> => {
     const depth = relative(root, dir).split(sep).filter(Boolean).length;
-    if (
-      found.length >= MAX_WORKSPACE_MANIFESTS ||
-      visitedDirectories++ >= MAX_VISITED_DIRECTORIES ||
-      depth > MAX_WORKSPACE_DEPTH
-    )
-      return;
-    if (index === segments.length) {
-      found.push(dir);
-      return;
+    if (found.length >= MAX_WORKSPACE_MANIFESTS || depth > MAX_WORKSPACE_DEPTH) return;
+    if (depth > 0) {
+      const candidate = relative(root, dir).split(sep).join('/');
+      let included = false;
+      for (const { pattern, negated } of patterns) {
+        if (minimatch(candidate, pattern, { dot: false, nonegate: true })) included = !negated;
+      }
+      if (included) found.push(dir);
+      const canContainWorkspace = patterns.some(
+        ({ pattern, negated }) =>
+          !negated && minimatch(candidate, pattern, { dot: false, nonegate: true, partial: true }),
+      );
+      if (!canContainWorkspace) return;
     }
-    const segment = segments[index]!;
-    if (segment !== '*' && segment !== '**') {
-      const next = join(dir, segment);
-      if (isInside(root, next) && (await isRealDirectory(next))) await visit(next, index + 1);
-      return;
-    }
-    const entries = await safeDirectories(dir);
-    if (segment === '**') {
-      await visit(dir, index + 1);
-      for (const entry of entries) await visit(join(dir, entry), index);
-      return;
-    }
-    for (const entry of entries) await visit(join(dir, entry), index + 1);
+    if (visitedDirectories++ >= MAX_VISITED_DIRECTORIES) return;
+    for (const entry of await safeDirectories(dir)) await visit(join(dir, entry));
   };
 
-  await visit(root, 0);
+  await visit(root);
   return found;
 }
 
@@ -258,20 +257,6 @@ async function safeDirectories(dir: string): Promise<string[]> {
   } catch {
     return [];
   }
-}
-
-async function isRealDirectory(path: string): Promise<boolean> {
-  try {
-    const stat = await lstat(path);
-    return stat.isDirectory() && !stat.isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
-function isInside(root: string, candidate: string): boolean {
-  const rel = relative(root, resolve(candidate));
-  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !rel.startsWith(sep));
 }
 
 async function lockfilePackageManager(dir: string): Promise<'npm' | 'pnpm' | 'yarn' | null> {

@@ -282,7 +282,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
       <CenteredMessage
         title="Couldn't load project"
         subtitle={error ?? 'Unknown error'}
-        onRetry={load}
+        onRetry={() => load()}
       />
     );
   }
@@ -305,7 +305,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
   return (
     <View style={styles.flex}>
       <Stack.Screen options={{ title }} />
-      {error ? <StaleBanner message={error} onRetry={load} /> : null}
+      {error ? <StaleBanner message={error} onRetry={() => load()} /> : null}
       <ProjectTabs
         active={activeTab}
         creating={creatingLoop}
@@ -1549,32 +1549,36 @@ function DevServersSection({
     const run = (): void => {
       setSaving(true);
       setError(undefined);
+      let projectWasStopped = false;
+      let serverWasStopped = false;
       void (async () => {
-        let projectWasRestarted = false;
         if (needsContainerRestart) {
           const stopped = await client.deprovisionProject(project.id, { purge: false });
           onUpdated(stopped);
-          projectWasRestarted = true;
+          projectWasStopped = true;
         } else if (
           editing !== 'new' &&
           editing.running &&
           (editing.command !== body.command || editing.workdir !== body.workdir)
         ) {
           await client.stopDevServer(editing.id);
+          serverWasStopped = true;
         }
         const server =
           editing === 'new'
             ? await client.createDevServer(project.id, { ...body, autoStart: true })
             : await client.updateDevServer(editing.id, body);
-        if (projectWasRestarted) {
+        if (projectWasStopped) {
           const queued = await client.repairProject(project.id);
           onUpdated(queued);
+          projectWasStopped = false;
         } else if (
           editing !== 'new' &&
           editing.running &&
           (editing.command !== body.command || editing.workdir !== body.workdir)
         ) {
           await client.startDevServer(editing.id);
+          serverWasStopped = false;
         }
         setServers((current) => {
           const found = current.some((candidate) => candidate.id === server.id);
@@ -1584,9 +1588,18 @@ function DevServersSection({
         });
         setEditing(null);
       })()
-        .catch((caught) =>
-          setError(caught instanceof VerityApiError ? caught.message : 'Could not save Dev Server'),
-        )
+        .catch(async (caught) => {
+          // Restore the prior running state when a later mutation fails. Recovery
+          // is best-effort and deliberately precedes surfacing the original error.
+          try {
+            if (projectWasStopped) onUpdated(await client.repairProject(project.id));
+            else if (serverWasStopped && editing !== 'new') await client.startDevServer(editing.id);
+          } catch {
+            // The next refresh exposes the still-stopped state; retain the primary
+            // save failure because it is the actionable cause.
+          }
+          setError(caught instanceof VerityApiError ? caught.message : 'Could not save Dev Server');
+        })
         .finally(() => setSaving(false));
     };
     if (needsContainerRestart) {

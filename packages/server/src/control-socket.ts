@@ -177,7 +177,7 @@ export function listenUnix(server: Server, socketPath: string): Promise<void> {
     server.once('error', reject);
     server.listen(socketPath, () => {
       server.off('error', reject);
-      resolve();
+      void chmod(socketPath, 0o600).then(() => resolve(), reject);
     });
   });
 }

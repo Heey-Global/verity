@@ -3,6 +3,18 @@ import type { ExpoConfig } from 'expo/config';
 // The official Verity EAS project ID is public configuration. Forks can point
 // their builds at a different Expo project without editing this file.
 const expoProjectId = process.env.EXPO_PROJECT_ID?.trim() || 'b38b4675-5fef-4eb5-bf4c-492c3e21e717';
+// OAuth client IDs are public application identifiers. Keep the official iOS
+// client reproducible in source; forks can override it alongside their bundle ID.
+const officialGoogleOAuthClientId =
+  '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com';
+const googleOAuthClientId = process.env.GOOGLE_AUTH_ID?.trim() || officialGoogleOAuthClientId;
+const googleOAuthClientPattern = /^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/;
+
+if (!googleOAuthClientPattern.test(googleOAuthClientId)) {
+  throw new Error('GOOGLE_AUTH_ID must be a Google iOS OAuth client ID');
+}
+
+const googleOAuthScheme = `com.googleusercontent.apps.${googleOAuthClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`;
 
 // Expo config (SDK 57). New Arch is forced by SDK 57 (no `newArchEnabled`
 // field). EAS Update checks on launch; eas.json binds each distributed build to
@@ -10,7 +22,9 @@ const expoProjectId = process.env.EXPO_PROJECT_ID?.trim() || 'b38b4675-5fef-4eb5
 const config: ExpoConfig = {
   name: 'Verity',
   slug: 'verity',
-  scheme: 'verity',
+  // The Google scheme must be registered in the native binary before its OAuth
+  // redirect can return from the system browser.
+  scheme: ['verity', googleOAuthScheme],
   version: '1.11.0', // x-release-please-version
   // iPad and iPad-on-Mac should adapt to the user's current window/device
   // orientation, especially with Magic Keyboard or Stage Manager. Phone layouts
@@ -68,8 +82,15 @@ const config: ExpoConfig = {
   web: { favicon: './assets/favicon.png' },
   plugins: [
     'expo-router',
+    [
+      'expo-camera',
+      {
+        cameraPermission: 'Allow Verity to scan a secure server pairing code.',
+        barcodeScannerEnabled: true,
+      },
+    ],
     // Secure, OS-keychain-backed storage for the per-device API bearer token
-    // (audit C1). Gated behind device biometrics/passcode at read time.
+    // (audit C1). Sensitive items use native keychain authentication at read time.
     'expo-secure-store',
     // Biometric unlock (Face ID / Touch ID) protecting the stored bearer token.
     // Sets the iOS NSFaceIDUsageDescription.

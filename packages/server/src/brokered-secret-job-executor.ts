@@ -82,7 +82,7 @@ export interface BrokeredSecretJobExecutorOptions {
    */
   seams?: {
     openAttach?: DockerGvisorSandboxChannelOptions['openAttach'];
-    authenticator?: DockerGvisorSandboxChannelOptions['authenticator'];
+    authenticatorOptions?: DockerGvisorSandboxChannelOptions['authenticatorOptions'];
     onTerminalOutcome?: DockerGvisorSandboxChannelOptions['onTerminalOutcome'];
     scheduleDeadline?: DockerGvisorSandboxLauncherOptions['scheduleDeadline'];
   };
@@ -119,7 +119,9 @@ export function createBrokeredSecretJobExecutor(
     redactorProfile: options.redactorProfile,
     recipientKeys: options.recipientKeys,
     ...(options.seams?.openAttach ? { openAttach: options.seams.openAttach } : {}),
-    ...(options.seams?.authenticator ? { authenticator: options.seams.authenticator } : {}),
+    ...(options.seams?.authenticatorOptions
+      ? { authenticatorOptions: options.seams.authenticatorOptions }
+      : {}),
     ...(options.seams?.onTerminalOutcome
       ? { onTerminalOutcome: options.seams.onTerminalOutcome }
       : {}),

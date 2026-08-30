@@ -168,10 +168,19 @@ function commandAvailable(command: string): boolean {
   return spawnSync('sh', ['-c', `command -v ${command}`], { stdio: 'ignore' }).status === 0;
 }
 
-function processEnvWithoutClaude(): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('CLAUDE_')),
-  );
+function agentLoginBaseEnv(): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    'PATH',
+    'LANG',
+    'LC_ALL',
+    'LC_CTYPE',
+    'TERM',
+    'TMPDIR',
+    'TZ',
+    // Test fixture control only; production does not set it.
+    'VERITY_FAKE_AGENT_LOGIN_MODE',
+  ]);
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => allowed.has(key)));
 }
 
 function readCodexAuthJson(session: LoginSession): string | null {
@@ -247,13 +256,15 @@ function markFromOutput(session: LoginSession): void {
 
 export function createProcessAgentLoginService(options: {
   updateSettings: AgentLoginSettingsUpdater;
+  sessionTtlMs?: number;
 }): AgentLoginService {
   const sessions = new Map<string, LoginSession>();
+  const sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
 
   const cleanup = (session: LoginSession): void => {
     clearTimeout(session.cleanupTimer);
     if (session.submitTimer) clearTimeout(session.submitTimer);
-    if (session.child && session.status !== 'complete' && session.status !== 'failed') {
+    if (session.child && session.status !== 'complete') {
       session.child.kill('SIGTERM');
     }
     rmSync(session.dir, { recursive: true, force: true });
@@ -262,7 +273,6 @@ export function createProcessAgentLoginService(options: {
   const fail = (session: LoginSession, message: string): void => {
     session.status = 'failed';
     session.message = message;
-    session.child = null;
     if (session.submitTimer) {
       clearTimeout(session.submitTimer);
       session.submitTimer = null;
@@ -349,8 +359,7 @@ export function createProcessAgentLoginService(options: {
         if (!current || current.status === 'complete') return;
         fail(current, 'Login timed out. Start a new login and try again.');
         cleanup(current);
-        sessions.delete(id);
-      }, SESSION_TTL_MS),
+      }, sessionTtlMs),
     };
     sessions.set(id, session);
 
@@ -361,7 +370,7 @@ export function createProcessAgentLoginService(options: {
       chmodSync(expectScriptPath, 0o700);
       child = spawn('expect', [expectScriptPath], {
         env: {
-          ...processEnvWithoutClaude(),
+          ...agentLoginBaseEnv(),
           HOME: home,
           CLAUDE_CONFIG_DIR: join(home, '.claude'),
           VERITY_AGENT_LOGIN_TRANSCRIPT: transcriptPath,
@@ -373,7 +382,7 @@ export function createProcessAgentLoginService(options: {
     } else {
       child = spawn('script', ['-q', '-f', '-c', 'codex login --device-auth', transcriptPath], {
         env: {
-          ...process.env,
+          ...agentLoginBaseEnv(),
           HOME: home,
           CODEX_HOME: join(home, '.codex'),
           NO_COLOR: '1',
@@ -399,12 +408,13 @@ export function createProcessAgentLoginService(options: {
     child.stderr.on('data', collect);
     child.on('error', (error) => fail(session, error.message));
     child.on('exit', () => {
+      session.child = null;
       const transcript = existsSync(transcriptPath) ? readFileSync(transcriptPath, 'utf8') : '';
       session.output = `${session.output}\n${transcript}`.slice(-MAX_OUTPUT_CHARS);
       markFromOutput(session);
       void maybeComplete(session)
         .then(() => {
-          if (session.status !== 'complete') {
+          if (session.status !== 'complete' && session.status !== 'failed') {
             fail(
               session,
               session.provider === 'codex'

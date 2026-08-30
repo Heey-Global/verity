@@ -36,6 +36,12 @@ const bytesRes = (
     copy.set(bytes);
     return Promise.resolve(copy.buffer);
   },
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  }),
 });
 
 interface Call {
@@ -309,6 +315,42 @@ describe('downloadDriveFile / exportDriveFile', () => {
       reason: 'http_404',
     });
   });
+
+  it('stops streaming once a download exceeds its hard byte budget', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.enqueue(new Uint8Array([3, 4]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { fetch } = recordingFetch(() => ({ ...bytesRes(new Uint8Array()), body }));
+    await expect(
+      downloadDriveFile('at', 'large', { fetch, maxDownloadBytes: 3 }),
+    ).rejects.toMatchObject({ reason: 'too_large' });
+    expect(cancelled).toBe(true);
+  });
+
+  it('rejects an oversized declared export before reading its body', async () => {
+    let read = false;
+    const { fetch } = recordingFetch(() => ({
+      ...bytesRes(new Uint8Array()),
+      headers: { get: () => '4' },
+      body: {
+        getReader() {
+          read = true;
+          throw new Error('must not read');
+        },
+      } as unknown as ReadableStream<Uint8Array>,
+    }));
+    await expect(
+      exportDriveFile('at', 'large', 'text/plain', { fetch, maxDownloadBytes: 3 }),
+    ).rejects.toMatchObject({ reason: 'too_large' });
+    expect(read).toBe(false);
+  });
 });
 
 describe('referenceDocFileName', () => {
@@ -362,6 +404,43 @@ describe('createCachedGoogleAccessToken', () => {
     refreshToken = 'rt-new';
     await expect(provider()).resolves.toBe('t2');
     expect(refreshes).toBe(2);
+  });
+
+  it('does not join an in-flight refresh for different credentials', async () => {
+    let refreshToken = 'rt-old';
+    let releaseOld!: () => void;
+    const oldBlocked = new Promise<void>((resolve) => (releaseOld = resolve));
+    const fetch: GoogleFetch = async (_url, init) => {
+      const token = new URLSearchParams(init?.body as string).get('refresh_token');
+      if (token === 'rt-old') await oldBlocked;
+      return jsonRes({ access_token: token === 'rt-old' ? 'old' : 'new', expires_in: 3599 });
+    };
+    const provider = createCachedGoogleAccessToken(
+      () => Promise.resolve({ clientId: 'cid', refreshToken }),
+      { fetch },
+    );
+
+    const old = provider();
+    refreshToken = 'rt-new';
+    await expect(provider()).resolves.toBe('new');
+    releaseOld();
+    await expect(old).resolves.toBe('old');
+  });
+
+  it('refreshes according to a shorter provider expiry', async () => {
+    let currentTime = 1_000;
+    let refreshes = 0;
+    const provider = createCachedGoogleAccessToken(
+      () => Promise.resolve({ clientId: 'cid', refreshToken: 'rt' }),
+      {
+        now: () => currentTime,
+        fetch: () =>
+          Promise.resolve(jsonRes({ access_token: `t${String(++refreshes)}`, expires_in: 31 })),
+      },
+    );
+    await expect(provider()).resolves.toBe('t1');
+    currentTime += 1_001;
+    await expect(provider()).resolves.toBe('t2');
   });
 
   it('swallows a refresh failure to undefined so the next call retries', async () => {

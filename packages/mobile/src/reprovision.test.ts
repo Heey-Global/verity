@@ -47,7 +47,7 @@ describe('reprovisionActiveProjects', () => {
   it('collects failures as owner/repo and continues past them', async () => {
     const projects = [
       project('a', 'active', 'heey-global', 'verity'),
-      project('b', 'active', 'heey-global', 'deep-ocr'),
+      project('b', 'active', 'example-org', 'sample-app'),
       project('c', 'active', 'heey-global', 'k8s'),
     ];
     const recreate = vi.fn<(id: string) => Promise<void>>(async (id) => {
@@ -57,7 +57,7 @@ describe('reprovisionActiveProjects', () => {
     const result = await reprovisionActiveProjects(projects, recreate);
 
     expect(recreate).toHaveBeenCalledTimes(3);
-    expect(result).toEqual({ total: 3, done: 3, failed: ['heey-global/deep-ocr'] });
+    expect(result).toEqual({ total: 3, done: 3, failed: ['example-org/sample-app'] });
   });
 
   it('reports incremental progress, ending at done === total', async () => {

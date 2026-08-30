@@ -190,19 +190,21 @@ export class ProjectRelayLifecycle {
     }
     const failures: unknown[] = [];
     for (const [projectId, entry] of this.active) {
-      const results = await Promise.all([
-        ...(entry.brokerListener === undefined
-          ? []
-          : [runCleanup(() => entry.brokerListener!.close())]),
-        ...(entry.claudeListener === undefined
-          ? []
-          : [runCleanup(() => entry.claudeListener!.close())]),
-        ...(entry.codexListener === undefined
-          ? []
-          : [runCleanup(() => entry.codexListener!.close())]),
-      ]);
-      failures.push(...results.flatMap((result) => (result.ok ? [] : [result.error])));
-      this.active.delete(projectId);
+      const entryFailures: unknown[] = [];
+      for (const key of ['brokerListener', 'claudeListener', 'codexListener'] as const) {
+        const listener = entry[key];
+        if (listener === undefined) continue;
+        const result = await runCleanup(() => listener.close());
+        if (result.ok) {
+          if (key === 'brokerListener') delete entry.brokerListener;
+          else if (key === 'claudeListener') delete entry.claudeListener;
+          else delete entry.codexListener;
+        } else entryFailures.push(result.error);
+      }
+      failures.push(...entryFailures);
+      // A failed close leaves authority in an unknown live state. Retain the
+      // entry so a later suspend/close can retry those process-owned handles.
+      if (entryFailures.length === 0) this.active.delete(projectId);
     }
     if (failures.length > 0)
       throw new AggregateError(failures, 'project relay lifecycle suspend failed');
@@ -245,6 +247,9 @@ export class ProjectRelayLifecycle {
     binding: ProjectRelayBinding,
     issueCapabilities = true,
   ): Promise<ProjectRelayActivation | void> {
+    if (binding.codexGateway !== undefined && this.options.startCodexListener === undefined) {
+      throw new Error('project relay Codex gateway has no listener implementation');
+    }
     const identity = {
       projectId: binding.projectId,
       containerGeneration: binding.containerGeneration,

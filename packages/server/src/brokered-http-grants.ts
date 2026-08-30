@@ -89,8 +89,8 @@ export interface BrokeredGrantRecord {
  * Grants are additionally keyed by the CHANNEL they were approved on (ADR 0014 D3),
  * recorded in `brokered_grant_approvals` rather than on the grant row so the two
  * channels cannot refresh each other's windows. On ACP a grant auto-approves only
- * while its own approval is under 24 hours old, and `forever` is refused outright;
- * on the attested native relay nothing changes.
+ * while its own approval is under 24 hours old, and `forever` is refused outright.
+ * The former native channel is retired and cannot reach this API.
  */
 export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
   const inFlightGrants = new Map<string, Promise<void>>();
@@ -169,85 +169,87 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
        * consults an approval record. The ACP ceiling would then be enforced against a
        * row nobody believes exists.
        */
-      const operation = previous.then(() =>
-        db.transaction().execute(async (tx) => {
-          // Expired rows remain historically active until renewal. Revoke matching
-          // expired rows first so the partial unique index permits one replacement.
-          await tx
-            .updateTable('secret_provider_permissions')
-            .set({ state: 'revoked', updated_at: new Date().toISOString() })
-            .where('project_id', '=', input.projectId)
-            .where('binding_id', '=', input.bindingId)
-            .where('secret_name', '=', input.secretAlias)
-            .where('tool_id', '=', toolId)
-            .where('scope', '=', input.scope)
-            .where('session_id', sessionId === null ? 'is' : '=', sessionId)
-            .where('state', '=', 'active')
-            .where('issuer', '=', GRANT_ISSUER)
-            .where('expires_at', '<=', new Date())
-            .execute();
-          const existing = await activeGrantId(tx);
-          if (existing !== undefined) {
-            if (input.scope === 'project') {
-              await tx
-                .updateTable('secret_provider_permissions')
-                .set({
-                  expires_at: new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString(),
-                  updated_at: new Date().toISOString(),
-                })
-                .where('id', '=', existing)
-                .execute();
+      const operation = previous
+        .catch(() => undefined)
+        .then(() =>
+          db.transaction().execute(async (tx) => {
+            // Expired rows remain historically active until renewal. Revoke matching
+            // expired rows first so the partial unique index permits one replacement.
+            await tx
+              .updateTable('secret_provider_permissions')
+              .set({ state: 'revoked', updated_at: new Date().toISOString() })
+              .where('project_id', '=', input.projectId)
+              .where('binding_id', '=', input.bindingId)
+              .where('secret_name', '=', input.secretAlias)
+              .where('tool_id', '=', toolId)
+              .where('scope', '=', input.scope)
+              .where('session_id', sessionId === null ? 'is' : '=', sessionId)
+              .where('state', '=', 'active')
+              .where('issuer', '=', GRANT_ISSUER)
+              .where('expires_at', '<=', new Date())
+              .execute();
+            const existing = await activeGrantId(tx);
+            if (existing !== undefined) {
+              if (input.scope === 'project') {
+                await tx
+                  .updateTable('secret_provider_permissions')
+                  .set({
+                    expires_at: new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString(),
+                    updated_at: new Date().toISOString(),
+                  })
+                  .where('id', '=', existing)
+                  .execute();
+              }
+              // Every scope records the approval, including the two that write nothing to
+              // the grant row itself. Skipping it here would make an ACP re-approval of a
+              // live `session` grant a no-op, so the grant would go on ageing out of its
+              // 24-hour window while the operator kept answering the card.
+              await recordApproval(tx, existing);
+              return;
             }
-            // Every scope records the approval, including the two that write nothing to
-            // the grant row itself. Skipping it here would make an ACP re-approval of a
-            // live `session` grant a no-op, so the grant would go on ageing out of its
-            // 24-hour window while the operator kept answering the card.
-            await recordApproval(tx, existing);
-            return;
-          }
-          await tx
-            .insertInto('secret_provider_permissions')
-            .values({
-              id: randomUUID(),
-              project_id: input.projectId,
-              binding_id: input.bindingId,
-              binding_version: 1,
-              secret_name: input.secretAlias,
-              tool_id: toolId,
-              scope: input.scope,
-              session_id: sessionId,
-              // `session` expires with its session and `forever` never expires, so both
-              // store a NULL expiry; only `project` carries the rolling 30-day window.
-              expires_at:
-                input.scope === 'project'
-                  ? new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString()
-                  : null,
-              remaining_uses: null,
-              granted_by: 'operator',
-              issuer: GRANT_ISSUER,
-              state: 'active',
-            })
-            .onConflict((conflict) => conflict.doNothing())
-            .execute();
-          // Read the id back rather than trusting the one just generated: the insert is
-          // `doNothing`, so a grant racing in from another Server process (the in-flight
-          // map only serializes this one) leaves the row — and the id the approval must
-          // attach to — belonging to that writer. The insert blocks until that writer
-          // commits, so this re-read sees the winning row either way. A grant with no
-          // approval row would be dead on ACP, which is the failure this exists to avoid.
-          const inserted = await activeGrantId(tx);
-          // No active row after our own insert means the row we conflicted with was
-          // revoked or deleted in the moment between the two statements. Nothing was
-          // saved, so say so: returning normally would put a "scope saved" card in
-          // front of the operator for a grant that does not exist, and the next call
-          // would prompt again with no explanation. The rollback costs nothing — the
-          // insert already did nothing — and re-approving retries it.
-          if (inserted === undefined) {
-            throw new Error('the grant was revoked while it was being approved');
-          }
-          await recordApproval(tx, inserted);
-        }),
-      );
+            await tx
+              .insertInto('secret_provider_permissions')
+              .values({
+                id: randomUUID(),
+                project_id: input.projectId,
+                binding_id: input.bindingId,
+                binding_version: 1,
+                secret_name: input.secretAlias,
+                tool_id: toolId,
+                scope: input.scope,
+                session_id: sessionId,
+                // `session` expires with its session and `forever` never expires, so both
+                // store a NULL expiry; only `project` carries the rolling 30-day window.
+                expires_at:
+                  input.scope === 'project'
+                    ? new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString()
+                    : null,
+                remaining_uses: null,
+                granted_by: 'operator',
+                issuer: GRANT_ISSUER,
+                state: 'active',
+              })
+              .onConflict((conflict) => conflict.doNothing())
+              .execute();
+            // Read the id back rather than trusting the one just generated: the insert is
+            // `doNothing`, so a grant racing in from another Server process (the in-flight
+            // map only serializes this one) leaves the row — and the id the approval must
+            // attach to — belonging to that writer. The insert blocks until that writer
+            // commits, so this re-read sees the winning row either way. A grant with no
+            // approval row would be dead on ACP, which is the failure this exists to avoid.
+            const inserted = await activeGrantId(tx);
+            // No active row after our own insert means the row we conflicted with was
+            // revoked or deleted in the moment between the two statements. Nothing was
+            // saved, so say so: returning normally would put a "scope saved" card in
+            // front of the operator for a grant that does not exist, and the next call
+            // would prompt again with no explanation. The rollback costs nothing — the
+            // insert already did nothing — and re-approving retries it.
+            if (inserted === undefined) {
+              throw new Error('the grant was revoked while it was being approved');
+            }
+            await recordApproval(tx, inserted);
+          }),
+        );
       inFlightGrants.set(key, operation);
       try {
         await operation;

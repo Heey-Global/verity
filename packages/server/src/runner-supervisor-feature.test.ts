@@ -1,5 +1,6 @@
 import {
   chmod,
+  copyFile,
   link,
   lstat,
   mkdtemp,
@@ -989,6 +990,22 @@ describe('verity-runner supervisor runtime', () => {
       },
       { trustedCliEntryScriptDir: join(root, 'snapshots') },
     );
+    expect(materialized.entrySandbox).toMatchObject({
+      loading: 'dynamic',
+      dynamicRoot: root,
+    });
+    const launch = trustedCliLaunchSpec(
+      {
+        kind: 'trusted-cli',
+        command: '/usr/bin/node',
+        args: materialized.args,
+        cwd: root,
+        secrets: [],
+        entrySandbox: materialized.entrySandbox!,
+      },
+      { agentUid: 1000, agentGid: 1000, env: { PATH: '/usr/bin' } },
+    );
+    expect(launch.args).toEqual(expect.arrayContaining(['--dynamic-root', root]));
     const parentResource = resolve(materialized.args[0]!, '..', '..', '..', 'lib', 'config.js');
     await expect(readFile(parentResource, 'utf8')).resolves.toBe('module.exports = true\n');
     await expect(materialized.cleanup()).resolves.toBe(true);
@@ -1009,15 +1026,11 @@ describe('verity-runner supervisor runtime', () => {
     await writeFile(otherSecret, 'other\n');
     const sharedMemoryDependency = `/dev/shm/verity-landlock-${String(process.pid)}`;
     await writeFile(sharedMemoryDependency, 'mutable\n');
-    await execFileAsync('cc', [
-      '-O2',
-      '-Wall',
-      '-Wextra',
-      '-Werror',
-      resolve('features/verity-sandbox-toolkit/bin/verity-script-sandbox.c'),
-      '-o',
+    await copyFile(
+      resolve('features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox'),
       helper,
-    ]);
+    );
+    await chmod(helper, 0o755);
     await expect(execFileAsync(helper, ['--probe'])).resolves.toBeDefined();
     const command = ['--root', snapshotRoot, '--cwd', snapshotRoot, '--loading'];
     await expect(
@@ -1064,14 +1077,30 @@ describe('verity-runner supervisor runtime', () => {
       execFileAsync(helper, [...command, 'isolated', '--', '/usr/bin/cat', sharedMemoryDependency]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
+      execFileAsync(helper, [...command, 'isolated', '--', '/usr/bin/cat', '/etc/passwd']),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
       execFileAsync(helper, [
         ...command,
         'dynamic',
+        '--dynamic-root',
+        worktree,
         '--',
         '/usr/bin/cat',
         join(worktree, 'dependency'),
       ]),
     ).resolves.toBeDefined();
+    await expect(
+      execFileAsync(helper, [
+        ...command,
+        'dynamic',
+        '--dynamic-root',
+        worktree,
+        '--',
+        '/usr/bin/cat',
+        otherSecret,
+      ]),
+    ).rejects.toMatchObject({ code: 1 });
     await rm(sharedMemoryDependency, { force: true });
     await rm(root, { recursive: true, force: true });
   });
@@ -3418,6 +3447,9 @@ describe('verity-runner supervisor runtime', () => {
           timeoutMs: 30_000,
         });
       });
+      expect((await lstat(join(runtimeDir, 'turns/turn-worker/request.json'))).mode & 0o777).toBe(
+        0o600,
+      );
       await expect(
         request({
           ...start,

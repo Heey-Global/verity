@@ -36,6 +36,7 @@ export interface ControlAttachRequest {
   mode: 'inspect' | 'acquire' | 'resume';
   protocolVersion?: number;
   leaseEpoch?: number;
+  capability?: string;
 }
 
 /**
@@ -515,6 +516,7 @@ export async function serveControl(
     authorizeAcquire?: (
       requestedControllerId: string,
       current: { controllerId: string; leaseEpoch: number } | undefined,
+      capability: string | undefined,
     ) => boolean | Promise<boolean>;
     /** ADR 0006 D6: produce the attach-handshake snapshot (last durable frameSeq,
      * turn status, outstanding permissions, protocol/instance identity) at attach-ACK
@@ -631,13 +633,16 @@ export async function serveControl(
               );
               return;
             }
-            if (parsed.mode === 'acquire' && currentControllerId !== parsed.controllerId) {
+            if (parsed.mode === 'acquire') {
               const current =
                 currentControllerId === undefined
                   ? undefined
                   : { controllerId: currentControllerId, leaseEpoch: currentLeaseEpoch };
-              const authorized = await (opts.authorizeAcquire?.(parsed.controllerId, current) ??
-                current === undefined);
+              const authorized = await (opts.authorizeAcquire?.(
+                parsed.controllerId,
+                current,
+                parsed.capability,
+              ) ?? current === undefined);
               if (!authorized) {
                 socket.write(
                   encodeLine({
@@ -972,6 +977,8 @@ export async function connectControl(
     /** Version already validated through the supervisor's immutable turn state.
      * This is the N+1→N compatibility path for control sockets predating `inspect`. */
     verifiedProtocolVersion?: number;
+    attachTimeoutMs?: number;
+    capability?: string;
   } = {},
 ): Promise<ControlSocketClient> {
   const turnId = opts.turnId ?? socketPath;
@@ -979,6 +986,9 @@ export async function connectControl(
   if (opts.resumeLeaseEpoch !== undefined && !Number.isSafeInteger(opts.resumeLeaseEpoch)) {
     throw new Error('control resumeLeaseEpoch must be a safe integer');
   }
+  const attachTimeoutMs = opts.attachTimeoutMs ?? 5_000;
+  if (!Number.isSafeInteger(attachTimeoutMs) || attachTimeoutMs < 1)
+    throw new Error('control attach timeout must be a positive safe integer');
 
   // Compatibility is established without touching the Runner's controller epoch.
   // `acquire` repeats the version below so the check and lease mutation are atomic.
@@ -1010,6 +1020,10 @@ export async function connectControl(
     settleAttach = resolve;
     rejectAttach = reject;
   });
+  const attachTimer = setTimeout(() => {
+    rejectAttach(new Error('control attach timed out'));
+    socket.destroy();
+  }, attachTimeoutMs);
   socket.on(
     'data',
     makeLineReader(
@@ -1060,10 +1074,16 @@ export async function connectControl(
       controllerId,
       mode: opts.resumeLeaseEpoch === undefined ? 'acquire' : 'resume',
       protocolVersion: RUNNER_FRAME_PROTOCOL_VERSION,
+      ...(opts.capability !== undefined ? { capability: opts.capability } : {}),
       ...(opts.resumeLeaseEpoch !== undefined ? { leaseEpoch: opts.resumeLeaseEpoch } : {}),
     }),
   );
-  const attachReply = await attached;
+  let attachReply: ControlAttachReply;
+  try {
+    attachReply = await attached;
+  } finally {
+    clearTimeout(attachTimer);
+  }
   if (attachReply.kind === 'attach-reject') {
     socket.destroy();
     throw new Error(`control attach rejected: ${attachReply.reason}`);

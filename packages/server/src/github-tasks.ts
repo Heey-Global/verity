@@ -239,7 +239,7 @@ export interface GitHubTaskService {
 // populate whichever matches and error the other (ignored) — one round trip, no
 // owner-type config needed.
 const BOARD_QUERY = `
-query($owner:String!, $number:Int!) {
+query($owner:String!, $number:Int!, $after:String) {
   organization(login:$owner) { projectV2(number:$number) { ...proj } }
   user(login:$owner) { projectV2(number:$number) { ...proj } }
 }
@@ -254,7 +254,8 @@ fragment proj on ProjectV2 {
       ... on ProjectV2SingleSelectField { options { id name } }
     }
   }
-  items(first: 100) {
+  items(first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       id
       fieldValues(first: 20) {
@@ -452,6 +453,20 @@ function toBoard(data: unknown): TaskBoard | null {
   };
 }
 
+function boardItemsPage(data: unknown): { hasNextPage: boolean; endCursor: string | null } | null {
+  const root = asRecord(data);
+  const org = asRecord(root?.organization);
+  const usr = asRecord(root?.user);
+  const project = asRecord(asRecord(org?.projectV2) ?? asRecord(usr?.projectV2));
+  const items = asRecord(project?.items);
+  const pageInfo = asRecord(items?.pageInfo);
+  if (pageInfo === null || typeof pageInfo.hasNextPage !== 'boolean') return null;
+  return {
+    hasNextPage: pageInfo.hasNextPage,
+    endCursor: typeof pageInfo.endCursor === 'string' ? pageInfo.endCursor : null,
+  };
+}
+
 // --- service -----------------------------------------------------------------
 
 export function createGitHubTaskService(opts: GitHubTaskServiceOptions): GitHubTaskService {
@@ -498,13 +513,30 @@ export function createGitHubTaskService(opts: GitHubTaskServiceOptions): GitHubT
       const pre = await preflight(undefined, 'board');
       if (pre === null) return null;
       if (cache !== undefined && now() - cache.at < ttlMs) return cache.board;
-      const res = await run<unknown>(
-        BOARD_QUERY,
-        { owner: pre.owner, number: projectNumber },
-        pre.token,
-      );
-      if (!res.ok) return cache?.board ?? null; // transient: serve last good, don't cache
-      const board = toBoard(res.data);
+      let cursor: string | null = null;
+      let board: TaskBoard | null = null;
+      for (let page = 0; page < 100; page += 1) {
+        const res = await run<unknown>(
+          BOARD_QUERY,
+          { owner: pre.owner, number: projectNumber, after: cursor },
+          pre.token,
+        );
+        if (!res.ok) return cache?.board ?? null;
+        const next = toBoard(res.data);
+        if (next === null) return cache?.board ?? null;
+        if (board === null) board = next;
+        else {
+          board.items.push(...next.items);
+          board.fields = next.fields;
+        }
+        const pagination = boardItemsPage(res.data);
+        if (pagination === null || !pagination.hasNextPage) break;
+        if (pagination.endCursor === null || pagination.endCursor === cursor) {
+          return cache?.board ?? null;
+        }
+        cursor = pagination.endCursor;
+        if (page === 99) return cache?.board ?? null;
+      }
       if (board === null) return cache?.board ?? null; // board/owner not found — don't cache a miss
       cache = { board, at: now() };
       return board;
@@ -579,6 +611,8 @@ export function createGitHubTaskService(opts: GitHubTaskServiceOptions): GitHubT
     } | null> {
       const issuePre = await preflight(input.repo);
       if (issuePre === null) return null;
+      const boardPre = await preflight(undefined, 'board');
+      if (boardPre === null) return null;
       const board = await this.getBoard();
       if (board === null) return null;
       const created = await run<{
@@ -595,7 +629,7 @@ export function createGitHubTaskService(opts: GitHubTaskServiceOptions): GitHubT
       const added = await run<{ addProjectV2ItemById?: { item?: { id?: unknown } } }>(
         ADD_ITEM_MUTATION,
         { projectId: board.projectId, contentId: issue.id },
-        issuePre.token,
+        boardPre.token,
       );
       cache = undefined;
       const itemId = added.data?.addProjectV2ItemById?.item?.id;

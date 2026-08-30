@@ -13,6 +13,7 @@ import {
   parseUpdateJournal,
   readUpdateJournal,
   UPDATE_JOURNAL_FILE,
+  withUpdateJournalLease,
 } from './update-journal.js';
 
 const image = (character: string): string =>
@@ -40,6 +41,31 @@ function request(path: string) {
 }
 
 describe('Updater journal', () => {
+  it('serializes writers through a lock inode on the shared journal volume', async () => {
+    const path = await root();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let acquired!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    const first = withUpdateJournalLease(path, async () => {
+      acquired();
+      await held;
+    });
+    await entered;
+    await expect(withUpdateJournalLease(path, async () => undefined)).rejects.toThrow(
+      /another updater process owns/,
+    );
+    release();
+    await first;
+    await expect(withUpdateJournalLease(path, async () => 'reacquired')).resolves.toBe(
+      'reacquired',
+    );
+  });
+
   it('creates a synced, checksum-protected operation with the next generation', async () => {
     const path = await root();
     const journal = await beginUpdate(request(path));

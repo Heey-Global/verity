@@ -154,7 +154,8 @@ export function createServerUpdateNotifier(
    */
   let announcedHere: string | undefined;
 
-  const check = async (): Promise<ServerUpdateNotice> => {
+  let checkInFlight: Promise<ServerUpdateNotice> | undefined;
+  const performCheck = async (): Promise<ServerUpdateNotice> => {
     try {
       const availability = await options.resolve();
       // Only `available` is worth a notification. `current` is the happy path,
@@ -216,6 +217,14 @@ export function createServerUpdateNotifier(
       log('release-channel notification check failed', error);
       return 'nothing-to-announce';
     }
+  };
+  const check = (): Promise<ServerUpdateNotice> => {
+    if (checkInFlight !== undefined) return checkInFlight;
+    const pass = performCheck().finally(() => {
+      if (checkInFlight === pass) checkInFlight = undefined;
+    });
+    checkInFlight = pass;
+    return pass;
   };
 
   return {

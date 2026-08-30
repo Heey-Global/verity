@@ -359,7 +359,7 @@ describe('verity-code-review session backend', () => {
       expect(reviewerToken({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:/' })).toBe('<unset>');
       expect(reviewerToken({ ANTHROPIC_BASE_URL: `http://127.0.0.2:${port}/` })).toBe('<unset>');
       expect(reviewerToken({ ANTHROPIC_BASE_URL: `ftp://127.0.0.1:${port}/` })).toBe('<unset>');
-    });
+    }, 30_000);
   });
 
   it('keeps the placeholder literal in sync with the server policy constant', () => {

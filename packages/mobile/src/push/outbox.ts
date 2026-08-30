@@ -1,7 +1,5 @@
 import type { PushReplyAction, PushReplyOutcome } from './response.js';
 
-const DEFAULT_MAX_ATTEMPTS = 8;
-
 /** One queued reply. `id` is a locally-minted `clientReplyId` — today it is only
  * the outbox's own dedup/identity key; once `POST /turns` accepts a
  * `clientReplyId` it becomes the server-side idempotency key too. */
@@ -26,9 +24,6 @@ export interface PushOutboxOptions {
   perform: (action: PushReplyAction, clientReplyId: string) => Promise<PushReplyOutcome>;
   newId: () => string;
   now: () => number;
-  /** Drop an entry after this many transient failures so a permanently
-   * un-routable reply can't grow the queue forever. Defaults to 8. */
-  maxAttempts?: number | undefined;
 }
 
 /** A persistent reply outbox for lock-screen quick replies. An operator can answer
@@ -41,14 +36,13 @@ export interface PushOutbox {
   queue(action: PushReplyAction): Promise<void>;
   /** Persist a reply, then attempt to flush it immediately. */
   enqueue(action: PushReplyAction): Promise<void>;
-  /** Attempt every pending entry once; drop the delivered/stale/exhausted ones. */
+  /** Attempt every pending entry once; drop only delivered or confirmed-stale entries. */
   flush(): Promise<void>;
   pending(): Promise<PushOutboxEntry[]>;
 }
 
 export function createPushOutbox(options: PushOutboxOptions): PushOutbox {
   const { storage, perform, newId, now } = options;
-  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 
   // Serialize all storage reads/writes AND every `perform` call. Delivering one
   // reply at a time is the point: it prevents a re-entrant flush (foreground +
@@ -77,7 +71,6 @@ export function createPushOutbox(options: PushOutboxOptions): PushOutbox {
       }
       if (outcome === 'done' || outcome === 'stale') continue;
       const attempts = entry.attempts + 1;
-      if (attempts >= maxAttempts) continue; // give up — drop rather than grow forever
       kept.push({ ...entry, attempts });
     }
     await storage.save(kept);

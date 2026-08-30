@@ -790,9 +790,9 @@ export function createCodexUsageService(opts: CodexUsageOptions = {}): CodexUsag
         log.debug({ windows: states.length }, 'verity: codex usage probe refreshed');
         health = { state: 'ok', windows: states.length, at: observedAt };
       }
-    } catch (error) {
+    } catch {
       // Network/parse/control-channel failure: identical backoff, serve last-good.
-      log.warn({ reason: 'exception', err: error }, 'verity: codex usage probe threw; backing off');
+      log.warn({ reason: 'exception' }, 'verity: codex usage probe threw; backing off');
       const at = now();
       health = { state: 'failed', at, since: failingSince(at, 'failed') };
       lastUnreadable = null;

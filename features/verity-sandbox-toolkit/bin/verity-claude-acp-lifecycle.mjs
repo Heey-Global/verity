@@ -9,7 +9,7 @@
  * vendor-neutral shape for every ACP backend.
  */
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const LABEL = 'verity-claude-acp-lifecycle';
@@ -34,9 +34,14 @@ function replaceOnce(source, from, to, label) {
   return source.replace(from, to);
 }
 
-const file = path.join(packageDir(), 'dist', 'acp-agent.js');
+const resolvedPackageDir = await realpath(packageDir()).catch((error) =>
+  fail(`cannot resolve package directory: ${error?.message ?? error}`),
+);
+const file = path.join(resolvedPackageDir, 'dist', 'acp-agent.js');
 let source;
 try {
+  const entry = await lstat(file);
+  if (!entry.isFile() || entry.isSymbolicLink()) fail(`${file} is not a regular file`);
   source = await readFile(file, 'utf8');
 } catch (error) {
   fail(`cannot read ${file}: ${error?.message ?? error}`);
@@ -214,7 +219,14 @@ source = replaceOnce(
   'synthetic user message',
 );
 
-await writeFile(file, source, 'utf8');
+const temporary = `${file}.verity-${String(process.pid)}.tmp`;
+try {
+  const mode = (await stat(file)).mode;
+  await writeFile(temporary, source, { encoding: 'utf8', mode, flag: 'wx' });
+  await rename(temporary, file);
+} finally {
+  await rm(temporary, { force: true });
+}
 if (process.env['VERITY_PATCH_FIXTURE'] !== '1') {
   try {
     execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' });

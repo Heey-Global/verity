@@ -37,6 +37,10 @@ export function deriveSessionStatus(events: readonly AgentEvent[]): SessionStatu
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event === undefined) continue;
+    // A fresh operator prompt starts a new turn. Until that turn emits its own
+    // status-bearing event it is running; never inherit a terminal marker from
+    // the preceding turn. Steered prompts remain part of the current turn.
+    if (event.t === 'prompt' && event.steered !== true) return 'running';
     switch (event.t) {
       case 'status':
         return event.state;

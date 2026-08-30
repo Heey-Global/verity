@@ -16,19 +16,21 @@ const binding = {
 
 function harness() {
   const calls: string[] = [];
+  const brokerClose = vi.fn(async () => {
+    calls.push('broker.close');
+  });
   const brokerListener: ProjectInternalUnixListener = {
     socketPath: '/run/verity/project/broker.sock',
     identity: { projectId: 'p1', containerGeneration: 'generation-1' },
-    close: vi.fn(async () => {
-      calls.push('broker.close');
-    }),
+    close: brokerClose,
   };
+  const claudeClose = vi.fn(async () => {
+    calls.push('claude.close');
+  });
   const claudeListener: ProjectClaudeUnixListener = {
     socketPath: '/run/verity/project/claude.sock',
     identity: { projectId: 'p1', containerGeneration: 'generation-1' },
-    close: vi.fn(async () => {
-      calls.push('claude.close');
-    }),
+    close: claudeClose,
   };
   const signing = {
     issue: vi.fn(async () => {
@@ -76,7 +78,9 @@ function harness() {
   });
   return {
     brokerListener,
+    brokerClose,
     calls,
+    claudeClose,
     claudeListener,
     github,
     lifecycle,
@@ -153,6 +157,29 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.github.revokeProject).not.toHaveBeenCalled();
     expect(h.calls).toEqual(expect.arrayContaining(['broker.close', 'claude.close']));
     expect(h.lifecycle.isActive('p1')).toBe(false);
+  });
+
+  it('retains a relay whose listener failed to close so suspend can retry it', async () => {
+    const h = harness();
+    await h.lifecycle.start(binding);
+    h.brokerClose.mockRejectedValueOnce(new Error('close failed'));
+    await expect(h.lifecycle.suspend()).rejects.toThrow(/suspend failed/);
+    expect(h.lifecycle.isActive('p1')).toBe(true);
+    await expect(h.lifecycle.suspend()).resolves.toBeUndefined();
+    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.brokerClose).toHaveBeenCalledTimes(2);
+    expect(h.claudeClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed before opening anything when a Codex gateway has no listener', async () => {
+    const h = harness();
+    await expect(
+      h.lifecycle.start({
+        ...binding,
+        codexGateway: { host: 'codex.internal', port: 9444 },
+      }),
+    ).rejects.toThrow(/Codex gateway has no listener/);
+    expect(h.startBrokerListener).not.toHaveBeenCalled();
   });
 
   it('names the generation it holds so the GC never sweeps a relay in use', async () => {

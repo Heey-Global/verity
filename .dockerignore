@@ -20,8 +20,10 @@
 # Env / secrets — never bake into an image layer
 .env
 .env.local
+.env.*
 **/.env
 **/.env.local
+**/.env.*
 
 # Test / coverage artifacts
 coverage

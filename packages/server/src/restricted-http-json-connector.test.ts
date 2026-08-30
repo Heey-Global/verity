@@ -63,7 +63,11 @@ vi.mock('node:dns/promises', async (importOriginal) => {
 const profile = restrictedHttpJsonProfileSchema.parse({
   id: 'project-http',
   projectId: 'project-1',
-  secretPolicy: { mode: 'allowlist', aliases: ['STRIPE_API_KEY', 'GITHUB_TOKEN'] },
+  secretPolicy: {
+    mode: 'allowlist',
+    aliases: ['STRIPE_API_KEY', 'GITHUB_TOKEN'],
+    destinations: [{ hostname: 'api.stripe.com', pathPrefixes: ['/v1'] }],
+  },
 });
 
 function request(overrides: Record<string, unknown> = {}) {
@@ -78,12 +82,32 @@ function request(overrides: Record<string, unknown> = {}) {
 }
 
 describe('restricted HTTP JSON connector', () => {
+  it.each([
+    'https://evil.example/v1/customers',
+    'https://api.stripe.com/v2/customers',
+    'https://api.stripe.com/v10/customers',
+  ])('rejects an allowlisted secret outside its destination boundary: %s', async (url) => {
+    const resolveSecret = vi.fn();
+    const connector = createRestrictedHttpJsonConnector({
+      profile,
+      resolveSecret,
+      transport: vi.fn(),
+    });
+    await expect(connector.execute(request({ url }))).rejects.toBeInstanceOf(
+      RestrictedHttpJsonRejectedError,
+    );
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
   it('validates allowlist uniqueness and supports approval-only secret selection', async () => {
     expect(() =>
       restrictedHttpJsonProfileSchema.parse({
         id: 'duplicate-aliases',
         projectId: 'project-1',
-        secretPolicy: { mode: 'allowlist', aliases: ['API_TOKEN', 'API_TOKEN'] },
+        secretPolicy: {
+          mode: 'allowlist',
+          aliases: ['API_TOKEN', 'API_TOKEN'],
+          destinations: [{ hostname: 'api.example.com', pathPrefixes: ['/'] }],
+        },
       }),
     ).toThrow(/secret aliases must be unique/);
 
@@ -317,6 +341,23 @@ describe('restricted HTTP JSON connector', () => {
         encodedReserved: '[REDACTED:STRIPE_API_KEY]',
         encodedUnreserved: '[REDACTED:STRIPE_API_KEY]',
       },
+    });
+  });
+
+  it('redacts repeatedly percent-encoded credentials', async () => {
+    const secretValue = 'secret value?';
+    const twice = encodeURIComponent(encodeURIComponent(secretValue));
+    const connector = createRestrictedHttpJsonConnector({
+      profile,
+      resolveSecret: async () => Buffer.from(secretValue),
+      transport: async (input) => {
+        await input.authorizeRequest();
+        return { status: 200, body: JSON.stringify({ twice }) };
+      },
+    });
+    await expect(connector.execute(request())).resolves.toEqual({
+      status: 200,
+      body: { twice: '[REDACTED:STRIPE_API_KEY]' },
     });
   });
 
@@ -731,6 +772,7 @@ describe('restricted HTTP JSON connector JWT auth', () => {
     secretPolicy: {
       mode: 'allowlist',
       aliases: ['ASC_API_KEY_P8', 'ASC_API_KEY_ID', 'ASC_API_ISSUER_ID'],
+      destinations: [{ hostname: 'api.appstoreconnect.apple.com', pathPrefixes: ['/v1/apps'] }],
     },
   });
   const ascRequest = (auth: Record<string, unknown> = {}) => ({
@@ -866,7 +908,11 @@ describe('restricted HTTP JSON connector JWT auth', () => {
         id: 'asc-key-only',
         projectId: 'project-1',
         // The signing key is allowed; the issuer alias is not.
-        secretPolicy: { mode: 'allowlist', aliases: ['ASC_API_KEY_P8'] },
+        secretPolicy: {
+          mode: 'allowlist',
+          aliases: ['ASC_API_KEY_P8'],
+          destinations: [{ hostname: 'api.appstoreconnect.apple.com', pathPrefixes: ['/v1/apps'] }],
+        },
       }),
       resolveSecret,
       transport: vi.fn(),

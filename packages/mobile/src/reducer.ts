@@ -16,6 +16,8 @@ import type {
 } from './happy/message.js';
 import type { StreamEventFrame } from './wire.js';
 
+const MAX_TRACKED_RATE_LIMITS = 32;
+
 export interface SessionState {
   sessionId: string | undefined;
   model: string | undefined;
@@ -122,6 +124,7 @@ export class SessionReducer {
   };
   private readonly _permissionDenials: PermissionDenial[] = [];
   private _rateLimit: SessionState['rateLimit'];
+  private readonly _rejectedRateLimits = new Map<string, NonNullable<SessionState['rateLimit']>>();
   // The live per-tool permission prompt the turn is paused on (#149), or undefined.
   // At most one pending at a time (the turn blocks on it). See SessionState.pendingPermission.
   private _pendingPermission: PendingPermission | undefined;
@@ -257,6 +260,9 @@ export class SessionReducer {
         this.openTool(seq, ts, event.id, event.name, event.input, event.parentToolId);
         break;
       case 'tool_result':
+        if (this._pendingSkillToolId !== null && event.id !== this._pendingSkillToolId) {
+          this._pendingSkillToolId = null;
+        }
         // A result for the parked tool also resolves its prompt (e.g. the tool ran,
         // or a deny short-circuited to an error result for that id) (#149).
         this.clearPermissionFor(event.id);
@@ -300,7 +306,7 @@ export class SessionReducer {
         if (event.phase === 'started') this._openTasks.add(event.id);
         else if (event.phase === 'ended') this._openTasks.delete(event.id);
         break;
-      case 'rate_limit':
+      case 'rate_limit': {
         // Track the latest provider rate-limit status as session state (the screen
         // shows a single banner only when it's not `allowed`) — NOT a per-turn
         // transcript row, which was noise. Closes the open block like any other
@@ -310,25 +316,35 @@ export class SessionReducer {
         // model-scoped events in the canonical log/detail projection, but do not
         // let them replace or clear the all-models live banner.
         if (event.scope !== undefined && event.scope !== 'all_models') break;
-        // Codex can emit 5h + weekly meter updates back-to-back. An allowed update
-        // for one window must not hide an active block in the other window.
-        if (
-          event.status === 'allowed' &&
-          this._rateLimit !== undefined &&
-          this._rateLimit.status !== 'allowed' &&
-          this._rateLimit.providerLabel === (event.providerLabel ?? 'Claude') &&
-          this._rateLimit.window !== event.window
-        ) {
-          break;
+        const observedSeconds = Math.floor(ts / 1000);
+        for (const [storedKey, stored] of this._rejectedRateLimits) {
+          if (stored.resetsAt <= observedSeconds) this._rejectedRateLimits.delete(storedKey);
         }
-        this._rateLimit = {
+        const next = {
           status: event.status,
           resetsAt: event.resetsAt,
           window: event.window,
           ...(event.usedPercent !== undefined ? { usedPercent: event.usedPercent } : {}),
           providerLabel: event.providerLabel ?? 'Claude',
         };
+        const key = `${next.providerLabel}\u0000${next.window}`;
+        if (next.status === 'allowed') this._rejectedRateLimits.delete(key);
+        else this._rejectedRateLimits.set(key, next);
+        while (this._rejectedRateLimits.size > MAX_TRACKED_RATE_LIMITS) {
+          let oldestKey: string | undefined;
+          let oldestReset = Number.POSITIVE_INFINITY;
+          for (const [storedKey, stored] of this._rejectedRateLimits) {
+            if (stored.resetsAt < oldestReset) {
+              oldestKey = storedKey;
+              oldestReset = stored.resetsAt;
+            }
+          }
+          if (oldestKey === undefined) break;
+          this._rejectedRateLimits.delete(oldestKey);
+        }
+        this._rateLimit = this._rejectedRateLimits.values().next().value ?? next;
         break;
+      }
       case 'choices': {
         // A decision point (issue #97) → its own message the screen renders as
         // tappable chips. Closes the open streaming block like any boundary event.
@@ -614,6 +630,7 @@ export class SessionReducer {
   }
 
   clearRateLimit(): void {
+    this._rejectedRateLimits.clear();
     this._rateLimit = undefined;
   }
 
@@ -624,7 +641,12 @@ export class SessionReducer {
    * a turn that dies between the prompt and its `tool_call`/`tool_result` never
    * emits one, leaving an "approve/deny" card the operator taps forever. */
   resolvePermission(toolUseId: string): void {
+    const wasCurrent = this._pendingPermission?.toolUseId === toolUseId;
     this.clearPermissionFor(toolUseId);
+    if (wasCurrent && this._status === 'awaiting_input') {
+      this._status = 'running';
+      this._running = true;
+    }
   }
 
   get state(): SessionState {

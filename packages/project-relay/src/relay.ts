@@ -375,22 +375,22 @@ function forwardBrokerRequest(
         timeout: upstreamTimeoutMs,
       },
       (upstreamResponse) => {
-        response.writeHead(upstreamResponse.statusCode ?? 502, {
-          ...responseHeaders(upstreamResponse.headers),
-          connection: 'close',
-        });
+        const chunks: Buffer[] = [];
         let bytes = 0;
         upstreamResponse.on('data', (chunk: Buffer) => {
           bytes += chunk.length;
           if (bytes > limits.maxResponseBytes) {
             upstreamResponse.destroy(new RelayLimitError());
-            response.destroy();
             return;
           }
-          response.write(chunk);
+          chunks.push(chunk);
         });
         upstreamResponse.once('end', () => {
-          response.end();
+          response.writeHead(upstreamResponse.statusCode ?? 502, {
+            ...responseHeaders(upstreamResponse.headers),
+            connection: 'close',
+          });
+          response.end(Buffer.concat(chunks));
           settle();
         });
         upstreamResponse.once('error', (error) => settle(error));
@@ -442,6 +442,14 @@ function hasUnsafeHeaders(request: IncomingMessage): boolean {
   for (const [name, values] of Object.entries(request.headersDistinct)) {
     if (!ACCEPTED_REQUEST_HEADERS.has(name)) return true;
     if (values !== undefined && values.length !== 1) return true;
+    if (
+      name === 'connection' &&
+      (values?.[0] ?? '')
+        .split(',')
+        .map((token) => token.trim().toLowerCase())
+        .some((token) => token !== 'close' && token !== 'keep-alive')
+    )
+      return true;
   }
   return false;
 }

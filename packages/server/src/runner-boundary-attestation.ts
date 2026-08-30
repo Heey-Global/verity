@@ -8,6 +8,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024;
+// A maximum-size payload is wrapped in a 512-byte header and padded to the next
+// tar block. The transport ceiling must include that framing overhead.
+const MAX_ARCHIVE_TRANSPORT_BYTES = MAX_ARCHIVE_BYTES + 1024;
 
 class EvidenceError extends Error {
   constructor(readonly safeReason: string) {
@@ -28,7 +31,12 @@ export const RUNNER_BOUNDARY_BINARIES = [
   '/usr/local/bin/verity-runner-supervisor-start',
   '/usr/local/bin/verity-runner-worker',
   '/usr/local/bin/verity-runner-stack-start',
+  '/usr/local/bin/verity-agent-spawn-broker',
 ] as const;
+
+// Prebuilt in trusted release CI for both supported architectures. Content is
+// verified here as well as by the Feature installer.
+export const RUNNER_BOUNDARY_PROTECTED_FILES = ['/usr/local/bin/verity-script-sandbox'] as const;
 
 export type RunnerBoundaryAttestation =
   /** Verified — and against WHICH trust root. The identity travels with the
@@ -120,6 +128,7 @@ const EVIDENCE_PATHS = [
   '/usr/local',
   '/usr/local/bin',
   ...RUNNER_BOUNDARY_BINARIES,
+  ...RUNNER_BOUNDARY_PROTECTED_FILES,
 ] as const;
 
 /** Read only the first archive entry (plus file bytes) directly from Docker.
@@ -148,7 +157,12 @@ async function readDockerPath(
         method: 'GET',
       };
     } else {
-      const url = new URL(endpoint, dockerHost);
+      // Docker uses tcp:// in DOCKER_HOST, while node:http accepts only http(s)
+      // URL schemes. The daemon endpoint itself is plain HTTP on that socket.
+      const httpDockerHost = dockerHost.startsWith('tcp://')
+        ? `http://${dockerHost.slice('tcp://'.length)}`
+        : dockerHost;
+      const url = new URL(endpoint, httpDockerHost);
       requestOptions = {
         protocol: url.protocol,
         hostname: url.hostname,
@@ -169,7 +183,7 @@ async function readDockerPath(
         if (settled) return;
         chunks.push(chunk);
         length += chunk.length;
-        if (length > MAX_ARCHIVE_BYTES) {
+        if (length > MAX_ARCHIVE_TRANSPORT_BYTES) {
           response.destroy();
           finish(new Error('Docker archive exceeded the evidence limit'));
           return;
@@ -421,6 +435,14 @@ export function evaluateRunnerBoundaryEvidence(
     if ((file.mode & 0o022) !== 0) return deny(`${path} is group- or world-writable`);
     presented.set(path, sha256(file.content));
   }
+  for (const path of RUNNER_BOUNDARY_PROTECTED_FILES) {
+    const file = evidence.files.get(path);
+    if (file?.type !== 'file' || file.content === undefined)
+      return deny(`${path} is missing, not a regular file, or traverses a symlink`);
+    if (file.uid !== 0) return deny(`${path} is not root-owned`);
+    if ((file.mode & 0o022) !== 0) return deny(`${path} is group- or world-writable`);
+    presented.set(path, sha256(file.content));
+  }
   const unknown = RUNNER_BOUNDARY_BINARIES.find(
     (path) => !args.trustedToolkits.some((toolkit) => toolkit.hashes.has(path)),
   );
@@ -431,7 +453,9 @@ export function evaluateRunnerBoundaryEvidence(
     return deny(`this Server knows no accepted hash for ${unknown}`);
   }
   const matched = args.trustedToolkits.find((toolkit) =>
-    RUNNER_BOUNDARY_BINARIES.every((path) => toolkit.hashes.get(path) === presented.get(path)),
+    [...RUNNER_BOUNDARY_BINARIES, ...RUNNER_BOUNDARY_PROTECTED_FILES].every(
+      (path) => toolkit.hashes.get(path) === presented.get(path),
+    ),
   );
   if (matched === undefined) {
     const foreign = RUNNER_BOUNDARY_BINARIES.find(
@@ -589,7 +613,7 @@ async function toolkitBundleIsAbsent(featureDir: string): Promise<boolean> {
  * until each one fails its next attestation, which is the silence this whole
  * mechanism was written to end.
  */
-const BOUNDARY_POLICY_VERSION = 1;
+const BOUNDARY_POLICY_VERSION = 2;
 
 /** The identity of a trust root already in hand. A passing attestation reports
  *  the identity of the exact map it compared against, so the recorded value
@@ -611,7 +635,7 @@ function toolkitIdentityOf(
   const hash = createHash('sha256');
   hash.update(`policy:${String(BOUNDARY_POLICY_VERSION)}\n`);
   hash.update(`ids:${String(ids.runnerUid)}:${String(ids.runtimeGid)}\n`);
-  for (const path of RUNNER_BOUNDARY_BINARIES) {
+  for (const path of [...RUNNER_BOUNDARY_BINARIES, ...RUNNER_BOUNDARY_PROTECTED_FILES]) {
     hash.update(`${path}:${hashes.get(path) ?? ''}\n`);
   }
   return `sha256:${hash.digest('hex')}`;
@@ -697,12 +721,20 @@ export async function acceptedToolkits(featureDir: string): Promise<AcceptedTool
   if (floor === undefined || !Array.isArray(releases)) return accepted;
   for (const release of releases as readonly unknown[]) {
     if (typeof release !== 'object' || release === null) continue;
-    const { version, hashes } = release as { version?: unknown; hashes?: unknown };
+    const { version, architecture, hashes } = release as {
+      version?: unknown;
+      architecture?: unknown;
+      hashes?: unknown;
+    };
     const parsed = parseVersion(version);
     if (parsed === undefined || !versionAtLeast(parsed, floor)) continue;
+    const currentArchitecture = process.arch === 'x64' ? 'amd64' : process.arch;
+    // Architecture was absent in the original script-only ledger. Retain parser
+    // compatibility, but all newly generated native-helper entries bind it.
+    if (architecture !== undefined && architecture !== currentArchitecture) continue;
     if (typeof hashes !== 'object' || hashes === null) continue;
     const build = new Map<string, string>();
-    for (const path of RUNNER_BOUNDARY_BINARIES) {
+    for (const path of [...RUNNER_BOUNDARY_BINARIES, ...RUNNER_BOUNDARY_PROTECTED_FILES]) {
       const hash = (hashes as Record<string, unknown>)[path];
       // A 64-hex check, not a format nicety: an entry that is not a sha256 could
       // never match a computed digest anyway, and admitting it would only make the
@@ -711,8 +743,15 @@ export async function acceptedToolkits(featureDir: string): Promise<AcceptedTool
     }
     // A release that does not name every boundary binary does not describe a
     // build, and half a build must not become a hash others can be mixed with.
-    if (build.size !== RUNNER_BOUNDARY_BINARIES.length) continue;
-    accepted.push({ label: `release ${String(version)}`, hashes: build });
+    if (build.size !== RUNNER_BOUNDARY_BINARIES.length + RUNNER_BOUNDARY_PROTECTED_FILES.length)
+      continue;
+    accepted.push({
+      label:
+        architecture === undefined
+          ? `release ${String(version)}`
+          : `release ${String(version)} (${currentArchitecture})`,
+      hashes: build,
+    });
   }
   return accepted;
 }
@@ -724,9 +763,23 @@ async function trustedToolkitHashes(featureDir: string): Promise<Map<string, str
       ? 'verity-runner-supervisor.mjs'
       : path.endsWith('worker')
         ? 'verity-runner-worker.mjs'
-        : path.slice(path.lastIndexOf('/') + 1);
+        : path.endsWith('spawn-broker')
+          ? 'verity-agent-spawn-broker.mjs'
+          : path.slice(path.lastIndexOf('/') + 1);
     hashes.set(path, sha256(await readFile(`${featureDir}/bin/${sourceName}`)));
   }
+  const architecture = process.arch === 'x64' ? 'amd64' : process.arch;
+  if (architecture !== 'amd64' && architecture !== 'arm64') {
+    throw new Error(`unsupported runner boundary architecture: ${process.arch}`);
+  }
+  const sums = await readFile(`${featureDir}/prebuilt/sha256sums.txt`, 'utf8');
+  const artifact = `linux-${architecture}/verity-script-sandbox`;
+  const matches = sums
+    .split('\n')
+    .map((line) => /^([0-9a-f]{64}) {2}(\S+)$/u.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null && match[2] === artifact);
+  if (matches.length !== 1) throw new Error(`missing or ambiguous trusted hash for ${artifact}`);
+  hashes.set(RUNNER_BOUNDARY_PROTECTED_FILES[0], matches[0]?.[1] ?? '');
   return hashes;
 }
 

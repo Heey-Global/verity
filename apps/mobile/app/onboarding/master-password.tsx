@@ -45,13 +45,16 @@ import {
   setAuthToken,
 } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { clearPairingBootstrap, getPairingBootstrap } from '../../lib/pairingSession';
+import { getServerProfile } from '../../lib/serverProfile';
+import { safeReturnTo } from '../../lib/safeReturnTo';
 
 const NEXT = { href: '/onboarding/github' } as const;
 const BACK = '/onboarding/server-url';
 
 export default function OnboardingMasterPassword() {
   const params = useLocalSearchParams<{ returnTo?: string }>();
-  const returnTo = useMemo(() => safeReturnTo(params.returnTo), [params.returnTo]);
+  const returnTo = useMemo(() => safeReturnTo(params.returnTo, null), [params.returnTo]);
   return <MasterPasswordRoute returnTo={returnTo} />;
 }
 
@@ -74,12 +77,6 @@ export function MasterPasswordRoute({ returnTo }: { returnTo: Href | null }) {
     );
   }
   return <MasterPasswordStep client={client} back={back} next={next} returnTo={returnTo} />;
-}
-
-function safeReturnTo(value: string | string[] | undefined): Href | null {
-  const candidate = Array.isArray(value) ? value[0] : value;
-  if (candidate === '/') return '/';
-  return null;
 }
 
 function MasterPasswordStep({
@@ -173,9 +170,14 @@ function MasterPasswordStep({
     }
     setFieldError(undefined);
     setBusy(true);
+    const profile = getServerProfile();
+    const pairingBootstrap = profile
+      ? (getPairingBootstrap(profile.serverId) ?? undefined)
+      : undefined;
     void client
-      .initSecretPassword(password)
+      .initSecretPassword(password, undefined, pairingBootstrap)
       .then((res) => {
+        if (profile && pairingBootstrap) clearPairingBootstrap(profile.serverId, pairingBootstrap);
         // Store this device's minted bearer token (audit C1) when the gate is
         // active; a gate-off deployment returns no token and this is a no-op.
         if (res?.token) void setAuthToken(getVerityBaseUrl(), res.token, res.tokenId);
@@ -202,15 +204,24 @@ function MasterPasswordStep({
     if (busy) return;
     setFieldError(undefined);
     setBusy(true);
+    const profile = getServerProfile();
+    const pairingBootstrap = profile
+      ? (getPairingBootstrap(profile.serverId) ?? undefined)
+      : undefined;
     void client
-      .unlockSecret(password)
+      .unlockSecret(password, undefined, pairingBootstrap)
       .then((res) => {
+        if (profile && pairingBootstrap) clearPairingBootstrap(profile.serverId, pairingBootstrap);
         if (res?.token) void setAuthToken(getVerityBaseUrl(), res.token, res.tokenId);
         maybeAskBiometrics(res?.token, password);
       })
       .catch((caught) => {
         if (caught instanceof VerityApiError && caught.status === 401) {
-          setFieldError('Incorrect password.');
+          setFieldError(
+            pairingBootstrap
+              ? 'Incorrect password. Scan a new pairing code before retrying.'
+              : 'Incorrect password or a new pairing code is required.',
+          );
           return;
         }
         setFieldError(caught instanceof VerityApiError ? caught.message : 'Could not unlock.');

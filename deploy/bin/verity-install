@@ -25,6 +25,7 @@ ID_PATH="$STATE_DIR/deployment-id"
 PROJECT_PATH="$STATE_DIR/compose-project"
 SUPERVISOR_PATH="$STATE_DIR/runner-supervisor"
 GVISOR_PATH="$STATE_DIR/gvisor-required"
+POSTGRES_PASSWORD_PATH="$STATE_DIR/postgres-password"
 LOCK_PATH="$STATE_DIR/.verity-install.lock"
 MANAGED_CONTAINER_PREFIX='verity-managed-server'
 MANAGED_DEPLOYMENT_VOLUME='verity-managed-deployment'
@@ -140,8 +141,8 @@ docker compose version >/dev/null 2>&1 \
   || die 'the Docker Compose v2 plugin is required — `docker compose version` failed. Install docker-compose-plugin; the standalone docker-compose binary is not used.'
 
 case "$(uname -m)" in
-  x86_64|amd64|aarch64|arm64) ;;
-  *) die "unsupported architecture $(uname -m) — managed mode supports amd64 and arm64" ;;
+  x86_64|amd64) ;;
+  *) die "unsupported architecture $(uname -m) — this release currently publishes amd64 images only" ;;
 esac
 
 # ── docker helpers ─────────────────────────────────────────────────────────
@@ -215,7 +216,10 @@ if [ -e "$STATE_DIR" ]; then
   # and `chmod 0700 /etc` on a host whose operator mistyped the override is a far
   # worse outcome than a state directory that stays 0755.
 elif [ "$opt_check" = 0 ]; then
-  install -d -m 0700 -o root -g root "$STATE_DIR"
+  # Containers run as uid 1000 and must be able to traverse the bind-mounted
+  # directory. Files remain individually restricted; execute-only access does
+  # not permit listing the directory or reading root-owned installer state.
+  install -d -m 0711 -o root -g root "$STATE_DIR"
 fi
 
 # Reading a state file through a symlink lets whoever planted it choose what this
@@ -388,6 +392,17 @@ fi
 # second Postgres and a second Server, and the control-plane fence then refuses to
 # start the newcomer. So resolve it once, persist it, and reuse it forever after.
 persisted_project="$(read_state "$PROJECT_PATH")"
+
+# Internal PostgreSQL credential. Hex is URL-safe without percent-encoding and
+# 32 random bytes retain full entropy. Existing hosts receive one once and reuse
+# it across every managed generation and installer repair.
+postgres_password="$(read_state "$POSTGRES_PASSWORD_PATH")"
+if [ -n "$postgres_password" ]; then
+  [[ "$postgres_password" =~ ^[a-f0-9]{64}$ ]] \
+    || die "$POSTGRES_PASSWORD_PATH is malformed; expected 64 lowercase hex characters"
+else
+  postgres_password="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+fi
 
 # A name given by hand or inherited from the environment must not quietly displace
 # the persisted one: that is precisely how a second project gets stood up beside the
@@ -667,6 +682,16 @@ printf '%s\n' "$deployment_id" | write_state "$ID_PATH" 0644
 printf '%s\n' "$compose_project" | write_state "$PROJECT_PATH" 0644
 printf '%s\n' "$runner_supervisor" | write_state "$SUPERVISOR_PATH" 0644
 printf '%s\n' "$gvisor_required" | write_state "$GVISOR_PATH" 0644
+printf '%s\n' "$postgres_password" | write_state "$POSTGRES_PASSWORD_PATH" 0600
+
+# Stable server identity and TLS keys live beside the installer state. Each run
+# rotates only the short-lived, one-time pairing capability shown below.
+note 'creating TLS identity and a 15-minute device pairing code'
+pairing_uri="$(VERITY_STATE_DIR="$STATE_DIR" \
+  VERITY_API_HOST_PORT="${VERITY_API_HOST_PORT:-8082}" \
+  VERITY_SERVER_UID="${VERITY_SERVER_UID:-1000}" \
+  VERITY_SERVER_GID="${VERITY_SERVER_GID:-1000}" \
+  "$repo_root/deploy/bin/verity-pairing-material")"
 
 # ── hand over to the guarded migration ─────────────────────────────────────
 note 'running the guarded migration (verity-compose managed-up)'
@@ -676,13 +701,42 @@ VERITY_MANAGED_DEPLOYMENT_ID="$deployment_id" \
 VERITY_UPDATER_TOKEN_HOST_PATH="$TOKEN_PATH" \
 VERITY_RUNNER_SUPERVISOR="$runner_supervisor" \
 VERITY_GVISOR_REQUIRED="$gvisor_required" \
+VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
+VERITY_POSTGRES_PASSWORD="$postgres_password" \
 COMPOSE_PROJECT_NAME="$compose_project" \
   ./deploy/bin/verity-compose managed-up
 
+# Databases initialized by older releases retain `trust` in PGDATA even after
+# the Compose environment changes. Set the role password first, replace host
+# trust rules atomically inside that already-running container, then reload.
+postgres_containers="$(docker_query 'the Compose PostgreSQL container after migration' \
+  ps --filter "label=com.docker.compose.project=$compose_project" \
+  --filter 'label=com.docker.compose.service=postgres' --format '{{.Names}}')"
+postgres_container_count="$(count_lines "$postgres_containers")"
+[ "$postgres_container_count" = 1 ] \
+  || die "expected exactly one running PostgreSQL container after managed-up, found $postgres_container_count; authentication migration was not completed. Fix the Compose deployment and run this installer again."
+postgres_container="$postgres_containers"
+docker exec "$postgres_container" psql -v ON_ERROR_STOP=1 -U verity -d verity \
+  -c "SET password_encryption='scram-sha-256'; ALTER ROLE verity WITH PASSWORD '$postgres_password'" >/dev/null \
+  || die 'could not set the PostgreSQL role password'
+docker exec --user 0 "$postgres_container" sh -eu -c \
+  "sed -i -E '/^[[:space:]]*host/ s/[[:space:]]+trust([[:space:]]|$)/ scram-sha-256\\1/' \"\$PGDATA/pg_hba.conf\"; ! grep -Eq '^[[:space:]]*host[^#]*[[:space:]]trust([[:space:]]|$)' \"\$PGDATA/pg_hba.conf\"" \
+  || die 'could not migrate every PostgreSQL host authentication rule from trust to SCRAM'
+docker exec "$postgres_container" psql -v ON_ERROR_STOP=1 -U verity -d verity \
+  -c 'SELECT pg_reload_conf()' >/dev/null \
+  || die 'could not reload PostgreSQL authentication configuration'
+docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
+  psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U verity -d verity -c 'SELECT 1' >/dev/null \
+  || die 'PostgreSQL rejected the generated credential over TCP after the SCRAM migration; run this installer again after correcting PostgreSQL'
+
 printf '\n'
 if [ "$first_install" = 1 ]; then
-  note 'installed. Open the app and unlock the master password store to finish first-run setup.'
+  note 'installed. Scan this one-time code in the app, then create the master password.'
 else
-  note 'host side is now on the same release as the Server.'
+  note 'host side is now on the same release as the Server. Scan to pair another device.'
 fi
+printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_image" \
+  packages/server/dist/pairing-qr.js \
+  || die 'the Server image could not render the pairing QR code'
+printf '  Pairing URI: %s\n' "$pairing_uri"
 note 'normal app-initiated updates carry managed companions forward automatically; re-run this command only for recovery.'

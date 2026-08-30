@@ -74,22 +74,52 @@ describe('runner-transport (ADR 0006 Stage 2.1)', () => {
     if (perm?.kind === 'permission-request') expect(perm.request).toEqual(PERMISSION_REQUEST);
   });
 
-  it('resolves as soon as the result frame is seen and stops delivering after it', async () => {
+  it('tails a frame larger than the bounded read chunk across multiple reads', async () => {
+    const large = frame(
+      { kind: 'event', event: { t: 'text', delta: 'x'.repeat(2 * 1024 * 1024) } },
+      1,
+    );
+    const terminal = frame({ kind: 'result', result: RESULT }, 2);
+    await writeFrame({ path: file }, large);
+    await writeFrame({ path: file }, terminal);
+    const seen: RunnerFrame[] = [];
+    await tailFrames(
+      file,
+      (item) => {
+        seen.push(item);
+      },
+      { pollMs: 1 },
+    );
+    expect(seen).toEqual([large, terminal]);
+  });
+
+  it('rejects data after the terminal result frame', async () => {
     await writeFrame({ path: file }, SESSION_FRAME);
     await writeFrame({ path: file }, RESULT_FRAME);
     // A frame written AFTER the result must not be delivered (tail already resolved).
     await writeFrame({ path: file }, EVENT_FRAME_A);
 
     const seen: RunnerFrame[] = [];
-    await tailFrames(
-      file,
-      (frame) => {
-        seen.push(frame);
-      },
-      { pollMs: 1 },
-    );
+    await expect(
+      tailFrames(
+        file,
+        (frame) => {
+          seen.push(frame);
+        },
+        { pollMs: 1 },
+      ),
+    ).rejects.toThrow('runner result frame must be terminal');
 
-    expect(seen).toEqual([SESSION_FRAME, RESULT_FRAME]);
+    expect(seen).toEqual([SESSION_FRAME]);
+  });
+
+  it('rejects trailing frames that begin beyond the current read chunk', async () => {
+    await writeFrame({ path: file }, RESULT_FRAME);
+    await appendFile(file, ' '.repeat(1024 * 1024));
+    await writeFrame({ path: file }, EVENT_FRAME_A);
+    await expect(tailFrames(file, () => {}, { pollMs: 1 })).rejects.toThrow(
+      'runner result frame must be terminal',
+    );
   });
 
   it('buffers a partial trailing line across polls (frame split by a poll boundary)', async () => {
@@ -141,6 +171,25 @@ describe('runner-transport (ADR 0006 Stage 2.1)', () => {
   it('rejects on a malformed frame line', async () => {
     await appendFile(file, '{"kind":"bogus"}\n');
     await expect(tailFrames(file, () => {}, { pollMs: 1 })).rejects.toThrow(/frame kind/);
+  });
+
+  it('bounds an unterminated frame accumulated across polls', async () => {
+    const tail = tailFrames(file, () => {}, { pollMs: 1 });
+    await appendFile(file, 'x'.repeat(8 * 1024 * 1024));
+    await appendFile(file, 'x');
+    await expect(tail).rejects.toThrow('runner frame exceeded the size limit');
+  });
+
+  it.each([
+    ['wrong protocol', { ...SESSION_FRAME, protocolVersion: 999 }],
+    ['fractional sequence', { ...SESSION_FRAME, frameSeq: 1.5 }],
+    ['empty turn id', { ...SESSION_FRAME, turnId: '' }],
+    ['malformed event', { ...EVENT_FRAME_A, event: { t: 'status', state: 'bogus' } }],
+    ['malformed result', { ...RESULT_FRAME, result: { exitCode: '0' } }],
+    ['forged payload hash', { ...SESSION_FRAME, id: 'other-session' }],
+  ])('rejects a structurally invalid %s frame', async (_label, invalid) => {
+    await appendFile(file, `${JSON.stringify(invalid)}\n`);
+    await expect(tailFrames(file, () => {}, { pollMs: 1 })).rejects.toThrow(/invalid/);
   });
 
   it('waits for the file to appear before the first frame', async () => {

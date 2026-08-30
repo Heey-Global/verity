@@ -158,6 +158,7 @@ class ReconnectingControlChannel {
     private readonly controlSocketPath: string,
     private readonly turnId: string,
     private readonly controllerId: string,
+    private readonly capability: string | undefined,
     private readonly isSettled: () => boolean,
     private readonly verifiedProtocolVersion: number | undefined,
     connectInitial: () => Promise<ControlSocketClient | undefined>,
@@ -185,6 +186,7 @@ class ReconnectingControlChannel {
     this.reconnecting = connectControl(this.controlSocketPath, {
       turnId: this.turnId,
       controllerId: this.controllerId,
+      ...(this.capability !== undefined ? { capability: this.capability } : {}),
       resumeLeaseEpoch: failed.leaseEpoch,
       ...(this.verifiedProtocolVersion !== undefined
         ? { verifiedProtocolVersion: this.verifiedProtocolVersion }
@@ -317,12 +319,21 @@ export class FileTailRunnerClient implements RunnerClient {
     // for a decision the operator already made. The frame is still claimed below so
     // the sequence stays contiguous; the `tool_call` that follows keeps the request
     // itself visible in the transcript.
-    const autoApproved =
+    const grantCovered =
       frame.kind === 'permission-request' &&
       ctx.answerPermission !== undefined &&
       (await this.deps
         .autoApprovePermission?.(ctx.sessionId, frame.request, this.grantChannel)
         .catch(() => false)) === true;
+    // A grant lookup is not an approval until the Runner ACKs the decision. If
+    // delivery fails or the prompt is no longer applicable, keep the ordinary
+    // durable card path: claiming the frame without either an ACK or a card would
+    // make the permission invisible forever, including after reattach.
+    const autoApproved =
+      grantCovered &&
+      (await ctx.answerPermission!(frame.request.toolUseId, { behavior: 'allow' }).catch(
+        () => false,
+      )) === true;
     // Claim EVERY frame under `(turnId, frameSeq)` so the sequence stays contiguous
     // and a re-tail after a crash is idempotent (D4). Event frames also persist their
     // event inside that same transaction; other frames just claim their slot.
@@ -371,12 +382,8 @@ export class FileTailRunnerClient implements RunnerClient {
       }
       case 'permission-request': {
         if (autoApproved) {
-          // A standing grant already covers this request: answer it here, so no card
-          // and no push ever existed. Answering is best-effort — the worker's own
-          // fail-safe denies an unanswered prompt when the turn settles.
-          if (accepted) {
-            await ctx.answerPermission?.(frame.request.toolUseId, { behavior: 'allow' });
-          }
+          // The standing grant was acknowledged before the frame was claimed, so no
+          // card and no push ever existed.
           return;
         }
         if (accepted) {
@@ -463,6 +470,7 @@ export class FileTailRunnerClient implements RunnerClient {
             controlSocketPath,
             turnId,
             controllerId,
+            opts.startCommandId,
             () => settled,
             RUNNER_FRAME_PROTOCOL_VERSION,
             () =>
@@ -472,6 +480,9 @@ export class FileTailRunnerClient implements RunnerClient {
                   : connectControl(controlSocketPath, {
                       turnId,
                       controllerId,
+                      ...(opts.startCommandId !== undefined
+                        ? { capability: opts.startCommandId }
+                        : {}),
                       verifiedProtocolVersion: RUNNER_FRAME_PROTOCOL_VERSION,
                     }),
               ),
@@ -589,7 +600,11 @@ export class FileTailRunnerClient implements RunnerClient {
           stderr: '',
           aborted: true,
         });
-        return Promise.resolve(true);
+        // A raw file-tail client cannot certify termination of a separately
+        // launched worker; it only stopped its local tail. SupervisorRunnerClient
+        // wraps this handle with the real out-of-band kill and returns true only
+        // after that control plane proves the worker terminal.
+        return Promise.resolve(externalLaunch === undefined);
       },
     };
   }
@@ -645,12 +660,16 @@ export class FileTailRunnerClient implements RunnerClient {
       controlSocketPath,
       turnId,
       controllerId,
+      target.controlCapability,
       () => settled,
       target.protocolVersion,
       () =>
         connectControl(controlSocketPath, {
           turnId,
           controllerId,
+          ...(target.controlCapability !== undefined
+            ? { capability: target.controlCapability }
+            : {}),
           ...(target.protocolVersion !== undefined
             ? { verifiedProtocolVersion: target.protocolVersion }
             : {}),
@@ -695,7 +714,10 @@ export class FileTailRunnerClient implements RunnerClient {
         if (settled) return Promise.resolve(true);
         controller.abort();
         resolveResult({ sessionId, exitCode: 143, stderr: '', aborted: true });
-        return Promise.resolve(true);
+        // Reattachment is necessarily to an external worker. Closing this Server's
+        // tail is not evidence that worker stopped; the supervisor wrapper supplies
+        // the actual termination certificate.
+        return Promise.resolve(false);
       },
     };
   }

@@ -54,9 +54,13 @@ async function backend(label: string): Promise<{
   };
 }
 
-async function get(port: number, path: string): Promise<{ status: number; body: string }> {
+async function get(
+  port: number,
+  path: string,
+  headers?: Record<string, string>,
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    request({ host: '127.0.0.1', port, path }, (response) => {
+    request({ host: '127.0.0.1', port, path, headers }, (response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk));
       response.on('end', () =>
@@ -90,6 +94,75 @@ async function gateway(
 }
 
 describe('managed gateway foundation', () => {
+  it('replaces a spoofed managed-client header with a signed socket identity', async () => {
+    let forwarded: string | string[] | undefined;
+    const server = createServer((request, response) => {
+      forwarded = request.headers['x-verity-managed-client'];
+      response.end('ok');
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = (server.address() as { port: number }).port;
+    closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const runtime = await startManagedGateway({
+      publicPort: 0,
+      internalPort: 0,
+      backend: { host: '127.0.0.1', publicPort: port, internalPort: port },
+      allowedBackendHosts: ['127.0.0.1'],
+      clientIdentitySecret: Buffer.alloc(32, 7),
+    });
+    closers.push(() => runtime.close());
+
+    await get(runtime.publicPort, '/', { 'x-verity-managed-client': 'spoofed' });
+    expect(forwarded).toEqual(expect.stringMatching(/^\d+\.[^.]+\.[A-Za-z0-9_-]+$/));
+    expect(forwarded).not.toBe('spoofed');
+  });
+
+  it('replaces a spoofed managed-client header on WebSocket upgrades', async () => {
+    let forwarded: string | string[] | undefined;
+    const sockets = new Set<import('node:net').Socket>();
+    const server = createServer();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    server.on('upgrade', (request, socket) => {
+      forwarded = request.headers['x-verity-managed-client'];
+      socket.end(
+        'HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n',
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = (server.address() as { port: number }).port;
+    closers.push(
+      () =>
+        new Promise<void>((resolve) => {
+          for (const socket of sockets) socket.destroy();
+          server.close(() => resolve());
+        }),
+    );
+    const runtime = await startManagedGateway({
+      publicPort: 0,
+      internalPort: 0,
+      backend: { host: '127.0.0.1', publicPort: port, internalPort: port },
+      allowedBackendHosts: ['127.0.0.1'],
+      clientIdentitySecret: Buffer.alloc(32, 7),
+    });
+    closers.push(() => runtime.close());
+
+    const socket = connect(runtime.publicPort, '127.0.0.1');
+    await once(socket, 'connect');
+    socket.write(
+      'GET /events HTTP/1.1\r\nHost: gateway\r\nConnection: Upgrade\r\nUpgrade: test\r\n' +
+        'X-Verity-Managed-Client: spoofed\r\n\r\n',
+    );
+    await once(socket, 'data');
+    socket.destroy();
+
+    expect(forwarded).toEqual(expect.stringMatching(/^\d+\.[^.]+\.[A-Za-z0-9_-]+$/));
+    expect(forwarded).not.toBe('spoofed');
+  });
   it('switches public and internal routes atomically behind maintenance', async () => {
     const oldBackend = await backend('old');
     const nextBackend = await backend('next');

@@ -57,6 +57,17 @@ describe('extractToolResultImages', () => {
       ]),
     ).toEqual([]);
   });
+
+  it('rejects unrenderable or active-content media types', async () => {
+    const unsafe = inlineImage('PHN2Zz4=', 'image/svg+xml');
+    expect(extractToolResultImages([unsafe])).toEqual([]);
+    const store = vi.fn(async () => 'id');
+    await expect(externalizeToolResultImages([unsafe], store)).resolves.toEqual({
+      output: [unsafe],
+      changed: false,
+    });
+    expect(store).not.toHaveBeenCalled();
+  });
 });
 
 describe('externalizeToolResultImages', () => {

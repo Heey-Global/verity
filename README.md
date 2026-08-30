@@ -27,11 +27,9 @@ same command repairs or updates the host-side installation without replacing its
 persisted deployment identity. The release bundle is staged in a fresh root-owned
 directory for the duration of the run and removed afterwards.
 
-**For manual installation and advanced options, follow [`deploy/README.md`](deploy/README.md).** In short:
-bring up the runner with `docker compose -f deploy/docker-compose.yml up -d`, then
-open the mobile app, point it at `http://<host>:8082`, set a master password, and
-connect GitHub — everything else is configured in the app, with no host-mounted
-secret files.
+**For manual installation and advanced options, follow [`deploy/README.md`](deploy/README.md).**
+The supported installer creates the local TLS identity and prints a one-time QR
+code; scan it in the mobile app, set a master password, and connect GitHub.
 
 The default deploy is still **self-contained** — you do not have to bring your own
 database — but PostgreSQL is the only runtime store: `deploy/docker-compose.yml`

@@ -86,6 +86,7 @@ import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   createContext,
+  type ComponentProps,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -162,6 +163,8 @@ import {
 } from '../../lib/attachments';
 import { getAuthToken } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { downloadPinnedFile } from '../../lib/pinnedTransport';
+import { getServerProfile } from '../../lib/serverProfile';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import {
   type ClickModifiers,
@@ -2304,6 +2307,7 @@ export function SessionChat({
   const uploadMeetingAudio = useCallback(() => {
     void (async () => {
       let localId: string | undefined;
+      let pickedUri: string | undefined;
       let clearLocalImmediately = false;
       let scheduleLocalFallbackClear = false;
       try {
@@ -2364,6 +2368,7 @@ export function SessionChat({
         }
         const picked = await pickMeetingAudioAsset();
         if (!picked) return;
+        pickedUri = picked.uri;
         const activityId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         localId = activityId;
         setLocalMeetingUploads((current) => [
@@ -2400,6 +2405,13 @@ export function SessionChat({
           );
         }
       } finally {
+        if (pickedUri) {
+          try {
+            new FsFile(pickedUri).delete();
+          } catch {
+            // Best effort; the OS may already have reaped the picker copy.
+          }
+        }
         if (localId) {
           const clearLocal = () => {
             setLocalMeetingUploads((current) =>
@@ -2448,10 +2460,17 @@ export function SessionChat({
             }
           }
         } catch (error) {
-          if (!transcriptUploaded && !(error instanceof VerityApiError)) {
+          const retryableUploadFailure =
+            !transcriptUploaded &&
+            (!(error instanceof VerityApiError) || error.status === 429 || error.status >= 500);
+          if (retryableUploadFailure) {
             restorePendingMeetingUpload(sessionId, { ...pending, transcriptUploaded });
           }
           if (error instanceof VerityApiError && !transcriptUploaded) {
+            if (retryableUploadFailure) {
+              Alert.alert('Could not upload meeting audio', error.message);
+              return;
+            }
             if (pending.followUpPrompt?.trim()) {
               const followUpPrompt = pending.followUpPrompt.trim();
               setDraft((current) =>
@@ -3678,6 +3697,10 @@ function SessionFilesSheet({
   // string it saw first.
   const token = getAuthToken(baseUrl);
   const authorization = token !== null && token.length > 0 ? `Bearer ${token}` : '';
+  const directTlsPin =
+    getServerProfile()?.endpoints.find(({ url }) => url === baseUrl)?.transport === 'direct'
+      ? getServerProfile()?.endpoints.find(({ url }) => url === baseUrl)?.tlsPin
+      : undefined;
 
   useEffect(() => {
     if (!initialFilePath) return;
@@ -3751,8 +3774,9 @@ function SessionFilesSheet({
   const uploadFiles = useCallback(() => {
     void (async () => {
       let uploaded = false;
+      let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
       try {
-        const picked = await pickSessionFiles();
+        picked = await pickSessionFiles();
         if (picked.length === 0) return;
         setUploading(true);
         for (const file of picked) {
@@ -3766,6 +3790,16 @@ function SessionFilesSheet({
       } catch (err) {
         Alert.alert('Could not upload file', err instanceof Error ? err.message : String(err));
       } finally {
+        // DocumentPicker copied every selected item into our cache. Dispose all
+        // copies after success or failure; otherwise repeated large selections
+        // permanently consume app storage.
+        for (const file of picked) {
+          try {
+            new FsFile(file.uri).delete();
+          } catch {
+            // Best effort; the OS may already have reaped the temporary file.
+          }
+        }
         if (uploaded) setReloadKey((key) => key + 1);
         setUploading(false);
       }
@@ -3843,16 +3877,22 @@ function SessionFilesSheet({
           const cacheDir = new FsDirectory(Paths.cache, cacheDirectoryName(sessionId, filePath));
           cacheDir.create({ idempotent: true, intermediates: true });
           const token = getAuthToken(baseUrl);
-          const file = await FsFile.downloadFileAsync(
-            url,
-            new FsFile(cacheDir, fileNameFromPath(filePath)),
-            {
-              idempotent: true,
-              ...(token !== null && token.length > 0
-                ? { headers: { authorization: `Bearer ${token}` } }
-                : {}),
-            },
-          );
+          const destination = new FsFile(cacheDir, fileNameFromPath(filePath));
+          const headers =
+            token !== null && token.length > 0 ? { authorization: `Bearer ${token}` } : undefined;
+          const file = directTlsPin
+            ? new FsFile(
+                await downloadPinnedFile({
+                  url,
+                  destination: destination.uri,
+                  tlsPin: directTlsPin,
+                  ...(headers ? { headers } : {}),
+                }),
+              )
+            : await FsFile.downloadFileAsync(url, destination, {
+                idempotent: true,
+                ...(headers ? { headers } : {}),
+              });
           const sharing = await loadSharingModule();
           if (sharing !== undefined && (await sharing.isAvailableAsync())) {
             await sharing.shareAsync(file.uri, {
@@ -3867,7 +3907,7 @@ function SessionFilesSheet({
         }
       })();
     },
-    [baseUrl, client, sessionId],
+    [baseUrl, client, directTlsPin, sessionId],
   );
 
   const openFile = useCallback(
@@ -4178,6 +4218,8 @@ function SessionFilesSheet({
                           enabled
                           items={dragItemsByPath.get(entry.path) ?? []}
                           authorization={authorization}
+                          tlsPin={directTlsPin ?? ''}
+                          origin={baseUrl}
                           // The selection has done its job once the files land
                           // somewhere; leaving it up would strand the sheet in a
                           // mode you have to dismiss by hand. A row dragged from
@@ -4347,8 +4389,8 @@ function UserBubble({ message }: { message: UserTextMessage }) {
                     accessibilityRole="imagebutton"
                     accessibilityLabel={`View attached image ${String(i + 1)} full screen`}
                   >
-                    <ExpoImage
-                      source={attachmentSource(a)}
+                    <AttachmentImage
+                      attachment={a}
                       style={styles.userImage}
                       contentFit="cover"
                       transition={120}
@@ -4401,7 +4443,7 @@ function UserBubble({ message }: { message: UserTextMessage }) {
 // Full-screen viewer for a sent attachment. Base64 → data URI (or the stored-blob
 // URL) for <Image>; the zoom/pan/close behaviour lives in ImageLightbox.
 function ImageViewer({ attachment, onClose }: { attachment: Attachment; onClose: () => void }) {
-  const source = attachmentSource(attachment);
+  const source = useAttachmentImageSource(attachment);
   if (source === undefined) return null;
   return (
     <ImageLightbox
@@ -4978,27 +5020,32 @@ function ToolImages({ images }: { images: ToolImage[] }) {
   if (images.length === 0) return null;
   return (
     <View style={styles.toolImages}>
-      {images.map((img, i) => {
-        // A stored image (id) resolves to the content-addressed endpoint, which
-        // expo-image fetches lazily + disk-caches (only visible rows load); a
-        // live-streamed / legacy image (data) resolves to a data URI. See
-        // attachmentSource.
-        const source = attachmentSource(img);
-        if (source === undefined) return null;
-        return (
-          <Pressable
-            key={`${String(i)}-${img.id ?? source.uri?.slice(0, 24) ?? 'image'}`}
-            onPress={() => setViewer(source)}
-            accessibilityRole="imagebutton"
-            accessibilityLabel="Image from tool result"
-            accessibilityHint="Opens the image full screen, where you can pinch to zoom"
-          >
-            <ExpoImage source={source} style={styles.toolImage} contentFit="contain" />
-          </Pressable>
-        );
-      })}
+      {images.map((img, i) => (
+        <ToolImageItem key={`${String(i)}-${img.id ?? 'inline'}`} image={img} onOpen={setViewer} />
+      ))}
       {viewer !== null ? <ImageLightbox source={viewer} onClose={() => setViewer(null)} /> : null}
     </View>
+  );
+}
+
+function ToolImageItem({
+  image,
+  onOpen,
+}: {
+  image: ToolImage;
+  onOpen: (source: ImageSource) => void;
+}) {
+  const source = useAttachmentImageSource(image);
+  if (source === undefined) return null;
+  return (
+    <Pressable
+      onPress={() => onOpen(source)}
+      accessibilityRole="imagebutton"
+      accessibilityLabel="Image from tool result"
+      accessibilityHint="Opens the image full screen, where you can pinch to zoom"
+    >
+      <ExpoImage source={source} style={styles.toolImage} contentFit="contain" />
+    </Pressable>
   );
 }
 
@@ -6252,9 +6299,9 @@ function QueuedMessages({
                     attachment.kind === 'file' ? (
                       <FilePreview key={attachmentIndex} name={attachment.fileName} />
                     ) : (
-                      <ExpoImage
+                      <AttachmentImage
                         key={attachmentIndex}
-                        source={attachmentSource(attachment)}
+                        attachment={attachment}
                         style={styles.userImage}
                         contentFit="cover"
                         transition={120}
@@ -6660,12 +6707,14 @@ function InputBar({
   );
   const onComposerKeyPress = useCallback(
     (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
-      if (Platform.OS !== 'ios' || !Platform.isPad || event.nativeEvent.key !== 'Enter') return;
+      if (dead || Platform.OS !== 'ios' || !Platform.isPad || event.nativeEvent.key !== 'Enter')
+        return;
+      if (hardwareKeyboardDetection() !== 'hardware') return;
       suppressReturnChangeRef.current = true;
       returnSubmitValueRef.current = value;
       onSend();
     },
-    [onSend, value],
+    [dead, onSend, value],
   );
   // Auto-grow: let the native multiline TextInput size to its content (it grows up
   // to `maxHeight`, then scrolls). We deliberately do NOT set an explicit `height`
@@ -6900,6 +6949,82 @@ function attachmentSource(a: {
   return undefined;
 }
 
+/** Resolve stored images through the same native public-key-pinned downloader as
+ * API requests. Passing their HTTPS URL directly to expo-image would use its own
+ * URLSession and therefore reject the installer's self-signed certificate. */
+function useAttachmentImageSource(a: {
+  id?: string;
+  data?: string;
+  mediaType: string;
+}): ImageSource | undefined {
+  const immediate = useMemo(() => attachmentSource(a), [a.data, a.id, a.mediaType]);
+  const [source, setSource] = useState<ImageSource | undefined>(
+    a.id === undefined ? immediate : undefined,
+  );
+  useEffect(() => {
+    if (a.id === undefined) {
+      setSource(immediate);
+      return;
+    }
+    const baseUrl = getVerityBaseUrl();
+    const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === baseUrl);
+    if (baseUrl === null || endpoint?.transport !== 'direct' || endpoint.tlsPin === undefined) {
+      setSource(immediate);
+      return;
+    }
+    let active = true;
+    let cachedUri: string | undefined;
+    const destination = new FsFile(
+      Paths.cache,
+      'verity-attachments',
+      `${a.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    const token = getAuthToken(baseUrl);
+    void downloadPinnedFile({
+      url: `${baseUrl}/attachments/${a.id}`,
+      destination: destination.uri,
+      tlsPin: endpoint.tlsPin,
+      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+    })
+      .then((uri) => {
+        if (active) {
+          cachedUri = uri;
+          setSource({ uri });
+        } else {
+          try {
+            new FsFile(uri).delete();
+          } catch {
+            // Best effort cache cleanup.
+          }
+        }
+      })
+      .catch(() => {
+        if (active) setSource(undefined);
+      });
+    return () => {
+      active = false;
+      if (cachedUri) {
+        try {
+          new FsFile(cachedUri).delete();
+        } catch {
+          // Best effort cache cleanup.
+        }
+      }
+    };
+  }, [a.id, immediate]);
+  return source;
+}
+
+function AttachmentImage({
+  attachment,
+  ...props
+}: Omit<ComponentProps<typeof ExpoImage>, 'source'> & {
+  attachment: { id?: string; data?: string; mediaType: string };
+}) {
+  const source = useAttachmentImageSource(attachment);
+  return <ExpoImage {...props} source={source} />;
+}
+
 // The strip of picked-but-not-yet-sent images above the input: horizontally
 // scrollable thumbnails, each with a remove (×) button (rendered via expo-image
 // from a data URI — see attachmentSource).
@@ -6922,8 +7047,8 @@ function AttachmentPreviews({
           {a.kind === 'file' ? (
             <FilePreview name={a.fileName} />
           ) : (
-            <ExpoImage
-              source={attachmentSource(a)}
+            <AttachmentImage
+              attachment={a}
               style={styles.previewImage}
               contentFit="cover"
               accessibilityLabel={`Attachment ${String(i + 1)}`}

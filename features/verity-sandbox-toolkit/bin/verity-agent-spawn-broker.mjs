@@ -75,7 +75,7 @@ export const DEFAULT_WORKTREE_ROOT = '/work';
  * is the Runner, which is exactly the party this guard does not trust.
  */
 export const SHARED_SESSION_ROOT = '/srv/verity/sessions';
-const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_ARGS_BYTES = 2 * 1024 * 1024;
 /**
  * The `command` values a spawn request may name. Deliberately a closed set held
@@ -345,6 +345,10 @@ async function validateSpawnRequest(raw, options) {
           typeof secret.value === 'string' &&
           secret.value.length > 0 &&
           !secret.value.includes('\0') &&
+          (secret.encoding === undefined ||
+            (secret.injection === 'file' &&
+              secret.encoding === 'base64' &&
+              Buffer.from(secret.value, 'base64').toString('base64') === secret.value)) &&
           Buffer.byteLength(secret.value) <= 1024 * 1024 &&
           // Absent means env: every caller written before file injection existed.
           (secret.injection === undefined ||
@@ -1005,6 +1009,7 @@ export async function validateTrustedCliArguments(
   let envWrapper = commandName === 'env';
   let timeoutWrapper = commandName === 'timeout';
   let timeoutDurationSeen = false;
+  let requiredFileOperand = false;
   // What the exception may waive is the file Verity is about to write, so the
   // comparison has to be the one open(2) makes. `resolve` collapses `..`
   // textually: `<dir>/link/../SECRET` matches the secret path lexically while
@@ -1042,6 +1047,12 @@ export async function validateTrustedCliArguments(
   };
   for (const arg of args) {
     if (typeof arg !== 'string') continue;
+    const fileOperandRequired = requiredFileOperand;
+    requiredFileOperand =
+      (commandName === 'make' && arg === '-f') ||
+      (commandName === 'xargs' && arg === '-a') ||
+      ((commandName === 'java' || commandName === 'javac') &&
+        (arg === '-cp' || arg === '-classpath' || arg === '--class-path'));
     if (inlineCodeFollows) {
       // Arguments after `-c <code>` are values supplied to that already-visible
       // code, not files the interpreter itself executes.
@@ -1219,7 +1230,7 @@ export async function validateTrustedCliArguments(
         // tool whose flag takes a plain path unable to use file injection at all.
         if (!interpreter && (await namesMaterializedSecret(group.locations))) continue;
         if (interpreter) throw new Error('trusted CLI interpreter operand does not exist');
-        if (group.explicit || bareExecutableOperand) {
+        if (group.explicit || bareExecutableOperand || fileOperandRequired) {
           throw new Error(`trusted CLI file operand does not exist: ${describeOperand(arg)}`);
         }
         continue;
@@ -1369,7 +1380,9 @@ async function materializeTrustedCliSecrets(request, options) {
       // `wx` fails closed on an existing file: a leftover from a killed run, or
       // one planted by the agent, must never be handed to a command as though
       // Verity had just written it.
-      await writeFile(path, secret.value, { mode: 0o600, flag: 'wx' });
+      const bytes =
+        secret.encoding === 'base64' ? Buffer.from(secret.value, 'base64') : secret.value;
+      await writeFile(path, bytes, { mode: 0o600, flag: 'wx' });
       written.push(path);
       await chown(path, uid, gid);
     }
@@ -1460,6 +1473,9 @@ export async function materializeTrustedCliEntryScript(request, options) {
         root: snapshotRoot,
         cwd: request.entryScript.loading === 'isolated' ? snapshotCwd : request.cwd,
         loading: request.entryScript.loading,
+        ...(request.entryScript.loading === 'dynamic'
+          ? { dynamicRoot: request.entryScript.worktreeRoot }
+          : {}),
       },
       cleanup,
     };
@@ -1491,6 +1507,9 @@ export function trustedCliLaunchSpec(request, options) {
           request.entrySandbox.cwd,
           '--loading',
           request.entrySandbox.loading,
+          ...(request.entrySandbox.loading === 'dynamic'
+            ? ['--dynamic-root', request.entrySandbox.dynamicRoot]
+            : []),
           ...request.secrets.flatMap((secret) =>
             secret.injection === 'file'
               ? ['--secret', trustedCliSecretPath(secret.name, options)]

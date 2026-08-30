@@ -31,18 +31,6 @@ export const CHOICES_FENCE_TAG = 'verity:choices';
  */
 const CHOICES_FENCE_RE = /```verity:choices[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
 
-const YES_NO_QUESTION_START_RE =
-  /^(?:soll(?:en)?|kann(?:st| ich|st du| man| es)?|könn(?:en|test|te)|darf(?: ich|st du| man)?|dürf(?:en|te|test)|möchtest|möchten|willst|wollen|ist|sind|wäre|wärst|würdest|should|shall|can|could|would|do|does|did|is|are|was|were|will|may|might|must|commit|push|proceed|continue|open)\b/i;
-
-const OPEN_QUESTION_START_RE =
-  /^(?:what|which|who|whom|whose|when|where|why|how|welche(?:r|s|n|m)?|wer|wen|wem|wessen|wann|wo|warum|wieso|weshalb|wie)\b/i;
-
-const OPEN_QUESTION_ANYWHERE_RE =
-  /\b(?:what|which|who|whom|whose|when|where|why|how|welche(?:r|s|n|m)?|wer|wen|wem|wessen|wann|wo|warum|wieso|weshalb|wie|or|oder)\b/i;
-
-const ENGLISH_WAS_QUESTION_RE =
-  /^was\s+(?:i|it|he|she|we|you|they|there|this|that|the|a|an|your|my|our|their)\b/i;
-
 /** Result of scanning an agent text block for the choices contract. */
 export interface ParsedChoices {
   /**
@@ -86,33 +74,6 @@ function parseLenientJson(body: string): unknown {
   }
 }
 
-function lastNonEmptyLine(input: string): string | undefined {
-  const lines = input.split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]?.trim();
-    if (line !== undefined && line.length > 0) return line;
-  }
-  return undefined;
-}
-
-function synthesizeYesNoChoices(input: string): ChoicesPayload | undefined {
-  const line = lastNonEmptyLine(input);
-  if (line === undefined || !line.endsWith('?')) return undefined;
-  if (line.startsWith('```') || line.startsWith('>')) return undefined;
-
-  const question = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, '');
-  if (!ENGLISH_WAS_QUESTION_RE.test(question) && /\bwas\b/i.test(question)) return undefined;
-  if (OPEN_QUESTION_START_RE.test(question)) return undefined;
-  if (OPEN_QUESTION_ANYWHERE_RE.test(question)) return undefined;
-  if (!YES_NO_QUESTION_START_RE.test(question)) return undefined;
-
-  return {
-    question,
-    options: [{ label: 'Ja', recommended: true }, { label: 'Nein' }],
-    multiSelect: false,
-  };
-}
-
 /**
  * Lift a {@link ChoicesPayload} off the contract block(s) in an agent text block,
  * returning the prose (block(s) removed, surrounding text rejoined) plus the
@@ -134,11 +95,7 @@ function synthesizeYesNoChoices(input: string): ChoicesPayload | undefined {
  */
 export function parseChoicesBlock(input: string): ParsedChoices {
   const matches = [...input.matchAll(CHOICES_FENCE_RE)];
-  if (matches.length === 0) {
-    const choices = synthesizeYesNoChoices(input);
-    if (choices !== undefined) return { text: input, choices };
-    return { text: input };
-  }
+  if (matches.length === 0) return { text: input };
 
   // Honor the last block that parses to a valid payload (the operative one).
   let choices: ChoicesPayload | undefined;

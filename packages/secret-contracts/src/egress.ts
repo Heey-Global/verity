@@ -27,7 +27,8 @@ const dnsNameSchema = z
   .max(253)
   .regex(
     /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
-  );
+  )
+  .refine((value) => !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(value), 'IP literals are not DNS names');
 
 export const restrictedHttpEgressPolicySchema = z
   .object({

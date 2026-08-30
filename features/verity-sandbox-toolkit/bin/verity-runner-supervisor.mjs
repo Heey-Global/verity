@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
+import { setImmediate } from 'node:timers';
 
 export const SUPERVISOR_PROTOCOL_VERSION = 1;
 /**
@@ -419,6 +420,7 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
             name: entry.env,
             value: entry.secret,
             ...(entry.injection === undefined ? {} : { injection: entry.injection }),
+            ...(entry.encoding === undefined ? {} : { encoding: entry.encoding }),
           })),
         })}\n`,
       );
@@ -1579,7 +1581,10 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       resolveExit = resolve;
     });
     try {
-      await writeJsonAtomic(requestPath, request);
+      // The request is a one-worker capability channel. It must not be writable by
+      // the shared runtime group after validation: the worker opens this inode once,
+      // verifies its ownership/mode, and unlinks it before parsing.
+      await writeJsonAtomic(requestPath, request, 0o600);
       await updateTurnState(runtimeDir, request.turnId, { workerLock: true });
       workerLock = await acquireFileLock(workerLockPath);
       child = spawnWorker(workerCommand, [...(options.workerArgs ?? []), requestPath], {
@@ -2159,6 +2164,8 @@ export async function runSupervisor(options = {}) {
     socket.on('error', () => undefined);
     let buffered = Buffer.alloc(0);
     let handled = false;
+    let processingStarted = false;
+    let pipelinedAfterNewline = false;
     let timeout = setTimeout(() => socket.destroy(), 5_000);
     const setRequestTimeout = (milliseconds) => {
       clearTimeout(timeout);
@@ -2183,7 +2190,13 @@ export async function runSupervisor(options = {}) {
       socket.once('close', () => clearTimeout(grace));
     };
     socket.on('data', (chunk) => {
-      if (handled) return;
+      if (handled) {
+        // A second request may arrive in a later Unix-socket chunk. Give framing
+        // one event-loop turn before applying the first request so TCP/Unix chunk
+        // boundaries cannot turn the same pipelined bytes into different behavior.
+        if (!processingStarted && chunk.length > 0) pipelinedAfterNewline = true;
+        return;
+      }
       if (buffered.length + chunk.length > MAX_CONTROL_LINE_BYTES) {
         handled = true;
         buffered = Buffer.alloc(0);
@@ -2197,12 +2210,17 @@ export async function runSupervisor(options = {}) {
       const line = buffered.subarray(0, newline).toString('utf8');
       const remainder = buffered.subarray(newline + 1);
       buffered = Buffer.alloc(0);
-      socket.pause();
       if (remainder.length > 0) {
         respond(responseForError(new Error('supervisor accepts exactly one request')));
         return;
       }
-      void Promise.resolve()
+      void new Promise((resolve) => setImmediate(resolve))
+        .then(() => {
+          processingStarted = true;
+          if (pipelinedAfterNewline) {
+            throw new Error('supervisor accepts exactly one request');
+          }
+        })
         .then(() => JSON.parse(line))
         .then((request) => {
           setRequestTimeout(supervisorRequestTimeoutMs(request));

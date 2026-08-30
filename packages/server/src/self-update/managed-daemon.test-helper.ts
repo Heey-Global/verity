@@ -78,6 +78,7 @@ export function inspectFromSpec(id: string, spec: ContainerSpec, status: string)
     securityOpt: spec.securityOpt,
     capAdd: spec.capAdd,
     env: [...env].map(([name, value]) => `${name}=${value}`),
+    entrypoint: spec.entrypoint,
     command: spec.command,
     mounts: [
       ...(spec.binds ?? []).map((bind) => {

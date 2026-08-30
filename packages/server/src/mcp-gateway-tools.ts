@@ -19,7 +19,7 @@ export function createMcpGatewayToolExecutor(options: {
         projectId: string;
         sessionId: string;
         turnId: string;
-        callId: string;
+        invocationId: string;
         request: unknown;
       }) => Promise<unknown>)
     | undefined;
@@ -50,7 +50,7 @@ export function createMcpGatewayToolExecutor(options: {
         projectId,
         sessionId,
         turnId,
-        callId: invocationId,
+        invocationId,
         request,
       });
     }

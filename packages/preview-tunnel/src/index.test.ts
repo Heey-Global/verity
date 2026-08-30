@@ -12,6 +12,7 @@ import {
   hashPreviewPin,
   hashPreviewSecret,
   reconnectDelayMs,
+  supervisePreviewConnector,
 } from './index.js';
 
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -21,6 +22,45 @@ afterEach(async () => {
 });
 
 describe('connector reconnect policy', () => {
+  it('resets failure backoff after a successful connection and retries disconnects', async () => {
+    let calls = 0;
+    let stop = false;
+    const delays: number[] = [];
+    const connector = {
+      connect: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('offline');
+      },
+      waitForDisconnect: async () => {
+        if (calls === 3) stop = true;
+      },
+    };
+    await supervisePreviewConnector(connector, {
+      stopping: () => stop,
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    expect(delays).toEqual([2_000, 1_000]);
+    expect(calls).toBe(3);
+  });
+
+  it('terminates after the bounded number of consecutive failures', async () => {
+    let calls = 0;
+    await expect(
+      supervisePreviewConnector(
+        {
+          connect: async () => {
+            calls += 1;
+            throw new Error('offline');
+          },
+          waitForDisconnect: async () => undefined,
+        },
+        { stopping: () => false, sleep: async () => undefined },
+      ),
+    ).rejects.toThrow('offline');
+    expect(calls).toBe(CONNECTOR_MAX_RECONNECT_ATTEMPTS);
+  });
   it('backs off exponentially from one second and caps at fifteen', () => {
     // Attempt 0 is the post-disconnect retry (a successful connect resets the
     // counter), so the first wait is deliberately short.

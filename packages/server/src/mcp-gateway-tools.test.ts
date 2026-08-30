@@ -98,7 +98,7 @@ describe('MCP gateway trusted CLI integration', () => {
           secretAlias: 'KUBECONFIG_PROD',
           env: 'KUBECONFIG',
           injection: 'file',
-          secret: 'kubeconfig-marker',
+          secret: Buffer.from('kubeconfig-marker').toString('base64'),
         },
       ],
       command: ['/usr/bin/kubectl', 'get', 'pods'],
@@ -131,7 +131,7 @@ describe('MCP gateway Control delivery integration', () => {
       projectId: 'verity-control',
       sessionId: 'session-1',
       turnId: 'turn-1',
-      callId: 'invocation-1',
+      invocationId: 'invocation-1',
       request,
     });
   });

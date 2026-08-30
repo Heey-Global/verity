@@ -213,25 +213,29 @@ function PlanBoard({ client }: { client: VerityClient }) {
     const trimmed = draftTitle.trim();
     if (trimmed.length === 0) return;
     voice.abort();
-    setDraftTitle('');
     setCreatingDraft(true);
-    await createDraft(trimmed);
-    if (mounted.current) setCreatingDraft(false);
+    const ok = await createDraft(trimmed);
+    if (mounted.current) {
+      setCreatingDraft(false);
+      if (ok) setDraftTitle('');
+    }
   };
 
   // Run the one-shot refiner over a transcript and open/refresh the review sheet.
-  const runRefine = async (transcript: string): Promise<void> => {
+  const runRefine = async (transcript: string): Promise<boolean> => {
     const t = transcript.trim();
-    if (t.length === 0) return;
+    if (t.length === 0) return false;
     setRefining(true);
     setRefineError(undefined);
     try {
       const refined = await client.refineTask(t);
       if (mounted.current) setReview(refined);
+      return true;
     } catch (caught) {
       if (mounted.current) {
         setRefineError(caught instanceof VerityApiError ? caught.message : 'Refinement failed');
       }
+      return false;
     } finally {
       if (mounted.current) setRefining(false);
     }
@@ -241,7 +245,9 @@ function PlanBoard({ client }: { client: VerityClient }) {
     const t = draftTitle.trim();
     if (t.length === 0) return;
     voice.abort();
-    void runRefine(t).then(() => setDraftTitle(''));
+    void runRefine(t).then((ok) => {
+      if (ok && mounted.current) setDraftTitle('');
+    });
   };
 
   const submitIssue = async (): Promise<void> => {
@@ -481,6 +487,7 @@ function PlanBoard({ client }: { client: VerityClient }) {
                 title: fieldItem.title,
                 body: fieldItem.body,
                 url: fieldItem.url,
+                ...(fieldItem.projectId ? { projectId: fieldItem.projectId } : {}),
               },
             });
             setFieldItem(null);

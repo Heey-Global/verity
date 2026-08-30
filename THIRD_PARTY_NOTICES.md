@@ -13,9 +13,10 @@ separately by `TRADEMARKS.md`.
 
 - Material Symbols is supplied by `@expo-google-fonts/material-symbols`; its
   package code is MIT and its bundled font files are Apache-2.0.
-- The product website requests Inter from Google Fonts at runtime. Inter is
-  licensed under the SIL Open Font License 1.1 and is not stored in this source
-  tree.
+- The product website bundles Inter locally under
+  `docs/website/site/assets/inter-latin-variable.woff2`. Inter is licensed
+  under the SIL Open Font License 1.1; its license text is stored alongside the
+  font.
 - Product screenshots and Verity artwork in this repository are project-authored.
   Their source availability does not grant trademark rights; see
   `TRADEMARKS.md`.
@@ -37,15 +38,15 @@ separately by `TRADEMARKS.md`.
 | --- | ---: |
 | (BSD-3-Clause OR GPL-2.0) | 1 |
 | (MIT OR Apache-2.0) | 1 |
-| (MIT OR CC0-1.0) | 2 |
+| (MIT OR CC0-1.0) | 3 |
 | 0BSD | 2 |
 | Apache-2.0 | 52 |
 | BlueOak-1.0.0 | 7 |
 | BSD-2-Clause | 15 |
-| BSD-3-Clause | 28 |
+| BSD-3-Clause | 27 |
 | CC-BY-4.0 | 1 |
-| ISC | 58 |
-| MIT | 1000 |
+| ISC | 64 |
+| MIT | 979 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -69,7 +70,7 @@ separately by `TRADEMARKS.md`.
 | @anthropic-ai/claude-agent-sdk-win32-arm64 | 0.3.232 | SEE LICENSE IN LICENSE.md | [source](https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-arm64/-/claude-agent-sdk-win32-arm64-0.3.232.tgz) |
 | @anthropic-ai/claude-agent-sdk-win32-x64 | 0.3.232 | SEE LICENSE IN LICENSE.md | [source](https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk-win32-x64/-/claude-agent-sdk-win32-x64-0.3.232.tgz) |
 | @anthropic-ai/claude-agent-sdk | 0.3.232 | SEE LICENSE IN README.md | [source](https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.232.tgz) |
-| @anthropic-ai/sdk | 0.116.0 | MIT | [source](https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.116.0.tgz) |
+| @anthropic-ai/sdk | 0.122.0 | MIT | [source](https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.122.0.tgz) |
 | @babel/code-frame | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/code-frame/-/code-frame-7.29.7.tgz) |
 | @babel/compat-data | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/compat-data/-/compat-data-7.29.7.tgz) |
 | @babel/core | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/core/-/core-7.29.7.tgz) |
@@ -144,7 +145,7 @@ separately by `TRADEMARKS.md`.
 | @babel/plugin-transform-react-jsx-source | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-react-jsx-source/-/plugin-transform-react-jsx-source-7.29.7.tgz) |
 | @babel/plugin-transform-react-jsx | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-react-jsx/-/plugin-transform-react-jsx-7.29.7.tgz) |
 | @babel/plugin-transform-react-pure-annotations | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-react-pure-annotations/-/plugin-transform-react-pure-annotations-7.29.7.tgz) |
-| @babel/plugin-transform-regenerator | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-regenerator/-/plugin-transform-regenerator-7.29.7.tgz) |
+| @babel/plugin-transform-regenerator | 7.29.8 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-regenerator/-/plugin-transform-regenerator-7.29.8.tgz) |
 | @babel/plugin-transform-runtime | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-runtime/-/plugin-transform-runtime-7.29.7.tgz) |
 | @babel/plugin-transform-shorthand-properties | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-shorthand-properties/-/plugin-transform-shorthand-properties-7.29.7.tgz) |
 | @babel/plugin-transform-template-literals | 7.29.7 | MIT | [source](https://registry.npmjs.org/@babel/plugin-transform-template-literals/-/plugin-transform-template-literals-7.29.7.tgz) |
@@ -320,34 +321,20 @@ separately by `TRADEMARKS.md`.
 | @radix-ui/react-use-layout-effect | 1.1.2 | MIT | [source](https://registry.npmjs.org/@radix-ui/react-use-layout-effect/-/react-use-layout-effect-1.1.2.tgz) |
 | @react-native-async-storage/async-storage | 2.2.0 | MIT | [source](https://registry.npmjs.org/@react-native-async-storage/async-storage/-/async-storage-2.2.0.tgz) |
 | @react-native-masked-view/masked-view | 0.3.2 | MIT | [source](https://registry.npmjs.org/@react-native-masked-view/masked-view/-/masked-view-0.3.2.tgz) |
-| @react-native/assets-registry | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/assets-registry/-/assets-registry-0.85.3.tgz) |
 | @react-native/assets-registry | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/assets-registry/-/assets-registry-0.86.3.tgz) |
-| @react-native/babel-plugin-codegen | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/babel-plugin-codegen/-/babel-plugin-codegen-0.85.3.tgz) |
 | @react-native/babel-plugin-codegen | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/babel-plugin-codegen/-/babel-plugin-codegen-0.86.3.tgz) |
-| @react-native/babel-preset | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/babel-preset/-/babel-preset-0.85.3.tgz) |
 | @react-native/babel-preset | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/babel-preset/-/babel-preset-0.86.3.tgz) |
-| @react-native/codegen | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/codegen/-/codegen-0.85.3.tgz) |
 | @react-native/codegen | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/codegen/-/codegen-0.86.3.tgz) |
-| @react-native/community-cli-plugin | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/community-cli-plugin/-/community-cli-plugin-0.85.3.tgz) |
 | @react-native/community-cli-plugin | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/community-cli-plugin/-/community-cli-plugin-0.86.3.tgz) |
-| @react-native/debugger-frontend | 0.85.3 | BSD-3-Clause | [source](https://registry.npmjs.org/@react-native/debugger-frontend/-/debugger-frontend-0.85.3.tgz) |
 | @react-native/debugger-frontend | 0.86.3 | BSD-3-Clause | [source](https://registry.npmjs.org/@react-native/debugger-frontend/-/debugger-frontend-0.86.3.tgz) |
-| @react-native/debugger-shell | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/debugger-shell/-/debugger-shell-0.85.3.tgz) |
 | @react-native/debugger-shell | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/debugger-shell/-/debugger-shell-0.86.3.tgz) |
-| @react-native/dev-middleware | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/dev-middleware/-/dev-middleware-0.85.3.tgz) |
 | @react-native/dev-middleware | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/dev-middleware/-/dev-middleware-0.86.3.tgz) |
-| @react-native/gradle-plugin | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/gradle-plugin/-/gradle-plugin-0.85.3.tgz) |
 | @react-native/gradle-plugin | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/gradle-plugin/-/gradle-plugin-0.86.3.tgz) |
 | @react-native/jest-preset | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/jest-preset/-/jest-preset-0.86.3.tgz) |
-| @react-native/js-polyfills | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/js-polyfills/-/js-polyfills-0.85.3.tgz) |
 | @react-native/js-polyfills | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/js-polyfills/-/js-polyfills-0.86.3.tgz) |
-| @react-native/metro-babel-transformer | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/metro-babel-transformer/-/metro-babel-transformer-0.85.3.tgz) |
 | @react-native/metro-babel-transformer | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/metro-babel-transformer/-/metro-babel-transformer-0.86.3.tgz) |
-| @react-native/metro-config | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/metro-config/-/metro-config-0.85.3.tgz) |
 | @react-native/metro-config | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/metro-config/-/metro-config-0.86.3.tgz) |
-| @react-native/normalize-colors | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/normalize-colors/-/normalize-colors-0.85.3.tgz) |
 | @react-native/normalize-colors | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/normalize-colors/-/normalize-colors-0.86.3.tgz) |
-| @react-native/virtualized-lists | 0.85.3 | MIT | [source](https://registry.npmjs.org/@react-native/virtualized-lists/-/virtualized-lists-0.85.3.tgz) |
 | @react-native/virtualized-lists | 0.86.3 | MIT | [source](https://registry.npmjs.org/@react-native/virtualized-lists/-/virtualized-lists-0.86.3.tgz) |
 | @rolldown/binding-android-arm64 | 1.0.3 | MIT | [source](https://registry.npmjs.org/@rolldown/binding-android-arm64/-/binding-android-arm64-1.0.3.tgz) |
 | @rolldown/binding-darwin-arm64 | 1.0.3 | MIT | [source](https://registry.npmjs.org/@rolldown/binding-darwin-arm64/-/binding-darwin-arm64-1.0.3.tgz) |
@@ -389,6 +376,7 @@ separately by `TRADEMARKS.md`.
 | @types/babel__traverse | 7.28.0 | MIT | [source](https://registry.npmjs.org/@types/babel__traverse/-/babel__traverse-7.28.0.tgz) |
 | @types/chai | 5.2.3 | MIT | [source](https://registry.npmjs.org/@types/chai/-/chai-5.2.3.tgz) |
 | @types/deep-eql | 4.0.2 | MIT | [source](https://registry.npmjs.org/@types/deep-eql/-/deep-eql-4.0.2.tgz) |
+| @types/emscripten | 1.41.5 | MIT | [source](https://registry.npmjs.org/@types/emscripten/-/emscripten-1.41.5.tgz) |
 | @types/esrecurse | 4.3.1 | MIT | [source](https://registry.npmjs.org/@types/esrecurse/-/esrecurse-4.3.1.tgz) |
 | @types/estree | 1.0.9 | MIT | [source](https://registry.npmjs.org/@types/estree/-/estree-1.0.9.tgz) |
 | @types/graceful-fs | 4.1.9 | MIT | [source](https://registry.npmjs.org/@types/graceful-fs/-/graceful-fs-4.1.9.tgz) |
@@ -401,6 +389,7 @@ separately by `TRADEMARKS.md`.
 | @types/json-schema | 7.0.15 | MIT | [source](https://registry.npmjs.org/@types/json-schema/-/json-schema-7.0.15.tgz) |
 | @types/node | 24.13.3 | MIT | [source](https://registry.npmjs.org/@types/node/-/node-24.13.3.tgz) |
 | @types/pg | 8.23.1 | MIT | [source](https://registry.npmjs.org/@types/pg/-/pg-8.23.1.tgz) |
+| @types/qrcode | 1.5.6 | MIT | [source](https://registry.npmjs.org/@types/qrcode/-/qrcode-1.5.6.tgz) |
 | @types/react-test-renderer | 19.1.0 | MIT | [source](https://registry.npmjs.org/@types/react-test-renderer/-/react-test-renderer-19.1.0.tgz) |
 | @types/react | 19.2.18 | MIT | [source](https://registry.npmjs.org/@types/react/-/react-19.2.18.tgz) |
 | @types/stack-utils | 2.0.3 | MIT | [source](https://registry.npmjs.org/@types/stack-utils/-/stack-utils-2.0.3.tgz) |
@@ -474,7 +463,6 @@ separately by `TRADEMARKS.md`.
 | babel-plugin-polyfill-regenerator | 0.6.8 | MIT | [source](https://registry.npmjs.org/babel-plugin-polyfill-regenerator/-/babel-plugin-polyfill-regenerator-0.6.8.tgz) |
 | babel-plugin-react-compiler | 1.0.0 | MIT | [source](https://registry.npmjs.org/babel-plugin-react-compiler/-/babel-plugin-react-compiler-1.0.0.tgz) |
 | babel-plugin-react-native-web | 0.21.2 | MIT | [source](https://registry.npmjs.org/babel-plugin-react-native-web/-/babel-plugin-react-native-web-0.21.2.tgz) |
-| babel-plugin-syntax-hermes-parser | 0.33.3 | MIT | [source](https://registry.npmjs.org/babel-plugin-syntax-hermes-parser/-/babel-plugin-syntax-hermes-parser-0.33.3.tgz) |
 | babel-plugin-syntax-hermes-parser | 0.36.0 | MIT | [source](https://registry.npmjs.org/babel-plugin-syntax-hermes-parser/-/babel-plugin-syntax-hermes-parser-0.36.0.tgz) |
 | babel-plugin-syntax-hermes-parser | 0.36.1 | MIT | [source](https://registry.npmjs.org/babel-plugin-syntax-hermes-parser/-/babel-plugin-syntax-hermes-parser-0.36.1.tgz) |
 | babel-plugin-transform-flow-enums | 0.0.2 | MIT | [source](https://registry.npmjs.org/babel-plugin-transform-flow-enums/-/babel-plugin-transform-flow-enums-0.0.2.tgz) |
@@ -484,6 +472,7 @@ separately by `TRADEMARKS.md`.
 | badgin | 1.2.3 | MIT | [source](https://registry.npmjs.org/badgin/-/badgin-1.2.3.tgz) |
 | balanced-match | 1.0.2 | MIT | [source](https://registry.npmjs.org/balanced-match/-/balanced-match-1.0.2.tgz) |
 | balanced-match | 4.0.4 | MIT | [source](https://registry.npmjs.org/balanced-match/-/balanced-match-4.0.4.tgz) |
+| barcode-detector | 3.2.2 | MIT | [source](https://registry.npmjs.org/barcode-detector/-/barcode-detector-3.2.2.tgz) |
 | base64-js | 1.5.1 | MIT | [source](https://registry.npmjs.org/base64-js/-/base64-js-1.5.1.tgz) |
 | baseline-browser-mapping | 2.10.38 | Apache-2.0 | [source](https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.10.38.tgz) |
 | big-integer | 1.6.52 | Unlicense | [source](https://registry.npmjs.org/big-integer/-/big-integer-1.6.52.tgz) |
@@ -519,6 +508,7 @@ separately by `TRADEMARKS.md`.
 | cli-cursor | 2.1.0 | MIT | [source](https://registry.npmjs.org/cli-cursor/-/cli-cursor-2.1.0.tgz) |
 | cli-spinners | 2.9.2 | MIT | [source](https://registry.npmjs.org/cli-spinners/-/cli-spinners-2.9.2.tgz) |
 | client-only | 0.0.1 | MIT | [source](https://registry.npmjs.org/client-only/-/client-only-0.0.1.tgz) |
+| cliui | 6.0.0 | ISC | [source](https://registry.npmjs.org/cliui/-/cliui-6.0.0.tgz) |
 | cliui | 8.0.1 | ISC | [source](https://registry.npmjs.org/cliui/-/cliui-8.0.1.tgz) |
 | clone | 1.0.4 | MIT | [source](https://registry.npmjs.org/clone/-/clone-1.0.4.tgz) |
 | co | 4.6.0 | MIT | [source](https://registry.npmjs.org/co/-/co-4.6.0.tgz) |
@@ -556,6 +546,7 @@ separately by `TRADEMARKS.md`.
 | debug | 2.6.9 | MIT | [source](https://registry.npmjs.org/debug/-/debug-2.6.9.tgz) |
 | debug | 3.2.7 | MIT | [source](https://registry.npmjs.org/debug/-/debug-3.2.7.tgz) |
 | debug | 4.4.3 | MIT | [source](https://registry.npmjs.org/debug/-/debug-4.4.3.tgz) |
+| decamelize | 1.2.0 | MIT | [source](https://registry.npmjs.org/decamelize/-/decamelize-1.2.0.tgz) |
 | decimal.js | 10.6.0 | MIT | [source](https://registry.npmjs.org/decimal.js/-/decimal.js-10.6.0.tgz) |
 | decode-uri-component | 0.2.2 | MIT | [source](https://registry.npmjs.org/decode-uri-component/-/decode-uri-component-0.2.2.tgz) |
 | dedent | 1.7.2 | MIT | [source](https://registry.npmjs.org/dedent/-/dedent-1.7.2.tgz) |
@@ -574,6 +565,7 @@ separately by `TRADEMARKS.md`.
 | detect-node-es | 1.1.0 | MIT | [source](https://registry.npmjs.org/detect-node-es/-/detect-node-es-1.1.0.tgz) |
 | diff-sequences | 29.6.3 | MIT | [source](https://registry.npmjs.org/diff-sequences/-/diff-sequences-29.6.3.tgz) |
 | diff | 9.0.0 | BSD-3-Clause | [source](https://registry.npmjs.org/diff/-/diff-9.0.0.tgz) |
+| dijkstrajs | 1.0.3 | MIT | [source](https://registry.npmjs.org/dijkstrajs/-/dijkstrajs-1.0.3.tgz) |
 | dnssd-advertise | 1.1.6 | MIT | [source](https://registry.npmjs.org/dnssd-advertise/-/dnssd-advertise-1.1.6.tgz) |
 | domexception | 4.0.0 | MIT | [source](https://registry.npmjs.org/domexception/-/domexception-4.0.0.tgz) |
 | dunder-proto | 1.0.1 | MIT | [source](https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz) |
@@ -623,6 +615,7 @@ separately by `TRADEMARKS.md`.
 | expo-application | 57.0.2 | MIT | [source](https://registry.npmjs.org/expo-application/-/expo-application-57.0.2.tgz) |
 | expo-asset | 57.0.15 | MIT | [source](https://registry.npmjs.org/expo-asset/-/expo-asset-57.0.15.tgz) |
 | expo-auth-session | 57.0.10 | MIT | [source](https://registry.npmjs.org/expo-auth-session/-/expo-auth-session-57.0.10.tgz) |
+| expo-camera | 57.0.4 | MIT | [source](https://registry.npmjs.org/expo-camera/-/expo-camera-57.0.4.tgz) |
 | expo-clipboard | 57.0.1 | MIT | [source](https://registry.npmjs.org/expo-clipboard/-/expo-clipboard-57.0.1.tgz) |
 | expo-constants | 57.0.16 | MIT | [source](https://registry.npmjs.org/expo-constants/-/expo-constants-57.0.16.tgz) |
 | expo-crypto | 57.0.2 | MIT | [source](https://registry.npmjs.org/expo-crypto/-/expo-crypto-57.0.2.tgz) |
@@ -719,13 +712,10 @@ separately by `TRADEMARKS.md`.
 | has-symbols | 1.1.0 | MIT | [source](https://registry.npmjs.org/has-symbols/-/has-symbols-1.1.0.tgz) |
 | has-tostringtag | 1.0.2 | MIT | [source](https://registry.npmjs.org/has-tostringtag/-/has-tostringtag-1.0.2.tgz) |
 | hasown | 2.0.4 | MIT | [source](https://registry.npmjs.org/hasown/-/hasown-2.0.4.tgz) |
-| hermes-compiler | 250829098.0.10 | MIT | [source](https://registry.npmjs.org/hermes-compiler/-/hermes-compiler-250829098.0.10.tgz) |
 | hermes-compiler | 250829098.0.17 | MIT | [source](https://registry.npmjs.org/hermes-compiler/-/hermes-compiler-250829098.0.17.tgz) |
-| hermes-estree | 0.33.3 | MIT | [source](https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.33.3.tgz) |
 | hermes-estree | 0.35.0 | MIT | [source](https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.35.0.tgz) |
 | hermes-estree | 0.36.0 | MIT | [source](https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.36.0.tgz) |
 | hermes-estree | 0.36.1 | MIT | [source](https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.36.1.tgz) |
-| hermes-parser | 0.33.3 | MIT | [source](https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.33.3.tgz) |
 | hermes-parser | 0.35.0 | MIT | [source](https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.35.0.tgz) |
 | hermes-parser | 0.36.0 | MIT | [source](https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.36.0.tgz) |
 | hermes-parser | 0.36.1 | MIT | [source](https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.36.1.tgz) |
@@ -746,7 +736,6 @@ separately by `TRADEMARKS.md`.
 | iconv-lite | 0.7.3 | MIT | [source](https://registry.npmjs.org/iconv-lite/-/iconv-lite-0.7.3.tgz) |
 | ignore | 5.3.2 | MIT | [source](https://registry.npmjs.org/ignore/-/ignore-5.3.2.tgz) |
 | ignore | 7.0.5 | MIT | [source](https://registry.npmjs.org/ignore/-/ignore-7.0.5.tgz) |
-| image-size | 1.2.1 | MIT | [source](https://registry.npmjs.org/image-size/-/image-size-1.2.1.tgz) |
 | import-local | 3.2.0 | MIT | [source](https://registry.npmjs.org/import-local/-/import-local-3.2.0.tgz) |
 | imurmurhash | 0.1.4 | MIT | [source](https://registry.npmjs.org/imurmurhash/-/imurmurhash-0.1.4.tgz) |
 | indent-string | 4.0.0 | MIT | [source](https://registry.npmjs.org/indent-string/-/indent-string-4.0.0.tgz) |
@@ -875,21 +864,13 @@ separately by `TRADEMARKS.md`.
 | merge-descriptors | 2.0.0 | MIT | [source](https://registry.npmjs.org/merge-descriptors/-/merge-descriptors-2.0.0.tgz) |
 | merge-options | 3.0.4 | MIT | [source](https://registry.npmjs.org/merge-options/-/merge-options-3.0.4.tgz) |
 | merge-stream | 2.0.0 | MIT | [source](https://registry.npmjs.org/merge-stream/-/merge-stream-2.0.0.tgz) |
-| metro-babel-transformer | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-babel-transformer/-/metro-babel-transformer-0.84.4.tgz) |
 | metro-babel-transformer | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-babel-transformer/-/metro-babel-transformer-0.84.5.tgz) |
-| metro-cache-key | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-cache-key/-/metro-cache-key-0.84.4.tgz) |
 | metro-cache-key | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-cache-key/-/metro-cache-key-0.84.5.tgz) |
-| metro-cache | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-cache/-/metro-cache-0.84.4.tgz) |
 | metro-cache | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-cache/-/metro-cache-0.84.5.tgz) |
-| metro-config | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-config/-/metro-config-0.84.4.tgz) |
 | metro-config | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-config/-/metro-config-0.84.5.tgz) |
-| metro-core | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-core/-/metro-core-0.84.4.tgz) |
 | metro-core | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-core/-/metro-core-0.84.5.tgz) |
-| metro-file-map | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-file-map/-/metro-file-map-0.84.4.tgz) |
 | metro-file-map | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-file-map/-/metro-file-map-0.84.5.tgz) |
-| metro-minify-terser | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-minify-terser/-/metro-minify-terser-0.84.4.tgz) |
 | metro-minify-terser | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-minify-terser/-/metro-minify-terser-0.84.5.tgz) |
-| metro-resolver | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-resolver/-/metro-resolver-0.84.4.tgz) |
 | metro-resolver | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-resolver/-/metro-resolver-0.84.5.tgz) |
 | metro-runtime | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-runtime/-/metro-runtime-0.84.4.tgz) |
 | metro-runtime | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-runtime/-/metro-runtime-0.84.5.tgz) |
@@ -897,11 +878,8 @@ separately by `TRADEMARKS.md`.
 | metro-source-map | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-source-map/-/metro-source-map-0.84.5.tgz) |
 | metro-symbolicate | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-symbolicate/-/metro-symbolicate-0.84.4.tgz) |
 | metro-symbolicate | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-symbolicate/-/metro-symbolicate-0.84.5.tgz) |
-| metro-transform-plugins | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-transform-plugins/-/metro-transform-plugins-0.84.4.tgz) |
 | metro-transform-plugins | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-transform-plugins/-/metro-transform-plugins-0.84.5.tgz) |
-| metro-transform-worker | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro-transform-worker/-/metro-transform-worker-0.84.4.tgz) |
 | metro-transform-worker | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro-transform-worker/-/metro-transform-worker-0.84.5.tgz) |
-| metro | 0.84.4 | MIT | [source](https://registry.npmjs.org/metro/-/metro-0.84.4.tgz) |
 | metro | 0.84.5 | MIT | [source](https://registry.npmjs.org/metro/-/metro-0.84.5.tgz) |
 | micromatch | 4.0.8 | MIT | [source](https://registry.npmjs.org/micromatch/-/micromatch-4.0.8.tgz) |
 | mime-db | 1.52.0 | MIT | [source](https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz) |
@@ -991,6 +969,7 @@ separately by `TRADEMARKS.md`.
 | pkg-dir | 4.2.0 | MIT | [source](https://registry.npmjs.org/pkg-dir/-/pkg-dir-4.2.0.tgz) |
 | plist | 3.1.1 | MIT | [source](https://registry.npmjs.org/plist/-/plist-3.1.1.tgz) |
 | pngjs | 3.4.0 | MIT | [source](https://registry.npmjs.org/pngjs/-/pngjs-3.4.0.tgz) |
+| pngjs | 5.0.0 | MIT | [source](https://registry.npmjs.org/pngjs/-/pngjs-5.0.0.tgz) |
 | postcss | 8.5.26 | MIT | [source](https://registry.npmjs.org/postcss/-/postcss-8.5.26.tgz) |
 | postgres-array | 2.0.0 | MIT | [source](https://registry.npmjs.org/postgres-array/-/postgres-array-2.0.0.tgz) |
 | postgres-bytea | 1.0.1 | MIT | [source](https://registry.npmjs.org/postgres-bytea/-/postgres-bytea-1.0.1.tgz) |
@@ -1016,10 +995,10 @@ separately by `TRADEMARKS.md`.
 | psl | 1.15.0 | MIT | [source](https://registry.npmjs.org/psl/-/psl-1.15.0.tgz) |
 | punycode | 2.3.1 | MIT | [source](https://registry.npmjs.org/punycode/-/punycode-2.3.1.tgz) |
 | pure-rand | 6.1.0 | MIT | [source](https://registry.npmjs.org/pure-rand/-/pure-rand-6.1.0.tgz) |
+| qrcode | 1.5.4 | MIT | [source](https://registry.npmjs.org/qrcode/-/qrcode-1.5.4.tgz) |
 | qs | 6.15.3 | BSD-3-Clause | [source](https://registry.npmjs.org/qs/-/qs-6.15.3.tgz) |
 | query-string | 7.1.3 | MIT | [source](https://registry.npmjs.org/query-string/-/query-string-7.1.3.tgz) |
 | querystringify | 2.2.0 | MIT | [source](https://registry.npmjs.org/querystringify/-/querystringify-2.2.0.tgz) |
-| queue | 6.0.2 | MIT | [source](https://registry.npmjs.org/queue/-/queue-6.0.2.tgz) |
 | quick-format-unescaped | 4.0.4 | MIT | [source](https://registry.npmjs.org/quick-format-unescaped/-/quick-format-unescaped-4.0.4.tgz) |
 | range-parser | 1.2.1 | MIT | [source](https://registry.npmjs.org/range-parser/-/range-parser-1.2.1.tgz) |
 | raw-body | 3.0.2 | MIT | [source](https://registry.npmjs.org/raw-body/-/raw-body-3.0.2.tgz) |
@@ -1036,15 +1015,12 @@ separately by `TRADEMARKS.md`.
 | react-native-is-edge-to-edge | 1.3.1 | MIT | [source](https://registry.npmjs.org/react-native-is-edge-to-edge/-/react-native-is-edge-to-edge-1.3.1.tgz) |
 | react-native-keyboard-controller | 1.21.9 | MIT | [source](https://registry.npmjs.org/react-native-keyboard-controller/-/react-native-keyboard-controller-1.21.9.tgz) |
 | react-native-nitro-modules | 0.32.2 | MIT | [source](https://registry.npmjs.org/react-native-nitro-modules/-/react-native-nitro-modules-0.32.2.tgz) |
-| react-native-reanimated | 4.3.1 | MIT | [source](https://registry.npmjs.org/react-native-reanimated/-/react-native-reanimated-4.3.1.tgz) |
 | react-native-reanimated | 4.5.1 | MIT | [source](https://registry.npmjs.org/react-native-reanimated/-/react-native-reanimated-4.5.1.tgz) |
 | react-native-safe-area-context | 5.7.0 | MIT | [source](https://registry.npmjs.org/react-native-safe-area-context/-/react-native-safe-area-context-5.7.0.tgz) |
 | react-native-screens | 4.26.2 | MIT | [source](https://registry.npmjs.org/react-native-screens/-/react-native-screens-4.26.2.tgz) |
 | react-native-uitextview | 2.2.0 | MIT | [source](https://registry.npmjs.org/react-native-uitextview/-/react-native-uitextview-2.2.0.tgz) |
 | react-native-unistyles | 3.2.5 | MIT | [source](https://registry.npmjs.org/react-native-unistyles/-/react-native-unistyles-3.2.5.tgz) |
 | react-native-worklets | 0.10.4 | MIT | [source](https://registry.npmjs.org/react-native-worklets/-/react-native-worklets-0.10.4.tgz) |
-| react-native-worklets | 0.8.3 | MIT | [source](https://registry.npmjs.org/react-native-worklets/-/react-native-worklets-0.8.3.tgz) |
-| react-native | 0.85.3 | MIT | [source](https://registry.npmjs.org/react-native/-/react-native-0.85.3.tgz) |
 | react-native | 0.86.3 | MIT | [source](https://registry.npmjs.org/react-native/-/react-native-0.86.3.tgz) |
 | react-refresh | 0.14.2 | MIT | [source](https://registry.npmjs.org/react-refresh/-/react-refresh-0.14.2.tgz) |
 | react-remove-scroll-bar | 2.3.8 | MIT | [source](https://registry.npmjs.org/react-remove-scroll-bar/-/react-remove-scroll-bar-2.3.8.tgz) |
@@ -1064,6 +1040,7 @@ separately by `TRADEMARKS.md`.
 | regjsparser | 0.13.2 | BSD-2-Clause | [source](https://registry.npmjs.org/regjsparser/-/regjsparser-0.13.2.tgz) |
 | require-directory | 2.1.1 | MIT | [source](https://registry.npmjs.org/require-directory/-/require-directory-2.1.1.tgz) |
 | require-from-string | 2.0.2 | MIT | [source](https://registry.npmjs.org/require-from-string/-/require-from-string-2.0.2.tgz) |
+| require-main-filename | 2.0.0 | ISC | [source](https://registry.npmjs.org/require-main-filename/-/require-main-filename-2.0.0.tgz) |
 | requires-port | 1.0.0 | MIT | [source](https://registry.npmjs.org/requires-port/-/requires-port-1.0.0.tgz) |
 | resolve-cwd | 3.0.0 | MIT | [source](https://registry.npmjs.org/resolve-cwd/-/resolve-cwd-3.0.0.tgz) |
 | resolve-from | 5.0.0 | MIT | [source](https://registry.npmjs.org/resolve-from/-/resolve-from-5.0.0.tgz) |
@@ -1096,6 +1073,7 @@ separately by `TRADEMARKS.md`.
 | serve-static | 1.16.3 | MIT | [source](https://registry.npmjs.org/serve-static/-/serve-static-1.16.3.tgz) |
 | serve-static | 2.2.1 | MIT | [source](https://registry.npmjs.org/serve-static/-/serve-static-2.2.1.tgz) |
 | server-only | 0.0.1 | MIT | [source](https://registry.npmjs.org/server-only/-/server-only-0.0.1.tgz) |
+| set-blocking | 2.0.0 | ISC | [source](https://registry.npmjs.org/set-blocking/-/set-blocking-2.0.0.tgz) |
 | set-cookie-parser | 2.7.2 | MIT | [source](https://registry.npmjs.org/set-cookie-parser/-/set-cookie-parser-2.7.2.tgz) |
 | setprototypeof | 1.2.0 | ISC | [source](https://registry.npmjs.org/setprototypeof/-/setprototypeof-1.2.0.tgz) |
 | sf-symbols-typescript | 2.2.0 | MIT | [source](https://registry.npmjs.org/sf-symbols-typescript/-/sf-symbols-typescript-2.2.0.tgz) |
@@ -1137,7 +1115,7 @@ separately by `TRADEMARKS.md`.
 | stacktrace-js | 2.0.2 | MIT | [source](https://registry.npmjs.org/stacktrace-js/-/stacktrace-js-2.0.2.tgz) |
 | stacktrace-parser | 0.1.11 | MIT | [source](https://registry.npmjs.org/stacktrace-parser/-/stacktrace-parser-0.1.11.tgz) |
 | standard-navigation | 0.0.5 | MIT | [source](https://registry.npmjs.org/standard-navigation/-/standard-navigation-0.0.5.tgz) |
-| standardwebhooks | 1.0.0 | MIT | [source](https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.0.0.tgz) |
+| standardwebhooks | 1.1.1 | MIT | [source](https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz) |
 | statuses | 1.5.0 | MIT | [source](https://registry.npmjs.org/statuses/-/statuses-1.5.0.tgz) |
 | statuses | 2.0.2 | MIT | [source](https://registry.npmjs.org/statuses/-/statuses-2.0.2.tgz) |
 | std-env | 4.1.0 | MIT | [source](https://registry.npmjs.org/std-env/-/std-env-4.1.0.tgz) |
@@ -1162,6 +1140,7 @@ separately by `TRADEMARKS.md`.
 | supports-hyperlinks | 2.3.0 | MIT | [source](https://registry.npmjs.org/supports-hyperlinks/-/supports-hyperlinks-2.3.0.tgz) |
 | supports-preserve-symlinks-flag | 1.0.0 | MIT | [source](https://registry.npmjs.org/supports-preserve-symlinks-flag/-/supports-preserve-symlinks-flag-1.0.0.tgz) |
 | symbol-tree | 3.2.4 | MIT | [source](https://registry.npmjs.org/symbol-tree/-/symbol-tree-3.2.4.tgz) |
+| tagged-tag | 1.0.0 | MIT | [source](https://registry.npmjs.org/tagged-tag/-/tagged-tag-1.0.0.tgz) |
 | terminal-link | 2.1.1 | MIT | [source](https://registry.npmjs.org/terminal-link/-/terminal-link-2.1.1.tgz) |
 | terser | 5.48.0 | BSD-2-Clause | [source](https://registry.npmjs.org/terser/-/terser-5.48.0.tgz) |
 | test-exclude | 6.0.0 | ISC | [source](https://registry.npmjs.org/test-exclude/-/test-exclude-6.0.0.tgz) |
@@ -1186,6 +1165,7 @@ separately by `TRADEMARKS.md`.
 | type-detect | 4.0.8 | MIT | [source](https://registry.npmjs.org/type-detect/-/type-detect-4.0.8.tgz) |
 | type-fest | 0.21.3 | (MIT OR CC0-1.0) | [source](https://registry.npmjs.org/type-fest/-/type-fest-0.21.3.tgz) |
 | type-fest | 0.7.1 | (MIT OR CC0-1.0) | [source](https://registry.npmjs.org/type-fest/-/type-fest-0.7.1.tgz) |
+| type-fest | 5.8.0 | (MIT OR CC0-1.0) | [source](https://registry.npmjs.org/type-fest/-/type-fest-5.8.0.tgz) |
 | type-is | 2.1.0 | MIT | [source](https://registry.npmjs.org/type-is/-/type-is-2.1.0.tgz) |
 | typescript-eslint | 8.67.0 | MIT | [source](https://registry.npmjs.org/typescript-eslint/-/typescript-eslint-8.67.0.tgz) |
 | typescript | 6.0.3 | Apache-2.0 | [source](https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz) |
@@ -1205,7 +1185,7 @@ separately by `TRADEMARKS.md`.
 | use-sidecar | 1.1.3 | MIT | [source](https://registry.npmjs.org/use-sidecar/-/use-sidecar-1.1.3.tgz) |
 | util-deprecate | 1.0.2 | MIT | [source](https://registry.npmjs.org/util-deprecate/-/util-deprecate-1.0.2.tgz) |
 | utils-merge | 1.0.1 | MIT | [source](https://registry.npmjs.org/utils-merge/-/utils-merge-1.0.1.tgz) |
-| uuid | 7.0.3 | MIT | [source](https://registry.npmjs.org/uuid/-/uuid-7.0.3.tgz) |
+| uuid | 11.1.1 | MIT | [source](https://registry.npmjs.org/uuid/-/uuid-11.1.1.tgz) |
 | v8-to-istanbul | 9.3.0 | ISC | [source](https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz) |
 | validate-npm-package-name | 5.0.1 | ISC | [source](https://registry.npmjs.org/validate-npm-package-name/-/validate-npm-package-name-5.0.1.tgz) |
 | vary | 1.1.2 | MIT | [source](https://registry.npmjs.org/vary/-/vary-1.1.2.tgz) |
@@ -1224,9 +1204,11 @@ separately by `TRADEMARKS.md`.
 | whatwg-mimetype | 3.0.0 | MIT | [source](https://registry.npmjs.org/whatwg-mimetype/-/whatwg-mimetype-3.0.0.tgz) |
 | whatwg-url-minimum | 0.1.2 | MIT | [source](https://registry.npmjs.org/whatwg-url-minimum/-/whatwg-url-minimum-0.1.2.tgz) |
 | whatwg-url | 11.0.0 | MIT | [source](https://registry.npmjs.org/whatwg-url/-/whatwg-url-11.0.0.tgz) |
+| which-module | 2.0.1 | ISC | [source](https://registry.npmjs.org/which-module/-/which-module-2.0.1.tgz) |
 | which | 2.0.2 | ISC | [source](https://registry.npmjs.org/which/-/which-2.0.2.tgz) |
 | why-is-node-running | 2.3.0 | MIT | [source](https://registry.npmjs.org/why-is-node-running/-/why-is-node-running-2.3.0.tgz) |
 | word-wrap | 1.2.5 | MIT | [source](https://registry.npmjs.org/word-wrap/-/word-wrap-1.2.5.tgz) |
+| wrap-ansi | 6.2.0 | MIT | [source](https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-6.2.0.tgz) |
 | wrap-ansi | 7.0.0 | MIT | [source](https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-7.0.0.tgz) |
 | wrappy | 1.0.2 | ISC | [source](https://registry.npmjs.org/wrappy/-/wrappy-1.0.2.tgz) |
 | write-file-atomic | 4.0.2 | ISC | [source](https://registry.npmjs.org/write-file-atomic/-/write-file-atomic-4.0.2.tgz) |
@@ -1240,13 +1222,17 @@ separately by `TRADEMARKS.md`.
 | xmlbuilder | 15.1.1 | MIT | [source](https://registry.npmjs.org/xmlbuilder/-/xmlbuilder-15.1.1.tgz) |
 | xmlchars | 2.2.0 | MIT | [source](https://registry.npmjs.org/xmlchars/-/xmlchars-2.2.0.tgz) |
 | xtend | 4.0.2 | MIT | [source](https://registry.npmjs.org/xtend/-/xtend-4.0.2.tgz) |
+| y18n | 4.0.3 | ISC | [source](https://registry.npmjs.org/y18n/-/y18n-4.0.3.tgz) |
 | y18n | 5.0.8 | ISC | [source](https://registry.npmjs.org/y18n/-/y18n-5.0.8.tgz) |
 | yallist | 3.1.1 | ISC | [source](https://registry.npmjs.org/yallist/-/yallist-3.1.1.tgz) |
 | yallist | 4.0.0 | ISC | [source](https://registry.npmjs.org/yallist/-/yallist-4.0.0.tgz) |
 | yaml | 2.9.0 | ISC | [source](https://registry.npmjs.org/yaml/-/yaml-2.9.0.tgz) |
+| yargs-parser | 18.1.3 | ISC | [source](https://registry.npmjs.org/yargs-parser/-/yargs-parser-18.1.3.tgz) |
 | yargs-parser | 21.1.1 | ISC | [source](https://registry.npmjs.org/yargs-parser/-/yargs-parser-21.1.1.tgz) |
+| yargs | 15.4.1 | MIT | [source](https://registry.npmjs.org/yargs/-/yargs-15.4.1.tgz) |
 | yargs | 17.7.3 | MIT | [source](https://registry.npmjs.org/yargs/-/yargs-17.7.3.tgz) |
 | yocto-queue | 0.1.0 | MIT | [source](https://registry.npmjs.org/yocto-queue/-/yocto-queue-0.1.0.tgz) |
 | zod-to-json-schema | 3.25.2 | ISC | [source](https://registry.npmjs.org/zod-to-json-schema/-/zod-to-json-schema-3.25.2.tgz) |
 | zod | 3.25.76 | MIT | [source](https://registry.npmjs.org/zod/-/zod-3.25.76.tgz) |
 | zod | 4.4.3 | MIT | [source](https://registry.npmjs.org/zod/-/zod-4.4.3.tgz) |
+| zxing-wasm | 3.1.3 | MIT | [source](https://registry.npmjs.org/zxing-wasm/-/zxing-wasm-3.1.3.tgz) |

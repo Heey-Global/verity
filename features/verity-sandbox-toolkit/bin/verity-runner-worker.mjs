@@ -6,75 +6,9 @@ var __export = (target, all) => {
 };
 
 // packages/session/dist/runner-worker-entry.js
-import { readFile as readFile2 } from "node:fs/promises";
-import { join as join2 } from "node:path";
-
-// packages/session/dist/backend-contract.js
-function isExplicitPreExecutionRejection(message) {
-  return /\b(?:login required|not logged in|authentication failed|unauthorized|invalid api key|token expired)\b/i.test(message) || /\b(?:rate limit|too many requests|quota exceeded)\b/i.test(message) || /\b(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)\b/i.test(message);
-}
-
-// packages/session/dist/backend.js
-var RUNNER_SUPERVISOR_BACKENDS = Object.freeze([
-  "claude-acp",
-  "codex-acp",
-  "opencode-acp"
-]);
-function isRunnerSupervisorBackend(value) {
-  return RUNNER_SUPERVISOR_BACKENDS.includes(value);
-}
-
-// node_modules/@agentclientprotocol/sdk/dist/schema/index.js
-var AGENT_METHODS = {
-  initialize: "initialize",
-  authenticate: "authenticate",
-  providers_list: "providers/list",
-  providers_set: "providers/set",
-  providers_disable: "providers/disable",
-  session_new: "session/new",
-  session_load: "session/load",
-  session_set_mode: "session/set_mode",
-  session_set_config_option: "session/set_config_option",
-  session_prompt: "session/prompt",
-  session_cancel: "session/cancel",
-  mcp_message: "mcp/message",
-  session_list: "session/list",
-  session_delete: "session/delete",
-  session_fork: "session/fork",
-  session_resume: "session/resume",
-  session_close: "session/close",
-  logout: "logout",
-  nes_start: "nes/start",
-  nes_suggest: "nes/suggest",
-  nes_accept: "nes/accept",
-  nes_reject: "nes/reject",
-  nes_close: "nes/close",
-  document_did_open: "document/didOpen",
-  document_did_change: "document/didChange",
-  document_did_close: "document/didClose",
-  document_did_save: "document/didSave",
-  document_did_focus: "document/didFocus"
-};
-var CLIENT_METHODS = {
-  session_request_permission: "session/request_permission",
-  session_update: "session/update",
-  fs_write_text_file: "fs/write_text_file",
-  fs_read_text_file: "fs/read_text_file",
-  terminal_create: "terminal/create",
-  terminal_output: "terminal/output",
-  terminal_release: "terminal/release",
-  terminal_wait_for_exit: "terminal/wait_for_exit",
-  terminal_kill: "terminal/kill",
-  mcp_connect: "mcp/connect",
-  mcp_message: "mcp/message",
-  mcp_disconnect: "mcp/disconnect",
-  elicitation_create: "elicitation/create",
-  elicitation_complete: "elicitation/complete"
-};
-var PROTOCOL_METHODS = {
-  cancel_request: "$/cancel_request"
-};
-var PROTOCOL_VERSION = 1;
+import { constants as constants3 } from "node:fs";
+import { open as open5, unlink } from "node:fs/promises";
+import { join as join2, resolve as resolve2 } from "node:path";
 
 // node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -14590,6 +14524,1225 @@ function date4(params) {
 // node_modules/zod/v4/classic/external.js
 config(en_default());
 
+// node_modules/@verity/events/dist/events.js
+var agentStatusSchema = external_exports.enum([
+  "running",
+  "awaiting_input",
+  "awaiting_dependency",
+  "crashed",
+  "completed"
+]);
+var riskClassSchema = external_exports.enum(["auto", "ask"]);
+var brokeredGrantChannelSchema = external_exports.literal("acp");
+var retiredBrokeredGrantChannelSchema = external_exports.literal("native").transform(() => void 0);
+var persistedBrokeredGrantChannelSchema = external_exports.union([brokeredGrantChannelSchema, retiredBrokeredGrantChannelSchema]).optional();
+var rateLimitWindowSchema = external_exports.enum(["five_hour", "weekly"]);
+var taskPhaseSchema = external_exports.enum(["started", "progress", "ended"]);
+var imageMediaTypeSchema = external_exports.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+var fileMediaTypeSchema = external_exports.string().min(1).max(255);
+var attachmentKindSchema = external_exports.enum(["image", "file"]);
+var attachmentUploadSchema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({
+    kind: external_exports.literal("image"),
+    mediaType: imageMediaTypeSchema,
+    data: external_exports.string().min(1)
+  }),
+  external_exports.object({
+    kind: external_exports.literal("file"),
+    mediaType: fileMediaTypeSchema,
+    /** Original name (basename); shown in the UI and used to name the on-disk file. */
+    fileName: external_exports.string().min(1).max(255),
+    data: external_exports.string().min(1)
+  })
+]);
+var attachmentHasBytes = (a) => a.id !== void 0 || a.data !== void 0;
+var attachmentBytesMessage = { message: "attachment needs an id or inline data" };
+var attachmentSchema = external_exports.union([
+  external_exports.object({
+    kind: external_exports.literal("image"),
+    mediaType: imageMediaTypeSchema,
+    /** Content-addressed reference (SHA-256 hex) — fetch via `GET /attachments/:id`. */
+    id: external_exports.string().min(1).optional(),
+    /** Legacy inline base64 (pre-blob-storage events only). */
+    data: external_exports.string().min(1).optional()
+  }).refine(attachmentHasBytes, attachmentBytesMessage),
+  external_exports.object({
+    kind: external_exports.literal("file"),
+    mediaType: fileMediaTypeSchema,
+    /** Original file name — rendered in the transcript and used to name the file
+     * materialized into the agent's working directory. */
+    fileName: external_exports.string().min(1).max(255),
+    id: external_exports.string().min(1).optional(),
+    data: external_exports.string().min(1).optional()
+  }).refine(attachmentHasBytes, attachmentBytesMessage)
+]);
+var toolResultRefSchema = external_exports.object({
+  id: external_exports.string().min(1),
+  bytes: external_exports.number().int().nonnegative()
+});
+var choicesOptionSchema = external_exports.object({
+  label: external_exports.string().min(1).max(200),
+  recommended: external_exports.boolean().optional()
+});
+var choicesPayloadSchema = external_exports.object({
+  question: external_exports.string().max(1e3).optional(),
+  options: external_exports.array(choicesOptionSchema).min(1).max(20),
+  multiSelect: external_exports.boolean().optional()
+}).refine((payload) => payload.options.filter((option) => option.recommended === true).length <= 1, { message: "at most one choice option may be recommended", path: ["options"] });
+var agentLoopScheduleSchema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("interval"), everyMinutes: external_exports.number().int().min(15) }),
+  external_exports.object({
+    kind: external_exports.literal("daily"),
+    hour: external_exports.number().int().min(0).max(23),
+    minute: external_exports.number().int().min(0).max(59)
+  }),
+  external_exports.object({
+    kind: external_exports.literal("weekly"),
+    weekday: external_exports.number().int().min(0).max(6),
+    hour: external_exports.number().int().min(0).max(23),
+    minute: external_exports.number().int().min(0).max(59)
+  })
+]);
+var agentLoopProposalSchema = external_exports.object({
+  loopId: external_exports.string().uuid(),
+  name: external_exports.string().trim().min(1).max(80),
+  script: external_exports.string().min(1),
+  schedule: agentLoopScheduleSchema,
+  reactionPrompt: external_exports.string().trim().min(1).optional(),
+  reactionModel: external_exports.string().trim().min(1).nullable().optional()
+});
+var usageSchema = external_exports.object({
+  inputTokens: external_exports.number().int().nonnegative(),
+  outputTokens: external_exports.number().int().nonnegative(),
+  cacheReadTokens: external_exports.number().int().nonnegative(),
+  cacheCreationTokens: external_exports.number().int().nonnegative()
+});
+var resultTelemetrySchema = external_exports.object({
+  backend: external_exports.string().min(1),
+  mode: external_exports.string().min(1),
+  userPromptChars: external_exports.number().int().nonnegative().optional(),
+  runtimePromptChars: external_exports.number().int().nonnegative().optional(),
+  submittedPromptChars: external_exports.number().int().nonnegative().optional(),
+  attachments: external_exports.number().int().nonnegative().optional(),
+  resumed: external_exports.boolean().optional()
+});
+var permissionDenialSchema = external_exports.object({
+  tool: external_exports.string().min(1),
+  toolUseId: external_exports.string().min(1).optional(),
+  input: external_exports.unknown().optional()
+});
+var parentToolId = external_exports.string().min(1).optional();
+var agentEventSchema = external_exports.discriminatedUnion("t", [
+  external_exports.object({
+    t: external_exports.literal("session"),
+    id: external_exports.string().min(1),
+    model: external_exports.string().min(1),
+    worktree: external_exports.string().min(1)
+  }),
+  external_exports.object({
+    t: external_exports.literal("status"),
+    state: agentStatusSchema
+  }),
+  external_exports.object({
+    t: external_exports.literal("text"),
+    delta: external_exports.string(),
+    parentToolId
+  }),
+  external_exports.object({
+    // Server-authored transcript note shown as a standalone chat message. Unlike
+    // streaming `text`, a notice is never coalesced into an open agent response and
+    // starts no turn. `role` lets system workflows show an operator-facing action
+    // ("Please transcribe…") followed by agent-style progress/results.
+    t: external_exports.literal("notice"),
+    text: external_exports.string(),
+    role: external_exports.enum(["agent", "operator"]).optional(),
+    // Correlates a server-confirmed workflow notice with an optimistic local echo.
+    clientRequestId: external_exports.string().max(100).optional()
+  }),
+  external_exports.object({
+    // The operator's steering prompt for a turn — persisted by the conductor when
+    // a turn is dispatched, so the operator's own message shows in the transcript
+    // (claude's stream doesn't echo it). Distinct from `text` (the agent's output).
+    t: external_exports.literal("prompt"),
+    // May be empty when the turn carries only attachments (e.g. a screenshot with
+    // no caption); the dispatch boundary guarantees at least one of text/attachments.
+    text: external_exports.string(),
+    // True when the message was injected into an already-running turn rather than
+    // starting a new one. Status projections use this to distinguish a real turn
+    // boundary from mid-turn steering while background tasks remain open.
+    steered: external_exports.boolean().optional(),
+    // Operator-attached files (v1: images) sent with this prompt, so the transcript
+    // can render them. Omitted when the turn had no attachments.
+    attachments: external_exports.array(attachmentSchema).optional()
+  }),
+  external_exports.object({
+    t: external_exports.literal("thinking"),
+    blockId: external_exports.string().min(1),
+    signature: external_exports.string().optional(),
+    delta: external_exports.string(),
+    parentToolId
+  }),
+  external_exports.object({
+    // The body Claude Code injects when a skill/slash-command (e.g. /code-review)
+    // is invoked — a synthetic `user` turn the model reads as
+    // instructions. The adapter routes it here instead of rendering it as operator
+    // prose (which dumped the whole skill into the chat). The reducer folds the
+    // text into the preceding `Skill` tool card as collapsed detail; a `skill`
+    // event that doesn't correlate to a skill call renders nothing.
+    t: external_exports.literal("skill"),
+    text: external_exports.string()
+  }),
+  external_exports.object({
+    t: external_exports.literal("tool_call_start"),
+    id: external_exports.string().min(1),
+    name: external_exports.string().min(1),
+    parentToolId
+  }),
+  external_exports.object({
+    t: external_exports.literal("tool_call"),
+    id: external_exports.string().min(1),
+    name: external_exports.string().min(1),
+    input: external_exports.unknown(),
+    parentToolId
+  }),
+  external_exports.object({
+    t: external_exports.literal("tool_result"),
+    id: external_exports.string().min(1),
+    output: external_exports.unknown(),
+    isError: external_exports.boolean(),
+    // Present when the store externalized a large text output: `output` above is
+    // then a truncated preview and this points at the full body (see
+    // {@link toolResultRefSchema}). Absent → `output` is the full result.
+    outputRef: toolResultRefSchema.optional(),
+    parentToolId
+  }),
+  external_exports.object({
+    t: external_exports.literal("permission"),
+    id: external_exports.string().min(1),
+    tool: external_exports.string().min(1),
+    input: external_exports.unknown(),
+    riskClass: riskClassSchema,
+    /**
+     * Transport this prompt arrived on, for the brokered-secret tools (ADR 0014 D3).
+     * The card offers only the standing scopes that channel accepts — `forever` is not
+     * available on `acp`, and the server refuses it there, so offering it would produce
+     * an approval that silently saves nothing. Server-derived; the agent never supplies
+     * it. Absent on events written before this existed, and on events from a server
+     * across a rollout boundary; the card reads absence as the restricted channel,
+     * since it cannot tell which transport raised such a prompt and the server refuses
+     * a standing scope it cannot resolve a channel for. A channel retired since the event
+     * was written reads as absent for the same reason
+     * ({@link persistedBrokeredGrantChannelSchema}).
+     */
+    grantChannel: persistedBrokeredGrantChannelSchema
+  }),
+  external_exports.object({
+    t: external_exports.literal("result"),
+    usage: usageSchema,
+    stopReason: external_exports.string(),
+    telemetry: resultTelemetrySchema.optional(),
+    /**
+     * Tools the turn requested but were NOT permitted (§5b). In `--resume`-per-
+     * turn (argv) mode `claude` silently auto-denies un-pre-approved tools, so
+     * surfacing these is how the operator sees what was blocked. Omitted when the
+     * turn had no denials.
+     */
+    permissionDenials: external_exports.array(permissionDenialSchema).optional()
+  }),
+  external_exports.object({
+    t: external_exports.literal("rate_limit"),
+    status: external_exports.string(),
+    resetsAt: external_exports.number().int().nonnegative(),
+    window: rateLimitWindowSchema,
+    /** Optional percent used for meter-style provider quota display. */
+    usedPercent: external_exports.number().min(0).max(100).optional(),
+    /** Provider-defined quota scope. Omitted by older events means all models. */
+    scope: external_exports.string().min(1).optional(),
+    /** Human-facing provider/engine label whose quota window this event describes. */
+    providerLabel: external_exports.string().min(1).optional()
+  }),
+  external_exports.object({
+    // A background task / sub-agent the turn spawned (Claude Code `system/task_*`).
+    // A `run_in_background` dispatch (Agent/Bash) returns its `tool_call`
+    // immediately while the work continues off-turn, so the turn's `result` can
+    // fire while the task is still open; the backend then re-invokes with more
+    // output and a later `result` once it finishes. The control plane tracks the
+    // open set (by `id`) to keep the turn/session "running" across that gap instead
+    // of reporting it completed at the first `result` — see `deriveSessionStatus`.
+    // Backend-neutral: any runtime with background work
+    // has an equivalent start/end signal.
+    t: external_exports.literal("task"),
+    id: external_exports.string().min(1),
+    phase: taskPhaseSchema,
+    // The dispatching `tool_call` id (the Agent/Task/Bash `tool_use`) when the
+    // backend reports it — lets the UI attribute the task to its tool_call. Absent
+    // on phases where the backend omits it (e.g. a bare `task_updated` patch).
+    toolUseId: external_exports.string().min(1).optional(),
+    // Human label the backend attached (task description / notification summary).
+    description: external_exports.string().min(1).optional(),
+    // Terminal outcome on phase `ended` (backend string, e.g. `completed`/`failed`).
+    status: external_exports.string().min(1).optional()
+  }),
+  external_exports.object({
+    // A decision point the agent posed at end-of-turn (issue #97). The adapter
+    // lifts this off a ` ```verity:choices ` contract block the agent appends to
+    // its final text (see {@link ./choices}); the app renders the options as
+    // tappable Quick-Action chips and a tap sends the chosen label as a new turn.
+    t: external_exports.literal("choices"),
+    question: external_exports.string().max(1e3).optional(),
+    options: external_exports.array(choicesOptionSchema).min(1).max(20),
+    multiSelect: external_exports.boolean().optional()
+  }).refine((event) => event.options.filter((option) => option.recommended === true).length <= 1, {
+    message: "at most one choice option may be recommended",
+    path: ["options"]
+  }),
+  external_exports.object({
+    t: external_exports.literal("agent_loop_proposal"),
+    proposal: agentLoopProposalSchema
+  }),
+  external_exports.object({
+    // A turn ended without normal completion. Emitted for an explicit cancel, an
+    // abandoned-turn recovery, or a shutdown drain; any partial output the agent
+    // already streamed stays in the log. Actor provenance is intentionally absent,
+    // so this renders as the neutral "Turn interrupted" transcript row.
+    t: external_exports.literal("interrupted")
+  }),
+  external_exports.object({
+    // The operator merged this session's open PR from the PR bar. The server appends
+    // this as a transcript-only marker so the operator SEES the merge landed when they
+    // return to the chat — it triggers NO turn and NO agent reply. The agent learns of
+    // the merge separately, via the pending note the merge route leaves (folded into
+    // its next turn). Rendered as a "Merged PR #N" row.
+    t: external_exports.literal("merged"),
+    number: external_exports.number().int().positive()
+  }),
+  external_exports.object({
+    t: external_exports.literal("compaction"),
+    boundary: external_exports.literal(true)
+  }),
+  external_exports.object({
+    t: external_exports.literal("error"),
+    kind: external_exports.string(),
+    message: external_exports.string()
+  }),
+  external_exports.object({
+    t: external_exports.literal("raw"),
+    backend: external_exports.string().min(1),
+    payload: external_exports.unknown()
+  })
+]);
+
+// node_modules/jsonrepair/lib/esm/utils/JSONRepairError.js
+var JSONRepairError = class extends Error {
+  constructor(message, position) {
+    super(`${message} at position ${position}`);
+    this.position = position;
+  }
+};
+
+// node_modules/jsonrepair/lib/esm/utils/stringUtils.js
+var codeSpace = 32;
+var codeNewline = 10;
+var codeTab = 9;
+var codeReturn = 13;
+var codeNonBreakingSpace = 160;
+var codeMongolianVowelSeparator = 6158;
+var codeEnQuad = 8192;
+var codeZeroWidthSpace = 8203;
+var codeNarrowNoBreakSpace = 8239;
+var codeMediumMathematicalSpace = 8287;
+var codeIdeographicSpace = 12288;
+var codeZeroWidthNoBreakSpace = 65279;
+function isHex(char) {
+  return /^[0-9A-Fa-f]$/.test(char);
+}
+function isDigit(char) {
+  return char >= "0" && char <= "9";
+}
+function isValidStringCharacter(char) {
+  return char >= " ";
+}
+function isDelimiter(char) {
+  return ",:[]/{}()\n+".includes(char);
+}
+function isFunctionNameCharStart(char) {
+  return char >= "a" && char <= "z" || char >= "A" && char <= "Z" || char === "_" || char === "$";
+}
+function isFunctionNameChar(char) {
+  return char >= "a" && char <= "z" || char >= "A" && char <= "Z" || char === "_" || char === "$" || char >= "0" && char <= "9";
+}
+var regexUrlStart = /^(http|https|ftp|mailto|file|data|irc):\/\/$/;
+var regexUrlChar = /^[A-Za-z0-9-._~:/?#@!$&'()*+;=]$/;
+function isUnquotedStringDelimiter(char) {
+  return ",[]/{}\n+".includes(char);
+}
+function isStartOfValue(char) {
+  return isQuote(char) || regexStartOfValue.test(char);
+}
+var regexStartOfValue = /^[[{\w-]$/;
+function isControlCharacter(char) {
+  return char === "\n" || char === "\r" || char === "	" || char === "\b" || char === "\f";
+}
+function isWhitespace(text, index) {
+  const code = text.charCodeAt(index);
+  return code === codeSpace || code === codeNewline || code === codeTab || code === codeReturn;
+}
+function isWhitespaceExceptNewline(text, index) {
+  const code = text.charCodeAt(index);
+  return code === codeSpace || code === codeTab || code === codeReturn;
+}
+function isSpecialWhitespace(text, index) {
+  const code = text.charCodeAt(index);
+  return code === codeNonBreakingSpace || code === codeMongolianVowelSeparator || code >= codeEnQuad && code <= codeZeroWidthSpace || code === codeNarrowNoBreakSpace || code === codeMediumMathematicalSpace || code === codeIdeographicSpace || code === codeZeroWidthNoBreakSpace;
+}
+function isQuote(char) {
+  return isDoubleQuoteLike(char) || isSingleQuoteLike(char);
+}
+function isDoubleQuoteLike(char) {
+  return char === '"' || char === "\u201C" || char === "\u201D";
+}
+function isDoubleQuote(char) {
+  return char === '"';
+}
+function isSingleQuoteLike(char) {
+  return char === "'" || char === "\u2018" || char === "\u2019" || char === "`" || char === "\xB4";
+}
+function isSingleQuote(char) {
+  return char === "'";
+}
+function stripLastOccurrence(text, textToStrip) {
+  let stripRemainingText = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : false;
+  const index = text.lastIndexOf(textToStrip);
+  return index !== -1 ? text.substring(0, index) + (stripRemainingText ? "" : text.substring(index + 1)) : text;
+}
+function insertBeforeLastWhitespace(text, textToInsert) {
+  let index = text.length;
+  if (!isWhitespace(text, index - 1)) {
+    return text + textToInsert;
+  }
+  while (isWhitespace(text, index - 1)) {
+    index--;
+  }
+  return text.substring(0, index) + textToInsert + text.substring(index);
+}
+function removeAtIndex(text, start, count) {
+  return text.substring(0, start) + text.substring(start + count);
+}
+function endsWithCommaOrNewline(text) {
+  return /[,\n][ \t\r]*$/.test(text);
+}
+function countOccurrences(text, char) {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charAt(i) === char) {
+      count++;
+    }
+  }
+  return count;
+}
+function isInsideUnclosedBracket(text, closeChar) {
+  switch (closeChar) {
+    case ")":
+      return countOccurrences(text, "(") > countOccurrences(text, ")");
+    case "]":
+      return countOccurrences(text, "[") > countOccurrences(text, "]");
+    case "}":
+      return countOccurrences(text, "{") > countOccurrences(text, "}");
+    default:
+      return false;
+  }
+}
+
+// node_modules/jsonrepair/lib/esm/regular/jsonrepair.js
+var controlCharacters = {
+  "\b": "\\b",
+  "\f": "\\f",
+  "\n": "\\n",
+  "\r": "\\r",
+  "	": "\\t"
+};
+var escapeCharacters = {
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "	"
+  // note that \u is handled separately in parseString()
+};
+function jsonrepair(text) {
+  let i = 0;
+  let output = "";
+  parseMarkdownCodeBlock(["```", "[```", "{```"]);
+  const processed = parseValue();
+  if (!processed) {
+    throwUnexpectedEnd();
+  }
+  parseMarkdownCodeBlock(["```", "```]", "```}"]);
+  const processedComma = parseCharacter(",");
+  if (processedComma) {
+    parseWhitespaceAndSkipComments();
+  }
+  if (isStartOfValue(text[i]) && endsWithCommaOrNewline(output)) {
+    if (!processedComma) {
+      output = insertBeforeLastWhitespace(output, ",");
+    }
+    parseNewlineDelimitedJSON();
+  } else if (processedComma) {
+    output = stripLastOccurrence(output, ",");
+  }
+  while (text[i] === "}" || text[i] === "]") {
+    i++;
+    parseWhitespaceAndSkipComments();
+  }
+  if (i >= text.length) {
+    return output;
+  }
+  throwUnexpectedCharacter();
+  function parseValue() {
+    parseWhitespaceAndSkipComments();
+    const processed2 = parseObject() || parseArray() || parseString() || parseNumber() || parseKeywords() || parseUnquotedString(false) || parseRegex();
+    parseWhitespaceAndSkipComments();
+    return processed2;
+  }
+  function parseWhitespaceAndSkipComments() {
+    let skipNewline = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : true;
+    const start = i;
+    let changed = parseWhitespace(skipNewline);
+    do {
+      changed = parseComment();
+      if (changed) {
+        changed = parseWhitespace(skipNewline);
+      }
+    } while (changed);
+    return i > start;
+  }
+  function parseWhitespace(skipNewline) {
+    const _isWhiteSpace = skipNewline ? isWhitespace : isWhitespaceExceptNewline;
+    let whitespace = "";
+    while (true) {
+      if (_isWhiteSpace(text, i)) {
+        whitespace += text[i];
+        i++;
+      } else if (isSpecialWhitespace(text, i)) {
+        whitespace += " ";
+        i++;
+      } else {
+        break;
+      }
+    }
+    if (whitespace.length > 0) {
+      output += whitespace;
+      return true;
+    }
+    return false;
+  }
+  function parseComment() {
+    if (text[i] === "/" && text[i + 1] === "*") {
+      while (i < text.length && !atEndOfBlockComment(text, i)) {
+        i++;
+      }
+      i += 2;
+      return true;
+    }
+    if (text[i] === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") {
+        i++;
+      }
+      return true;
+    }
+    return false;
+  }
+  function parseMarkdownCodeBlock(blocks) {
+    if (skipMarkdownCodeBlock(blocks)) {
+      if (isFunctionNameCharStart(text[i])) {
+        while (i < text.length && isFunctionNameChar(text[i])) {
+          i++;
+        }
+      }
+      parseWhitespaceAndSkipComments();
+      return true;
+    }
+    return false;
+  }
+  function skipMarkdownCodeBlock(blocks) {
+    parseWhitespace(true);
+    for (const block of blocks) {
+      const end = i + block.length;
+      if (text.slice(i, end) === block) {
+        i = end;
+        return true;
+      }
+    }
+    return false;
+  }
+  function parseCharacter(char) {
+    if (text[i] === char) {
+      output += text[i];
+      i++;
+      return true;
+    }
+    return false;
+  }
+  function skipCharacter(char) {
+    if (text[i] === char) {
+      i++;
+      return true;
+    }
+    return false;
+  }
+  function skipEscapeCharacter() {
+    return skipCharacter("\\");
+  }
+  function skipEllipsis() {
+    parseWhitespaceAndSkipComments();
+    if (text[i] === "." && text[i + 1] === "." && text[i + 2] === ".") {
+      i += 3;
+      parseWhitespaceAndSkipComments();
+      skipCharacter(",");
+      return true;
+    }
+    return false;
+  }
+  function parseObject() {
+    if (text[i] === "{") {
+      output += "{";
+      i++;
+      parseWhitespaceAndSkipComments();
+      if (skipCharacter(",")) {
+        parseWhitespaceAndSkipComments();
+      }
+      let initial = true;
+      while (i < text.length && text[i] !== "}") {
+        let processedComma2;
+        if (!initial) {
+          processedComma2 = parseCharacter(",");
+          if (!processedComma2) {
+            output = insertBeforeLastWhitespace(output, ",");
+          }
+          parseWhitespaceAndSkipComments();
+        } else {
+          processedComma2 = true;
+        }
+        skipEllipsis();
+        const processedKey = parseString() || parseUnquotedString(true);
+        if (!processedKey) {
+          if (text[i] === "}" || text[i] === "{" || text[i] === "]" || text[i] === "[" || text[i] === void 0) {
+            if (!initial) {
+              output = stripLastOccurrence(output, ",");
+            }
+          } else {
+            throwObjectKeyExpected();
+          }
+          break;
+        }
+        parseWhitespaceAndSkipComments();
+        const processedColon = parseCharacter(":");
+        const truncatedText = i >= text.length;
+        if (!processedColon) {
+          if (isStartOfValue(text[i]) || truncatedText) {
+            output = insertBeforeLastWhitespace(output, ":");
+          } else {
+            throwColonExpected();
+          }
+        }
+        const processedValue = parseValue();
+        if (!processedValue) {
+          if (processedColon || truncatedText) {
+            output += "null";
+          } else {
+            throwColonExpected();
+          }
+        }
+        initial = false;
+      }
+      if (text[i] === "}") {
+        output += "}";
+        i++;
+      } else {
+        output = insertBeforeLastWhitespace(output, "}");
+      }
+      return true;
+    }
+    return false;
+  }
+  function parseArray() {
+    if (text[i] === "[") {
+      output += "[";
+      i++;
+      parseWhitespaceAndSkipComments();
+      if (skipCharacter(",")) {
+        parseWhitespaceAndSkipComments();
+      }
+      let initial = true;
+      while (i < text.length && text[i] !== "]") {
+        if (!initial) {
+          const processedComma2 = parseCharacter(",");
+          if (!processedComma2) {
+            output = insertBeforeLastWhitespace(output, ",");
+          }
+        }
+        skipEllipsis();
+        const processedValue = parseValue();
+        if (!processedValue) {
+          if (!initial) {
+            output = stripLastOccurrence(output, ",");
+          }
+          break;
+        }
+        initial = false;
+      }
+      if (text[i] === "]") {
+        output += "]";
+        i++;
+      } else {
+        output = insertBeforeLastWhitespace(output, "]");
+      }
+      return true;
+    }
+    return false;
+  }
+  function parseNewlineDelimitedJSON() {
+    let initial = true;
+    let processedValue = true;
+    while (processedValue) {
+      if (!initial) {
+        const processedComma2 = parseCharacter(",");
+        if (!processedComma2) {
+          output = insertBeforeLastWhitespace(output, ",");
+        }
+      } else {
+        initial = false;
+      }
+      processedValue = parseValue();
+    }
+    if (!processedValue) {
+      output = stripLastOccurrence(output, ",");
+    }
+    output = `[
+${output}
+]`;
+  }
+  function parseString() {
+    let stopAtDelimiter = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : false;
+    let stopAtIndex = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : -1;
+    let skipEscapeChars = text[i] === "\\";
+    if (skipEscapeChars) {
+      i++;
+      skipEscapeChars = true;
+    }
+    if (isQuote(text[i])) {
+      const isEndQuote = isDoubleQuote(text[i]) ? isDoubleQuote : isSingleQuote(text[i]) ? isSingleQuote : isSingleQuoteLike(text[i]) ? isSingleQuoteLike : isDoubleQuoteLike;
+      const iBefore = i;
+      const oBefore = output.length;
+      let str = '"';
+      i++;
+      while (true) {
+        if (i >= text.length) {
+          const iPrev = prevNonWhitespaceIndex(i - 1);
+          if (!stopAtDelimiter && isDelimiter(text.charAt(iPrev))) {
+            i = iBefore;
+            output = output.substring(0, oBefore);
+            return parseString(true);
+          }
+          str = insertBeforeLastWhitespace(str, '"');
+          output += str;
+          return true;
+        }
+        if (i === stopAtIndex) {
+          str = insertBeforeLastWhitespace(str, '"');
+          output += str;
+          return true;
+        }
+        if (isEndQuote(text[i])) {
+          const iQuote = i;
+          const oQuote = str.length;
+          str += '"';
+          i++;
+          output += str;
+          parseWhitespaceAndSkipComments(false);
+          if (stopAtDelimiter || i >= text.length || isDelimiter(text[i]) && // only count the brackets inside the string when actually needed,
+          // i.e. when the quote is directly followed by a closing bracket
+          !isInsideUnclosedBracket(str, text[i]) || isQuote(text[i]) && !nextQuoteIsEndQuote(i) || isDigit(text[i])) {
+            parseConcatenatedString();
+            return true;
+          }
+          const iPrevChar = prevNonWhitespaceIndex(iQuote - 1);
+          const prevChar = text.charAt(iPrevChar);
+          if (prevChar === ",") {
+            i = iBefore;
+            output = output.substring(0, oBefore);
+            return parseString(false, iPrevChar);
+          }
+          if (isDelimiter(prevChar)) {
+            i = iBefore;
+            output = output.substring(0, oBefore);
+            return parseString(true);
+          }
+          output = output.substring(0, oBefore);
+          i = iQuote + 1;
+          str = `${str.substring(0, oQuote)}\\${str.substring(oQuote)}`;
+        } else if (stopAtDelimiter && isUnquotedStringDelimiter(text[i])) {
+          if (text[i - 1] === ":" && regexUrlStart.test(text.substring(iBefore + 1, i + 2))) {
+            while (i < text.length && regexUrlChar.test(text[i])) {
+              str += text[i];
+              i++;
+            }
+          }
+          str = insertBeforeLastWhitespace(str, '"');
+          output += str;
+          parseConcatenatedString();
+          return true;
+        } else if (text[i] === "\\") {
+          const char = text.charAt(i + 1);
+          const escapeChar = escapeCharacters[char];
+          if (escapeChar !== void 0) {
+            str += text.slice(i, i + 2);
+            i += 2;
+          } else if (char === "u") {
+            let j = 2;
+            while (j < 6 && isHex(text[i + j])) {
+              j++;
+            }
+            if (j === 6) {
+              str += text.slice(i, i + 6);
+              i += 6;
+            } else if (i + j >= text.length) {
+              i = text.length;
+            } else {
+              throwInvalidUnicodeCharacter();
+            }
+          } else if (char === "\n") {
+            str += "\\n";
+            i += 2;
+          } else {
+            str += char;
+            i += 2;
+          }
+        } else {
+          const char = text.charAt(i);
+          if (char === '"' && text[i - 1] !== "\\") {
+            str += `\\${char}`;
+            i++;
+          } else if (isControlCharacter(char)) {
+            str += controlCharacters[char];
+            i++;
+          } else {
+            if (!isValidStringCharacter(char)) {
+              throwInvalidCharacter(char);
+            }
+            str += char;
+            i++;
+          }
+        }
+        if (skipEscapeChars) {
+          skipEscapeCharacter();
+        }
+      }
+    }
+    return false;
+  }
+  function parseConcatenatedString() {
+    let processed2 = false;
+    parseWhitespaceAndSkipComments();
+    while (text[i] === "+") {
+      processed2 = true;
+      i++;
+      parseWhitespaceAndSkipComments();
+      output = stripLastOccurrence(output, '"', true);
+      const start = output.length;
+      const parsedStr = parseString();
+      if (parsedStr) {
+        output = removeAtIndex(output, start, 1);
+      } else {
+        output = insertBeforeLastWhitespace(output, '"');
+      }
+    }
+    return processed2;
+  }
+  function parseNumber() {
+    const start = i;
+    let num = "";
+    let invalid = false;
+    if (text[i] === "-") {
+      num += text[i];
+      i++;
+      if (!isDigit(text[i]) && atEndOfNumber()) {
+        num += "0";
+      }
+    }
+    if (text[i] === "0" && isDigit(text[i + 1])) {
+      invalid = true;
+    }
+    while (isDigit(text[i])) {
+      num += text[i];
+      i++;
+    }
+    if (text[i] === ".") {
+      if (num === "" || num === "-") {
+        num += "0";
+      }
+      num += text[i];
+      i++;
+      if (!isDigit(text[i])) {
+        num += "0";
+      }
+      while (isDigit(text[i])) {
+        num += text[i];
+        i++;
+      }
+    }
+    if (i > start) {
+      if (text[i] === "e" || text[i] === "E") {
+        if (num === "-") {
+          invalid = true;
+        }
+        num += text[i];
+        i++;
+        if (text[i] === "-" || text[i] === "+") {
+          num += text[i];
+          i++;
+        }
+        if (!isDigit(text[i])) {
+          num += "0";
+        }
+        while (isDigit(text[i])) {
+          num += text[i];
+          i++;
+        }
+      }
+      if (!atEndOfNumber()) {
+        i = start;
+        return false;
+      }
+      output += invalid ? `"${text.substring(start, i)}"` : num;
+      return true;
+    }
+    return false;
+  }
+  function parseKeywords() {
+    return parseKeyword("true", "true") || parseKeyword("false", "false") || parseKeyword("null", "null") || // repair Python keywords True, False, None
+    parseKeyword("True", "true") || parseKeyword("False", "false") || parseKeyword("None", "null");
+  }
+  function parseKeyword(name, value) {
+    if (text.slice(i, i + name.length) === name && !isFunctionNameChar(text[i + name.length])) {
+      output += value;
+      i += name.length;
+      return true;
+    }
+    return false;
+  }
+  function parseUnquotedString(isKey) {
+    const start = i;
+    if (isFunctionNameCharStart(text[i])) {
+      while (i < text.length && isFunctionNameChar(text[i])) {
+        i++;
+      }
+      let j = i;
+      while (isWhitespace(text, j)) {
+        j++;
+      }
+      if (text[j] === "(") {
+        i = j + 1;
+        parseValue();
+        if (text[i] === ")") {
+          i++;
+          if (text[i] === ";") {
+            i++;
+          }
+        }
+        return true;
+      }
+    }
+    while (i < text.length && !isUnquotedStringDelimiter(text[i]) && !isQuote(text[i]) && (!isKey || text[i] !== ":")) {
+      i++;
+    }
+    if (text[i - 1] === ":" && regexUrlStart.test(text.substring(start, i + 2))) {
+      while (i < text.length && regexUrlChar.test(text[i])) {
+        i++;
+      }
+    }
+    if (i > start) {
+      while (isWhitespace(text, i - 1) && i > 0) {
+        i--;
+      }
+      const symbol2 = text.slice(start, i);
+      output += symbol2 === "undefined" ? "null" : JSON.stringify(symbol2);
+      if (text[i] === '"') {
+        i++;
+      }
+      return true;
+    }
+  }
+  function parseRegex() {
+    if (text[i] === "/") {
+      const start = i;
+      i++;
+      while (i < text.length && (text[i] !== "/" || text[i - 1] === "\\")) {
+        i++;
+      }
+      i++;
+      output += JSON.stringify(text.substring(start, i));
+      return true;
+    }
+  }
+  function prevNonWhitespaceIndex(start) {
+    let prev = start;
+    while (prev > 0 && isWhitespace(text, prev)) {
+      prev--;
+    }
+    return prev;
+  }
+  function nextQuoteIsEndQuote(index) {
+    let next = index + 1;
+    while (next < text.length && isWhitespace(text, next)) {
+      next++;
+    }
+    return next >= text.length || isDelimiter(text[next]);
+  }
+  function atEndOfNumber() {
+    return i >= text.length || isDelimiter(text[i]) || isWhitespace(text, i);
+  }
+  function throwInvalidCharacter(char) {
+    throw new JSONRepairError(`Invalid character ${JSON.stringify(char)}`, i);
+  }
+  function throwUnexpectedCharacter() {
+    throw new JSONRepairError(`Unexpected character ${JSON.stringify(text[i])}`, i);
+  }
+  function throwUnexpectedEnd() {
+    throw new JSONRepairError("Unexpected end of json string", text.length);
+  }
+  function throwObjectKeyExpected() {
+    throw new JSONRepairError("Object key expected", i);
+  }
+  function throwColonExpected() {
+    throw new JSONRepairError("Colon expected", i);
+  }
+  function throwInvalidUnicodeCharacter() {
+    const chars = text.slice(i, i + 6);
+    throw new JSONRepairError(`Invalid unicode character "${chars}"`, i);
+  }
+}
+function atEndOfBlockComment(text, i) {
+  return text[i] === "*" && text[i + 1] === "/";
+}
+
+// node_modules/@verity/events/dist/choices.js
+var CHOICES_FENCE_TAG = "verity:choices";
+var CHOICES_FENCE_RE = /```verity:choices[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+function parseLenientJson(body) {
+  try {
+    return JSON.parse(body);
+  } catch {
+  }
+  try {
+    return JSON.parse(jsonrepair(body));
+  } catch {
+    return void 0;
+  }
+}
+function parseChoicesBlock(input) {
+  const matches = [...input.matchAll(CHOICES_FENCE_RE)];
+  if (matches.length === 0)
+    return { text: input };
+  let choices;
+  for (let i = matches.length - 1; i >= 0 && choices === void 0; i--) {
+    const parsedJson = parseLenientJson(matches[i][1] ?? "");
+    if (parsedJson === void 0)
+      continue;
+    const result2 = choicesPayloadSchema.safeParse(parsedJson);
+    if (result2.success)
+      choices = result2.data;
+  }
+  if (choices === void 0)
+    return { text: input };
+  let text = input;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const match = matches[i];
+    text = text.slice(0, match.index) + text.slice(match.index + match[0].length);
+  }
+  return { text: text.trimEnd(), choices };
+}
+var CHOICES_SYSTEM_PROMPT = `# Quick-Action choices (Verity)
+
+When your final response asks the operator to choose, approve, or give a go-ahead, append one final \`${CHOICES_FENCE_TAG}\` block. This is mandatory for yes/no approval questions such as "Soll ich ...?", "Should I ...?", "Commit?", "Push?", or "Open a PR?":
+
+\`\`\`${CHOICES_FENCE_TAG}
+{"question":"<the question, optional>","options":[{"label":"<short option label>","recommended":true},{"label":"<short option label>"}],"multiSelect":false}
+\`\`\`
+
+Use concrete short labels because each label is sent verbatim as the user's next message. Prefer action labels such as "Implement local fix" or "Refactor shared module" when the choice selects an approach; use "Ja" / "Nein" only when the preceding question makes the authorized action unambiguous. For a remote-workflow approval, use labels such as "Push + PR" / "Nicht pushen". A selected label is an instruction to execute that option, so proceed without asking for the same confirmation again. Offer only actions you can actually perform.
+
+Do not use a Quick Action to defer work already authorized by the user's request. If the user asked you to solve a problem and one small, low-risk solution is clear, implement it instead of asking whether to implement it. Use choices when the user must make a genuine consequential decision, including materially different solution approaches, a larger change in scope, or a risky or difficult-to-reverse action.
+
+Mark at most one option recommended. Set \`multiSelect:false\` (the default) for almost every prompt: a single tap then sends the option immediately. Set \`multiSelect:true\` ONLY when the options are additive and the operator would genuinely pick several at once (e.g. "which files to include") \u2014 this adds a two-step confirm (tap to select, then a separate Send button), so never use it for mutually exclusive choices, go-aheads, or "pick one to start" prompts. Skip pure status updates, open-ended brainstorming, and the final merge decision on an open PR (the PR status/merge bar handles that). When not already authorized, a go-ahead to commit, review, push, or open a PR is still a decision, so emit the block for those; when the user already requested the action, execute it without another choice. Do not write check-only status prose or poll/monitor PR checks/CI with tools such as \`gh pr checks\` unless explicitly asked; Verity refreshes that status. Valid JSON only: double-quoted keys/strings, no trailing commas, and escape inner double-quotes as \\".`;
+
+// node_modules/@verity/events/dist/agent-loop.js
+var AGENT_LOOP_FENCE_RE = /```verity:agent-loop[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+function parseAgentLoopProposal(input) {
+  const matches = [...input.matchAll(AGENT_LOOP_FENCE_RE)];
+  let proposal;
+  for (let i = matches.length - 1; i >= 0 && proposal === void 0; i -= 1) {
+    try {
+      const parsed = agentLoopProposalSchema.safeParse(JSON.parse(matches[i]?.[1] ?? ""));
+      if (parsed.success)
+        proposal = parsed.data;
+    } catch {
+    }
+  }
+  if (!proposal)
+    return { text: input };
+  const text = input.replace(AGENT_LOOP_FENCE_RE, (fence, body) => {
+    try {
+      return agentLoopProposalSchema.safeParse(JSON.parse(body)).success ? "" : fence;
+    } catch {
+      return fence;
+    }
+  }).trimEnd();
+  return { text, proposal };
+}
+
+// node_modules/@verity/events/dist/delivery-tool.js
+var deliveryBase = {
+  environment: external_exports.string().trim().min(1).max(64),
+  objective: external_exports.string().trim().min(1).max(2e3)
+};
+var projectReferenceSchema = external_exports.string().trim().min(1).max(200);
+var createDeliveryRequestSchema = external_exports.union([
+  external_exports.object({ serviceId: external_exports.string().trim().min(1).max(128), ...deliveryBase }).strict(),
+  external_exports.object({
+    ...deliveryBase,
+    service: external_exports.object({
+      name: external_exports.string().trim().min(1).max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+      sourceProject: projectReferenceSchema,
+      deploymentProject: projectReferenceSchema,
+      imageRepository: external_exports.string().trim().min(1).max(300),
+      manifestPath: external_exports.string().trim().min(1).max(500).refine((path) => !path.startsWith("/") && !path.split("/").includes("..")),
+      argoApplication: external_exports.string().trim().min(1).max(200)
+    }).strict()
+  }).strict()
+]);
+
+// node_modules/@verity/events/dist/session-handoff-tool.js
+var DECEPTIVE_IN_A_RENDERED_LINE = /[\p{Cc}\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+function isDeceptiveInARenderedLine(value) {
+  return DECEPTIVE_IN_A_RENDERED_LINE.test(value);
+}
+var cardLine = (max) => external_exports.string().trim().min(1).max(max).refine((value) => !isDeceptiveInARenderedLine(value), {
+  message: "must be a single line without control or bidi characters"
+});
+var projectReferenceSchema2 = cardLine(200);
+var listSessionsRequestSchema = external_exports.object({
+  project: projectReferenceSchema2.optional(),
+  /**
+   * Omitted means true: list only sessions a handoff could actually be delivered to.
+   *
+   * Left `.optional()` rather than given `.default(true)` because the approval card reads
+   * the raw arguments, before this schema runs — a default applied here would be invisible
+   * to it, and the card would have to state one of its own anyway. So the absent case is
+   * spelled out at each reader (`request.activeOnly !== false`) and they are compared
+   * against each other in the card's tests rather than against a default only one of them
+   * can see.
+   */
+  activeOnly: external_exports.boolean().optional()
+}).strict();
+var sessionHandoffRequestSchema = external_exports.object({
+  target: external_exports.union([
+    external_exports.object({ sessionId: cardLine(128) }).strict(),
+    external_exports.object({ project: projectReferenceSchema2 }).strict()
+  ]),
+  /** A one-line label, rendered on the approval card next to the target it names. */
+  title: cardLine(120),
+  briefing: external_exports.string().trim().min(1).max(2e4)
+}).strict();
+var LIST_SESSIONS_MAX_ENTRIES = 50;
+var LIST_SESSIONS_FIELDS = [
+  { key: "sessionId", label: "session id" },
+  { key: "projectId", label: "project id" },
+  { key: "project", label: "owner/repo" },
+  { key: "model", label: "model" },
+  { key: "status", label: "status" },
+  { key: "eventCount", label: "event count" },
+  { key: "resumable", label: "whether it can be resumed" },
+  { key: "handoffEligible", label: "whether a handoff would be accepted" },
+  { key: "handoffBlockedBy", label: "why not when it is not" }
+];
+var LIST_SESSIONS_FIELD_SENTENCE = LIST_SESSIONS_FIELDS.map((field) => field.label).map((label, index, all) => index === all.length - 1 ? `and ${label}` : label).join(", ");
+var LIST_SESSIONS_TOOL_DESCRIPTION = `List the Verity sessions of the fleet so a handoff can be addressed. Returns metadata only \u2014 ${LIST_SESSIONS_FIELD_SENTENCE}. It never returns transcript content, messages, session names or files; use it to pick a target, not to read another session's work. Verity Control sessions are not listed. Pass \`project\` to narrow to one project, and \`activeOnly: false\` to also see sessions that cannot currently take a turn. At most ${String(LIST_SESSIONS_MAX_ENTRIES)} sessions come back \u2014 the newest ones, when there are more. \`omitted\` says how many the cap left out; a session can also drop out after it, so \`omitted\` is a floor and a listing never proves a session does not exist \u2014 narrow with \`project\` instead of concluding it. The call requires user approval.`;
+
+// node_modules/@verity/events/dist/usage.js
+var WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
+var FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
+
+// packages/session/dist/backend-contract.js
+function isExplicitPreExecutionRejection(message) {
+  return /\b(?:login required|not logged in|authentication failed|unauthorized|invalid api key|token expired)\b/i.test(message) || /\b(?:rate limit|too many requests|quota exceeded)\b/i.test(message) || /\b(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)\b/i.test(message);
+}
+
+// packages/session/dist/backend.js
+var RUNNER_SUPERVISOR_BACKENDS = Object.freeze([
+  "claude-acp",
+  "codex-acp",
+  "opencode-acp"
+]);
+function isRunnerSupervisorBackend(value) {
+  return RUNNER_SUPERVISOR_BACKENDS.includes(value);
+}
+
+// node_modules/@agentclientprotocol/sdk/dist/schema/index.js
+var AGENT_METHODS = {
+  initialize: "initialize",
+  authenticate: "authenticate",
+  providers_list: "providers/list",
+  providers_set: "providers/set",
+  providers_disable: "providers/disable",
+  session_new: "session/new",
+  session_load: "session/load",
+  session_set_mode: "session/set_mode",
+  session_set_config_option: "session/set_config_option",
+  session_prompt: "session/prompt",
+  session_cancel: "session/cancel",
+  mcp_message: "mcp/message",
+  session_list: "session/list",
+  session_delete: "session/delete",
+  session_fork: "session/fork",
+  session_resume: "session/resume",
+  session_close: "session/close",
+  logout: "logout",
+  nes_start: "nes/start",
+  nes_suggest: "nes/suggest",
+  nes_accept: "nes/accept",
+  nes_reject: "nes/reject",
+  nes_close: "nes/close",
+  document_did_open: "document/didOpen",
+  document_did_change: "document/didChange",
+  document_did_close: "document/didClose",
+  document_did_save: "document/didSave",
+  document_did_focus: "document/didFocus"
+};
+var CLIENT_METHODS = {
+  session_request_permission: "session/request_permission",
+  session_update: "session/update",
+  fs_write_text_file: "fs/write_text_file",
+  fs_read_text_file: "fs/read_text_file",
+  terminal_create: "terminal/create",
+  terminal_output: "terminal/output",
+  terminal_release: "terminal/release",
+  terminal_wait_for_exit: "terminal/wait_for_exit",
+  terminal_kill: "terminal/kill",
+  mcp_connect: "mcp/connect",
+  mcp_message: "mcp/message",
+  mcp_disconnect: "mcp/disconnect",
+  elicitation_create: "elicitation/create",
+  elicitation_complete: "elicitation/complete"
+};
+var PROTOCOL_METHODS = {
+  cancel_request: "$/cancel_request"
+};
+var PROTOCOL_VERSION = 1;
+
 // node_modules/@agentclientprotocol/sdk/dist/schema-deserialize.js
 var skippedItem = /* @__PURE__ */ Symbol("skippedItem");
 function defaultOnError(schema, fallback) {
@@ -16686,11 +17839,11 @@ var Connection = class {
     const id = this.nextRequestId++;
     let cancel = () => {
     };
-    const response = new Promise((resolve2, reject) => {
+    const response = new Promise((resolve3, reject) => {
       const pendingResponse = {
         resolve: (value) => {
           try {
-            resolve2(mapResponse ? mapResponse(value) : value);
+            resolve3(mapResponse ? mapResponse(value) : value);
           } catch (error51) {
             reject(error51);
           }
@@ -16747,8 +17900,8 @@ var Connection = class {
     this.stream = stream;
     this.staticHandlers = handlers;
     this.allowBatches = options?.allowBatches ?? true;
-    this.closedPromise = new Promise((resolve2) => {
-      this.abortController.signal.addEventListener("abort", () => resolve2());
+    this.closedPromise = new Promise((resolve3) => {
+      this.abortController.signal.addEventListener("abort", () => resolve3());
     });
     void this.receive();
   }
@@ -17629,8 +18782,8 @@ var AsyncQueue = class {
     if (this.failed) {
       return Promise.reject(this.failure);
     }
-    return new Promise((resolve2, reject) => {
-      this.waiters.push({ resolve: resolve2, reject });
+    return new Promise((resolve3, reject) => {
+      this.waiters.push({ resolve: resolve3, reject });
     });
   }
 };
@@ -18234,1186 +19387,6 @@ var legacyClientNotificationMethods = /* @__PURE__ */ new Set([
   CLIENT_METHODS.elicitation_complete
 ]);
 
-// node_modules/@verity/events/dist/events.js
-var agentStatusSchema = external_exports.enum([
-  "running",
-  "awaiting_input",
-  "awaiting_dependency",
-  "crashed",
-  "completed"
-]);
-var riskClassSchema = external_exports.enum(["auto", "ask"]);
-var brokeredGrantChannelSchema = external_exports.literal("acp");
-var retiredBrokeredGrantChannelSchema = external_exports.literal("native").transform(() => void 0);
-var persistedBrokeredGrantChannelSchema = external_exports.union([brokeredGrantChannelSchema, retiredBrokeredGrantChannelSchema]).optional();
-var rateLimitWindowSchema = external_exports.enum(["five_hour", "weekly"]);
-var taskPhaseSchema = external_exports.enum(["started", "progress", "ended"]);
-var imageMediaTypeSchema = external_exports.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-var fileMediaTypeSchema = external_exports.string().min(1).max(255);
-var attachmentKindSchema = external_exports.enum(["image", "file"]);
-var attachmentUploadSchema = external_exports.discriminatedUnion("kind", [
-  external_exports.object({
-    kind: external_exports.literal("image"),
-    mediaType: imageMediaTypeSchema,
-    data: external_exports.string().min(1)
-  }),
-  external_exports.object({
-    kind: external_exports.literal("file"),
-    mediaType: fileMediaTypeSchema,
-    /** Original name (basename); shown in the UI and used to name the on-disk file. */
-    fileName: external_exports.string().min(1).max(255),
-    data: external_exports.string().min(1)
-  })
-]);
-var attachmentHasBytes = (a) => a.id !== void 0 || a.data !== void 0;
-var attachmentBytesMessage = { message: "attachment needs an id or inline data" };
-var attachmentSchema = external_exports.union([
-  external_exports.object({
-    kind: external_exports.literal("image"),
-    mediaType: imageMediaTypeSchema,
-    /** Content-addressed reference (SHA-256 hex) — fetch via `GET /attachments/:id`. */
-    id: external_exports.string().min(1).optional(),
-    /** Legacy inline base64 (pre-blob-storage events only). */
-    data: external_exports.string().min(1).optional()
-  }).refine(attachmentHasBytes, attachmentBytesMessage),
-  external_exports.object({
-    kind: external_exports.literal("file"),
-    mediaType: fileMediaTypeSchema,
-    /** Original file name — rendered in the transcript and used to name the file
-     * materialized into the agent's working directory. */
-    fileName: external_exports.string().min(1).max(255),
-    id: external_exports.string().min(1).optional(),
-    data: external_exports.string().min(1).optional()
-  }).refine(attachmentHasBytes, attachmentBytesMessage)
-]);
-var toolResultRefSchema = external_exports.object({
-  id: external_exports.string().min(1),
-  bytes: external_exports.number().int().nonnegative()
-});
-var choicesOptionSchema = external_exports.object({
-  label: external_exports.string().min(1),
-  recommended: external_exports.boolean().optional()
-});
-var choicesPayloadSchema = external_exports.object({
-  question: external_exports.string().optional(),
-  options: external_exports.array(choicesOptionSchema).min(1),
-  multiSelect: external_exports.boolean().optional()
-});
-var agentLoopScheduleSchema = external_exports.discriminatedUnion("kind", [
-  external_exports.object({ kind: external_exports.literal("interval"), everyMinutes: external_exports.number().int().min(15) }),
-  external_exports.object({
-    kind: external_exports.literal("daily"),
-    hour: external_exports.number().int().min(0).max(23),
-    minute: external_exports.number().int().min(0).max(59)
-  }),
-  external_exports.object({
-    kind: external_exports.literal("weekly"),
-    weekday: external_exports.number().int().min(0).max(6),
-    hour: external_exports.number().int().min(0).max(23),
-    minute: external_exports.number().int().min(0).max(59)
-  })
-]);
-var agentLoopProposalSchema = external_exports.object({
-  loopId: external_exports.string().uuid(),
-  name: external_exports.string().trim().min(1).max(80),
-  script: external_exports.string().min(1),
-  schedule: agentLoopScheduleSchema,
-  reactionPrompt: external_exports.string().trim().min(1).optional(),
-  reactionModel: external_exports.string().trim().min(1).nullable().optional()
-});
-var usageSchema = external_exports.object({
-  inputTokens: external_exports.number().int().nonnegative(),
-  outputTokens: external_exports.number().int().nonnegative(),
-  cacheReadTokens: external_exports.number().int().nonnegative(),
-  cacheCreationTokens: external_exports.number().int().nonnegative()
-});
-var resultTelemetrySchema = external_exports.object({
-  backend: external_exports.string().min(1),
-  mode: external_exports.string().min(1),
-  userPromptChars: external_exports.number().int().nonnegative().optional(),
-  runtimePromptChars: external_exports.number().int().nonnegative().optional(),
-  submittedPromptChars: external_exports.number().int().nonnegative().optional(),
-  attachments: external_exports.number().int().nonnegative().optional(),
-  resumed: external_exports.boolean().optional()
-});
-var permissionDenialSchema = external_exports.object({
-  tool: external_exports.string().min(1),
-  toolUseId: external_exports.string().min(1).optional(),
-  input: external_exports.unknown().optional()
-});
-var parentToolId = external_exports.string().min(1).optional();
-var agentEventSchema = external_exports.discriminatedUnion("t", [
-  external_exports.object({
-    t: external_exports.literal("session"),
-    id: external_exports.string().min(1),
-    model: external_exports.string().min(1),
-    worktree: external_exports.string().min(1)
-  }),
-  external_exports.object({
-    t: external_exports.literal("status"),
-    state: agentStatusSchema
-  }),
-  external_exports.object({
-    t: external_exports.literal("text"),
-    delta: external_exports.string(),
-    parentToolId
-  }),
-  external_exports.object({
-    // Server-authored transcript note shown as a standalone chat message. Unlike
-    // streaming `text`, a notice is never coalesced into an open agent response and
-    // starts no turn. `role` lets system workflows show an operator-facing action
-    // ("Please transcribe…") followed by agent-style progress/results.
-    t: external_exports.literal("notice"),
-    text: external_exports.string(),
-    role: external_exports.enum(["agent", "operator"]).optional(),
-    // Correlates a server-confirmed workflow notice with an optimistic local echo.
-    clientRequestId: external_exports.string().max(100).optional()
-  }),
-  external_exports.object({
-    // The operator's steering prompt for a turn — persisted by the conductor when
-    // a turn is dispatched, so the operator's own message shows in the transcript
-    // (claude's stream doesn't echo it). Distinct from `text` (the agent's output).
-    t: external_exports.literal("prompt"),
-    // May be empty when the turn carries only attachments (e.g. a screenshot with
-    // no caption); the dispatch boundary guarantees at least one of text/attachments.
-    text: external_exports.string(),
-    // True when the message was injected into an already-running turn rather than
-    // starting a new one. Status projections use this to distinguish a real turn
-    // boundary from mid-turn steering while background tasks remain open.
-    steered: external_exports.boolean().optional(),
-    // Operator-attached files (v1: images) sent with this prompt, so the transcript
-    // can render them. Omitted when the turn had no attachments.
-    attachments: external_exports.array(attachmentSchema).optional()
-  }),
-  external_exports.object({
-    t: external_exports.literal("thinking"),
-    blockId: external_exports.string().min(1),
-    signature: external_exports.string().optional(),
-    delta: external_exports.string(),
-    parentToolId
-  }),
-  external_exports.object({
-    // The body Claude Code injects when a skill/slash-command (e.g. /code-review)
-    // is invoked — a synthetic `user` turn the model reads as
-    // instructions. The adapter routes it here instead of rendering it as operator
-    // prose (which dumped the whole skill into the chat). The reducer folds the
-    // text into the preceding `Skill` tool card as collapsed detail; a `skill`
-    // event that doesn't correlate to a skill call renders nothing.
-    t: external_exports.literal("skill"),
-    text: external_exports.string()
-  }),
-  external_exports.object({
-    t: external_exports.literal("tool_call_start"),
-    id: external_exports.string().min(1),
-    name: external_exports.string().min(1),
-    parentToolId
-  }),
-  external_exports.object({
-    t: external_exports.literal("tool_call"),
-    id: external_exports.string().min(1),
-    name: external_exports.string().min(1),
-    input: external_exports.unknown(),
-    parentToolId
-  }),
-  external_exports.object({
-    t: external_exports.literal("tool_result"),
-    id: external_exports.string().min(1),
-    output: external_exports.unknown(),
-    isError: external_exports.boolean(),
-    // Present when the store externalized a large text output: `output` above is
-    // then a truncated preview and this points at the full body (see
-    // {@link toolResultRefSchema}). Absent → `output` is the full result.
-    outputRef: toolResultRefSchema.optional(),
-    parentToolId
-  }),
-  external_exports.object({
-    t: external_exports.literal("permission"),
-    id: external_exports.string().min(1),
-    tool: external_exports.string().min(1),
-    input: external_exports.unknown(),
-    riskClass: riskClassSchema,
-    /**
-     * Transport this prompt arrived on, for the brokered-secret tools (ADR 0014 D3).
-     * The card offers only the standing scopes that channel accepts — `forever` is not
-     * available on `acp`, and the server refuses it there, so offering it would produce
-     * an approval that silently saves nothing. Server-derived; the agent never supplies
-     * it. Absent on events written before this existed, and on events from a server
-     * across a rollout boundary; the card reads absence as the restricted channel,
-     * since it cannot tell which transport raised such a prompt and the server refuses
-     * a standing scope it cannot resolve a channel for. A channel retired since the event
-     * was written reads as absent for the same reason
-     * ({@link persistedBrokeredGrantChannelSchema}).
-     */
-    grantChannel: persistedBrokeredGrantChannelSchema
-  }),
-  external_exports.object({
-    t: external_exports.literal("result"),
-    usage: usageSchema,
-    stopReason: external_exports.string(),
-    telemetry: resultTelemetrySchema.optional(),
-    /**
-     * Tools the turn requested but were NOT permitted (§5b). In `--resume`-per-
-     * turn (argv) mode `claude` silently auto-denies un-pre-approved tools, so
-     * surfacing these is how the operator sees what was blocked. Omitted when the
-     * turn had no denials.
-     */
-    permissionDenials: external_exports.array(permissionDenialSchema).optional()
-  }),
-  external_exports.object({
-    t: external_exports.literal("rate_limit"),
-    status: external_exports.string(),
-    resetsAt: external_exports.number().int().nonnegative(),
-    window: rateLimitWindowSchema,
-    /** Optional percent used for meter-style provider quota display. */
-    usedPercent: external_exports.number().min(0).max(100).optional(),
-    /** Provider-defined quota scope. Omitted by older events means all models. */
-    scope: external_exports.string().min(1).optional(),
-    /** Human-facing provider/engine label whose quota window this event describes. */
-    providerLabel: external_exports.string().min(1).optional()
-  }),
-  external_exports.object({
-    // A background task / sub-agent the turn spawned (Claude Code `system/task_*`).
-    // A `run_in_background` dispatch (Agent/Bash) returns its `tool_call`
-    // immediately while the work continues off-turn, so the turn's `result` can
-    // fire while the task is still open; the backend then re-invokes with more
-    // output and a later `result` once it finishes. The control plane tracks the
-    // open set (by `id`) to keep the turn/session "running" across that gap instead
-    // of reporting it completed at the first `result` — see `deriveSessionStatus`.
-    // Backend-neutral: any runtime with background work
-    // has an equivalent start/end signal.
-    t: external_exports.literal("task"),
-    id: external_exports.string().min(1),
-    phase: taskPhaseSchema,
-    // The dispatching `tool_call` id (the Agent/Task/Bash `tool_use`) when the
-    // backend reports it — lets the UI attribute the task to its tool_call. Absent
-    // on phases where the backend omits it (e.g. a bare `task_updated` patch).
-    toolUseId: external_exports.string().min(1).optional(),
-    // Human label the backend attached (task description / notification summary).
-    description: external_exports.string().min(1).optional(),
-    // Terminal outcome on phase `ended` (backend string, e.g. `completed`/`failed`).
-    status: external_exports.string().min(1).optional()
-  }),
-  external_exports.object({
-    // A decision point the agent posed at end-of-turn (issue #97). The adapter
-    // lifts this off a ` ```verity:choices ` contract block the agent appends to
-    // its final text (see {@link ./choices}); the app renders the options as
-    // tappable Quick-Action chips and a tap sends the chosen label as a new turn.
-    t: external_exports.literal("choices"),
-    question: external_exports.string().optional(),
-    options: external_exports.array(choicesOptionSchema).min(1),
-    multiSelect: external_exports.boolean().optional()
-  }),
-  external_exports.object({
-    t: external_exports.literal("agent_loop_proposal"),
-    proposal: agentLoopProposalSchema
-  }),
-  external_exports.object({
-    // A turn ended without normal completion. Emitted for an explicit cancel, an
-    // abandoned-turn recovery, or a shutdown drain; any partial output the agent
-    // already streamed stays in the log. Actor provenance is intentionally absent,
-    // so this renders as the neutral "Turn interrupted" transcript row.
-    t: external_exports.literal("interrupted")
-  }),
-  external_exports.object({
-    // The operator merged this session's open PR from the PR bar. The server appends
-    // this as a transcript-only marker so the operator SEES the merge landed when they
-    // return to the chat — it triggers NO turn and NO agent reply. The agent learns of
-    // the merge separately, via the pending note the merge route leaves (folded into
-    // its next turn). Rendered as a "Merged PR #N" row.
-    t: external_exports.literal("merged"),
-    number: external_exports.number().int().positive()
-  }),
-  external_exports.object({
-    t: external_exports.literal("compaction"),
-    boundary: external_exports.literal(true)
-  }),
-  external_exports.object({
-    t: external_exports.literal("error"),
-    kind: external_exports.string(),
-    message: external_exports.string()
-  }),
-  external_exports.object({
-    t: external_exports.literal("raw"),
-    backend: external_exports.string().min(1),
-    payload: external_exports.unknown()
-  })
-]);
-
-// node_modules/jsonrepair/lib/esm/utils/JSONRepairError.js
-var JSONRepairError = class extends Error {
-  constructor(message, position) {
-    super(`${message} at position ${position}`);
-    this.position = position;
-  }
-};
-
-// node_modules/jsonrepair/lib/esm/utils/stringUtils.js
-var codeSpace = 32;
-var codeNewline = 10;
-var codeTab = 9;
-var codeReturn = 13;
-var codeNonBreakingSpace = 160;
-var codeMongolianVowelSeparator = 6158;
-var codeEnQuad = 8192;
-var codeZeroWidthSpace = 8203;
-var codeNarrowNoBreakSpace = 8239;
-var codeMediumMathematicalSpace = 8287;
-var codeIdeographicSpace = 12288;
-var codeZeroWidthNoBreakSpace = 65279;
-function isHex(char) {
-  return /^[0-9A-Fa-f]$/.test(char);
-}
-function isDigit(char) {
-  return char >= "0" && char <= "9";
-}
-function isValidStringCharacter(char) {
-  return char >= " ";
-}
-function isDelimiter(char) {
-  return ",:[]/{}()\n+".includes(char);
-}
-function isFunctionNameCharStart(char) {
-  return char >= "a" && char <= "z" || char >= "A" && char <= "Z" || char === "_" || char === "$";
-}
-function isFunctionNameChar(char) {
-  return char >= "a" && char <= "z" || char >= "A" && char <= "Z" || char === "_" || char === "$" || char >= "0" && char <= "9";
-}
-var regexUrlStart = /^(http|https|ftp|mailto|file|data|irc):\/\/$/;
-var regexUrlChar = /^[A-Za-z0-9-._~:/?#@!$&'()*+;=]$/;
-function isUnquotedStringDelimiter(char) {
-  return ",[]/{}\n+".includes(char);
-}
-function isStartOfValue(char) {
-  return isQuote(char) || regexStartOfValue.test(char);
-}
-var regexStartOfValue = /^[[{\w-]$/;
-function isControlCharacter(char) {
-  return char === "\n" || char === "\r" || char === "	" || char === "\b" || char === "\f";
-}
-function isWhitespace(text, index) {
-  const code = text.charCodeAt(index);
-  return code === codeSpace || code === codeNewline || code === codeTab || code === codeReturn;
-}
-function isWhitespaceExceptNewline(text, index) {
-  const code = text.charCodeAt(index);
-  return code === codeSpace || code === codeTab || code === codeReturn;
-}
-function isSpecialWhitespace(text, index) {
-  const code = text.charCodeAt(index);
-  return code === codeNonBreakingSpace || code === codeMongolianVowelSeparator || code >= codeEnQuad && code <= codeZeroWidthSpace || code === codeNarrowNoBreakSpace || code === codeMediumMathematicalSpace || code === codeIdeographicSpace || code === codeZeroWidthNoBreakSpace;
-}
-function isQuote(char) {
-  return isDoubleQuoteLike(char) || isSingleQuoteLike(char);
-}
-function isDoubleQuoteLike(char) {
-  return char === '"' || char === "\u201C" || char === "\u201D";
-}
-function isDoubleQuote(char) {
-  return char === '"';
-}
-function isSingleQuoteLike(char) {
-  return char === "'" || char === "\u2018" || char === "\u2019" || char === "`" || char === "\xB4";
-}
-function isSingleQuote(char) {
-  return char === "'";
-}
-function stripLastOccurrence(text, textToStrip) {
-  let stripRemainingText = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : false;
-  const index = text.lastIndexOf(textToStrip);
-  return index !== -1 ? text.substring(0, index) + (stripRemainingText ? "" : text.substring(index + 1)) : text;
-}
-function insertBeforeLastWhitespace(text, textToInsert) {
-  let index = text.length;
-  if (!isWhitespace(text, index - 1)) {
-    return text + textToInsert;
-  }
-  while (isWhitespace(text, index - 1)) {
-    index--;
-  }
-  return text.substring(0, index) + textToInsert + text.substring(index);
-}
-function removeAtIndex(text, start, count) {
-  return text.substring(0, start) + text.substring(start + count);
-}
-function endsWithCommaOrNewline(text) {
-  return /[,\n][ \t\r]*$/.test(text);
-}
-function countOccurrences(text, char) {
-  let count = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text.charAt(i) === char) {
-      count++;
-    }
-  }
-  return count;
-}
-function isInsideUnclosedBracket(text, closeChar) {
-  switch (closeChar) {
-    case ")":
-      return countOccurrences(text, "(") > countOccurrences(text, ")");
-    case "]":
-      return countOccurrences(text, "[") > countOccurrences(text, "]");
-    case "}":
-      return countOccurrences(text, "{") > countOccurrences(text, "}");
-    default:
-      return false;
-  }
-}
-
-// node_modules/jsonrepair/lib/esm/regular/jsonrepair.js
-var controlCharacters = {
-  "\b": "\\b",
-  "\f": "\\f",
-  "\n": "\\n",
-  "\r": "\\r",
-  "	": "\\t"
-};
-var escapeCharacters = {
-  '"': '"',
-  "\\": "\\",
-  "/": "/",
-  b: "\b",
-  f: "\f",
-  n: "\n",
-  r: "\r",
-  t: "	"
-  // note that \u is handled separately in parseString()
-};
-function jsonrepair(text) {
-  let i = 0;
-  let output = "";
-  parseMarkdownCodeBlock(["```", "[```", "{```"]);
-  const processed = parseValue();
-  if (!processed) {
-    throwUnexpectedEnd();
-  }
-  parseMarkdownCodeBlock(["```", "```]", "```}"]);
-  const processedComma = parseCharacter(",");
-  if (processedComma) {
-    parseWhitespaceAndSkipComments();
-  }
-  if (isStartOfValue(text[i]) && endsWithCommaOrNewline(output)) {
-    if (!processedComma) {
-      output = insertBeforeLastWhitespace(output, ",");
-    }
-    parseNewlineDelimitedJSON();
-  } else if (processedComma) {
-    output = stripLastOccurrence(output, ",");
-  }
-  while (text[i] === "}" || text[i] === "]") {
-    i++;
-    parseWhitespaceAndSkipComments();
-  }
-  if (i >= text.length) {
-    return output;
-  }
-  throwUnexpectedCharacter();
-  function parseValue() {
-    parseWhitespaceAndSkipComments();
-    const processed2 = parseObject() || parseArray() || parseString() || parseNumber() || parseKeywords() || parseUnquotedString(false) || parseRegex();
-    parseWhitespaceAndSkipComments();
-    return processed2;
-  }
-  function parseWhitespaceAndSkipComments() {
-    let skipNewline = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : true;
-    const start = i;
-    let changed = parseWhitespace(skipNewline);
-    do {
-      changed = parseComment();
-      if (changed) {
-        changed = parseWhitespace(skipNewline);
-      }
-    } while (changed);
-    return i > start;
-  }
-  function parseWhitespace(skipNewline) {
-    const _isWhiteSpace = skipNewline ? isWhitespace : isWhitespaceExceptNewline;
-    let whitespace = "";
-    while (true) {
-      if (_isWhiteSpace(text, i)) {
-        whitespace += text[i];
-        i++;
-      } else if (isSpecialWhitespace(text, i)) {
-        whitespace += " ";
-        i++;
-      } else {
-        break;
-      }
-    }
-    if (whitespace.length > 0) {
-      output += whitespace;
-      return true;
-    }
-    return false;
-  }
-  function parseComment() {
-    if (text[i] === "/" && text[i + 1] === "*") {
-      while (i < text.length && !atEndOfBlockComment(text, i)) {
-        i++;
-      }
-      i += 2;
-      return true;
-    }
-    if (text[i] === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") {
-        i++;
-      }
-      return true;
-    }
-    return false;
-  }
-  function parseMarkdownCodeBlock(blocks) {
-    if (skipMarkdownCodeBlock(blocks)) {
-      if (isFunctionNameCharStart(text[i])) {
-        while (i < text.length && isFunctionNameChar(text[i])) {
-          i++;
-        }
-      }
-      parseWhitespaceAndSkipComments();
-      return true;
-    }
-    return false;
-  }
-  function skipMarkdownCodeBlock(blocks) {
-    parseWhitespace(true);
-    for (const block of blocks) {
-      const end = i + block.length;
-      if (text.slice(i, end) === block) {
-        i = end;
-        return true;
-      }
-    }
-    return false;
-  }
-  function parseCharacter(char) {
-    if (text[i] === char) {
-      output += text[i];
-      i++;
-      return true;
-    }
-    return false;
-  }
-  function skipCharacter(char) {
-    if (text[i] === char) {
-      i++;
-      return true;
-    }
-    return false;
-  }
-  function skipEscapeCharacter() {
-    return skipCharacter("\\");
-  }
-  function skipEllipsis() {
-    parseWhitespaceAndSkipComments();
-    if (text[i] === "." && text[i + 1] === "." && text[i + 2] === ".") {
-      i += 3;
-      parseWhitespaceAndSkipComments();
-      skipCharacter(",");
-      return true;
-    }
-    return false;
-  }
-  function parseObject() {
-    if (text[i] === "{") {
-      output += "{";
-      i++;
-      parseWhitespaceAndSkipComments();
-      if (skipCharacter(",")) {
-        parseWhitespaceAndSkipComments();
-      }
-      let initial = true;
-      while (i < text.length && text[i] !== "}") {
-        let processedComma2;
-        if (!initial) {
-          processedComma2 = parseCharacter(",");
-          if (!processedComma2) {
-            output = insertBeforeLastWhitespace(output, ",");
-          }
-          parseWhitespaceAndSkipComments();
-        } else {
-          processedComma2 = true;
-        }
-        skipEllipsis();
-        const processedKey = parseString() || parseUnquotedString(true);
-        if (!processedKey) {
-          if (text[i] === "}" || text[i] === "{" || text[i] === "]" || text[i] === "[" || text[i] === void 0) {
-            if (!initial) {
-              output = stripLastOccurrence(output, ",");
-            }
-          } else {
-            throwObjectKeyExpected();
-          }
-          break;
-        }
-        parseWhitespaceAndSkipComments();
-        const processedColon = parseCharacter(":");
-        const truncatedText = i >= text.length;
-        if (!processedColon) {
-          if (isStartOfValue(text[i]) || truncatedText) {
-            output = insertBeforeLastWhitespace(output, ":");
-          } else {
-            throwColonExpected();
-          }
-        }
-        const processedValue = parseValue();
-        if (!processedValue) {
-          if (processedColon || truncatedText) {
-            output += "null";
-          } else {
-            throwColonExpected();
-          }
-        }
-        initial = false;
-      }
-      if (text[i] === "}") {
-        output += "}";
-        i++;
-      } else {
-        output = insertBeforeLastWhitespace(output, "}");
-      }
-      return true;
-    }
-    return false;
-  }
-  function parseArray() {
-    if (text[i] === "[") {
-      output += "[";
-      i++;
-      parseWhitespaceAndSkipComments();
-      if (skipCharacter(",")) {
-        parseWhitespaceAndSkipComments();
-      }
-      let initial = true;
-      while (i < text.length && text[i] !== "]") {
-        if (!initial) {
-          const processedComma2 = parseCharacter(",");
-          if (!processedComma2) {
-            output = insertBeforeLastWhitespace(output, ",");
-          }
-        }
-        skipEllipsis();
-        const processedValue = parseValue();
-        if (!processedValue) {
-          if (!initial) {
-            output = stripLastOccurrence(output, ",");
-          }
-          break;
-        }
-        initial = false;
-      }
-      if (text[i] === "]") {
-        output += "]";
-        i++;
-      } else {
-        output = insertBeforeLastWhitespace(output, "]");
-      }
-      return true;
-    }
-    return false;
-  }
-  function parseNewlineDelimitedJSON() {
-    let initial = true;
-    let processedValue = true;
-    while (processedValue) {
-      if (!initial) {
-        const processedComma2 = parseCharacter(",");
-        if (!processedComma2) {
-          output = insertBeforeLastWhitespace(output, ",");
-        }
-      } else {
-        initial = false;
-      }
-      processedValue = parseValue();
-    }
-    if (!processedValue) {
-      output = stripLastOccurrence(output, ",");
-    }
-    output = `[
-${output}
-]`;
-  }
-  function parseString() {
-    let stopAtDelimiter = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : false;
-    let stopAtIndex = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : -1;
-    let skipEscapeChars = text[i] === "\\";
-    if (skipEscapeChars) {
-      i++;
-      skipEscapeChars = true;
-    }
-    if (isQuote(text[i])) {
-      const isEndQuote = isDoubleQuote(text[i]) ? isDoubleQuote : isSingleQuote(text[i]) ? isSingleQuote : isSingleQuoteLike(text[i]) ? isSingleQuoteLike : isDoubleQuoteLike;
-      const iBefore = i;
-      const oBefore = output.length;
-      let str = '"';
-      i++;
-      while (true) {
-        if (i >= text.length) {
-          const iPrev = prevNonWhitespaceIndex(i - 1);
-          if (!stopAtDelimiter && isDelimiter(text.charAt(iPrev))) {
-            i = iBefore;
-            output = output.substring(0, oBefore);
-            return parseString(true);
-          }
-          str = insertBeforeLastWhitespace(str, '"');
-          output += str;
-          return true;
-        }
-        if (i === stopAtIndex) {
-          str = insertBeforeLastWhitespace(str, '"');
-          output += str;
-          return true;
-        }
-        if (isEndQuote(text[i])) {
-          const iQuote = i;
-          const oQuote = str.length;
-          str += '"';
-          i++;
-          output += str;
-          parseWhitespaceAndSkipComments(false);
-          if (stopAtDelimiter || i >= text.length || isDelimiter(text[i]) && // only count the brackets inside the string when actually needed,
-          // i.e. when the quote is directly followed by a closing bracket
-          !isInsideUnclosedBracket(str, text[i]) || isQuote(text[i]) && !nextQuoteIsEndQuote(i) || isDigit(text[i])) {
-            parseConcatenatedString();
-            return true;
-          }
-          const iPrevChar = prevNonWhitespaceIndex(iQuote - 1);
-          const prevChar = text.charAt(iPrevChar);
-          if (prevChar === ",") {
-            i = iBefore;
-            output = output.substring(0, oBefore);
-            return parseString(false, iPrevChar);
-          }
-          if (isDelimiter(prevChar)) {
-            i = iBefore;
-            output = output.substring(0, oBefore);
-            return parseString(true);
-          }
-          output = output.substring(0, oBefore);
-          i = iQuote + 1;
-          str = `${str.substring(0, oQuote)}\\${str.substring(oQuote)}`;
-        } else if (stopAtDelimiter && isUnquotedStringDelimiter(text[i])) {
-          if (text[i - 1] === ":" && regexUrlStart.test(text.substring(iBefore + 1, i + 2))) {
-            while (i < text.length && regexUrlChar.test(text[i])) {
-              str += text[i];
-              i++;
-            }
-          }
-          str = insertBeforeLastWhitespace(str, '"');
-          output += str;
-          parseConcatenatedString();
-          return true;
-        } else if (text[i] === "\\") {
-          const char = text.charAt(i + 1);
-          const escapeChar = escapeCharacters[char];
-          if (escapeChar !== void 0) {
-            str += text.slice(i, i + 2);
-            i += 2;
-          } else if (char === "u") {
-            let j = 2;
-            while (j < 6 && isHex(text[i + j])) {
-              j++;
-            }
-            if (j === 6) {
-              str += text.slice(i, i + 6);
-              i += 6;
-            } else if (i + j >= text.length) {
-              i = text.length;
-            } else {
-              throwInvalidUnicodeCharacter();
-            }
-          } else if (char === "\n") {
-            str += "\\n";
-            i += 2;
-          } else {
-            str += char;
-            i += 2;
-          }
-        } else {
-          const char = text.charAt(i);
-          if (char === '"' && text[i - 1] !== "\\") {
-            str += `\\${char}`;
-            i++;
-          } else if (isControlCharacter(char)) {
-            str += controlCharacters[char];
-            i++;
-          } else {
-            if (!isValidStringCharacter(char)) {
-              throwInvalidCharacter(char);
-            }
-            str += char;
-            i++;
-          }
-        }
-        if (skipEscapeChars) {
-          skipEscapeCharacter();
-        }
-      }
-    }
-    return false;
-  }
-  function parseConcatenatedString() {
-    let processed2 = false;
-    parseWhitespaceAndSkipComments();
-    while (text[i] === "+") {
-      processed2 = true;
-      i++;
-      parseWhitespaceAndSkipComments();
-      output = stripLastOccurrence(output, '"', true);
-      const start = output.length;
-      const parsedStr = parseString();
-      if (parsedStr) {
-        output = removeAtIndex(output, start, 1);
-      } else {
-        output = insertBeforeLastWhitespace(output, '"');
-      }
-    }
-    return processed2;
-  }
-  function parseNumber() {
-    const start = i;
-    let num = "";
-    let invalid = false;
-    if (text[i] === "-") {
-      num += text[i];
-      i++;
-      if (!isDigit(text[i]) && atEndOfNumber()) {
-        num += "0";
-      }
-    }
-    if (text[i] === "0" && isDigit(text[i + 1])) {
-      invalid = true;
-    }
-    while (isDigit(text[i])) {
-      num += text[i];
-      i++;
-    }
-    if (text[i] === ".") {
-      if (num === "" || num === "-") {
-        num += "0";
-      }
-      num += text[i];
-      i++;
-      if (!isDigit(text[i])) {
-        num += "0";
-      }
-      while (isDigit(text[i])) {
-        num += text[i];
-        i++;
-      }
-    }
-    if (i > start) {
-      if (text[i] === "e" || text[i] === "E") {
-        if (num === "-") {
-          invalid = true;
-        }
-        num += text[i];
-        i++;
-        if (text[i] === "-" || text[i] === "+") {
-          num += text[i];
-          i++;
-        }
-        if (!isDigit(text[i])) {
-          num += "0";
-        }
-        while (isDigit(text[i])) {
-          num += text[i];
-          i++;
-        }
-      }
-      if (!atEndOfNumber()) {
-        i = start;
-        return false;
-      }
-      output += invalid ? `"${text.substring(start, i)}"` : num;
-      return true;
-    }
-    return false;
-  }
-  function parseKeywords() {
-    return parseKeyword("true", "true") || parseKeyword("false", "false") || parseKeyword("null", "null") || // repair Python keywords True, False, None
-    parseKeyword("True", "true") || parseKeyword("False", "false") || parseKeyword("None", "null");
-  }
-  function parseKeyword(name, value) {
-    if (text.slice(i, i + name.length) === name && !isFunctionNameChar(text[i + name.length])) {
-      output += value;
-      i += name.length;
-      return true;
-    }
-    return false;
-  }
-  function parseUnquotedString(isKey) {
-    const start = i;
-    if (isFunctionNameCharStart(text[i])) {
-      while (i < text.length && isFunctionNameChar(text[i])) {
-        i++;
-      }
-      let j = i;
-      while (isWhitespace(text, j)) {
-        j++;
-      }
-      if (text[j] === "(") {
-        i = j + 1;
-        parseValue();
-        if (text[i] === ")") {
-          i++;
-          if (text[i] === ";") {
-            i++;
-          }
-        }
-        return true;
-      }
-    }
-    while (i < text.length && !isUnquotedStringDelimiter(text[i]) && !isQuote(text[i]) && (!isKey || text[i] !== ":")) {
-      i++;
-    }
-    if (text[i - 1] === ":" && regexUrlStart.test(text.substring(start, i + 2))) {
-      while (i < text.length && regexUrlChar.test(text[i])) {
-        i++;
-      }
-    }
-    if (i > start) {
-      while (isWhitespace(text, i - 1) && i > 0) {
-        i--;
-      }
-      const symbol2 = text.slice(start, i);
-      output += symbol2 === "undefined" ? "null" : JSON.stringify(symbol2);
-      if (text[i] === '"') {
-        i++;
-      }
-      return true;
-    }
-  }
-  function parseRegex() {
-    if (text[i] === "/") {
-      const start = i;
-      i++;
-      while (i < text.length && (text[i] !== "/" || text[i - 1] === "\\")) {
-        i++;
-      }
-      i++;
-      output += JSON.stringify(text.substring(start, i));
-      return true;
-    }
-  }
-  function prevNonWhitespaceIndex(start) {
-    let prev = start;
-    while (prev > 0 && isWhitespace(text, prev)) {
-      prev--;
-    }
-    return prev;
-  }
-  function nextQuoteIsEndQuote(index) {
-    let next = index + 1;
-    while (next < text.length && isWhitespace(text, next)) {
-      next++;
-    }
-    return next >= text.length || isDelimiter(text[next]);
-  }
-  function atEndOfNumber() {
-    return i >= text.length || isDelimiter(text[i]) || isWhitespace(text, i);
-  }
-  function throwInvalidCharacter(char) {
-    throw new JSONRepairError(`Invalid character ${JSON.stringify(char)}`, i);
-  }
-  function throwUnexpectedCharacter() {
-    throw new JSONRepairError(`Unexpected character ${JSON.stringify(text[i])}`, i);
-  }
-  function throwUnexpectedEnd() {
-    throw new JSONRepairError("Unexpected end of json string", text.length);
-  }
-  function throwObjectKeyExpected() {
-    throw new JSONRepairError("Object key expected", i);
-  }
-  function throwColonExpected() {
-    throw new JSONRepairError("Colon expected", i);
-  }
-  function throwInvalidUnicodeCharacter() {
-    const chars = text.slice(i, i + 6);
-    throw new JSONRepairError(`Invalid unicode character "${chars}"`, i);
-  }
-}
-function atEndOfBlockComment(text, i) {
-  return text[i] === "*" && text[i + 1] === "/";
-}
-
-// node_modules/@verity/events/dist/choices.js
-var CHOICES_FENCE_TAG = "verity:choices";
-var CHOICES_FENCE_RE = /```verity:choices[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
-var YES_NO_QUESTION_START_RE = /^(?:soll(?:en)?|kann(?:st| ich|st du| man| es)?|könn(?:en|test|te)|darf(?: ich|st du| man)?|dürf(?:en|te|test)|möchtest|möchten|willst|wollen|ist|sind|wäre|wärst|würdest|should|shall|can|could|would|do|does|did|is|are|was|were|will|may|might|must|commit|push|proceed|continue|open)\b/i;
-var OPEN_QUESTION_START_RE = /^(?:what|which|who|whom|whose|when|where|why|how|welche(?:r|s|n|m)?|wer|wen|wem|wessen|wann|wo|warum|wieso|weshalb|wie)\b/i;
-var OPEN_QUESTION_ANYWHERE_RE = /\b(?:what|which|who|whom|whose|when|where|why|how|welche(?:r|s|n|m)?|wer|wen|wem|wessen|wann|wo|warum|wieso|weshalb|wie|or|oder)\b/i;
-var ENGLISH_WAS_QUESTION_RE = /^was\s+(?:i|it|he|she|we|you|they|there|this|that|the|a|an|your|my|our|their)\b/i;
-function parseLenientJson(body) {
-  try {
-    return JSON.parse(body);
-  } catch {
-  }
-  try {
-    return JSON.parse(jsonrepair(body));
-  } catch {
-    return void 0;
-  }
-}
-function lastNonEmptyLine(input) {
-  const lines = input.split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]?.trim();
-    if (line !== void 0 && line.length > 0)
-      return line;
-  }
-  return void 0;
-}
-function synthesizeYesNoChoices(input) {
-  const line = lastNonEmptyLine(input);
-  if (line === void 0 || !line.endsWith("?"))
-    return void 0;
-  if (line.startsWith("```") || line.startsWith(">"))
-    return void 0;
-  const question = line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "");
-  if (!ENGLISH_WAS_QUESTION_RE.test(question) && /\bwas\b/i.test(question))
-    return void 0;
-  if (OPEN_QUESTION_START_RE.test(question))
-    return void 0;
-  if (OPEN_QUESTION_ANYWHERE_RE.test(question))
-    return void 0;
-  if (!YES_NO_QUESTION_START_RE.test(question))
-    return void 0;
-  return {
-    question,
-    options: [{ label: "Ja", recommended: true }, { label: "Nein" }],
-    multiSelect: false
-  };
-}
-function parseChoicesBlock(input) {
-  const matches = [...input.matchAll(CHOICES_FENCE_RE)];
-  if (matches.length === 0) {
-    const choices2 = synthesizeYesNoChoices(input);
-    if (choices2 !== void 0)
-      return { text: input, choices: choices2 };
-    return { text: input };
-  }
-  let choices;
-  for (let i = matches.length - 1; i >= 0 && choices === void 0; i--) {
-    const parsedJson = parseLenientJson(matches[i][1] ?? "");
-    if (parsedJson === void 0)
-      continue;
-    const result2 = choicesPayloadSchema.safeParse(parsedJson);
-    if (result2.success)
-      choices = result2.data;
-  }
-  if (choices === void 0)
-    return { text: input };
-  let text = input;
-  for (let i = matches.length - 1; i >= 0; i--) {
-    const match = matches[i];
-    text = text.slice(0, match.index) + text.slice(match.index + match[0].length);
-  }
-  return { text: text.trimEnd(), choices };
-}
-var CHOICES_SYSTEM_PROMPT = `# Quick-Action choices (Verity)
-
-When your final response asks the operator to choose, approve, or give a go-ahead, append one final \`${CHOICES_FENCE_TAG}\` block. This is mandatory for yes/no approval questions such as "Soll ich ...?", "Should I ...?", "Commit?", "Push?", or "Open a PR?":
-
-\`\`\`${CHOICES_FENCE_TAG}
-{"question":"<the question, optional>","options":[{"label":"<short option label>","recommended":true},{"label":"<short option label>"}],"multiSelect":false}
-\`\`\`
-
-Use concrete short labels because each label is sent verbatim as the user's next message. Prefer action labels such as "Implement local fix" or "Refactor shared module" when the choice selects an approach; use "Ja" / "Nein" only when the preceding question makes the authorized action unambiguous. For a remote-workflow approval, use labels such as "Push + PR" / "Nicht pushen". A selected label is an instruction to execute that option, so proceed without asking for the same confirmation again. Offer only actions you can actually perform.
-
-Do not use a Quick Action to defer work already authorized by the user's request. If the user asked you to solve a problem and one small, low-risk solution is clear, implement it instead of asking whether to implement it. Use choices when the user must make a genuine consequential decision, including materially different solution approaches, a larger change in scope, or a risky or difficult-to-reverse action.
-
-Mark at most one option recommended. Set \`multiSelect:false\` (the default) for almost every prompt: a single tap then sends the option immediately. Set \`multiSelect:true\` ONLY when the options are additive and the operator would genuinely pick several at once (e.g. "which files to include") \u2014 this adds a two-step confirm (tap to select, then a separate Send button), so never use it for mutually exclusive choices, go-aheads, or "pick one to start" prompts. Skip pure status updates, open-ended brainstorming, and the final merge decision on an open PR (the PR status/merge bar handles that). When not already authorized, a go-ahead to commit, review, push, or open a PR is still a decision, so emit the block for those; when the user already requested the action, execute it without another choice. Do not write check-only status prose or poll/monitor PR checks/CI with tools such as \`gh pr checks\` unless explicitly asked; Verity refreshes that status. Valid JSON only: double-quoted keys/strings, no trailing commas, and escape inner double-quotes as \\".`;
-
-// node_modules/@verity/events/dist/agent-loop.js
-var AGENT_LOOP_FENCE_RE = /```verity:agent-loop[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
-function parseAgentLoopProposal(input) {
-  const matches = [...input.matchAll(AGENT_LOOP_FENCE_RE)];
-  let proposal;
-  for (let i = matches.length - 1; i >= 0 && proposal === void 0; i -= 1) {
-    try {
-      const parsed = agentLoopProposalSchema.safeParse(JSON.parse(matches[i]?.[1] ?? ""));
-      if (parsed.success)
-        proposal = parsed.data;
-    } catch {
-    }
-  }
-  if (!proposal)
-    return { text: input };
-  return { text: input.replace(AGENT_LOOP_FENCE_RE, "").trimEnd(), proposal };
-}
-
-// node_modules/@verity/events/dist/delivery-tool.js
-var deliveryBase = {
-  environment: external_exports.string().trim().min(1).max(64),
-  objective: external_exports.string().trim().min(1).max(2e3)
-};
-var projectReferenceSchema = external_exports.string().trim().min(1).max(200);
-var createDeliveryRequestSchema = external_exports.union([
-  external_exports.object({ serviceId: external_exports.string().trim().min(1).max(128), ...deliveryBase }).strict(),
-  external_exports.object({
-    ...deliveryBase,
-    service: external_exports.object({
-      name: external_exports.string().trim().min(1).max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-      sourceProject: projectReferenceSchema,
-      deploymentProject: projectReferenceSchema,
-      imageRepository: external_exports.string().trim().min(1).max(300),
-      manifestPath: external_exports.string().trim().min(1).max(500).refine((path) => !path.startsWith("/") && !path.split("/").includes("..")),
-      argoApplication: external_exports.string().trim().min(1).max(200)
-    }).strict()
-  }).strict()
-]);
-
-// node_modules/@verity/events/dist/session-handoff-tool.js
-var DECEPTIVE_IN_A_RENDERED_LINE = /[\p{Cc}\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
-function isDeceptiveInARenderedLine(value) {
-  return DECEPTIVE_IN_A_RENDERED_LINE.test(value);
-}
-var cardLine = (max) => external_exports.string().trim().min(1).max(max).refine((value) => !isDeceptiveInARenderedLine(value), {
-  message: "must be a single line without control or bidi characters"
-});
-var projectReferenceSchema2 = cardLine(200);
-var listSessionsRequestSchema = external_exports.object({
-  project: projectReferenceSchema2.optional(),
-  /**
-   * Omitted means true: list only sessions a handoff could actually be delivered to.
-   *
-   * Left `.optional()` rather than given `.default(true)` because the approval card reads
-   * the raw arguments, before this schema runs — a default applied here would be invisible
-   * to it, and the card would have to state one of its own anyway. So the absent case is
-   * spelled out at each reader (`request.activeOnly !== false`) and they are compared
-   * against each other in the card's tests rather than against a default only one of them
-   * can see.
-   */
-  activeOnly: external_exports.boolean().optional()
-}).strict();
-var sessionHandoffRequestSchema = external_exports.object({
-  target: external_exports.union([
-    external_exports.object({ sessionId: cardLine(128) }).strict(),
-    external_exports.object({ project: projectReferenceSchema2 }).strict()
-  ]),
-  /** A one-line label, rendered on the approval card next to the target it names. */
-  title: cardLine(120),
-  briefing: external_exports.string().trim().min(1).max(2e4)
-}).strict();
-var LIST_SESSIONS_MAX_ENTRIES = 50;
-var LIST_SESSIONS_FIELDS = [
-  { key: "sessionId", label: "session id" },
-  { key: "projectId", label: "project id" },
-  { key: "project", label: "owner/repo" },
-  { key: "model", label: "model" },
-  { key: "status", label: "status" },
-  { key: "eventCount", label: "event count" },
-  { key: "resumable", label: "whether it can be resumed" },
-  { key: "handoffEligible", label: "whether a handoff would be accepted" },
-  { key: "handoffBlockedBy", label: "why not when it is not" }
-];
-var LIST_SESSIONS_FIELD_SENTENCE = LIST_SESSIONS_FIELDS.map((field) => field.label).map((label, index, all) => index === all.length - 1 ? `and ${label}` : label).join(", ");
-var LIST_SESSIONS_TOOL_DESCRIPTION = `List the Verity sessions of the fleet so a handoff can be addressed. Returns metadata only \u2014 ${LIST_SESSIONS_FIELD_SENTENCE}. It never returns transcript content, messages, session names or files; use it to pick a target, not to read another session's work. Verity Control sessions are not listed. Pass \`project\` to narrow to one project, and \`activeOnly: false\` to also see sessions that cannot currently take a turn. At most ${String(LIST_SESSIONS_MAX_ENTRIES)} sessions come back \u2014 the newest ones, when there are more. \`omitted\` says how many the cap left out; a session can also drop out after it, so \`omitted\` is a floor and a listing never proves a session does not exist \u2014 narrow with \`project\` instead of concluding it. The call requires user approval.`;
-
-// node_modules/@verity/events/dist/usage.js
-var WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
-var FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
-
 // packages/session/dist/structured-lifecycle.js
 function isRecord2(value) {
   return typeof value === "object" && value !== null;
@@ -19876,7 +19849,7 @@ var SessionWriter = class {
   }
   /** Must be called once the stream ends. */
   async finish() {
-    if (this.sessionId === void 0 && this.pending.length > 0) {
+    if (this.sessionId === void 0) {
       const hasTerminalResult = this.pending.some((event) => event.t === "result");
       if (this.storeSessionId !== void 0 && hasTerminalResult) {
         const existing = await this.store.getSession(this.storeSessionId);
@@ -19931,11 +19904,11 @@ var PROCESS_TREE_KILL_GRACE_MS = 1e3;
 var readProcFile = (path) => readFileSync(path, "utf8");
 var readTaskIds = (pid) => readdirSync(`/proc/${pid}/task`).filter((entry) => /^\d+$/.test(entry)).map(Number);
 function statFields(pid, readProc) {
-  const stat2 = readProc(`/proc/${pid}/stat`);
-  const end = stat2.lastIndexOf(")");
+  const stat = readProc(`/proc/${pid}/stat`);
+  const end = stat.lastIndexOf(")");
   if (end < 0)
     return [];
-  return stat2.slice(end + 1).trim().split(/\s+/);
+  return stat.slice(end + 1).trim().split(/\s+/);
 }
 function processStartTime(pid, readProc = readProcFile) {
   return statFields(pid, readProc)[19] ?? "";
@@ -20122,10 +20095,10 @@ var nodeSpawner = (command, args, options) => {
       stderrTail = (stderrTail + chunk).slice(-STDERR_CAP_BYTES);
     });
   }
-  const exited = new Promise((resolve2, reject) => {
+  const exited = new Promise((resolve3, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => {
-      resolve2(exitCodeFromClose(code, signal));
+      resolve3(exitCodeFromClose(code, signal));
     });
   });
   exited.catch(() => void 0);
@@ -20213,23 +20186,53 @@ function processStream(process3) {
   if (process3.writeStdin === void 0)
     throw new Error("ACP agent requires writable stdin");
   const encoder = new TextEncoder();
+  const stdinDecoder = new TextDecoder();
   const iterator = process3.stdout[Symbol.asyncIterator]();
+  const maxFrameBytes = 8 * 1024 * 1024;
+  let buffered = "";
   return ndJsonStream2(new WritableStream({
     write(chunk) {
-      if (!process3.writeStdin?.(new TextDecoder().decode(chunk))) {
+      if (!process3.writeStdin?.(stdinDecoder.decode(chunk, { stream: true }))) {
         throw new Error("ACP agent stdin closed");
       }
     },
     close() {
+      const tail = stdinDecoder.decode();
+      if (tail !== "" && !process3.writeStdin?.(tail)) {
+        throw new Error("ACP agent stdin closed");
+      }
       process3.closeStdin?.();
     }
   }), new ReadableStream({
     async pull(controller) {
-      const next = await iterator.next();
-      if (next.done)
-        controller.close();
-      else
-        controller.enqueue(encoder.encode(next.value));
+      while (true) {
+        const newline2 = buffered.indexOf("\n");
+        if (newline2 >= 0) {
+          const line = buffered.slice(0, newline2).replace(/\r$/u, "");
+          buffered = buffered.slice(newline2 + 1);
+          if (Buffer.byteLength(line) > maxFrameBytes)
+            throw new Error("ACP frame is too large");
+          try {
+            JSON.parse(line);
+          } catch {
+            throw new Error("ACP agent returned malformed JSON");
+          }
+          controller.enqueue(encoder.encode(`${line}
+`));
+          return;
+        }
+        if (Buffer.byteLength(buffered) > maxFrameBytes)
+          throw new Error("ACP frame is too large");
+        const next = await iterator.next();
+        if (next.done) {
+          if (buffered.length === 0)
+            controller.close();
+          else
+            throw new Error("ACP agent returned an incomplete JSON frame");
+          return;
+        }
+        buffered += next.value;
+      }
     },
     async cancel() {
       await iterator.return?.();
@@ -20303,8 +20306,8 @@ async function settled(work) {
   try {
     return await Promise.race([
       work.then(() => true, () => true),
-      new Promise((resolve2) => {
-        timer = setTimeout(() => resolve2(false), MODE_SETTLE_MS);
+      new Promise((resolve3) => {
+        timer = setTimeout(() => resolve3(false), MODE_SETTLE_MS);
         timer.unref?.();
       })
     ]);
@@ -20414,9 +20417,9 @@ async function runAcpTurn(opts, profile) {
     }
     const neutral = permissionRequest(request2, name);
     await writer.writePermission(neutral, "acp");
-    return await new Promise((resolve2) => {
+    return await new Promise((resolve3) => {
       opts.onPermissionRequest?.(neutral, (decision) => {
-        resolve2(adopt(permissionOption(request2, decision, activeMode, modePicker)));
+        resolve3(adopt(permissionOption(request2, decision, activeMode, modePicker)));
       });
     });
   };
@@ -20426,7 +20429,9 @@ async function runAcpTurn(opts, profile) {
     }
     if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
       if (parentToolId2(update._meta, metaNamespace) === void 0) {
-        await writeAll(writer, topLevelText.push(update.content.text));
+        for (const event of adapter.consume(update)) {
+          await writeAll(writer, event.t === "text" ? topLevelText.push(event.delta) : [event]);
+        }
         return;
       }
     }
@@ -20440,7 +20445,7 @@ async function runAcpTurn(opts, profile) {
     return queued;
   };
   const drainUpdates = async () => {
-    await new Promise((resolve2) => setImmediate(resolve2));
+    await new Promise((resolve3) => setImmediate(resolve3));
     await updateTail;
     if (updateError !== void 0) {
       throw updateError instanceof Error ? updateError : new Error("ACP session update persistence failed", { cause: updateError });
@@ -20722,6 +20727,12 @@ async function applySelectOption(setup, configId, value, unavailable, { reassert
     value
   });
   const echoed = selectOption(answer?.configOptions, configId);
+  if (echoed === void 0) {
+    const note = unavailable(value, option.currentValue);
+    if (note !== void 0)
+      await setup.notice(note);
+    return "rejected";
+  }
   if (echoed !== void 0 && echoed.currentValue !== value) {
     const note = unavailable(value, echoed.currentValue);
     if (note !== void 0)
@@ -20893,6 +20904,7 @@ import { constants as osConstants } from "node:os";
 var PROTOCOL_VERSION2 = 1;
 var MAX_STDERR_CHARS = 64 * 1024;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
+var MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
 var SESSION_RUNTIME_ENV_KEYS = ["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL"];
 function sessionRuntimeEnv(env) {
   const forwarded = {};
@@ -20916,7 +20928,7 @@ var AsyncTextQueue = class {
   }
   push(value) {
     if (this.ended)
-      return;
+      return false;
     const waiter = this.waiters.shift();
     if (waiter)
       waiter({ done: false, value });
@@ -20926,6 +20938,7 @@ var AsyncTextQueue = class {
       if (this.queuedBytes >= STDOUT_HIGH_WATER_BYTES)
         this.pause();
     }
+    return this.queuedBytes < STDOUT_HIGH_WATER_BYTES;
   }
   end() {
     if (this.ended)
@@ -20946,7 +20959,7 @@ var AsyncTextQueue = class {
         }
         if (this.ended)
           return { done: true, value: void 0 };
-        return await new Promise((resolve2) => this.waiters.push(resolve2));
+        return await new Promise((resolve3) => this.waiters.push(resolve3));
       }
     };
   }
@@ -20958,13 +20971,20 @@ function decode3(data) {
   return Buffer.from(data, "base64").toString("utf8");
 }
 function send(socket, frame) {
-  return !socket.destroyed && socket.write(`${JSON.stringify(frame)}
+  if (socket.destroyed || !socket.writable)
+    return false;
+  socket.write(`${JSON.stringify(frame)}
 `);
+  return true;
 }
 function createBrokerSpawner(socketPath) {
   const spawner = (command, args, options) => {
     const socket = createConnection(socketPath);
-    const stdout = new AsyncTextQueue(() => socket.pause(), () => socket.resume());
+    let processBuffered = () => void 0;
+    const stdout = new AsyncTextQueue(() => socket.pause(), () => {
+      socket.resume();
+      queueMicrotask(processBuffered);
+    });
     let stderrTail = "";
     let pid;
     let spawned = false;
@@ -20974,7 +20994,7 @@ function createBrokerSpawner(socketPath) {
     const pendingInput = options.stdin === void 0 ? [] : [options.stdin];
     let stdinClosed = options.keepStdinOpen !== true;
     let resolveExited = () => void 0;
-    const exited = new Promise((resolve2) => resolveExited = resolve2);
+    const exited = new Promise((resolve3) => resolveExited = resolve3);
     const settle = (code) => {
       if (settled2)
         return;
@@ -21006,21 +21026,32 @@ function createBrokerSpawner(socketPath) {
         ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}
       });
     });
-    socket.on("data", (chunk) => {
-      buffered += chunk.toString("utf8");
+    processBuffered = () => {
+      if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES && !buffered.includes("\n")) {
+        stderrTail = "spawn broker frame exceeded the size limit";
+        settle(1);
+        return;
+      }
       for (; ; ) {
+        if (settled2)
+          break;
         const newline2 = buffered.indexOf("\n");
         if (newline2 < 0)
           break;
         const line = buffered.slice(0, newline2);
         buffered = buffered.slice(newline2 + 1);
+        if (Buffer.byteLength(line) > MAX_BROKER_FRAME_BYTES) {
+          stderrTail = "spawn broker frame exceeded the size limit";
+          settle(1);
+          break;
+        }
         let frame;
         try {
           frame = JSON.parse(line);
         } catch {
           stderrTail = "spawn broker returned malformed JSON";
           settle(1);
-          continue;
+          break;
         }
         if (frame.ok !== true) {
           const error51 = typeof frame.error === "string" ? frame.error : "spawn broker failed";
@@ -21031,7 +21062,8 @@ function createBrokerSpawner(socketPath) {
           pid = typeof frame.pid === "number" ? frame.pid : void 0;
           flushInput();
         } else if (frame.kind === "stdout" && typeof frame.data === "string") {
-          stdout.push(decode3(frame.data));
+          if (!stdout.push(decode3(frame.data)))
+            break;
         } else if (frame.kind === "stderr" && typeof frame.data === "string") {
           stderrTail = `${stderrTail}${decode3(frame.data)}`.slice(-MAX_STDERR_CHARS);
         } else if (frame.kind === "exit") {
@@ -21039,14 +21071,24 @@ function createBrokerSpawner(socketPath) {
           settle(typeof frame.code === "number" ? frame.code : 128 + (signalNumber ?? 0));
         }
       }
+    };
+    socket.on("data", (chunk) => {
+      if (settled2)
+        return;
+      buffered += chunk.toString("utf8");
+      processBuffered();
     });
     socket.once("error", (error51) => {
       stderrTail = `${stderrTail}${stderrTail ? "\n" : ""}${error51.message}`.slice(-MAX_STDERR_CHARS);
       settle(1);
     });
     socket.once("close", () => {
-      if (!settled2)
+      if (!settled2) {
+        if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES) {
+          stderrTail = "spawn broker frame exceeded the size limit";
+        }
         settle(1);
+      }
     });
     return {
       stdout,
@@ -21069,7 +21111,11 @@ function createBrokerSpawner(socketPath) {
         if (!spawned)
           pendingInput.push(data);
         else
-          send(socket, { protocolVersion: PROTOCOL_VERSION2, kind: "stdin", data: encode3(data) });
+          return send(socket, {
+            protocolVersion: PROTOCOL_VERSION2,
+            kind: "stdin",
+            data: encode3(data)
+          });
         return true;
       },
       closeStdin: () => {
@@ -21085,9 +21131,9 @@ function createBrokerSpawner(socketPath) {
 }
 
 // packages/session/dist/runner-server.js
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { mkdir as mkdir2, open as open3 } from "node:fs/promises";
-import { dirname as dirname2 } from "node:path";
+import { createHash as createHash2, randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
+import { mkdir as mkdir2, open as open4 } from "node:fs/promises";
+import { dirname as dirname3 } from "node:path";
 
 // scripts/runner-worker-store-shim.mjs
 var RUNNER_FRAME_PROTOCOL_VERSION = 1;
@@ -21162,7 +21208,8 @@ ${this.runtimeNotice}`.trim();
 
 // packages/session/dist/runner-transport.js
 import { createHash } from "node:crypto";
-import { open, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
+var MAX_FRAME_BYTES = 8 * 1024 * 1024;
 function frameBodyHash(body) {
   return createHash("sha256").update(JSON.stringify(body)).digest("hex");
 }
@@ -21506,9 +21553,9 @@ async function serveControl(socketPath, handlers, opts = {}) {
           }));
           return;
         }
-        if (parsed.mode === "acquire" && currentControllerId !== parsed.controllerId) {
+        if (parsed.mode === "acquire") {
           const current = currentControllerId === void 0 ? void 0 : { controllerId: currentControllerId, leaseEpoch: currentLeaseEpoch };
-          const authorized = await (opts.authorizeAcquire?.(parsed.controllerId, current) ?? current === void 0);
+          const authorized = await (opts.authorizeAcquire?.(parsed.controllerId, current, parsed.capability) ?? current === void 0);
           if (!authorized) {
             socket.write(encodeLine({
               kind: "attach-reject",
@@ -21601,9 +21648,9 @@ async function serveControl(socketPath, handlers, opts = {}) {
       }
     }
     const requestEpoch = msg.leaseEpoch;
-    const delivery = reply.then((value) => new Promise((resolve2) => {
+    const delivery = reply.then((value) => new Promise((resolve3) => {
       if (socket.destroyed) {
-        resolve2();
+        resolve3();
         return;
       }
       const response = requestEpoch < currentLeaseEpoch ? {
@@ -21611,12 +21658,12 @@ async function serveControl(socketPath, handlers, opts = {}) {
         commandId: msg.commandId,
         reason: "stale-lease"
       } : value;
-      socket.write(encodeLine(response), () => resolve2());
+      socket.write(encodeLine(response), () => resolve3());
     })).catch(() => void 0);
     pendingDeliveries.add(delivery);
     void delivery.finally(() => pendingDeliveries.delete(delivery));
   };
-  await new Promise((resolve2, reject) => {
+  await new Promise((resolve3, reject) => {
     server2 = createServer((socket) => {
       sockets.add(socket);
       socket.on("data", makeLineReader(dispatch(socket), () => socket.destroy()));
@@ -21626,12 +21673,12 @@ async function serveControl(socketPath, handlers, opts = {}) {
     server2.once("error", reject);
     server2.listen(socketPath, () => {
       server2.removeListener("error", reject);
-      resolve2();
+      resolve3();
     });
   });
   let resolveClosed;
-  const closed = new Promise((resolve2) => {
-    resolveClosed = resolve2;
+  const closed = new Promise((resolve3) => {
+    resolveClosed = resolve3;
   });
   const close = async () => {
     if (closing) {
@@ -21639,13 +21686,13 @@ async function serveControl(socketPath, handlers, opts = {}) {
       return;
     }
     closing = true;
-    const serverClosed = new Promise((resolve2) => server2.close(() => resolve2()));
+    const serverClosed = new Promise((resolve3) => server2.close(() => resolve3()));
     let drainTimer;
     try {
       await Promise.race([
         Promise.allSettled([...pendingDeliveries]),
-        new Promise((resolve2) => {
-          drainTimer = setTimeout(resolve2, 1e3);
+        new Promise((resolve3) => {
+          drainTimer = setTimeout(resolve3, 1e3);
         })
       ]);
     } finally {
@@ -21670,12 +21717,26 @@ async function serveControl(socketPath, handlers, opts = {}) {
 }
 
 // packages/session/dist/runner-state.js
-import { rename, readFile, writeFile } from "node:fs/promises";
+import { chmod, open as open3, rename, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { dirname as dirname2 } from "node:path";
 async function writeRunnerState(path, state) {
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, JSON.stringify(state), "utf8");
+  await chmod(tmp, 416);
+  const file2 = await open3(tmp, "r");
+  try {
+    await file2.sync();
+  } finally {
+    await file2.close();
+  }
   await rename(tmp, path);
+  const directory = await open3(dirname2(path), "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
 }
 function initialRunnerTurnState(turnId, runnerInstanceId, now) {
   return {
@@ -21731,13 +21792,24 @@ var FileEventSink = class {
   writer;
   seq = 0;
   sessions = /* @__PURE__ */ new Map();
+  pendingSessionEvent;
   constructor(writer) {
     this.writer = writer;
   }
   async appendEvent(_sessionId, event) {
-    await this.writer.write({ kind: "event", event });
+    if (event.t === "session")
+      this.pendingSessionEvent = event;
+    else
+      await this.writer.write({ kind: "event", event });
     this.seq += 1;
     return { seq: this.seq, ts: Date.now() };
+  }
+  async bindSession(id) {
+    await this.writer.write({ kind: "session", id });
+    const event = this.pendingSessionEvent;
+    this.pendingSessionEvent = void 0;
+    if (event !== void 0)
+      await this.writer.write({ kind: "event", event });
   }
   createSession(session) {
     this.sessions.set(session.sessionId, {
@@ -21773,8 +21845,8 @@ var RunnerServer = class {
    * operations onto that same turn; the socket is unlinked on settle.
    */
   async run(eventFilePath, opts) {
-    await mkdir2(dirname2(eventFilePath), { recursive: true });
-    const handle = await open3(eventFilePath, opts.exclusiveEventFile === true ? "wx" : "w", 416);
+    await mkdir2(dirname3(eventFilePath), { recursive: true });
+    const handle = await open4(eventFilePath, opts.exclusiveEventFile === true ? "wx" : "w", 416);
     try {
       await handle.chmod(416);
     } catch (error51) {
@@ -21782,7 +21854,7 @@ var RunnerServer = class {
       throw error51;
     }
     const runnerInstanceId = randomUUID2();
-    const { controlSocketPath, exclusiveEventFile, terminalizeErrors, turnId, ...runOpts } = opts;
+    const { controlSocketPath, controlCapability, exclusiveEventFile, terminalizeErrors, turnId, ...runOpts } = opts;
     void exclusiveEventFile;
     const writer = new SerialFrameWriter(handle, turnId, runnerInstanceId);
     const sink = new FileEventSink(writer);
@@ -21790,24 +21862,28 @@ var RunnerServer = class {
     const stateFilePath = `${eventFilePath}.state.json`;
     const state = initialRunnerTurnState(turnId, runnerInstanceId, Date.now());
     let stateTail = Promise.resolve();
-    const persistState = () => {
+    const persistState = (required2 = false) => {
       state.updatedAt = Date.now();
       state.lastFrameSeq = writer.frameCount;
       const snapshot = { ...state };
-      stateTail = stateTail.then(() => writeRunnerState(stateFilePath, snapshot)).catch(() => void 0);
-      return stateTail;
+      const write = stateTail.then(() => writeRunnerState(stateFilePath, snapshot));
+      stateTail = write.catch(() => void 0);
+      return required2 ? write : stateTail;
     };
-    await persistState();
+    await persistState(true);
     const outstandingPermissions = /* @__PURE__ */ new Map();
     const turn2 = this.client.startTurn(runnerOptions, {
       onSession: async (id) => {
-        await writer.write({ kind: "session", id });
+        await sink.bindSession(id);
         state.sessionId = id;
         void persistState();
       },
       onPermissionRequest: (request2) => {
         outstandingPermissions.set(request2.toolUseId, request2);
-        void writer.write({ kind: "permission-request", request: request2 });
+        void writer.write({ kind: "permission-request", request: request2 }).catch(async () => {
+          outstandingPermissions.delete(request2.toolUseId);
+          await turn2.cancel().catch(() => void 0);
+        });
       }
       // No bus: events go to the file, not a server-side bus (D2).
     });
@@ -21831,7 +21907,7 @@ var RunnerServer = class {
         // ACQUIRE with a fresh id. Allow it — acquire bumps the monotonic lease
         // epoch, which fences the previous controller's stale-epoch commands, so
         // "highest epoch wins" still holds at most one live controller.
-        authorizeAcquire: () => true,
+        authorizeAcquire: (_controllerId, _current, capability) => controlCapability === void 0 || sameCapability(capability, controlCapability),
         // D6 handshake: report this turn's live disposition at attach time.
         attachSnapshot: () => ({
           protocolVersion: RUNNER_FRAME_PROTOCOL_VERSION,
@@ -21846,7 +21922,7 @@ var RunnerServer = class {
       state.status = "settled";
       state.aborted = aborted2;
       state.settledAt = Date.now();
-      return persistState();
+      return persistState(true);
     };
     const result2 = (async () => {
       let settled2;
@@ -21872,7 +21948,7 @@ var RunnerServer = class {
           await controlServer?.close().catch(() => void 0);
           return settled2;
         }
-        await markSettled(true).catch(() => void 0);
+        await markSettled(true);
         await handle.close().catch(() => void 0);
         await controlServer?.close().catch(() => void 0);
         throw err;
@@ -21884,6 +21960,7 @@ var RunnerServer = class {
       await controlServer?.close().catch(() => void 0);
       return settled2;
     })();
+    void result2.catch(() => void 0);
     return {
       result: result2,
       steer: (message) => turn2.steer(message),
@@ -21892,17 +21969,80 @@ var RunnerServer = class {
     };
   }
 };
+function sameCapability(candidate, expected) {
+  if (candidate === void 0)
+    return false;
+  const left = createHash2("sha256").update(candidate).digest();
+  const right = createHash2("sha256").update(expected).digest();
+  return timingSafeEqual(left, right);
+}
 
 // packages/session/dist/runner-worker-entry.js
+var safeIdSchema = external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
+var boundedString = (max) => external_exports.string().max(max);
+var startTurnRequestSchema = external_exports.strictObject({
+  protocolVersion: external_exports.literal(1),
+  kind: external_exports.literal("start-turn"),
+  turnId: safeIdSchema,
+  startCommandId: safeIdSchema,
+  sessionId: safeIdSchema,
+  backend: external_exports.enum(["claude-acp", "codex-acp", "opencode-acp"]),
+  worktree: boundedString(4096).refine((value) => value.startsWith("/")),
+  cwd: boundedString(4096).refine((value) => value.startsWith("/")),
+  prompt: boundedString(1024 * 1024),
+  attachments: external_exports.array(attachmentUploadSchema).max(20).optional(),
+  model: boundedString(256).optional(),
+  steerable: external_exports.boolean(),
+  permissionControl: external_exports.boolean(),
+  appendSystemPrompt: boundedString(1024 * 1024).optional(),
+  resumeSessionId: boundedString(256).optional(),
+  permissionMode: boundedString(128).optional(),
+  allowedTools: external_exports.array(boundedString(4096)).max(256).optional(),
+  disallowedTools: external_exports.array(boundedString(4096)).max(256).optional(),
+  timeoutMs: external_exports.number().int().min(1).max(864e5).optional(),
+  trustedCliExecution: external_exports.boolean().optional(),
+  mcpGatewayToken: boundedString(512).min(1).optional(),
+  sessionEnv: external_exports.strictObject({
+    VERITY_SESSION_BACKEND: boundedString(256).optional(),
+    VERITY_SESSION_MODEL: boundedString(256).optional()
+  }).optional()
+}).superRefine((request2, context) => {
+  const worktree = resolve2(request2.worktree);
+  const cwd = resolve2(request2.cwd);
+  if (cwd !== worktree && !cwd.startsWith(`${worktree}/`)) {
+    context.addIssue({ code: "custom", message: "cwd outside worktree", path: ["cwd"] });
+  }
+});
+async function consumeStartRequest(path) {
+  const handle = await open5(path, constants3.O_RDONLY | constants3.O_NOFOLLOW);
+  try {
+    const stats = await handle.stat();
+    const uid = process.getuid?.();
+    if (!stats.isFile() || uid !== void 0 && stats.uid !== uid || (stats.mode & 18) !== 0) {
+      throw new Error("runner worker received an insecure request file");
+    }
+    if (stats.size > 16 * 1024 * 1024) {
+      throw new Error("runner worker request exceeds size limit");
+    }
+    await unlink(path);
+    const raw = JSON.parse(await handle.readFile("utf8"));
+    return startTurnRequestSchema.parse(raw);
+  } finally {
+    await handle.close();
+  }
+}
 var requestPath = process.argv[2];
 var turnDir = process.env.VERITY_RUNNER_TURN_DIR;
 if (requestPath === void 0 || turnDir === void 0) {
   throw new Error("runner worker requires request path and turn directory");
 }
-var request = JSON.parse(await readFile2(requestPath, "utf8"));
-if (request.protocolVersion !== 1 || request.kind !== "start-turn" || !isRunnerSupervisorBackend(request.backend)) {
-  throw new Error("runner worker received an unsupported request");
-}
+var request = await consumeStartRequest(requestPath);
+if (!isRunnerSupervisorBackend(request.backend))
+  throw new Error("unsupported runner backend");
+var originalConsoleError = console.error.bind(console);
+var originalConsoleWarn = console.warn.bind(console);
+console.error = () => originalConsoleError("runner worker dependency reported an error");
+console.warn = () => originalConsoleWarn("runner worker dependency reported a warning");
 if (request.trustedCliExecution === true && request.backend !== "claude-acp" && request.backend !== "codex-acp") {
   throw new Error("trusted CLI execution requires a supported brokered-tool backend");
 }
@@ -21930,6 +22070,7 @@ var backends = {
 var server = new RunnerServer(backends[request.backend]());
 var turn = await server.run(join2(turnDir, "events.jsonl"), {
   turnId: request.turnId,
+  controlCapability: request.startCommandId,
   controlSocketPath: join2(turnDir, "control.sock"),
   exclusiveEventFile: true,
   terminalizeErrors: true,

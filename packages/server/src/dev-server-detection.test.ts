@@ -76,6 +76,57 @@ describe('detectDevServers', () => {
     ]);
   });
 
+  it('supports ordered negation, braces, and character classes in workspace globs', async () => {
+    const root = await repo();
+    for (const workdir of [
+      'apps/web',
+      'apps/admin',
+      'apps/legacy',
+      'packages/ui',
+      'packages/api',
+    ]) {
+      await mkdir(join(root, workdir), { recursive: true });
+      await writeFile(
+        join(root, workdir, 'package.json'),
+        JSON.stringify({ name: workdir.replace('/', '-'), scripts: { dev: 'vite' } }),
+      );
+    }
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({
+        name: 'root',
+        workspaces: ['{apps,packages}/*', '!apps/legacy', '!packages/[a-z]pi'],
+        scripts: {},
+      }),
+    );
+
+    expect((await detectDevServers(root)).map(({ workdir }) => workdir)).toEqual([
+      'apps/admin',
+      'apps/web',
+      'packages/ui',
+    ]);
+  });
+
+  it('does not spend the workspace traversal budget on unrelated top-level trees', async () => {
+    const root = await repo();
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'root', workspaces: ['zz-apps/*'], scripts: {} }),
+    );
+    for (let index = 0; index < 1_005; index += 1) {
+      await mkdir(join(root, `generated-${String(index).padStart(4, '0')}`));
+    }
+    await mkdir(join(root, 'zz-apps', 'web'), { recursive: true });
+    await writeFile(
+      join(root, 'zz-apps', 'web', 'package.json'),
+      JSON.stringify({ name: 'web', scripts: { dev: 'vite' } }),
+    );
+
+    expect(await detectDevServers(root)).toEqual([
+      expect.objectContaining({ workdir: 'zz-apps/web', name: 'Web' }),
+    ]);
+  });
+
   it('falls back to standalone packages when the repo has no root package.json', async () => {
     const root = await repo();
     await mkdir(join(root, 'apps', 'web'), { recursive: true });

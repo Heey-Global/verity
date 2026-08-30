@@ -88,6 +88,8 @@ export interface SecretProviderCatalog extends DopplerSecretCatalog {
       bindingId: string;
       bindingVersion: number;
       secretName: string;
+      aliasId?: string;
+      aliasVersion?: number;
       toolId: string;
       sessionId?: string;
       now: Date;
@@ -221,7 +223,55 @@ export function createPostgresSecretProviderCatalog(db: Kysely<Database>): Secre
     if (inputs.length === 0) return true;
     try {
       return await db.transaction().execute(async (tx) => {
+        for (const projectId of [...new Set(inputs.map((input) => input.projectId))].sort()) {
+          await tx
+            .selectFrom('projects')
+            .select('id')
+            .where('id', '=', projectId)
+            .forUpdate()
+            .executeTakeFirstOrThrow();
+        }
         for (const input of inputs) {
+          const binding = await tx
+            .selectFrom('secret_provider_bindings')
+            .select('state')
+            .where('project_id', '=', input.projectId)
+            .where('id', '=', input.bindingId)
+            .where('version', '=', input.bindingVersion)
+            .where('provider', '=', 'doppler')
+            .executeTakeFirst();
+          const laterRevocation = await tx
+            .selectFrom('secret_provider_bindings')
+            .select('version')
+            .where('project_id', '=', input.projectId)
+            .where('id', '=', input.bindingId)
+            .where('version', '>', input.bindingVersion)
+            .where('provider', '=', 'doppler')
+            .where('state', '!=', 'active')
+            .executeTakeFirst();
+          if (binding?.state !== 'active' || laterRevocation !== undefined) {
+            throw new PermissionUnavailable();
+          }
+          if (input.aliasId !== undefined && input.aliasVersion !== undefined) {
+            const alias = await tx
+              .selectFrom('secret_aliases')
+              .select('state')
+              .where('project_id', '=', input.projectId)
+              .where('id', '=', input.aliasId)
+              .where('version', '=', input.aliasVersion)
+              .executeTakeFirst();
+            const laterAliasRevocation = await tx
+              .selectFrom('secret_aliases')
+              .select('version')
+              .where('project_id', '=', input.projectId)
+              .where('id', '=', input.aliasId)
+              .where('version', '>', input.aliasVersion)
+              .where('state', '!=', 'active')
+              .executeTakeFirst();
+            if (alias?.state !== 'active' || laterAliasRevocation !== undefined) {
+              throw new PermissionUnavailable();
+            }
+          }
           const rows = await tx
             .selectFrom('secret_provider_permissions')
             .selectAll()
@@ -375,6 +425,26 @@ export function createPostgresSecretProviderCatalog(db: Kysely<Database>): Secre
             .where('id', '=', record.projectId)
             .forUpdate()
             .executeTakeFirstOrThrow();
+          const currentBinding = await tx
+            .selectFrom('secret_provider_bindings')
+            .select('state')
+            .where('project_id', '=', record.projectId)
+            .where('id', '=', record.binding.id)
+            .where('version', '=', record.binding.version)
+            .where('provider', '=', record.binding.provider)
+            .executeTakeFirst();
+          const laterBindingRevocation = await tx
+            .selectFrom('secret_provider_bindings')
+            .select('version')
+            .where('project_id', '=', record.projectId)
+            .where('id', '=', record.binding.id)
+            .where('version', '>', record.binding.version)
+            .where('provider', '=', record.binding.provider)
+            .where('state', '!=', 'active')
+            .executeTakeFirst();
+          if (currentBinding?.state !== 'active' || laterBindingRevocation !== undefined) {
+            throw new SecretProviderCatalogError('alias binding is unavailable');
+          }
           await tx
             .insertInto('secret_aliases')
             .values({
@@ -766,6 +836,31 @@ export function createPostgresSecretProviderCatalog(db: Kysely<Database>): Secre
         claims.aliases.map((ref) => resolveAlias(ref, claims.projectId)),
       );
       if (aliases.some((alias) => alias === undefined)) return false;
+      if (
+        aliases.some(
+          (alias) =>
+            alias!.profile.id !== claims.profile.id ||
+            alias!.profile.version !== claims.profile.version ||
+            alias!.profile.policyHash !== claims.profile.policyHash,
+        )
+      )
+        return false;
+      const claimedBindings = new Set(
+        claims.providerBindings.map(
+          (binding) => `${binding.provider}\0${binding.id}\0${String(binding.version)}`,
+        ),
+      );
+      const aliasBindings = new Set(
+        aliases.map(
+          (alias) =>
+            `${alias!.binding.provider}\0${alias!.binding.id}\0${String(alias!.binding.version)}`,
+        ),
+      );
+      if (
+        claimedBindings.size !== aliasBindings.size ||
+        [...claimedBindings].some((binding) => !aliasBindings.has(binding))
+      )
+        return false;
       const bindings = await Promise.all(
         aliases.map((alias) => resolveBinding(alias!.binding, claims.projectId)),
       );
@@ -789,6 +884,8 @@ export function createPostgresSecretProviderCatalog(db: Kysely<Database>): Secre
           bindingId: alias!.binding.id,
           bindingVersion: alias!.binding.version,
           secretName: alias!.providerKey,
+          aliasId: alias!.id,
+          aliasVersion: alias!.version,
           toolId,
           sessionId: claims.sessionId,
           now,
@@ -806,6 +903,31 @@ export function createPostgresSecretProviderCatalog(db: Kysely<Database>): Secre
         claims.aliases.map((ref) => resolveAlias(ref, claims.projectId)),
       );
       if (aliases.some((alias) => alias === undefined)) return false;
+      if (
+        aliases.some(
+          (alias) =>
+            alias!.profile.id !== claims.profile.id ||
+            alias!.profile.version !== claims.profile.version ||
+            alias!.profile.policyHash !== claims.profile.policyHash,
+        )
+      )
+        return false;
+      const claimedBindings = new Set(
+        claims.providerBindings.map(
+          (binding) => `${binding.provider}\0${binding.id}\0${String(binding.version)}`,
+        ),
+      );
+      const aliasBindings = new Set(
+        aliases.map(
+          (alias) =>
+            `${alias!.binding.provider}\0${alias!.binding.id}\0${String(alias!.binding.version)}`,
+        ),
+      );
+      if (
+        claimedBindings.size !== aliasBindings.size ||
+        [...claimedBindings].some((binding) => !aliasBindings.has(binding))
+      )
+        return false;
       const bindings = await Promise.all(
         aliases.map((alias) => resolveBinding(alias!.binding, claims.projectId)),
       );

@@ -65,6 +65,7 @@ export function createInMemorySecretJobStore(): SecretJobStore {
     update(jobId, state, result) {
       const job = jobs.get(jobId);
       if (job === undefined) return Promise.reject(new Error('unknown secret job'));
+      if (job.state === 'reaped' && state !== 'reaped') return Promise.resolve();
       jobs.set(jobId, {
         ...job,
         state,
@@ -147,16 +148,23 @@ export function createPostgresSecretJobStore(db: Kysely<Database>): SecretJobSto
       };
     },
     async update(jobId, state, result) {
-      const updated = await db
+      let query = db
         .updateTable('secret_jobs')
         .set({
           state,
           ...(result !== undefined ? { result_json: JSON.stringify(result) } : {}),
           updated_at: new Date().toISOString(),
         })
-        .where('job_id', '=', jobId)
-        .executeTakeFirst();
+        .where('job_id', '=', jobId);
+      if (state !== 'reaped') query = query.where('state', '!=', 'reaped');
+      const updated = await query.executeTakeFirst();
       if (updated === undefined || Number(updated.numUpdatedRows) !== 1) {
+        const current = await db
+          .selectFrom('secret_jobs')
+          .select('state')
+          .where('job_id', '=', jobId)
+          .executeTakeFirst();
+        if (current?.state === 'reaped' && state !== 'reaped') return;
         throw new Error('secret job state update did not match exactly one row');
       }
     },

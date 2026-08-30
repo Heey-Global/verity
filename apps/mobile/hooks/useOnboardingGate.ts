@@ -5,7 +5,7 @@
 // whole app is worse than a missed redirect — so an error logs and lets the
 // operator through to the normal app.
 import { isPristineOnboardingStatus, resumeStep, type OnboardingStatus } from '@verity/mobile';
-import { usePathname, useSegments } from 'expo-router';
+import { useGlobalSearchParams, usePathname, useSegments } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
@@ -37,6 +37,7 @@ function unlockRoute(returnTo: string, opts: { serverSecret?: boolean } = {}): s
 export function useOnboardingGate(): OnboardingGateState {
   const segments = useSegments();
   const pathname = usePathname();
+  const searchParams = useGlobalSearchParams<Record<string, string | string[]>>();
   const inOnboarding = segments[0] === 'onboarding';
   const inUnlockDevice = segments[0] === 'unlock-device';
   // The standalone GitHub reconnect screen is exempt from the "setup incomplete"
@@ -53,7 +54,12 @@ export function useOnboardingGate(): OnboardingGateState {
 
     const currentReturnTo = (): string => {
       if (!pathname || pathname.length === 0 || pathname === '/unlock-device') return '/';
-      return pathname;
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(searchParams)) {
+        for (const item of Array.isArray(value) ? value : [value]) query.append(key, item);
+      }
+      const encoded = query.toString();
+      return encoded ? `${pathname}?${encoded}` : pathname;
     };
 
     const check = async (): Promise<void> => {
@@ -101,7 +107,9 @@ export function useOnboardingGate(): OnboardingGateState {
           }
           setState({
             status: 'done',
-            redirectTo: unlockRoute(onboardingRoute(status), { serverSecret: false }),
+            redirectTo: unlockRoute(status.complete ? currentReturnTo() : onboardingRoute(status), {
+              serverSecret: false,
+            }),
           });
           return;
         }
@@ -133,7 +141,7 @@ export function useOnboardingGate(): OnboardingGateState {
       if (interval !== undefined) clearInterval(interval);
       subscription.remove();
     };
-  }, [inOnboarding, inUnlockDevice, inGithubConnect, pathname]);
+  }, [inOnboarding, inUnlockDevice, inGithubConnect, pathname, searchParams]);
 
   return state;
 }

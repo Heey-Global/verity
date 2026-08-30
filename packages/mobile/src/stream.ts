@@ -14,7 +14,7 @@ export interface StreamSocket {
   close(): void;
 }
 
-export type StreamSocketFactory = (url: string) => StreamSocket;
+export type StreamSocketFactory = (url: string, protocols?: string | string[]) => StreamSocket;
 
 export interface SessionStreamOptions {
   /** Control-plane base URL (http/https) — the scheme is switched to ws/wss. */
@@ -34,11 +34,10 @@ export interface SessionStreamOptions {
   onConnectionStateChange?: (state: SessionStreamConnectionState) => void;
   /** Initial resume cursor; events with seq > this are streamed. Default 0. */
   sinceSeq?: number;
-  /** Supplies the per-device bearer token appended as `?access_token=` on the WS
-   *  upgrade (audit C1) — a WebSocket handshake can't carry an Authorization
-   *  header. Read on every {@link open} (including reconnects) so a rotated token
-   *  is used. Omit/return null → the upgrade goes out without a token. */
-  getToken?: () => string | null | undefined;
+  /** Mints a short-lived, single-use ticket over authenticated HTTPS before each
+   * WebSocket connection. The ticket is carried as a WebSocket subprotocol, never
+   * in the URL. Omit only when the server's authentication gate is disabled. */
+  getStreamTicket?: () => Promise<string>;
 }
 
 export type SessionStreamConnectionState =
@@ -69,6 +68,7 @@ export class SessionStream {
   private eventFrames: StreamEventFrame[] = [];
   private readonly wsBaseUrl: string;
   private socket: StreamSocket | null = null;
+  private opening = false;
   private lastSeq: number;
   private rateLimitClearedThroughSeq: number | undefined;
   // tool_use_ids whose permission prompt the server has already settled. Kept so
@@ -217,14 +217,50 @@ export class SessionStream {
   }
 
   private open(): void {
-    if (this.stopped || this.paused || this.socket !== null) return;
+    if (this.stopped || this.paused || this.socket !== null || this.opening) return;
+    // Every connection has its own replay watermark. Keeping the previous
+    // socket's value would publish replay frames as live updates before the new
+    // stream confirms it has caught up.
+    this.caughtUp = false;
     this.setConnectionState(this.reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
+    const ticketPromise = this.opts.getStreamTicket?.();
+    if (ticketPromise !== undefined) {
+      this.opening = true;
+      const generation = this.reconnectGeneration;
+      void ticketPromise
+        .then((ticket) => {
+          this.opening = false;
+          if (this.stopped || this.paused || generation !== this.reconnectGeneration) return;
+          this.openSocket(`verity-stream-ticket.${ticket}`);
+        })
+        .catch(() => {
+          this.opening = false;
+          if (this.stopped || generation !== this.reconnectGeneration) return;
+          this.opts.onError?.('stream authorization failed');
+          this.reconnectAttempt += 1;
+          this.setConnectionState('reconnecting');
+          const delayMs = Math.min(
+            RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
+            RECONNECT_MAX_DELAY_MS,
+          );
+          const retry = (): void => {
+            if (!this.stopped && !this.paused && generation === this.reconnectGeneration) {
+              this.open();
+            }
+          };
+          if (this.opts.scheduleReconnect) this.opts.scheduleReconnect(retry, delayMs);
+          else setTimeout(retry, delayMs);
+        });
+      return;
+    }
+    this.openSocket();
+  }
+
+  private openSocket(protocol?: string): void {
+    if (this.stopped || this.paused || this.socket !== null) return;
     const id = encodeURIComponent(this.opts.sessionId);
-    const token = this.opts.getToken?.();
-    const auth =
-      token != null && token.length > 0 ? `&access_token=${encodeURIComponent(token)}` : '';
-    const url = `${this.wsBaseUrl}/sessions/${id}/stream?sinceSeq=${String(this.lastSeq)}${auth}`;
-    const socket = this.opts.connect(url);
+    const url = `${this.wsBaseUrl}/sessions/${id}/stream?sinceSeq=${String(this.lastSeq)}`;
+    const socket = this.opts.connect(url, protocol);
     this.socket = socket;
     socket.addEventListener('message', (event) => {
       if (this.socket !== socket) return;
@@ -253,6 +289,9 @@ export class SessionStream {
       return;
     }
     if (frame.k === 'event') {
+      // Replays can overlap after a reconnect. Never apply an already-seen frame
+      // or let an out-of-order frame move the resume cursor backwards.
+      if (frame.seq <= this.lastSeq) return;
       this.reducer.applyFrame(frame);
       this.eventFrames.push(frame);
       this.lastSeq = frame.seq;

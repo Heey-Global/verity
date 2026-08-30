@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { open, rename, unlink, writeFile } from 'node:fs/promises';
+import { link, open, unlink, writeFile } from 'node:fs/promises';
 
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,255}$/;
 
@@ -65,7 +65,36 @@ export async function openActivationGate(operationId: string, peerGid: number): 
     } finally {
       await file.close();
     }
-    await rename(temporary, path);
+    let published = false;
+    try {
+      // A hard link publishes this already-synced inode atomically and, unlike
+      // rename(), can never replace a winner another Updater published first.
+      await link(temporary, path);
+      published = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const winner = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        await validate(winner, peerGid);
+      } finally {
+        await winner.close();
+      }
+    }
+    if (published) {
+      const directory = await open(
+        ACTIVATION_GATE_DIRECTORY,
+        constants.O_RDONLY | constants.O_DIRECTORY,
+      );
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
+    // Publication is the operation's commit point. Failure to remove the
+    // private staging hardlink afterwards must not report the gate as unopened
+    // and trigger a duplicate activation attempt.
+    await unlink(temporary).catch(() => undefined);
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
     throw error;

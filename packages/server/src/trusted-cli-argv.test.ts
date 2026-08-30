@@ -24,8 +24,7 @@ import {
  * A refusal fixture therefore runs every spelling it lists and asserts on the
  * set that got through, rather than stopping at the first. A gap the rule does
  * not cover yet is written the same way, only with the survivors named instead
- * of empty — see {@link expectGap}, which says what such a fixture asserts and
- * what to do when one of them fails.
+ * of empty so a newly closed gap becomes an explicit refusal regression.
  */
 
 const IMMUTABLE_FILE = '/usr/lib/os-release';
@@ -99,7 +98,7 @@ function spell(calls: readonly Call[]): string[] {
 /**
  * Records a gap: these calls reach code the rule was meant to cover, and the
  * shipped validator lets them through today. This is a description of the
- * current behaviour, NOT a requirement — the gaps are meant to close.
+ * current behaviour, NOT a requirement — such gaps are meant to close.
  *
  * A failure here is therefore expected on the day one is fixed, and the fix is
  * to move that spelling into the refusal fixture above rather than to widen
@@ -107,15 +106,6 @@ function spell(calls: readonly Call[]): string[] {
  * marked expected-to-fail, so a change that closes one spelling and leaves the
  * others still shows up — an expected-failure marker would stay green.
  */
-async function expectGap(root: string, calls: readonly Call[]): Promise<void> {
-  expect(
-    await accepted(root, calls),
-    'A gap fixture changed. If the validator now refuses one of these spellings, ' +
-      'that is the fix landing: move the spelling into the refusal fixture above ' +
-      'and delete it here. Do not add spellings to a gap fixture to make it pass.',
-  ).toEqual(spell(calls));
-}
-
 describe('trusted CLI argv integrity', () => {
   it('matches only complete routes from a generic executable policy', () => {
     const policy = {
@@ -593,19 +583,14 @@ describe('trusted CLI argv integrity', () => {
     });
   });
 
-  // GAP: the same absent file, spelled without a leading `/`, `./`, `../` or
-  // `file:`, is waved through. `make -f payload.mk` and `xargs -a payload.args`
-  // name a place in the agent's own worktree, and the agent can put a file
-  // there between the approval and the launch — the run then reads it. What
-  // decides today is the spelling, not where the name points.
-  it('records the gap: an absent file operand spelled as a bare relative name', async () => {
+  it('refuses absent bare relative operands of options that load files', async () => {
     await withWorktree('absent-bare', async (root) => {
       const calls: Call[] = [
         ['/usr/bin/make', ['-f', 'payload.mk', 'all']],
         ['/usr/bin/xargs', ['-a', 'payload.args', 'sh']],
         ['/usr/bin/java', ['-cp', 'future/lib/*', 'Main']],
       ];
-      await expectGap(root, calls);
+      expect(await accepted(root, calls)).toEqual([]);
     });
   });
 

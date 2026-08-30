@@ -111,11 +111,20 @@ fi
 
 TIPS=()
 BASES=()
-while read -r _local_ref local_sha _remote_ref remote_sha _rest; do
+REVIEW_TIPS=()
+while read -r _local_ref local_sha remote_ref remote_sha _rest; do
   [ -n "${local_sha:-}" ] || continue
   if is_zero_sha "$local_sha"; then continue; fi
+  if ! git cat-file -e "${local_sha}^{commit}" 2>/dev/null; then
+    echo "pre-push: PUSH BLOCKED - pushed local SHA is not a commit: $local_sha" >&2
+    exit 2
+  fi
   TIPS+=("$local_sha")
   BASES+=("${remote_sha:-}")
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master|refs/heads/staging|refs/heads/release/*) ;;
+    *) REVIEW_TIPS+=("$local_sha") ;;
+  esac
 done <<<"$STDIN_REFS"
 
 # No refs on stdin means the hook was invoked outside a real push (tests, manual
@@ -124,6 +133,7 @@ done <<<"$STDIN_REFS"
 if [ "${#TIPS[@]}" -eq 0 ] && [ -z "$STDIN_REFS" ]; then
   TIPS=("HEAD")
   BASES=("")
+  REVIEW_TIPS=("HEAD")
 fi
 
 SECRET_STATUS=0
@@ -177,11 +187,14 @@ fi
 # a release automation step or an operator action whose content already passed
 # both gates on the source branch. The secret gate above deliberately ran first
 # and is NOT skipped here.
-case "$BRANCH" in
-  main|master|staging|release/*)
-    exit 0
-    ;;
-esac
+if [ -n "$STDIN_REFS" ]; then
+  [ "${#REVIEW_TIPS[@]}" -gt 0 ] || exit 0
+else
+  case "$BRANCH" in
+    main|master|staging|release/*) exit 0 ;;
+  esac
+fi
+PUSH_CHECK_TIP="${REVIEW_TIPS[0]:-HEAD}"
 
 # ─── Lint + format gate (repo-local; inert where there is no such script) ────
 # CI runs `npm run lint` && `npm run format` as an UNCONDITIONAL required job, so
@@ -254,8 +267,11 @@ EOF
     has_script "$full" || return 0
 
     local base=""
-    if has_script "$scoped" && git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
-      base=$(git merge-base "$BASE_REF" HEAD 2>/dev/null || true)
+    # One scoped diff cannot represent a multi-ref push. Run the full check in
+    # that case so a clean first ref cannot hide failures carried by a later one.
+    if has_script "$scoped" && [ "${#REVIEW_TIPS[@]}" -eq 1 ] \
+      && git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
+      base=$(git merge-base "$BASE_REF" "$PUSH_CHECK_TIP" 2>/dev/null || true)
     fi
 
     if [ -n "$base" ]; then
@@ -264,7 +280,7 @@ EOF
       # scoped set), so no --diff-filter here. grep reads a process substitution,
       # not a pipe, so an early -q match can't SIGPIPE-flip it under pipefail.
       if [ -n "$cfg" ] \
-        && grep -qE "$cfg" < <(git diff --name-only "$base" HEAD 2>/dev/null); then
+        && grep -qE "$cfg" < <(git diff --name-only "$base" "$PUSH_CHECK_TIP" 2>/dev/null); then
         echo "pre-push: config changed — running full 'npm run $full'…" >&2
         (cd "$REPO_ROOT" && npm run --silent "$full" >&2)
         return $?
@@ -274,7 +290,7 @@ EOF
       while IFS= read -r f; do
         [ -n "$f" ] || continue
         if [ -z "$ext" ] || [[ "$f" =~ $ext ]]; then files+=("$f"); fi
-      done < <(git diff --name-only --diff-filter=ACMR "$base" HEAD 2>/dev/null)
+      done < <(git diff --name-only --diff-filter=ACMR "$base" "$PUSH_CHECK_TIP" 2>/dev/null)
       if [ "${#files[@]}" -eq 0 ]; then
         echo "pre-push: no changed files for '$scoped' — skipping" >&2
         return 0
@@ -335,8 +351,8 @@ if [ -f "$MARKER" ]; then
   REVIEWED_SHA=$(head -n1 "$MARKER" | tr -d '[:space:]')
 fi
 
-if [ -n "$REVIEWED_SHA" ] && ! printf '%s' "$REVIEWED_SHA" | grep -qE '^[0-9a-f]{40}$'; then
-  echo "pre-push-review: WARNING marker '$REVIEWED_SHA' is not a 40-char commit SHA" >&2
+if [ -n "$REVIEWED_SHA" ] && ! printf '%s' "$REVIEWED_SHA" | grep -qE '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+  echo "pre-push-review: WARNING marker '$REVIEWED_SHA' is not a full commit object ID" >&2
   REVIEWED_SHA=""
 fi
 
@@ -345,11 +361,20 @@ if [ -n "$REVIEWED_SHA" ] && ! git rev-parse --verify --quiet "${REVIEWED_SHA}^{
   REVIEWED_SHA=""
 fi
 
-if [ -n "$REVIEWED_SHA" ] && git merge-base --is-ancestor "$REVIEWED_SHA" HEAD 2>/dev/null; then
-  PENDING_COMMITS=$(git rev-list "${REVIEWED_SHA}..HEAD" 2>/dev/null || true)
-elif git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
-  PENDING_COMMITS=$(git rev-list "${BASE_REF}..HEAD" 2>/dev/null || true)
-else
+PENDING_COMMITS=""
+REVIEW_BOUNDARY_MISSING=0
+for REVIEW_TIP in "${REVIEW_TIPS[@]}"; do
+  if [ -n "$REVIEWED_SHA" ] && git merge-base --is-ancestor "$REVIEWED_SHA" "$REVIEW_TIP" 2>/dev/null; then
+    PENDING_COMMITS="$PENDING_COMMITS $(git rev-list "${REVIEWED_SHA}..${REVIEW_TIP}" 2>/dev/null || true)"
+  elif git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
+    PENDING_COMMITS="$PENDING_COMMITS $(git rev-list "${BASE_REF}..${REVIEW_TIP}" 2>/dev/null || true)"
+  else
+    REVIEW_BOUNDARY_MISSING=1
+    break
+  fi
+done
+
+if [ "$REVIEW_BOUNDARY_MISSING" = "1" ]; then
   # The remote to fetch from is whatever BASE_REF is qualified by — not
   # necessarily "origin", and not every BASE_REF is remote-qualified at all.
   # A remote-tracking ref has three rev-parse-valid spellings — "origin/main",
@@ -394,7 +419,7 @@ remote, so there is nothing to fetch it from."
 PUSH BLOCKED - no usable code review boundary
 
 Branch: $BRANCH
-HEAD:   $HEAD_SHA
+Pushed tip: $REVIEW_TIP
 
 Neither $BASE_REF nor a valid marker is available.
 

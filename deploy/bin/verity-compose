@@ -14,6 +14,30 @@ deploy_dir="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 base_compose="$deploy_dir/docker-compose.yml"
 supervisor_compose="$deploy_dir/docker-compose.runner-supervisor.yml"
 
+# Installer-managed hosts can invoke this wrapper directly for diagnostics or
+# repair without copying the database credential into their shell history.
+if [ -z "${VERITY_POSTGRES_PASSWORD:-}" ]; then
+  postgres_password_file="${VERITY_STATE_DIR:-/etc/verity}/postgres-password"
+  if [ -e "$postgres_password_file" ]; then
+    if [ -L "$postgres_password_file" ] || [ ! -f "$postgres_password_file" ]; then
+      printf '%s\n' 'verity-compose: PostgreSQL password state must be a regular file' >&2
+      exit 64
+    fi
+    VERITY_POSTGRES_PASSWORD="$(cat "$postgres_password_file")"
+    case "$VERITY_POSTGRES_PASSWORD" in
+      *[!a-f0-9]*|'')
+        printf '%s\n' 'verity-compose: PostgreSQL password state is malformed' >&2
+        exit 64
+        ;;
+    esac
+    [ "${#VERITY_POSTGRES_PASSWORD}" -eq 64 ] || {
+      printf '%s\n' 'verity-compose: PostgreSQL password state is malformed' >&2
+      exit 64
+    }
+    export VERITY_POSTGRES_PASSWORD
+  fi
+fi
+
 compose_base() {
   if [ "${VERITY_RUNNER_SUPERVISOR:-1}" = "0" ]; then
     docker compose -f "$base_compose" "$@"
@@ -157,18 +181,17 @@ if [ "${1:-}" = "managed-up" ]; then
   if [ -z "${VERITY_HOST_ARCHITECTURE:-}" ]; then
     case "$(uname -m)" in
       x86_64|amd64) VERITY_HOST_ARCHITECTURE=amd64 ;;
-      aarch64|arm64) VERITY_HOST_ARCHITECTURE=arm64 ;;
       *)
-        printf '%s\n' 'verity-compose: managed-up supports only amd64 and arm64 hosts' >&2
+        printf '%s\n' 'verity-compose: this release currently publishes amd64 images only' >&2
         exit 64
         ;;
     esac
     export VERITY_HOST_ARCHITECTURE
   fi
   case "$VERITY_HOST_ARCHITECTURE" in
-    amd64|arm64) ;;
+    amd64) ;;
     *)
-      printf '%s\n' 'verity-compose: VERITY_HOST_ARCHITECTURE must be amd64 or arm64' >&2
+      printf '%s\n' 'verity-compose: VERITY_HOST_ARCHITECTURE must be amd64 for this release' >&2
       exit 64
       ;;
   esac
@@ -295,7 +318,11 @@ if [ "${1:-}" = "managed-up" ]; then
       fi
       transition_active=1
     fi
-    if ! compose_managed --profile managed up -d; then
+    # TLS material may have renewed without changing Compose configuration. Force
+    # the terminator to reopen the mounted key/certificate before advertising the
+    # freshly generated pairing URI.
+    if ! compose_managed --profile managed up -d --force-recreate verity-managed-gateway \
+      || ! compose_managed --profile managed up -d; then
       printf '%s\n' 'verity-compose: existing managed topology could not be reconciled' >&2
       if [ "$transition_active" -eq 1 ]; then rollback_managed || exit 71; fi
       exit 70
@@ -303,7 +330,7 @@ if [ "${1:-}" = "managed-up" ]; then
     readiness_attempt=0
     while [ "$readiness_attempt" -lt 30 ]; do
       if compose_managed --profile managed exec -T verity-managed-gateway \
-        node -e "fetch('http://127.0.0.1:8082/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+        node -e "require('node:https').get('https://127.0.0.1:8082/healthz',{rejectUnauthorized:false},r=>{r.resume();process.exit(r.statusCode>=200&&r.statusCode<300?0:1)}).on('error',()=>process.exit(1))"; then
         transition_active=0
         exit 0
       fi
@@ -332,7 +359,7 @@ if [ "${1:-}" = "managed-up" ]; then
   readiness_attempt=0
   while [ "$readiness_attempt" -lt 30 ]; do
     if compose_managed --profile managed exec -T verity-managed-gateway \
-      node -e "fetch('http://127.0.0.1:8082/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+      node -e "require('node:https').get('https://127.0.0.1:8082/healthz',{rejectUnauthorized:false},r=>{r.resume();process.exit(r.statusCode>=200&&r.statusCode<300?0:1)}).on('error',()=>process.exit(1))"; then
       transition_active=0
       exit 0
     fi

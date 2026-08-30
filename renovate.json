@@ -34,7 +34,7 @@
       "groupName": "vitest"
     },
     {
-      "description": "Internal Heey-Org images - immediate PRs, deliberately exempt from the repo-wide nightly window. Only EXTERNAL dependencies are batched into 01:00-06:00; our own images are published continuously and must be picked up same-day. Currently matches ghcr.io/heey-global/verity/verity-server; the pattern covers any future internal image without a further config change. Mirrors the equivalent rules in Heey-Global/k8s.",
+      "description": "First-party Verity images - immediate PRs, deliberately exempt from the repo-wide nightly window. Only external dependencies are batched into 01:00-06:00; project images are published continuously and must be picked up the same day.",
       "matchPackageNames": ["/ghcr.io/heey-global/.*/"],
       "schedule": ["at any time"]
     },

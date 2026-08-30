@@ -19,11 +19,13 @@
     },
     "production": {
       "autoIncrement": true,
+      "environment": "production",
       "channel": "production"
     },
     "testflight": {
       "distribution": "store",
       "autoIncrement": true,
+      "environment": "production",
       "channel": "testflight"
     }
   },

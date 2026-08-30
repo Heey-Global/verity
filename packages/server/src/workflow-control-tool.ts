@@ -30,7 +30,8 @@ export interface ControlPlaneDeliveryCall {
   projectId: string;
   sessionId: string;
   turnId: string;
-  callId: string;
+  /** Stable gateway invocation identity (request id + tool + authenticated request MAC). */
+  invocationId: string;
   request: unknown;
 }
 
@@ -104,7 +105,7 @@ export function createControlPlaneDeliveryTool(options: {
       .update('\0')
       .update(input.turnId)
       .update('\0')
-      .update(input.callId)
+      .update(input.invocationId)
       .digest('hex');
     const workflowInput = {
       idempotencyKey: `control-plane:${invocationHash}`,

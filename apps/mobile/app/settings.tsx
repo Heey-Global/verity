@@ -343,14 +343,14 @@ function SettingsView({
   // `undefined`) mean there's no secret store — the paste fields + unlock hint hide,
   // matching SecretStoreSection which renders nothing in those cases.
   const secretManaged = secretStatus !== undefined && secretStatus !== 'unmanaged';
-  // "Connected" for the summary pill: the stored PEM is the authoritative signal (it
-  // is what lets the server sign the App JWT); both identifiers present also counts.
+  // "Connected" means the complete App credential tuple is usable. Partial state
+  // stays editable instead of claiming a connection that cannot mint a token.
   const githubConnected =
-    (settings?.githubAppPrivateKeyConfigured ?? false) ||
-    (settings?.githubAppId !== null &&
-      settings?.githubAppId !== undefined &&
-      settings?.githubAppInstallationId !== null &&
-      settings?.githubAppInstallationId !== undefined);
+    (settings?.githubAppPrivateKeyConfigured ?? false) &&
+    settings?.githubAppId !== null &&
+    settings?.githubAppId !== undefined &&
+    settings?.githubAppInstallationId !== null &&
+    settings?.githubAppInstallationId !== undefined;
 
   const updateField = useCallback((key: FieldKey, value: string) => {
     editVersion.current += 1;
@@ -389,20 +389,29 @@ function SettingsView({
     setSaving(true);
     setError(undefined);
     setRepro({ phase: 'idle' });
+    const patch = patchFromDraft(draft, secretDraft);
+    const submittedSecrets = secretDraft;
+    // The request owns an immutable snapshot now. Do not retain plaintext in
+    // component state for the lifetime of a failed or slow network request.
+    if (secretDirty) setSecretDraft(EMPTY_SECRET_DRAFT);
     void client
-      .updateVeritySettings(patchFromDraft(draft, secretDraft))
+      .updateVeritySettings(patch)
       .then((next) => {
         setSettings(next);
         if (editVersion.current === savingVersion) {
           setDraft(draftFromSettings(next));
-          // Wipe the write-only paste boxes: their values are now stored, and we
-          // never keep secret material in component state longer than the request.
-          setSecretDraft(EMPTY_SECRET_DRAFT);
         }
         setSavedAt(next.updatedAt);
         if (requiresContainerApply) setApplyPending(true);
       })
       .catch((caught) => {
+        setSecretDraft((current) => {
+          const restored = { ...current };
+          for (const key of Object.keys(submittedSecrets) as (keyof SecretSettingsDraft)[]) {
+            if (restored[key] === '') restored[key] = submittedSecrets[key];
+          }
+          return restored;
+        });
         // A 503 means the store is sealed — a secret write can't land until it's
         // unlocked. Surface that specifically; other failures use the generic copy.
         setError(

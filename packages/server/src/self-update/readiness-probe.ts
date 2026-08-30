@@ -121,10 +121,10 @@ export async function runReadinessProbe(
   const sleep = options.sleep ?? wait;
   const doFetch = options.fetch ?? globalThis.fetch;
   const deadline = now() + timeoutMs;
-  const attempt = async (): Promise<{ ok: boolean; detail: string }> => {
+  const attempt = async (remainingMs: number): Promise<{ ok: boolean; detail: string }> => {
     try {
       const response = await doFetch(url, {
-        signal: AbortSignal.timeout(requestTimeoutMs),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(requestTimeoutMs, remainingMs))),
         headers: { accept: 'application/json' },
       });
       const body: unknown = await response.json();
@@ -140,12 +140,15 @@ export async function runReadinessProbe(
   };
   let attempts = 0;
   for (;;) {
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) return { ok: false, attempts, detail: 'readiness deadline expired' };
     attempts += 1;
-    const outcome = await attempt();
+    const outcome = await attempt(remainingMs);
     if (outcome.ok) return { ok: true, attempts, detail: outcome.detail };
     // A restarting container refuses connections for a while; only the overall
     // budget decides when that stops being "not yet" and becomes "not at all".
-    if (now() + intervalMs >= deadline) return { ok: false, attempts, detail: outcome.detail };
-    await sleep(intervalMs);
+    const remainingAfterAttempt = deadline - now();
+    if (remainingAfterAttempt <= intervalMs) return { ok: false, attempts, detail: outcome.detail };
+    await sleep(Math.min(intervalMs, remainingAfterAttempt));
   }
 }

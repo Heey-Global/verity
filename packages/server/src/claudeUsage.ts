@@ -533,12 +533,9 @@ export function createClaudeUsageService(opts: ClaudeUsageOptions = {}): ClaudeU
       } else {
         log.debug({ windows: states.length }, 'verity: claude usage probe refreshed');
       }
-    } catch (error) {
+    } catch {
       // Network/parse failure: identical backoff, serve last-good.
-      log.warn(
-        { reason: 'exception', err: error },
-        'verity: claude usage probe threw; backing off',
-      );
+      log.warn({ reason: 'exception' }, 'verity: claude usage probe threw; backing off');
       backOff();
     }
   }

@@ -234,7 +234,7 @@ describe('preflightConfigFromEnv', () => {
     expect(config.databaseUrl).toBeUndefined();
     expect(config.requiredMounts?.[0]?.path).toBe('/srv/verity');
     expect(config.candidatePorts).toEqual([
-      { label: 'public', port: 8080 },
+      { label: 'public', port: 8787 },
       { label: 'internal', port: 8083 },
     ]);
   });

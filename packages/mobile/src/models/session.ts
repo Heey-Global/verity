@@ -189,9 +189,8 @@ export interface SessionModelOptions {
   baseUrl: string;
   /** Opens the WS socket (inject the platform `WebSocket` / a fake). */
   connect: StreamSocketFactory;
-  /** Supplies the per-device bearer token for the WS upgrade (audit C1),
-   *  forwarded to {@link SessionStream}. Omit when unauthenticated. */
-  getToken?: () => string | null | undefined;
+  /** Mints a one-use stream ticket over the authenticated API. */
+  getStreamTicket?: () => Promise<string>;
   /** Notified with a fresh state snapshot on every change. */
   onChange?: (state: SessionModelState) => void;
   /** Lets sibling overview state retire the same permission id immediately.
@@ -276,6 +275,9 @@ export class SessionModel {
   // one. See the `working` field in `state`. Starts at -1 (no settled poll yet).
   private _settledAtSeq = -1;
   private _waiting: QueuedItem[] = [];
+  /** Stream watermark when each server queue id was first observed. An older
+   * identical prompt must not consume a newly queued item (common for "ok"). */
+  private readonly _waitingSinceSeq = new Map<string, number>();
   // The worktree's live branch from the activity poll (#110), so the header label
   // tracks an external/agent `git checkout` without a remount. undefined until the
   // first poll resolves (or when the server doesn't report it).
@@ -320,7 +322,7 @@ export class SessionModel {
       baseUrl: opts.baseUrl,
       sessionId: opts.sessionId,
       connect: opts.connect,
-      ...(opts.getToken ? { getToken: opts.getToken } : {}),
+      ...(opts.getStreamTicket ? { getStreamTicket: opts.getStreamTicket } : {}),
       onUpdate: (session) => {
         this._session = session;
         // The canonical message may have just landed — hand the bubble over from the
@@ -422,7 +424,7 @@ export class SessionModel {
       // queued message is delivered (its `prompt` event lands as a user-text), drop
       // its "waiting to send" bubble — don't wait for the next activity poll, which
       // left it showing as a duplicate alongside the solid sent bubble.
-      waitingMessages: this.subtractDeliveredItems(this._waiting),
+      waitingMessages: this.subtractDeliveredWaiting(),
       branch: this._branch,
       hasOlder: this._hasOlder,
       loadingOlder: this._loadingOlder,
@@ -467,6 +469,23 @@ export class SessionModel {
     return pending;
   }
 
+  private subtractDeliveredWaiting(): QueuedItem[] {
+    const claimed = new Set<string>();
+    return this._waiting.filter((item) => {
+      const sinceSeq = this._waitingSinceSeq.get(item.id) ?? this.stream.newestSeq;
+      const delivered = this._session.messages.find(
+        (message) =>
+          message.kind === 'user-text' &&
+          message.text === item.text &&
+          messageSeq(message.id) > sinceSeq &&
+          !claimed.has(message.id),
+      );
+      if (delivered === undefined) return true;
+      claimed.add(delivered.id);
+      return false;
+    });
+  }
+
   /**
    * Retire local echoes ({@link PendingMessage}) that something authoritative now
    * covers, so a just-sent message is shown exactly once at every moment:
@@ -483,7 +502,7 @@ export class SessionModel {
   private retirePending(): boolean {
     if (this._pending.length === 0) return false;
     const waiting = new Map<string, number>();
-    for (const item of this.subtractDeliveredItems(this._waiting)) {
+    for (const item of this.subtractDeliveredWaiting()) {
       waiting.set(item.text, (waiting.get(item.text) ?? 0) + 1);
     }
     // Each transcript message may retire only ONE echo (two identical sends need
@@ -641,6 +660,7 @@ export class SessionModel {
     } catch {
       // fall back to a full replay from 0 (no older page to fetch)
     }
+    if (!this._running || this._paused) return;
     this.stream.start();
   }
 
@@ -815,6 +835,15 @@ export class SessionModel {
       // older server omits the field, which is not the same as "confirmed": it means
       // that server never holds the fence this way, so `false` is the honest read.
       const terminationUnconfirmed = activity.terminationUnconfirmed === true;
+      const activeWaitingIds = new Set(activity.queued.map((item) => item.id));
+      for (const id of this._waitingSinceSeq.keys()) {
+        if (!activeWaitingIds.has(id)) this._waitingSinceSeq.delete(id);
+      }
+      for (const item of activity.queued) {
+        if (!this._waitingSinceSeq.has(item.id)) {
+          this._waitingSinceSeq.set(item.id, this.stream.newestSeq);
+        }
+      }
       // A queue entry from the previous poll may cover a newly added local echo.
       const pendingRetired = this.retirePending();
       if (

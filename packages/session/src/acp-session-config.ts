@@ -44,8 +44,7 @@ export function selectValues(option: SessionConfigOption & { type: 'select' }): 
  * be able to tell `set` from the four ways of not setting it.
  */
 export type SelectOutcome =
-  /** The agent's answer shows the option holding `value` — or, on an agent that
-   *  echoes no options at all, that it answered without an error. */
+  /** The agent's answer shows the option holding `value`. */
   | 'set'
   /** The option already held `value`; skipped (never returned under `reassert`). */
   | 'unchanged'
@@ -122,14 +121,17 @@ export async function applySelectOption(
   // restriction on that backend, "the agent did not raise an error" is a weaker fact
   // than the one available for free in the same response.
   //
-  // An agent that echoes nothing keeps the old meaning of `set` — there is nothing to
-  // check against, and turning an unverifiable ack into a refusal would fail turns on
-  // adapters that behave correctly.
+  // Missing options cannot prove the requested security posture. Fail closed.
   const echoed = selectOption(
     (answer as { configOptions?: readonly SessionConfigOption[] } | null | undefined)
       ?.configOptions,
     configId,
   );
+  if (echoed === undefined) {
+    const note = unavailable(value, option.currentValue);
+    if (note !== undefined) await setup.notice(note);
+    return 'rejected';
+  }
   if (echoed !== undefined && echoed.currentValue !== value) {
     const note = unavailable(value, echoed.currentValue);
     if (note !== undefined) await setup.notice(note);

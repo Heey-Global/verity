@@ -85,6 +85,12 @@ function untrustedRepo(repoPath: string): string[] {
     'merge.verifySignatures=false',
     '-c',
     'submodule.recurse=false',
+    '-c',
+    'credential.helper=',
+    '-c',
+    'core.sshCommand=ssh -F /dev/null',
+    '-c',
+    'protocol.ext.allow=never',
   ];
 }
 
@@ -618,12 +624,16 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       throw new Error('specify exactly one of newBranch/branch/preview');
     }
 
-    // Dirty handling FIRST, before any branch validation or checkout.
+    const target = sw.newBranch ?? sw.branch ?? sw.preview;
+    if (target === undefined || !isValidBranchName(target)) {
+      throw new InvalidBranchNameError(target ?? '');
+    }
+
+    // Validate the complete target before checkpointing or stashing user work.
     await handleDirty(worktreePath, sw.onDirty);
 
     if (sw.newBranch != null) {
       const newBranch = sw.newBranch;
-      if (!isValidBranchName(newBranch)) throw new InvalidBranchNameError(newBranch);
       if (await branchExists(worktreePath, newBranch)) throw new BranchExistsError(newBranch);
       await git(['-C', worktreePath, 'checkout', '-b', newBranch, baseBranch]);
     } else if (sw.preview != null) {
@@ -631,14 +641,14 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       // `origin/<preview>`. Detached HEAD doesn't claim the branch name, so this
       // works even while another worktree is developing that branch.
       const preview = sw.preview;
-      if (!isValidBranchName(preview)) throw new InvalidBranchNameError(preview);
+      const remoteRef = `refs/remotes/origin/${preview}`;
       try {
-        await git(['-C', worktreePath, 'fetch', 'origin', preview]);
+        await git(['-C', worktreePath, 'fetch', 'origin', `+refs/heads/${preview}:${remoteRef}`]);
       } catch {
         // No such branch on the remote (or fetch refused it).
         throw new BranchNotFoundError(preview);
       }
-      await git(['-C', worktreePath, 'checkout', '--detach', `origin/${preview}`]);
+      await git(['-C', worktreePath, 'checkout', '--detach', remoteRef]);
     } else {
       const branch = sw.branch as string;
       if (!(await branchExists(worktreePath, branch))) throw new BranchNotFoundError(branch);
@@ -650,7 +660,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
         '--porcelain',
       ]);
       if (checkedOutBranches(porcelain).has(branch)) throw new BranchInUseError(branch);
-      await git(['-C', worktreePath, 'checkout', branch]);
+      await git(['-C', worktreePath, 'checkout', '--', branch]);
     }
 
     return current(worktreePath);
@@ -734,6 +744,15 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     // resolves to a remote name or short SHA (see `current`) — `branchExists`
     // below then finds no local branch and we skip the delete.
     const feature = await current(worktreePath);
+    if (!isValidBranchName(feature)) return { base };
+    const featureTip =
+      feature !== base && feature !== baseBranch && (await branchExists(worktreePath, feature))
+        ? (await git(['-C', worktreePath, 'rev-parse', `refs/heads/${feature}`])).trim()
+        : undefined;
+    // An idle observation can race a new turn. Refuse before changing HEAD when
+    // tracked work has appeared, and let the unforced checkout below enforce the
+    // same invariant across the remaining window.
+    if (await hasTrackedChanges(worktreePath, git)) return { base };
     // Pull the merged base tip into this worktree's object store. Both refs are
     // fully qualified so nothing in the name can be read as syntax: a bare
     // `fetch origin +foo` would parse the `+` as the refspec's force marker and
@@ -742,21 +761,56 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     // the remote-tracking ref to follow a force-pushed base, as a clone's own
     // refspec does — plain `fetch origin <base>` updated it the same way.
     const remoteRef = `refs/remotes/origin/${base}`;
-    await git(['-C', worktreePath, 'fetch', 'origin', `+refs/heads/${base}:${remoteRef}`]);
+    await git([
+      '-C',
+      worktreePath,
+      ...untrustedRepo(worktreePath),
+      'fetch',
+      'origin',
+      `+refs/heads/${base}:${remoteRef}`,
+    ]);
     // Detach onto the merged tip: never claims the `base` branch name (so it can't
     // block a parallel worktree), and `-f` discards the merged feature branch's now
     // stale working tree. `current()` still reports "<base>" for this detached HEAD
     // via its points-at lookup, so the cockpit shows the base.
-    await git(['-C', worktreePath, 'checkout', '-f', '--detach', remoteRef]);
+    await git([
+      '-C',
+      worktreePath,
+      ...untrustedRepo(worktreePath),
+      'checkout',
+      '--detach',
+      remoteRef,
+    ]);
     // Delete the merged local feature branch — only when it was a real local branch
     // (not a base, not a detached/preview label). Both bases are excluded: the merge
     // target because the worktree now sits on it, and the project base because it is
     // never a session's own branch to remove. `-D` (not `-d`): the operator explicitly
     // merged, and a squash/rebase merge leaves the local tip un-merged by git's
     // ancestry check, which `-d` would refuse.
-    if (feature !== base && feature !== baseBranch && (await branchExists(worktreePath, feature))) {
-      await git(['-C', worktreePath, 'branch', '-D', feature]);
-      return { base, deletedBranch: feature };
+    if (featureTip !== undefined) {
+      const deleted = await git([
+        '-C',
+        worktreePath,
+        ...untrustedRepo(worktreePath),
+        'update-ref',
+        '-d',
+        `refs/heads/${feature}`,
+        featureTip,
+      ])
+        .then(() => true)
+        .catch(async (error: unknown) => {
+          if (error instanceof SandboxUnavailableError) throw error;
+          const currentTip = await git([
+            '-C',
+            worktreePath,
+            'rev-parse',
+            '--verify',
+            `refs/heads/${feature}`,
+          ]).catch(() => '');
+          if (currentTip.trim() === featureTip) throw error;
+          return false;
+        });
+      if (deleted) return { base, deletedBranch: feature };
     }
     return { base };
   }

@@ -99,7 +99,7 @@ describe('createPushOutbox', () => {
     expect(perform).toHaveBeenCalledTimes(1);
   });
 
-  it('gives up after maxAttempts transient failures', async () => {
+  it('never loses an entry solely because transient failures repeat', async () => {
     const storage = memoryStorage();
     const perform = vi
       .fn<(action: PushReplyAction) => Promise<PushReplyOutcome>>()
@@ -109,12 +109,11 @@ describe('createPushOutbox', () => {
       perform,
       newId: sequentialIds(),
       now: () => 1,
-      maxAttempts: 2,
     });
     await outbox.enqueue(PERMISSION_ACTION); // attempt 1 → kept (attempts=1)
     expect((await outbox.pending())[0]?.attempts).toBe(1);
-    await outbox.flush(); // attempt 2 → hits max, dropped
-    expect(await outbox.pending()).toEqual([]);
+    await outbox.flush();
+    expect((await outbox.pending())[0]?.attempts).toBe(2);
   });
 
   it('never delivers an entry twice when a flush races an enqueue', async () => {

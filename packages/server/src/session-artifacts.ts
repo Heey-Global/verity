@@ -1,4 +1,5 @@
-import { lstat, realpath, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, realpath, rm, type FileHandle } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { transcriptPath } from '@verity/session';
 import { codexRolloutFiles, RUNNER_CLAUDE_HOME_DIRNAME } from './runner-transcript.js';
@@ -147,16 +148,10 @@ const BACKEND_ARTIFACTS: Readonly<Record<string, BackendArtifacts>> = {
    * a fresh dated file per run, plus the `verity-restored/` copy Verity materialized —
    * which is the whole set that has to go.
    *
-   * Unlike claude's, this entry does not read {@link SessionArtifactInput.scope}: a
-   * `backend-switch` takes every rollout of the displaced thread, `verity-restored/`
-   * copy included. The asymmetry is not an oversight — it follows from where the only
-   * copy lives. Claude's `subagents/` tree has no sink at all, so the file on the volume
-   * is it. A codex rollout has one: `ServerCodexTranscript.tail` streams its bytes into
-   * the durable transcript as they are written and `restoreForResume` materializes them
-   * back verbatim, Codex's own format untouched (`runner-transcript.ts`). Switching away
-   * and back therefore rebuilds the rollout rather than resuming a thread that lost one,
-   * and what is at risk is at most the bytes written after the last sync tick — not the
-   * conversation.
+   * A backend switch preserves rollouts. The durable sink is polled, so the final bytes
+   * may not have reached the store when the binding changes; deleting here made a
+   * reversible model switch lose that tail permanently. Session deletion (or the
+   * orphan sweep after the id is no longer live) remains the safe collection boundary.
    *
    * That sink is not a separate condition to check: the rollouts this resolver can find
    * live under `<dataVolumeRoot>/runners/<projectId>`, and a Codex turn only writes there
@@ -174,7 +169,9 @@ const BACKEND_ARTIFACTS: Readonly<Record<string, BackendArtifacts>> = {
    * the listing is the shape to reach for.
    */
   codex: async (input, backendSessionId) =>
-    await codexRolloutFiles(input.runtimeDir, backendSessionId),
+    input.scope === 'backend-switch'
+      ? []
+      : await codexRolloutFiles(input.runtimeDir, backendSessionId),
 
   /**
    * Nothing on the runner runtime. OpenCode moved to ACP under the runner supervisor
@@ -330,13 +327,10 @@ export function isWithinRealPath(root: string, candidate: string): boolean {
  * `rm` unlinks a final symlink rather than following it, but every INTERMEDIATE
  * component is followed during resolution — and the runner runtime is writable by the
  * sandbox, so `projects/<encoded-cwd>` could be replaced with a link pointing anywhere.
- * Resolving the parent and re-checking containment narrows that: the delete happens on
- * the path as resolution found it, or not at all. It is a check followed by a use, not an
- * atomic one — a sandbox that swaps the parent between the `realpath` here and the `rm`
- * below wins that race, and only an `O_NOFOLLOW`-style handle held across both would
- * close it. What it removes is the standing case, a link planted and left in place, which
- * is what a sandbox writing its own runtime can actually arrange; the remaining window is
- * one the attacker must hit rather than one that is simply open.
+ * Resolving the parent is followed by opening that directory with `O_NOFOLLOW`,
+ * validating the opened descriptor, and deleting through `/proc/self/fd/<fd>`. The
+ * held directory handle closes the check/use race: replacing any path component after
+ * validation cannot redirect the deletion.
  *
  * Returns the resolved path, `'absent'` when there is nothing there, or `'outside'`
  * when it escapes the runtime. `root` is the runtime as `realpath` reports it, resolved
@@ -347,7 +341,7 @@ export function isWithinRealPath(root: string, candidate: string): boolean {
 async function resolveTarget(
   path: string,
   root: string,
-): Promise<{ resolved: string } | 'absent' | 'outside'> {
+): Promise<{ resolved: string; anchored: string; parent: FileHandle } | 'absent' | 'outside'> {
   let parent: string;
   try {
     parent = await realpath(dirname(path));
@@ -356,15 +350,44 @@ async function resolveTarget(
     // inside it.
     return 'absent';
   }
-  const resolved = join(parent, basename(path));
-  // The runtime directory itself is never a target, only ever a boundary.
-  if (resolved === root || !isWithinRealPath(root, resolved)) return 'outside';
+  let parentHandle: FileHandle;
   try {
-    await lstat(resolved);
+    parentHandle = await open(
+      parent,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
   } catch {
     return 'absent';
   }
-  return { resolved };
+  // Anchor deletion to the directory object we validated, not its mutable path.
+  // Re-check the opened descriptor through procfs: an attacker swapping an
+  // intermediate component between realpath and open can otherwise redirect the
+  // later rm outside the runtime.
+  const descriptorPath = `/proc/self/fd/${parentHandle.fd}`;
+  let openedParent: string;
+  try {
+    openedParent = await realpath(descriptorPath);
+  } catch {
+    await parentHandle.close();
+    return 'absent';
+  }
+  const resolved = join(openedParent, basename(path));
+  // The runtime directory itself is never a target, only ever a boundary.
+  if (resolved === root || !isWithinRealPath(root, resolved)) {
+    await parentHandle.close();
+    return 'outside';
+  }
+  try {
+    await lstat(join(descriptorPath, basename(path)));
+  } catch {
+    await parentHandle.close();
+    return 'absent';
+  }
+  return {
+    resolved,
+    anchored: join(descriptorPath, basename(path)),
+    parent: parentHandle,
+  };
 }
 
 /**
@@ -424,12 +447,14 @@ export async function purgeSessionArtifacts(
       // `session-delete` ever names. `force` still absorbs a file that vanished between
       // the check above and here. The same options are what the ephemeral-turn cleanup
       // in `embedded.ts` uses.
-      await rm(target.resolved, { recursive: true, force: true });
+      await rm(target.anchored, { recursive: true, force: true });
       removed.push(target.resolved);
     } catch {
       // The RESOLVED path, like `removed` — this is the leak someone will go looking for,
       // and the requested path may name a symlink rather than the file still on disk.
       failed.push(target.resolved);
+    } finally {
+      await target.parent.close().catch(() => undefined);
     }
   }
   return {

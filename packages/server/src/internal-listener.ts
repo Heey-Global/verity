@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, chownSync, lstatSync, mkdirSync, unlinkSync, type Stats } from 'node:fs';
+import {
+  chmodSync,
+  chownSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  renameSync,
+  unlinkSync,
+  type Stats,
+} from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
@@ -90,16 +100,31 @@ export function unlinkOwnedUnixSocket(
   socketPath: string,
   owner: Pick<Stats, 'dev' | 'ino' | 'ctimeMs'>,
 ): void {
+  const quarantine = `${socketPath}.closing-${randomUUID()}`;
   try {
-    const current = lstatSync(socketPath);
+    // Rename first: unlike lstat-then-unlink, this atomically removes exactly one
+    // directory entry. Verify the moved inode before deleting it, and restore a
+    // successor entry if it was not ours.
+    renameSync(socketPath, quarantine);
+    const current = lstatSync(quarantine);
     if (
       current.isSocket() &&
       !current.isSymbolicLink() &&
       current.dev === owner.dev &&
       current.ino === owner.ino &&
       current.ctimeMs === owner.ctimeMs
-    )
-      unlinkSync(socketPath);
+    ) {
+      unlinkSync(quarantine);
+    } else {
+      try {
+        linkSync(quarantine, socketPath);
+        unlinkSync(quarantine);
+      } catch (error) {
+        // A successor claimed the public path after the quarantine rename. Never
+        // overwrite it; retain the displaced inode for manual recovery.
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }

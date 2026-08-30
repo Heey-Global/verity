@@ -38,120 +38,27 @@
   "minimumVersion": "9.0.0",
   "releases": [
     {
-      "version": "9.0.0",
+      "version": "16.3.1",
+      "architecture": "amd64",
       "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "1907875b87422124335324bbc2838213619d96e9659af3a8fd76c44b1917e57e",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "3f265a7e57b6003ac8750d9f8b11c7db3a3377fc07266505a51dcb2499c79909",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
+        "/usr/local/bin/verity-runner-supervisor": "3de5209f67f8b1ce26561f44bc710f2d5b4e6b441824da7b4b7157abae62b698",
+        "/usr/local/bin/verity-runner-supervisor-start": "c63006713fd22af6d1de6646ecab2b28ee0300a7a1c0ffa2b11d30d0d6cd7490",
+        "/usr/local/bin/verity-runner-worker": "2009cf4d80ffeabc4442d567858850d3a135e2e40ff97d2a4f13d5ff0f307418",
+        "/usr/local/bin/verity-runner-stack-start": "234a787c58eb497e03f3a3b5f9b513e28663afff612f6316e5b7f031fa290e86",
+        "/usr/local/bin/verity-agent-spawn-broker": "8feb1193870c0adc71976fd79a7c1a9d17ab085ec9720822daf277fd14974903",
+        "/usr/local/bin/verity-script-sandbox": "f20953180e72d1da910215f134e5f172952166dde19e1f8a6c49562334dc19ad"
       }
     },
     {
-      "version": "10.0.0",
+      "version": "16.3.1",
+      "architecture": "arm64",
       "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "eeff9d1a6e59ffe04324c5437bb2210118c90999185b65aee78f588b9b3e2834",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "4e0df8e96b2033136a9e2a6e5075fe494dfb3b646d98a3cabe7a3f2e4665eb24",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.0.1",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "62bc66ae71fe1076dd45d928f920b3f722fd8f85ab06562858d29f15d6d62199",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "d98067f4527113e3bc8008d200239c5aad8754168e7a7f7da805e7850f3fa20f",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.1.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "62bc66ae71fe1076dd45d928f920b3f722fd8f85ab06562858d29f15d6d62199",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "7bc1aa9e7333108f3bd6c49102d7bfe8b8040c5e5330202fa763aaa285ca7ac4",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.2.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "69673eb28af4cc79913046de22435aa9c87bc17de341a715952e86dcd97441fa",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "adbc104a9cec0390e740916b8550173b97d575fa53d130cbbd65b912d5e9de78",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.3.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "69673eb28af4cc79913046de22435aa9c87bc17de341a715952e86dcd97441fa",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.4.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.5.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.6.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "10.7.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "a9d380cb9dc56284505a9467d45e4a82371d42c6f526b9d477750fb21118b76b",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "3650670cdab1f47b09855d3f03b3dd1518f586eed23bb9efb752c85fd1e0925b",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "11.0.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "32222a8aa935e6c7e0060236ff33cc45b716120d2e5f389c566a2349ae30bb04",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "fad4ae0d99e9bd6b55dc357a69e0e494d4c75ac37dd7e05835f17c810def88de",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "11.1.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "32222a8aa935e6c7e0060236ff33cc45b716120d2e5f389c566a2349ae30bb04",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "268f101b230907674832ab8ab27fbdfa745dae545217d750baa2a9dfe12e9081",
-        "/usr/local/bin/verity-runner-stack-start": "56f5d467558e20800a1450a065f92ccc96b2925e5cdab0e2f4b1cfeb9783faf7"
-      }
-    },
-    {
-      "version": "12.0.0",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "8e39702da03da82da0cbc74b7a862ec7b3d0e763d91ad6e28ed8a9c7a3758199",
-        "/usr/local/bin/verity-runner-supervisor-start": "a5e3677ef92dfd6e625f1abe741c056404342a9a29750d5d9c8d44d4d8edff51",
-        "/usr/local/bin/verity-runner-worker": "34abbe758b58488808b613733ce99ea31a17061b0cff41752f4c07baab476827",
-        "/usr/local/bin/verity-runner-stack-start": "eca4f6cd925cafafe4b47ca9c92783f405b0a1a9c9ecfa3f8fe7a6fe937ba4a0"
+        "/usr/local/bin/verity-runner-supervisor": "3de5209f67f8b1ce26561f44bc710f2d5b4e6b441824da7b4b7157abae62b698",
+        "/usr/local/bin/verity-runner-supervisor-start": "c63006713fd22af6d1de6646ecab2b28ee0300a7a1c0ffa2b11d30d0d6cd7490",
+        "/usr/local/bin/verity-runner-worker": "2009cf4d80ffeabc4442d567858850d3a135e2e40ff97d2a4f13d5ff0f307418",
+        "/usr/local/bin/verity-runner-stack-start": "234a787c58eb497e03f3a3b5f9b513e28663afff612f6316e5b7f031fa290e86",
+        "/usr/local/bin/verity-agent-spawn-broker": "8feb1193870c0adc71976fd79a7c1a9d17ab085ec9720822daf277fd14974903",
+        "/usr/local/bin/verity-script-sandbox": "6c16197ae3cbd184c8d1d9b1a0725a3f290575a694150da2e11d095b237ee4ed"
       }
     }
   ]

@@ -78,6 +78,35 @@ describe('control socket transport (ADR 0006 Stage 2.1b, standalone)', () => {
     client = undefined;
   });
 
+  it('rejects a same-uid controller without the per-turn capability', async () => {
+    const path = socketPath();
+    const handlers = fakeHandlers();
+    server = await serveControl(path, handlers, {
+      authorizeAcquire: (_id, _current, capability) => capability === 'unguessable-start-id',
+    });
+    await expect(connectControl(path, { capability: 'wrong' })).rejects.toThrow(
+      'control attach rejected',
+    );
+    expect(handlers.answers).toEqual([]);
+    client = await connectControl(path, { capability: 'unguessable-start-id' });
+  });
+
+  it('re-authorizes the same controller id on every acquire', async () => {
+    const path = socketPath();
+    const handlers = fakeHandlers();
+    const controllerId = 'stable-controller';
+    server = await serveControl(path, handlers, {
+      authorizeAcquire: (_id, _current, capability) => capability === 'unguessable-start-id',
+    });
+    client = await connectControl(path, {
+      controllerId,
+      capability: 'unguessable-start-id',
+    });
+    await expect(connectControl(path, { controllerId, capability: 'wrong' })).rejects.toThrow(
+      'control attach rejected',
+    );
+  });
+
   it('steer round-trips the handler boolean back over the socket', async () => {
     const handlers = fakeHandlers(true);
     const path = socketPath();

@@ -57,11 +57,11 @@ describe.each<[string, (opts?: SecretJobFrameSpoolOptions) => SecretJobFrameSpoo
     expect(page.hasMore).toBe(false);
 
     // Resume-from-sequence replay: everything after seq 0.
-    const resumed = await spool.readPage(JOB, 0);
+    const resumed = await spool.readPage(JOB, 1);
     expect(resumed.frames.map((f) => f.sequence)).toEqual([1, 2]);
     expect(resumed.firstSequence).toBe(1);
     // An empty tail read reports where to resume, no firstSequence.
-    const empty = await spool.readPage(JOB, 2);
+    const empty = await spool.readPage(JOB, 3);
     expect(empty.frames).toEqual([]);
     expect(empty.firstSequence).toBeUndefined();
     expect(empty.nextSequence).toBe(3);
@@ -115,7 +115,7 @@ describe.each<[string, (opts?: SecretJobFrameSpoolOptions) => SecretJobFrameSpoo
     expect(page.nextSequence).toBe(256);
     expect(page.hasMore).toBe(true);
 
-    const tail = await spool.readPage(JOB, 255);
+    const tail = await spool.readPage(JOB, 256);
     expect(tail.frames.map((f) => f.sequence)).toEqual([256]);
     expect(tail.hasMore).toBe(false);
   }, 30_000);
@@ -152,6 +152,25 @@ describe.each<[string, (opts?: SecretJobFrameSpoolOptions) => SecretJobFrameSpoo
     expect(await spool.purge(cutoff)).toBe(1);
     expect((await spool.readPage('old')).frames).toEqual([]);
     expect((await spool.readPage('new')).frames).toHaveLength(1);
+  });
+
+  it('retains complete history and sequence continuity for a recently continued job', async () => {
+    let clock = Date.parse('2026-07-19T00:00:00Z');
+    const spool = makeSpool({ now: () => new Date(clock) });
+    await spool.persist(frame({ sequence: 0, payload: 'old-prefix' }));
+    const cutoff = new Date(clock).toISOString();
+    clock += 60_000;
+    await spool.persist(frame({ sequence: 1, payload: 'recent-tail' }));
+
+    expect(await spool.purge(cutoff)).toBe(0);
+    expect((await spool.readPage(JOB)).frames.map((item) => item.payload)).toEqual([
+      'old-prefix',
+      'recent-tail',
+    ]);
+    await expect(
+      spool.persist(frame({ sequence: 2, payload: 'continued' })),
+    ).resolves.toBeUndefined();
+    expect((await spool.readPage(JOB, 2)).frames.map((item) => item.sequence)).toEqual([2]);
   });
 });
 

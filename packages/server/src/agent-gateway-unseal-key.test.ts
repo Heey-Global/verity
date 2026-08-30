@@ -10,10 +10,16 @@ describe('resolveAgentGatewayUnsealKey', () => {
   it('prefers an explicitly configured key and persists nothing', () => {
     const dir = root();
     const key = resolveAgentGatewayUnsealKey(dir, {
-      VERITY_AGENT_GATEWAY_UNSEAL_KEY: 'host-provisioned',
+      VERITY_AGENT_GATEWAY_UNSEAL_KEY: 'ab'.repeat(32),
     });
-    expect(key).toBe('host-provisioned');
+    expect(key).toBe('ab'.repeat(32));
     expect(() => statSync(join(dir, 'agent-gateway', 'unseal-key'))).toThrow();
+  });
+
+  it('rejects a malformed explicitly configured key', () => {
+    expect(() =>
+      resolveAgentGatewayUnsealKey(root(), { VERITY_AGENT_GATEWAY_UNSEAL_KEY: 'host-provisioned' }),
+    ).toThrow(/64 lowercase hex/u);
   });
 
   it('generates a 32-byte hex key and persists it 0600', () => {

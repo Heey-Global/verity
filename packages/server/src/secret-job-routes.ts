@@ -21,7 +21,7 @@ const decisionBodySchema = z.discriminatedUnion('approved', [
     .strict(),
 ]);
 const framesQuerySchema = z
-  .object({ afterSequence: z.coerce.number().int().nonnegative().optional() })
+  .object({ nextSequence: z.coerce.number().int().nonnegative().optional() })
   .strict();
 
 /** Register the authenticated transport adapter around the transport-neutral Secret Job service. */
@@ -105,7 +105,7 @@ export function registerSecretJobRoutes(
     }
     try {
       return reply.send(
-        await service.readFrames(params.data.jobId, actor, query.data.afterSequence),
+        await service.readFrames(params.data.jobId, actor, query.data.nextSequence),
       );
     } catch (error) {
       if (error instanceof SecretJobServiceRejectedError) {

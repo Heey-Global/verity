@@ -17,6 +17,7 @@
  * Both the writer (store) and the reader (mobile card) import from here so the
  * on-disk shape stays defined in exactly one place.
  */
+import { imageMediaTypeSchema } from './events.js';
 
 /** `source.type` of an externalized (content-addressed) tool-result image block.
  * The legacy inline form uses `'base64'` with `source.data`. */
@@ -51,19 +52,21 @@ export function extractToolResultImages(output: unknown): ToolResultImage[] {
   const images: ToolResultImage[] = [];
   for (const block of output) {
     const source = imageSource(block);
-    if (!source || typeof source.media_type !== 'string') continue;
+    if (!source) continue;
+    const mediaType = imageMediaTypeSchema.safeParse(source.media_type);
+    if (!mediaType.success) continue;
     if (
       source.type === TOOL_IMAGE_REF_TYPE &&
       typeof source.id === 'string' &&
       source.id.length > 0
     ) {
-      images.push({ mediaType: source.media_type, id: source.id });
+      images.push({ mediaType: mediaType.data, id: source.id });
     } else if (
       source.type === 'base64' &&
       typeof source.data === 'string' &&
       source.data.length > 0
     ) {
-      images.push({ mediaType: source.media_type, data: source.data });
+      images.push({ mediaType: mediaType.data, data: source.data });
     }
   }
   return images;
@@ -88,16 +91,17 @@ export async function externalizeToolResultImages(
   const next = await Promise.all(
     blocks.map(async (block): Promise<unknown> => {
       const source = imageSource(block);
+      const mediaType = imageMediaTypeSchema.safeParse(source?.media_type);
       if (
         !source ||
         source.type !== 'base64' ||
-        typeof source.media_type !== 'string' ||
+        !mediaType.success ||
         typeof source.data !== 'string' ||
         source.data.length === 0
       ) {
         return block;
       }
-      const id = await store(source.media_type, source.data);
+      const id = await store(mediaType.data, source.data);
       changed = true;
       const nextSource: Record<string, unknown> = { ...source, type: TOOL_IMAGE_REF_TYPE, id };
       delete nextSource.data;

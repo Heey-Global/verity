@@ -103,24 +103,17 @@ export function createGatewayRequestMacKeyring(
   };
   return {
     async active() {
-      const existing = await db
-        .selectFrom('audit_mac_keys')
-        .select(['key_id', 'key_material'])
-        .where('state', '=', 'active')
-        .executeTakeFirst();
-      if (existing !== undefined) return decode(existing);
-      // Mint under the lock and re-read inside it: two Servers serving their first gateway
-      // call at once would otherwise both insert, and the loser's rows would be MACed under
-      // a key the winner's partial unique index rejected — recorded against a key id no
-      // longer active, which reads as a rotation that never happened.
+      // Read and mint under the same lock as rotation. A fast-path read outside
+      // the lock can return the incumbent while another process commits its
+      // retirement, causing a new audit record after rotation to use the old key.
       return await db.transaction().execute(async (tx) => {
         await sql`select pg_advisory_xact_lock(hashtext(${KEYRING_LOCK}))`.execute(tx);
-        const raced = await tx
+        const existing = await tx
           .selectFrom('audit_mac_keys')
           .select(['key_id', 'key_material'])
           .where('state', '=', 'active')
           .executeTakeFirst();
-        return decode(raced ?? (await mint(tx)));
+        return decode(existing ?? (await mint(tx)));
       });
     },
     async byId(keyId) {

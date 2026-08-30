@@ -17,7 +17,7 @@ concerns are cobbled together rather than cleanly layered:
 - **Stale containers drop signing.** Commit signing relies on SSH-key mounts
   the provisioner adds from the Verity settings record (`da57338`). Containers
   created before that change (e.g. `dev-heey-global--verity`, created
-  2026-06-28, vs `dev-heey-global--deep-ocr`, created 2026-06-29 after the
+  2026-06-28, vs `dev-example-org--sample-app`, created 2026-06-29 after the
   change) never received the mounts. A restart does **not** heal this — mounts
   are fixed at container-create time; only a re-provision does.
 

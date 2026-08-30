@@ -11,7 +11,7 @@
 //   - `listProjects({ includeHidden: true })` length.
 // None of these touch `getVeritySettings()` (which decrypts) or any secret value.
 import type { EventStore, SealableSecretCipher } from '@verity/store';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 /**
  * The ordered required-then-optional onboarding steps the status endpoint reasons
@@ -118,9 +118,29 @@ export async function computeOnboardingStatus(
  */
 export function registerOnboardingRoutes(
   app: FastifyInstance,
-  deps: { eventStore: EventStore; secretCipher: SealableSecretCipher | undefined },
+  deps: {
+    eventStore: EventStore;
+    secretCipher: SealableSecretCipher | undefined;
+    isAuthenticated?: (request: FastifyRequest) => boolean;
+  },
 ): void {
-  app.get('/onboarding/status', (): Promise<OnboardingStatus> => {
-    return computeOnboardingStatus(deps.eventStore, deps.secretCipher);
+  app.get('/onboarding/status', async (request): Promise<OnboardingStatus> => {
+    const status = await computeOnboardingStatus(deps.eventStore, deps.secretCipher);
+    if (!status.masterPasswordSet || deps.isAuthenticated?.(request) === true) return status;
+    // The route must stay reachable while sealed so the app can choose its unlock
+    // screen, but an unauthenticated post-onboarding probe must not inventory
+    // providers, signing material, or project state.
+    return {
+      sealed: status.sealed,
+      masterPasswordSet: true,
+      githubAppConfigured: false,
+      signingKeyConfigured: false,
+      hasProject: false,
+      dopplerConfigured: false,
+      claudeConfigured: false,
+      codexConfigured: false,
+      complete: false,
+      nextStep: null,
+    };
   });
 }

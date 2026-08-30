@@ -32,6 +32,9 @@ export type TrustedCliSummary = {
 function parseSecret(raw: unknown): TrustedCliSecretSummary | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const entry = raw as Record<string, unknown>;
+  if (Object.keys(entry).some((key) => !['secretAlias', 'env', 'injection'].includes(key))) {
+    return null;
+  }
   const secretAlias = typeof entry['secretAlias'] === 'string' ? entry['secretAlias'] : null;
   const env = typeof entry['env'] === 'string' ? entry['env'] : null;
   if (secretAlias === null || env === null || secretAlias.length === 0 || env.length === 0) {
@@ -49,6 +52,9 @@ function parseSecret(raw: unknown): TrustedCliSecretSummary | null {
 export function trustedCliSummary(rawInput: unknown): TrustedCliSummary | null {
   if (typeof rawInput !== 'object' || rawInput === null || Array.isArray(rawInput)) return null;
   const input = rawInput as Record<string, unknown>;
+  if (Object.keys(input).some((key) => !['secrets', 'command', 'entryScript'].includes(key))) {
+    return null;
+  }
   const rawSecrets = input['secrets'];
   if (!Array.isArray(rawSecrets) || rawSecrets.length === 0) return null;
   const secrets: TrustedCliSecretSummary[] = [];
@@ -73,6 +79,11 @@ export function trustedCliSummary(rawInput: unknown): TrustedCliSummary | null {
     )
       return null;
     const entry = rawEntryScript as Record<string, unknown>;
+    if (
+      Object.keys(entry).some((key) => !['path', 'projectPath', 'sha256', 'loading'].includes(key))
+    ) {
+      return null;
+    }
     if (
       typeof entry['path'] !== 'string' ||
       typeof entry['projectPath'] !== 'string' ||

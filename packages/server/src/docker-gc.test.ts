@@ -95,6 +95,22 @@ describe('planImageSweep', () => {
     expect(plan.map((entry) => entry.ref)).toEqual(['verity-devc-acme-web:b']);
   });
 
+  it('counts image generations rather than multiple tags of the same generation', () => {
+    const images = [
+      image({
+        id: 'sha256:new',
+        repoTags: ['verity-devc-acme-web:new', 'verity-devc-acme-web:alias'],
+        created: 300,
+      }),
+      image({ id: 'sha256:old', repoTags: ['verity-devc-acme-web:old'], created: 200 }),
+    ];
+    expect(
+      planImageSweep({ images, inUseImageIds: new Set(), keepPerRepo: 1 }).map(
+        (entry) => entry.ref,
+      ),
+    ).toEqual(['verity-devc-acme-web:old']);
+  });
+
   it('never retires an image a container still references, however old', () => {
     const images = [
       image({ id: 'sha256:new', repoTags: ['verity-devc-acme-web:a'], created: 300 }),
@@ -191,15 +207,12 @@ describe('planVolumeSweep', () => {
     expect(planVolumeSweep({ volumes, nowMs, minAgeMs: 0 })).toEqual([]);
   });
 
-  it('treats an absent or unparseable createdAt as old', () => {
+  it('protects volumes with an absent or unparseable createdAt', () => {
     const volumes = [
       volume({ name: anonName('f') }),
       volume({ name: anonName('0'), createdAt: 'nonsense' }),
     ];
-    expect(planVolumeSweep({ volumes, nowMs, minAgeMs: 60 * 60_000 })).toEqual([
-      anonName('f'),
-      anonName('0'),
-    ]);
+    expect(planVolumeSweep({ volumes, nowMs, minAgeMs: 60 * 60_000 })).toEqual([]);
   });
 });
 
@@ -208,7 +221,13 @@ describe('planBuilderVolumeSweep', () => {
   const builder = (uuid: string): string => `buildx_buildkit_builder-${uuid}_state`;
 
   it('sweeps orphaned builder state volumes past the grace period', () => {
-    const volumes = [volume({ name: builder('4fd1fb8a-06b2'), createdAt: '2026-07-01T00:00:00Z' })];
+    const volumes = [
+      volume({
+        name: builder('4fd1fb8a-06b2'),
+        labels: { 'verity.gc-owner': 'verity' },
+        createdAt: '2026-07-01T00:00:00Z',
+      }),
+    ];
     expect(planBuilderVolumeSweep({ volumes, nowMs, minAgeMs: 60_000 })).toEqual([
       builder('4fd1fb8a-06b2'),
     ]);
@@ -228,11 +247,26 @@ describe('planBuilderVolumeSweep', () => {
     expect(planBuilderVolumeSweep({ volumes, nowMs, minAgeMs: 0 })).toEqual([]);
   });
 
+  it('recognizes the real buildx volume shape for a named builder node', () => {
+    const name = 'buildx_buildkit_verity-ci-bounded-v100_state';
+    expect(
+      planBuilderVolumeSweep({
+        volumes: [volume({ name, createdAt: '2026-01-01T00:00:00Z' })],
+        nowMs,
+        minAgeMs: 0,
+      }),
+    ).toEqual([name]);
+  });
+
   it('does not overlap with planVolumeSweep on the same listing', () => {
     // Name shapes are disjoint: a volume is claimed by at most one planner.
     const volumes = [
       volume({ name: anonName('a'), createdAt: '2026-01-01T00:00:00Z' }),
-      volume({ name: builder('4fd1fb8a-06b2'), createdAt: '2026-01-01T00:00:00Z' }),
+      volume({
+        name: builder('4fd1fb8a-06b2'),
+        labels: { 'verity.gc-owner': 'verity' },
+        createdAt: '2026-01-01T00:00:00Z',
+      }),
     ];
     const anon = planVolumeSweep({ volumes, nowMs, minAgeMs: 0 });
     const build = planBuilderVolumeSweep({ volumes, nowMs, minAgeMs: 0 });
@@ -474,7 +508,11 @@ describe('runDockerGc', () => {
     const docker = fakeDocker({
       volumes: [
         volume({ name: anonName('a'), createdAt: '2026-01-01T00:00:00Z' }),
-        volume({ name: builderVol, createdAt: '2026-01-01T00:00:00Z' }),
+        volume({
+          name: builderVol,
+          labels: { 'verity.gc-owner': 'verity' },
+          createdAt: '2026-01-01T00:00:00Z',
+        }),
       ],
     });
     const report = await runDockerGc(deps(docker));
@@ -497,7 +535,7 @@ describe('runDockerGc', () => {
     expect(report.builderVolumesRemoved).toBe(0);
   });
 
-  it('escalates to keeping one generation and no volume grace under disk pressure', async () => {
+  it('keeps the configured volume grace under disk pressure', async () => {
     const docker = fakeDocker({
       images: [
         image({ id: 'sha256:new', repoTags: ['verity-devc-acme-web:a'], created: 300 }),
@@ -515,7 +553,7 @@ describe('runDockerGc', () => {
 
     expect(report.lowDisk).toBe(true);
     expect(docker.removedImages).toEqual(['verity-devc-acme-web:b']);
-    expect(docker.removedVolumes).toEqual([anonName('a')]);
+    expect(docker.removedVolumes).toEqual([]);
   });
 
   it('skips a resource that fails and still sweeps the rest', async () => {

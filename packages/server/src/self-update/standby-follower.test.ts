@@ -142,7 +142,7 @@ describe('createStandbyFollower', () => {
    * about this process, so the cutover's bounded wait can fall back instead of
    * waiting out a standby that is not coming.
    */
-  it('reports the state it is actually in when a transition fails', async () => {
+  it('does not acknowledge an ambiguous state when a transition fails', async () => {
     const lifecycle = fakeLifecycle('quiesced', { resume: new Error('lock is held') });
     const client = fakeClient(directive('serving'));
     const onError = vi.fn();
@@ -150,7 +150,14 @@ describe('createStandbyFollower', () => {
     expect(await createStandbyFollower({ client, lifecycle, onError }).step()).toBe('failed');
 
     expect(onError).toHaveBeenCalledTimes(1);
-    expect(client.acknowledged).toEqual([{ operationId: 'generation-2', state: 'quiesced' }]);
+    expect(client.acknowledged).toEqual([]);
+  });
+
+  it('does not report serving after a failed quiesce', async () => {
+    const lifecycle = fakeLifecycle('serving', { quiesce: new Error('listener close failed') });
+    const client = fakeClient(directive('quiesced'));
+    expect(await createStandbyFollower({ client, lifecycle }).step()).toBe('failed');
+    expect(client.acknowledged).toEqual([]);
   });
 
   /** A stop lands between the read and the transition: nothing may be started or

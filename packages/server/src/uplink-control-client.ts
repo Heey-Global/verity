@@ -31,6 +31,7 @@ interface Pending {
   resolve(value: Record<string, unknown>): void;
   reject(error: Error): void;
   timer: NodeJS.Timeout;
+  inlineResponse: boolean;
 }
 
 export interface UplinkControlClientOptions {
@@ -48,7 +49,7 @@ export interface UplinkControlClientOptions {
  * is accepted by this class. */
 export class UplinkControlClient implements PreviewEdgeControl {
   private socket: WebSocket | undefined;
-  private stopped = false;
+  private stopped = true;
   private retryMs = 1_000;
   private retryTimer: NodeJS.Timeout | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
@@ -67,6 +68,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private messageTail: Promise<void> = Promise.resolve();
   private cleanupTail: Promise<void> = Promise.resolve();
   private cleanupRequired = false;
+  private processingMessage = false;
 
   constructor(private readonly options: UplinkControlClientOptions) {
     const url = new URL(options.url);
@@ -76,6 +78,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   start(): void {
+    if (!this.stopped) return;
     this.stopped = false;
     this.generation += 1;
     void this.connect();
@@ -134,10 +137,18 @@ export class UplinkControlClient implements PreviewEdgeControl {
     try {
       const expiresAt = new Date(stringField(response, 'expiresAt'));
       if (!Number.isFinite(expiresAt.getTime())) throw new Error('invalid Uplink expiresAt');
+      const publicOrigin = validatedBindingUrl(response, 'publicOrigin', 'https:');
+      const edgeUrl = validatedBindingUrl(response, 'edgeUrl', 'wss:');
+      if (
+        publicOrigin.hostname !== edgeUrl.hostname ||
+        edgeUrl.pathname !== '/__verity/connector'
+      ) {
+        throw new Error('invalid Uplink edge binding');
+      }
       return {
         shareId: rawShareId,
-        publicOrigin: stringField(response, 'publicOrigin'),
-        edgeUrl: stringField(response, 'edgeUrl'),
+        publicOrigin: publicOrigin.origin,
+        edgeUrl: edgeUrl.toString(),
         connectorToken: stringField(response, 'connectorToken'),
         sessionSecret: stringField(response, 'sessionSecret'),
         expiresAt,
@@ -216,7 +227,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
     });
     socket.on('message', (data) => {
       const raw = rawDataText(data);
-      if (this.hasPendingRequest(raw)) {
+      const requestId = (() => {
+        try {
+          const parsed = JSON.parse(raw) as { requestId?: unknown };
+          return typeof parsed.requestId === 'string' ? parsed.requestId : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+      if (requestId !== undefined && this.pending.get(requestId)?.inlineResponse === true) {
         void this.onMessage(raw, key).catch((error: unknown) => {
           this.options.log?.warn({ error }, 'invalid Uplink control response');
           this.clearAuthority('invalid Uplink control message', !this.stopped);
@@ -225,9 +244,14 @@ export class UplinkControlClient implements PreviewEdgeControl {
         return;
       }
       this.messageTail = this.messageTail
-        .then(() => {
+        .then(async () => {
           if (this.socket !== socket || generation !== this.generation) return;
-          return this.onMessage(raw, key);
+          this.processingMessage = true;
+          try {
+            await this.onMessage(raw, key);
+          } finally {
+            this.processingMessage = false;
+          }
         })
         .catch((error: unknown) => {
           this.options.log?.warn({ error }, 'invalid Uplink control message');
@@ -355,15 +379,6 @@ export class UplinkControlClient implements PreviewEdgeControl {
     throw new Error(`unknown Uplink control frame: ${frameType || 'missing type'}`);
   }
 
-  private hasPendingRequest(raw: string): boolean {
-    try {
-      const frame = JSON.parse(raw) as { requestId?: unknown };
-      return typeof frame.requestId === 'string' && this.pending.has(frame.requestId);
-    } catch {
-      return false;
-    }
-  }
-
   private applyLease(frame: Record<string, unknown>): void {
     const leaseUntil = this.validateLease(frame);
     this.features = new Set(
@@ -486,6 +501,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         resolve,
         reject,
         timer,
+        inlineResponse: this.processingMessage,
       });
       socket.send(JSON.stringify({ type, requestId, ...fields }), (error) => {
         if (!error) return;
@@ -547,6 +563,29 @@ function stringField(frame: Record<string, unknown>, key: string): string {
   const value = frame[key];
   if (typeof value !== 'string' || !value) throw new Error(`invalid Uplink ${key}`);
   return value;
+}
+
+function validatedBindingUrl(
+  frame: Record<string, unknown>,
+  key: string,
+  protocol: 'https:' | 'wss:',
+): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(stringField(frame, key));
+  } catch {
+    throw new Error(`invalid Uplink ${key}`);
+  }
+  if (
+    parsed.protocol !== protocol ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(`invalid Uplink ${key}`);
+  }
+  return parsed;
 }
 
 function optionalString(value: unknown, fallback: string): string {

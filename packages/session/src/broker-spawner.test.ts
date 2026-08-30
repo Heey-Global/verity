@@ -43,7 +43,10 @@ function privilegeDropLaunches(
   extra: { dockerGid?: string } = {},
 ): { path: string; args: string[]; executable: string }[] {
   const identity = { agentUid: 1000, agentGid: 1000, runnerUid: 1101, runnerGid: 1101, ...extra };
-  const agent = (command: 'claude-agent-acp' | 'codex-acp', executable: string) => ({
+  const agent = (
+    command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp',
+    executable: string,
+  ) => ({
     path: `agentLaunchSpec(${command})`,
     args: agentLaunchSpec({ command, args: [], cwd: '/work' }, identity).args,
     executable,
@@ -51,6 +54,7 @@ function privilegeDropLaunches(
   return [
     agent('claude-agent-acp', '/usr/local/bin/claude-agent-acp'),
     agent('codex-acp', '/usr/local/bin/codex-acp'),
+    agent('opencode-acp', '/usr/local/bin/opencode-acp'),
     {
       path: 'trustedCliLaunchSpec',
       args: trustedCliLaunchSpec(
@@ -1096,10 +1100,9 @@ describe('broker spawner protocol handling', () => {
     expect(handle.stderr()).toBe('spawn broker returned malformed JSON');
   });
 
-  // Every `ok:false` frame is a refusal reason the operator needs; a second one
-  // must not overwrite the first, and a refusal with no reason still has to say
-  // something rather than reading as an empty failure.
-  it('joins successive broker refusals and keeps the first exit code', async () => {
+  // The first refusal settles the request. Frames coalesced behind it must not
+  // mutate the settled handle or be interpreted as belonging to this spawn.
+  it('stops parsing a coalesced chunk after the first refusal', async () => {
     const broker = await startScriptedBroker();
     const handle = await connect(broker);
 
@@ -1110,7 +1113,7 @@ describe('broker spawner protocol handling', () => {
     );
 
     await expect(handle.exited).resolves.toBe(1);
-    expect(handle.stderr()).toBe('invalid agent spawn request\nspawn broker failed');
+    expect(handle.stderr()).toBe('invalid agent spawn request');
   });
 
   // POSIX 128+signum, so a killed agent is never reported as a clean 0. An
@@ -1157,6 +1160,23 @@ describe('broker spawner protocol handling', () => {
     await expect(handle.exited).resolves.toBe(1);
     // Empty: this is the close path, not the socket-error path.
     expect(handle.stderr()).toBe('');
+  });
+
+  it('reports an oversized unterminated final broker frame', async () => {
+    const broker = await startScriptedBroker();
+    const handle = await connect(broker);
+    broker.write('x'.repeat(8 * 1024 * 1024 + 1));
+    broker.end();
+    await expect(handle.exited).resolves.toBe(1);
+    expect(handle.stderr()).toBe('spawn broker frame exceeded the size limit');
+  });
+
+  it('rejects an oversized broker frame even when newline terminated', async () => {
+    const broker = await startScriptedBroker();
+    const handle = await connect(broker);
+    broker.write(`${'x'.repeat(8 * 1024 * 1024 + 1)}\n`);
+    await expect(handle.exited).resolves.toBe(1);
+    expect(handle.stderr()).toBe('spawn broker frame exceeded the size limit');
   });
 
   // A cancel that lands between `spawn-agent` and `spawned` has nothing to signal

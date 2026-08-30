@@ -91,15 +91,16 @@ export function resumeStep(status: OnboardingStatus): StepId {
 export function normalizeServerUrl(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === '') return null;
-  // A scheme is `word://` at the start (http, https, or anything the operator
-  // typed deliberately). Bare host/IP → default to http.
+  // Bare host/IP defaults to HTTP; control-plane endpoints support only HTTP(S).
   const withScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`;
   try {
-    return new URL(withScheme).origin;
+    const parsed = new URL(withScheme);
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.origin === 'null') {
+      return null;
+    }
+    return parsed.origin;
   } catch {
-    // Keep the historical behavior for unusual but operator-intended addresses
-    // the platform URL parser rejects; still avoid persisting a trailing slash.
-    return withScheme.replace(/\/+$/, '');
+    return null;
   }
 }
 

@@ -141,7 +141,7 @@ export class SessionWriter {
 
   /** Must be called once the stream ends. */
   async finish(): Promise<void> {
-    if (this.sessionId === undefined && this.pending.length > 0) {
+    if (this.sessionId === undefined) {
       const hasTerminalResult = this.pending.some((event) => event.t === 'result');
       if (this.storeSessionId !== undefined && hasTerminalResult) {
         const existing = await this.store.getSession(this.storeSessionId);

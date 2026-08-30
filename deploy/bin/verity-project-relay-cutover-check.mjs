@@ -178,14 +178,32 @@ export function analyzeProjectRelayCutover(
   };
 }
 
-function inspectContainers() {
-  const ids = execFileSync('docker', ['ps', '-aq'], { encoding: 'utf8' })
-    .split(/\s+/)
-    .filter(Boolean);
+export function inspectContainers(run = execFileSync) {
+  const ids = run('docker', ['ps', '-aq'], { encoding: 'utf8' }).split(/\s+/).filter(Boolean);
   if (ids.length === 0) return [];
-  return JSON.parse(execFileSync('docker', ['inspect', ...ids], { encoding: 'utf8' })).map(
-    normalizeDockerInspect,
-  );
+  const inspected = [];
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const batch = ids.slice(offset, offset + 100);
+    try {
+      inspected.push(...JSON.parse(run('docker', ['inspect', ...batch], { encoding: 'utf8' })));
+    } catch {
+      // A container may disappear between `ps` and `inspect`. Retry the failed
+      // batch individually so that one expected disappearance neither hides the
+      // remaining topology nor aborts the cutover check.
+      for (const id of batch) {
+        try {
+          inspected.push(...JSON.parse(run('docker', ['inspect', id], { encoding: 'utf8' })));
+        } catch (error) {
+          // It vanished; the topology below is evaluated from the surviving
+          // containers. Persistent inspect failures still make their required
+          // peer/control absent and therefore fail closed.
+          const detail = `${error?.message ?? ''}\n${error?.stderr ?? ''}`;
+          if (!/No such (?:object|container)/i.test(detail)) throw error;
+        }
+      }
+    }
+  }
+  return inspected.map(normalizeDockerInspect);
 }
 
 export function normalizeDockerInspect(inspect) {

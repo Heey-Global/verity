@@ -31,6 +31,17 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TZ=Europe/Berlin
 ENV TZ=${TZ}
 
+# Copying /usr/local from the official Python image does not copy the Debian
+# shared libraries its standard-library extension modules link against. Keep
+# the runtime set explicit so imports such as ssl, sqlite3, bz2, lzma, ctypes,
+# readline, tkinter and uuid cannot fail only after a Sandbox has started.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates libbluetooth3 libbz2-1.0 libdb5.3 libexpat1 libffi8 \
+      libgdbm6 liblzma5 libncursesw6 libreadline8 libsqlite3-0 libssl3 \
+      tk libuuid1 zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+
 # Python 3.14 — copied wholesale from python:3.14-bookworm. Placed under
 # /usr/local/ to match python:3.14-bookworm's own layout so sys.prefix and
 # shared-lib search paths resolve without env-var hacks. Symlink python3/pip3.
@@ -44,7 +55,8 @@ RUN ldconfig \
  && ln -sf /usr/local/bin/python3.14 /usr/local/bin/python \
  && ln -sf /usr/local/bin/pip3.14    /usr/local/bin/pip3 \
  && ln -sf /usr/local/bin/pip3.14    /usr/local/bin/pip \
- && python3 --version && pip3 --version
+ && python3 --version && pip3 --version \
+ && python3 -c 'import bz2, ctypes, lzma, readline, sqlite3, ssl, tkinter, uuid'
 
 # Unify the unprivileged user to 'dev' (uid 1000). The node base ships uid 1000
 # named 'node'; renaming preserves the uid so existing project volumes

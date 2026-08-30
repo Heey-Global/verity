@@ -6,6 +6,7 @@ LABEL org.opencontainers.image.description="Verity product website"
 
 COPY --chown=101:101 docs/website/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --chown=101:101 docs/website/site/index.html /usr/share/nginx/html/index.html
+COPY --chown=101:101 docs/website/site/install.sh /usr/share/nginx/html/install.sh
 COPY --chown=101:101 docs/website/site/assets/hero-product-verity-v5.png /usr/share/nginx/html/assets/hero-product-verity-v5.png
 COPY --chown=101:101 docs/website/site/assets/verity-mark.png /usr/share/nginx/html/assets/verity-mark.png
 COPY --chown=101:101 docs/website/site/assets/verity-favicon.png /usr/share/nginx/html/assets/verity-favicon.png

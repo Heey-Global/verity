@@ -12,10 +12,10 @@ git config --global core.hooksPath /opt/agent-seed/hooks
 Project containers mount `/opt/agent-seed` read-only and prepend
 `/opt/agent-seed/bin` to `PATH`.
 
-- `bin/gh` reads the mounted token file (`VERITY_GH_TOKEN_FILE`, default
-  `/run/verity/gh-token`) only for the child `gh`
-  process, so GitHub CLI auth works without exporting `GH_TOKEN` into the
-  ambient shell.
+- `bin/gh` redeems the opaque capability mounted at
+  `/run/verity/gh-token-capability` through `verity-gh-token`, then exposes the
+  fresh repository-scoped token only to its child `gh` process. No reusable
+  GitHub credential is mounted in the sandbox or exported to the ambient shell.
 - `bin/git` is a thin wrapper that refuses `git worktree remove` on a Verity
   session worktree (`.verity-sessions/agent-<id>`) — self-removal would delete
   the tree the session runs in and permanently break it ("workspace no longer

@@ -35,14 +35,15 @@ export default function GithubConnectScreen() {
   return <GithubConnectView client={client} />;
 }
 
-// `githubAppPrivateKeyConfigured` is the authoritative "connected" signal (the PEM is
-// what lets the server sign the App JWT); we also treat both identifiers being present
-// as connected so a summary still renders on older shapes.
+// A usable GitHub App connection requires all three credentials. A stored PEM by
+// itself can sign an App JWT but cannot address an App or installation, so showing
+// it as connected strands the user on a summary whose API calls cannot work.
 function isConnected(settings: VeritySettings | null): boolean {
   if (settings === null) return false;
   return (
-    settings.githubAppPrivateKeyConfigured ||
-    (settings.githubAppId !== null && settings.githubAppInstallationId !== null)
+    settings.githubAppPrivateKeyConfigured &&
+    settings.githubAppId !== null &&
+    settings.githubAppInstallationId !== null
   );
 }
 

@@ -3,10 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { AgentEvent } from '@verity/events';
+import { CompiledQuery } from 'kysely';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { migrateToLatest } from './db.js';
-import { createEmbeddedDb } from './pglite.js';
+import { createEmbeddedDb, PgliteDriver } from './pglite.js';
 import { EventStore } from './store.js';
 
 const session = { sessionId: 's1', worktree: '/wt/agent-s1', model: 'claude-opus-4-8' };
@@ -59,6 +60,91 @@ describe('createEmbeddedDb — in-memory', () => {
     } finally {
       await db.destroy();
     }
+  });
+
+  it('serializes a transaction against concurrent work on the shared PGlite session', async () => {
+    const db = createEmbeddedDb();
+    try {
+      await migrateToLatest(db);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const transaction = db.transaction().execute(async (trx) => {
+        await new EventStore(trx).createSession({ ...session, sessionId: 'serialized-a' });
+        await gate;
+      });
+      let concurrentSettled = false;
+      const concurrent = db
+        .transaction()
+        .execute(async (trx) => {
+          await new EventStore(trx).createSession({
+            ...session,
+            sessionId: 'serialized-b',
+            worktree: '/tmp/serialized-b',
+          });
+        })
+        .finally(() => {
+          concurrentSettled = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(concurrentSettled).toBe(false);
+      release();
+      await Promise.all([transaction, concurrent]);
+      expect(await new EventStore(db).getSession('serialized-b')).toBeDefined();
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  it("keeps ordinary queries outside another connection's open transaction", async () => {
+    const db = createEmbeddedDb();
+    try {
+      await migrateToLatest(db);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const transaction = db.transaction().execute(async (trx) => {
+        await new EventStore(trx).createSession({ ...session, sessionId: 'uncommitted' });
+        await gate;
+      });
+
+      let querySettled = false;
+      const query = new EventStore(db).getSession('uncommitted').finally(() => {
+        querySettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(querySettled).toBe(false);
+      release();
+      await transaction;
+      await expect(query).resolves.toBeDefined();
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  it('releases the coordinator when BEGIN fails', async () => {
+    let failBegin = true;
+    const client = {
+      query: (statement: string) => {
+        if (statement === 'begin' && failBegin) {
+          failBegin = false;
+          return Promise.reject(new Error('injected BEGIN failure'));
+        }
+        return Promise.resolve({ rows: [{ value: 1 }], affectedRows: 0 });
+      },
+      close: () => Promise.resolve(),
+    };
+    const driver = new PgliteDriver(client as never);
+    const first = await driver.acquireConnection();
+    await expect(driver.beginTransaction(first)).rejects.toThrow('injected BEGIN failure');
+    // If the failed BEGIN retained the coordinator lock, the next connection's
+    // ordinary query would wait forever.
+    const second = await driver.acquireConnection();
+    await expect(second.executeQuery(CompiledQuery.raw('select 1'))).resolves.toMatchObject({
+      rows: [{ value: 1 }],
+    });
   });
 
   it('rejects an empty dataDir (would silently degrade to in-memory + lose data)', () => {

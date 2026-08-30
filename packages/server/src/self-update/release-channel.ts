@@ -25,6 +25,13 @@ export interface ReleaseChannelMetadata {
   readonly generation: string;
 }
 
+export function isRfc3339Timestamp(value: string): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
 /**
  * The published channel document.
  *
@@ -198,7 +205,7 @@ export function parseReleaseChannelMetadata(metadata: unknown): ReleaseChannelMe
     (metadata.agentSeedImage !== null &&
       !digestRef(metadata.agentSeedImage, OFFICIAL_AGENT_SEED_IMAGE)) ||
     typeof metadata.publishedAt !== 'string' ||
-    !Number.isFinite(Date.parse(metadata.publishedAt)) ||
+    !isRfc3339Timestamp(metadata.publishedAt) ||
     typeof metadata.generation !== 'string' ||
     !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(metadata.generation)
   )
@@ -257,8 +264,21 @@ export function createReleaseChannelResolver(
           if (controller.signal.aborted) {
             throw new Error(`release channel lookup timed out after ${timeoutMs}ms`);
           }
-          lastGood = channel.metadata;
+          if (lastGood !== null) {
+            const monotonic = compareVersions(channel.metadata.version, lastGood.version);
+            if (monotonic === null || monotonic < 0)
+              throw new Error(
+                'release channel metadata rolled back below the last verified release',
+              );
+            if (
+              monotonic === 0 &&
+              (channel.metadata.serverImage !== lastGood.serverImage ||
+                channel.metadata.revision !== lastGood.revision)
+            )
+              throw new Error('release channel metadata equivocated at an existing version');
+          }
           if (channel.metadata.architecture !== options.architecture) {
+            lastGood = channel.metadata;
             return {
               state: 'incompatible',
               release: channel.metadata,
@@ -275,17 +295,21 @@ export function createReleaseChannelResolver(
           if (comparison === null)
             throw new Error('running Server version is not a stable release');
           if (comparison <= 0) {
+            lastGood = channel.metadata;
             return { state: 'current', release: channel.metadata, operation: null };
           }
           const compatibility = isCompatible(options.current, channel.metadata.compatibility);
-          return compatibility.compatible
-            ? { state: 'available', release: channel.metadata, operation: null }
-            : {
-                state: 'incompatible',
-                release: channel.metadata,
-                reasons: compatibility.reasons,
-                operation: null,
-              };
+          if (!compatibility.compatible) {
+            lastGood = channel.metadata;
+            return {
+              state: 'incompatible',
+              release: channel.metadata,
+              reasons: compatibility.reasons,
+              operation: null,
+            };
+          }
+          lastGood = channel.metadata;
+          return { state: 'available', release: channel.metadata, operation: null };
         })(),
         timedOut,
       ]);

@@ -170,23 +170,53 @@ export interface AcpBackendProfile {
 function processStream(process: SpawnedProcess): acp.Stream {
   if (process.writeStdin === undefined) throw new Error('ACP agent requires writable stdin');
   const encoder = new TextEncoder();
+  const stdinDecoder = new TextDecoder();
   const iterator = process.stdout[Symbol.asyncIterator]();
+  const maxFrameBytes = 8 * 1024 * 1024;
+  let buffered = '';
   return acp.ndJsonStream(
     new WritableStream<Uint8Array>({
       write(chunk) {
-        if (!process.writeStdin?.(new TextDecoder().decode(chunk))) {
+        if (!process.writeStdin?.(stdinDecoder.decode(chunk, { stream: true }))) {
           throw new Error('ACP agent stdin closed');
         }
       },
       close() {
+        const tail = stdinDecoder.decode();
+        if (tail !== '' && !process.writeStdin?.(tail)) {
+          throw new Error('ACP agent stdin closed');
+        }
         process.closeStdin?.();
       },
     }),
     new ReadableStream<Uint8Array>({
       async pull(controller) {
-        const next = await iterator.next();
-        if (next.done) controller.close();
-        else controller.enqueue(encoder.encode(next.value));
+        while (true) {
+          const newline = buffered.indexOf('\n');
+          if (newline >= 0) {
+            const line = buffered.slice(0, newline).replace(/\r$/u, '');
+            buffered = buffered.slice(newline + 1);
+            if (Buffer.byteLength(line) > maxFrameBytes) throw new Error('ACP frame is too large');
+            try {
+              JSON.parse(line);
+            } catch {
+              // Never include the agent-controlled frame in the error: malformed
+              // output may contain credentials or prompt data.
+              throw new Error('ACP agent returned malformed JSON');
+            }
+            controller.enqueue(encoder.encode(`${line}\n`));
+            return;
+          }
+          if (Buffer.byteLength(buffered) > maxFrameBytes)
+            throw new Error('ACP frame is too large');
+          const next = await iterator.next();
+          if (next.done) {
+            if (buffered.length === 0) controller.close();
+            else throw new Error('ACP agent returned an incomplete JSON frame');
+            return;
+          }
+          buffered += next.value;
+        }
       },
       async cancel() {
         await iterator.return?.();
@@ -616,7 +646,12 @@ export async function runAcpTurn(
     }
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
       if (parentToolId(update._meta, metaNamespace) === undefined) {
-        await writeAll(writer, topLevelText.push(update.content.text));
+        // Keep lifecycle signals carried in `_meta`; bypassing the adapter to
+        // coalesce prose used to discard task/compaction boundaries attached to
+        // the same message chunk.
+        for (const event of adapter.consume(update)) {
+          await writeAll(writer, event.t === 'text' ? topLevelText.push(event.delta) : [event]);
+        }
         return;
       }
     }

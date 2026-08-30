@@ -110,12 +110,13 @@ export async function startAgentGatewayRuntime(options: {
         const recovered = await codexSpill.read(nextCodexCredential.unsealKey);
         const sameSource = nextCodexCredential.sourceRevision === codexSourceRevision;
         const recoverable = recovered?.sourceRevision === nextCodexCredential.sourceRevision;
+        const explicitAuth = nextCodexCredential.authJson !== undefined;
         const authJson =
+          nextCodexCredential.authJson ??
           (sameSource ? codexAuthority?.snapshot() : undefined) ??
-          (recoverable ? recovered.authJson : undefined) ??
-          nextCodexCredential.authJson;
+          (recoverable ? recovered.authJson : undefined);
         if (authJson !== undefined) {
-          if (!sameSource && !recoverable) {
+          if (explicitAuth || (!sameSource && !recoverable)) {
             await codexSpill.write(
               nextCodexCredential.unsealKey,
               nextCodexCredential.sourceRevision,
@@ -136,7 +137,7 @@ export async function startAgentGatewayRuntime(options: {
               };
             },
           });
-          if (recoverable && recovered.authJson !== nextCodexCredential.authJson) {
+          if (!explicitAuth && recoverable && recovered.authJson !== nextCodexCredential.authJson) {
             pendingCodexUpdate = {
               sourceRevision: recovered.sourceRevision,
               updatedRevision: createHash('sha256').update(recovered.authJson).digest('hex'),

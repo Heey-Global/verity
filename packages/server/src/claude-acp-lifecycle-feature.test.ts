@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,5 +87,19 @@ describe('Claude ACP structured lifecycle feature patch', () => {
         env: { ...process.env, VERITY_PATCH_FIXTURE: '1' },
       }),
     ).rejects.toMatchObject({ code: 1 });
+  });
+
+  it('refuses to patch through a symlinked adapter file', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-link-'));
+    const outside = path.join(root, 'outside.js');
+    await mkdir(path.join(root, 'dist'));
+    await writeFile(outside, PINNED_ADAPTER);
+    await symlink(outside, path.join(root, 'dist', 'acp-agent.js'));
+    await expect(
+      execFileAsync(process.execPath, [SCRIPT, root], {
+        env: { ...process.env, VERITY_PATCH_FIXTURE: '1' },
+      }),
+    ).rejects.toMatchObject({ code: 1 });
+    expect(await readFile(outside, 'utf8')).toBe(PINNED_ADAPTER);
   });
 });

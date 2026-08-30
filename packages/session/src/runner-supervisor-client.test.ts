@@ -1268,6 +1268,7 @@ describe('SupervisorRunnerRecovery', () => {
         sessionId: 'session-1',
         turnId: 'turn-1',
         protocolVersion: 1,
+        controlCapability: 'start-1',
         eventFilePath: join(dir, 'runners/project-1/turns/turn-1/events.jsonl'),
         controlSocketPath: join(dir, 'runners/project-1/turns/turn-1/control.sock'),
       },
@@ -1814,9 +1815,9 @@ describe('SupervisorRunnerClient.forceCancel', () => {
     });
     const turn = reattach(runtime, '../escape');
 
-    await expect(turn.forceCancel?.()).resolves.toBe(true);
+    await expect(turn.forceCancel?.()).resolves.toBe(false);
     expect(requests).toEqual([]);
-    // The `true` above is the transport's real abort, not a fabricated verdict.
+    // An unsafe id cannot be sent or certified as cancelled by the supervisor.
     await expect(turn.result).resolves.toEqual({
       sessionId: 'session-1',
       exitCode: 143,
@@ -2622,7 +2623,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
   // ever re-sending. One that names a different turn must not buy either.
   it('refuses an acknowledgement that names a different turn', async () => {
     const runtime = join(dir, 'mismatched-ack-runtime');
-    await serveSupervisor(runtime, (request, peer) => {
+    const received = await serveSupervisor(runtime, (request, peer) => {
       if (request.kind === 'start-turn') {
         peer.write(
           `${JSON.stringify({ ok: true, kind: 'start-accepted', turnId: 'turn-other' })}\n`,
@@ -2644,6 +2645,7 @@ describe('SupervisorRunnerClient start-turn resilience', () => {
     const issuedAt = Date.now();
     await expect(startTurn(client).result).rejects.toThrow(/./u);
     expect(Date.now() - issuedAt).toBeLessThan(1_500);
+    expect(received.filter((request) => request.kind === 'start-turn')).toHaveLength(1);
   });
 
   // A response too large to read is an answer this side FAILED to read, not a decision

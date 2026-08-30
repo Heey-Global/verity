@@ -3,8 +3,25 @@ import { test } from 'node:test';
 
 import {
   analyzeProjectRelayCutover,
+  inspectContainers,
   normalizeDockerInspect,
 } from './verity-project-relay-cutover-check.mjs';
+
+test('re-inspects a failed batch and tolerates only containers that disappeared', () => {
+  const run = (_command, args) => {
+    if (args[0] === 'ps') return 'gone\nkept\n';
+    if (args.length > 2) throw new Error('batch raced');
+    if (args[1] === 'gone') {
+      throw Object.assign(new Error('No such container: gone'), {
+        stderr: 'Error: No such container: gone',
+      });
+    }
+    return JSON.stringify([{ Id: 'kept', Name: '/kept', State: { Running: true } }]);
+  };
+  assert.deepEqual(inspectContainers(run), [
+    { name: 'kept', running: true, labels: {}, networks: [] },
+  ]);
+});
 
 const control = {
   name: 'deploy-verity-1',

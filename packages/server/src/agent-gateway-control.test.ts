@@ -31,6 +31,12 @@ afterEach(async () => {
 });
 
 describe('agent gateway Unix control channel', () => {
+  it('publishes control sockets with mode 0600', async () => {
+    const socketPath = await temporarySocket();
+    servers.push(await startRawControlServer(socketPath, { ok: true }));
+    expect((await stat(socketPath)).mode & 0o777).toBe(0o600);
+  });
+
   it('reads and acknowledges a Codex rotation only through the explicit control requests', async () => {
     const socketPath = await temporarySocket();
     const update = {

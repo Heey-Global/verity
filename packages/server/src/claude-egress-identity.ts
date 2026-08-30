@@ -169,13 +169,29 @@ export function createClaudeEgressIdentityService(
       // listener reconciled. A crash after activation is safe: the old persisted
       // leaf remains valid and is restored on restart.
       await emitGatewayLeaf(ca, gateway);
-      await store.upsertClaudeEgressCa({
-        ...existing,
-        gatewayServerName: persistedServerNames,
-        gatewayCertPem: gateway.certPem,
-        gatewayKeyPem: gateway.keyPem,
-        gatewayExpiresAt: notAfterOf(gateway.certPem),
-      });
+      try {
+        await store.upsertClaudeEgressCa({
+          ...existing,
+          gatewayServerName: persistedServerNames,
+          gatewayCertPem: gateway.certPem,
+          gatewayKeyPem: gateway.keyPem,
+          gatewayExpiresAt: notAfterOf(gateway.certPem),
+        });
+      } catch (persistError) {
+        try {
+          await emitGatewayLeaf(ca, {
+            certPem: existing.gatewayCertPem,
+            keyPem: existing.gatewayKeyPem,
+          });
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [persistError, rollbackError],
+            'gateway leaf persistence and activation rollback failed',
+            { cause: rollbackError },
+          );
+        }
+        throw persistError;
+      }
       return { ca, gateway };
     }
 
@@ -193,15 +209,38 @@ export function createClaudeEgressIdentityService(
     // silently break the affected projects' mTLS. A crash mid-rotation leaves
     // either the old world or the new one, never a fresh CA with orphaned certs.
     // Each project then re-issues lazily against the new CA on its next request.
-    await store.replaceClaudeEgressCa({
-      caCertPem: minted.caCertPem,
-      caKeyPem: minted.caKeyPem,
-      gatewayServerName: persistedServerNames,
-      gatewayCertPem: gateway.certPem,
-      gatewayKeyPem: gateway.keyPem,
-      caExpiresAt: notAfterOf(minted.caCertPem),
-      gatewayExpiresAt: notAfterOf(gateway.certPem),
-    });
+    // Activate the new trust root and leaf before making them durable, matching
+    // same-CA leaf rotation above. If activation fails, the old durable world is
+    // retained and the next resolution retries instead of stranding the live
+    // gateway on certificates its store no longer knows.
+    await emitGatewayLeaf(minted, gateway);
+    try {
+      await store.replaceClaudeEgressCa({
+        caCertPem: minted.caCertPem,
+        caKeyPem: minted.caKeyPem,
+        gatewayServerName: persistedServerNames,
+        gatewayCertPem: gateway.certPem,
+        gatewayKeyPem: gateway.keyPem,
+        caExpiresAt: notAfterOf(minted.caCertPem),
+        gatewayExpiresAt: notAfterOf(gateway.certPem),
+      });
+    } catch (persistError) {
+      if (existing !== undefined) {
+        try {
+          await emitGatewayLeaf(
+            { caCertPem: existing.caCertPem, caKeyPem: existing.caKeyPem },
+            { certPem: existing.gatewayCertPem, keyPem: existing.gatewayKeyPem },
+          );
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [persistError, rollbackError],
+            'CA persistence and activation rollback failed',
+            { cause: rollbackError },
+          );
+        }
+      }
+      throw persistError;
+    }
     return { ca: minted, gateway };
   }
 
@@ -215,6 +254,25 @@ export function createClaudeEgressIdentityService(
     return run;
   }
 
+  // Certificate lookup + issuance and revocation must be one operation per
+  // project. Without this queue, two concurrent provisions can both observe a
+  // missing row and mint different leaves, or a revoke can delete a row just
+  // before an in-flight provision writes it back and silently resurrects access.
+  const projectTails = new Map<string, Promise<void>>();
+  function withProjectLock<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = projectTails.get(projectId) ?? Promise.resolve();
+    const run = previous.then(operation, operation);
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    projectTails.set(projectId, settled);
+    void settled.finally(() => {
+      if (projectTails.get(projectId) === settled) projectTails.delete(projectId);
+    });
+    return run;
+  }
+
   return {
     async gatewayMaterial(): Promise<GatewayMtlsMaterial> {
       const { ca, gateway } = await loadOrIssueCa();
@@ -223,42 +281,46 @@ export function createClaudeEgressIdentityService(
     },
 
     async sandboxMaterial(projectId): Promise<SandboxEgressMaterial> {
-      // Resolve the CA first: a CA rotation here clears stale client rows, so the
-      // lookup below then re-issues against the fresh CA.
-      const { ca } = await loadOrIssueCa();
-      const existing = await store.getClaudeEgressClientCert(projectId);
-      let client: ProjectClientCertificate;
-      if (existing !== undefined && isFresh(existing.expiresAt)) {
-        client = {
-          projectId,
-          certPem: existing.certPem,
-          keyPem: existing.keyPem,
-          fingerprint256: existing.fingerprint256,
-        };
-      } else {
-        const issued = await issueProjectClientCertificate(ca, {
-          projectId,
-          ...(options.leafValidityDays !== undefined
-            ? { validityDays: options.leafValidityDays }
-            : {}),
-        });
-        await store.upsertClaudeEgressClientCert({
-          projectId,
-          certPem: issued.certPem,
-          keyPem: issued.keyPem,
-          fingerprint256: issued.fingerprint256,
-          expiresAt: notAfterOf(issued.certPem),
-        });
-        client = issued;
-        // A new (or rotated) fingerprint was persisted — refresh the live registry.
-        await emitBindings();
-      }
-      return sandboxEgressMaterial(ca, client);
+      return withProjectLock(projectId, async () => {
+        // Resolve the CA first: a CA rotation here clears stale client rows, so the
+        // lookup below then re-issues against the fresh CA.
+        const { ca } = await loadOrIssueCa();
+        const existing = await store.getClaudeEgressClientCert(projectId);
+        let client: ProjectClientCertificate;
+        if (existing !== undefined && isFresh(existing.expiresAt)) {
+          client = {
+            projectId,
+            certPem: existing.certPem,
+            keyPem: existing.keyPem,
+            fingerprint256: existing.fingerprint256,
+          };
+        } else {
+          const issued = await issueProjectClientCertificate(ca, {
+            projectId,
+            ...(options.leafValidityDays !== undefined
+              ? { validityDays: options.leafValidityDays }
+              : {}),
+          });
+          await store.upsertClaudeEgressClientCert({
+            projectId,
+            certPem: issued.certPem,
+            keyPem: issued.keyPem,
+            fingerprint256: issued.fingerprint256,
+            expiresAt: notAfterOf(issued.certPem),
+          });
+          client = issued;
+          // A new (or rotated) fingerprint was persisted — refresh the live registry.
+          await emitBindings();
+        }
+        return sandboxEgressMaterial(ca, client);
+      });
     },
 
     async revokeProject(projectId): Promise<void> {
-      await store.deleteClaudeEgressClientCert(projectId);
-      await emitBindings();
+      await withProjectLock(projectId, async () => {
+        await store.deleteClaudeEgressClientCert(projectId);
+        await emitBindings();
+      });
     },
   };
 }

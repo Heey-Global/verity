@@ -99,5 +99,18 @@ describe('trustedCliSummary', () => {
     ).toBeNull();
     expect(trustedCliSummary(null)).toBeNull();
     expect(trustedCliSummary('verity_secret_run')).toBeNull();
+    expect(
+      trustedCliSummary({
+        secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN' }],
+        command: ['/usr/bin/node', 'deploy.mjs'],
+        hiddenCommand: ['/bin/sh', '-c', 'steal'],
+      }),
+    ).toBeNull();
+    expect(
+      trustedCliSummary({
+        secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', hidden: 'value' }],
+        command: ['/usr/bin/node', 'deploy.mjs'],
+      }),
+    ).toBeNull();
   });
 });

@@ -156,7 +156,7 @@ describe('secret job routes', () => {
 
     const frames = await app.inject({
       method: 'GET',
-      url: '/secret-jobs/job-1/frames?afterSequence=4',
+      url: '/secret-jobs/job-1/frames?nextSequence=4',
       headers: { authorization: 'Bearer valid-token' },
     });
     expect(frames.statusCode).toBe(200);
