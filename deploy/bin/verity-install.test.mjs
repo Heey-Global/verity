@@ -78,11 +78,28 @@ function makeHost({ docker = [], state = {} } = {}) {
 
   writeFileSync(join(binDir, 'verity-install'), readFileSync(join(here, 'verity-install')));
   chmodSync(join(binDir, 'verity-install'), 0o755);
+  const pairingHandoff = join(root, 'pairing.env');
+  // Pairing material has its own tests against the real OpenSSL implementation.
+  // This installer suite runs in a deliberately minimal, network-isolated Node
+  // image, so keep its fixture focused on the installer's handoff contract rather
+  // than making every host-state scenario depend on OpenSSL being in that image.
   writeFileSync(
     join(binDir, 'verity-pairing-material'),
-    readFileSync(join(here, 'verity-pairing-material')),
+    `#!/usr/bin/env bash\nset -euo pipefail\n` +
+      `state_dir="\${VERITY_STATE_DIR:?}"\n` +
+      `printf 'VERITY_STATE_DIR=%s\\nVERITY_API_HOST_PORT=%s\\nVERITY_SERVER_UID=%s\\nVERITY_SERVER_GID=%s\\n' "$state_dir" "\${VERITY_API_HOST_PORT:?}" "\${VERITY_SERVER_UID:?}" "\${VERITY_SERVER_GID:?}" >${JSON.stringify(pairingHandoff)}\n` +
+      `chmod 0711 "$state_dir"\n` +
+      `printf '%s' 'test-identity' >"$state_dir/pairing-identity.pem"\n` +
+      `printf '%s' 'test-key' >"$state_dir/tls-key.pem"\n` +
+      `printf '%s' 'test-cert' >"$state_dir/tls-cert.pem"\n` +
+      `printf '%s' 'test-code' >"$state_dir/pairing-code"\n` +
+      `printf '%s' '2099-01-01T00:00:00.000Z' >"$state_dir/pairing-expires-at"\n` +
+      `printf '%s' 'verity://pair?payload=test' >"$state_dir/pairing-uri"\n` +
+      `chmod 0600 "$state_dir"/pairing-identity.pem "$state_dir"/tls-key.pem "$state_dir"/pairing-code "$state_dir"/pairing-expires-at "$state_dir"/pairing-uri\n` +
+      `chmod 0644 "$state_dir/tls-cert.pem"\n` +
+      `printf '%s\\n' 'verity://pair?payload=test'\n`,
+    { mode: 0o755 },
   );
-  chmodSync(join(binDir, 'verity-pairing-material'), 0o755);
   writeFileSync(join(checkout, 'deploy', 'docker-compose.yml'), 'services: {}\n');
 
   // Records the handover instead of performing it, so a test can assert on exactly
@@ -123,7 +140,7 @@ function makeHost({ docker = [], state = {} } = {}) {
     writeFileSync(join(stateDir, name), contents);
   }
 
-  return { root, checkout, stateDir, stubDir, handover, binDir };
+  return { root, checkout, stateDir, stubDir, handover, pairingHandoff, binDir };
 }
 
 function run(host, args = [], env = {}) {
@@ -258,6 +275,18 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
     assert.equal(env.VERITY_POSTGRES_PASSWORD, stateFile(host, 'postgres-password'));
     assert.equal(env.COMPOSE_PROJECT_NAME, 'verity');
+    const pairingEnv = Object.fromEntries(
+      readFileSync(host.pairingHandoff, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => line.split('=', 2)),
+    );
+    assert.deepEqual(pairingEnv, {
+      VERITY_STATE_DIR: host.stateDir,
+      VERITY_API_HOST_PORT: '8082',
+      VERITY_SERVER_UID: '0',
+      VERITY_SERVER_GID: '0',
+    });
     assert.equal(env.VERITY_MANAGED_DEPLOYMENT_ID, stateFile(host, 'deployment-id'));
     assert.match(env.VERITY_MANAGED_DEPLOYMENT_ID, /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
   });
