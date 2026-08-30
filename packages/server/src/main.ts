@@ -990,8 +990,14 @@ async function main(): Promise<void> {
   // In managed mode the public Gateway terminates TLS; its backend remains on
   // the private Compose network over HTTP. Direct deployments terminate here.
   const managedDeployment = Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim());
-  const https = managedDeployment ? undefined : await tlsFromEnvironment();
-  const managedTls = managedDeployment ? await tlsFromEnvironment() : undefined;
+  const configuredTlsMode = process.env.VERITY_TLS_MODE?.trim();
+  const tlsMode = configuredTlsMode === '' ? undefined : configuredTlsMode;
+  if (tlsMode !== undefined && tlsMode !== 'direct' && tlsMode !== 'backend') {
+    throw new Error('VERITY_TLS_MODE must be direct or backend');
+  }
+  const backendTls = tlsMode === 'backend' || (tlsMode === undefined && managedDeployment);
+  const https = backendTls ? undefined : await tlsFromEnvironment();
+  const managedTls = backendTls ? await tlsFromEnvironment() : undefined;
 
   /** The build itself, split out only so the failure unwind above can wrap it. */
   const buildAndListen = async (context: {

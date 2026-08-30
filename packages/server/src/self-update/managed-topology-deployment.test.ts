@@ -100,8 +100,13 @@ describe('managed Compose ownership topology', () => {
     ];
 
     const anchor = envKeys(slice('    environment: &verity-server-environment', '\n  verity-'));
-    const bootstrap = envKeys(slice('\n  managed-bootstrap:', '\n  verity-managed-gateway:'));
-    const updater = envKeys(slice('\n  verity-updater:', '\n  # OPT-IN HARDENING:'));
+    const bootstrapBlock = slice('\n  managed-bootstrap:', '\n  verity-managed-gateway:');
+    const updaterBlock = slice('\n  verity-updater:', '\n  # OPT-IN HARDENING:');
+    const bootstrap = envKeys(bootstrapBlock);
+    const updater = envKeys(updaterBlock);
+
+    expect(bootstrapBlock).toMatch(/^ {6}VERITY_TLS_MODE: backend$/m);
+    expect(updaterBlock).toMatch(/^ {6}VERITY_TLS_MODE: backend$/m);
 
     // Read out of the source, not restated here. A hand-kept copy would leave this
     // guard blind in one direction — drop a name from the list in

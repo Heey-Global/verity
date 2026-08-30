@@ -74,6 +74,7 @@ services:
       # from managed-up. Never inherit the host's managed identity into it: that
       # would turn this public TLS endpoint into the private HTTP backend.
       VERITY_MANAGED_DEPLOYMENT_ID: ''
+      VERITY_TLS_MODE: direct
       VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
       VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
       VERITY_PAIRING_IDENTITY_KEY_PATH: /run/verity-pairing/pairing-identity.pem
@@ -559,6 +560,7 @@ services:
       VERITY_SERVER_IMAGE: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
       VERITY_MANAGED_ROOT: /var/lib/verity/updater/managed-deployment
       VERITY_MANAGED_DEPLOYMENT_ID: ${VERITY_MANAGED_DEPLOYMENT_ID:-}
+      VERITY_TLS_MODE: backend
       VERITY_HOST_ARCHITECTURE: ${VERITY_HOST_ARCHITECTURE:-}
       VERITY_SERVER_UID: ${VERITY_SERVER_UID:-1000}
       VERITY_SERVER_GID: ${VERITY_SERVER_GID:-1000}
@@ -612,6 +614,7 @@ services:
       <<: *verity-server-environment
       VERITY_UPDATER_TOKEN_FILE: /run/secrets/updater-token
       VERITY_MANAGED_DEPLOYMENT_ID: ${VERITY_MANAGED_DEPLOYMENT_ID:-}
+      VERITY_TLS_MODE: backend
       VERITY_DOCKER_SOCKET_PATH: ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
       # COMPATIBILITY, not configuration. Nothing in the Updater or the Server reads
       # this — the provisioner uses the RUNNER_RUNTIME_GID constant. It is here so a
