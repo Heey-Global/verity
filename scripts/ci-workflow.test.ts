@@ -1994,6 +1994,7 @@ describe('server image CI smoke', () => {
     expect(harness).toContain('VERITY_HOST_CLONE_ROOT="$host_state_root/workspaces"');
     expect(harness).toContain('VERITY_SECRET_MATERIALIZATION_ROOT="$host_state_root/secrets"');
     expect(harness).toContain('VERITY_PAIRING_STATE_HOST_PATH="$pairing_state"');
+    expect(harness).toContain('export VERITY_MANAGED_DEPLOYMENT_ID=');
     expect(harness).toContain('/opt/verity-install/deploy/bin/verity-pairing-material');
     expect(harness).toContain('--env VERITY_SERVER_UID=1000');
     expect(harness).not.toContain('VERITY_PROJECT_RELAY_IMAGE');
@@ -2020,6 +2021,7 @@ describe('server image CI smoke', () => {
     expect(harness).toContain("'{{.State.Status}}:{{.State.ExitCode}}'");
     expect(harness).toContain('[[ "$seed_status" = exited:0 ]]');
     expect(harness).toContain('/onboarding/status');
+    expect(harness).toContain('rejectUnauthorized: false');
     expect(harness).toContain('nextStep: "master-password"');
     expect(harness).toContain('unexpected first-run onboarding state');
     expect(harness).toContain(

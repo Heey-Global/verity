@@ -54,6 +54,11 @@ pairing_state="$host_state_root/pairing"
 mkdir -m 0700 "$pairing_state"
 
 export VERITY_SERVER_IMAGE="$image"
+# A self-hosted runner may itself belong to a managed Verity installation.
+# That host-local identity must never leak into this deliberately fresh legacy
+# Compose topology, where it would switch the Server backend to plain HTTP. An
+# explicit empty export also overrides any implicit Compose `.env` source.
+export VERITY_MANAGED_DEPLOYMENT_ID=
 export VERITY_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
 export VERITY_RUNNER_SUPERVISOR=1
 export VERITY_GVISOR_REQUIRED=0
@@ -153,14 +158,26 @@ runner_state="$(docker --host "$DOCKER_HOST" inspect --format '{{.State.Status}}
 
 echo '--- clean install: verify first-run state'
 "$compose" exec -T verity node --input-type=module -e '
-  const health = await fetch("http://127.0.0.1:8082/healthz");
+  import https from "node:https";
+  const request = (path) => new Promise((resolve, reject) => {
+    https.get({ hostname: "127.0.0.1", port: 8082, path, rejectUnauthorized: false }, resolve)
+      .on("error", reject);
+  });
+  const readJson = async (path) => {
+    const response = await request(path);
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    return { ok: response.statusCode >= 200 && response.statusCode < 300,
+      status: response.statusCode, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
+  };
+  const health = await readJson("/healthz");
   if (!health.ok) throw new Error("healthz returned " + health.status);
-  const body = await health.json();
+  const body = health.json;
   if (body.status !== "ok") throw new Error("unexpected health: " + JSON.stringify(body));
 
-  const onboarding = await fetch("http://127.0.0.1:8082/onboarding/status");
+  const onboarding = await readJson("/onboarding/status");
   if (!onboarding.ok) throw new Error("onboarding status returned " + onboarding.status);
-  const state = await onboarding.json();
+  const state = onboarding.json;
   const expected = {
     sealed: true,
     masterPasswordSet: false,
