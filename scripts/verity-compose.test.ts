@@ -99,6 +99,28 @@ afterEach(() => {
 });
 
 describe('deploy/bin/verity-compose', () => {
+  it('keeps direct Server TLS and pairing identity in the runner overlay', () => {
+    const base = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
+      services: Record<string, { environment?: Record<string, string> }>;
+    };
+    const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
+      services: Record<string, { environment?: Record<string, string> }>;
+    };
+    const names = [
+      'VERITY_TLS_KEY_PATH',
+      'VERITY_TLS_CERT_PATH',
+      'VERITY_PAIRING_IDENTITY_KEY_PATH',
+      'VERITY_PAIRING_CODE_PATH',
+      'VERITY_PAIRING_EXPIRES_AT_PATH',
+    ];
+    const baseEnvironment = base.services['verity']?.environment ?? {};
+    const overlayEnvironment = overlay.services['verity']?.environment ?? {};
+    expect(Object.fromEntries(names.map((name) => [name, overlayEnvironment[name]]))).toEqual(
+      Object.fromEntries(names.map((name) => [name, baseEnvironment[name]])),
+    );
+    for (const name of names) expect(overlayEnvironment[name]).toBeTruthy();
+  });
+
   it('keeps PostgreSQL reachable from managed Server generations on verity-net', () => {
     const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
       services: Record<string, { networks?: unknown; environment?: Record<string, string> }>;

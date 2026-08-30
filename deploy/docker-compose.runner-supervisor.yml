@@ -23,6 +23,15 @@ services:
     cap_add:
       - CHOWN
     environment:
+      # Repeat the direct Server's transport identity in this overlay. Compose
+      # implementations merge environment mappings, but keeping these security-
+      # critical paths explicit prevents an overlay-only environment block from
+      # silently replacing TLS and pairing configuration on older engines.
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
+      VERITY_PAIRING_IDENTITY_KEY_PATH: /run/verity-pairing/pairing-identity.pem
+      VERITY_PAIRING_CODE_PATH: /run/verity-pairing/pairing-code
+      VERITY_PAIRING_EXPIRES_AT_PATH: /run/verity-pairing/pairing-expires-at
       VERITY_RUNNER_SUPERVISOR: '1'
       VERITY_CONTROL_PLANE_RUNNER: '1'
       VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR: /run/verity-control-identity
