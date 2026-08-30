@@ -1,6 +1,7 @@
 import {
   access,
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -284,6 +285,19 @@ describe('syncTranscript (polling loop)', () => {
 });
 
 describe('materializeToDisk / restoreIfMissing', () => {
+  it('restores beneath an execute-only runtime root without requiring list access', async () => {
+    await transcript.appendLines('s1', ['{"db":1}']);
+    const file = join(dir, 'projects', '-work', 's1.jsonl');
+    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o100);
+    try {
+      await expect(restoreIfMissing(transcript, 's1', file, { rootDir: dir })).resolves.toBe(true);
+    } finally {
+      await chmod(dir, 0o700);
+    }
+    expect(await readFile(file, 'utf8')).toBe('{"db":1}\n');
+  });
+
   it('refuses an ancestor symlink that escapes the declared runtime root', async () => {
     await transcript.appendLines('s1', ['{"db":1}']);
     const outside = await mkdtemp(join(tmpdir(), 'verity-transcript-outside-'));

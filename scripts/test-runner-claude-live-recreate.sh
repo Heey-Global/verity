@@ -42,7 +42,7 @@ start_sandbox() {
   docker volume create "$runtime_volume" >/dev/null
   docker run --rm --user 0:0 -v "$runtime_volume:/runtime" -v "$work_volume:/work" \
     --entrypoint=sh "$image" \
-    -c 'chown 1000:1101 /runtime /work && chmod 0170 /runtime && chmod 0750 /work'
+    -c 'mkdir -p /runtime/claude/projects/-work && chown -R 1000:1101 /runtime && chown 1000:1101 /work && chmod 0700 /runtime/claude /runtime/claude/projects /runtime/claude/projects/-work && chmod 0170 /runtime && chmod 0750 /work'
   docker run -d --name "$sandbox" --network "$network" \
     -e WORKSPACE=/work -e VERITY_LIVE_SMOKE_WORKTREE=/work \
     -e CLAUDE_CONFIG_DIR=/run/verity-runner/claude \

@@ -25,6 +25,12 @@ import type { TranscriptStore } from '@verity/store';
 const LF = 0x0a;
 const MAX_READ_BYTES = 1024 * 1024;
 const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+// Node does not expose Linux O_PATH, but this module already relies on Linux
+// `/proc/self/fd`. O_PATH obtains a race-stable directory reference using only
+// traverse permission; O_RDONLY incorrectly requires read/list permission on
+// the deliberately execute-only Runner runtime root.
+const O_PATH = 0x20_0000;
+const PATH_DIRECTORY_FLAGS = O_PATH | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
 
 /**
  * Encode an absolute cwd into its `~/.claude/projects` folder name: every
@@ -91,7 +97,7 @@ async function ensureTranscriptParent(
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw Object.assign(new Error('transcript path escapes its runtime root'), { code: 'EXDEV' });
   }
-  let parent = await open(root, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+  let parent = await open(root, PATH_DIRECTORY_FLAGS);
   try {
     for (const component of rel.split('/').filter(Boolean)) {
       const parentFd = `/proc/self/fd/${parent.fd}`;
@@ -100,10 +106,7 @@ async function ensureTranscriptParent(
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
-      const child = await open(
-        join(parentFd, component),
-        fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
-      );
+      const child = await open(join(parentFd, component), PATH_DIRECTORY_FLAGS);
       await parent.close();
       parent = child;
     }
@@ -133,10 +136,7 @@ async function openTranscriptFile(
 ): Promise<FileHandle> {
   if (rootDir === undefined) return open(filePath, flags, mode);
   const root = await realpath(rootDir);
-  const parent = await open(
-    dirname(filePath),
-    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
-  );
+  const parent = await open(dirname(filePath), PATH_DIRECTORY_FLAGS);
   const parentFd = `/proc/self/fd/${parent.fd}`;
   try {
     const actualParent = await realpath(parentFd);
@@ -322,10 +322,7 @@ export async function materializeToDisk(
   await ensureTranscriptParent(filePath, opts.rootDir);
   // Publish a complete file in one rename. Truncating the live path exposed a
   // zero/partial transcript to a concurrently starting resume.
-  const parent = await open(
-    dirname(filePath),
-    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
-  );
+  const parent = await open(dirname(filePath), PATH_DIRECTORY_FLAGS);
   const parentFd = `/proc/self/fd/${parent.fd}`;
   if (opts.rootDir !== undefined) {
     const [root, actualParent] = await Promise.all([realpath(opts.rootDir), realpath(parentFd)]);

@@ -52,6 +52,7 @@ compose="$repo_root/deploy/bin/verity-compose"
 host_state_root="$(mktemp -d "$socket_dir/state.XXXXXX")"
 
 export VERITY_SERVER_IMAGE="$image"
+export VERITY_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
 export VERITY_RUNNER_SUPERVISOR=1
 export VERITY_GVISOR_REQUIRED=0
 export VERITY_API_HOST_PORT=0
