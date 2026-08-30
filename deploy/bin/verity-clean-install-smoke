@@ -50,6 +50,8 @@ docker --host "$DOCKER_HOST" image inspect "$image" >/dev/null 2>&1 ||
 repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 compose="$repo_root/deploy/bin/verity-compose"
 host_state_root="$(mktemp -d "$socket_dir/state.XXXXXX")"
+pairing_state="$host_state_root/pairing"
+mkdir -m 0700 "$pairing_state"
 
 export VERITY_SERVER_IMAGE="$image"
 export VERITY_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
@@ -60,6 +62,7 @@ export VERITY_DOCKER_SOCKET_PATH="$socket"
 export VERITY_AGENT_SEED_HOST_PATH="$host_state_root/agent-seed"
 export VERITY_HOST_CLONE_ROOT="$host_state_root/workspaces"
 export VERITY_SECRET_MATERIALIZATION_ROOT="$host_state_root/secrets"
+export VERITY_PAIRING_STATE_HOST_PATH="$pairing_state"
 export VERITY_SERVER_MEMORY=1g
 export VERITY_SERVER_MEMORY_SWAP=1g
 export VERITY_SERVER_CPUS=1
@@ -86,6 +89,16 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
+
+# The public Compose surface consumes the TLS identity that verity-install creates
+# before its first `up`. Generate it with the exact candidate image/helper so this
+# smoke covers that release contract while keeping the one-time URI out of CI logs.
+docker --host "$DOCKER_HOST" run --rm --user 0:0 --entrypoint /bin/sh \
+  --mount "type=bind,src=$pairing_state,dst=/state" \
+  --env VERITY_STATE_DIR=/state --env VERITY_SERVER_UID=1000 --env VERITY_SERVER_GID=1000 \
+  --env VERITY_PAIRING_IPS=127.0.0.1 "$image" \
+  -c 'chown root:root /state && exec /opt/verity-install/deploy/bin/verity-pairing-material' \
+  >/dev/null
 
 echo '--- clean install: render the public Compose surface'
 "$compose" config --quiet

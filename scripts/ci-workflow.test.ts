@@ -1993,6 +1993,9 @@ describe('server image CI smoke', () => {
     expect(harness).toContain('VERITY_AGENT_SEED_HOST_PATH="$host_state_root/agent-seed"');
     expect(harness).toContain('VERITY_HOST_CLONE_ROOT="$host_state_root/workspaces"');
     expect(harness).toContain('VERITY_SECRET_MATERIALIZATION_ROOT="$host_state_root/secrets"');
+    expect(harness).toContain('VERITY_PAIRING_STATE_HOST_PATH="$pairing_state"');
+    expect(harness).toContain('/opt/verity-install/deploy/bin/verity-pairing-material');
+    expect(harness).toContain('--env VERITY_SERVER_UID=1000');
     expect(harness).not.toContain('VERITY_PROJECT_RELAY_IMAGE');
     expect(harness).toContain('failure diagnostics');
     expect(harness).toContain('"$compose" logs --no-color --tail 200');
