@@ -561,6 +561,8 @@ services:
       VERITY_MANAGED_ROOT: /var/lib/verity/updater/managed-deployment
       VERITY_MANAGED_DEPLOYMENT_ID: ${VERITY_MANAGED_DEPLOYMENT_ID:-}
       VERITY_TLS_MODE: backend
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
       VERITY_HOST_ARCHITECTURE: ${VERITY_HOST_ARCHITECTURE:-}
       VERITY_SERVER_UID: ${VERITY_SERVER_UID:-1000}
       VERITY_SERVER_GID: ${VERITY_SERVER_GID:-1000}
@@ -584,6 +586,9 @@ services:
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    environment:
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
     ports:
       - '${VERITY_API_HOST_PORT:-8082}:8082'
     expose: ['8083']
@@ -615,6 +620,8 @@ services:
       VERITY_UPDATER_TOKEN_FILE: /run/secrets/updater-token
       VERITY_MANAGED_DEPLOYMENT_ID: ${VERITY_MANAGED_DEPLOYMENT_ID:-}
       VERITY_TLS_MODE: backend
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
       VERITY_DOCKER_SOCKET_PATH: ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
       # COMPATIBILITY, not configuration. Nothing in the Updater or the Server reads
       # this — the provisioner uses the RUNNER_RUNTIME_GID constant. It is here so a

@@ -63,7 +63,9 @@ COPY packages/preview-tunnel packages/preview-tunnel
 # with TS2307 (module not found) even though the image never runs the toolkit.
 COPY features features
 
-RUN npm run build
+# Force project-reference emission even if a persistent BuildKit cache restores
+# stale incremental metadata from an older source layer.
+RUN npm run build -- --force
 
 # ---------------------------------------------------------------------------
 # Stage 2: deps — production-only node_modules, scoped to the server workspace.

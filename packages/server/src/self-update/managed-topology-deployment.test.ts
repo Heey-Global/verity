@@ -105,8 +105,16 @@ describe('managed Compose ownership topology', () => {
     const bootstrap = envKeys(bootstrapBlock);
     const updater = envKeys(updaterBlock);
 
-    expect(bootstrapBlock).toMatch(/^ {6}VERITY_TLS_MODE: backend$/m);
-    expect(updaterBlock).toMatch(/^ {6}VERITY_TLS_MODE: backend$/m);
+    for (const block of [bootstrapBlock, updaterBlock]) {
+      expect(block).toMatch(/^ {6}VERITY_TLS_MODE: backend$/m);
+      expect(block).toMatch(/^ {6}VERITY_TLS_KEY_PATH: \/run\/verity-pairing\/tls-key\.pem$/m);
+      expect(block).toMatch(/^ {6}VERITY_TLS_CERT_PATH: \/run\/verity-pairing\/tls-cert\.pem$/m);
+    }
+    const gatewayBlock = slice('\n  verity-managed-gateway:', '\n  verity-updater:');
+    expect(gatewayBlock).toMatch(/^ {6}VERITY_TLS_KEY_PATH: \/run\/verity-pairing\/tls-key\.pem$/m);
+    expect(gatewayBlock).toMatch(
+      /^ {6}VERITY_TLS_CERT_PATH: \/run\/verity-pairing\/tls-cert\.pem$/m,
+    );
 
     // Read out of the source, not restated here. A hand-kept copy would leave this
     // guard blind in one direction — drop a name from the list in
