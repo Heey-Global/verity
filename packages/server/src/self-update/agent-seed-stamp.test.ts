@@ -97,6 +97,12 @@ describe('agent seed stamp', () => {
     expect(sandboxAgentSeedHostPath({ VERITY_AGENT_SEED_HOST_PATH: '/custom/seed' })).toBe(
       '/custom/seed',
     );
+    expect(
+      sandboxAgentSeedHostPath({
+        VERITY_MANAGED_DEPLOYMENT_ID: '  ',
+        VERITY_AGENT_SEED_HOST_PATH: '/custom/seed',
+      }),
+    ).toBe('/custom/seed');
   });
 
   it('reads back the four fields the one-shot writes', () => {

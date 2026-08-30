@@ -214,7 +214,7 @@ function buildReleaseChannelResolver(
     return { resolve: () => Promise.resolve({ state: 'unsupported', reason, operation: null }) };
   }
   return createReleaseChannelResolver({
-    managed: process.env.VERITY_MANAGED_DEPLOYMENT_ID !== undefined,
+    managed: Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim()),
     current: SERVER_COMPAT,
     architecture,
     load: createReleaseChannelArtifactLoader({ architecture }),
@@ -527,7 +527,7 @@ async function main(): Promise<void> {
     // publication belongs exclusively to the Updater's target-image helper;
     // an old compose pin must never race it or move the pointer backwards.
     const selectedDigest = await readPublishedAgentSeedDigest('/opt/agent-seed-host');
-    if (selectedDigest !== null && (process.env.VERITY_MANAGED_DEPLOYMENT_ID ?? '') !== '') {
+    if (selectedDigest !== null && (process.env.VERITY_MANAGED_DEPLOYMENT_ID ?? '').trim() !== '') {
       const selected = '/opt/agent-seed-host/.current';
       const stamp = await readAgentSeedStamp(selected);
       if (stamp === null || agentSeedPublicationKey(stamp.image, stamp.version) !== selectedDigest)
@@ -989,10 +989,9 @@ async function main(): Promise<void> {
       : undefined;
   // In managed mode the public Gateway terminates TLS; its backend remains on
   // the private Compose network over HTTP. Direct deployments terminate here.
-  const https = process.env.VERITY_MANAGED_DEPLOYMENT_ID ? undefined : await tlsFromEnvironment();
-  const managedTls = process.env.VERITY_MANAGED_DEPLOYMENT_ID
-    ? await tlsFromEnvironment()
-    : undefined;
+  const managedDeployment = Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim());
+  const https = managedDeployment ? undefined : await tlsFromEnvironment();
+  const managedTls = managedDeployment ? await tlsFromEnvironment() : undefined;
 
   /** The build itself, split out only so the failure unwind above can wrap it. */
   const buildAndListen = async (context: {

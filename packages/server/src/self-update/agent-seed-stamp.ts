@@ -39,7 +39,7 @@ export function sandboxAgentSeedHostPath(environment: NodeJS.ProcessEnv): string
   if (managedRoot !== undefined)
     return managedRoot.endsWith('/.current') ? managedRoot : join(managedRoot, '.current');
   const configured = environment.VERITY_AGENT_SEED_HOST_PATH;
-  if ((environment.VERITY_MANAGED_DEPLOYMENT_ID ?? '') === '') return configured;
+  if ((environment.VERITY_MANAGED_DEPLOYMENT_ID ?? '').trim() === '') return configured;
   const root = configured ?? AGENT_SEED_MOUNT_PATH;
   return root.endsWith('/.current') ? root : join(root, '.current');
 }

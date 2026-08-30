@@ -70,6 +70,10 @@ services:
       # is expected in a container, so the server's startup "open bind" warning is
       # normal here.) Restrict exposure via the `ports:` host bind above or a proxy.
       HOST: 0.0.0.0
+      # The base service is always the legacy/direct Server, including rollback
+      # from managed-up. Never inherit the host's managed identity into it: that
+      # would turn this public TLS endpoint into the private HTTP backend.
+      VERITY_MANAGED_DEPLOYMENT_ID: ''
       VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
       VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
       VERITY_PAIRING_IDENTITY_KEY_PATH: /run/verity-pairing/pairing-identity.pem

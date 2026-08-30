@@ -119,6 +119,7 @@ describe('deploy/bin/verity-compose', () => {
       Object.fromEntries(names.map((name) => [name, baseEnvironment[name]])),
     );
     for (const name of names) expect(overlayEnvironment[name]).toBeTruthy();
+    expect(baseEnvironment['VERITY_MANAGED_DEPLOYMENT_ID']).toBe('');
   });
 
   it('keeps PostgreSQL reachable from managed Server generations on verity-net', () => {
