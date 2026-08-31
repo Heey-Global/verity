@@ -185,6 +185,8 @@ jobs:
           ' | while IFS= read -r branch; do
             echo "Dispatching CI for $branch"
             gh workflow run ci.yml --ref "$branch"
+            echo "Dispatching Gitleaks for $branch"
+            gh workflow run gitleaks-dispatch.yml --ref "$branch"
             pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
             if [[ -z "$pr_number" ]]; then
               echo "::error::Could not resolve the release PR for $branch." >&2

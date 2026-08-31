@@ -1,0 +1,17 @@
+name: Gitleaks release PR dispatch
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Release Please uses GITHUB_TOKEN, so its PR updates do not emit a
+# pull_request event. Call the same organization-wide workflow explicitly so
+# generated release PRs receive the required Gitleaks verdict as well.
+jobs:
+  gitleaks:
+    # Keep the organization policy reviewable at the exact revision this
+    # repository approved. Renovate can propose deliberate pin updates.
+    # renovate: datasource=github-tags depName=Heey-Global/.github
+    uses: Heey-Global/.github/.github/workflows/gitleaks.yml@a4cad96874a0fc3290e42ac0119367ba1af7207e
