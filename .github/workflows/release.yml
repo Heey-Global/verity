@@ -107,6 +107,9 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs['backend-version'] != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job deliberately has no checkout. Tell gh which repository to
+          # query instead of making it discover one from a nonexistent .git.
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ inputs.backend-version }}
           SOURCE_REF: ${{ inputs.backend-ref }}
           REPUBLISH: ${{ inputs.backend-republish }}
