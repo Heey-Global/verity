@@ -1,0 +1,26 @@
+{
+  "name": "@verity/session",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Live session pipeline — stream-json lines -> canonical events -> durable store (concept §5a)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.3.0",
+    "@verity/adapter-claude": "*",
+    "@verity/events": "*",
+    "@verity/secret-contracts": "*",
+    "@verity/store": "*",
+    "zod": "4.4.3"
+  }
+}

@@ -1,0 +1,22 @@
+name: Recover TestFlight distribution
+
+# Manual recovery for the rare case where EAS Build succeeds but the downstream
+# TestFlight upload fails. Run this workflow from EAS to retry distribution of
+# the latest store build without paying for another native build.
+jobs:
+  get_latest_testflight_build:
+    name: Find latest TestFlight build
+    type: get-build
+    params:
+      platform: ios
+      profile: testflight
+      distribution: store
+
+  distribute_testflight:
+    name: Retry TestFlight upload
+    needs: [get_latest_testflight_build]
+    type: testflight
+    params:
+      build_id: ${{ needs.get_latest_testflight_build.outputs.build_id }}
+      profile: testflight
+      changelog: TestFlight distribution retry

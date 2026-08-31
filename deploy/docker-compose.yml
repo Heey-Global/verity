@@ -1,0 +1,809 @@
+# Verity runner — reference install (ADR 0003 Phase A).
+#
+# One command brings the control-plane API up:
+#
+#     docker compose -f deploy/docker-compose.yml up -d
+#
+# The guarded installer provisions the local TLS identity and prints a one-time QR
+# code. Scan it in the app before setting the master password.
+services:
+  verity:
+    # The product runs a PREBUILT image — it never builds from source here, so the
+    # deployed product carries no dev tooling. A normal operator uses the published
+    # image (the default below; pin to a `:vX.Y.Z@sha256:…` tag for reproducibility).
+    # A dev harness that iterates on the server builds the image locally and sets
+    # VERITY_SERVER_IMAGE to that tag — the product compose is byte-identical either
+    # way, the only difference is which image it runs.
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
+    command: [direct-server]
+    restart: unless-stopped
+    # Host resource guardrails. Compose enforces these on the control-plane
+    # container itself; sandbox limits below only apply to spawned project
+    # containers. Keep defaults conservative for a 16 GiB single-host install and
+    # override in .env on larger machines.
+    mem_limit: ${VERITY_SERVER_MEMORY:-4g}
+    memswap_limit: ${VERITY_SERVER_MEMORY_SWAP:-4g}
+    cpus: ${VERITY_SERVER_CPUS:-4}
+    pids_limit: ${VERITY_SERVER_PIDS_LIMIT:-512}
+    ports:
+      # Published on all host interfaces so the mobile app can connect. The API
+      # must stay on a trusted LAN or sit behind TLS/VPN because its application
+      # credentials otherwise cross that network in cleartext.
+      - '${VERITY_API_HOST_PORT:-8082}:8082'
+    # REMOVING A NAME FROM THIS BLOCK IS A COMPATIBILITY CHANGE, not a cleanup.
+    # `managed-bootstrap` seals these names into the deployment spec as env SOURCES,
+    # every managed generation copies that list forward verbatim, and the Updater
+    # resolves every source on every reconcile — so a name deleted here stays sealed
+    # on every host bootstrapped before the deletion. Record it in
+    # RETIRED_MANAGED_SERVER_ENVIRONMENT (`self-update/managed-server-owner.ts`) in
+    # the same commit, or those hosts' Updaters crash-loop on
+    # `managed Server environment source is missing`.
+    #
+    # CHANGING A VALUE HERE IS THE SAME KIND OF CHANGE, and it has no repair at all.
+    # Reconciliation compares the running Server against what it would build and
+    # refuses on any difference — it never recreates — so a host whose container was
+    # created with the old value fails on `managed Server container conflicts with
+    # the sealed deployment spec` instead, until some later update rebuilds the
+    # Server. Keep every value interpolable (`${NAME:-default}`) so such a host can
+    # pin what it was created with in its own .env while the default moves on.
+    #
+    # Both are gates now rather than conventions: the live self-update smoke seals a
+    # deployment from the PREVIOUS release's copy of this file and starts the
+    # candidate Updater on the current one, so a removal without a retirement, or a
+    # changed default, fails the release instead of every installed host
+    # (`deploy/bin/verity-self-update-live-smoke`).
+    environment: &verity-server-environment
+      VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
+      # Which Server is THE control plane (ADR 0008 D7). The value names a
+      # control-plane SLOT, not a container instance: it stays identical across
+      # ordinary recreation, but it must differ from any other Server that could
+      # run at the same time. PostgreSQL's session-level advisory lock supplies
+      # process exclusivity and is released automatically after a hard kill. The
+      # managed Server inherits this value because it replaces the same slot.
+      # Unset ⇒ no fence, behaviour unchanged.
+      # The other services inheriting this anchor never claim a generation.
+      VERITY_CONTROL_PLANE_HOLDER_ID: verity
+      # Bind the API on all interfaces INSIDE this container so the published port
+      # above — and the internal compose network below — can reach it. The server
+      # defaults to loopback (audit C1), which only guards a NON-containerized
+      # direct run; here the container plus the auth gate (master password /
+      # per-device bearer token) is the security boundary. (This non-loopback bind
+      # is expected in a container, so the server's startup "open bind" warning is
+      # normal here.) Restrict exposure via the `ports:` host bind above or a proxy.
+      HOST: 0.0.0.0
+      # The base service is always the legacy/direct Server, including rollback
+      # from managed-up. Never inherit the host's managed identity into it: that
+      # would turn this public TLS endpoint into the private HTTP backend.
+      VERITY_MANAGED_DEPLOYMENT_ID: ''
+      VERITY_TLS_MODE: direct
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
+      VERITY_PAIRING_IDENTITY_KEY_PATH: /run/verity-pairing/pairing-identity.pem
+      VERITY_PAIRING_CODE_PATH: /run/verity-pairing/pairing-code
+      VERITY_PAIRING_EXPIRES_AT_PATH: /run/verity-pairing/pairing-expires-at
+
+      # Remote push works through Expo without a server credential by default.
+      # Set this to 0 to disable device registration and notification delivery.
+      VERITY_PUSH_ENABLED: ${VERITY_PUSH_ENABLED:-1}
+      # Optional: required only when Enhanced Push Security is enabled for the
+      # EAS project. Do not pass the broader EAS build credential (EXPO_TOKEN).
+      EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN:-}
+
+      # Google Drive OAuth iOS client id (ADR 0009). Published release images bake
+      # this in from the GitHub Actions build arg, but local/dev deployments often
+      # run a self-built image where that build arg is blank. Passing it at runtime
+      # keeps both paths equivalent; runtime env overrides any image default.
+      GOOGLE_AUTH_ID: ${GOOGLE_AUTH_ID:-}
+
+      # Sandbox runtime hardening (audit C1). Spawned project containers are ALWAYS
+      # launched with all Linux capabilities dropped, privilege escalation blocked
+      # (no-new-privileges), and a PID cap (default 512) — so a malicious dependency
+      # cannot fork-bomb the host or escalate to container-root. Defaults keep each
+      # project sandbox bounded; override in .env only for repos that genuinely need
+      # more headroom.
+      #
+      # Sessions are told about these limits at runtime by
+      # SANDBOX_RESOURCES_SYSTEM_PROMPT (packages/events/src/sandbox-resources.ts),
+      # whose text is deployment-independent — it points sessions at the cgroup
+      # files rather than at the numbers below, so changing these needs no edit
+      # there. It prefers cgroup v2 with the sandbox's own cgroup visible and
+      # falls back to asking Node what libuv found, which is expected to cover a
+      # v1 host as well — untested, and the prompt is written not to depend on it.
+      VERITY_SANDBOX_MEMORY: ${VERITY_SANDBOX_MEMORY:-4g}
+      VERITY_SANDBOX_CPUS: ${VERITY_SANDBOX_CPUS:-2}
+      VERITY_SANDBOX_PIDS_LIMIT: ${VERITY_SANDBOX_PIDS_LIMIT:-512}
+      # Escape hatch for a project whose devcontainer needs sudo or a capability:
+      # VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION: '1'   # keep sudo working
+      # VERITY_SANDBOX_CAP_ADD: NET_BIND_SERVICE          # add back specific caps
+
+      # Every project sandbox is single-homed on its own network with one
+      # generation-matched relay. The digest pin is mandatory: Verity has no
+      # shared-network or direct-control-plane fallback.
+      # Supplementary group shared only with the relay-owned Unix sockets. Keep
+      # this aligned with a custom relay image's runtime GID.
+      VERITY_PROJECT_RELAY_GID: ${VERITY_PROJECT_RELAY_GID:-65532}
+
+      # Temporary public previews are a paid feature granted and operated by the
+      # Uplink (ADR 0012), so there is nothing to configure here: no cluster
+      # credentials reach an installation, and the subscription key is entered in
+      # the app and kept in the encrypted secret store rather than in a variable
+      # or a mounted file.
+
+      # Docker access via the mounted host socket (ADR 0003 R2 default). Verity
+      # spawns project containers as siblings on the host daemon through this.
+      VERITY_DOCKER_BASE_URL: unix:///var/run/docker.sock
+      # The host preflight and in-server readiness use the same opt-in. Runtime drift after startup
+      # changes /healthz to 503 degraded; readiness never treats another runtime as equivalent.
+      VERITY_SECRET_JOB_RUNTIME_REQUIRED: ${VERITY_GVISOR_REQUIRED:-0}
+
+      # Single data root, backed by the named `verity-data` volume mounted below.
+      # Verity derives its on-disk subdirs from this:
+      #   <root>/workspaces  project clones
+      #   <root>/secrets     short-lived materialized files (gh-token-broker
+      #                      capability, signing token, non-secret git material)
+      #   <root>/sessions    the server's own session worktrees
+      # The DB is no longer on disk (Postgres), so this is the only path to set.
+      VERITY_ROOT: /srv/verity
+
+      # Named data volume (M16). Verity mounts each project's <root>/workspaces/<repo>
+      # and <root>/secrets/… into sibling sandboxes as VOLUME subpaths of this volume
+      # (Docker 25+ volume-subpath) — the source resolves by volume NAME on the host
+      # daemon, so there is no host directory to create or `chown 1000:1000`, and no
+      # host-path knowledge to keep consistent. MUST match the volume name below.
+      VERITY_DATA_VOLUME: verity-data
+
+      # Startup sweep of backend transcripts under <root>/runners whose session the
+      # database no longer knows (see deploy/README.md). Forwarded rather than left to
+      # the code default because it is the operator's only way to stop a delete they
+      # suspect is wrong — `dry` reports and touches nothing, `off` skips it — and an
+      # escape hatch the reference deployment does not pass through is not one.
+      VERITY_TRANSCRIPT_SWEEP: ${VERITY_TRANSCRIPT_SWEEP:-on}
+
+      # Host-disk garbage collection. Verity keeps several append-only Docker
+      # caches, and without a collector a long-lived runner fills its disk:
+      #   * devcontainer images — the provisioner tags each build
+      #     `verity-devc-<owner>-<repo>:<content-hash>` and reuses it on a hit, so
+      #     every sandbox base-image release (routinely daily) re-hashes every
+      #     project and leaves the previous 5-7 GB image behind, forever;
+      #   * anonymous volumes — the daemon mints one per container for each VOLUME
+      #     in the image, and they outlive the container unless removed with it;
+      #   * build cache — accumulates unbounded on a busy build host;
+      #   * orphaned buildx builder state volumes — a `docker-container` driver
+      #     builder keeps multi-GB BuildKit cache in a
+      #     `buildx_buildkit_builder-*_state` volume that `buildx rm` / a daemon
+      #     restart leaves behind, invisible to the build-cache prune (it is a
+      #     separate BuildKit instance).
+      # `docker system prune` reaches NONE of the first two (those image tags are
+      # tagged, not dangling, and prune skips volumes altogether), which is why a
+      # host can be full despite regular prunes. The GC runs daily at 04:00 (just
+      # after the 03:00 sandbox auto-update, so it retires the tag that update
+      # superseded) plus once shortly after boot, and it only ever deletes images
+      # carrying a `verity-devc-` tag, volumes that are dangling AND carry the
+      # daemon's anonymous label AND have a daemon-generated 64-hex name, and
+      # dangling `buildx_buildkit_builder-*_state` volumes. Named volumes —
+      # `verity-data`, `verity-db` — can never match.
+      #
+      # Set to 0 only if an external janitor owns this host's Docker disk.
+      VERITY_DOCKER_GC: ${VERITY_DOCKER_GC:-1}
+      # Devcontainer image generations kept per repo (default 2 — above 1 so an
+      # in-flight provision that resolved the previous hash still hits a warm
+      # cache). Under disk pressure this drops to 1 automatically.
+      # VERITY_DOCKER_GC_KEEP_IMAGES: '2'
+      # Grace period before a dangling anonymous volume is swept (default 1h),
+      # covering the window between container create and start.
+      # VERITY_DOCKER_GC_VOLUME_MIN_AGE_HOURS: '1'
+      # Build-cache entries older than this are pruned (default 72h = 3 days).
+      # VERITY_DOCKER_GC_BUILD_CACHE_MAX_AGE_HOURS: '72'
+      # Free space on VERITY_ROOT below which the pass escalates: keep 1 image
+      # generation per repo and drop the volume grace period (default 40 GB).
+      # VERITY_DOCKER_GC_LOW_DISK_GB: '40'
+
+      # Claude is ACP-only. The guarded installer and verity-compose include the
+      # supervisor overlay by default; setting this to 0 intentionally disables
+      # Claude rather than selecting the retired native transport.
+      # Raw use of this base file stays fail-closed at 0 because it lacks the
+      # required overlay privileges and volumes. The guarded wrapper supplies the
+      # overlay, whose service override sets this to 1.
+      VERITY_RUNNER_SUPERVISOR: ${VERITY_RUNNER_SUPERVISOR:-0}
+      VERITY_OPENCODE_ENABLED: ${VERITY_OPENCODE_ENABLED:-}
+      VERITY_EXTRA_MODELS: ${VERITY_EXTRA_MODELS:-}
+      # Forwarded only so upgraded deployments receive the migration refusal in
+      # main.ts instead of silently ignoring the retired setting.
+      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-}
+      # Control-plane database — a real PostgreSQL running as the `postgres`
+      # service below. Postgres is now the ONLY runtime database (pglite has been
+      # removed from the runtime); the server fails fast without this. The
+      # migrations run on every startup, so no manual DB steps are needed. The
+      # password is a fixed internal value on an unpublished network (postgres is
+      # not exposed to the host), so it is deliberately NOT configurable. Reaches
+      # postgres by service DNS on the compose network below.
+      DATABASE_URL: postgres://verity:${VERITY_POSTGRES_PASSWORD:?set by verity-install}@postgres:5432/verity
+
+      # Disable the repo-root "human session" mode. That mode is a dev-container
+      # artifact (a checkout the server never provisions); in the runner it has no
+      # meaning. Unset, repoDir would fall back to process.cwd() (=/app, not a git
+      # repo) and the worktree/branch services would error for non-project
+      # sessions. main.ts documents VERITY_REPO_DIR='' as the disable value.
+      VERITY_REPO_DIR: ''
+
+      # At-rest secret encryption (ADR 0002 D3) is unlocked ONLY by a master
+      # password set in the app on first run (POST /secret/init) — there is no
+      # env-key/headless auto-unlock. Run the first-time onboarding on a trusted
+      # network/behind the firewall until that password is set.
+
+      # Default image spawned for a project when the repo has no devcontainer
+      # (ADR 0003 R3). Empty means: resolve ghcr.io/heey-global/verity/verity-sandbox
+      # at THIS server's own release version to a digest lazily during
+      # provisioning/recreate/update checks, then use that pinned digest
+      # internally. The version comes from VERITY_SERVER_VERSION, baked in at
+      # build time — server, sandbox image and toolkit Feature are published from
+      # one release version, so a server hands out the image it can attest rather
+      # than whatever `:latest` has moved to since. Builds without a release
+      # version (dev/PR) keep resolving the `:latest` channel.
+      # Set from .env only for a local/private override.
+      VERITY_DEFAULT_PROJECT_IMAGE: ${VERITY_DEFAULT_PROJECT_IMAGE:-}
+      # Managed publication keeps complete release trees below the configured
+      # host root and switches only this pointer. Docker resolves the symlink at
+      # sandbox creation, so an existing sandbox retains its immutable old
+      # mount while a new sandbox receives one complete selected release.
+      VERITY_AGENT_SEED_ROOT_HOST_PATH: ${VERITY_AGENT_SEED_HOST_PATH:-/opt/agent-seed}
+      # Enable the Docker-backed Dev Server start/stop/status API used by the
+      # project Dev Servers tab. Set to 0 only when this deployment intentionally
+      # disables process control inside project containers.
+      VERITY_ENABLE_PROJECT_RUNTIME: ${VERITY_ENABLE_PROJECT_RUNTIME:-1}
+      # Same model for the injected devcontainer Feature: empty means resolve
+      # ghcr.io/heey-global/verity/verity-sandbox-toolkit at this server's release
+      # version to a digest at provisioning/recreate/update time (`:latest` on
+      # builds with no release version). Note that the Feature BAKED into the
+      # server image still outranks a resolved ref — it is the trust root the
+      # runner-boundary attestation compares each sandbox against, so injecting
+      # anything else would guarantee that check fails. Only a value set HERE
+      # outranks the bundle, and then only as an explicit digest.
+      VERITY_SANDBOX_TOOLKIT_FEATURE_REF: ${VERITY_SANDBOX_TOOLKIT_FEATURE_REF:-}
+
+      # `/internal/*` remains on a non-published listener for trusted
+      # control-plane services. Project sandboxes never reach it over this network:
+      # their generation-bound relay talks to project UDS listeners instead.
+      VERITY_INTERNAL_PORT: ${VERITY_INTERNAL_PORT:-8083}
+
+      # Claude credential boundary. The gateway listens ONLY inside `verity-net`
+      # (there is deliberately no host `ports:` entry for 9443), while each project
+      # sandbox gets a loopback connector and its own mTLS client identity. Every
+      # Claude project turn is routed through it, so the real OAuth token is never
+      # injected into a sandbox — there is no un-routed fallback and no per-project
+      # opt-in. A sandbox provisioned before the gateway fails its next Claude turn
+      # closed until the reconciler recreates it.
+      VERITY_CLAUDE_EGRESS_GATEWAY_URL: ${VERITY_CLAUDE_EGRESS_GATEWAY_URL:-https://verity:9443}
+      VERITY_CLAUDE_CONNECTOR_PORT: ${VERITY_CLAUDE_CONNECTOR_PORT:-47821}
+      # Control plane for the gateway. This Unix socket is on a dedicated volume
+      # that no Sandbox mounts.
+      # One correct value, which the gateway process itself already defaults to. The
+      # gateway service below pins the same literal, so overriding this alone would move
+      # the Server only; a non-standard topology has to change both sides.
+      VERITY_AGENT_GATEWAY_CONTROL_SOCKET: ${VERITY_AGENT_GATEWAY_CONTROL_SOCKET:-/run/verity-agent-gateway/control.sock}
+      # Unseal material is held only by the Server and sent over the private control
+      # socket; it is deliberately absent from the gateway environment. Nothing outside
+      # the Server ever reads it, so the Server generates and persists its own on first
+      # use — leave this unset unless an existing deployment already provisions one.
+      VERITY_AGENT_GATEWAY_UNSEAL_KEY: ${VERITY_AGENT_GATEWAY_UNSEAL_KEY:-}
+      VERITY_AGENT_GATEWAY_URL: ${VERITY_AGENT_GATEWAY_URL:-https://verity-agent-gateway:9443}
+      VERITY_AGENT_GATEWAY_CLAUDE_PORT: '9443'
+      VERITY_CODEX_EGRESS_GATEWAY_URL: ${VERITY_CODEX_EGRESS_GATEWAY_URL:-https://verity-agent-gateway:9444}
+
+      # Meeting transcription backend. Verity ships no bundled speech-to-text
+      # service, so transcription is off until these point at an OpenAI-compatible
+      # transcription API. The request shape is the standard one, so any such
+      # provider works without a code path of its own:
+      #
+      #   VERITY_TRANSCRIBE_BASE_URL=https://api.example.com/v1
+      #   VERITY_TRANSCRIBE_API_KEY=<token>
+      #   VERITY_TRANSCRIBE_MODEL=<provider's model id>
+      #
+      # State the trade plainly: every second of meeting audio leaves this host to
+      # be transcribed. Left unset, Verity reports meeting transcription as not
+      # configured instead of accepting a recording it cannot process.
+      VERITY_PARAKEET_BASE_URL: ${VERITY_TRANSCRIBE_BASE_URL:-}
+      VERITY_PARAKEET_API_KEY: ${VERITY_TRANSCRIBE_API_KEY:-}
+      VERITY_PARAKEET_MODEL: ${VERITY_TRANSCRIBE_MODEL:-parakeet-tdt-0.6b}
+      # Largest upload the backend accepts. This is a quality setting, not just a
+      # guardrail: with windowing disabled, anything above this ceiling is
+      # re-encoded to 24 kbps mono to fit — which destroyed most of the
+      # recognizable speech on real meeting audio. Raise it to match the backend
+      # (DeepInfra accepts at least 64 MB, measured) before turning windowing off,
+      # or the client will quietly compress instead of erroring.
+      VERITY_PARAKEET_MAX_UPLOAD_BYTES: ${VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES:-25000000}
+      # Survive a backend that is briefly unreachable — a provider restart, a DNS
+      # blip — after Verity is already running. Connection-only, never inference.
+      VERITY_PARAKEET_RETRIES: ${VERITY_PARAKEET_RETRIES:-12}
+      # Do not resubmit hours of inference after a real HTTP failure. The larger
+      # retry budget above is only for requests that never received a response.
+      VERITY_PARAKEET_HTTP_RETRIES: ${VERITY_PARAKEET_HTTP_RETRIES:-0}
+      VERITY_PARAKEET_RETRY_DELAY_MS: ${VERITY_PARAKEET_RETRY_DELAY_MS:-5000}
+      # Bound what a single request asks the backend to transcribe, so a
+      # multi-hour recording is not one hours-long upload. Parakeet-class models
+      # reject single-pass inputs above 400 seconds; with the default five-second
+      # context on both sides, a 300-second core tops out at 310s. Backends that
+      # segment long audio themselves (Whisper-class) can set this to 0 — raise
+      # VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES to fit the whole recording first.
+      VERITY_MEETING_CHUNK_SECONDS: ${VERITY_MEETING_CHUNK_SECONDS:-300}
+      # Preserve recognition context for words that cross a chunk boundary.
+      VERITY_MEETING_CHUNK_OVERLAP_SECONDS: ${VERITY_MEETING_CHUNK_OVERLAP_SECONDS:-5}
+
+    volumes:
+      # Docker socket (the R2 default). Trade-off, stated honestly: a container
+      # with the host socket is effectively host-root-equivalent. Acceptable for
+      # a single-operator self-hosted control-plane; harden with the socket-proxy
+      # sidecar below if you want a scoped boundary.
+      - ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+
+      # Named data volume (M16). The server clones + materializes secrets under
+      # /srv/verity here; the provisioner then mounts each project's subdir into its
+      # sibling sandbox as a VOLUME subpath of `verity-data` (Docker 25+
+      # volume-subpath), so the source resolves by volume NAME on the host daemon —
+      # no host directory to pre-create or `chown 1000:1000`, and no host-path
+      # consistency to maintain. Docker initializes the volume with the right owner
+      # on first use. `verity-data` is declared under the top-level `volumes:` key.
+      - verity-data:/srv/verity
+      - verity-agent-gateway-control:/run/verity-agent-gateway
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
+
+    # Grant the non-root `node` user access to the mounted socket without running
+    # the container as root. Set this to the GID that owns /var/run/docker.sock
+    # on the host (usually the `docker` group): `getent group docker | cut -d: -f3`.
+    # 999 is the common default on Debian/Ubuntu hosts; adjust for yours.
+    group_add:
+      - '${VERITY_DOCKER_SOCKET_GID:-999}'
+      - '${VERITY_PROJECT_RELAY_GID:-65532}'
+      # The Claude egress client key is handed to the Runner group so the connector
+      # can read it, and every Claude project turn goes through the gateway, so this
+      # membership is NOT Runner-supervisor scoped. Changing a file group to a group
+      # the process already belongs to needs no CAP_CHOWN, which is why it belongs
+      # here while CAP_CHOWN stays in the overlay: without it that chown fails EPERM
+      # and every project sandbox creation/repair fails with it.
+      - '${VERITY_RUNNER_RUNTIME_GID:-1101}'
+
+    # NOTE: the opt-in Runner supervisor (VERITY_RUNNER_SUPERVISOR=1, ADR 0006)
+    # needs the Server to additionally hold CAP_CHOWN: it hands a freshly created
+    # runtime directory to the Runner UID, and changing an owning UID always requires
+    # the capability. That capability is NOT
+    # granted here — it lives in the layered `docker-compose.runner-supervisor.yml`
+    # override so the base install carries no standing privilege for a feature it
+    # does not use. Enable both together:
+    #   docker compose -f docker-compose.yml -f docker-compose.runner-supervisor.yml up -d
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const https=require('node:https');const internalPort=process.env.VERITY_INTERNAL_PORT||'8083';const publicHealth=new Promise((resolve,reject)=>https.get('https://127.0.0.1:8082/healthz',{rejectUnauthorized:false},r=>{r.resume();resolve(r.statusCode>=200&&r.statusCode<300)}).on('error',reject));Promise.all([publicHealth,fetch('http://127.0.0.1:'+internalPort+'/healthz').then(r=>r.ok)]).then(ok=>ok.every(Boolean)?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # Generous first-boot window: the server runs migrations on the initial
+      # start, which can be slow on modest hardware.
+      start_period: 40s
+
+    depends_on:
+      # Publish the version-matched agent-seed toolkit onto the host bind BEFORE
+      # the server (and thus any sandbox) starts, so commit signing works on the
+      # first project. One-shot; must exit 0.
+      verity-agent-seed:
+        condition: service_completed_successfully
+      # Wait until Postgres is accepting connections before the server boots and
+      # runs migrations. Compose still brings everything up from a single
+      # `up -d`; this only orders the startup.
+      postgres:
+        condition: service_healthy
+      # Start the standalone gateway before the Server. Its health endpoint
+      # remains unready until the Server sends configuration over the control
+      # socket, so waiting for service_healthy here would deadlock startup.
+      verity-agent-gateway:
+        condition: service_started
+
+  # Independently supervised generic credential-gateway process. It receives
+  # TLS/peer snapshots plus a short-lived access token over the private Unix
+  # socket and keeps only encrypted recovery state on its dedicated volume. The
+  # service key matches its DNS identity, so Compose names the container and
+  # resolves the service under the same name.
+  verity-agent-gateway:
+    # Unseal material is generated and persisted by the Server, and the control socket
+    # has one correct value both processes default to, so the image digest is the only
+    # variable a deployment supplies:
+    #   VERITY_SERVER_IMAGE=<gateway-image@sha256:digest> docker compose up -d
+    # Set VERITY_AGENT_GATEWAY_UNSEAL_KEY only to adopt a key an existing deployment
+    # already provisions; it goes to the Server alone, never into this environment.
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
+    restart: unless-stopped
+    mem_limit: ${VERITY_AGENT_GATEWAY_MEMORY:-512m}
+    memswap_limit: ${VERITY_AGENT_GATEWAY_MEMORY_SWAP:-512m}
+    cpus: ${VERITY_AGENT_GATEWAY_CPUS:-1}
+    pids_limit: ${VERITY_AGENT_GATEWAY_PIDS_LIMIT:-128}
+    entrypoint:
+      - /usr/bin/tini
+      - --
+      - node
+      - packages/server/dist/agent-gateway-main.js
+    environment:
+      VERITY_AGENT_GATEWAY_CONTROL_SOCKET: /run/verity-agent-gateway/control.sock
+      VERITY_AGENT_GATEWAY_HEALTH_HOST: 127.0.0.1
+      VERITY_AGENT_GATEWAY_HEALTH_PORT: '9080'
+      # mTLS-authenticated data listener used by every project Sandbox.
+      VERITY_AGENT_GATEWAY_CLAUDE_HOST: 0.0.0.0
+      VERITY_AGENT_GATEWAY_CLAUDE_PORT: '9443'
+      VERITY_AGENT_GATEWAY_CODEX_HOST: 0.0.0.0
+      VERITY_AGENT_GATEWAY_CODEX_PORT: '9444'
+      VERITY_AGENT_GATEWAY_CODEX_AUTHORITY: verity-agent-gateway:9444
+      VERITY_AGENT_GATEWAY_URL: ${VERITY_AGENT_GATEWAY_URL:-https://verity-agent-gateway:9443}
+      VERITY_AGENT_GATEWAY_SPILL_PATH: /var/lib/verity-agent-gateway/claude-access-token.enc
+      VERITY_AGENT_GATEWAY_CODEX_SPILL_PATH: /var/lib/verity-agent-gateway/codex-auth.enc
+    volumes:
+      - verity-agent-gateway-control:/run/verity-agent-gateway
+      - verity-agent-gateway-state:/var/lib/verity-agent-gateway
+    networks:
+      default:
+        aliases:
+          - verity-agent-gateway
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:9080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # One-shot bootstrap: publish the agent-seed toolkit from THIS server image as
+  # an immutable digest directory and atomically select it through `.current`.
+  # Managed updates subsequently have one publisher: the Updater's target-image
+  # helper. Bootstrap remains the install/recovery owner for non-managed starts.
+  #
+  # Why this is required, not optional: the provisioner ALWAYS binds the host path
+  # `${VERITY_AGENT_SEED_HOST_PATH:-/opt/agent-seed}` over each sandbox's
+  # /opt/agent-seed (a deploy-level mount, unconditional) — which SHADOWS whatever
+  # the sandbox image baked there. So the wrappers a sandbox actually runs — the
+  # `gh` + credential wrappers, the pre-push hook, and crucially `verity-git-sign`
+  # for the commit-signing broker (git's `gpg.ssh.program`) — come from this host
+  # directory, NOT from the sandbox image. Nothing else populates it, so without
+  # this step the host dir is empty (or a stale leftover) and every sandbox commit
+  # fails with `cannot run /opt/agent-seed/bin/verity-git-sign: No such file`.
+  #
+  # Bootstrap runs before the initial Server. After managed authority takes over,
+  # the Updater starts the same publisher FROM the sealed target digest as part
+  # of the durable companion handoff. Both paths are idempotent: an existing
+  # digest directory is validated, never rewritten, and one symlink rename is
+  # the only active-set mutation.
+  verity-agent-seed:
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
+    mem_limit: ${VERITY_AGENT_SEED_MEMORY:-256m}
+    memswap_limit: ${VERITY_AGENT_SEED_MEMORY_SWAP:-256m}
+    cpus: ${VERITY_AGENT_SEED_CPUS:-1}
+    pids_limit: ${VERITY_AGENT_SEED_PIDS_LIMIT:-128}
+    # The target host dir is root-owned and the seeded wrappers are world r-x, so
+    # run as root to write it; no chown needed (sandboxes read via other/exec bits).
+    user: '0:0'
+    restart: 'no'
+    # The image reference this copy came from. `VERITY_SERVER_VERSION` needs no
+    # passing — the deploy image bakes it in, so it is already the version of
+    # whatever image is running here.
+    environment:
+      VERITY_SERVER_IMAGE: ${VERITY_SERVER_IMAGE}
+      VERITY_MANAGED_DEPLOYMENT_ID: ${VERITY_MANAGED_DEPLOYMENT_ID:-}
+    command: ['publish-agent-seed']
+    volumes:
+      # MUST resolve to the same host path the server hands sandboxes as the
+      # /opt/agent-seed bind source (VERITY_AGENT_SEED_HOST_PATH, default
+      # /opt/agent-seed) — otherwise the seed lands somewhere sandboxes never mount.
+      - ${VERITY_AGENT_SEED_HOST_PATH:-/opt/agent-seed}:/opt/agent-seed-host
+
+  postgres:
+    # Control-plane database for Verity. Internal to the compose network only —
+    # deliberately NOT published to the host (no `ports:`). Because it is
+    # unreachable from outside the compose network, it uses `trust` auth: there is
+    # no password to store, generate, or configure. The network isolation is the
+    # boundary, and Verity's own secrets are additionally encrypted at rest.
+    # renovate: datasource=docker depName=postgres
+    image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    restart: unless-stopped
+    mem_limit: ${VERITY_POSTGRES_MEMORY:-1g}
+    memswap_limit: ${VERITY_POSTGRES_MEMORY_SWAP:-1g}
+    cpus: ${VERITY_POSTGRES_CPUS:-1}
+    pids_limit: ${VERITY_POSTGRES_PIDS_LIMIT:-256}
+    # Guardrail against a leaked/abandoned transaction pinning a row lock: Postgres
+    # auto-rolls-back any session left `idle in transaction` past this timeout, so a
+    # stuck holder can never pile up blocked writes and exhaust the server's DB pool
+    # (which would hang reads like GET /onboarding/status — the mobile app's launch
+    # gate — leaving it on an infinite loading spinner). Verity's DB transactions
+    # are short-lived state transitions, so 60s is far above any legitimate hold.
+    # Defense-in-depth behind the app-side fix that keeps hangable docker I/O OUT of
+    # the SELECT … FOR UPDATE lock.
+    command:
+      - postgres
+      - -c
+      - idle_in_transaction_session_timeout=60000
+    environment:
+      POSTGRES_USER: verity
+      POSTGRES_DB: verity
+      POSTGRES_PASSWORD: ${VERITY_POSTGRES_PASSWORD:?set by verity-install}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      # postgres:18 stores data in a major-version subdir and expects a single
+      # mount at /var/lib/postgresql (NOT /var/lib/postgresql/data). Mounting the
+      # old path leaves PGDATA in the image's anonymous volume — non-persistent,
+      # and PG18 refuses to start when it detects data at the legacy path. See
+      # https://github.com/docker-library/postgres/pull/1259.
+      - verity-db:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U verity -d verity']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Explicit one-time adoption job for the managed Server deployment. This profile
+  # never runs during a normal `up`. Invoke it only as the documented migration:
+  #   VERITY_MANAGED_DEPLOYMENT_ID=<stable-id> VERITY_HOST_ARCHITECTURE=<amd64|arm64> \
+  #     docker compose -f deploy/docker-compose.yml --profile managed-migration \
+  #     run --rm managed-bootstrap
+  # Both values deliberately default empty below so an inactive profile cannot
+  # break normal Compose interpolation; the bootstrap rejects either empty value.
+  managed-bootstrap:
+    profiles: [managed-migration]
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
+    command: [managed-bootstrap]
+    user: '0:0'
+    restart: 'no'
+    environment:
+      <<: *verity-server-environment
+      VERITY_SERVER_IMAGE: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
+      VERITY_MANAGED_ROOT: /var/lib/verity/updater/managed-deployment
+      VERITY_MANAGED_DEPLOYMENT_ID: ${VERITY_MANAGED_DEPLOYMENT_ID:-}
+      VERITY_TLS_MODE: backend
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
+      VERITY_HOST_ARCHITECTURE: ${VERITY_HOST_ARCHITECTURE:-}
+      VERITY_SERVER_UID: ${VERITY_SERVER_UID:-1000}
+      VERITY_SERVER_GID: ${VERITY_SERVER_GID:-1000}
+      VERITY_DOCKER_SOCKET_GID: ${VERITY_DOCKER_SOCKET_GID:-999}
+      VERITY_DOCKER_SOCKET_PATH: ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+      VERITY_PROJECT_RELAY_GID: ${VERITY_PROJECT_RELAY_GID:-65532}
+      VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
+      VERITY_PAIRING_STATE_HOST_PATH: ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}
+    volumes:
+      - verity-managed-deployment:/var/lib/verity/updater/managed-deployment
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
+
+  # Managed topology is opt-in through docker-compose.managed.yml. Keeping these
+  # services profiled means the legacy one-file deployment remains unchanged.
+  verity-managed-gateway:
+    profiles: [managed]
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
+    command: [managed-gateway]
+    restart: unless-stopped
+    user: '1000:1000'
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
+    ports:
+      - '${VERITY_API_HOST_PORT:-8082}:8082'
+    expose: ['8083']
+    networks:
+      default:
+        aliases: [verity]
+    volumes:
+      # Read-write: the Gateway binds the control socket here on every start.
+      - verity-managed-gateway-control:/run/verity-gateway
+      # Least privilege: TLS termination does not need the stable Ed25519 identity
+      # key or the installer pairing capability held in the same host directory.
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}/tls-key.pem:/run/verity-pairing/tls-key.pem:ro
+      - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}/tls-cert.pem:/run/verity-pairing/tls-cert.pem:ro
+
+  verity-updater:
+    profiles: [managed]
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned official server image}
+    command: [managed-updater]
+    restart: unless-stopped
+    depends_on:
+      # Start the managed Gateway container before the Updater. service_started
+      # does not guarantee its control socket is bound; the Updater still waits.
+      verity-managed-gateway:
+        condition: service_started
+    user: '0:0'
+    network_mode: none
+    environment:
+      <<: *verity-server-environment
+      VERITY_UPDATER_TOKEN_FILE: /run/secrets/updater-token
+      VERITY_MANAGED_DEPLOYMENT_ID: ${VERITY_MANAGED_DEPLOYMENT_ID:-}
+      VERITY_TLS_MODE: backend
+      VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
+      VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
+      VERITY_DOCKER_SOCKET_PATH: ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+      # COMPATIBILITY, not configuration. Nothing in the Updater or the Server reads
+      # this — the provisioner uses the RUNNER_RUNTIME_GID constant. It is here so a
+      # deployment sealed by a Server image from before the env-source fix can still
+      # resolve it: those specs carry `VERITY_RUNNER_RUNTIME_GID` as an env source,
+      # the Updater has to resolve every source on every reconcile, and without this
+      # line it throws `managed Server environment source is missing:
+      # VERITY_RUNNER_RUNTIME_GID` in a crash loop — which leaves the managed Gateway
+      # without a backend and rolls the whole migration back.
+      #
+      # A Compose value rather than a code change on purpose: the compose file comes
+      # from the operator's checkout and takes effect immediately, while the image
+      # that seals is digest-pinned and only moves with a release.
+      #
+      # Removable once no deployment carries a pre-fix seal any more — and that is
+      # not something a release does on its own: every new generation reuses the
+      # sealed environment list verbatim (`advanceManagedDeploymentImage`),
+      # so only a fresh `managed-bootstrap` on a discarded managed-deployment volume
+      # drops the source. Until a host has been through that, this line is what keeps
+      # its Updater out of the crash loop.
+      VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
+      # TRANSITIONAL COMPATIBILITY SOURCES — not configuration. Nothing in a current
+      # Server or Updater reads any of these, and no Server is given them: an Updater
+      # carrying RETIRED_MANAGED_SERVER_ENVIRONMENT
+      # (`self-update/managed-server-owner.ts`) builds the Server without them.
+      #
+      # They exist because a deployment sealed before a variable was retired still
+      # names it as an env SOURCE. `managed-bootstrap` sealed the Updater's own
+      # environment at bootstrap, every managed generation copies that list forward
+      # verbatim, and the Updater has to resolve every source on every reconcile. An
+      # Updater whose IMAGE predates that list therefore exits with
+      # `managed Server environment source is missing: <name>` and restarts into the
+      # same failure — and a crash-looping Updater cannot self-update onto the image
+      # that would fix it.
+      #
+      # This file is the way out of that deadlock, because it reaches a host through
+      # the git checkout rather than through a release: a resolvable value lets the
+      # old Updater resolve the source and start, after which it can update itself
+      # normally. That is the ONLY job these lines have.
+      #
+      # INTERPOLABLE, not hardcoded, and that distinction is the whole point. An
+      # EMPTY value is right for a Server about to be CREATED: it is what the
+      # retired variable now means, and the Updater that creates the container also
+      # writes the value, so the two agree by construction. It is WRONG for a Server
+      # that already EXISTS. `reconcileManagedServer` compares the running container
+      # against what it would build and throws `managed Server container conflicts
+      # with the sealed deployment spec` on any difference — it never recreates, so
+      # there is no path by which the container converges on the new value. A host
+      # whose Server was created while the deployment still supplied the ORIGINAL
+      # value therefore needs that original value here, or its Updater crash-loops
+      # exactly as it did on the missing source.
+      #
+      # Only the host knows which of the two it is, so neither can be baked in.
+      # Empty stays the default, so a fresh install and every host that has since
+      # rebuilt its Server are unchanged; a host still carrying a pre-retirement
+      # Server pins the original value in its own environment until the next update
+      # rebuilds the Server without it.
+      #
+      # REMOVABLE once no Updater image older than that list is in the field. When
+      # retiring a further variable, record it in the list — that is the durable
+      # half, and it travels with the image — and add it here only for as long as
+      # Updaters without it may still be running.
+      #
+      # #1490 — Kubernetes preview edge.
+      VERITY_PREVIEW_DOMAIN: ${VERITY_PREVIEW_DOMAIN:-}
+      VERITY_PREVIEW_EDGE_IMAGE: ${VERITY_PREVIEW_EDGE_IMAGE:-}
+      VERITY_PREVIEW_CONNECTOR_IMAGE: ${VERITY_PREVIEW_CONNECTOR_IMAGE:-}
+      VERITY_PREVIEW_KUBERNETES_API_URL: ${VERITY_PREVIEW_KUBERNETES_API_URL:-}
+      VERITY_PREVIEW_KUBERNETES_TOKEN_FILE: ${VERITY_PREVIEW_KUBERNETES_TOKEN_FILE:-}
+      VERITY_PREVIEW_KUBERNETES_NAMESPACE: ${VERITY_PREVIEW_KUBERNETES_NAMESPACE:-}
+      VERITY_PREVIEW_GATEWAY_NAME: ${VERITY_PREVIEW_GATEWAY_NAME:-}
+      VERITY_PREVIEW_GATEWAY_NAMESPACE: ${VERITY_PREVIEW_GATEWAY_NAMESPACE:-}
+      VERITY_PREVIEW_GATEWAY_SECTION: ${VERITY_PREVIEW_GATEWAY_SECTION:-}
+      # #1553 — bundled local transcription sidecar. An empty value is also what a
+      # Server image from before that removal would want: it read
+      # VERITY_LOCAL_TRANSCRIBE_AVAILABLE as a flag, and the sidecar is gone.
+      VERITY_LOCAL_TRANSCRIBE_AVAILABLE: ${VERITY_LOCAL_TRANSCRIBE_AVAILABLE:-}
+      VERITY_LOCAL_TRANSCRIBE_BASE_URL: ${VERITY_LOCAL_TRANSCRIBE_BASE_URL:-}
+      VERITY_LOCAL_TRANSCRIBE_MODEL: ${VERITY_LOCAL_TRANSCRIBE_MODEL:-}
+    volumes:
+      - ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - verity-managed-deployment:/var/lib/verity/updater/managed-deployment
+      - verity-updater-control:/run/verity-updater/control
+      # The Updater is the client here. Mounted read-write because connecting to
+      # a Unix socket is a write on the inode, and a read-only mount would refuse
+      # it even for root.
+      - verity-managed-gateway-control:/run/verity-gateway
+      # /dev/null keeps inactive-profile interpolation valid; the Updater rejects
+      # it as a non-regular token file when the managed profile is actually run.
+      - ${VERITY_UPDATER_TOKEN_HOST_PATH:-/dev/null}:/run/secrets/updater-token:ro
+      # The agent seed, read-only, so the Updater can report which release the
+      # sandboxes' wrappers came from. The Server cannot mount this itself: its
+      # mounts are fixed by the sealed deployment spec, which admits four, none
+      # read-only, and the fourth is the control socket above. So the Updater
+      # reads `.current` and the Server asks it over that socket. This mount stays
+      # read-only; the operation-bound target-image helper receives the parent at
+      # a different fixed target for atomic publication.
+      - ${VERITY_AGENT_SEED_HOST_PATH:-/opt/agent-seed}:/opt/agent-seed:ro
+
+  # OPT-IN HARDENING: docker-socket-proxy sidecar (ADR 0003 R2).
+  # ---------------------------------------------------------------------------
+  # For operators who want a scoped Docker API surface instead of the raw socket.
+  # To enable:
+  #   1. Uncomment this service.
+  #   2. On the `verity` service: REMOVE the `/var/run/docker.sock` bind-mount and
+  #      the `group_add` block (the proxy owns the socket, not the runner), and
+  #      set:
+  #        VERITY_DOCKER_BASE_URL: http://docker-socket-proxy:2375
+  #   3. Add `docker-socket-proxy` to the verity service's `depends_on`.
+  # The proxy narrows the Docker API surface: only the verbs enabled below are
+  # reachable, everything else is denied (404). Note this is a *narrowing*, not a
+  # sandbox — see the EXEC caveat below.
+  #
+  # docker-socket-proxy:
+  #   # renovate: datasource=docker depName=tecnativa/docker-socket-proxy
+  #   image: tecnativa/docker-socket-proxy:0.3.0
+  #   restart: unless-stopped
+  #   environment:
+  #     # Container lifecycle Verity needs to provision project sessions:
+  #     # create/inspect/start/stop/remove containers, read images, and (for
+  #     # devcontainer builds, ADR 0003 R3.1) build.
+  #     CONTAINERS: 1
+  #     IMAGES: 1
+  #     POST: 1
+  #     BUILD: 1
+  #     # Host-disk GC (VERITY_DOCKER_GC, on by default) needs to enumerate and
+  #     # delete volumes, and to DELETE superseded devcontainer images. The proxy
+  #     # denies DELETE and the /volumes surface unless both are enabled — without
+  #     # them the GC logs a skipped resource each pass and the disk still fills.
+  #     # Drop both only together with VERITY_DOCKER_GC: 0.
+  #     VOLUMES: 1
+  #     DELETE: 1
+  #     # EXEC is REQUIRED by Verity's exec-based runtime (it runs the agent inside
+  #     # the project container via `docker exec`). It is powerful: exec permits
+  #     # arbitrary code execution inside any container on the daemon. It cannot be
+  #     # dropped without redesigning the runtime, so the proxy narrows the surface
+  #     # but does not remove this capability — do not oversell it as a sandbox.
+  #     EXEC: 1
+  #     # Read-only endpoints for health/inspection. Safe to enable.
+  #     INFO: 1
+  #     VERSION: 1
+  #     # Everything not listed above defaults to denied.
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   # Not published to the host; only reachable on the compose network.
+
+networks:
+  # Stable control-plane network for Compose services. Project sandboxes never
+  # join it; each is single-homed with its generation-matched relay.
+  default:
+    name: verity-net
+
+volumes:
+  # Control-plane Postgres data. Compose namespaces this by project name, so it
+  # is stable across restarts of the same stack.
+  verity-db:
+  # Verity data root (project clones + materialized secrets + session worktrees).
+  # Mounted at VERITY_ROOT in the server; project subdirs are mounted into sibling
+  # sandboxes as volume subpaths (M16). Docker-managed — no host dir / chown needed.
+  #
+  # EXPLICIT name (like `verity-net` above), NOT compose-project-namespaced: the
+  # server hands VERITY_DATA_VOLUME verbatim to sibling sandboxes as the
+  # volume-subpath source, so the real volume name MUST equal that literal. Without
+  # `name:`, compose creates `<project>_verity-data` while VERITY_DATA_VOLUME stays
+  # `verity-data` — the mismatch makes every sandbox mount of a secrets/workspaces
+  # subpath fail with "no such file or directory" at container start.
+  verity-data:
+    name: verity-data
+  # Private Server↔Gateway Unix control channel. Kept separate from verity-data
+  # so the gateway process cannot read worktrees or unrelated materialized secrets.
+  verity-agent-gateway-control:
+    name: verity-agent-gateway-control
+  verity-agent-gateway-state:
+  # Updater-owned authority created only by the explicit managed-migration job.
+  verity-managed-deployment:
+    name: verity-managed-deployment
+  # Private authenticated Server↔Updater control socket. The Gateway never mounts it.
+  verity-updater-control:
+    name: verity-updater-control
+  # Private Updater↔Gateway control socket, the reverse direction: it carries the
+  # maintenance switch and the backend selection. The managed Server never mounts
+  # it, so no Server generation can redirect the front door at itself.
+  verity-managed-gateway-control:
+    name: verity-managed-gateway-control

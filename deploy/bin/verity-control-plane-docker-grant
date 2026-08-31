@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# Decides the ADR 0006 Amendment 1 Docker grant for one control-plane Runner launch.
+#
+# Usage: verity-control-plane-docker-grant <socket-path> <agent-primary-gid>
+#
+# Prints the group id to grant the agent child, or nothing when no grant applies.
+# Exits non-zero — refusing the launch — when the grant is switched OFF but
+# withholding it would not actually withhold anything. See REFUSAL below.
+#
+# This lives beside `verity-control-plane-runner-start` rather than inside it for
+# one reason: the launcher demands uid 0 and a mounted identity directory before
+# it reaches any of this, so nothing in a test can drive it. Every input here is
+# an argument or an environment variable, so the decision — including the refusal
+# — is exercised directly by `scripts/verity-control-plane-docker-grant.test.ts`
+# rather than asserted about as text.
+set -euo pipefail
+
+socket_path="${1:-}"
+agent_uid="${2:-}"
+agent_gid="${3:-}"
+runner_gid="${4:-}"
+
+if [ -z "$socket_path" ] || [ -z "$agent_uid" ] || [ -z "$agent_gid" ] || [ -z "$runner_gid" ]; then
+  echo 'verity-control-plane-docker-grant: usage: <socket-path> <agent-uid> <agent-primary-gid> <runner-runtime-gid>' >&2
+  exit 2
+fi
+
+# The identities the REFUSALS below compare against, so a value that cannot be
+# compared is not a reason to skip the comparison — it is a provisioning fault
+# that would silently retire the check.
+for id in "$agent_uid" "$agent_gid" "$runner_gid"; do
+  case "$id" in
+    '' | 0 | *[!0-9]*)
+      echo "verity-control-plane-docker-grant: agent/runner uid/gid is not usable: '$id'" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Parse the switch EXACTLY as the managed reconciler does (`dockerSocketEnabled`
+# in managed-control-plane-runner.ts): trim, then case-fold, then compare against
+# the same two spellings. The two topologies read one variable, so a value one
+# of them reads as OFF and the other reads as ON — `FALSE`, say — hands the
+# operator a denial on managed and a live socket on Compose. That is the same
+# defect as the refusal below, arriving through the parser instead.
+switch_value="${VERITY_CONTROL_PLANE_RUNNER_DOCKER:-1}"
+switch_value="${switch_value#"${switch_value%%[![:space:]]*}"}"
+switch_value="${switch_value%"${switch_value##*[![:space:]]}"}"
+# `tr` rather than `${switch_value,,}`: the latter needs bash 4, and macOS still
+# ships 3.2, which would fail this script at runtime with "bad substitution" —
+# i.e. refuse every launch — on the one platform where it is easiest to run by
+# hand while developing.
+switch_value="$(printf '%s' "$switch_value" | tr '[:upper:]' '[:lower:]')"
+
+grant_enabled=1
+case "$switch_value" in
+  '0' | 'false') grant_enabled=0 ;;
+esac
+
+# No socket, no decision. This is the managed topology with the switch off (it
+# drops the bind mount outright), and it is also every host that simply does not
+# mount a daemon socket. Fail closed and quietly: there is nothing to grant and
+# nothing to refuse.
+if [ ! -S "$socket_path" ]; then
+  exit 0
+fi
+
+# Read owner, group and mode off the MOUNTED INODE rather than from
+# configuration. A guessed or stale GID produces a socket the agent cannot open,
+# which is indistinguishable from the feature not being deployed. `-c` is GNU,
+# `-f` is BSD; `%a`/`%Lp` are the permission bits without the file type.
+socket_stat="$(stat -c '%u %g %a' "$socket_path" 2>/dev/null || stat -f '%u %g %Lp' "$socket_path" 2>/dev/null || true)"
+socket_uid="${socket_stat%% *}"
+socket_gid="$(printf '%s' "$socket_stat" | cut -d' ' -f2)"
+socket_mode="${socket_stat##* }"
+
+if [ "$grant_enabled" -eq 0 ]; then
+  # REFUSAL. Withholding the supplementary group denies the agent by permission
+  # bits alone, so it denies anything only while the agent cannot already reach
+  # the socket some other way. Connecting to a unix socket needs WRITE permission
+  # on the inode, and the agent gets it from whichever class it falls into:
+  #
+  #   - owner, if the socket is owned by the agent's uid (rootless Docker puts a
+  #     uid-1000 socket in exactly this position);
+  #   - group, if the socket's group is the agent's PRIMARY gid — no
+  #     supplementary group needed, which is the case ADR 0006 Amendment 1 names;
+  #   - other, on any host where someone has "fixed" permissions with
+  #     `chmod 666 /var/run/docker.sock`, which is a common enough workaround.
+  #
+  # In all three the switch would report success and withdraw nothing. Only the
+  # managed topology can remove the capability outright, by dropping the mount;
+  # on Compose the mount cannot be dropped conditionally, so the honest answer is
+  # to refuse the launch rather than claim a denial that is not being delivered.
+  # A denial that cannot be verified must not be reported as delivered, so an
+  # inode we failed to read is a refusal rather than a shrug.
+  case "$socket_uid$socket_gid$socket_mode" in
+    '' | *[!0-9]*)
+      echo "verity-control-plane-docker-grant: refusing to start. VERITY_CONTROL_PLANE_RUNNER_DOCKER is off, but $socket_path could not be stat'ed, so the denial it asks for cannot be verified." >&2
+      exit 1
+      ;;
+  esac
+
+  # Left-pad the OCTAL mode to four digits so the class digits can be indexed
+  # positionally whether `stat` reported 660 or 0660. Padding as a string, not
+  # via `printf '%04d'`, which would reinterpret the octal as decimal.
+  padded_mode="$socket_mode"
+  while [ "${#padded_mode}" -lt 4 ]; do padded_mode="0$padded_mode"; done
+
+  # Pick the class the way the KERNEL does: exactly one applies, and it does not
+  # fall through. If the agent owns the inode it is judged by the owner bits even
+  # when `other` is more permissive — so a 0006 socket owned by the agent is
+  # genuinely denied to it, and refusing there would take the control plane down
+  # for access that does not exist.
+  if [ "$socket_uid" = "$agent_uid" ]; then
+    class_bits="${padded_mode:1:1}"
+    class_reason="owned by the agent's uid $socket_uid"
+  elif [ "$socket_gid" = "$agent_gid" ]; then
+    class_bits="${padded_mode:2:1}"
+    class_reason="group-owned by gid $socket_gid, which is the agent's primary group"
+  else
+    class_bits="${padded_mode:3:1}"
+    class_reason="world-writable (mode $padded_mode)"
+  fi
+
+  # Connecting to a unix socket needs WRITE on the inode; read alone is not a way
+  # in. NOTE the limit of this test: it reads the traditional mode bits only, so a
+  # POSIX ACL granting the agent write would not be seen here. Checking that would
+  # mean depending on `getfacl` inside the Runner entrypoint, where a missing
+  # binary means the control plane does not start at all. ACLs on a daemon socket
+  # are not a configuration Verity creates or supports, and the managed topology —
+  # which drops the mount outright — is unaffected either way.
+  reachable=''
+  if [ $((class_bits & 2)) -ne 0 ]; then reachable="$class_reason"; fi
+  if [ -n "$reachable" ]; then
+    echo "verity-control-plane-docker-grant: refusing to start. VERITY_CONTROL_PLANE_RUNNER_DOCKER is off, but $socket_path is $reachable — the agent can open it without the docker group, so withholding the group would deny it nothing. Remove the socket mount, or give the socket an owner, group and mode the agent cannot reach, or set VERITY_CONTROL_PLANE_RUNNER_DOCKER=1 and accept the grant." >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+# A socket owned by the RUNNER RUNTIME group cannot be granted at all: that group
+# owns every turn's `events.jsonl`, its `control.sock` and `supervisor.sock`, so
+# handing it to the agent is the one thing ADR 0006 forbids outright — and the
+# broker enforces that, throwing on exactly this value. Without this check the
+# host would deploy a Runner that looks healthy and then fails EVERY agent launch
+# deep inside the spawn broker, which is the most expensive possible place to
+# discover a provisioning mistake. Refuse here instead, naming it.
+if [ "$socket_gid" = "$runner_gid" ]; then
+  echo "verity-control-plane-docker-grant: refusing to start. $socket_path is group-owned by gid $socket_gid, which is the Runner runtime group — granting it would hand the agent the group that owns every turn journal, so the spawn broker will refuse it and no turn could start. Give the Docker socket a group of its own, or set VERITY_CONTROL_PLANE_RUNNER_DOCKER=0." >&2
+  exit 1
+fi
+
+case "$socket_gid" in
+  '' | 0 | *[!0-9]*)
+    # A root-group socket (gid 0) is not a grant — nothing is a member of group
+    # root — and an unreadable one is a provisioning fault, not a boundary. Say so
+    # once, rather than leaving a silent EACCES for the agent to misdiagnose as a
+    # missing daemon.
+    echo "verity-control-plane-docker-grant: skipped, $socket_path has no usable group" >&2
+    exit 0
+    ;;
+esac
+
+printf '%s\n' "$socket_gid"

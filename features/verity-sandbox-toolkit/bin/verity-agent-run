@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# verity-agent-run — agent-NEUTRAL keep-alive entrypoint for Verity sandboxes.
+#
+# Hard ENTRYPOINT on verity-sandbox (deploy/verity-sandbox.Dockerfile). The
+# devcontainer path invokes the SAME script from post-start.sh in the
+# background instead of as PID 1 (D2: one script, two consume paths).
+#
+# Agent SESSIONS are run by the Verity server via `docker exec … <agent>` per
+# session (packages/server/src/project-backend.ts DockerExecBackend). The
+# entrypoint therefore launches NO agent ambiently — it is agent-neutral. Its
+# only job is to keep the container (and its tmux + token refresher) alive and
+# to expose an interactive shell for `docker exec … tmux attach` + the `wt`
+# worktree helper.
+#
+# Responsibilities (E6/E7/E8 from the source dev-base entrypoint.sh):
+#   - Start (or re-attach to) a tmux session running a plain login shell.
+#   - Optionally run a project-defined dev server in a 2nd tmux window
+#     (.dev-server/start.sh, if present + executable).
+#   - Keep PID 1 alive so the container + tmux + token refresher stay up.
+#
+# Home-agnostic (D3): uses $HOME / env only, never a baked /home/dev.
+# Idempotent: re-attaches if the session already exists.
+#
+# `-e` is deliberately omitted (only `-uo pipefail`): as the container's PID 1
+# this MUST always reach `exec sleep infinity` at the tail, so a transient
+# non-zero from an intermediate step (e.g. a tmux hiccup) must not abort the
+# script and kill the container. The few fallible steps handle their own exit
+# codes explicitly (`|| true`, guarded `if`).
+set -uo pipefail
+
+# Session name. Default `verity` (agent-neutral — the old `claude` default was
+# a remnant of the retired remote-control flow). Only the entrypoint and the
+# `wt` helper reference this name (both honour TMUX_SESSION); the server drives
+# sessions via `docker exec`, not `tmux attach`, so nothing depends on the
+# literal name. Configurable via TMUX_SESSION for callers that need a fixed one.
+SESSION="${TMUX_SESSION:-verity}"
+WORKSPACE="${WORKSPACE:-/work}"
+
+# ─── Git runtime reconcile ────────────────────────────────────────────────
+# verity-sandbox bakes the git SIGNING config, but two per-container things must
+# be wired at runtime — the devcontainer lifecycle hook that would do it
+# (on-create) does NOT run on the provisioner's plain create+start path:
+#   1. operator identity (user.name/email) from the env the provisioner sets —
+#      without it every commit fails ("please tell me who you are").
+#   2. an HTTPS-push credential helper backed by the Verity token broker —
+#      verity-sandbox drops dev-base's baked helper (Feature D4: transport auth is
+#      the provisioner's/entrypoint's runtime concern, not a helper baked into the
+#      image). github.com origins route over HTTPS via the Feature's insteadOf
+#      rewrite, so this covers `git push`. The helper (verity-gh-cred) redeems the
+#      container capability for a fresh repo-scoped token on demand — no gh-token
+#      file is mounted.
+# Best-effort + idempotent (re-applied every start); a missing var/token is
+# skipped. The signing KEY path is NOT touched here — it's satisfied by the
+# provisioner mounting the key at /run/verity/ssh (#436).
+if [ -n "${GIT_USER_NAME:-}" ]; then git config --global user.name "$GIT_USER_NAME" || true; fi
+if [ -n "${GIT_USER_EMAIL:-}" ]; then git config --global user.email "$GIT_USER_EMAIL" || true; fi
+if [ -n "${VERITY_GH_TOKEN_URL:-}" ] && [ -r "${VERITY_GH_TOKEN_CAPABILITY_FILE:-/run/verity/gh-token-capability}" ]; then
+  git config --global credential.helper '!verity-gh-cred' || true
+fi
+
+# ─── E6. tmux session with a plain login shell ────────────────────────────
+# A long-lived login shell holds the session open for `docker exec … tmux
+# attach` and for `wt`, which opens per-worktree windows in this session.
+# State that agents persist lives in their own config volumes (mounted by the
+# provisioner), independent of this session.
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  tmux new-session -d -s "$SESSION" -c "$WORKSPACE" -n main "exec bash -l"
+else
+  echo ">> verity-agent-run: tmux session '$SESSION' already running — re-attaching (idempotent)."
+fi
+
+# ─── E7. Optional project dev-server in a 2nd window ──────────────────────
+# Convention: if .dev-server/start.sh exists + is executable, run it in a
+# 'server' tmux window (npm run dev, uvicorn, …).
+START_SCRIPT="$WORKSPACE/.dev-server/start.sh"
+if [ -x "$START_SCRIPT" ] \
+  && ! tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx server; then
+  tmux new-window -t "$SESSION" -n server -c "$WORKSPACE" \
+    "echo '=== $START_SCRIPT ==='; '$START_SCRIPT' || true; echo; echo '(server exited, drop to shell)'; exec bash"
+fi
+
+echo ">> verity-agent-run: tmux session '$SESSION' running."
+echo ">> Attach:         docker exec -it \$(hostname) tmux attach -t $SESSION"
+echo ">> Worktree:       docker exec -it \$(hostname) wt <branch>"
+
+# ─── E8. Keep PID 1 alive ─────────────────────────────────────────────────
+# When invoked as the container ENTRYPOINT this holds the container (and its
+# tmux + token refresher) up. On the devcontainer path this script is run in
+# the background by post-start.sh, so the `exec` simply detaches a sleeper —
+# harmless. Exactly mirrors the source entrypoint.sh tail.
+exec sleep infinity

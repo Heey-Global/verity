@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# GitHub CLI wrapper for agent containers.
+#
+# `gh` does not speak git's credential-helper protocol, so this wrapper redeems
+# the container capability for a fresh repo-scoped token from the Verity token
+# broker (via verity-gh-token) and exports it as GH_TOKEN for THIS child process
+# only. No GitHub token is stored in the sandbox; a stale inherited GH_TOKEN is
+# overridden.
+
+set -euo pipefail
+
+unset GH_TOKEN GITHUB_TOKEN
+
+candidates=()
+if [ -n "${VERITY_GH_REAL:-}" ]; then
+  candidates+=("$VERITY_GH_REAL")
+fi
+candidates+=(/usr/local/lib/verity/gh-real /usr/bin/gh /usr/local/bin/gh)
+
+for candidate in "${candidates[@]}"; do
+  if [ -x "$candidate" ] && [ "$candidate" != "$0" ]; then
+    REAL_GH="$candidate"
+    break
+  fi
+done
+
+if [ -z "${REAL_GH:-}" ]; then
+  echo "gh wrapper: real gh binary not found" >&2
+  exit 127
+fi
+
+if TOKEN="$(verity-gh-token 2>/dev/null)" && [ -n "$TOKEN" ]; then
+  export GH_TOKEN="$TOKEN"
+fi
+
+exec "$REAL_GH" "$@"

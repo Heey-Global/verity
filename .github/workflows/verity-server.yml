@@ -1,0 +1,163 @@
+name: verity-server
+
+# Manual / ad-hoc build + smoke-test of the deployable Verity control-plane image
+# (deploy/Dockerfile). The PR pre-merge gate is ci.yml's `server-image` job — it
+# builds the SAME image, runs the same tooling smoke PLUS a real Postgres boot, and
+# is gated on a superset of the paths this workflow used. Running here on PRs too
+# just built the image a SECOND time per server-touching PR (wasted a self-hosted
+# runner slot), so the PR trigger is removed. Publishing to
+# ghcr.io/heey-global/verity/verity-server happens in release.yml (on main).
+
+on:
+  # Manual only: ci.yml owns the PR gate; release.yml owns publishing.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Cancel a stale run when a fix-push lands — this build is expensive and there
+# is no point burning runner time on a superseded commit. Mirrors ci.yml: PRs
+# group by source branch; pushes to main group by SHA so back-to-back merges
+# never cancel each other.
+concurrency:
+  group: verity-server-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: heey-global/verity/verity-server
+  # The relay-only server validates an immutable relay reference at startup.
+  # The image is never pulled in this health-only smoke because no project is
+  # provisioned.
+  VERITY_CI_RELAY_IMAGE: ghcr.io/heey-global/verity/verity-project-relay@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  # Health-only smoke value; no gateway is contacted until a Claude turn.
+  VERITY_CI_GATEWAY_UNSEAL_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-24.04
+    # Bounded below the janitor's cache grace period — see the note on
+    # ci.yml's `server-image` job.
+    timeout-minutes: 45
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The persistent shared builder — see the note on the setup-buildx step in
+      # ci.yml's `server-image` job. Same builder name everywhere on purpose: this
+      # workflow builds the same Dockerfile as that job, so it reads back the
+      # local layers CI already produced, exactly as it already shares CI's
+      # `type=gha` scope.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          name: verity-ci-bounded-v1
+          cleanup: false
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Build amd64 (load locally)
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          # Named explicitly; see the note in ci.yml on why `use` is not enough.
+          builder: verity-ci-bounded-v1
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: verity-server:smoke
+          # `scope` and `ignore-error`: see the note on the `Build Verity server
+          # image` step in ci.yml. Same Dockerfile, so deliberately the same scope
+          # name — this workflow and ci.yml share one cache entry rather than
+          # overwriting each other's index in the default one.
+          #
+          # No pull_request gate here (unlike ci.yml): this workflow is
+          # workflow_dispatch-only, so it never runs on a PR ref to begin with.
+          cache-from: type=gha,scope=verity-server
+          cache-to: type=gha,mode=max,scope=verity-server,ignore-error=true
+
+      - name: Smoke-test image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run --rm --entrypoint=sh verity-server:smoke -lc '
+            set -eu
+            node --version
+            git --version
+            docker --version
+            docker compose version
+            devcontainer --version
+            command -v claude
+            command -v codex
+            test -x /usr/local/bin/verity-transcribe-meeting
+            test -d /opt/verity-features/verity-sandbox-toolkit
+            test "$(id -un)" = "node"
+          '
+
+          docker rm -f verity-server-smoke verity-postgres-smoke >/dev/null 2>&1 || true
+          docker network create verity-smoke-net >/dev/null 2>&1 || true
+          # The server now requires a real Postgres (pglite removed from the
+          # runtime). Bring one up like the compose stack does: internal only,
+          # trust auth (no password), no published port.
+          docker run -d --name verity-postgres-smoke --network verity-smoke-net \
+            -e POSTGRES_USER=verity -e POSTGRES_DB=verity \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            postgres:18-alpine
+          for _ in $(seq 1 30); do
+            if docker exec verity-postgres-smoke pg_isready -U verity -d verity >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker run -d --name verity-server-smoke --network verity-smoke-net \
+            --group-add 65532 \
+            -e HOST=0.0.0.0 \
+            -e VERITY_REPO_DIR= \
+            -e VERITY_DOCKER_BASE_URL=unix:///var/run/docker.sock \
+            -e VERITY_DATA_VOLUME=verity-data \
+            -e VERITY_PROJECT_RELAY_IMAGE="$VERITY_CI_RELAY_IMAGE" \
+            -e VERITY_AGENT_GATEWAY_CONTROL_SOCKET=/tmp/verity-agent-gateway-control.sock \
+            -e VERITY_AGENT_GATEWAY_UNSEAL_KEY="$VERITY_CI_GATEWAY_UNSEAL_KEY" \
+            -e VERITY_AGENT_GATEWAY_URL=https://verity-agent-gateway:9443 \
+            -e VERITY_CLAUDE_EGRESS_GATEWAY_URL=https://verity:9443 \
+            -e VERITY_CLAUDE_CONNECTOR_PORT=47821 \
+            -e DATABASE_URL=postgres://verity@verity-postgres-smoke:5432/verity \
+            verity-server:smoke
+          cleanup() {
+            docker rm -f verity-server-smoke verity-postgres-smoke >/dev/null 2>&1 || true
+            docker network rm verity-smoke-net >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 30); do
+            if docker exec verity-server-smoke node -e \
+              "const r = await fetch('http://127.0.0.1:8082/healthz'); if (!r.ok) process.exit(1);"; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Verity server image did not pass /healthz smoke test" >&2
+          docker logs --tail=120 verity-server-smoke 2>/dev/null || true
+          exit 1
+
+      - name: Clean Docker smoke artifacts
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f verity-server-smoke verity-postgres-smoke >/dev/null 2>&1 || true
+          docker network rm verity-smoke-net >/dev/null 2>&1 || true
+          docker image rm -f verity-server:smoke >/dev/null 2>&1 || true
+          # Size cap, two stores, both spellings of the flag — see the note on the
+          # `Clean Docker smoke artifacts` step in ci.yml's `server-image` job.
+          docker buildx prune --builder verity-ci-bounded-v1 --force --keep-storage 40GB >/dev/null 2>&1 \
+            || docker buildx prune --builder verity-ci-bounded-v1 --force --reserved-space 40GB >/dev/null 2>&1 \
+            || true
+          docker builder prune --all --force --keep-storage 20GB >/dev/null 2>&1 \
+            || docker builder prune --all --force --reserved-space 20GB >/dev/null 2>&1 \
+            || true

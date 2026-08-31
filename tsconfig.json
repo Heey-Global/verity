@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "files": [],
+  "references": [
+    { "path": "packages/events" },
+    { "path": "packages/secret-contracts" },
+    { "path": "packages/adapter-claude" },
+    { "path": "packages/project-relay" },
+    { "path": "packages/preview-tunnel" },
+    { "path": "packages/store" },
+    { "path": "packages/session" },
+    { "path": "packages/server" }
+  ]
+}

@@ -1,0 +1,656 @@
+name: verity-sandbox
+
+# Builds the verity-sandbox image — the successor to the old dev-server `dev-base`
+# image (#299). verity-sandbox = a plain node/python base + the shared
+# `verity-sandbox-toolkit` devcontainer Feature applied at build time (deploy/verity-sandbox.Dockerfile
+# runs the SAME install.sh a user devcontainer runs via --additional-features).
+#
+# Namespace migration (#475): the image is DUAL-published to the legacy path
+# `ghcr.io/heey-global/verity-sandbox` AND the new `ghcr.io/heey-global/verity/verity-sandbox`
+# (under the shared `heey-global/verity/*` namespace, ADR 0003 R1) — same digest under
+# both. The legacy path stays until the provisioner default flips to the new path and
+# running containers are re-provisioned, then it's retired.
+#
+# Strategy (mirrors the retired dev-server dev-base.yml):
+#   1. PR: build amd64 + smoke-test, no push.
+#   2. main: build amd64 + smoke-test, push both paths to ghcr.io.
+# amd64-only — the fleet runs on amd64; the build context is the repo root so the
+# Dockerfile's `COPY features/verity-sandbox-toolkit` resolves.
+#
+# Tags pushed (main only):
+#   :v<semver>    — v-prefixed toolkit version, e.g. v1.11.0.
+#   :sha-<short>  — immutable reference for rollback.
+#   :latest       — mutable channel tag for auto-update consumers.
+#
+# Renovate watches the pinned action versions below (full-semver + annotation),
+# and the image's own deps (node digest, python, gh/doppler/claude) via the
+# customManagers in renovate.json (deploy/verity-sandbox.Dockerfile + the Feature).
+#
+# dev-base decommission (dev-server dev-base.yml) happens only AFTER the cutover
+# flips running projects onto verity-sandbox — out of scope for this workflow.
+
+on:
+  # Publishing moved to release.yml (release-please, gated on main). This workflow is
+  # now the PR pre-merge gate only: build + smoke-test, no push.
+  pull_request:
+    paths:
+      - 'deploy/verity-sandbox.Dockerfile'
+      - 'features/verity-sandbox-toolkit/**'
+      # This repo's own sandbox layer, built on the image above and smoke-tested
+      # against it below. Its harness is listed too: the Dockerfile creates a
+      # directory at a path that module names, installs the server binaries it
+      # looks for, and neither side can be changed alone without the assertions
+      # going stale.
+      # (Adding paths here cannot republish the fleet image: this workflow is
+      # `pull_request` + `workflow_dispatch` only — publishing moved to
+      # release.yml — so the filter gates the smoke build and nothing else.)
+      - '.devcontainer/**'
+      - 'scripts/test-postgres.ts'
+      # The smoke step below creates and drops a worker database by the naming
+      # rule this file owns, so a change to it can invalidate those assertions
+      # without touching either path above. (`packages/store/src/**` is already
+      # listed for the bundle check; kept here for the reason, not the coverage.)
+      - 'packages/store/src/testing.ts'
+      - 'scripts/fixtures/fake-claude-live-smoke.mjs'
+      - 'scripts/fixtures/fake-claude-recreate-smoke.mjs'
+      - 'packages/server/src/runner-claude-live-server.ts'
+      - 'packages/server/src/runner-claude-recreate-server.ts'
+      - 'scripts/test-runner-claude-live-container.sh'
+      - 'scripts/test-runner-claude-live-recreate.sh'
+      - 'scripts/build-runner-worker.mjs'
+      # esbuild substitutes this for `@verity/store`, so its source is INSIDE the
+      # worker bundle even though the package it replaces is not. Without it here,
+      # a shim change drifts the committed bundle with nothing to notice — and the
+      # bundle-matches-sources step below is what `verity-code-review` leans on
+      # when it excludes that file from review.
+      - 'scripts/runner-worker-store-shim.mjs'
+      # The bundle also contains whatever the resolver pulled in, so a dependency
+      # bump can change it with no first-party file touched at all. Without these
+      # two, that is a drift the bundle-match step never runs on — and the review
+      # exclusion below assumes it always runs.
+      - 'package-lock.json'
+      - 'packages/*/package.json'
+      - 'packages/adapter-claude/src/**'
+      - 'packages/events/src/**'
+      - 'packages/session/src/**'
+      - 'packages/store/src/**'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'tsconfig.base.json'
+      - '.github/workflows/verity-sandbox.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Cancel a stale run when a fix-push lands — this build is expensive and there
+# is no point burning runner time on a superseded commit. Mirrors ci.yml: PRs
+# group by source branch; pushes to main group by SHA so back-to-back merges
+# never cancel each other.
+concurrency:
+  group: verity-sandbox-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # Legacy image path — kept during the namespace migration (#475) so already-
+  # provisioned containers and the current provisioner default keep resolving.
+  IMAGE_NAME: heey-global/verity-sandbox
+  # Target path under the shared `heey-global/verity/*` namespace (ADR 0003 R1).
+  # Dual-published alongside IMAGE_NAME until the provisioner default flips and the
+  # legacy path is retired (#475).
+  IMAGE_NAME_NEW: heey-global/verity/verity-sandbox
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-24.04
+    # Bounded below the janitor's cache grace period — see the note on
+    # ci.yml's `server-image` job.
+    timeout-minutes: 45
+    # Namespace everything by run so local reproduction, retries, and any future
+    # runner-layout change cannot make one cleanup reach another run's resources.
+    env:
+      SMOKE_IMAGE: verity-sandbox:smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      DEVCONTAINER_IMAGE: verity-devcontainer:smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_ENTRYPOINT: verity-ep-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_GH_CAPABILITY: /tmp/verity-smoke-ghcap-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare hosted-runner disk
+        uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '25'
+
+      # Toolkit changes already trigger this image build, which installs and
+      # exercises the Feature. Keep its OCI schema validation in the same job so
+      # one PR does not allocate a second runner merely for another checkout.
+      # renovate: datasource=github-actions depName=devcontainers/action
+      - name: Validate verity-sandbox-toolkit Feature schema
+        uses: devcontainers/action@1082abd5d2bf3a11abccba70eef98df068277772 # v1.4.3
+        with:
+          validate-only: 'true'
+          base-path-to-features: features
+
+      # Bound the BuildKit container to fit alongside the job's other processes.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          name: verity-ci-bounded-v1
+          cleanup: false
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # Deliberately no `cache: npm`; preserve the Actions cache budget for
+          # BuildKit layers used by this much larger image build.
+
+      # `@verity/store` is here for the shared-PostgreSQL step further down: it
+      # brings `pg`, the client the test harness actually connects with, into
+      # node_modules so that step can prove the socket URL against it rather than
+      # against psql.
+      - run: npm ci --workspace @verity/server --workspace @verity/store --include-workspace-root
+      - run: npm run build:runner-worker
+
+      # The step above regenerates the worker bundle from `packages/session`, so
+      # by here the working tree holds what the sources actually produce. Assert
+      # the COMMITTED copy is that same thing: it is a privileged in-sandbox
+      # component, and without this nothing in CI relates it to any source at all
+      # — a hand-edit of the minified file would ship, and a source change with a
+      # forgotten rebuild would leave the repository disagreeing with the image.
+      # This workflow's `paths` covers both directions (`features/verity-sandbox-toolkit/**`
+      # and `packages/session/src/**` among them), so neither reaches main unseen.
+      #
+      # `verity-code-review` excludes this one file from the reviewed diff and
+      # names this step as the reason it may; keep the two in sync.
+      - name: Committed runner worker bundle matches its sources
+        run: |
+          # `--quiet`, not `--exit-code`: the difference would be a minified bundle
+          # printed in full into the log, which buries the annotation that says what
+          # to do about it. The name of the file is the whole diagnostic here.
+          if ! git diff --quiet -- features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs; then
+            echo "::error::the committed runner worker bundle differs from the one built from packages/session — run 'npm run build:runner-worker' and commit the result"
+            exit 1
+          fi
+
+      - name: Build amd64 and load Docker image
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          # Named explicitly; see the note in ci.yml on why `use` is not enough.
+          builder: verity-ci-bounded-v1
+          # Repo root so `COPY features/verity-sandbox-toolkit` (the shared Feature) resolves.
+          context: .
+          file: deploy/verity-sandbox.Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.SMOKE_IMAGE }}
+          load: true
+          # `scope`, the pull_request write gate and `ignore-error`: see the note
+          # on the `Build Verity server image` step in ci.yml. The scope name
+          # follows the Dockerfile, so this job reads exactly what release.yml's
+          # `publish-sandbox` wrote — and this image is the largest in the repo,
+          # so it is the one that most needs its own namespace.
+          #
+          # This workflow only ever runs on pull_request and workflow_dispatch, so
+          # the gate means the entry is written by releases and manual runs. That
+          # does cost reuse between two pushes to the SAME PR; it costs nothing
+          # across PRs, because a `refs/pull/N/merge` entry was never visible to
+          # them anyway.
+          cache-from: type=gha,scope=verity-sandbox
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-sandbox,ignore-error=true' || '' }}
+
+      - name: Smoke-test image
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The image ENTRYPOINT is verity-agent-run (agent-neutral: keeps the
+          # container + a tmux login shell alive; it launches NO agent). Override
+          # it with bash for the checks. The four agent CLIs block on TTY detection
+          # without a pty (`claude --version` waits on auth-state init), so they
+          # are launched under a real pseudo-terminal below (not just presence-
+          # checked).
+          docker run --rm --entrypoint=bash "$SMOKE_IMAGE" -lc '
+            set -euo pipefail
+            echo "::group::Versions / presence"
+            gh --version | head -1
+            doppler --version
+            git --version
+            node --version
+            python3 --version
+            pip3 --version | head -1
+            tmux -V
+            jq --version
+            openssl version
+            echo "::endgroup::"
+
+            echo "::group::Agent CLIs — launch --version under a pseudo-terminal"
+            # claude/codex/opencode/pi block on TTY detection without a pty
+            # (claude waits on auth-state init). Allocate a REAL pty via python
+            # (openpty+fork — no host TTY needed, unlike `docker run -t`), and
+            # timeout-guard each so a hang fails loud instead of stalling CI.
+            pty_run() {
+              timeout 30 python3 -c "import os,pty,sys; raise SystemExit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))" "$@"
+            }
+            pty_run claude --version
+            pty_run codex --version
+            pty_run opencode --version
+            pty_run pi --version
+            echo "::endgroup::"
+
+            echo "::group::Helper scripts present + executable"
+            test -x /usr/local/bin/wt
+            test -x /usr/local/bin/verity-agent-run
+            echo OK
+            echo "::endgroup::"
+
+            echo "::group::User identity + dirs"
+            id dev | tee /dev/stderr | grep -q "uid=1000"
+            test "$(id -un)" = "dev"
+            test -d /home/dev/.claude
+            test -d /home/dev/.ssh
+            stat -c "%U %a" /home/dev/.ssh | grep -q "dev 700"
+            echo OK
+            echo "::endgroup::"
+
+            echo "::group::Git config (D3: signing key on the neutral /run/verity path)"
+            git config --global --get gpg.format | grep -q ssh
+            git config --global --get commit.gpgsign | grep -q true
+            git config --global --get user.signingkey | grep -q "^/run/verity/ssh/id_ed25519.pub$"
+            git config --global --get core.hooksPath | grep -q "^/opt/agent-seed/hooks$"
+            git config --global --get-all url."https://github.com/".insteadOf | grep -q "git@github.com:"
+            echo OK
+            echo "::endgroup::"
+
+            echo "::group::Secret gate detects a real credential (not just present)"
+            # The pinned gitleaks is a security control, so assert BEHAVIOR: a
+            # presence check would not notice a scanner whose default ruleset
+            # stopped matching after a version bump, and the hooks would then be
+            # silently permissive. The token is generated here, never a literal —
+            # a literal in this file would be a finding in this very repo.
+            test -x /opt/agent-seed/hooks/pre-commit
+            test -s /opt/agent-seed/hooks/pre-commit
+            test -x /opt/agent-seed/bin/verity-secret-scan
+            test -x /usr/local/bin/verity-secret-scan
+            gitleaks version
+            tmp_leak="$(mktemp -d)"
+            git init -q "$tmp_leak"
+            git -C "$tmp_leak" config user.email smoke@example.invalid
+            git -C "$tmp_leak" config user.name Smoke
+            git -C "$tmp_leak" config commit.gpgsign false
+            # 64 random bytes, base64, stripped to alphanumerics: comfortably more
+            # than the 36 characters the github-pat rule requires after filtering.
+            printf "GITHUB_TOKEN=ghp_%s\n" "$(head -c 64 /dev/urandom | base64 | tr -dc a-zA-Z0-9 | head -c 36)" \
+              > "$tmp_leak/config.env"
+            git -C "$tmp_leak" add config.env
+            # The pre-commit hook must refuse this staged diff (exit 1), and must
+            # do so with the value redacted.
+            leak_out="$(cd "$tmp_leak" && /opt/agent-seed/hooks/pre-commit 2>&1)" && leak_rc=0 || leak_rc=$?
+            test "$leak_rc" = "1"
+            printf "%s\n" "$leak_out" | grep -q "COMMIT BLOCKED - secret detected"
+            printf "%s\n" "$leak_out" | grep -q "REDACTED"
+            # A clean staged diff must pass the same hook.
+            rm "$tmp_leak/config.env"
+            printf "no secret here\n" > "$tmp_leak/notes.md"
+            git -C "$tmp_leak" add -A
+            (cd "$tmp_leak" && /opt/agent-seed/hooks/pre-commit)
+            rm -rf "$tmp_leak"
+            echo OK
+            echo "::endgroup::"
+
+            echo "::group::agent-seed code review hook is REALLY provisioned (not just configured)"
+            # core.hooksPath asserted above only proves the CONFIG is set. Assert the
+            # hook FILE actually exists + is executable + non-empty, and the marker
+            # tool is on PATH — the gap that let a dead-path core.hooksPath ship.
+            test -x /opt/agent-seed/hooks/pre-push
+            test -s /opt/agent-seed/hooks/pre-push
+            test -x /opt/agent-seed/bin/gh
+            test "$(readlink /usr/local/bin/gh)" = "/opt/agent-seed/bin/gh"
+            # Token-broker model: the gh wrapper redeems the per-container capability
+            # for a fresh repo-scoped token via verity-gh-token — no gh-token FILE is
+            # mounted. Assert the wrapper invokes the broker client and that both the
+            # broker client and the credential helper are provisioned on PATH.
+            grep -q "verity-gh-token" /usr/local/bin/gh
+            test -x /usr/local/lib/verity/gh-real
+            test -x /opt/agent-seed/bin/verity-gh-token
+            test -x /usr/local/bin/verity-gh-token
+            test -x /opt/agent-seed/bin/verity-gh-cred
+            test -x /usr/local/bin/verity-gh-cred
+            tmp_gh_test="$(mktemp -d)"
+            trap "rm -rf \"$tmp_gh_test\"" EXIT
+            printf "%s\n" \
+              "#!/usr/bin/env bash" \
+              "printf \"GH_TOKEN=%s\\n\" \"\${GH_TOKEN-<unset>}\"" \
+              "printf \"GITHUB_TOKEN=%s\\n\" \"\${GITHUB_TOKEN-<unset>}\"" \
+              > "$tmp_gh_test/gh-real"
+            chmod 0755 "$tmp_gh_test/gh-real"
+            # A stub verity-gh-token on PATH stands in for the broker: the wrapper
+            # exports its output as GH_TOKEN (only) for the child and clears any stale
+            # inherited GH_TOKEN/GITHUB_TOKEN.
+            printf "%s\n" "#!/usr/bin/env bash" "printf \"fresh-token\"" \
+              > "$tmp_gh_test/verity-gh-token"
+            chmod 0755 "$tmp_gh_test/verity-gh-token"
+            out="$(PATH="$tmp_gh_test:$PATH" GH_TOKEN=stale GITHUB_TOKEN=stale VERITY_GH_REAL="$tmp_gh_test/gh-real" /usr/local/bin/gh)"
+            printf "%s\n" "$out" | grep -qx "GH_TOKEN=fresh-token"
+            printf "%s\n" "$out" | grep -qx "GITHUB_TOKEN=<unset>"
+            # Broker yields nothing (non-zero exit) → no token exported; stale
+            # inherited GH_TOKEN/GITHUB_TOKEN are still cleared.
+            printf "%s\n" "#!/usr/bin/env bash" "exit 1" > "$tmp_gh_test/verity-gh-token"
+            chmod 0755 "$tmp_gh_test/verity-gh-token"
+            out="$(PATH="$tmp_gh_test:$PATH" GH_TOKEN=stale GITHUB_TOKEN=stale VERITY_GH_REAL="$tmp_gh_test/gh-real" /usr/local/bin/gh)"
+            printf "%s\n" "$out" | grep -qx "GH_TOKEN=<unset>"
+            printf "%s\n" "$out" | grep -qx "GITHUB_TOKEN=<unset>"
+            test -x /usr/local/bin/verity-code-review
+            test -f /opt/agent-seed/code-review-prompt.md
+            # The gate must offer a concrete `run` subcommand. Without it agents
+            # improvise a backend-native reviewer, which resolves to a missing
+            # `code_review` agent path and hangs the turn on a tool call that
+            # never returns output.
+            # Exercise `run` against a STUBBED reviewer: proves prompt discovery,
+            # invocation and output capture actually work, without spending an API
+            # call. A help-text grep alone would let a broken run path ship.
+            tmp_review="$(mktemp -d)"
+            mkdir -p "$tmp_review/codex-home"
+            export CODEX_HOME="$tmp_review/codex-home"
+            # No single quotes anywhere in this script: it runs inside the
+            # docker -lc single-quoted wrapper above, so a single quote here
+            # ends that wrapper and breaks the whole step.
+            printf "%s\n" "#!/usr/bin/env bash" "out=\"\"" \
+              "while [ \$# -gt 0 ]; do case \"\$1\" in -o) out=\"\$2\"; shift 2;; *) shift;; esac; done" \
+              "printf \"STUB REVIEW OK\n\" >\"\$out\"" >"$tmp_review/codex"
+            chmod 0755 "$tmp_review/codex"
+            git init -q -b main "$tmp_review/repo"
+            git -C "$tmp_review/repo" config user.email ci@example.com
+            git -C "$tmp_review/repo" config user.name ci
+            printf "a\n" >"$tmp_review/repo/f.txt"
+            git -C "$tmp_review/repo" add -A
+            git -C "$tmp_review/repo" -c commit.gpgsign=false commit -qm base
+            git -C "$tmp_review/repo" checkout -q -b feat/ci
+            printf "b\n" >"$tmp_review/repo/f.txt"
+            git -C "$tmp_review/repo" add -A
+            git -C "$tmp_review/repo" -c commit.gpgsign=false commit -qm change
+            help_output="$(cd "$tmp_review/repo" && /usr/local/bin/verity-code-review help)"
+            printf "%s\n" "$help_output" | grep -q "verity-code-review run"
+            review_output="$(cd "$tmp_review/repo" && PATH="$tmp_review:$PATH" /usr/local/bin/verity-code-review run main)"
+            printf "%s\n" "$review_output" | grep -q "STUB REVIEW OK"
+            # And it must fail CLOSED when the reviewer itself fails, never pass silently.
+            printf "%s\n" "#!/usr/bin/env bash" "exit 7" >"$tmp_review/codex"
+            chmod 0755 "$tmp_review/codex"
+            if (cd "$tmp_review/repo" && PATH="$tmp_review:$PATH" /usr/local/bin/verity-code-review run main); then
+              echo "verity-code-review run must fail closed when the reviewer fails" >&2
+              exit 1
+            fi
+            rm -rf "$tmp_review"
+            echo OK
+            echo "::endgroup::"
+
+            echo "::group::SSH config"
+            grep -q "StrictHostKeyChecking yes" /home/dev/.ssh/config
+            grep -q "IdentitiesOnly yes" /home/dev/.ssh/config
+            echo OK
+            echo "::endgroup::"
+
+            echo "::group::npm supply-chain hardening"
+            test "$(npm config get ignore-scripts)" = "true"
+            test "$(npm config get allow-git)" = "none"
+            test "$(npm config get save-exact)" = "true"
+            test "$(npm config get fund)" = "false"
+            echo OK
+            echo "::endgroup::"
+
+            echo "::group::D4: dead credential plumbing is NOT present"
+            test ! -e /etc/profile.d/gh-token.sh
+            test ! -e /usr/local/bin/gh-app-token
+            echo OK
+            echo "::endgroup::"
+          '
+
+      # The repo's OWN devcontainer layer (.devcontainer/Dockerfile), built on the
+      # image this job just produced rather than the published one — this is the
+      # only place the two are proved to work together before either ships.
+      #
+      # It lives in this workflow, not ci.yml, for a reason worth stating: the
+      # thing under test is a container image, and the base is already here.
+      # Building it in ci.yml would mean pulling the published sandbox on every
+      # PR to test a layer whose base that PR may have just changed.
+      - name: Repo devcontainer layer builds on this image
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `--builder default`, and buildx spelled out rather than left to
+          # `docker build`'s alias, because of what the base is here: the step
+          # above `docker load`ed $SMOKE_IMAGE into the DAEMON's image store, and
+          # it exists nowhere else — no registry has it. The builder this job
+          # otherwise uses, `verity-ci-bounded-v1`, is a `docker-container` driver: it
+          # resolves `FROM` through a registry and cannot see the daemon's
+          # images, so it would try to pull a tag that was never pushed. The
+          # built-in `default` builder is the daemon itself, which both finds the
+          # base and leaves the result where the `docker run` below looks for it.
+          docker buildx build \
+            --builder default \
+            --build-arg "VERITY_SANDBOX_IMAGE=$SMOKE_IMAGE" \
+            --tag "$DEVCONTAINER_IMAGE" \
+            --file .devcontainer/Dockerfile \
+            .devcontainer
+
+      # The suite's shared PostgreSQL, exercised through the REAL harness rather
+      # than a Bash transcription of it: `scripts/test-postgres.ts` is imported
+      # from the mounted checkout and its `setUpSharedPostgres` is called. Node's
+      # type stripping runs the .ts directly, and the module deliberately imports
+      # nothing but node builtins, so this needs no `npm install` in the image.
+      #
+      # Unit tests cover the decisions in that module (which bin directory, which
+      # URL, which flags). What ONLY a container can show is whether initdb and
+      # pg_ctl actually succeed as the unprivileged agent user, in the directory
+      # the Dockerfile above created — the exact step that silently degrades to
+      # pglite when it fails, which is why the fallback is turned into an error
+      # here.
+      - name: Shared test PostgreSQL comes up in the repo devcontainer
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The container script arrives on stdin as a quoted heredoc rather than
+          # as one `bash -lc` argument. Nothing inside it needs escaping then, so
+          # an apostrophe in a comment cannot end the script three lines early.
+          docker run --rm -i -v "$PWD:/repo:ro" --entrypoint=bash "$DEVCONTAINER_IMAGE" -l <<'CONTAINER'
+          set -euo pipefail
+
+          echo "::group::image contract"
+          # The step below imports a .ts file directly, so the image needs a Node
+          # whose type stripping is on by default. Printed rather than asserted —
+          # a loader error further down reads like a broken script, and this line
+          # is what tells the two apart.
+          node --version
+          # The harness looks under this directory and nowhere on PATH.
+          ls -d /usr/lib/postgresql/*/bin
+          # CLUSTER_ROOT: owned by the agent user (no sudo in a sandbox) and
+          # 0700, because trust auth makes these permissions the boundary.
+          test "$(stat -c "%U %a" /var/lib/verity-test-postgres)" = "dev 700"
+          # No system cluster: the postinst must have honoured the drop-in.
+          # Searched rather than spelled out, so pinning a different major
+          # cannot turn this assertion vacuous.
+          test -z "$(find /var/lib/postgresql -maxdepth 2 -name main -print -quit 2>/dev/null)"
+          echo OK
+          echo "::endgroup::"
+
+          echo "::group::initdb + pg_ctl as the agent user"
+          # `</dev/null` on both node calls: this whole script is fed to `bash -l`
+          # on stdin and carries a nested heredoc, so a child that reads stdin
+          # would swallow the rest of the file. Neither wants input; saying so
+          # keeps the hazard out of a script nobody will re-derive.
+          url="$(node --input-type=module -e '
+            import { setUpSharedPostgres } from "/repo/scripts/test-postgres.ts";
+            const shared = await setUpSharedPostgres(process.env, (message) => {
+              throw new Error(message);
+            });
+            if (shared === undefined) throw new Error("no shared PostgreSQL, and no failure reported");
+            process.stdout.write(shared.adminUrl);
+          ' </dev/null)"
+          echo OK
+          echo "::endgroup::"
+
+          echo "::group::a worker database, through the client the suite uses"
+          # psql would only prove the server is up. It is not what connects
+          # during a run: `pg.Pool` is, and it takes the socket path from
+          # `?host=` via pg-connection-string rather than from the authority. If
+          # that were wrong, setUpSharedPostgres would still hand back a URL, the
+          # pglite fallback would be skipped, and every database test would fail
+          # in sandboxes and nowhere else. Hence the real client here.
+          #
+          # `new pg.Pool({ connectionString })` is the store's own construction,
+          # not an approximation of it: `createPostgresDb` in
+          # `packages/store/src/db.ts` builds the pool the same way and passes no
+          # host, port or ssl of its own, so nothing between that URL and this
+          # one can drop the socket parameter. Should it ever gain an explicit
+          # host, this step stops standing in for it and has to be rewritten
+          # around the real constructor.
+          #
+          # The database NAME is spelled out rather than imported from
+          # `packages/store/src/testing.ts`: that module reaches kysely, pglite
+          # and the schema through `.js` specifiers that only resolve after a
+          # build, while `scripts/test-postgres.ts` above imports node builtins
+          # only. `workerDatabaseUrl` and the pathname rewrite it performs are
+          # unit-tested against pg-connection-string; what needs a container is
+          # the connection.
+          cat >/tmp/verity-pg-smoke.mjs <<'JS'
+          // Resolved as the package rather than by reaching into its internals:
+          // a path into node_modules depends on npm hoisting and on pg's own
+          // file layout, and would fail this step with ERR_MODULE_NOT_FOUND —
+          // which reads like an environment problem, the exact thing this step
+          // exists to tell apart from a broken socket URL.
+          import { createRequire } from "node:module";
+          // Resolved from the package that DECLARES pg, not from the repo root:
+          // the root only sees it when npm hoists, and a future layout that
+          // nested it under packages/store/node_modules would fail this step
+          // with the exact ERR_MODULE_NOT_FOUND described above.
+          const pg = createRequire("/repo/packages/store/package.json")("pg");
+
+          const admin = process.argv[2];
+          const name = "verity_test_smoke_w1";
+          const worker = new URL(admin);
+          worker.pathname = "/" + name;
+
+          const run = async (url, sql) => {
+            const pool = new pg.Pool({ connectionString: url });
+            try {
+              return (await pool.query(sql)).rows;
+            } finally {
+              await pool.end();
+            }
+          };
+
+          await run(admin, 'create database "' + name + '"');
+          try {
+            const [row] = await run(worker.href, "select current_database() as db");
+            if (row.db !== name) throw new Error("connected to " + row.db + ", not " + name);
+          } finally {
+            await run(admin, 'drop database if exists "' + name + '" with (force)');
+          }
+          JS
+          node /tmp/verity-pg-smoke.mjs "$url" </dev/null
+          echo OK
+          echo "::endgroup::"
+          CONTAINER
+
+      - name: Entrypoint runtime smoke-test (agent-neutral PID 1)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Exercise the REAL entrypoint (verity-agent-run), not the bash
+          # override above. Asserts the agent-neutral contract: it opens the
+          # tmux session, holds PID 1 with `sleep infinity`, and launches NO
+          # agent (sessions run via the server's `docker exec`, never here).
+          # WORKSPACE=/home/dev because no project clone is mounted at /work;
+          # the entrypoint's `tmux new-session -c "$WORKSPACE"` needs a real dir.
+          # A readable capability file + broker URL + GIT_USER_* env also exercise
+          # the entrypoint's git runtime reconcile: identity seeded from env, and an
+          # HTTPS-push credential helper (verity-gh-cred) wired whenever the broker
+          # URL is set and the capability at VERITY_GH_TOKEN_CAPABILITY_FILE
+          # (defaults to /run/verity/gh-token-capability) is readable. The helper is
+          # only WIRED here — no token is redeemed until an actual push — so a dummy
+          # broker URL + capability suffice to assert the wiring.
+          echo 'smoke-dummy-capability' > "$SMOKE_GH_CAPABILITY"
+          docker run -d --name "$SMOKE_ENTRYPOINT" \
+            -e WORKSPACE=/home/dev \
+            -e GIT_USER_NAME=ci-smoke -e GIT_USER_EMAIL=ci@verity.test \
+            -e VERITY_GH_TOKEN_URL=http://verity-smoke.invalid/internal/github/token \
+            -v "$SMOKE_GH_CAPABILITY":/run/verity/gh-token-capability:ro \
+            "$SMOKE_IMAGE"
+
+          session_up=0
+          for _ in $(seq 1 20); do
+            if docker exec "$SMOKE_ENTRYPOINT" tmux has-session -t verity 2>/dev/null; then
+              session_up=1; break
+            fi
+            sleep 1
+          done
+
+          # Gather state BEFORE teardown so the assertions below can't leak the
+          # container on failure. Enumerate processes via /proc (no `ps`/`pgrep`
+          # dependency) and match whole comm names to avoid substring hits.
+          # `|| true` on the exec-based gathers so a broken entrypoint (dead
+          # container) surfaces as a clean assertion failure below, not a raw
+          # `docker exec` abort under `set -e`.
+          running=$(docker inspect -f '{{.State.Running}}' "$SMOKE_ENTRYPOINT")
+          pid1=$(docker exec "$SMOKE_ENTRYPOINT" sh -c "tr '\0' ' ' </proc/1/cmdline" || true)
+          agents=$(docker exec "$SMOKE_ENTRYPOINT" sh -c \
+            'for c in /proc/[0-9]*/comm; do cat "$c" 2>/dev/null; done | grep -E "^(claude|codex|opencode|pi)$" || true' || true)
+          gitname=$(docker exec "$SMOKE_ENTRYPOINT" git config --global --get user.name || true)
+          gitemail=$(docker exec "$SMOKE_ENTRYPOINT" git config --global --get user.email || true)
+          credhelper=$(docker exec "$SMOKE_ENTRYPOINT" sh -c 'git config --global --get credential.helper >/dev/null 2>&1 && echo set || echo unset' || true)
+          docker rm -f "$SMOKE_ENTRYPOINT" >/dev/null
+
+          echo "session_up=$session_up running=$running pid1=[$pid1] agents=[$agents]"
+          test "$session_up" = 1        # tmux session `verity` came up
+          test "$running" = true        # container still alive (PID 1 held)
+          echo "$pid1" | grep -q 'sleep infinity'   # PID 1 is the keep-alive
+          test -z "$agents"             # no agent CLI launched by the entrypoint
+          # git runtime reconcile: identity seeded from env + credential helper wired
+          echo "gitname=[$gitname] gitemail=[$gitemail] credhelper=$credhelper"
+          test "$gitname" = "ci-smoke"          # user.name seeded from GIT_USER_NAME
+          test "$gitemail" = "ci@verity.test"   # user.email seeded from GIT_USER_EMAIL
+          test "$credhelper" = "set"            # HTTPS push credential helper wired
+          echo "entrypoint runtime smoke-test OK"
+
+      # Each script already namespaces the containers, volumes and networks it
+      # creates by run; the image is the one name it takes from outside, so hand
+      # it this run's tag rather than letting it fall back to the shared default.
+      - name: Claude ACP Runner survives a hard Server restart
+        shell: bash
+        env:
+          VERITY_LIVE_SMOKE_IMAGE: ${{ env.SMOKE_IMAGE }}
+        run: scripts/test-runner-claude-live-container.sh
+
+      - name: Claude session survives a Sandbox recreate
+        shell: bash
+        env:
+          VERITY_LIVE_SMOKE_IMAGE: ${{ env.SMOKE_IMAGE }}
+        run: scripts/test-runner-claude-live-recreate.sh
+
+      - name: Clean Docker smoke artifacts
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f "$SMOKE_ENTRYPOINT" >/dev/null 2>&1 || true
+          rm -f "$SMOKE_GH_CAPABILITY"
+          # The devcontainer layer first: it holds a reference on the base, so
+          # removing the base before it would leave the tag behind as a dangling
+          # image on a shared daemon.
+          docker image rm -f "$DEVCONTAINER_IMAGE" >/dev/null 2>&1 || true
+          docker image rm -f "$SMOKE_IMAGE" >/dev/null 2>&1 || true
+          # Size cap, two stores, both spellings of the flag — see the note on the
+          # `Clean Docker smoke artifacts` step in ci.yml's `server-image` job.
+          docker buildx prune --builder verity-ci-bounded-v1 --force --keep-storage 40GB >/dev/null 2>&1 \
+            || docker buildx prune --builder verity-ci-bounded-v1 --force --reserved-space 40GB >/dev/null 2>&1 \
+            || true
+          docker builder prune --all --force --keep-storage 20GB >/dev/null 2>&1 \
+            || docker builder prune --all --force --reserved-space 20GB >/dev/null 2>&1 \
+            || true
+          df -h "$RUNNER_TEMP" || true
+          docker system df || true

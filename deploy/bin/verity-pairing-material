@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="${VERITY_STATE_DIR:-/etc/verity}"
+port="${VERITY_API_HOST_PORT:-8082}"
+identity_key="$state_dir/pairing-identity.pem"
+tls_key="$state_dir/tls-key.pem"
+tls_cert="$state_dir/tls-cert.pem"
+pairing_code="$state_dir/pairing-code"
+pairing_expiry="$state_dir/pairing-expires-at"
+pairing_uri="$state_dir/pairing-uri"
+server_uid="${VERITY_SERVER_UID:-1000}"
+server_gid="${VERITY_SERVER_GID:-1000}"
+
+die() { printf 'verity-pairing-material: %s\n' "$*" >&2; exit 1; }
+command -v openssl >/dev/null 2>&1 || die 'openssl is required'
+[[ "$server_uid" =~ ^[0-9]+$ ]] || die 'VERITY_SERVER_UID must be decimal digits'
+[[ "$server_gid" =~ ^[0-9]+$ ]] || die 'VERITY_SERVER_GID must be decimal digits'
+[ -d "$state_dir" ] || die "$state_dir does not exist"
+[ ! -L "$state_dir" ] || die "$state_dir must not be a symlink"
+if [ "$(id -u)" = 0 ]; then
+  [ "$(stat -c '%u' "$state_dir")" = 0 ] || die "$state_dir must be owned by root"
+  # The non-root Server needs traversal, while material files below remain 0600.
+  chmod 0711 "$state_dir"
+fi
+
+for material in "$identity_key" "$tls_key" "$tls_cert" "$pairing_code" "$pairing_expiry" "$pairing_uri"; do
+  [ ! -L "$material" ] || die "$material must not be a symlink"
+  [ ! -e "$material" ] || [ -f "$material" ] || die "$material must be a regular file"
+done
+
+write_private() {
+  local target="$1"
+  local temporary="$target.$$.tmp"
+  umask 077
+  cat >"$temporary"
+  chmod 0600 "$temporary"
+  if [ "$(id -u)" = 0 ]; then chown "$server_uid:$server_gid" "$temporary"; fi
+  mv -f "$temporary" "$target"
+}
+
+if [ ! -s "$identity_key" ]; then
+  openssl genpkey -algorithm ED25519 | write_private "$identity_key"
+fi
+if [ ! -s "$tls_key" ]; then
+  openssl ecparam -name prime256v1 -genkey -noout | write_private "$tls_key"
+fi
+if [ "$(id -u)" = 0 ]; then
+  chown "$server_uid:$server_gid" "$identity_key" "$tls_key"
+fi
+chmod 0600 "$identity_key" "$tls_key"
+
+ips="${VERITY_PAIRING_IPS:-$(hostname -I 2>/dev/null || true)}"
+san='DNS:localhost,IP:127.0.0.1'
+suggested=''
+for ip in $ips; do
+  case "$ip" in
+    *:*|*[!0-9.]*) continue ;;
+  esac
+  san="$san,IP:$ip"
+  [ -n "$suggested" ] || suggested="https://$ip:$port"
+done
+pair_host="${VERITY_PAIRING_HOST:-}"
+if [ -n "$pair_host" ]; then
+  [[ "$pair_host" =~ ^[A-Za-z0-9.-]+$ ]] || die 'VERITY_PAIRING_HOST is not a DNS name'
+  san="$san,DNS:$pair_host"
+  suggested="https://$pair_host:$port"
+fi
+[ -n "$suggested" ] || suggested="https://127.0.0.1:$port"
+
+if [ ! -s "$tls_cert" ] || ! openssl x509 -checkend 604800 -noout -in "$tls_cert" >/dev/null 2>&1; then
+  temporary="$tls_cert.$$.tmp"
+  openssl req -new -x509 -sha256 -days 397 -key "$tls_key" -out "$temporary" \
+    -subj '/CN=Verity local control plane' \
+    -addext "subjectAltName=$san" \
+    -addext 'keyUsage=digitalSignature,keyEncipherment' \
+    -addext 'extendedKeyUsage=serverAuth'
+  chmod 0644 "$temporary"
+  if [ "$(id -u)" = 0 ]; then chown root:root "$temporary"; fi
+  mv -f "$temporary" "$tls_cert"
+fi
+
+code="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+expires_at="$(date -u -d '+15 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"
+printf %s "$code" | write_private "$pairing_code"
+printf %s "$expires_at" | write_private "$pairing_expiry"
+
+identity_key_b64="$(openssl pkey -in "$identity_key" -pubout -outform DER | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
+server_id="srv_$(printf 'verity.device-pairing.v1.server-id\0%s' "$identity_key_b64" | openssl dgst -sha256 -binary | head -c 16 | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
+# Pin the P-256 public key rather than the leaf certificate. The TLS key remains
+# stable when the short-lived self-signed certificate renews, so paired devices
+# keep working without accepting an unrelated certificate/key.
+tls_pin="sha256-$(openssl x509 -in "$tls_cert" -pubkey -noout | openssl pkey -pubin -outform DER | tail -c 65 | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
+payload="$(printf '{"v":1,"serverId":"%s","identityKey":"%s","tlsPin":"%s","code":"%s","url":"%s","expiresAt":"%s"}' "$server_id" "$identity_key_b64" "$tls_pin" "$code" "$suggested" "$expires_at" | openssl base64 -A | tr '+/' '-_' | tr -d '=')"
+printf 'verity://pair?payload=%s' "$payload" | write_private "$pairing_uri"
+
+cat "$pairing_uri"
+printf '\n'

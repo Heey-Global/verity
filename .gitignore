@@ -1,0 +1,76 @@
+# Every generated path below is written WITHOUT a trailing slash, deliberately.
+# A trailing slash restricts the pattern to directories, and a symlink is not a
+# directory to git however it resolves — so `node_modules/` leaves a symlinked
+# `node_modules` untracked-but-visible, which is how one was committed in #1557.
+# Sandbox worktrees symlink the install in rather than repeat it (the pre-push
+# hook refuses to run lint or format without `$REPO_ROOT/node_modules`), so that
+# symlink is the normal case here, not an accident. None of these names is one
+# the repo would want tracked as a file either, so the slash bought nothing.
+
+# Dependencies
+node_modules
+
+# Embedded server database (pglite data dir)
+.verity-data
+.verity-sessions
+
+# Build output
+dist
+*.tsbuildinfo
+
+# Expo / React Native (generated; native dirs are produced by prebuild/EAS)
+.expo
+apps/*/android
+apps/*/ios
+
+# Test/coverage
+.cache
+coverage
+
+# Env / secrets
+.env
+.env.local
+!.env.example
+*.local.yml
+
+# Local runner/onboarding state
+.verity-onboarding
+
+# Editor / OS
+.DS_Store
+*.log
+
+# Agent code review marker (local review receipt written by `verity-code-review
+# mark`; a per-checkout receipt, never committed — see AGENTS.md).
+.agents/.last-code-review-sha
+# Scratch copies of `verity-code-review` output, which the tool writes to a temp dir it
+# deletes on exit. Staged in the worktree only so a session can read its own findings.
+.agents/review-capture/
+
+# Worktree re-registration sidecar: a per-checkout copy of the facts needed to
+# rebuild `.git/worktrees/<name>` after a cross-namespace `git worktree prune`
+# deletes it (see worktree.ts). Local to the checkout, never committed. The
+# `.tmp` is what it is written as before being renamed into place.
+.verity-worktree.json
+.verity-worktree.json.tmp
+
+# Core dumps. A sandbox that runs out of memory drops one of these in the
+# worktree root, where `git add -A` will happily stage 800 MB of process memory
+# — worker environment, gateway bearers, prompt text and all. Anchored: unanchored
+# these would also swallow any `core/` directory anywhere in the tree. Anchoring
+# does not distinguish a file from a directory — git has no file-only syntax — so a
+# top-level `core/` would still need `!/core/` added here if one is ever introduced.
+# Every suffix requires a digit, never a bare `*`: `/core.*` would also swallow a
+# root-level `core.ts` or `core.json` and hide real source from `git add`. A digit
+# is a weaker requirement than it looks — glob `*` matches whatever trails it, so
+# `/core.*.[0-9]*` also covers a hypothetical `core.spec.1.ts`. That is accepted:
+# the alternative is enumerating dump suffixes a host may not use, and no such
+# source file exists at the repo ROOT, which is the only place these are anchored.
+# Two
+# shapes, because `kernel.core_pattern` differs per host: `core.<pid>` (the kernel
+# default) and `core.<comm>.<pid>[.<time>]` (what most distro patterns produce, and
+# the one that would otherwise slip through — `core.node.1234` starts with neither
+# `core.` + digit nor any tracked extension).
+/core
+/core.[0-9]*
+/core.*.[0-9]*

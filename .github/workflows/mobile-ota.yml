@@ -1,0 +1,221 @@
+name: verity-mobile-ota
+
+# Ships a patch-versioned EAS Update to the TestFlight channel on every merge to
+# main that touches the mobile bundle. This is the "always ship JS/asset changes" half of the
+# mobile release split: installed TestFlight builds pull the compatible update on
+# next launch/foreground (apps/mobile/lib/automaticUpdates.ts).
+#
+# It NEVER builds a native binary. A new TestFlight build is produced only when you
+# deliberately run the native `deploy-testflight` EAS workflow
+# (`eas workflow:run deploy-testflight.yml`), so routine merges stop spending native
+# builds. The explicit X.Y.0 runtime guarantees that patches only reach their
+# native release line; after X.(Y+1).0 ships, older X.Y.0 installs receive no newer
+# OTA bundles.
+#
+# Each successful publish gets the next patch in the current native line:
+# `mobile-v1.4.0` is the TestFlight build, followed by OTA releases
+# `mobile-v1.4.1`, `mobile-v1.4.2`, and so on. The version is stamped into the
+# exported bundle, so the app always displays the exact release it is running.
+#
+# Requires an EXPO_TOKEN repository secret (an Expo access token from
+# expo.dev -> account settings -> access tokens). The guard step below fails loudly
+# if it is missing rather than letting eas-cli error out cryptically.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/mobile/**'
+      - 'packages/events/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: write
+
+concurrency:
+  # Never cancel an in-flight publish: a cancelled `eas update` can leave a
+  # half-rolled-out update. Serialize back-to-back merges instead of racing them.
+  group: mobile-ota-testflight
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    # A stalled Metro export / EAS publish must not hold the serialized release
+    # slot indefinitely.
+    timeout-minutes: 30
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect native release commit
+        id: release-kind
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet HEAD^ HEAD -- apps/mobile/version.txt; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Native mobile release commit detected; its TestFlight workflow owns this version."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require Expo release configuration
+        if: steps.release-kind.outputs.skip != 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "::error::EXPO_TOKEN secret is not set — add an Expo access token (expo.dev -> access tokens) as a repository secret so the OTA publish can authenticate." >&2
+            exit 1
+          fi
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - if: steps.release-kind.outputs.skip != 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # Deliberately no `cache: npm`; the roughly 2 GB archive competes with
+          # the BuildKit entries used by release image jobs.
+
+      - if: steps.release-kind.outputs.skip != 'true'
+        run: npm ci
+
+      # apps/mobile bundles @verity/mobile from its built dist (the mobile-app CI
+      # job builds it before its checks for the same reason), so build the workspace
+      # dependency before Metro exports the update bundle.
+      - if: steps.release-kind.outputs.skip != 'true'
+        run: npm run -w @verity/mobile build
+
+      - name: Allocate next OTA patch version
+        if: steps.release-kind.outputs.skip != 'true'
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_tag="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+              | grep -E '^mobile-v[0-9]+\.[0-9]+\.0$' \
+              | sort -V \
+              | tail -n 1
+          )"
+          if [[ -z "$native_tag" ]]; then
+            echo "::error::No native mobile-vX.Y.0 release exists. Merge the first mobile release-please PR and publish its TestFlight build before shipping OTA patches." >&2
+            exit 1
+          fi
+
+          native_version="${native_tag#mobile-v}"
+          IFS=. read -r major minor native_patch <<< "$native_version"
+          if [[ "$native_patch" != "0" ]]; then
+            echo "::error::Native release tag must end in .0, got $native_tag" >&2
+            exit 1
+          fi
+
+          configured_version="$(node -e '
+            const source = require("node:fs").readFileSync("apps/mobile/app.config.ts", "utf8");
+            const match = source.match(/version:\s*["'\''`](\d+\.\d+\.\d+)["'\''`]\s*,\s*\/\/ x-release-please-version/);
+            if (!match) throw new Error("cannot read release version from apps/mobile/app.config.ts");
+            process.stdout.write(match[1]);
+          ')"
+          if [[ "$configured_version" != "$native_version" ]]; then
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            echo "OTA skipped: configured native line $configured_version is not published yet (latest published: $native_version)."
+            exit 0
+          fi
+
+          # The explicit runtime separates release lines; this cumulative guard
+          # protects compatibility within a line. Once native-sensitive files
+          # differ from the published .0 tag, no later merge may ship an OTA until
+          # the next native release captures that new native surface.
+          #
+          # The ROOT manifest/lockfile are deliberately NOT in this path list. In a
+          # workspaces monorepo they also carry pure tooling edits (a new lint
+          # script, a server-only dependency) that an installed binary absorbs
+          # fine — treating every such edit as native silently blocked EVERY OTA
+          # from mobile-v1.3.6 onward (a `lint:changed` script did it). What
+          # actually matters in the lockfile is a version move inside the app's own
+          # dependency closure; the helper reports exactly those.
+          if ! native_path_changes="$(git diff --name-only "$native_tag"..HEAD -- \
+              apps/mobile/package.json apps/mobile/app.config.ts apps/mobile/eas.json \
+              apps/mobile/ios apps/mobile/android apps/mobile/native \
+              apps/mobile/plugins apps/mobile/patches)"; then
+            echo "::error::Could not compare native-sensitive mobile paths with $native_tag." >&2
+            exit 1
+          fi
+          if ! native_lock_changes="$(node scripts/mobile-native-lock-changes.mjs "$native_tag" HEAD)"; then
+            echo "::error::Could not compare the mobile dependency closure with $native_tag." >&2
+            exit 1
+          fi
+          native_changes="$(printf '%s\n%s\n' "$native_path_changes" "$native_lock_changes" | sed '/^$/d')"
+          if [[ -n "$native_changes" ]]; then
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            echo "OTA skipped: native-sensitive changes exist after $native_tag:"
+            echo "$native_changes"
+            exit 0
+          fi
+
+          current_tag="$(git tag --list "mobile-v${major}.${minor}.*" --sort=-version:refname | head -n 1)"
+          current_version="${current_tag#mobile-v}"
+          IFS=. read -r _ _ patch <<< "$current_version"
+          next_version="${major}.${minor}.$((patch + 1))"
+          next_tag="mobile-v${next_version}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${next_tag}" >/dev/null 2>&1; then
+            echo "::error::OTA tag $next_tag already exists; refusing to publish an ambiguous version." >&2
+            exit 1
+          fi
+
+          echo "version=$next_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "Allocating OTA release $next_tag from native line $native_tag"
+
+      # Stamp the exact release into a JS-only source file before Metro
+      # exports the bundle. GITHUB_SHA remains available internally for diagnosis.
+      - name: Stamp running release version
+        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
+        env:
+          MOBILE_RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/stamp-mobile-build-info.mjs
+
+      - name: Publish OTA update to the testflight channel
+        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # eas-cli is pinned here (not in package.json) so the OTA toolchain is
+          # reproducible without adding it to the app's dependency tree.
+          #
+          # The explicit X.Y.0 runtime comes from app.config.ts, so this update can
+          # only reach the corresponding native TestFlight release line.
+          npx eas-cli@21.0.1 update \
+            --channel testflight \
+            --platform ios \
+            --message "v${{ steps.version.outputs.version }} · main@${GITHUB_SHA::7}" \
+            --non-interactive
+
+      - name: Record OTA GitHub release
+        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OTA_TAG: ${{ steps.version.outputs.tag }}
+          OTA_VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$OTA_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "Mobile $OTA_VERSION (OTA)" \
+            --notes "OTA release $OTA_VERSION for the TestFlight channel, built from commit $GITHUB_SHA." \
+            --latest=false

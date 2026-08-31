@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_image="${1:-verity-project-relay:smoke}"
+suffix="${VERITY_LIFECYCLE_SMOKE_ID:-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$}"
+smoke_label="verity.lifecycle-smoke=$suffix"
+registry="verity-relay-registry-${suffix}"
+network="verity-relay-lifecycle-${suffix}"
+volume="verity-relay-lifecycle-${suffix}"
+harness_volume="verity-relay-harness-${suffix}"
+harness="verity-relay-harness-${suffix}"
+probe_image='node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'
+# renovate: datasource=docker depName=registry versioning=docker
+registry_image='registry:2.8.3@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278'
+registry_ref=''
+digest_ref=''
+
+cleanup() {
+  docker rm -f "$harness" "$registry" >/dev/null 2>&1 || true
+  docker ps -aq --filter "label=verity.project-id=lifecycle-$suffix" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker ps -aq --filter "label=verity.project-id=rollback-$suffix" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker network rm "$network" >/dev/null 2>&1 || true
+  docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  docker volume rm -f "$harness_volume" >/dev/null 2>&1 || true
+  [[ -z "$digest_ref" ]] || docker image rm -f "$digest_ref" >/dev/null 2>&1 || true
+  [[ -z "$registry_ref" ]] || docker image rm -f "$registry_ref" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker run -d --name "$registry" --restart on-failure:3 --label "$smoke_label" -p 127.0.0.1::5000 "$registry_image" >/dev/null
+registry_port="$(docker inspect -f '{{(index (index .NetworkSettings.Ports "5000/tcp") 0).HostPort}}' "$registry")"
+# The self-hosted runner can talk to a Docker daemon whose loopback is not the
+# workflow process's loopback. Probe from the daemon host network—the same
+# namespace in which `docker push 127.0.0.1:…` resolves its registry endpoint.
+wait_for_registry() {
+  docker run --rm --network host "$probe_image" node --input-type=module -e '
+  const port = process.argv[1];
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/v2/`);
+      if (response.ok) process.exit(0);
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  process.exit(1);
+' "$registry_port"
+}
+
+report_registry() {
+  docker inspect -f 'registry status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}} ports={{json .NetworkSettings.Ports}}' "$registry" >&2
+  docker logs "$registry" >&2 || true
+}
+
+if ! wait_for_registry; then
+  report_registry
+  exit 1
+fi
+registry_ref="127.0.0.1:${registry_port}/verity/project-relay:smoke"
+docker tag "$source_image" "$registry_ref"
+docker push "$registry_ref" >/dev/null
+digest_ref="$(docker inspect -f '{{index .RepoDigests 0}}' "$registry_ref")"
+[[ "$digest_ref" == *@sha256:* ]]
+
+docker network create --label "$smoke_label" "$network" >/dev/null
+docker volume create --label "$smoke_label" "$volume" >/dev/null
+docker volume create --label "$smoke_label" "$harness_volume" >/dev/null
+repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+# Stream the built runtime through Docker stdin so a remote/containerized daemon
+# never has to resolve the workflow checkout as a host bind path.
+tar -C "$repo_root" -cf - \
+  node_modules package.json packages/*/package.json packages/*/dist \
+  deploy/bin/verity-project-relay-lifecycle-smoke.mjs | \
+  docker run --rm -i --mount "type=volume,src=$harness_volume,dst=/repo" \
+    "$probe_image" tar -C /repo -xf -
+
+# The registry is deliberately a disposable test dependency. If the shared
+# daemon briefly killed it under pressure after the push, its bounded restart
+# policy preserves the pushed layer store; wait for that recovery before the
+# lifecycle harness asks production code to pull the immutable digest.
+if ! wait_for_registry; then
+  report_registry
+  exit 1
+fi
+
+if ! docker run --name "$harness" --network "$network" --user 0:0 \
+  --label "$smoke_label" \
+  --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+  --mount "type=volume,src=$volume,dst=/data" \
+  --mount "type=volume,src=$harness_volume,dst=/repo,readonly" \
+  --workdir /repo \
+  "$probe_image" node deploy/bin/verity-project-relay-lifecycle-smoke.mjs \
+  "$digest_ref" "$volume" "$network" "$suffix"; then
+  report_registry
+  for project_id in "lifecycle-$suffix" "rollback-$suffix"; do
+    while read -r relay_id; do
+      [[ -n "$relay_id" ]] || continue
+      docker inspect -f 'relay={{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' "$relay_id" >&2
+      docker logs "$relay_id" >&2 || true
+    done < <(docker ps -aq --filter "label=verity.project-id=$project_id")
+  done
+  exit 1
+fi

@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Prove the documented self-hosted Compose quick start against a throwaway
+# Docker daemon. This script destroys the stack it creates, so it refuses every
+# daemon it cannot prove is isolated from the host deployment.
+set -euo pipefail
+
+image="${1:-}"
+[[ -n "$image" ]] || {
+  echo 'usage: verity-clean-install-smoke <server-image>' >&2
+  exit 2
+}
+: "${DOCKER_HOST:?DOCKER_HOST must point at an isolated Docker daemon}"
+: "${VERITY_CLEAN_INSTALL_DAEMON_ID:?VERITY_CLEAN_INSTALL_DAEMON_ID must authorize the disposable daemon}"
+
+socket="${DOCKER_HOST#unix://}"
+socket_dir="${socket%/*}"
+socket_dir_name="${socket_dir##*/}"
+
+refuse() {
+  echo "verity-clean-install-smoke refuses to run: $1" >&2
+  exit 1
+}
+
+[[ "$DOCKER_HOST" == unix://* ]] || refuse 'DOCKER_HOST is not a unix socket'
+[[ "$socket" == /*/docker.sock ]] || refuse 'the socket path is not absolute'
+[[ "$socket_dir_name" == verity-clean-install-dind-* ]] ||
+  refuse 'the socket is not inside a run-scoped clean-install daemon directory'
+[[ -S "$socket" ]] || refuse 'the isolated daemon socket does not exist'
+
+isolated_id="$(docker --host "$DOCKER_HOST" info --format '{{.ID}}' 2>/dev/null || true)"
+host_id="$(docker --host unix:///var/run/docker.sock info --format '{{.ID}}' 2>/dev/null || true)"
+[[ -n "$isolated_id" ]] || refuse 'the isolated daemon did not answer'
+[[ -n "$host_id" ]] || refuse 'the host daemon identity could not be checked'
+[[ "$isolated_id" != "$host_id" ]] || refuse 'DOCKER_HOST points at the host daemon'
+[[ "$isolated_id" == "$VERITY_CLEAN_INSTALL_DAEMON_ID" ]] ||
+  refuse 'the isolated daemon does not match the authorized disposable daemon'
+
+containers="$(docker --host "$DOCKER_HOST" ps --all --quiet)"
+[[ -z "$containers" ]] || refuse 'the disposable daemon already contains containers'
+volumes="$(docker --host "$DOCKER_HOST" volume ls --quiet)"
+[[ -z "$volumes" ]] || refuse 'the disposable daemon already contains volumes'
+custom_networks="$(
+  docker --host "$DOCKER_HOST" network ls --format '{{.Name}}' |
+    awk '$0 != "bridge" && $0 != "host" && $0 != "none" { print }'
+)"
+[[ -z "$custom_networks" ]] || refuse 'the disposable daemon already contains custom networks'
+docker --host "$DOCKER_HOST" image inspect "$image" >/dev/null 2>&1 ||
+  refuse "the image '$image' is not loaded in the isolated daemon"
+
+repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+compose="$repo_root/deploy/bin/verity-compose"
+host_state_root="$(mktemp -d "$socket_dir/state.XXXXXX")"
+pairing_state="$host_state_root/pairing"
+mkdir -m 0700 "$pairing_state"
+
+export VERITY_SERVER_IMAGE="$image"
+# A self-hosted runner may itself belong to a managed Verity installation.
+# That host-local identity must never leak into this deliberately fresh legacy
+# Compose topology, where it would switch the Server backend to plain HTTP. An
+# explicit empty export also overrides any implicit Compose `.env` source.
+export VERITY_MANAGED_DEPLOYMENT_ID=
+export VERITY_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+export VERITY_RUNNER_SUPERVISOR=1
+export VERITY_GVISOR_REQUIRED=0
+export VERITY_API_HOST_PORT=0
+export VERITY_DOCKER_SOCKET_PATH="$socket"
+export VERITY_AGENT_SEED_HOST_PATH="$host_state_root/agent-seed"
+export VERITY_HOST_CLONE_ROOT="$host_state_root/workspaces"
+export VERITY_SECRET_MATERIALIZATION_ROOT="$host_state_root/secrets"
+export VERITY_PAIRING_STATE_HOST_PATH="$pairing_state"
+export VERITY_SERVER_MEMORY=1g
+export VERITY_SERVER_MEMORY_SWAP=1g
+export VERITY_SERVER_CPUS=1
+export VERITY_POSTGRES_MEMORY=512m
+export VERITY_POSTGRES_MEMORY_SWAP=512m
+export VERITY_AGENT_GATEWAY_MEMORY=256m
+export VERITY_AGENT_GATEWAY_MEMORY_SWAP=256m
+export VERITY_CONTROL_PLANE_RUNNER_MEMORY=1g
+export VERITY_CONTROL_PLANE_RUNNER_MEMORY_SWAP=1g
+export VERITY_CONTROL_PLANE_RUNNER_CPUS=1
+
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo '--- clean install: failure diagnostics' >&2
+    "$compose" ps --all >&2 || true
+    "$compose" logs --no-color --tail 200 >&2 || true
+  fi
+  "$compose" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  docker --host "$DOCKER_HOST" run --rm --user 0 --entrypoint /bin/sh \
+    --mount "type=bind,src=$host_state_root,dst=/state" "$image" \
+    -c 'find /state -mindepth 1 -delete' >/dev/null 2>&1 || true
+  rmdir "$host_state_root" 2>/dev/null || true
+  return "$status"
+}
+trap cleanup EXIT
+
+# The public Compose surface consumes the TLS identity that verity-install creates
+# before its first `up`. Generate it with the exact candidate image/helper so this
+# smoke covers that release contract while keeping the one-time URI out of CI logs.
+docker --host "$DOCKER_HOST" run --rm --user 0:0 --entrypoint /bin/sh \
+  --mount "type=bind,src=$pairing_state,dst=/state" \
+  --env VERITY_STATE_DIR=/state --env VERITY_SERVER_UID=1000 --env VERITY_SERVER_GID=1000 \
+  --env VERITY_PAIRING_IPS=127.0.0.1 "$image" \
+  -c 'chown root:root /state && exec /opt/verity-install/deploy/bin/verity-pairing-material' \
+  >/dev/null
+
+echo '--- clean install: render the public Compose surface'
+"$compose" config --quiet
+
+echo '--- clean install: start empty Server, Gateway and PostgreSQL'
+"$compose" up --detach
+
+wait_for_service() {
+  service="$1"
+  for attempt in $(seq 1 180); do
+    container_id="$("$compose" ps --all --quiet "$service")"
+    state="$(
+      docker --host "$DOCKER_HOST" inspect \
+        --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        "$container_id" 2>/dev/null || true
+    )"
+    [ "$state" = healthy ] && return 0
+    if [ "$state" = exited ] || [ "$state" = dead ]; then return 1; fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_service postgres
+wait_for_service verity
+
+# The Gateway and Runner start with production defaults, but on a pristine
+# sealed deployment their projected credentials deliberately do not exist yet.
+# Their containers must be running, and become healthy after onboarding unlocks
+# and projects those credentials.
+gateway_id="$("$compose" ps --all --quiet verity-agent-gateway)"
+[[ -n "$gateway_id" ]] || {
+  echo 'Agent Gateway container was not created' >&2
+  exit 1
+}
+gateway_state="$(docker --host "$DOCKER_HOST" inspect --format '{{.State.Status}}' "$gateway_id")"
+[[ "$gateway_state" = running ]] || {
+  echo "Agent Gateway container is not running: $gateway_state" >&2
+  exit 1
+}
+
+runner_id="$("$compose" ps --all --quiet verity-control-runner)"
+[[ -n "$runner_id" ]] || {
+  echo 'control-plane Runner container was not created' >&2
+  exit 1
+}
+runner_state="$(docker --host "$DOCKER_HOST" inspect --format '{{.State.Status}}' "$runner_id")"
+[[ "$runner_state" = running ]] || {
+  echo "control-plane Runner container is not running: $runner_state" >&2
+  exit 1
+}
+
+echo '--- clean install: verify first-run state'
+"$compose" exec -T verity node --input-type=module -e '
+  import https from "node:https";
+  const request = (path) => new Promise((resolve, reject) => {
+    https.get({ hostname: "127.0.0.1", port: 8082, path, rejectUnauthorized: false }, resolve)
+      .on("error", reject);
+  });
+  const readJson = async (path) => {
+    const response = await request(path);
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    return { ok: response.statusCode >= 200 && response.statusCode < 300,
+      status: response.statusCode, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
+  };
+  const health = await readJson("/healthz");
+  if (!health.ok) throw new Error("healthz returned " + health.status);
+  const body = health.json;
+  if (body.status !== "ok") throw new Error("unexpected health: " + JSON.stringify(body));
+
+  const onboarding = await readJson("/onboarding/status");
+  if (!onboarding.ok) throw new Error("onboarding status returned " + onboarding.status);
+  const state = onboarding.json;
+  const expected = {
+    sealed: true,
+    masterPasswordSet: false,
+    githubAppConfigured: false,
+    signingKeyConfigured: false,
+    hasProject: false,
+    dopplerConfigured: false,
+    claudeConfigured: false,
+    codexConfigured: false,
+    complete: false,
+    nextStep: "master-password",
+  };
+  if (JSON.stringify(state) !== JSON.stringify(expected)) {
+    throw new Error("unexpected first-run onboarding state: " + JSON.stringify(state));
+  }
+'
+
+"$compose" exec -T postgres psql -U verity -d verity -Atqc "select count(*) > 0 from information_schema.tables where table_schema = 'public'" |
+  grep -qx t
+
+seed_id="$("$compose" ps --all --quiet verity-agent-seed)"
+[[ -n "$seed_id" ]] || {
+  echo 'agent-seed publisher container was not created' >&2
+  exit 1
+}
+seed_status="$(docker --host "$DOCKER_HOST" inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$seed_id")"
+[[ "$seed_status" = exited:0 ]] || {
+  echo "agent-seed publisher did not complete: $seed_status" >&2
+  exit 1
+}
+
+echo 'clean install smoke passed'

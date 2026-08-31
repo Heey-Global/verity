@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image="${1:-verity-project-relay:smoke}"
+suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
+container="verity-project-relay-smoke-${suffix}"
+fixture_container="verity-project-relay-fixture-${suffix}"
+network="verity-project-relay-smoke-${suffix}"
+socket_volume="verity-project-relay-sockets-${suffix}"
+artifacts_root="$(mktemp -d)"
+fixture_image='node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'
+fixture_source=''
+read -r -d '' fixture_source <<'NODE' || true
+const http = require('node:http');
+const net = require('node:net');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = '/run/verity-relay';
+fs.mkdirSync(path.join(root, 'broker'), {recursive: true});
+fs.mkdirSync(path.join(root, 'claude'), {recursive: true});
+for (const directory of [root, path.join(root, 'broker'), path.join(root, 'claude')]) {
+  fs.chownSync(directory, 0, 65532);
+  fs.chmodSync(directory, 0o750);
+}
+http.createServer((req, res) => {
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    res.writeHead(200, {'content-type': 'application/json'});
+    res.end(JSON.stringify({method: req.method, url: req.url, body: Buffer.concat(chunks).toString()}));
+  });
+}).listen(path.join(root, 'broker', 'broker.sock'), () => {
+  fs.chownSync(path.join(root, 'broker', 'broker.sock'), 65532, 65532);
+  fs.chmodSync(path.join(root, 'broker', 'broker.sock'), 0o660);
+});
+net.createServer(socket => socket.pipe(socket)).listen(path.join(root, 'claude', 'claude.sock'), () => {
+  fs.chownSync(path.join(root, 'claude', 'claude.sock'), 65532, 65532);
+  fs.chmodSync(path.join(root, 'claude', 'claude.sock'), 0o660);
+  console.log('ready');
+});
+setInterval(() => {}, 60_000);
+NODE
+broker_probe_source=''
+read -r -d '' broker_probe_source <<'NODE' || true
+const http = require('node:http');
+function request(method, path, body = '') {
+  return new Promise((resolve, reject) => {
+    const outgoing = http.request({
+      host: process.argv[1],
+      port: 8080,
+      method,
+      path,
+      headers: {'content-length': String(Buffer.byteLength(body))},
+      timeout: 5_000,
+    }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.once('error', reject);
+      response.once('end', () => resolve({
+        status: response.statusCode ?? 0,
+        body: Buffer.concat(chunks).toString(),
+      }));
+    });
+    outgoing.once('timeout', () => outgoing.destroy(new Error('broker probe timed out')));
+    outgoing.once('error', reject);
+    outgoing.end(body);
+  });
+}
+void (async () => {
+  const allowed = await request('POST', '/internal/github/token', 'smoke');
+  if (allowed.status !== 200) throw new Error(`allowed broker request returned ${allowed.status}`);
+  const payload = JSON.parse(allowed.body);
+  if (payload.url !== '/internal/github/token' || payload.body !== 'smoke') {
+    throw new Error('broker relay changed the allowed request');
+  }
+  const wrongPath = await request('POST', '/projects');
+  if (wrongPath.status !== 404) throw new Error(`disallowed path returned ${wrongPath.status}`);
+  const wrongMethod = await request('GET', '/internal/github/token');
+  if (wrongMethod.status !== 404) throw new Error(`disallowed method returned ${wrongMethod.status}`);
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+NODE
+claude_probe_source=''
+read -r -d '' claude_probe_source <<'NODE' || true
+const net = require('node:net');
+const expected = Buffer.from('opaque-claude-tls-record');
+const socket = net.createConnection({host: process.argv[1], port: 8443}, () => socket.write(expected));
+const timer = setTimeout(() => socket.destroy(new Error('Claude relay smoke timed out')), 5_000);
+socket.once('data', data => {
+  clearTimeout(timer);
+  if (!data.equals(expected)) throw new Error('Claude relay changed forwarded bytes');
+  socket.destroy();
+});
+socket.once('error', error => {
+  clearTimeout(timer);
+  console.error(error);
+  process.exitCode = 1;
+});
+socket.once('close', () => {
+  clearTimeout(timer);
+  if (process.exitCode) process.exit(process.exitCode);
+});
+NODE
+
+cleanup() {
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  docker rm -f "$fixture_container" >/dev/null 2>&1 || true
+  docker network rm "$network" >/dev/null 2>&1 || true
+  docker volume rm -f "$socket_volume" >/dev/null 2>&1 || true
+  rm -rf "$artifacts_root"
+}
+trap cleanup EXIT
+
+docker volume create "$socket_volume" >/dev/null
+docker run -d --name "$fixture_container" \
+  --network none \
+  --mount "type=volume,src=$socket_volume,dst=/run/verity-relay" \
+  "$fixture_image" \
+  -e "$fixture_source" >/dev/null
+
+for _ in $(seq 1 50); do
+  docker logs "$fixture_container" 2>&1 | grep -q '^ready$' && break
+  sleep 0.1
+done
+docker logs "$fixture_container" 2>&1 | grep -q '^ready$'
+
+docker network create "$network" >/dev/null
+docker run -d --name "$container" \
+  --network "$network" \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --pids-limit 32 \
+  --memory 64m \
+  --cpus 0.25 \
+  --ulimit nofile=64:64 \
+  --restart no \
+  --user 65532:65532 \
+  --mount "type=volume,src=$socket_volume,dst=/run/verity-relay,readonly" \
+  "$image" >/dev/null
+
+broker_ready=0
+for _ in $(seq 1 50); do
+  if docker run --rm --network "$network" "$fixture_image" \
+    -e "$broker_probe_source" "$container"; then
+    broker_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$broker_ready" != 1 ]]; then
+  docker inspect -f 'relay state={{json .State}}' "$container" >&2 || true
+  docker logs "$container" >&2 || true
+  exit 1
+fi
+docker run --rm --network "$network" "$fixture_image" \
+  -e "$claude_probe_source" "$container"
+
+docker inspect "$container" >"$artifacts_root/inspect.json"
+node - "$artifacts_root/inspect.json" <<'NODE'
+const [info] = require(process.argv[2]);
+const host = info.HostConfig;
+if (!host.ReadonlyRootfs) throw new Error('root filesystem is writable');
+if (host.Privileged) throw new Error('relay is privileged');
+if (host.CapDrop?.join(',') !== 'ALL') throw new Error('CapDrop is not ALL');
+if (!host.SecurityOpt?.includes('no-new-privileges')) throw new Error('NNP missing');
+if (host.PidsLimit !== 32) throw new Error('PID limit mismatch');
+if (host.Memory !== 67108864) throw new Error('memory limit mismatch');
+if (host.NanoCpus !== 250000000) throw new Error('CPU limit mismatch');
+if (info.Config.User !== '65532:65532') throw new Error('unexpected user');
+if ((info.Config.Env ?? []).some(entry => /TOKEN|SECRET|PASSWORD|KEY/.test(entry.split('=', 1)[0]))) {
+  throw new Error('secret-shaped environment present');
+}
+if (Object.keys(info.NetworkSettings.Networks ?? {}).length !== 1) throw new Error('relay is multi-homed');
+const mounts = info.Mounts ?? [];
+if (mounts.length !== 1 || mounts[0].Destination !== '/run/verity-relay' || mounts[0].RW) {
+  throw new Error('unexpected relay mount');
+}
+NODE
+
+if docker run --rm --entrypoint=/bin/sh "$image" -c true >/dev/null 2>&1; then
+  echo 'relay image unexpectedly contains a shell' >&2
+  exit 1
+fi
+
+echo 'project relay smoke test passed'
