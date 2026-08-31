@@ -1,0 +1,125 @@
+name: verity-mobile-ota-promote
+
+# The staging publisher changes only the candidate manifest in its promotion PR.
+# A merge therefore acts as the explicit approval to move the existing, tested
+# EAS branch to the channel embedded in TestFlight binaries.
+on:
+  push:
+    branches: [main]
+    paths: [apps/mobile/ota-promotion.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mobile-ota-testflight-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      - name: Read and validate approved candidate
+        id: candidate
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${EXPO_TOKEN:-}" ]]; then
+            echo '::error::EXPO_TOKEN is required to promote an OTA candidate.' >&2
+            exit 1
+          fi
+          node -e '
+            const fs = require("node:fs");
+            const value = JSON.parse(fs.readFileSync("apps/mobile/ota-promotion.json", "utf8"));
+            if (!value.version && !value.branch && !value.tag && !value.commit) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, "skip=true\n");
+              process.exit(0);
+            }
+            if (!/^\d+\.\d+\.\d+$/.test(value.version)) throw new Error("invalid OTA version");
+            if (value.tag !== `mobile-v${value.version}`) throw new Error("tag/version mismatch");
+            if (value.branch !== `staging-${value.tag}`) throw new Error("unexpected staging branch");
+            if (!/^[0-9a-f]{40}$/.test(value.commit)) throw new Error("invalid candidate commit");
+            for (const key of ["branch", "commit", "tag", "version"])
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value[key]}\n`);
+          '
+          candidate_commit="$(node -p 'require("./apps/mobile/ota-promotion.json").commit')"
+          candidate_tag="$(node -p 'require("./apps/mobile/ota-promotion.json").tag')"
+          if [[ -z "$candidate_commit" ]]; then
+            echo 'Initial empty promotion manifest; nothing to promote.'
+            exit 0
+          fi
+          git merge-base --is-ancestor "$candidate_commit" HEAD
+          # The staging workflow exposes the PR immediately before its final tag
+          # reservation. If an already-green PR is merged in that tiny window,
+          # wait for the reservation instead of losing the one promotion event.
+          tag_commit=''
+          for _ in {1..12}; do
+            git fetch --quiet --tags origin
+            tag_commit="$(git rev-list -n 1 "$candidate_tag" 2>/dev/null || true)"
+            [[ -n "$tag_commit" ]] && break
+            sleep 5
+          done
+          if [[ "$tag_commit" != "$candidate_commit" ]]; then
+            echo "::error::Reserved tag does not point at the approved candidate." >&2
+            exit 1
+          fi
+          latest_promoted_tag="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+              | grep -E '^mobile-v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n 1
+          )"
+          if [[ -n "$latest_promoted_tag" && "$latest_promoted_tag" != "$candidate_tag" ]]; then
+            newest="$(printf '%s\n%s\n' "$latest_promoted_tag" "$candidate_tag" | sort -V | tail -n 1)"
+            if [[ "$newest" != "$candidate_tag" ]]; then
+              echo "::error::$candidate_tag is older than already promoted $latest_promoted_tag; refusing to move TestFlight backwards." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Promote tested EAS branch to TestFlight
+        if: steps.candidate.outputs.skip != 'true'
+        working-directory: apps/mobile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: >-
+          npx --yes eas-cli@21.0.1 channel:edit testflight
+          --branch "${{ steps.candidate.outputs.branch }}"
+          --non-interactive
+
+      - name: Record promoted OTA GitHub release
+        if: steps.candidate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.candidate.outputs.tag }}"
+          title="Mobile ${{ steps.candidate.outputs.version }} (OTA)"
+          notes="Promoted the tested EAS branch ${{ steps.candidate.outputs.branch }} to the TestFlight channel."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$title" --notes "$notes" --latest=false
+          else
+            gh release create "$tag" \
+              --target "${{ steps.candidate.outputs.commit }}" \
+              --title "$title" \
+              --notes "$notes" \
+              --latest=false
+          fi

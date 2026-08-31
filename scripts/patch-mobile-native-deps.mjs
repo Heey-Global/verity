@@ -6,7 +6,7 @@
 // The app is a CNG (prebuild) app: `ios/` is generated on the EAS builder from
 // node_modules, so a native dependency can only be corrected by editing what
 // prebuild reads. Run from the repo root — `npm run -w @verity/mobile-app
-// patch:native`, and automatically from `eas-build-post-install`, which EAS runs
+// patch:native`, and from the GitHub native build workflows before prebuild
 // after `npm ci` and before prebuild/pod install. A local `npm ci` restores the
 // unpatched sources, so a local native build needs `patch:native` again.
 //
@@ -354,7 +354,7 @@ export function runPatch(patch, repoRoot) {
  * others: with one patch left unreported a second problem would only surface on
  * the next build, one at a time.
  *
- * The exit code is what breaks `eas-build-post-install`'s `&&` chain, so a build
+ * The exit code is what stops the GitHub workflow step, so a build
  * that cannot be patched never reaches prebuild.
  *
  * @param {string} repoRoot
