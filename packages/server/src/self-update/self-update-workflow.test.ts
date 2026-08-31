@@ -134,6 +134,23 @@ describe('self-update workflow image', () => {
     );
   });
 
+  it('supplies the complete production bootstrap inputs during restart re-adoption', async () => {
+    const smoke = await readFile(
+      resolve(root, 'packages/server/src/self-update-live-smoke.ts'),
+      'utf8',
+    );
+    const start = smoke.indexOf('  const bootstrapEnvironment = {');
+    const end = smoke.indexOf('\n  };', start);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const environment = smoke.slice(start, end);
+    expect(environment).toContain("required('VERITY_SMOKE_DATABASE_URL')");
+    expect(environment).toContain('VERITY_MANAGED_ROOT: managedRoot');
+    expect(environment).toContain("required('VERITY_SMOKE_DOCKER_SOCKET')");
+    expect(environment).toContain("VERITY_PAIRING_STATE_HOST_PATH: '/etc/verity'");
+  });
+
   // The newest tag is not the newest published image, and this step needs the
   // latter. Neither `git describe` nor a walk over `git tag` can express that
   // difference — git has no idea which of its tags reached a registry — so

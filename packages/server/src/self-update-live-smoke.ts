@@ -2540,6 +2540,11 @@ async function updaterRestarts(managedRoot: string): Promise<void> {
     ...serverEnvironment(required('VERITY_SMOKE_DATABASE_URL'), authority.spec.deploymentId),
     VERITY_MANAGED_ROOT: managedRoot,
     VERITY_DOCKER_SOCKET_PATH: required('VERITY_SMOKE_DOCKER_SOCKET'),
+    // The production adoption job receives this from Compose. The restart probe
+    // invokes the same bootstrap function directly, so it must provide every
+    // topology-shaping input Compose would have supplied before asserting that
+    // the stale image — and only the stale image — is refused.
+    VERITY_PAIRING_STATE_HOST_PATH: '/etc/verity',
   };
   let refused: unknown;
   try {
