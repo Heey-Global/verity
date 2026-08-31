@@ -2380,8 +2380,13 @@ export class EventStore implements EventSink {
               // The search view may already contain this provisional notice and its
               // cursor may point beyond the now-removed event. Reset it in the same
               // transaction, then rebuild from the surviving canonical log after
-              // commit. A rollback therefore restores both canonical and projected
-              // state together.
+              // commit. Serialize with both live projection and backfill before
+              // resetting: either may already have read the notice and would
+              // otherwise reinsert it after this transaction commits. A rollback
+              // therefore restores both canonical and projected state together.
+              await sql`select pg_advisory_xact_lock(hashtext(${
+                'messages:' + anchor.sessionId
+              }))`.execute(tx);
               await tx.deleteFrom('messages').where('session_id', '=', anchor.sessionId).execute();
               await tx
                 .deleteFrom('message_projection_state')
