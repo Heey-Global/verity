@@ -74,6 +74,11 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
   merged: { t: 'merged', number: 233 },
   compaction: { t: 'compaction', boundary: true },
   error: { t: 'error', kind: 'spawn_failed', message: 'boom' },
+  session_progress: {
+    t: 'session_progress',
+    summary: 'Implementation complete and verified.',
+    outcomeDelivered: true,
+  },
   raw: { t: 'raw', backend: 'claude-code', payload: { queue: 'op' } },
 };
 

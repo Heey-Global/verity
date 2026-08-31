@@ -678,12 +678,25 @@ async function refreshedBase(
       lastErr = err;
     }
   }
+  try {
+    await git(['-C', repoDir, 'rev-parse', '--verify', 'HEAD']);
+  } catch {
+    throw new RepositoryHasNoCommitsError();
+  }
   // Redact the auth header from the surfaced cause so a git error echoing
   // `http.extraheader=Authorization: Basic <base64>` never leaks the token.
   throw new Error(
     `refreshBase: 'git fetch origin ${baseBranch}' failed after retry; refusing to branch ` +
       `off a possibly-stale local '${baseBranch}'. Cause: ${redactAuthHeader(String(lastErr), header)}`,
   );
+}
+
+/** Safe, user-facing failure for a managed checkout whose HEAD is still unborn. */
+export class RepositoryHasNoCommitsError extends Error {
+  constructor() {
+    super('repository has no commits yet; initialize its default branch before starting a session');
+    this.name = 'RepositoryHasNoCommitsError';
+  }
 }
 
 /**

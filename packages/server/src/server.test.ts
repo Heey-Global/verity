@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -82,6 +83,7 @@ import {
   type ServerDeps,
 } from './server.js';
 import type { PushNotification, PushSender } from './push-sender.js';
+import { RepositoryHasNoCommitsError } from './worktree.js';
 import {
   serverUpdateNotifierStatePath,
   SERVER_UPDATE_PUSH_CATEGORY,
@@ -636,6 +638,7 @@ beforeAll(async () => {
     conductor,
     agentLogin,
     spawnWorktreeRoot: worktreeRoot,
+    projectCloneRoot: tmpdir(),
     branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
@@ -3342,6 +3345,7 @@ describe('GET /sessions', () => {
         usage: ZERO_USAGE,
         resumable: false, // fake worktree path → not on disk
         eventCount: 1,
+        lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
       {
@@ -3356,6 +3360,7 @@ describe('GET /sessions', () => {
         usage: ZERO_USAGE,
         resumable: false,
         eventCount: 0,
+        lastActivityAt: null,
         lastSeenEventCount: null,
       },
     ]);
@@ -3450,6 +3455,7 @@ describe('GET /sessions', () => {
         },
         resumable: false,
         eventCount: 2,
+        lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
     ]);
@@ -6034,6 +6040,7 @@ describe('GET /sessions/:id', () => {
       usage: ZERO_USAGE,
       resumable: false,
       eventCount: 2,
+      lastActivityAt: expect.any(Number),
       lastSeenEventCount: null,
       busy: false,
       queued: [],
@@ -6632,6 +6639,63 @@ describe('DELETE /sessions/:id', () => {
     expect(res.statusCode).toBe(200);
     expect(cancelTurn).not.toHaveBeenCalled();
     expect(closeSession).toHaveBeenCalledWith('s1');
+  });
+
+  it('refuses force-delete while a meeting job owns the session worktree', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-delete-test-'));
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const meetingApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      meetingTranscriber: {
+        transcribe: (input) =>
+          new Promise<MeetingTranscriptResult>((_resolve, reject) => {
+            markStarted();
+            input.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+              once: true,
+            });
+          }),
+      },
+    });
+    try {
+      await ctx.store.createSession({ sessionId: 'meeting-delete', worktree, model: 'm' });
+      const upload = await meetingApp.inject({
+        method: 'POST',
+        url: '/sessions/meeting-delete/meetings/transcripts/stream',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-verity-meeting-file-name': 'planning.m4a',
+          'x-verity-meeting-media-type': 'audio%2Fmp4',
+        },
+        payload: Buffer.from('long audio'),
+      });
+      expect(upload.statusCode).toBe(202);
+      await started;
+
+      const removed = await meetingApp.inject({
+        method: 'DELETE',
+        url: '/sessions/meeting-delete?force=true',
+      });
+      expect(removed.statusCode).toBe(409);
+      expect(removed.json()).toMatchObject({ error: expect.stringContaining('meeting job') });
+      expect(await ctx.store.getSession('meeting-delete')).toBeDefined();
+      expect(cancelTurn).not.toHaveBeenCalled();
+      expect(closeSession).not.toHaveBeenCalled();
+
+      await meetingApp.inject({ method: 'POST', url: '/sessions/meeting-delete/cancel' });
+      await vi.waitFor(async () => {
+        expect((await meetingApp.inject('/sessions/meeting-delete/activity')).json().busy).toBe(
+          false,
+        );
+      });
+    } finally {
+      await meetingApp.close();
+      rmSync(worktree, { recursive: true, force: true });
+    }
   });
 
   it('keeps a busy session and its worktree when reaping fails', async () => {
@@ -7497,6 +7561,50 @@ go`,
     expect(res.statusCode).toBe(500);
     expect(res.json()).toEqual({ error: 'internal error' });
     expect(res.body).not.toContain('INTERNAL');
+  });
+});
+
+describe('POST /sessions/:id/recover-worktree', () => {
+  it('repairs only the selected Verity-owned session boundary', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'verity-route-worktree-recovery-'));
+    const sessionsRoot = join(projectRoot, '.verity-sessions');
+    const worktree = join(sessionsRoot, 'agent-repair');
+    const nested = join(worktree, 'nested');
+    mkdirSync(nested, { recursive: true });
+    await ctx.store.upsertProject({
+      id: 'p-worktree-repair',
+      owner: 'heey-global',
+      repo: 'repair',
+      containerName: 'verity-heey-global--repair',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-worktree-repair',
+      worktree,
+      model: 'claude-opus-4-8',
+      projectId: 'p-worktree-repair',
+    });
+    chmodSync(nested, 0o600);
+    chmodSync(worktree, 0o600);
+    chmodSync(sessionsRoot, 0o600);
+    chmodSync(projectRoot, 0o600);
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/sessions/s-worktree-repair/recover-worktree',
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        sessionId: 's-worktree-repair',
+        repaired: ['project-root', 'sessions-root', 'worktree'],
+      });
+      expect(lstatSync(nested).mode & 0o777).toBe(0o600);
+    } finally {
+      chmodSync(projectRoot, 0o700);
+      chmodSync(sessionsRoot, 0o700);
+      chmodSync(worktree, 0o700);
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -9947,6 +10055,23 @@ describe('POST /sessions (injected worktree provisioner)', () => {
       expect(res.statusCode).toBe(201);
       const { sessionId }: { sessionId: string } = res.json();
       expect(await ctx.store.getSession(sessionId)).toMatchObject({ sessionId });
+      expect(startSession).not.toHaveBeenCalled();
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('surfaces an empty base repository without starting a session', async () => {
+    const f = fake();
+    f.provisioner.add.mockRejectedValueOnce(new RepositoryHasNoCommitsError());
+    const a = buildServer({ eventStore: ctx.store, bus, conductor, worktrees: f.provisioner });
+    try {
+      const res = await a.inject({ method: 'POST', url: '/sessions', payload: { prompt: 'go' } });
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toEqual({
+        error:
+          'repository has no commits yet; initialize its default branch before starting a session',
+      });
       expect(startSession).not.toHaveBeenCalled();
     } finally {
       await a.close();

@@ -45,6 +45,9 @@ import {
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   TERMINOLOGY_SYSTEM_PROMPT,
+  RECENT_SESSION_MESSAGES_DEFAULT,
+  recentSessionMessagesRequestSchema,
+  publishSessionProgressRequestSchema,
   aggregateUsage,
   attachmentUploadSchema,
   type AgentEvent,
@@ -76,6 +79,14 @@ import {
   type SessionFileEntry,
 } from './session-files.js';
 import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
+import { repairSessionWorktreePermissions } from './session-worktree-recovery.js';
+import {
+  currentPublishedProgress,
+  olderEventsMayMatchWindow,
+  redactSessionObservationText,
+  safeRecentMessages,
+  safeSessionProgressErrorKind,
+} from './session-observation.js';
 import type {
   VeritySettingsPatch,
   VeritySettingsRecord,
@@ -133,6 +144,7 @@ import type { PushSender } from './push-sender.js';
 import {
   createGitWorktreeProvisioner,
   createScratchProvisioner,
+  RepositoryHasNoCommitsError,
   type WorktreeProvisioner,
 } from './worktree.js';
 import {
@@ -206,7 +218,11 @@ import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import { createMcpGateway, type McpGatewayDeps } from './mcp-gateway.js';
 import { collectSessionFacts } from './session-facts.js';
-import { createControlPlaneSessionTools } from './session-handoff-tool.js';
+import {
+  ControlPlaneSessionAuthorityError,
+  ControlPlaneSessionToolError,
+  createControlPlaneSessionTools,
+} from './session-handoff-tool.js';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 import {
   LOCAL_PROJECT_OWNER,
@@ -1453,7 +1469,9 @@ So: repo work belongs in a project session. When a task needs to read a private 
 What this container does have:
 - The Verity HTTP API, reachable in-cluster, for inspecting projects, sessions and server state.
 - The \`verity_create_delivery\` tool. When the user asks for a service to be changed and delivered across projects, use this tool instead of sending them to project sessions. Reuse a known service id. On first use, propose the exact existing Source and GitOps projects plus image, manifest-directory and Argo-CD coordinates; the visible approval registers that relationship and starts the delivery. Never ask the user to invent or look up an internal service id.
-- The \`verity_list_sessions\` and \`verity_session_handoff\` tools. Listing answers which sessions exist, in which project, and which can receive a handoff — metadata only, never another session's transcript. The handoff writes one briefing into an existing project session as a turn, which is how findings from here reach the session that must act on them: state the conclusion, the exact coordinates, and what you want done, because the other session cannot see this conversation. It cannot open a session, and it grants the target no authority it did not already have.
+- The \`verity_list_sessions\` and \`verity_session_handoff\` tools. List first and let the user choose an exact existing session or New session; a new-session handoff creates the target and uses the briefing as its first turn. A bare project target is only a convenience when exactly one eligible session exists and never chooses among several.
+- The on-demand \`verity_session_progress\` tool returns structured lifecycle/cached branch-PR facts without transcript content. \`verity_recent_session_messages\` reads one explicitly selected session only after a separate approval that names the purpose and bounded window. Never poll either tool.
+- Project sessions can publish a bounded, explicit outcome summary with \`verity_publish_session_progress\`; the server binds it to the calling session. A completed turn is not proof that the requested outcome was delivered.
 - Outbound HTTPS, so public documentation and public repositories are readable.
 - Doppler-backed server credentials and other control-plane capabilities where a task genuinely requires them.
 - The host Docker daemon, at \`/var/run/docker.sock\`, with a working \`docker\` CLI. This is a deliberate grant (ADR 0006 Amendment 1) and it exists for ONE purpose: diagnosing the fleet.
@@ -2697,6 +2715,8 @@ export interface SessionSummary extends SessionRecord {
    * the overview compares against a per-device "last seen" mark to show an unread
    * dot. Carried on the summary so the list needn't open each session to know it. */
   eventCount: number;
+  /** Timestamp of the newest canonical event, for metadata-only recency displays. */
+  lastActivityAt: number | null;
   /**
    * Conditions about THIS session worth interrupting the operator for — currently
    * only `sandbox_disconnected` (see `attention.ts`). Absent when there is
@@ -3811,6 +3831,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(503);
       return { error: 'secret store is sealed', status: 'sealed' as const };
     }
+    if (error instanceof RepositoryHasNoCommitsError) {
+      request.log.warn(error, 'verity: session base repository is empty');
+      reply.code(409);
+      return { error: error.message };
+    }
     // Fastify's own client errors carry a 4xx statusCode (415 unsupported media
     // type, 413 payload too large, malformed-JSON 400, …). Surface the code —
     // it's a client mistake they can fix — but with a generic message so no
@@ -4307,6 +4332,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ? { permissionAwaitingInput: true as const }
         : {}),
       usage: aggregateUsage(events),
+      lastActivityAt: sequencedEvents.at(-1)?.ts ?? null,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable: await worktreeExists(session.worktree),
@@ -6214,6 +6240,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // reaches the same durable permission card, decide route and standing-grant check as a
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
+  const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
   if (deps.mcpGateway !== undefined) {
     const gatewayDeps = deps.mcpGateway;
     // The two control-plane session tools are bound on the same seam as `requestApproval`,
@@ -6261,6 +6288,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             status: session.status,
             resumable: session.resumable,
             eventCount: session.eventCount,
+            lastActivityAt: session.lastActivityAt,
           })),
           omitted,
         };
@@ -6297,6 +6325,210 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           {},
           { displayPrompt, clientReplyId: idempotencyKey },
         ),
+      createSession: async ({ projectId, name, idempotencyKey }) => {
+        const existing = controlHandoffSessionCreates.get(idempotencyKey);
+        if (existing !== undefined) return existing;
+        const creating = (async (): Promise<{ sessionId: string }> => {
+          const digest = createHash('sha256').update(idempotencyKey).digest();
+          digest[6] = (digest[6]! & 0x0f) | 0x40;
+          digest[8] = (digest[8]! & 0x3f) | 0x80;
+          const hex = digest.subarray(0, 16).toString('hex');
+          const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+          const prior = await deps.eventStore.getSession(sessionId);
+          if (prior !== undefined) {
+            if (prior.projectId !== projectId) {
+              throw new ControlPlaneSessionToolError('new-session handoff key collision');
+            }
+            return { sessionId };
+          }
+          const project = await deps.eventStore.getProject(projectId);
+          if (
+            project === undefined ||
+            project.hiddenAt !== null ||
+            project.state !== 'active' ||
+            isControlPlaneProject(project)
+          ) {
+            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+          }
+          if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
+            throw new ControlPlaneSessionToolError('new-session handoff is not configured');
+          }
+          if (projectsBeingDeleted.has(project.id)) {
+            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+          }
+          const releaseSpawn = beginProjectSpawn(project.id);
+          try {
+            const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
+              project.id,
+            );
+            const model = settings?.defaultModel ?? (await availableModels()).default;
+            if (!isProjectSessionModel(model)) {
+              throw new ControlPlaneSessionToolError('project has no eligible default model');
+            }
+            const selectedModel = model as string;
+            const projectClone = projectClonePath(deps.projectCloneRoot, project);
+            const worktreeOpts = {
+              refreshBase: true,
+              ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
+            };
+            const provisioner =
+              deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+              createGitWorktreeProvisioner({
+                repoDir: projectClone,
+                worktreeRoot: join(projectClone, '.verity-sessions'),
+                ...worktreeOpts,
+              });
+            await deps.refreshProjectToken?.(project);
+            const worktree = await provisioner.add(makeBranch(name));
+            try {
+              await deps.eventStore.createSession({
+                sessionId,
+                projectId: project.id,
+                worktree,
+                model: selectedModel,
+                name,
+              });
+            } catch (error) {
+              await provisioner.remove(worktree).catch(() => undefined);
+              throw error;
+            }
+            return { sessionId };
+          } finally {
+            releaseSpawn();
+          }
+        })();
+        controlHandoffSessionCreates.set(idempotencyKey, creating);
+        try {
+          return await creating;
+        } finally {
+          controlHandoffSessionCreates.delete(idempotencyKey);
+        }
+      },
+      readProgress: async (sessionId) => {
+        const session = await deps.eventStore.getSession(sessionId);
+        if (session === undefined)
+          throw new ControlPlaneSessionToolError('target session vanished');
+        // Progress is a tail projection. Lifecycle, the active prompt and the current-turn
+        // publication all resolve from recent canonical state; never load an unbounded log.
+        const progressPage = await deps.eventStore.getEventsBeforeSeq(sessionId, 2_000);
+        const events = progressPage.events;
+        const status = liveStatus(
+          sessionId,
+          events.map(({ event }) => event),
+        );
+        const lifecycle =
+          status === 'running'
+            ? 'running'
+            : status === 'awaiting_input'
+              ? 'waiting'
+              : conductor.queuedItems(sessionId).length > 0
+                ? 'queued'
+                : status === 'crashed'
+                  ? 'failed'
+                  : status === 'completed'
+                    ? 'completed'
+                    : 'waiting';
+        const lastActivityAt = events.at(-1)?.ts ?? null;
+        const activePrompt =
+          lifecycle === 'running'
+            ? events.findLast(({ event }) => event.t === 'prompt' && event.steered !== true)
+            : undefined;
+        const latestPromptForError = events.findLast(
+          ({ event }) => event.t === 'prompt' && event.steered !== true,
+        );
+        const latestTerminal = events.findLast(
+          ({ event }) => event.t === 'result' || event.t === 'interrupted',
+        );
+        const latestErrorCandidate = events.findLast(({ event }) => event.t === 'error');
+        const latestError =
+          latestErrorCandidate !== undefined &&
+          (latestPromptForError === undefined ||
+            latestErrorCandidate.seq > latestPromptForError.seq) &&
+          (latestTerminal === undefined || latestErrorCandidate.seq > latestTerminal.seq)
+            ? latestErrorCandidate
+            : undefined;
+        const published = currentPublishedProgress(events);
+        const branchService = await branchesForSession(session);
+        const branch = await branchService?.current(session.worktree).catch(() => undefined);
+        const issue = branch?.match(/^[a-z]+\/(\d+)-/u)?.[1];
+        const cachedPr = prSummaryCache.get(session.worktree)?.pr;
+        return {
+          lifecycle,
+          status,
+          projectionTruncated: progressPage.hasMore,
+          lastActivityAt,
+          ...(activePrompt === undefined
+            ? {}
+            : {
+                activeTurnStartedAt: activePrompt.ts,
+                activeTurnAgeMs: Date.now() - activePrompt.ts,
+              }),
+          turnCompleted: lifecycle === 'completed' || lifecycle === 'failed',
+          // Outcome delivery is an explicit claim, not inferred from a successful process exit.
+          outcomeDelivered:
+            published?.event.t === 'session_progress' ? published.event.outcomeDelivered : null,
+          ...(branch === undefined ? {} : { branch }),
+          ...(issue === undefined ? {} : { issueNumber: Number(issue) }),
+          ...(cachedPr === undefined ? {} : { cachedPullRequest: cachedPr }),
+          publishedSummary:
+            published?.event.t === 'session_progress'
+              ? {
+                  summary: redactSessionObservationText(published.event.summary),
+                  publishedAt: published.ts,
+                }
+              : null,
+          ...(published?.event.t === 'session_progress' && published.event.blocker !== undefined
+            ? {
+                blocker: {
+                  kind: 'published',
+                  summary: redactSessionObservationText(published.event.blocker),
+                },
+              }
+            : latestError?.event.t === 'error' &&
+                (published === undefined || latestError.seq > published.seq)
+              ? {
+                  blocker: {
+                    kind: 'error',
+                    errorKind: safeSessionProgressErrorKind(latestError.event.kind),
+                  },
+                }
+              : {}),
+          ...(published?.event.t === 'session_progress' &&
+          published.event.requiredDecision !== undefined
+            ? {
+                requiredDecision: redactSessionObservationText(published.event.requiredDecision),
+              }
+            : {}),
+        };
+      },
+      readRecentMessages: async ({ sessionId, count, sinceMinutes, beforeSeq }) => {
+        // Bound database work independently of the requested message count: one assistant
+        // message may consist of thousands of streaming deltas, and an approval-gated context
+        // read must not become a full-transcript memory load for a long-running session.
+        const page = await deps.eventStore.getEventsBeforeSeq(sessionId, 1_000, beforeSeq);
+        const sinceMs = sinceMinutes === undefined ? undefined : Date.now() - sinceMinutes * 60_000;
+        const result = safeRecentMessages(page.events, count, sinceMs, {
+          olderEventsExist: page.hasMore,
+          newerEventsExist:
+            beforeSeq !== undefined &&
+            ((await deps.eventStore.getEventsBeforeSeq(sessionId, 1)).events.at(-1)?.seq ?? 0) >=
+              beforeSeq,
+        });
+        const olderEventsCanMatchWindow = olderEventsMayMatchWindow(
+          page.hasMore,
+          page.events[0]?.ts,
+          sinceMs,
+        );
+        return {
+          messages: result.messages,
+          hasMore: result.hasMore || olderEventsCanMatchWindow,
+          ...(result.nextBeforeSeq !== undefined
+            ? { nextBeforeSeq: result.nextBeforeSeq }
+            : olderEventsCanMatchWindow && page.events[0] !== undefined
+              ? { nextBeforeSeq: page.events[0].seq }
+              : {}),
+        };
+      },
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
@@ -6304,14 +6536,61 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // an operator being asked to read a briefing their answer could not have delivered. The
       // tools re-check it themselves on the way in; this only decides when it is caught.
       authorizeCall: async ({ projectId, sessionId, toolName }) => {
-        if (toolName !== 'verity_list_sessions' && toolName !== 'verity_session_handoff') return;
+        if (toolName === 'verity_publish_session_progress') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const project = await deps.eventStore.getProject(projectId);
+          if (
+            session === undefined ||
+            session.projectId !== projectId ||
+            project === undefined ||
+            isControlPlaneProject(project)
+          ) {
+            throw new ControlPlaneSessionAuthorityError(
+              'progress publishing is restricted to the calling project session',
+            );
+          }
+          return;
+        }
+        if (
+          toolName !== 'verity_list_sessions' &&
+          toolName !== 'verity_session_handoff' &&
+          toolName !== 'verity_session_progress' &&
+          toolName !== 'verity_recent_session_messages'
+        )
+          return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      invokeTool: (input) => {
+      invokeTool: async (input) => {
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
         if (input.toolName === 'verity_session_handoff')
           return controlPlaneSessionTools.handoff(input);
+        if (input.toolName === 'verity_session_progress')
+          return controlPlaneSessionTools.progress(input);
+        if (input.toolName === 'verity_recent_session_messages') {
+          const parsed = recentSessionMessagesRequestSchema.parse(input.request);
+          app.log.info(
+            {
+              actorSessionId: input.sessionId,
+              approvedBy: 'operator',
+              targetSessionId: parsed.sessionId,
+              count: parsed.count ?? RECENT_SESSION_MESSAGES_DEFAULT,
+              sinceMinutes: parsed.sinceMinutes,
+              beforeSeq: parsed.beforeSeq,
+              purpose: redactSessionObservationText(parsed.purpose),
+            },
+            'verity: approved Control Plane recent-message read',
+          );
+          return controlPlaneSessionTools.recentMessages(input);
+        }
+        if (input.toolName === 'verity_publish_session_progress') {
+          const progress = publishSessionProgressRequestSchema.parse(input.request);
+          await deps.eventStore.appendEvent(input.sessionId, {
+            t: 'session_progress',
+            ...progress,
+          });
+          return { sessionId: input.sessionId, published: true };
+        }
         return gatewayDeps.invokeTool(input);
       },
       requestApproval: ({ sessionId, callId, toolName, input, signal }) =>
@@ -8436,6 +8715,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable: await worktreeExists(session.worktree),
       eventCount: events.length,
+      lastActivityAt: sequencedEvents.at(-1)?.ts ?? null,
       busy: conductor.isBusy(id) || hasMeetingJob(id),
       queued: conductor.queuedItems(id),
     };
@@ -9578,6 +9858,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
+      // Meeting jobs can enter a non-cancellable delivery phase. Never tear
+      // their session or worktree down through force-delete; the dedicated
+      // cancel route is the only operation that knows whether the job can still
+      // be stopped safely.
+      if (hasMeetingJob(id)) {
+        reply.code(409);
+        return { error: `session ${id} has an active meeting job — stop it before deleting` };
+      }
       const deleteClaimed = async (): Promise<{ sessionId: string } | { error: string }> => {
         // The ownership barrier has either settled the live turn (forced delete) or
         // atomically proved the session idle (ordinary delete). Close every retained
@@ -10133,6 +10421,61 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // So `queued: false` means "running now" (a fresh idle turn OR a steered one);
   // `queued: true` means "waiting behind the current turn". An unknown session →
   // 404; a full queue → 429.
+  app.post(
+    '/sessions/:id/recover-worktree',
+    async (
+      request,
+      reply,
+    ): Promise<
+      | {
+          sessionId: string;
+          repaired: Array<'project-root' | 'sessions-root' | 'worktree'>;
+        }
+      | { error: string }
+    > => {
+      const { id } = sessionParams.parse(request.params);
+      const session = await deps.eventStore.getSession(id);
+      if (session === undefined) {
+        reply.code(404);
+        return { error: `session ${id} not found` };
+      }
+      if (session.projectId === null) {
+        reply.code(409);
+        return { error: 'worktree recovery is available only for project sessions' };
+      }
+      if (deps.projectCloneRoot === undefined) {
+        reply.code(409);
+        return { error: 'worktree recovery is not configured for project sessions' };
+      }
+      if (conductor.isBusy(id) || hasMeetingJob(id)) {
+        reply.code(409);
+        return { error: `session ${id} is busy — retry worktree recovery when its turn ends` };
+      }
+      try {
+        const result = await repairSessionWorktreePermissions(
+          session.worktree,
+          process.getuid?.(),
+          deps.projectCloneRoot,
+        );
+        request.log.info(
+          { sessionId: id, projectId: session.projectId, repaired: result.repaired },
+          'verity: session worktree permission recovery completed',
+        );
+        return { sessionId: id, repaired: result.repaired };
+      } catch (error) {
+        request.log.warn(
+          { err: error, sessionId: id, projectId: session.projectId },
+          'verity: session worktree permission recovery refused',
+        );
+        reply.code(409);
+        return {
+          error:
+            'session worktree permissions could not be repaired safely — ownership or path shape requires project reprovisioning',
+        };
+      }
+    },
+  );
+
   app.post(
     '/sessions/:id/turns',
     async (

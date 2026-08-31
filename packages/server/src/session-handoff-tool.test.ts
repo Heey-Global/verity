@@ -45,6 +45,7 @@ function facts(
     status: 'idle',
     resumable: true,
     eventCount: 3,
+    lastActivityAt: 1_700_000_000_000,
     ...overrides,
   };
 }
@@ -78,6 +79,9 @@ function harness(
     // Taken from the deps type rather than restated, so a new field on the dispatch input
     // reaches these assertions instead of being silently dropped by a narrower stub.
     dispatchTurn?: ControlPlaneSessionToolDeps['dispatchTurn'];
+    createSession?: ControlPlaneSessionToolDeps['createSession'];
+    readProgress?: ControlPlaneSessionToolDeps['readProgress'];
+    readRecentMessages?: ControlPlaneSessionToolDeps['readRecentMessages'];
   } = {},
 ) {
   const dispatchTurn = vi.fn(overrides.dispatchTurn ?? (async () => ({ queued: false })));
@@ -108,6 +112,11 @@ function harness(
       return { sessions: overrides.sessions ?? SESSIONS, omitted: overrides.omitted ?? 0 };
     },
     dispatchTurn,
+    ...(overrides.createSession === undefined ? {} : { createSession: overrides.createSession }),
+    ...(overrides.readProgress === undefined ? {} : { readProgress: overrides.readProgress }),
+    ...(overrides.readRecentMessages === undefined
+      ? {}
+      : { readRecentMessages: overrides.readRecentMessages }),
   });
   const call = (request: unknown) => ({
     projectId: CONTROL_PROJECT_ID,
@@ -374,6 +383,7 @@ describe('verity_list_sessions', () => {
       model: true,
       status: true,
       eventCount: true,
+      lastActivityAt: true,
       resumable: true,
       handoffEligible: true,
       handoffBlockedBy: true,
@@ -475,6 +485,28 @@ describe('verity_session_handoff', () => {
     ).resolves.toMatchObject({ sessionId: 'sess-k8s', queued: true });
   });
 
+  it('creates the explicitly selected new session and delivers the briefing as its first turn', async () => {
+    const createSession = vi.fn(async () => ({ sessionId: 'sess-created' }));
+    const { tools, dispatchTurn, call } = harness({ createSession });
+    await expect(
+      tools.handoff(
+        call({
+          target: { newSession: { project: 'acme/website' } },
+          title: 'Investigate worker failure',
+          briefing: 'Reproduce EACCES and add a bounded repair.',
+        }),
+      ),
+    ).resolves.toMatchObject({ sessionId: 'sess-created', project: 'acme/website' });
+    expect(createSession).toHaveBeenCalledWith({
+      projectId: 'website',
+      name: 'Investigate worker failure',
+      idempotencyKey: 'handoff-session:turn-1:invocation-1',
+    });
+    expect(dispatchTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'sess-created' }),
+    );
+  });
+
   it('rejects an unknown, Control, unresumable or not-active target with distinct messages', async () => {
     const { tools, dispatchTurn, call } = harness();
     const handoff = (sessionId: string) =>
@@ -555,6 +587,32 @@ describe('verity_session_handoff', () => {
       tools.handoff(
         call({ target: { sessionId: 'sess-web' }, title: 't', briefing: 'x'.repeat(20_001) }),
       ),
+    ).rejects.toThrow();
+  });
+});
+
+describe('Control Plane session observation', () => {
+  it('reads structured progress for one exact authorized target', async () => {
+    const readProgress = vi.fn(async () => ({ lifecycle: 'running', publishedSummary: null }));
+    const { tools, call } = harness({ readProgress });
+    await expect(tools.progress(call({ sessionId: 'sess-web' }))).resolves.toMatchObject({
+      sessionId: 'sess-web',
+      projectId: 'website',
+      lifecycle: 'running',
+    });
+    expect(readProgress).toHaveBeenCalledWith('sess-web');
+  });
+
+  it('requires purpose and enforces the bounded default for recent messages', async () => {
+    const readRecentMessages = vi.fn(async () => ({ messages: [], hasMore: false }));
+    const { tools, call } = harness({ readRecentMessages });
+    await expect(
+      tools.recentMessages(call({ sessionId: 'sess-web', purpose: 'Check handoff status' })),
+    ).resolves.toMatchObject({ sessionId: 'sess-web', count: 20, purpose: 'Check handoff status' });
+    expect(readRecentMessages).toHaveBeenCalledWith({ sessionId: 'sess-web', count: 20 });
+    await expect(tools.recentMessages(call({ sessionId: 'sess-web' }))).rejects.toThrow();
+    await expect(
+      tools.recentMessages(call({ sessionId: 'sess-web', purpose: 'Too broad', count: 51 })),
     ).rejects.toThrow();
   });
 });
