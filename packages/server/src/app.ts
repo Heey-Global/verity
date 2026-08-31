@@ -49,7 +49,11 @@ import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
   eventStore: EventStore;
+  /** TLS termination options for the public direct-server listener. */
+  https?: ServerDeps['https'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
+  /** Installer-issued authority that gates first initialization. */
+  devicePairing?: ServerDeps['devicePairing'];
   workflowStore?: WorkflowStore | undefined;
   workflowGithubWebhookSecret?: string | undefined;
   authorizeWorkflowAction?: ServerDeps['authorizeWorkflowAction'];
@@ -289,9 +293,11 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
 
   return buildServer({
     eventStore: deps.eventStore,
+    ...(deps.https !== undefined ? { https: deps.https } : {}),
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }
       : {}),
+    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
     ...(deps.workflowStore !== undefined ? { workflowStore: deps.workflowStore } : {}),
     ...(deps.workflowGithubWebhookSecret !== undefined
       ? { workflowGithubWebhookSecret: deps.workflowGithubWebhookSecret }

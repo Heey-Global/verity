@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryEventBus, type Backend, type SpawnedProcess, type Spawner } from '@verity/session';
@@ -6,6 +7,7 @@ import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/te
 import type { ProjectRecord } from '@verity/store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildControlPlane } from './app.js';
+import { createProjectEgressCa, issueGatewayServerCertificate } from './claude-egress-ca.js';
 import type { GitHubTaskService } from './github-tasks.js';
 
 let ctx: TestDb;
@@ -71,6 +73,24 @@ function oneShotBackend(reply: string, prompts: string[] = []): Backend {
 }
 
 describe('buildControlPlane', () => {
+  it('preserves TLS through the control-plane composition boundary', async () => {
+    const ca = await createProjectEgressCa({ validityDays: 1 });
+    const certificate = await issueGatewayServerCertificate(ca, {
+      serverName: 'localhost',
+      validityDays: 1,
+    });
+    const app = buildControlPlane({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      https: { key: certificate.keyPem, cert: certificate.certPem },
+    });
+    try {
+      expect(app.server).toBeInstanceOf(HttpsServer);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('injects durable Verity Control capabilities for project and legacy control sessions', async () => {
     const projectWorktree = mkdtempSync(join(tmpdir(), 'verity-project-control-'));
     const legacyWorktree = mkdtempSync(join(tmpdir(), 'verity-legacy-control-'));

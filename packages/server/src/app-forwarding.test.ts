@@ -41,6 +41,17 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('passes direct-listener TLS and device-pairing authority through', () => {
+    const https = { key: 'key', cert: 'certificate' };
+    const devicePairing = {
+      exchange: vi.fn(),
+      verifySession: vi.fn(),
+    } as unknown as NonNullable<ServerDeps['devicePairing']>;
+    const got = forward({ https, devicePairing });
+    expect(got.https).toBe(https);
+    expect(got.devicePairing).toBe(devicePairing);
+  });
+
   it('passes the managed release-channel resolver through', () => {
     const serverUpdateResolver = { resolve: vi.fn() };
     const got = forward({ serverUpdateResolver });
