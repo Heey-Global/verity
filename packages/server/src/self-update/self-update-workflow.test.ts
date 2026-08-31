@@ -124,7 +124,12 @@ describe('self-update workflow image', () => {
     expect(version).toMatch(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
     expect(workflow).toContain('--build-arg "VERITY_SERVER_VERSION=$VERITY_SMOKE_SERVER_VERSION"');
     expect(smoke).toContain(
-      'expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" \\\n' +
+      'createAgentSeedProvenanceClient(\n' +
+        '       process.env.VERITY_SMOKE_SERVER_VERSION,\n' +
+        '       process.env.VERITY_SMOKE_SERVER_IMAGE,',
+    );
+    expect(smoke).toContain(
+      'expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" "$target_digest" \\\n' +
         '  "matched $VERITY_SMOKE_SERVER_VERSION $target_digest"',
     );
   });
