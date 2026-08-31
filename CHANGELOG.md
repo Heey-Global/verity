@@ -1,5 +1,29 @@
 # Changelog
 
+## [16.4.1](https://github.com/Heey-Global/verity/compare/v16.4.0...v16.4.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **release:** bootstrap first server image ([d310255](https://github.com/Heey-Global/verity/commit/d310255a9ebfc4a20b4172138e630fb1f0414e93))
+* **release:** bootstrap first server image ([0b2d710](https://github.com/Heey-Global/verity/commit/0b2d710f1b325ab8d417841a8d7fe46194d18c17))
+* **release:** identify smoke agent seed image ([ff87b75](https://github.com/Heey-Global/verity/commit/ff87b75606ef1d878b685ff4ba0edba008683d6f))
+* **release:** identify smoke agent seed image ([8b23300](https://github.com/Heey-Global/verity/commit/8b23300eeb84c14a358315b64f19e11eccda7f70))
+* **release:** keep recovery harness current ([c6eb668](https://github.com/Heey-Global/verity/commit/c6eb6688a55e966c4e0d04658f1cf7910bb6d890))
+* **release:** keep recovery harness current ([855da61](https://github.com/Heey-Global/verity/commit/855da6195bc962127d20fdab80ab940262a6f622))
+* **release:** provide smoke database password ([8a2b919](https://github.com/Heey-Global/verity/commit/8a2b919d88e94e25c93f646cf71f210fe4b11eb6))
+* **release:** provide smoke database password ([431ea37](https://github.com/Heey-Global/verity/commit/431ea37dcc955f7b938330759475723b30ba8ced))
+* **release:** stage current smoke driver ([7612a68](https://github.com/Heey-Global/verity/commit/7612a68fc77d5f3b8d053754240041e22149bd45))
+* **release:** stage current smoke driver ([2f33574](https://github.com/Heey-Global/verity/commit/2f3357495e5ba531c8921bbab2f46e83abdf5eb7))
+* **release:** target repository during recovery ([d3092e7](https://github.com/Heey-Global/verity/commit/d3092e7d9d0aa9851fa96b007d461f0c6f7e9a19))
+* **release:** target repository during recovery ([1028bf5](https://github.com/Heey-Global/verity/commit/1028bf5c1f6e7de13598feee9cd8d7390e0a506c))
+
+
+### Performance Improvements
+
+* **ci:** streamline mobile release validation ([44537ce](https://github.com/Heey-Global/verity/commit/44537ce86dfb9a7318cfc82f928767c620176a2b))
+* **ci:** streamline mobile release validation ([339bd61](https://github.com/Heey-Global/verity/commit/339bd61d61b440c896dd61064028974fb049d768))
+
 ## [16.4.0](https://github.com/Heey-Global/verity/compare/v16.3.1...v16.4.0) (2026-08-31)
 
 
