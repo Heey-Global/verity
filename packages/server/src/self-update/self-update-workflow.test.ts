@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -874,6 +874,9 @@ describe('self-update workflow image', () => {
     expect(workflow).toContain(
       '--cache-to type=gha,mode=max,scope=verity-server,ignore-error=true',
     );
+    expect(workflow).toContain('for attempt in 1 2 3; do');
+    expect(workflow).toContain('failed to fetch oauth token: unexpected status from');
+    expect(workflow).toContain('deterministic Dockerfile/build failures still fail immediately');
 
     // Two steps, not one step with two background jobs — and the harness first, so a
     // compile error fails before the expensive build rather than beside it.
@@ -890,5 +893,55 @@ describe('self-update workflow image', () => {
     // again is a one-line change that looks like a pure speed win from the diff.
     expect(workflow).not.toContain('image_pid');
     expect(workflow).not.toContain('harness_pid');
+  });
+
+  it('retries only transient registry authorization failures', async () => {
+    const script = await step('Build the Server image into the isolated daemon');
+    const dir = await mkdtemp(join(tmpdir(), 'verity-build-retry-'));
+    const docker = join(dir, 'docker');
+    const sleep = join(dir, 'sleep');
+    await writeFile(
+      docker,
+      `#!/usr/bin/env bash
+count_file="$RUNNER_TEMP/docker-count"
+count=0
+[[ ! -f "$count_file" ]] || count="$(<"$count_file")"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+case "$BUILD_CASE" in
+  transient-then-success)
+    [[ "$count" -ge 3 ]] || { echo 'ERROR: failed to fetch oauth token: unexpected status from POST request to https://auth.docker.io/token: 500 Internal Server Error' >&2; exit 1; } ;;
+  transient-exhausted)
+    echo 'ERROR: failed to fetch oauth token: unexpected status from POST request to https://auth.docker.io/token: 429 Too Many Requests' >&2; exit 1 ;;
+  deterministic)
+    echo 'ERROR: compiler reported unexpected EOF while building application' >&2; exit 1 ;;
+esac
+`,
+    );
+    await writeFile(sleep, '#!/usr/bin/env bash\nexit 0\n');
+    await chmod(docker, 0o755);
+    await chmod(sleep, 0o755);
+
+    try {
+      const env = {
+        VERITY_SMOKE_SERVER_VERSION: '16.4.1',
+        VERITY_SMOKE_IMAGE: 'verity-server:candidate',
+      };
+      const recovered = await runIn(dir, script, { ...env, BUILD_CASE: 'transient-then-success' });
+      expect(recovered.code).toBe(0);
+      expect(await readFile(join(dir, 'docker-count'), 'utf8')).toBe('3');
+
+      await rm(join(dir, 'docker-count'));
+      const exhausted = await runIn(dir, script, { ...env, BUILD_CASE: 'transient-exhausted' });
+      expect(exhausted.code).not.toBe(0);
+      expect(await readFile(join(dir, 'docker-count'), 'utf8')).toBe('3');
+
+      await rm(join(dir, 'docker-count'));
+      const deterministic = await runIn(dir, script, { ...env, BUILD_CASE: 'deterministic' });
+      expect(deterministic.code).not.toBe(0);
+      expect(await readFile(join(dir, 'docker-count'), 'utf8')).toBe('1');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
