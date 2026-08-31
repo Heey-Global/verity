@@ -608,11 +608,14 @@ jobs:
           docker tag "$VERITY_SMOKE_IMAGE" "$VERITY_SMOKE_PREVIOUS_IMAGE"
 
       - name: Run the live self-update smoke
-        run: >-
-          deploy/bin/verity-self-update-live-smoke
-          "$VERITY_SMOKE_IMAGE"
-          "$VERITY_SMOKE_PREVIOUS_IMAGE"
-          "$VERITY_SMOKE_PREVIOUS_TAG"
+        run: |
+          postgres_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$postgres_password"
+          export VERITY_POSTGRES_PASSWORD="$postgres_password"
+          deploy/bin/verity-self-update-live-smoke \
+            "$VERITY_SMOKE_IMAGE" \
+            "$VERITY_SMOKE_PREVIOUS_IMAGE" \
+            "$VERITY_SMOKE_PREVIOUS_TAG"
 
       - name: Collect isolated daemon diagnostics
         if: failure()
