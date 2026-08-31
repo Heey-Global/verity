@@ -8,9 +8,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_ARCHIVE_BYTES = 4 * 1024 * 1024;
-// A maximum-size payload is wrapped in a 512-byte header and padded to the next
-// tar block. The transport ceiling must include that framing overhead.
-const MAX_ARCHIVE_TRANSPORT_BYTES = MAX_ARCHIVE_BYTES + 1024;
+// A maximum-size payload is wrapped in a 512-byte header, padded to the next tar
+// block, and followed by two 512-byte end markers. Include all framing overhead.
+const MAX_ARCHIVE_TRANSPORT_BYTES = MAX_ARCHIVE_BYTES + 1536;
 
 class EvidenceError extends Error {
   constructor(readonly safeReason: string) {
@@ -192,7 +192,10 @@ async function readDockerPath(
         const archive = Buffer.concat(chunks, length);
         try {
           const partial = parseDockerArchive(path, archive);
-          if (partial.type !== 'file' || partial.content?.length === octal(archive, 124, 12)) {
+          // Directory evidence is complete at its header. A file is not safe to
+          // accept until the response ends: otherwise a daemon can declare an
+          // in-limit first entry and continue streaming unbounded trailing data.
+          if (partial.type !== 'file') {
             response.destroy();
             finish(undefined, partial);
           }

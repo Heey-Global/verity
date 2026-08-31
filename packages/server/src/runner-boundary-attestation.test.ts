@@ -1421,6 +1421,28 @@ describe('defaultImageEvidenceCollector (ADR 0006 D1 evidence gathering)', () =>
     }
   });
 
+  it('accepts a maximum-size file with complete tar end markers', async () => {
+    const content = Buffer.alloc(4 * 1024 * 1024, 120);
+    const archive = Buffer.concat([
+      tarBlock('passwd', { size: content.length }),
+      content,
+      Buffer.alloc(1024),
+    ]);
+    const server = await startArchiveServer((path, response) => {
+      response.statusCode = 200;
+      response.end(path === '/etc/passwd' ? archive : FIXTURES.get(path));
+    });
+    try {
+      const evidence = await defaultImageEvidenceCollector({
+        imageRef: 'dev-base:local',
+        dockerHost: server.dockerHost,
+      });
+      expect(evidence.files.get('/etc/passwd')?.content).toHaveLength(content.length);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('refuses when the daemon never answers within the timeout', async () => {
     const server = await startArchiveServer(() => {
       /* hold the request open so the per-request timeout is what ends it */

@@ -23,6 +23,9 @@ services:
     cap_add:
       - CHOWN
     environment:
+      HOST: 0.0.0.0
+      VERITY_MANAGED_DEPLOYMENT_ID: ''
+      VERITY_TLS_MODE: direct
       VERITY_TLS_KEY_PATH: /run/verity-pairing/tls-key.pem
       VERITY_TLS_CERT_PATH: /run/verity-pairing/tls-cert.pem
       # Repeat the direct Server's transport identity in this overlay. Compose

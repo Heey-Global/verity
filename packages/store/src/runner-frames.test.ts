@@ -483,6 +483,10 @@ describe('EventStore.fenceRunningTurnIfSilent', () => {
 
   it('releases the exact shutdown fence when an unrelated event followed its notice', async () => {
     const anchor = await runningAnchor();
+    // Establish the pre-fence projection before exercising its invalidation and
+    // rebuild. Otherwise the live projector and rollback backfill can start from
+    // opposite sides of the deliberately deleted projection cursor.
+    await ctx.store.waitForMessageProjectionIdle();
     const latestSeq = await ctx.store.latestEventSeq('s1');
     const fenced = await ctx.store.fenceRunningTurnIfSilent(anchor, latestSeq, {
       t: 'notice',

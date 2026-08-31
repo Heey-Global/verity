@@ -107,6 +107,9 @@ describe('deploy/bin/verity-compose', () => {
       services: Record<string, { environment?: Record<string, string> }>;
     };
     const names = [
+      'HOST',
+      'VERITY_MANAGED_DEPLOYMENT_ID',
+      'VERITY_TLS_MODE',
       'VERITY_TLS_KEY_PATH',
       'VERITY_TLS_CERT_PATH',
       'VERITY_PAIRING_IDENTITY_KEY_PATH',
@@ -118,7 +121,9 @@ describe('deploy/bin/verity-compose', () => {
     expect(Object.fromEntries(names.map((name) => [name, overlayEnvironment[name]]))).toEqual(
       Object.fromEntries(names.map((name) => [name, baseEnvironment[name]])),
     );
-    for (const name of names) expect(overlayEnvironment[name]).toBeTruthy();
+    for (const name of names.filter((name) => name !== 'VERITY_MANAGED_DEPLOYMENT_ID')) {
+      expect(overlayEnvironment[name]).toBeTruthy();
+    }
     expect(baseEnvironment['VERITY_MANAGED_DEPLOYMENT_ID']).toBe('');
     expect(baseEnvironment['VERITY_TLS_MODE']).toBe('direct');
   });
