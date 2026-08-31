@@ -66,13 +66,24 @@ jobs:
         with:
           minimum-free-gib: '25'
 
-      # Replace the workflow checkout only after its local setup action has run.
-      # From here onward every source and script belongs to the exact candidate.
+      - name: Stage the workflow-owned live smoke driver
+        run: |
+          install -m 0755 deploy/bin/verity-self-update-live-smoke \
+            "$RUNNER_TEMP/verity-self-update-live-smoke"
+
+      # Replace the workflow checkout only after its local setup action and live
+      # smoke driver have been staged. Product source belongs to the exact
+      # candidate; release-gate repairs remain usable for an immutable old tag.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.candidate-sha || github.sha }}
           fetch-depth: 0
+
+      - name: Restore the workflow-owned live smoke driver
+        run: |
+          install -m 0755 "$RUNNER_TEMP/verity-self-update-live-smoke" \
+            deploy/bin/verity-self-update-live-smoke
 
       # Deliberately at the START of the job, not only in the teardown. The
       # teardown removes THIS run's volume, and it is an `if: always()` step — but
