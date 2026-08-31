@@ -1,0 +1,41 @@
+{
+  "cli": {
+    "version": ">= 20.3.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview"
+    },
+    "simulator": {
+      "ios": {
+        "simulator": true
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "environment": "production",
+      "channel": "production"
+    },
+    "testflight": {
+      "distribution": "store",
+      "autoIncrement": true,
+      "environment": "production",
+      "channel": "testflight"
+    }
+  },
+  "submit": {
+    "production": {},
+    "testflight": {
+      "ios": {
+        "appleTeamId": "P9C486Q6X6",
+        "ascAppId": "6785766719"
+      }
+    }
+  }
+}

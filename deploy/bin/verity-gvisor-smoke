@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Exercise the pinned Docker runsc runtime on a real host without secrets or network access.
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+deploy_dir="$(cd -- "$script_dir/.." && pwd)"
+# shellcheck source=../gvisor/versions.env
+source "$deploy_dir/gvisor/versions.env"
+
+for tool in docker jq sha512sum uname; do
+  command -v "$tool" >/dev/null || { echo "missing required host tool: $tool" >&2; exit 1; }
+done
+
+runtime_path="/opt/verity/runsc/$RUNSC_RELEASE/runsc"
+case "$(uname -m)" in
+  x86_64) checksum=$RUNSC_SHA512_X86_64 ;;
+  aarch64|arm64) checksum=$RUNSC_SHA512_AARCH64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+printf '%s  %s\n' "$checksum" "$runtime_path" | sha512sum --check --status || {
+  echo "runsc binary does not match the pinned $RUNSC_RELEASE checksum" >&2
+  exit 1
+}
+
+registration="$(docker info --format '{{json .Runtimes.runsc}}')"
+jq --exit-status \
+  --arg path "$runtime_path" \
+  '.path == $path and .runtimeArgs == ["--platform=systrap", "--network=none"]' \
+  <<<"$registration" >/dev/null || {
+    echo 'Docker runsc registration does not match the pinned path and arguments' >&2
+    exit 1
+  }
+
+image="${VERITY_GVISOR_SMOKE_IMAGE:-$RUNSC_SMOKE_IMAGE}"
+if [[ ! $image =~ @sha256:[a-f0-9]{64}$ ]]; then
+  echo 'VERITY_GVISOR_SMOKE_IMAGE must be pinned by a full sha256 digest' >&2
+  exit 1
+fi
+
+container="verity-gvisor-smoke-$$"
+container_id=''
+cleanup_best_effort() {
+  if [[ -n $container_id ]]; then
+    docker rm --force "$container_id" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_best_effort EXIT INT TERM
+
+docker pull "$image" >/dev/null
+container_id="$(docker create \
+  --name "$container" \
+  --runtime runsc \
+  --network none \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16777216 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 32 \
+  --memory 64m \
+  --cpus 0.25 \
+  --restart no \
+  --user 65532:65532 \
+  --entrypoint /bin/sh \
+  "$image" -c 'printf "%s\n" verity-gvisor-smoke-ok')"
+[[ -n $container_id ]] || { echo 'Docker create returned no container ID' >&2; exit 1; }
+
+inspect="$(docker inspect "$container_id")"
+jq --exit-status \
+  '.[0].HostConfig.Runtime == "runsc" and
+   .[0].HostConfig.NetworkMode == "none" and
+   .[0].HostConfig.ReadonlyRootfs == true and
+   .[0].HostConfig.Privileged == false and
+   .[0].HostConfig.CapDrop == ["ALL"] and
+   (.[0].HostConfig.CapAdd == null or .[0].HostConfig.CapAdd == []) and
+   (.[0].HostConfig.Devices == null or .[0].HostConfig.Devices == []) and
+   (.[0].HostConfig.DeviceRequests == null or .[0].HostConfig.DeviceRequests == []) and
+   (.[0].HostConfig.DeviceCgroupRules == null or .[0].HostConfig.DeviceCgroupRules == []) and
+   (.[0].HostConfig.Binds == null or .[0].HostConfig.Binds == []) and
+   (.[0].HostConfig.Mounts == null or .[0].HostConfig.Mounts == []) and
+   .[0].HostConfig.SecurityOpt == ["no-new-privileges:true"] and
+   .[0].HostConfig.RestartPolicy.Name == "no" and
+   .[0].HostConfig.PidsLimit == 32 and
+   .[0].HostConfig.Memory == 67108864 and
+   .[0].HostConfig.NanoCpus == 250000000 and
+   (.[0].HostConfig.Tmpfs | keys) == ["/tmp"] and
+   (.[0].HostConfig.Tmpfs["/tmp"] | split(",") | sort) ==
+     (["rw", "noexec", "nosuid", "nodev", "size=16777216"] | sort) and
+   (.[0].Config.Volumes == null or .[0].Config.Volumes == {}) and
+   .[0].Config.User == "65532:65532" and
+   .[0].Config.Entrypoint == ["/bin/sh"] and
+   .[0].Config.Cmd == ["-c", "printf \"%s\\n\" verity-gvisor-smoke-ok"]' \
+  <<<"$inspect" >/dev/null || {
+    echo 'created smoke container does not match the required isolation profile' >&2
+    exit 1
+  }
+
+output="$(docker start --attach "$container_id")"
+[[ $output == *verity-gvisor-smoke-ok* ]] || {
+  echo 'runsc smoke workload did not return its completion marker' >&2
+  exit 1
+}
+
+docker rm --force "$container_id" >/dev/null
+container_id=''
+trap - EXIT INT TERM
+echo "gVisor smoke passed with $RUNSC_RELEASE and a networkless runsc container"

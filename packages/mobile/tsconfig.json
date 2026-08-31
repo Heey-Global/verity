@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // The TS core is authored + tested in Node (vitest); `fetch`/`Response`/`URL`
+    // are Node globals here. The real RN app supplies its own fetch types at
+    // build time in the operator's Expo environment.
+    "types": ["node"]
+  },
+  "references": [{ "path": "../../packages/events" }],
+  "include": ["src/**/*.ts"]
+}

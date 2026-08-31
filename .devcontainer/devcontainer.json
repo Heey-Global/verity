@@ -1,0 +1,26 @@
+{
+  // The Verity repo's own sandbox. Verity builds this instead of running the
+  // baked `verity-sandbox` image directly, and injects the node Feature and the
+  // `verity-sandbox-toolkit` Feature on top via `--additional-features`
+  // (packages/server/src/provisioner.ts). Both are already in the base this
+  // Dockerfile starts from, and install.sh is written to be re-runnable, so the
+  // injection is redundant work rather than a conflict — the cost is a slower
+  // FIRST provision after this directory or the base image changes, and nothing
+  // after that: the built image is cached under a content hash over exactly
+  // those two inputs.
+  //
+  // Keys here are deliberately limited to what Verity's sandbox runtime honours.
+  // Everything in `UNSUPPORTED_DEVCONTAINER_RUNTIME_KEYS` (containerEnv,
+  // runArgs, privileged, mounts that are not plain binds, lifecycle commands
+  // other than a string `postCreateCommand`, …) is REJECTED at provision time
+  // rather than silently ignored, because those are the keys that would weaken
+  // the sandbox boundary. Add none of them here.
+  "name": "verity",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  // Matches the base image's own user. Stated rather than inherited so a base
+  // that ever changed its default would fail loudly here instead of handing an
+  // agent a root container.
+  "remoteUser": "dev"
+}

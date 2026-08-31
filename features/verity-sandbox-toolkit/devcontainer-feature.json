@@ -1,0 +1,120 @@
+{
+  "id": "verity-sandbox-toolkit",
+  "version": "0.0.0-managed",
+  "name": "Verity Sandbox Toolkit",
+  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + claude-code + codex + opencode + pi CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
+  "documentationURL": "https://github.com/Heey-Global/verity/tree/main/features/verity-sandbox-toolkit",
+  "installsAfter": ["ghcr.io/devcontainers/features/node"],
+  "options": {
+    "tz": {
+      "type": "string",
+      "default": "UTC",
+      "description": "IANA timezone for the container (sets TZ)."
+    },
+    "installClaude": {
+      "type": "boolean",
+      "default": true,
+      "description": "Install the @anthropic-ai/claude-code CLI globally (requires node on PATH)."
+    },
+    "claudeCodeVersion": {
+      "type": "string",
+      "default": "2.1.241",
+      "description": "Exact @anthropic-ai/claude-code npm version to pin."
+    },
+    "claudeAcpVersion": {
+      "type": "string",
+      "default": "0.70.0",
+      "description": "Exact @agentclientprotocol/claude-agent-acp npm version to pin."
+    },
+    "installCodex": {
+      "type": "boolean",
+      "default": true,
+      "description": "Install the @openai/codex CLI globally (requires node on PATH)."
+    },
+    "codexVersion": {
+      "type": "string",
+      "default": "0.149.0",
+      "description": "Exact @openai/codex npm version to pin."
+    },
+    "codexAcpVersion": {
+      "type": "string",
+      "default": "1.6.2",
+      "description": "Exact @agentclientprotocol/codex-acp npm version to pin."
+    },
+    "installOpencode": {
+      "type": "boolean",
+      "default": true,
+      "description": "Install the opencode-ai CLI globally (requires node on PATH)."
+    },
+    "opencodeVersion": {
+      "type": "string",
+      "default": "1.18.21",
+      "description": "Exact opencode-ai npm version to pin."
+    },
+    "installPi": {
+      "type": "boolean",
+      "default": true,
+      "description": "Install the @earendil-works/pi-coding-agent CLI globally (requires node on PATH)."
+    },
+    "installRunnerSupervisor": {
+      "type": "boolean",
+      "default": false,
+      "description": "Reserve the dedicated UID/GID and install the ADR 0006 Runner supervisor. Verity enables this for its managed default sandbox and for project devcontainer builds alike; a project devcontainer must additionally pass the provisioner's D1 boundary attestation before the supervisor is started."
+    },
+    "piVersion": {
+      "type": "string",
+      "default": "0.84.2",
+      "description": "Exact @earendil-works/pi-coding-agent npm version to pin."
+    },
+    "runnerUid": {
+      "type": "string",
+      "default": "1101",
+      "description": "Numeric UID reserved for the sandbox-local Verity Runner supervisor."
+    },
+    "runtimeGid": {
+      "type": "string",
+      "default": "1101",
+      "description": "Numeric GID shared only by the Runner runtime owner and Verity server."
+    },
+    "ghVersion": {
+      "type": "string",
+      "default": "2.98.0",
+      "description": "Exact cli/cli (GitHub CLI) release version to pin (no leading v)."
+    },
+    "dopplerVersion": {
+      "type": "string",
+      "default": "3.76.5",
+      "description": "Exact DopplerHQ/cli release version to pin."
+    },
+    "gitleaksVersion": {
+      "type": "string",
+      "default": "8.30.1",
+      "description": "Exact gitleaks/gitleaks release version to pin (no leading v). Backs the agent-seed pre-commit/pre-push secret gate."
+    },
+    "ghTokenFile": {
+      "type": "string",
+      "default": "/run/verity/gh-token",
+      "description": "Runtime bind path of the GitHub App installation token file (provisioner-supplied; not created at install time)."
+    },
+    "sshSigningKey": {
+      "type": "string",
+      "default": "/run/verity/ssh/id_ed25519.pub",
+      "description": "Runtime bind path of the public SSH signing key (git user.signingkey)."
+    },
+    "sshSigningKeyPrivate": {
+      "type": "string",
+      "default": "/run/verity/ssh/id_ed25519",
+      "description": "Runtime bind path of the private SSH signing/auth key (ssh IdentityFile)."
+    },
+    "claudeConfigDir": {
+      "type": "string",
+      "default": "/run/verity/claude",
+      "description": "Runtime persistent Claude config dir (CLAUDE_CONFIG_DIR); provisioner binds a writable volume here."
+    },
+    "hooksPath": {
+      "type": "string",
+      "default": "/opt/agent-seed/hooks",
+      "description": "git core.hooksPath — points at the agent-seed pre-commit secret hook and the pre-push secret + code review hook."
+    }
+  }
+}

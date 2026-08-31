@@ -1,0 +1,611 @@
+name: verity-self-update
+
+on:
+  # release.yml calls this only after release-please has created a backend
+  # release. Passing the candidate explicitly preserves the exact-commit gate
+  # without running the ninety-minute live matrix for every ordinary merge.
+  workflow_call:
+    inputs:
+      candidate-sha:
+        description: Exact backend release commit to exercise
+        required: true
+        type: string
+  # Recovery and deliberate ad-hoc validation remain possible. A manual run
+  # checks the ref selected in GitHub's workflow-dispatch UI.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  # Duplicate attempts of the same KIND for one candidate supersede each other.
+  # Keep manual recovery separate from workflow_call: a manual run is not wired
+  # to the release caller and must never cancel the verdict that caller awaits.
+  group: self-update-${{ github.event_name }}-${{ inputs.candidate-sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  live-smoke:
+    # The GitHub-hosted VM is disposable, while the cutover itself runs against a
+    # second privileged DinD daemon selected through DOCKER_HOST. The smoke script
+    # also refuses any daemon it cannot prove is throwaway.
+    runs-on: ubuntu-24.04
+    # Raised again with the SIGKILL matrix: the smoke now drives twelve
+    # generations and seventeen cutover runs, five of which wait a bounded window
+    # out on purpose. The budget is a backstop against a hang, not a performance
+    # target.
+    timeout-minutes: 90
+    env:
+      VERITY_SMOKE_DIND: verity-self-update-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_SMOKE_IMAGE: verity-server:self-update-${{ github.run_id }}-${{ github.run_attempt }}
+      # Namespaced per run like the two above, which it was not while this job owned
+      # a whole VM. It is a tag on the SHARED host daemon now: two main commits run
+      # concurrently by design (the concurrency group is per-sha, see above), and a
+      # fixed tag lets the second run retag it between the first run's `docker tag`
+      # and its `docker save` — which would silently test the wrong previous release.
+      VERITY_SMOKE_PREVIOUS_IMAGE: verity-server:self-update-previous-${{ github.run_id }}-${{ github.run_attempt }}
+      # The production publisher always supplies a released version. The smoke
+      # must do the same now that runtime startup rejects an invalid immutable
+      # image stamp; the value is synthetic because this image never leaves the
+      # isolated daemon and the cutover assertions are digest-based.
+      VERITY_SMOKE_SERVER_VERSION: 1.0.0
+    steps:
+      # Load repository-owned setup from the workflow revision first. A candidate
+      # may predate this action and must still be testable by a current workflow.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare hosted-runner disk
+        uses: ./.github/actions/reclaim-runner-disk
+        with:
+          minimum-free-gib: '25'
+
+      # Replace the workflow checkout only after its local setup action has run.
+      # From here onward every source and script belongs to the exact candidate.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate-sha || github.sha }}
+          fetch-depth: 0
+
+      # Deliberately at the START of the job, not only in the teardown. The
+      # teardown removes THIS run's volume, and it is an `if: always()` step — but
+      # "always" is the workflow's always, not the machine's: a runner that is
+      # OOM-killed, force-terminated by a converge, or loses its lane mid-job never
+      # runs it. Each leak is a whole Docker root for an image this job holds three
+      # times over, on the disk the live deployment writes to, and nothing else on
+      # this host has a reason to remove it. On the throwaway VM this was
+      # self-solving; here the only reliable reclaimer is the next run, so that is
+      # where it goes.
+      - name: Reclaim leaked isolated-daemon state
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The container half, which the volume half below cannot do for itself.
+          # A run killed after `docker run --detach` and before the teardown leaves
+          # a PRIVILEGED dind running on the production host for as long as the box
+          # lives — and because that container still references its volume, the
+          # volume is not dangling, so the sweep underneath is filtered away from
+          # exactly the leak that matters most. Removing the container first is what
+          # lets it work: the volume becomes dangling in the same step.
+          #
+          # This is a FORCE REMOVE running on the machine that serves production, so
+          # "probably one of ours" is not a good enough answer to "may I delete
+          # this". Both scopes below match the full name this workflow actually
+          # builds — `verity-self-update-dind-<run_id>-<attempt>`, both numeric,
+          # anchored at both ends — and not the prefix. A bare
+          # `verity-self-update-dind-*` would also accept
+          # `verity-self-update-dind-cache`, or whatever a future step names with
+          # the same prefix, and would remove it a day later without anyone having
+          # decided that.
+          #
+          # The age gate is the SECOND, independent guard, and it deliberately errs
+          # late rather than clever. `{{.RunningFor}}` is read only for the words
+          # "day", "week", "month" and "year"; the job's own budget is 90 minutes,
+          # so nothing this removes can belong to a run that is still alive,
+          # whatever the clock skew. Nothing here needs the sweep to be prompt — a
+          # leak sitting for a day costs a container slot, and a sweep that killed a
+          # live sibling's daemon would fail a release.
+          stale=0
+          while read -r container age; do
+            [[ -n "$container" ]] || continue
+            if [[ ! "$container" =~ ^verity-self-update-dind-[0-9]+-[0-9]+$ ]]; then
+              echo "::warning::Not removing '$container': the name filter returned something outside the run-scoped pattern." >&2
+              continue
+            fi
+            case "$age" in
+              *day*|*week*|*month*|*year*) ;;
+              *) continue ;;
+            esac
+            if docker --host unix:///var/run/docker.sock rm --force --volumes=false "$container" >/dev/null 2>&1; then
+              stale=$((stale + 1))
+              echo "Reclaimed leaked daemon container $container (created $age)"
+            fi
+          done < <(docker --host unix:///var/run/docker.sock ps --all \
+            --filter 'name=^verity-self-update-dind-[0-9]+-[0-9]+$' --format '{{.Names}} {{.RunningFor}}')
+          echo "Reclaimed $stale leaked isolated-daemon container(s)"
+
+          # Scoped twice, because the failure mode of getting this wrong is not a
+          # slow job. An unscoped `docker volume prune` on this host removes
+          # `verity-data`, `verity-managed-gateway-control` and `verity-updater-control`
+          # — the live deployment's state.
+          #
+          #   - the daemon-side filter is anchored on the FULL run-scoped name, both
+          #     ends and both numeric fields, AND on `dangling=true`, so a volume any
+          #     container still references is never even listed;
+          #   - the shell re-checks every name it is handed against the same shape
+          #     before removing it, so if that filter ever stopped meaning what it
+          #     means here, this removes nothing and says so.
+          #
+          # A concurrently running sibling is safe on both counts: its volume is
+          # attached to its dind, so it is not dangling, and `docker volume rm`
+          # refuses a volume that is in use even if it somehow were listed.
+          removed=0
+          while IFS= read -r volume; do
+            [[ -n "$volume" ]] || continue
+            if [[ ! "$volume" =~ ^verity-self-update-dind-[0-9]+-[0-9]+-data$ ]]; then
+              echo "::warning::Not removing '$volume': the name filter returned something outside the run-scoped pattern." >&2
+              continue
+            fi
+            if docker --host unix:///var/run/docker.sock volume rm "$volume" >/dev/null 2>&1; then
+              removed=$((removed + 1))
+              echo "Reclaimed leaked volume $volume"
+            fi
+          done < <(docker --host unix:///var/run/docker.sock volume ls --quiet \
+            --filter 'name=^verity-self-update-dind-[0-9]+-[0-9]+-data$' --filter dangling=true)
+          echo "Reclaimed $removed leaked isolated-daemon volume(s)"
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      - name: Fetch the previously released Server image
+        shell: bash
+        env:
+          # The catalogue read below is an ordinary HTTPS call and does not go
+          # through the daemon, so it needs the credential in its own hand;
+          # docker/login-action only wrote it into the daemon's config.
+          VERITY_GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # This step asks the REGISTRY which Server images exist. It used to ask
+          # git, by walking `git tag --merged HEAD^ --sort=-version:refname` and
+          # pulling each tag until one resolved, and that is the step that blocked
+          # the 13.2.14 release.
+          #
+          # Two separate things were wrong with it, and only the second is about
+          # persistent runners.
+          #
+          #   1. A git tag is not a published image. release-please tags and
+          #      publishes the GitHub release when the release PR merges, but every
+          #      image publish in release.yml hangs off `self-update-gate` — this
+          #      workflow's verdict. A release whose gate fails therefore keeps its
+          #      tag forever and never gets an image, and the NEXT release then walks
+          #      onto that tag as its predecessor. v13.2.13 is exactly that: tagged
+          #      at d45ba8b9, its release run failed, `ghcr.io/…:v13.2.13` answers
+          #      MANIFEST_UNKNOWN to this day. The tag walk cannot see the
+          #      difference, by construction — it is asking git a question only the
+          #      registry can answer.
+          #
+          #   2. The loop covered for that with `grep -Eqi 'manifest unknown|manifest
+          #      .*not found'` over `docker pull`'s stderr, which is a fail-closed
+          #      idea resting on an error string that is not an API. On the hosted
+          #      VM's Docker 28 with the classic image store a missing tag reads
+          #      `Error response from daemon: manifest unknown` and the pattern
+          #      matched. This host runs a daemon with the containerd image store,
+          #      where the same condition reads `Error response from daemon: failed
+          #      to resolve reference "ghcr.io/…:v13.2.13": not found` — no
+          #      "manifest" in it at all — so the pattern missed and the step exited
+          #      1 on a release it should have skipped.
+          #
+          # Widening that pattern to accept "not found" is not the fix, it is the
+          # trap. Against ghcr.io the containerd resolver renders references it
+          # cannot reach as the same `not found` regardless of WHY: a tag that was
+          # never pushed and a repository that does not exist are already
+          # indistinguishable (both verified on Docker 29.3.1, against
+          # `…/verity-server:v13.2.13` and `…/verity/definitely-not-a-repo:v1`),
+          # and a repository the credentials cannot read goes through that same
+          # mapping. Docker Hub still says `pull access denied` for the last of
+          # those; ghcr.io does not, so there is nothing left in the text to key a
+          # skip on. One that tried would read an expired login as "no published
+          # image", walk down to some arbitrarily old release and call the cutover
+          # green — precisely what the "fails closed when the registry refuses"
+          # test exists to prevent.
+          #
+          # So the skip moves off the error text and onto the registry's own
+          # catalogue, where an absence is an absence and a refusal is an HTTP
+          # status. Everything below reads exactly two things: what the COMMIT
+          # says, and what ghcr.io has. Nothing reads this runner's ref state, and
+          # nothing reads its working tree.
+          repository='heey-global/verity/verity-server'
+
+          # The version the commit under test carries. Its own release is the one
+          # thing that must never be picked as the predecessor, and on a release
+          # commit that is exactly what the version file names — so the bound is
+          # exclusive when THIS commit is what changed it, inclusive otherwise,
+          # where it names the release a deployment is actually running. A missing
+          # parent blob leaves it exclusive, which is the safe side.
+          #
+          # Read out of the commit rather than off the working tree, and the parent
+          # can only be read that way at all. It costs nothing and it keeps this
+          # step's inputs to two: what the commit says, and what ghcr.io has. A
+          # persistent runner's checkout is reset to the commit before the job
+          # starts, so today the two agree — but "today they agree" is the shape of
+          # assumption this whole step is being rewritten to stop making.
+          under_test="$(git show 'HEAD:version.txt' | tr -d '[:space:]')"
+          if [[ ! "$under_test" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::HEAD:version.txt does not name an X.Y.Z version, got '${under_test}'." >&2
+            exit 1
+          fi
+          parent_version="$(git show 'HEAD^:version.txt' 2>/dev/null | tr -d '[:space:]' || true)"
+          bound_inclusive=false
+          if [[ "$parent_version" == "$under_test" ]]; then
+            bound_inclusive=true
+          fi
+
+          # Zero-padded so the comparison is arithmetic rather than lexical, and
+          # narrow enough that the whole key stays inside a shell integer.
+          version_key() {
+            local IFS=.
+            set -- $1
+            printf '%05d%05d%05d\n' "$1" "$2" "$3"
+          }
+          bound="$(version_key "$under_test")"
+
+          # Every JSON body below is read by `node`, never by a pattern. The step
+          # runs after setup-node for exactly that reason, and the reason is not
+          # tidiness: a shell that recognises a token by the literal `"token":"` is
+          # a release gate that dies the night ghcr.io starts pretty-printing, or
+          # emits the fields in another order, or puts a space after the colon —
+          # none of which is a change to the API. `{ "token": "…" }` is the same
+          # response. Whitespace is not a wire format, and neither is field order.
+          #
+          # `curl` writes to a file rather than a variable so the parser reads the
+          # bytes the registry sent, with no shell in between them.
+          #
+          # `node` is guaranteed by the setup-node step above. `curl` is not: no
+          # other step in this repository's workflows shells out to it, so its
+          # presence on this runner image is asserted here rather than discovered as
+          # a bare "command not found" in the middle of the release gate. If it is
+          # ever missing, read the catalogue with node's `fetch` — not by going back
+          # to asking git.
+          if ! command -v curl >/dev/null 2>&1; then
+            echo '::error::curl is not on this runner, and the ghcr.io catalogue read needs it.' >&2
+            exit 1
+          fi
+
+          body="$RUNNER_TEMP/verity-registry-body.json"
+          headers="$RUNNER_TEMP/verity-registry-headers"
+          published="$RUNNER_TEMP/verity-published-server-tags"
+          : >"$published"
+
+          # `--fail` is the whole point of this call: a 401 from a broken login, a
+          # 404 from a renamed package and a 200 are three different outcomes here,
+          # where `docker pull` collapses all three into one sentence. Anything but
+          # a 200 aborts the step through `set -e`.
+          curl --fail --silent --show-error --retry 3 --output "$body" \
+            --user "${GITHUB_ACTOR:-github-actions}:${VERITY_GHCR_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull"
+          registry_token="$(node -e '
+            const body = require("node:fs").readFileSync(process.argv[1], "utf8");
+            let parsed;
+            try {
+              parsed = JSON.parse(body);
+            } catch {
+              process.exit(3);
+            }
+            const token = parsed?.token;
+            if (typeof token !== "string" || token === "") process.exit(4);
+            process.stdout.write(token);
+          ' "$body")" || {
+            echo "::error::ghcr.io issued no usable pull token for ${repository}." >&2
+            exit 1
+          }
+
+          # Paginated, because the catalogue is ordered oldest-first: a truncated
+          # read loses the NEWEST releases, which is the half this step needs, and
+          # it would lose them silently. The page cap only bounds a registry that
+          # keeps handing back a next link.
+          #
+          # `Link` is a header, not JSON, so it stays in the shell — but it is read
+          # only for a `<…>` in a line that also says `rel="next"`, and getting it
+          # wrong costs a page rather than a wrong answer.
+          next="/v2/${repository}/tags/list?n=1000"
+          pages=0
+          while [[ -n "$next" ]]; do
+            pages=$((pages + 1))
+            if (( pages > 50 )); then
+              echo '::error::ghcr.io kept paginating its tag catalogue past 50 pages.' >&2
+              exit 1
+            fi
+            curl --fail --silent --show-error --retry 3 --dump-header "$headers" \
+              --output "$body" \
+              --header "Authorization: Bearer ${registry_token}" "https://ghcr.io${next}"
+            node -e '
+              const body = require("node:fs").readFileSync(process.argv[1], "utf8");
+              let parsed;
+              try {
+                parsed = JSON.parse(body);
+              } catch {
+                process.exit(3);
+              }
+              const tags = parsed?.tags;
+              // The OCI spec allows a null `tags` for a repository with none.
+              if (tags !== null && tags !== undefined && !Array.isArray(tags)) process.exit(4);
+              for (const tag of tags ?? []) {
+                if (typeof tag === "string" && /^v[0-9]+\.[0-9]+\.[0-9]+$/.test(tag)) {
+                  console.log(tag);
+                }
+              }
+            ' "$body" >>"$published" || {
+              echo '::error::ghcr.io answered the tag catalogue with something that is not a tag list.' >&2
+              exit 1
+            }
+            next=''
+            link="$(tr -d '\r' <"$headers" | grep -i '^link:' | head -1 || true)"
+            if [[ "$link" == *'rel="next"'* && "$link" == *'<'*'>'* ]]; then
+              next="${link#*<}"
+              next="${next%%>*}"
+            fi
+          done
+
+          previous_tag="$(
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+              key="$(version_key "${tag#v}")"
+              if (( 10#$key > 10#$bound )); then
+                continue
+              fi
+              if (( 10#$key == 10#$bound )) && [[ "$bound_inclusive" != true ]]; then
+                continue
+              fi
+              printf '%s %s\n' "$key" "$tag"
+            # `head` closes its input as soon as it has the winner. With a large
+            # catalogue that makes `sort` hit EPIPE, and `pipefail` then aborts
+            # the release before the smoke starts. `sed` prints the same first
+            # line while continuing to drain the sorted input.
+            done <"$published" | sort -rn | sed -n '1p' | cut -d' ' -f2
+          )"
+          # The condition that started this: a release that got its tag and never
+          # got its image. It is not fatal here — the walk simply goes one release
+          # further back — but it is worth saying out loud, because the deployment
+          # that release names has nothing to self-update FROM.
+          under_test_published=false
+          if grep -qxF "v${under_test}" "$published"; then
+            under_test_published=true
+          fi
+          echo "ghcr.io lists $(wc -l <"$published" | tr -d ' ') published Server releases"
+          rm -f "$published" "$headers" "$body"
+          if [[ -z "$previous_tag" ]]; then
+            echo "::error::ghcr.io publishes no Server image at or below ${under_test}." >&2
+            exit 1
+          fi
+          if [[ "$bound_inclusive" == true && "$under_test_published" != true ]]; then
+            echo "::warning::v${under_test} is the release this commit carries, but ghcr.io has no Server image for it." >&2
+          fi
+
+          previous="ghcr.io/${repository}:${previous_tag}"
+          # The catalogue just said this tag is published, so there is no such thing
+          # as an expected failure here any more. A pull that fails now is a real
+          # failure — a refusal, an outage, a manifest deleted between the two calls
+          # — and every one of them has to stop the gate rather than retarget it.
+          docker pull "$previous"
+          docker tag "$previous" "$VERITY_SMOKE_PREVIOUS_IMAGE"
+          docker save --output "$RUNNER_TEMP/verity-smoke-previous.tar" "$VERITY_SMOKE_PREVIOUS_IMAGE"
+          # This step still runs against the HOST daemon — DOCKER_HOST only points
+          # at the isolated one from the daemon step below — and on a self-hosted
+          # runner that host daemon is production's. So exactly one reference is
+          # dropped: the run-scoped tag this step just created, which no other
+          # process can be holding.
+          #
+          # `$previous` deliberately stays. It is a real `ghcr.io/heey-global/verity/
+          # verity-server:vN` reference on the production host, quite possibly the
+          # release the live deployment is running, and `docker image rm` on the
+          # last reference to an image is a delete rather than an untag. Docker does
+          # refuse when a container holds it — but a job that must not delete
+          # production images should not be relying on Docker's refusal to notice.
+          # The cost of keeping it is a few hundred MB on a disk with >100 GB free,
+          # against a warm pull on the next run.
+          docker image rm "$VERITY_SMOKE_PREVIOUS_IMAGE" >/dev/null
+          # The TAG travels with the image, because the smoke needs both halves of
+          # what that release was: the Server it published, and the
+          # `deploy/docker-compose.yml` it shipped. The second is what a host seals
+          # its deployment spec from, and it is not recoverable from the image —
+          # which is exactly why the drift the last two outages came through was
+          # not representable in this gate before. `fetch-depth: 0` above is what
+          # makes `git show <tag>:…` answerable here.
+          printf 'VERITY_SMOKE_PREVIOUS_TAG=%s\n' "$previous_tag" >>"$GITHUB_ENV"
+          echo "Testing candidate against $previous_tag"
+
+      - name: Start the isolated Docker daemon
+        run: |
+          set -euo pipefail
+          socket_dir="$RUNNER_TEMP/$VERITY_SMOKE_DIND"
+          socket_path="$socket_dir/docker.sock"
+          # `$socket_dir` is bind-mounted into the daemon below, and that mount is
+          # resolved by the HOST's dockerd rather than by this container's
+          # filesystem. It works because each runner's home is bind-mounted at the
+          # SAME path on host and container (/home/runner-N), so `$RUNNER_TEMP` names
+          # one directory on both sides. Do not move the socket to a path that exists
+          # only inside the runner container.
+          mkdir -p "$socket_dir"
+          # The daemon's `/var/lib/docker` is a named volume, where it used to be a
+          # bind mount onto `/mnt` created with `sudo mkdir -p`. Three reasons, and
+          # only the first is about sudo:
+          #
+          #   - `sudo mkdir -p` cannot run here at all. The runner's single sudo
+          #     grant is `NOPASSWD: /usr/sbin/groupmod`; everything else fails
+          #     non-interactively.
+          #   - a bind mount would have to live under `$RUNNER_TEMP`, and dockerd
+          #     writes that tree as root. A killed job leaves it behind, and the
+          #     runner clears `_temp` at the START of the next job as uid 1000 —
+          #     which cannot remove a root-owned tree. One crashed run would take
+          #     the lane down for every job after it. A volume is removable by the
+          #     same unprivileged runner, through the daemon, and a leaked one is
+          #     inert. This job holds the Server image three times over (the build,
+          #     the blobs it pushes to its local registry, the copy pulled back by
+          #     digest), so this is not a small tree.
+          #   - it cannot be the container's own writable layer either: that layer
+          #     is overlayfs, on which dockerd falls back to the `vfs` storage
+          #     driver and copies every layer in full.
+          docker volume create "$VERITY_SMOKE_DIND-data" >/dev/null
+          df -h "$RUNNER_TEMP"
+          # `--add-host ghcr.io` plus `--insecure-registry ghcr.io` is what lets a
+          # local registry answer for the pinned image name. It is also why this
+          # daemon must stay throwaway: inside it, ghcr.io is no longer ghcr.io.
+          # Everything the smoke pulls beyond the Server image comes from Docker
+          # Hub, so nothing else in this daemon needs the real host.
+          # renovate: datasource=docker depName=docker
+          docker run --detach --privileged \
+            --name "$VERITY_SMOKE_DIND" \
+            --add-host ghcr.io:127.0.0.1 \
+            --volume "$socket_dir:/run/verity-dind" \
+            --mount "type=volume,src=$VERITY_SMOKE_DIND-data,dst=/var/lib/docker" \
+            --env DOCKER_TLS_CERTDIR= \
+            docker:29.7.1-dind@sha256:66fd272fc375aad4c8fa06351c414e15bffe8cb015c171e1b8a8efe36a72cc1e \
+            --host=unix:///var/run/docker.sock \
+            --host=unix:///run/verity-dind/docker.sock \
+            --insecure-registry ghcr.io
+          for attempt in $(seq 1 60); do
+            if docker exec "$VERITY_SMOKE_DIND" docker info >/dev/null 2>&1; then
+              docker exec "$VERITY_SMOKE_DIND" chmod 0666 /run/verity-dind/docker.sock
+              printf 'DOCKER_HOST=unix://%s\n' "$socket_path" >>"$GITHUB_ENV"
+              exit 0
+            fi
+            if [[ "$attempt" -eq 60 ]]; then
+              # Named, not ambient. `$DOCKER_HOST` is written to $GITHUB_ENV a few
+              # lines up, which takes effect in the NEXT step — so bare `docker` is
+              # the runner's own socket here and only here. Spelling that out is what
+              # keeps the rule "in this job, every container read names its daemon"
+              # true without exceptions to remember.
+              docker --host unix:///var/run/docker.sock logs "$VERITY_SMOKE_DIND" >&2 || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+      - name: Load the previous release into the isolated daemon
+        run: |
+          set -euo pipefail
+          docker load --input "$RUNNER_TEMP/verity-smoke-previous.tar"
+          # Nothing reads the tar again, and it is a whole Server image in size.
+          rm -f "$RUNNER_TEMP/verity-smoke-previous.tar"
+
+      # Use the isolated daemon through BuildKit so this exact main-commit build
+      # warms the same cache the gated release publisher consumes afterwards.
+      # The runner itself remains disposable; only content-addressed layers cross
+      # the job boundary through the GitHub Actions cache service.
+      #
+      # Default ephemeral builder, and here it could not be anything else. The
+      # step above redirected DOCKER_HOST to the throwaway dind daemon, so the
+      # builder this action creates lives INSIDE that daemon, on a data dir that
+      # dies with the job. A persistent name would buy nothing — there is no
+      # surviving daemon to hold the state — and would only make the container
+      # name collide with the real host builder if DOCKER_HOST ever stopped being
+      # redirected. `type=gha` is the only cache that can leave this job, which is
+      # exactly what the paragraph above relies on.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      # A shell-invoked Buildx does not receive the cache service credentials
+      # docker/build-push-action normally wires in. Export the short-lived Actions
+      # runtime token and URLs explicitly before using the `type=gha` backend.
+      # renovate: datasource=github-actions depName=crazy-max/ghaction-github-runtime
+      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
+
+      # The image build and the host harness have no dependency on one another and
+      # used to run concurrently, which was the right trade on a dedicated VM.
+      # It is not the right trade here. This host is 8 cores and 16 GB and it also
+      # carries the live Verity deployment; each runner lane is capped at 1.5 cores
+      # and 3 GiB, but the dind and its BuildKit are SIBLING containers started
+      # through the host socket and inherit no cap at all. Overlapping a full Server
+      # image build with `npm ci` plus `tsc -b` (measured at ~1.2 GB peak, and
+      # already SIGTERMed on these runners once) therefore does not overlap two
+      # capped workloads — it puts an uncapped one next to the cap the harness is
+      # trying to fit inside, on the box serving production.
+      #
+      # Serialising costs a few minutes of a 90-minute budget, on runner time that
+      # is now free. `--load` keeps the finished image in the isolated daemon where
+      # the smoke expects it; the cache makes the later release build incremental.
+      - name: Build the host-side harness
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Build the Server image into the isolated daemon
+        run: |
+          set -euo pipefail
+          # Printed for every failure that is not the one it cannot report: if the
+          # filesystem does fill, the write that loses the race can be the runner's
+          # own trace log, and then no step log is uploaded at all. The guard
+          # against that is the floor asserted in the headroom check, not this.
+          df -h "$RUNNER_TEMP"
+          docker buildx build \
+            --build-arg "VERITY_SERVER_VERSION=$VERITY_SMOKE_SERVER_VERSION" \
+            --cache-from type=gha,scope=verity-server \
+            --cache-to type=gha,mode=max,scope=verity-server,ignore-error=true \
+            --file deploy/Dockerfile \
+            --load \
+            --tag "$VERITY_SMOKE_IMAGE" \
+            .
+
+      - name: Run the live self-update smoke
+        run: >-
+          deploy/bin/verity-self-update-live-smoke
+          "$VERITY_SMOKE_IMAGE"
+          "$VERITY_SMOKE_PREVIOUS_IMAGE"
+          "$VERITY_SMOKE_PREVIOUS_TAG"
+
+      - name: Collect isolated daemon diagnostics
+        if: failure()
+        run: |
+          # `df` first: a full disk surfaces as whatever operation happened to be
+          # writing when it ran out, which on its own reads like a Docker bug.
+          df -h "$RUNNER_TEMP" || true
+          # Every container read is pinned to a daemon by name. These two lines used
+          # to be bare `docker ps -a` and `docker logs verity-managed-server`, which
+          # inherit `$DOCKER_HOST` — and `$DOCKER_HOST` is only set once the daemon
+          # step has run. A failure BEFORE that step, or any later reordering, sends
+          # both to the runner's own socket, which on this host is production's: the
+          # step would then print the live deployment's logs under a heading that
+          # says "isolated daemon". Read-only, and worse than printing nothing,
+          # because it is the output someone debugs a failed cutover from.
+          if [[ -n "${DOCKER_HOST:-}" ]]; then
+            docker --host "$DOCKER_HOST" ps -a || true
+            docker --host "$DOCKER_HOST" logs --tail=200 verity-managed-server 2>&1 || true
+          else
+            echo 'No isolated daemon was started for this run; nothing to read from it.'
+          fi
+          docker --host unix:///var/run/docker.sock logs --tail=200 "$VERITY_SMOKE_DIND" 2>&1 || true
+
+      - name: Tear down the isolated daemon
+        if: always()
+        run: |
+          # The socket file is created by dockerd as root inside a directory this
+          # runner owns, so removing it needs no privilege — write permission on the
+          # DIRECTORY is what governs unlink. That is the whole reason the daemon's
+          # storage is a named volume rather than a root-owned tree here: this
+          # cleanup has no sudo to fall back on.
+          docker --host unix:///var/run/docker.sock exec "$VERITY_SMOKE_DIND" \
+            rm -f /run/verity-dind/docker.sock >/dev/null 2>&1 || true
+          docker --host unix:///var/run/docker.sock rm -f "$VERITY_SMOKE_DIND" >/dev/null 2>&1 || true
+          docker --host unix:///var/run/docker.sock volume rm -f "$VERITY_SMOKE_DIND-data" \
+            >/dev/null 2>&1 || true
+          rm -rf "$RUNNER_TEMP/$VERITY_SMOKE_DIND" >/dev/null 2>&1 || true

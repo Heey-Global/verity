@@ -1,0 +1,143 @@
+name: verity-project-relay
+
+on:
+  pull_request:
+    paths:
+      - 'packages/project-relay/**'
+      - '.dockerignore'
+      - 'deploy/project-relay.Dockerfile'
+      - 'deploy/bin/verity-project-relay-smoke'
+      - 'deploy/bin/verity-project-relay-isolation-smoke'
+      - 'deploy/bin/verity-project-relay-lifecycle-smoke'
+      - 'deploy/bin/verity-project-relay-lifecycle-smoke.mjs'
+      - 'deploy/bin/verity-project-relay-migration-smoke'
+      - 'deploy/bin/verity-project-relay-migration-smoke.mjs'
+      - 'deploy/bin/verity-project-relay-cutover-check.mjs'
+      - 'deploy/bin/verity-project-relay-cutover-check.test.mjs'
+      - 'deploy/README.md'
+      - '.github/workflows/project-relay.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'tsconfig.base.json'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-relay-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-24.04
+    # Bounded below the janitor's cache grace period — see the note on
+    # ci.yml's `server-image` job. The `timeout-minutes: 10` further down bounds a
+    # single smoke step, which says nothing about how long the job can run.
+    timeout-minutes: 45
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The smoke harness uses host-side Node for its fixed UDS fixtures and
+      # docker-inspect assertions; runner Docker daemons do not guarantee it.
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+
+      # The persistent shared builder — see the note on the setup-buildx step in
+      # ci.yml's `server-image` job. Same pull_request shape as the sandbox build:
+      # `cache-to` is gated off here, so the local cache is the only thing that can
+      # make a second push to the same PR cheaper.
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          name: verity-ci-bounded-v1
+          cleanup: false
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Build amd64 (load locally)
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          # Named explicitly; see the note in ci.yml on why `use` is not enough.
+          builder: verity-ci-bounded-v1
+          context: .
+          file: deploy/project-relay.Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: verity-project-relay:smoke
+          # `scope`, the pull_request write gate and `ignore-error`: see the note
+          # on the `Build Verity server image` step in ci.yml. The scope name
+          # follows the Dockerfile, so this job reads exactly what release.yml's
+          # `publish-project-relay` wrote.
+          #
+          # This workflow only ever runs on pull_request and workflow_dispatch, so
+          # the gate means the entry is written by releases and manual runs. That
+          # does cost reuse between two pushes to the SAME PR; it costs nothing
+          # across PRs, because a `refs/pull/N/merge` entry was never visible to
+          # them anyway.
+          cache-from: type=gha,scope=verity-project-relay
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-project-relay,ignore-error=true' || '' }}
+
+      - name: Verify fixed routes and runtime confinement
+        run: deploy/bin/verity-project-relay-smoke verity-project-relay:smoke
+
+      - name: Verify project-generation isolation and teardown
+        run: deploy/bin/verity-project-relay-isolation-smoke verity-project-relay:smoke
+
+      - name: Build production relay lifecycle modules
+        run: |
+          # The host harness imports packages/server/dist plus its project
+          # references. Do not install or build unrelated mobile/Expo workspaces.
+          npm ci --workspace @verity/server --include-workspace-root --ignore-scripts
+          npm run build --workspace @verity/server
+
+      - name: Verify production relay lifecycle
+        timeout-minutes: 10
+        env:
+          VERITY_LIFECYCLE_SMOKE_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: deploy/bin/verity-project-relay-lifecycle-smoke verity-project-relay:smoke
+
+      - name: Verify legacy container migration (migrate-not-reuse)
+        timeout-minutes: 10
+        env:
+          VERITY_MIGRATION_SMOKE_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: deploy/bin/verity-project-relay-migration-smoke
+
+      - name: Verify cutover readiness policy
+        run: node --test deploy/bin/verity-project-relay-cutover-check.test.mjs
+
+      - name: Clean Docker smoke artifacts
+        if: always()
+        env:
+          VERITY_LIFECYCLE_SMOKE_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          VERITY_MIGRATION_SMOKE_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          docker ps -aq --filter "label=verity.lifecycle-smoke=$VERITY_LIFECYCLE_SMOKE_ID" | xargs -r docker rm -f || true
+          for project_id in "lifecycle-$VERITY_LIFECYCLE_SMOKE_ID" "rollback-$VERITY_LIFECYCLE_SMOKE_ID"; do
+            docker ps -aq --filter "label=verity.project-id=$project_id" | xargs -r docker rm -f || true
+          done
+          docker network ls -q --filter "label=verity.lifecycle-smoke=$VERITY_LIFECYCLE_SMOKE_ID" | xargs -r docker network rm || true
+          docker volume ls -q --filter "label=verity.lifecycle-smoke=$VERITY_LIFECYCLE_SMOKE_ID" | xargs -r docker volume rm -f || true
+          docker ps -aq --filter "label=verity.migration-smoke=$VERITY_MIGRATION_SMOKE_ID" | xargs -r docker rm -f || true
+          docker network ls -q --filter "label=verity.migration-smoke=$VERITY_MIGRATION_SMOKE_ID" | xargs -r docker network rm || true
+          docker volume ls -q --filter "label=verity.migration-smoke=$VERITY_MIGRATION_SMOKE_ID" | xargs -r docker volume rm -f || true
+          docker image ls -q '127.0.0.1:*/verity/project-relay:smoke' | xargs -r docker image rm -f || true
+          docker image rm -f verity-project-relay:smoke >/dev/null 2>&1 || true
+          # This job now writes into the shared persistent builder, so it also
+          # bounds it: whoever fills the store caps it. Size cap, two stores, both
+          # spellings of the flag — see the note on the `Clean Docker smoke
+          # artifacts` step in ci.yml's `server-image` job.
+          docker buildx prune --builder verity-ci-bounded-v1 --force --keep-storage 40GB >/dev/null 2>&1 \
+            || docker buildx prune --builder verity-ci-bounded-v1 --force --reserved-space 40GB >/dev/null 2>&1 \
+            || true
+          docker builder prune --all --force --keep-storage 20GB >/dev/null 2>&1 \
+            || docker builder prune --all --force --reserved-space 20GB >/dev/null 2>&1 \
+            || true

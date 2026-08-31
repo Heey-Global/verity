@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // Maintenance scripts are run directly with `node` (no build step / no emit),
+    // so this project exists only to give the type-checker + type-aware ESLint a
+    // home for `scripts/**`. `checkJs` type-checks the JSDoc-annotated `.mjs`
+    // helpers; `allowJs` lets them be included.
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node"]
+  },
+  "include": ["**/*.mjs", "**/*.ts"]
+}

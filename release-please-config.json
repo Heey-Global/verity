@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "verity",
+      "include-component-in-tag": false,
+      "exclude-paths": ["apps/mobile", "docs/website"]
+    },
+    "docs/website": {
+      "release-type": "simple",
+      "package-name": "website",
+      "initial-version": "1.0.0",
+      "exclude-paths": ["docs/website/concept.md", "docs/website/landing-copy.md"],
+      "include-component-in-tag": true,
+      "tag-separator": "-"
+    },
+    "apps/mobile": {
+      "release-type": "simple",
+      "package-name": "mobile",
+      "initial-version": "1.0.0",
+      "versioning": "always-bump-minor",
+      "include-component-in-tag": true,
+      "tag-separator": "-",
+      "draft": true,
+      "force-tag-creation": true,
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "app.config.ts"
+        }
+      ]
+    }
+  }
+}

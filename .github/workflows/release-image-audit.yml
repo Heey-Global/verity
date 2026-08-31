@@ -1,0 +1,111 @@
+name: verity-release-image-audit
+
+# Reports published GitHub releases that never got their container images.
+#
+# release-please tags and publishes the GitHub release when its release PR
+# merges. Every image publish in release.yml — Server, sandbox, toolkit,
+# project-relay, both preview components — is downstream of `self-update-gate`.
+# A release whose gate fails therefore keeps its tag and its `draft=false,
+# prerelease=false` GitHub release forever, with no image behind it, and nothing
+# in the repository says so. v13.2.13 and v13.2.14 are both in that state right
+# now, and v13.2.13 sitting there silently is what broke v13.2.14's release run
+# six hours later (#1561).
+#
+# WHY A SCHEDULED WORKFLOW AND NOT A JOB IN release.yml. release.yml is the
+# workflow whose failure creates the condition, which makes it the one place the
+# check cannot be trusted to run:
+#
+#   - A job that `needs: [publish-server, …]` is SKIPPED when the gate fails —
+#     skipped, not failed — so it would be silent in exactly the case it exists
+#     for.
+#   - A job with `if: always()` does run, but inside a run that is already red.
+#     Its finding lands as one more red job on a run someone has already
+#     classified as "the release that failed", which is how this went unnoticed
+#     twice. And it still only reports on ITS OWN release: v13.2.13 stayed broken
+#     through v13.2.14 and v13.2.15, and no run of release.yml would have
+#     mentioned it again.
+#   - Neither runs at all when the release run never starts — a cancelled run,
+#     an offline runner pool, a `workflow_dispatch` that was never issued.
+#
+# The condition is a property of the world, not of a run, so it is checked from
+# outside on a clock. Six-hourly, off the top of the hour (minute 0 is when every
+# scheduled workflow on GitHub fires at once), and offset from cache-janitor's :23
+# so the two do not queue behind each other.
+#
+# WHY A FAILING RUN AND NOT AN ISSUE. Both are findable; only one cannot pile up.
+# An issue-per-occurrence needs dedupe logic — search open issues by title,
+# decide whether a closed one should reopen — and that logic is code that can be
+# wrong in a way nobody notices, on a check whose entire purpose is noticing. It
+# also fits the condition badly: this is a persistent state, not an event. It is
+# true every six hours until someone repairs or deletes the release, so the honest
+# rendering is a workflow that stays red until then and goes green by itself when
+# it is fixed. GitHub already notifies on a scheduled workflow's first failure,
+# and the step summary names the release and the missing images, so the run page
+# answers "which one" without a re-run.
+#
+# The policy — which releases are in scope, how long a release may legitimately
+# have no images yet, what separates "never published" from "did not exist at that
+# version" — lives in scripts/audit-release-images.mjs and is unit-tested in
+# scripts/audit-release-images.test.ts, following cache-janitor.yml. Deliberately
+# not inline bash: that is the part that can go wrong.
+
+on:
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      window:
+        description: How many recent vX.Y.Z releases to audit (default 10)
+        type: string
+        default: ''
+      grace-minutes:
+        description: Ignore releases younger than this many minutes (default 240)
+        type: string
+        default: ''
+
+permissions:
+  # `packages: read` is what the ghcr.io token exchange trades for a pull token,
+  # and `contents: read` is what lists the releases. Nothing here writes anything:
+  # this check reports, it does not repair. Deleting a release or re-running a
+  # publish is a decision, and an automated one would be a workflow that can
+  # remove a release nobody asked it to.
+  contents: read
+  packages: read
+
+concurrency:
+  group: release-image-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    # GitHub-hosted for the same reason as cache-janitor: this is an API-only job
+    # with no build and no cache, and it must be able to run while all four
+    # self-hosted runners are busy — which is precisely what they are during and
+    # after a release, the window this check is about. Putting it on the pool it
+    # observes would let a saturated pool hide the condition a saturated pool
+    # helps cause.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/audit-release-images.mjs
+          sparse-checkout-cone-mode: false
+
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # No `cache: npm`: the script has zero dependencies and never runs
+          # `npm ci`.
+
+      - name: Audit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERITY_AUDIT_WINDOW: ${{ inputs.window }}
+          VERITY_AUDIT_GRACE_MINUTES: ${{ inputs['grace-minutes'] }}
+        # Blank inputs (every scheduled run) fall back to the script's defaults;
+        # they deliberately do NOT read as 0, which for the grace period would mean
+        # "judge a release the instant it is tagged".
+        run: node scripts/audit-release-images.mjs

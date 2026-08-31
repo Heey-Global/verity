@@ -1,0 +1,11 @@
+name: Verify native iOS build
+
+# Compile-only EAS Cloud gate for native changes. It produces a simulator build,
+# needs no Apple distribution credential, and never uploads to TestFlight.
+jobs:
+  build_ios_simulator:
+    name: Compile iOS simulator app
+    type: build
+    params:
+      platform: ios
+      profile: simulator

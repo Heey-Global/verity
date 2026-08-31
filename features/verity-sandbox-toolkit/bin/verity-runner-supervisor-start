@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Idempotent control-plane launcher for the ADR 0006 Runner supervisor preview.
+set -euo pipefail
+umask 0007
+
+RUNTIME_DIR="${VERITY_RUNNER_RUNTIME:-/run/verity-runner}"
+LOG="$RUNTIME_DIR/supervisor.log"
+
+# Reusable worktree-script approvals depend on the kernel enforcing the helper's
+# read boundary. Fail provisioning before the supervisor advertises the tool;
+# an approval card that can only end in exit 126 is not a supported fallback.
+/usr/local/bin/verity-script-sandbox --probe
+
+if /usr/local/bin/verity-runner-supervisor --probe >/dev/null 2>&1; then
+  exit 0
+fi
+
+# Redirection would otherwise create this discovery-adjacent artifact using the
+# caller's umask (commonly 0644). Keep every runtime artifact owner/group-only.
+touch "$LOG"
+chmod 0660 "$LOG"
+
+# Never remove discovery artifacts here: a transiently slow probe must not
+# unlink a live supervisor's listening socket. Only a process that has acquired
+# the singleton lock may replace stale socket/readiness files.
+nohup /usr/local/bin/verity-runner-supervisor >>"$LOG" 2>&1 &
+
+for _attempt in $(seq 1 100); do
+  if /usr/local/bin/verity-runner-supervisor --probe >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 0.05
+done
+
+if [ -s "$LOG" ]; then
+  sed -n '1,80p' "$LOG" >&2 || true
+fi
+echo "verity-runner-supervisor did not become ready" >&2
+exit 1

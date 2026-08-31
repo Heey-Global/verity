@@ -1,0 +1,33 @@
+# EAS build archive exclusions for the dev-server dogfood checkout.
+# Keep local runtime state, secrets, and agent worktrees out of remote builds.
+#
+# No trailing slashes, for the reason .gitignore gives: a trailing slash matches
+# directories only, and the dogfood checkout is exactly where `node_modules` is a
+# symlink into a shared install rather than a directory of its own.
+
+node_modules
+dist
+coverage
+*.tsbuildinfo
+*.log
+.DS_Store
+
+.expo
+apps/*/android
+apps/*/ios
+apps/mobile/expo-env.d.ts
+
+.env
+.env.*
+!.env.example
+.gh-token
+
+.verity-data
+.verity-sessions
+.verity-handoffs
+.verity-onboarding
+.verity-data*
+
+.claude
+.pnpm-store
+.wt-*

@@ -1,0 +1,3 @@
+# Verity
+
+@AGENTS.md

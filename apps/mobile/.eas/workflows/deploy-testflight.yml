@@ -1,0 +1,29 @@
+name: Deploy to TestFlight
+
+# Manual-only by design (no `on:` trigger, like recover-testflight.yml). A new
+# native TestFlight binary is produced only when you deliberately run this
+# workflow — `eas workflow:run deploy-testflight.yml` (or the "Run" button in the
+# EAS dashboard) — so routine merges never spend a native build. Every invocation
+# deliberately creates a new binary: a mobile-vX.Y.0 release is the native Apple
+# release boundary even when its JavaScript has no new native dependency.
+#
+# Continuous JS/asset shipping is handled separately and automatically by
+# .github/workflows/mobile-ota.yml, which publishes an EAS Update to the
+# `testflight` channel on every merge to main that touches the mobile bundle.
+
+jobs:
+  build_ios:
+    name: Build iPad app
+    type: build
+    params:
+      platform: ios
+      profile: testflight
+
+  distribute_testflight:
+    name: Upload new native build to TestFlight
+    needs: [build_ios]
+    type: testflight
+    params:
+      build_id: ${{ needs.build_ios.outputs.build_id }}
+      profile: testflight
+      changelog: ${{ github.commit_message || 'Verity update' }}

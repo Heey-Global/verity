@@ -1,0 +1,164 @@
+name: verity-website
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verity-website.yml'
+      # The smoke lives in a script now, so it has to be listed: an edit that
+      # broke it would otherwise first run during a release publish.
+      - 'deploy/bin/verity-website-smoke'
+      - 'docs/website/Dockerfile'
+      - 'docs/website/nginx.conf'
+      - 'docs/website/site/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/verity-website.yml'
+      # The smoke lives in a script now, so it has to be listed: an edit that
+      # broke it would otherwise first run during a release publish.
+      - 'deploy/bin/verity-website-smoke'
+      - 'docs/website/Dockerfile'
+      - 'docs/website/nginx.conf'
+      - 'docs/website/site/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize main publishes to protect the shared runner. Published tags are
+  # commit-specific; there is deliberately no mutable `latest` tag to race.
+  group: verity-website-${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: heey-global/verity/verity-website
+  TEST_CONTAINER: verity-website-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Pull requests only read and compare static files. They never build or run
+      # PR-controlled Dockerfiles on the persistent host Docker daemon.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate HTML and local assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          page=docs/website/site/index.html
+          grep -q '<title>Verity' "$page"
+          test "$(grep -c '<h1' "$page")" -eq 1
+          while IFS= read -r asset; do
+            test -f "docs/website/site/${asset}"
+            grep -Fq "docs/website/site/${asset}" docs/website/Dockerfile
+          done < <(grep -oE 'assets/[A-Za-z0-9._-]+' "$page" | sort -u)
+          grep -Fq 'listen 8080;' docs/website/nginx.conf
+          grep -Fq 'location = /healthz' docs/website/nginx.conf
+          grep -Fq 'Content-Security-Policy' docs/website/nginx.conf
+          grep -Fq "script-src 'self' https://stats.heey.global" docs/website/nginx.conf
+          grep -Fq 'src="https://stats.heey.global/api/script.js"' "$page"
+          grep -Fq 'data-site-id="2895f37c1a49"' "$page"
+          ! grep -Eqi 'fonts\.(googleapis|gstatic)\.com' "$page"
+          if grep -Eq 'fakeSubmit|you are on the list' "$page"; then
+            echo 'Website contains a non-persisting signup confirmation' >&2
+            exit 1
+          fi
+
+  pr-image-smoke:
+    if: github.event_name == 'pull_request'
+    needs: static-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+      - name: Build pull-request website image
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docs/website/Dockerfile
+          load: true
+          tags: verity-website-pr:${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Smoke-test pull-request website image
+        shell: bash
+        run: |
+          set -euo pipefail
+          deploy/bin/verity-website-smoke \
+            "verity-website-pr:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "$TEST_CONTAINER"
+
+  publish:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    needs: static-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to GHCR
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish untagged image digest
+        id: build
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docs/website/Dockerfile
+          platforms: linux/amd64
+          outputs: >-
+            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          provenance: true
+          sbom: true
+
+      - name: Smoke-test published digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          deploy/bin/verity-website-smoke \
+            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" "$TEST_CONTAINER"
+
+      - name: Promote tested digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}" \
+            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"

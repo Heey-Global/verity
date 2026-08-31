@@ -1,0 +1,486 @@
+#!/usr/bin/env bash
+# Runtime-neutral pre-push code review + secret gate for Verity agent containers.
+
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+MARKER="${VERITY_CODE_REVIEW_MARKER:-${REPO_ROOT}/.agents/.last-code-review-sha}"
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+BASE_REF="${VERITY_CODE_REVIEW_BASE_REF:-origin/main}"
+
+# ─── Secret gate (gitleaks; runs FIRST, on every branch) ─────────────────────
+# The pre-commit hook already scans each staged diff, but commits also arrive via
+# --no-verify, a rebase, a cherry-pick, or a checkout made outside this container.
+# Re-scan here: this is the last point where a secret is still local. Once pushed,
+# the credential is burned and must be rotated even if the branch is force-updated
+# seconds later — CI (the org gitleaks ruleset on main/staging) can only report it
+# after the fact.
+#
+# Deliberately ABOVE the protected-branch early exit below: skipping review on
+# main/staging/release is a workflow choice, but a secret pushed to a protected
+# branch is the worst case, not an exempt one.
+#
+# Placed ahead of lint/format so a leaked credential is never hidden behind an
+# unrelated ESLint failure. All policy lives in verity-secret-scan; this hook
+# only resolves it, picks the ranges, and renders the block message.
+resolve_secret_scan() {
+  if [ -n "${VERITY_SECRET_SCAN_BIN:-}" ]; then
+    if [ -x "$VERITY_SECRET_SCAN_BIN" ]; then
+      printf '%s' "$VERITY_SECRET_SCAN_BIN"
+      return 0
+    fi
+    return 1
+  fi
+
+  # Pure parameter expansion, no `dirname`: a hook must not assume coreutils are
+  # on PATH (git runs it with whatever environment the caller had).
+  local hook_dir="."
+  case "$0" in
+    */*) hook_dir="${0%/*}" ;;
+  esac
+
+  local candidate
+  for candidate in \
+    "$hook_dir/../bin/verity-secret-scan" \
+    /opt/agent-seed/bin/verity-secret-scan; do
+    if [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  command -v verity-secret-scan 2>/dev/null || return 1
+}
+
+if ! SECRET_SCAN=$(resolve_secret_scan); then
+  cat >&2 <<'EOF'
+============================================================
+PUSH BLOCKED - secret scan helper missing
+
+The agent-seed pre-push hook is installed but verity-secret-scan could not be
+located. The two ship together, so this is a container-provisioning bug: report
+it and rebuild the container rather than pushing unscanned commits.
+============================================================
+EOF
+  exit 2
+fi
+
+is_zero_sha() {
+  # git signals "no such object" (branch creation / deletion) with an all-zero
+  # sha, whose length depends on the repository's object format.
+  case "${1:-}" in
+    "" | *[!0]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Scan one pushed tip. Prefer the range the remote does not have yet, and widen
+# rather than narrow when that is unknown: without a resolvable base (branch
+# creation, missing base ref, shallow clone, unrelated histories) fall back to
+# the full reachable history — slower, but a skipped security gate is not an
+# option. The whole branch is scanned, not just the un-reviewed tail: a secret
+# committed before the last review marker is just as live.
+scan_tip() {
+  local tip="$1" remote="${2:-}" base="" status=0
+
+  if ! is_zero_sha "$remote" && git cat-file -e "${remote}^{commit}" 2>/dev/null; then
+    base="$remote"
+  elif git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
+    base=$(git merge-base "$BASE_REF" "$tip" 2>/dev/null || true)
+  fi
+
+  if [ -n "$base" ]; then
+    "$SECRET_SCAN" range "$base" "$tip" || status=$?
+  else
+    echo "pre-push: no base for ${tip} — scanning full history for secrets…" >&2
+    "$SECRET_SCAN" history "$tip" || status=$?
+  fi
+  return "$status"
+}
+
+# git feeds pre-push one "<local ref> <local sha> <remote ref> <remote sha>" line
+# per ref update on stdin. Scan what is actually being pushed — that is not
+# necessarily the checked-out branch (`git push origin HEAD:other`, `git push
+# --all`, pushing a detached tag). Deletions carry an all-zero local sha and have
+# no content to scan.
+STDIN_REFS=""
+if [ ! -t 0 ]; then
+  STDIN_REFS=$(cat || true)
+fi
+
+TIPS=()
+BASES=()
+REVIEW_TIPS=()
+while read -r _local_ref local_sha remote_ref remote_sha _rest; do
+  [ -n "${local_sha:-}" ] || continue
+  if is_zero_sha "$local_sha"; then continue; fi
+  if ! git cat-file -e "${local_sha}^{commit}" 2>/dev/null; then
+    echo "pre-push: PUSH BLOCKED - pushed local SHA is not a commit: $local_sha" >&2
+    exit 2
+  fi
+  TIPS+=("$local_sha")
+  BASES+=("${remote_sha:-}")
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master|refs/heads/staging|refs/heads/release/*) ;;
+    *) REVIEW_TIPS+=("$local_sha") ;;
+  esac
+done <<<"$STDIN_REFS"
+
+# No refs on stdin means the hook was invoked outside a real push (tests, manual
+# run); HEAD is then the only sensible subject. An empty list WITH refs means the
+# push only deletes remote branches, which carries no new content.
+if [ "${#TIPS[@]}" -eq 0 ] && [ -z "$STDIN_REFS" ]; then
+  TIPS=("HEAD")
+  BASES=("")
+  REVIEW_TIPS=("HEAD")
+fi
+
+SECRET_STATUS=0
+SCANNED=""
+for i in "${!TIPS[@]}"; do
+  key="${TIPS[$i]} ${BASES[$i]}"
+  case " $SCANNED " in
+    *" $key "*) continue ;;
+  esac
+  SCANNED="$SCANNED $key"
+
+  scan_tip "${TIPS[$i]}" "${BASES[$i]}" || SECRET_STATUS=$?
+  # Stop at the first blocked ref: the push fails as a whole anyway, and the
+  # findings already printed are what has to be fixed.
+  [ "$SECRET_STATUS" -eq 0 ] || break
+done
+
+if [ "$SECRET_STATUS" -eq 1 ]; then
+  cat >&2 <<'EOF'
+============================================================
+PUSH BLOCKED - secret detected in the commits being pushed
+
+gitleaks matched the finding(s) above (secret values redacted). Removing the
+file in a later commit is NOT enough — the secret stays in the history being
+pushed. Rewrite the offending commit(s), and rotate the credential if it ever
+existed outside this container.
+
+False positive? Add the reported fingerprint to .gitleaksignore with a comment
+saying why; CI scans the same fingerprints.
+
+Bypass only in a real emergency with:
+
+    git push --no-verify
+============================================================
+EOF
+  exit 2
+elif [ "$SECRET_STATUS" -ne 0 ]; then
+  cat >&2 <<'EOF'
+============================================================
+PUSH BLOCKED - secret scan could not run
+
+verity-secret-scan reported above why the gate is unusable. Fix the tooling
+rather than pushing unscanned commits.
+============================================================
+EOF
+  exit 2
+fi
+
+# ─── Protected branches: skip the review and lint gates ──────────────────────
+# Those branches are maintained through PRs, so a direct push to them is either
+# a release automation step or an operator action whose content already passed
+# both gates on the source branch. The secret gate above deliberately ran first
+# and is NOT skipped here.
+if [ -n "$STDIN_REFS" ]; then
+  [ "${#REVIEW_TIPS[@]}" -gt 0 ] || exit 0
+else
+  case "$BRANCH" in
+    main|master|staging|release/*) exit 0 ;;
+  esac
+fi
+PUSH_CHECK_TIP="${REVIEW_TIPS[0]:-HEAD}"
+
+# ─── Lint + format gate (repo-local; inert where there is no such script) ────
+# CI runs `npm run lint` && `npm run format` as an UNCONDITIONAL required job, so
+# a single ESLint/Prettier miss burns a full CI round-trip before anything else
+# is even evaluated. Run the same two checks locally here and fail the push
+# before it reaches CI. Each check runs only when the root package.json actually
+# defines that script, so this stays a no-op in every OTHER project the global
+# hook is installed into. Bypass in a pinch with `git push --no-verify`.
+#
+# Scope, when the repo opts in: whole-repo `eslint .` / `prettier --check .` is
+# O(repo size) in BOTH time and memory — type-aware linting loads the whole
+# TypeScript program, so on a large monorepo it grows unbounded and eventually
+# OOMs the push (V8 heap abort) instead of gating it. When the repo ALSO defines
+# a `lint:changed` / `format:changed` script, this hook runs it against only the
+# files changed vs the review base ($BASE_REF), so cost scales with the diff, not
+# the tree. CI still runs the full `lint`/`format` as the source of truth, so any
+# cross-file finding a scoped run cannot see is still caught there. Repos without
+# the `:changed` scripts keep the exact full-repo behavior below, unchanged.
+#
+# Fail closed when the repository declares either check. Silently deferring to
+# CI when the local dependencies are incomplete defeats the purpose of this
+# gate. Node is provided by Verity's project image and lets the shared hook
+# inspect package.json without mistaking unrelated keys for npm scripts.
+if [ -f "${REPO_ROOT}/package.json" ]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo "pre-push: PUSH BLOCKED - package.json exists but node is unavailable" >&2
+    exit 2
+  fi
+  if ! node -e 'require(process.argv[1])' "${REPO_ROOT}/package.json" >/dev/null 2>&1; then
+    echo "pre-push: PUSH BLOCKED - package.json is unreadable or invalid" >&2
+    exit 2
+  fi
+
+  has_script() {
+    node -e 'try{process.exit(require(process.argv[1]).scripts?.[process.argv[2]]?0:1)}catch(e){process.exit(1)}' \
+      "${REPO_ROOT}/package.json" "$1" >/dev/null 2>&1
+  }
+
+  if (has_script lint || has_script format) \
+    && { ! command -v npm >/dev/null 2>&1 || [ ! -d "${REPO_ROOT}/node_modules" ]; }; then
+    cat >&2 <<'EOF'
+============================================================
+PUSH BLOCKED - local lint/format toolchain unavailable
+
+This repository declares a lint or format check, but npm or node_modules is
+unavailable. Restore the repo-managed dependencies before
+pushing; CI must not be the first place these checks run.
+============================================================
+EOF
+    exit 2
+  fi
+
+  # Run a repo check scoped to changed files when the repo defines a `<name>:changed`
+  # script AND a review base can be resolved; otherwise run the full-repo `<name>`
+  # script. $1 full-repo script, $2 changed-scope script, $3 extension ERE (empty
+  # → all changed files), $4 config-invalidation ERE (empty → none).
+  #
+  # The scoped path is taken ONLY when the merge-base with $BASE_REF is known: if
+  # the base ref is missing OR merge-base fails (shallow clone, unrelated
+  # histories), we fall back to the full-repo script rather than silently skip the
+  # gate — a skipped gate is worse than a slow one. A change to a config file in
+  # $4 (the ruleset, a manifest) can invalidate UNCHANGED files, so it also forces
+  # the full script. A resolved base with an empty diff is genuinely "nothing to
+  # check" and skips. ACMR drops deletions (a deleted file cannot be linted).
+  # Committed diff only: a push carries commits, not the working tree. grep reads
+  # a process substitution (not a pipe) so an early -q match cannot SIGPIPE the
+  # producer and flip the result under `set -o pipefail`.
+  run_lint_or_format() {
+    local full="$1" scoped="$2" ext="$3" cfg="$4"
+    has_script "$full" || return 0
+
+    local base=""
+    # One scoped diff cannot represent a multi-ref push. Run the full check in
+    # that case so a clean first ref cannot hide failures carried by a later one.
+    if has_script "$scoped" && [ "${#REVIEW_TIPS[@]}" -eq 1 ] \
+      && git rev-parse --verify --quiet "$BASE_REF" >/dev/null 2>&1; then
+      base=$(git merge-base "$BASE_REF" "$PUSH_CHECK_TIP" 2>/dev/null || true)
+    fi
+
+    if [ -n "$base" ]; then
+      # Config invalidation considers ALL changed paths INCLUDING deletions and
+      # renames (removing/renaming a ruleset or manifest can also invalidate the
+      # scoped set), so no --diff-filter here. grep reads a process substitution,
+      # not a pipe, so an early -q match can't SIGPIPE-flip it under pipefail.
+      if [ -n "$cfg" ] \
+        && grep -qE "$cfg" < <(git diff --name-only "$base" "$PUSH_CHECK_TIP" 2>/dev/null); then
+        echo "pre-push: config changed — running full 'npm run $full'…" >&2
+        (cd "$REPO_ROOT" && npm run --silent "$full" >&2)
+        return $?
+      fi
+      # Scoped file arguments use ACMR: a deleted file cannot be linted.
+      local files=() f
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if [ -z "$ext" ] || [[ "$f" =~ $ext ]]; then files+=("$f"); fi
+      done < <(git diff --name-only --diff-filter=ACMR "$base" "$PUSH_CHECK_TIP" 2>/dev/null)
+      if [ "${#files[@]}" -eq 0 ]; then
+        echo "pre-push: no changed files for '$scoped' — skipping" >&2
+        return 0
+      fi
+      echo "pre-push: npm run $scoped (${#files[@]} changed file(s))…" >&2
+      (cd "$REPO_ROOT" && npm run --silent "$scoped" -- "${files[@]}" >&2)
+      return $?
+    fi
+
+    echo "pre-push: npm run $full…" >&2
+    (cd "$REPO_ROOT" && npm run --silent "$full" >&2)
+  }
+
+  if has_script lint; then
+    if ! run_lint_or_format lint lint:changed '\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$' \
+      '(^|/)(eslint\.config\.[cm]?[jt]s|\.eslintrc[^/]*|package\.json|package-lock\.json|tsconfig[^/]*\.json)$'; then
+      cat >&2 <<'EOF'
+============================================================
+PUSH BLOCKED - lint failed
+
+Fix the ESLint errors above (CI would fail the required `lint` job on
+the same errors — CI lints the whole repo, so also run `npm run lint`
+locally if a cross-file rule may be involved). Bypass only in a real
+emergency with:
+
+    git push --no-verify
+============================================================
+EOF
+      exit 2
+    fi
+  fi
+
+  if has_script format; then
+    if ! run_lint_or_format format format:changed '' \
+      '(^|/)(\.prettierrc[^/]*|prettier\.config\.[cm]?[jt]s|\.prettierignore|\.editorconfig|package\.json|package-lock\.json)$'; then
+      cat >&2 <<'EOF'
+============================================================
+PUSH BLOCKED - format check failed
+
+Run `npm run format:write` to auto-fix, then re-commit. Bypass only in a
+real emergency with:
+
+    git push --no-verify
+============================================================
+EOF
+      exit 2
+    fi
+  fi
+fi
+
+# ─── Artifact versioning: release-time, not pre-push ─────────────────────────
+# The shared OCI artifact version is derived automatically by semantic-release
+# on merge to main (see .github/workflows/release.yml) — no version is bumped on
+# a branch anymore, so there is nothing to do here at push time.
+
+REVIEWED_SHA=""
+if [ -f "$MARKER" ]; then
+  REVIEWED_SHA=$(head -n1 "$MARKER" | tr -d '[:space:]')
+fi
+
+if [ -n "$REVIEWED_SHA" ] && ! printf '%s' "$REVIEWED_SHA" | grep -qE '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+  echo "pre-push-review: WARNING marker '$REVIEWED_SHA' is not a full commit object ID" >&2
+  REVIEWED_SHA=""
+fi
+
+if [ -n "$REVIEWED_SHA" ] && ! git rev-parse --verify --quiet "${REVIEWED_SHA}^{commit}" >/dev/null 2>&1; then
+  echo "pre-push-review: WARNING marker SHA $REVIEWED_SHA is not a commit in this repo" >&2
+  REVIEWED_SHA=""
+fi
+
+PENDING_COMMITS=""
+REVIEW_BOUNDARY_MISSING=0
+for REVIEW_TIP in "${REVIEW_TIPS[@]}"; do
+  if [ -n "$REVIEWED_SHA" ] && git merge-base --is-ancestor "$REVIEWED_SHA" "$REVIEW_TIP" 2>/dev/null; then
+    PENDING_COMMITS="$PENDING_COMMITS $(git rev-list "${REVIEWED_SHA}..${REVIEW_TIP}" 2>/dev/null || true)"
+  elif git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
+    PENDING_COMMITS="$PENDING_COMMITS $(git rev-list "${BASE_REF}..${REVIEW_TIP}" 2>/dev/null || true)"
+  else
+    REVIEW_BOUNDARY_MISSING=1
+    break
+  fi
+done
+
+if [ "$REVIEW_BOUNDARY_MISSING" = "1" ]; then
+  # The remote to fetch from is whatever BASE_REF is qualified by — not
+  # necessarily "origin", and not every BASE_REF is remote-qualified at all.
+  # A remote-tracking ref has three rev-parse-valid spellings — "origin/main",
+  # "remotes/origin/main" and "refs/remotes/origin/main" — all naming the same
+  # thing, so normalize before splitting. Taking the leading component on faith
+  # would print "git fetch refs" or "git fetch remotes" for the qualified forms.
+  # Whatever is left then has to name a remote this repository actually has —
+  # a local "refs/heads/…" or a bare branch name does not, and is told plainly
+  # that there is nothing to fetch from. This branch is reached precisely when
+  # the agent has nothing but this message to go on, and a command that cannot
+  # work is worse than none.
+  SHORT_BASE="${BASE_REF#refs/}"
+  SHORT_BASE="${SHORT_BASE#remotes/}"
+  FETCH_CANDIDATE="${SHORT_BASE%%/*}"
+  if [ "$FETCH_CANDIDATE" != "$SHORT_BASE" ] &&
+    git config --get "remote.${FETCH_CANDIDATE}.url" >/dev/null 2>&1; then
+    # Explicit, forced destination refspec. A bare "git fetch <remote> <branch>"
+    # only guarantees FETCH_HEAD, so on a remote configured without a fetch
+    # refspec the command would succeed while $BASE_REF stayed unresolvable —
+    # and the agent would run it again against the same block. The "+" keeps a
+    # stale tracking ref from turning the hint into a non-fast-forward failure,
+    # and the source side is fully qualified so a remote tag of the same name
+    # cannot win the DWIM.
+    #
+    # A configured remote is not a promise that the branch exists on it, so this
+    # hint can still fail with "couldn't find remote ref". That is why the
+    # other-base route below is printed on both branches rather than only on the
+    # one that has no remote at all.
+    NEXT_STEPS="Fetch it, then review against it:
+
+    git fetch --no-tags $FETCH_CANDIDATE +refs/heads/${SHORT_BASE#*/}:refs/remotes/$SHORT_BASE
+    verity-code-review run     # isolated reviewer, concise findings
+    verity-code-review mark    # after every finding is addressed"
+  else
+    # Unindented continuation: the banner body sits at column 0 and only the
+    # command lines are indented, so a wrapped sentence has to match the body.
+    NEXT_STEPS="$BASE_REF is not a remote-tracking ref of any configured
+remote, so there is nothing to fetch it from."
+  fi
+  cat >&2 <<EOF
+============================================================
+PUSH BLOCKED - no usable code review boundary
+
+Branch: $BRANCH
+Pushed tip: $REVIEW_TIP
+
+Neither $BASE_REF nor a valid marker is available.
+
+The reviewer resolves the same boundary, so it fails the same way
+until it is given one that exists.
+
+$NEXT_STEPS
+
+Either way, if $BASE_REF stays unresolvable, review against a base
+that does exist and name it explicitly — a bare 'run' would resolve
+this same base:
+
+    verity-code-review run <other-base-ref>
+    verity-code-review mark    # after every finding is addressed
+
+Do not reach for 'mark' on its own — it records the marker without
+reviewing anything.
+============================================================
+EOF
+  exit 2
+fi
+
+ALL_COVERED=1
+UNCOVERED_SHAS=""
+for sha in $PENDING_COMMITS; do
+  subj=$(git log -1 --pretty='%s' "$sha" 2>/dev/null || echo "")
+  if echo "$subj" | grep -q '\[skip review\]'; then
+    continue
+  fi
+  ALL_COVERED=0
+  UNCOVERED_SHAS="${UNCOVERED_SHAS} ${sha}"
+done
+
+if [ "$ALL_COVERED" = "1" ]; then
+  exit 0
+fi
+
+cat >&2 <<EOF
+============================================================
+PUSH BLOCKED - pre-push code review required
+
+Branch:        $BRANCH
+HEAD:          $HEAD_SHA
+Last reviewed: ${REVIEWED_SHA:-<none>}
+Un-reviewed:  ${UNCOVERED_SHAS}
+
+Review the branch diff in an isolated reviewer — NOT inline in the chat, and
+without improvising a backend-specific sub-agent (no backend registers a
+'code_review' agent, so improvising hangs the turn):
+
+    verity-code-review run
+
+Then, once every finding is addressed, record the reviewed HEAD:
+
+    verity-code-review mark
+
+'mark' writes the marker without verifying anything, so marking without running
+the review turns this gate green on a diff nobody read.
+
+The marker is ${MARKER}. See AGENTS.md "Commits And PRs" for the
+runtime-neutral review contract.
+============================================================
+EOF
+exit 2

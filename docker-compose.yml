@@ -1,0 +1,27 @@
+# Local development dependencies for the Verity control-plane.
+# Production Postgres is provisioned separately on the dev-server host (§17);
+# this compose file only stands up a local Postgres for development + tests.
+services:
+  postgres:
+    # renovate: datasource=docker depName=postgres
+    image: postgres:18.6-bookworm@sha256:1c59e2c3c818eaa0f0628f695b36e7c9e362d6b219b36a54a32df645cbd7e1af
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-verity}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-verity}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      # PostgreSQL 18 keeps each major version in its own subdirectory. Mount the
+      # parent so upgrades and container recreation continue to use this named
+      # volume instead of an implicit anonymous volume at the image's VOLUME.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-verity} -d ${POSTGRES_DB:-verity}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Smoke-test one published Verity website image before anything tags it.
+#
+# Shared by the two publishes so they cannot drift. verity-website.yml smokes
+# every main commit before tagging `sha-<commit>`; release.yml smokes the same
+# build before tagging `v<website version>` off the website release train. What
+# "healthy" means for this image is one definition, in one file.
+#
+# Usage: deploy/bin/verity-website-smoke <image-reference> <container-name>
+set -euo pipefail
+
+IMAGE="${1:?image reference required}"
+TEST_CONTAINER="${2:?container name required}"
+
+# Both callers build the reference as `name@${digest}` from a build step's
+# output. An empty digest makes that a reference ending in `@`, which docker
+# reports as a parse error three lines later — true, and about the wrong thing.
+case "$IMAGE" in
+  *@ | *:)
+    echo "Refusing to smoke '$IMAGE': the digest or tag is empty" >&2
+    exit 1
+    ;;
+esac
+
+cleanup() {
+  docker rm -f "$TEST_CONTAINER" >/dev/null 2>&1 || true
+}
+diagnose() {
+  docker inspect --format \
+    'state={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} error={{.State.Error}}' \
+    "$TEST_CONTAINER" >&2 || true
+  docker logs "$TEST_CONTAINER" >&2 || true
+}
+# Every failure after the container answers is worth the same diagnostics as one
+# before it: a missing title or a 404 on an asset is nginx telling you something,
+# and its log says what. Without this the later checks fail as a bare non-zero
+# exit from `grep`, which names neither the check nor the reason.
+fail() {
+  echo "$1" >&2
+  diagnose
+  exit 1
+}
+# Armed before the container exists, because `docker run` can leave one created
+# but not started and `set -e` would then exit past an unarmed trap. INT and
+# TERM as well as EXIT: a cancelled Actions job is a SIGTERM, and the container
+# name carries the run attempt, so no later run's `docker rm -f` reclaims what a
+# cancellation stranded on this shared runner. The signal arm exits rather than
+# resuming, so a cancellation is not reported as a smoke failure against the
+# container it just removed.
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+docker rm -f "$TEST_CONTAINER" >/dev/null 2>&1 || true
+# This is an image smoke, not a host-network smoke. Keeping it inside the
+# container avoids depending on the shared runner's Docker NAT/iptables,
+# which can leave a healthy process unreachable through a published port.
+docker run -d --name "$TEST_CONTAINER" --read-only --network none \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m "$IMAGE" ||
+  fail 'The website container did not start'
+
+health_url='http://127.0.0.1:8080/healthz'
+ready=false
+last_health='no request attempted'
+readiness_deadline=$((SECONDS + 90))
+while (( SECONDS < readiness_deadline )); do
+  if last_health="$(
+    docker exec "$TEST_CONTAINER" wget -T 2 -t 1 -qO- "$health_url" 2>&1
+  )" && test "$last_health" = ok; then
+    ready=true
+    break
+  fi
+  if test "$(docker inspect --format '{{.State.Running}}' "$TEST_CONTAINER")" != true; then
+    fail 'The website container stopped before it became ready'
+  fi
+  sleep 1
+done
+if test "$ready" != true; then
+  fail "$(
+    printf 'Website container did not become ready within 90 seconds at %s\n' "$health_url"
+    printf 'Last health response: %s' "$last_health"
+  )"
+fi
+
+page="$(docker exec "$TEST_CONTAINER" wget -T 2 -t 1 -qO- http://127.0.0.1:8080/)" ||
+  fail 'The container is healthy but did not serve the index page'
+grep -q '<title>Verity' <<<"$page" ||
+  fail 'The served index page is not the Verity site'
+grep -Fq 'src="https://stats.heey.global/api/script.js"' <<<"$page" ||
+  fail 'The served page does not include analytics'
+assets_checked=0
+while IFS= read -r asset; do
+  docker exec "$TEST_CONTAINER" wget -T 2 -t 1 -qO /dev/null \
+    "http://127.0.0.1:8080/${asset}" ||
+    fail "The page references ${asset}, which the image does not serve"
+  assets_checked=$((assets_checked + 1))
+done < <(grep -oE 'assets/[A-Za-z0-9._-]+' <<<"$page" | sort -u)
+# An empty loop is silent, and silence here reads exactly like every asset
+# resolving. The page has referenced assets since it existed; if it stops, that
+# is a decision to make deliberately rather than a check that quietly lapses.
+if (( assets_checked == 0 )); then
+  fail 'No assets/ reference found on the page — the asset check proved nothing'
+fi
+# Captured first rather than piped: with `pipefail`, wget exiting on the
+# closed pipe after `grep -q` matches would fail the step on a success.
+response_headers="$(
+  docker exec "$TEST_CONTAINER" wget -T 2 -t 1 -S -O /dev/null \
+    http://127.0.0.1:8080/ 2>&1
+)" || fail 'Fetching the response headers failed'
+grep -qi '^[[:space:]]*X-Content-Type-Options: nosniff' <<<"$response_headers" ||
+  fail 'The image does not send X-Content-Type-Options: nosniff'

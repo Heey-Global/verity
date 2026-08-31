@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Verity app icon</title>
+  <desc id="desc">The Verity Airflow B on a dark midnight background.</desc>
+  <defs>
+    <radialGradient id="background" cx="50%" cy="46%" r="75%">
+      <stop stop-color="#100b1d"/>
+      <stop offset="1" stop-color="#06030d"/>
+    </radialGradient>
+    <linearGradient id="airflow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0" stop-color="#ff18b7"/>
+      <stop offset="0.3" stop-color="#ff18b7"/>
+      <stop offset="0.58" stop-color="#a94fe8"/>
+      <stop offset="0.88" stop-color="#18c8f5"/>
+      <stop offset="1" stop-color="#18c8f5"/>
+    </linearGradient>
+    <linearGradient id="upper-fold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop stop-color="#63127f"/>
+      <stop offset="1" stop-color="#b233d1"/>
+    </linearGradient>
+    <linearGradient id="lower-fold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop stop-color="#3920a8"/>
+      <stop offset="1" stop-color="#2778e9"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#background)"/>
+  <path
+    fill="url(#airflow)"
+    fill-rule="evenodd"
+    d="M270 190h312c142 0 250 86 250 210 0 78-43 139-109 174 77 34 127 103 127 190 0 143-116 240-276 240H270c-45 0-80-35-80-80V270c0-45 35-80 80-80Zm102 135v190h190c66 0 106-37 106-95 0-59-43-95-112-95H372Zm0 325v219h201c73 0 116-42 116-109 0-68-46-110-122-110H372Z"
+  />
+  <path
+    fill="url(#upper-fold)"
+    d="M556 325c69 0 112 36 112 95 0 58-40 95-106 95h-64c92 0 174 20 225 59 66-35 109-96 109-174 0-124-108-210-250-210h-26c91 20 143 68 156 135H556Z"
+    opacity="0.82"
+  />
+  <path
+    fill="url(#lower-fold)"
+    d="M567 650c76 0 122 42 122 110 0 67-43 109-116 109H462c73 61 166 91 245 72 88-40 143-103 143-177 0-87-50-156-127-190-49 42-128 76-226 76h70Z"
+    opacity="0.78"
+  />
+</svg>

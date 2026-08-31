@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Runtime-neutral pre-commit secret gate for Verity agent containers.
+#
+# Scans the STAGED diff with gitleaks and refuses the commit on a hit. This is
+# the cheapest place to stop a secret: once it is committed, removing it means
+# rewriting history, and once it is pushed the credential is burned and must be
+# rotated regardless. The pre-push hook re-scans the whole branch range as the
+# backstop for commits made with --no-verify or outside this container.
+#
+# All policy (which scanner, which repos opt in, how findings are reported) lives
+# in verity-secret-scan so the two hooks can never drift apart.
+#
+# Note: git ignores .git/hooks/* while core.hooksPath points here — that is
+# pre-existing for every hook type, and this hook deliberately does not chain to
+# repo-local hooks, which would silently start running code that was inert before.
+#
+# Bypass in a real emergency with `git commit --no-verify`.
+
+set -euo pipefail
+
+# The helper ships in the same agent-seed tree as this hook. Prefer an explicit
+# override (tests, non-standard layouts), then the tree this hook was installed
+# from, then the fixed mount point project containers bind, then PATH.
+resolve_secret_scan() {
+  if [ -n "${VERITY_SECRET_SCAN_BIN:-}" ]; then
+    if [ -x "$VERITY_SECRET_SCAN_BIN" ]; then
+      printf '%s' "$VERITY_SECRET_SCAN_BIN"
+      return 0
+    fi
+    return 1
+  fi
+
+  # Pure parameter expansion, no `dirname`: a hook must not assume coreutils are
+  # on PATH (git runs it with whatever environment the caller had).
+  local hook_dir="."
+  case "$0" in
+    */*) hook_dir="${0%/*}" ;;
+  esac
+
+  local candidate
+  for candidate in \
+    "$hook_dir/../bin/verity-secret-scan" \
+    /opt/agent-seed/bin/verity-secret-scan; do
+    if [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  command -v verity-secret-scan 2>/dev/null || return 1
+}
+
+if ! SECRET_SCAN=$(resolve_secret_scan); then
+  cat >&2 <<'EOF'
+============================================================
+COMMIT BLOCKED - secret scan helper missing
+
+The agent-seed pre-commit hook is installed but verity-secret-scan could not be
+located. The two ship together, so this is a container-provisioning bug: report
+it and rebuild the container rather than committing unscanned changes.
+============================================================
+EOF
+  exit 1
+fi
+
+SCAN_STATUS=0
+"$SECRET_SCAN" staged || SCAN_STATUS=$?
+
+if [ "$SCAN_STATUS" -eq 0 ]; then
+  exit 0
+fi
+
+if [ "$SCAN_STATUS" -eq 1 ]; then
+  cat >&2 <<'EOF'
+============================================================
+COMMIT BLOCKED - secret detected in the staged changes
+
+gitleaks matched the finding(s) above (secret values redacted). Remove the
+credential from the staged content — do not just unstage it — and re-commit.
+If the value ever existed outside this container, rotate it.
+
+False positive? Add its fingerprint to .gitleaksignore, with a comment saying
+why. Note that a staged fingerprint (file:rule:line) differs from the
+commit-scoped fingerprint CI reports (sha:file:rule:line), so the CI baseline
+may need its own entry once the commit exists.
+
+Bypass only in a real emergency with:
+
+    git commit --no-verify
+============================================================
+EOF
+  exit 1
+fi
+
+cat >&2 <<'EOF'
+============================================================
+COMMIT BLOCKED - secret scan could not run
+
+verity-secret-scan reported above why the gate is unusable. Fix the tooling
+rather than committing unscanned changes; CI runs the same scanner on the
+branch and a secret that reaches GitHub has to be rotated.
+============================================================
+EOF
+exit 1
