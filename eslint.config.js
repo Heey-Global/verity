@@ -118,4 +118,10 @@ export default tseslint.config(
       },
     },
   },
+  {
+    // The public bootstrap test executes directly with Node in the installer
+    // workflow and is not part of a TypeScript project.
+    files: ['docs/website/site/*.test.mjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+  },
 );

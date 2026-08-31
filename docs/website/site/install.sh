@@ -6,33 +6,154 @@ IMAGE_REPOSITORY=ghcr.io/heey-global/verity/verity-server
 # VARITY_IMAGE_TAG is a temporary compatibility fallback for bootstrap
 # automation created before the product spelling was corrected to Verity.
 IMAGE_TAG=${VERITY_IMAGE_TAG:-${VARITY_IMAGE_TAG:-latest}}
+INSTALL_MISSING=0
+PREFLIGHT_ONLY=0
 
 die() {
   printf 'verity-install: %s\n' "$*" >&2
   exit 1
 }
 
-command -v docker >/dev/null 2>&1 || die 'Docker 25 or newer is required: https://docs.docker.com/engine/install/'
-command -v tar >/dev/null 2>&1 || die 'tar is required'
-if [ "$(id -u)" -ne 0 ]; then
-  command -v sudo >/dev/null 2>&1 || die 'root access is required; install sudo or run this command as root'
-fi
+usage() {
+  cat <<'EOF'
+Usage: install.sh [bootstrap options] [verity-install options]
+
+Bootstrap options:
+  --preflight         Check every host prerequisite and exit without changing anything.
+  --install-missing   Install missing basic system tools (tar, flock, and OpenSSL) with the host
+                      package manager. Docker and Compose are never installed automatically.
+  -h, --help          Show this help.
+
+All other options are passed to the release-matched verity-install.
+EOF
+}
+
+installer_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --preflight) PREFLIGHT_ONLY=1; shift ;;
+    --install-missing) INSTALL_MISSING=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) installer_args+=("$1"); shift ;;
+  esac
+done
+
 as_root() {
   if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
 }
-as_root docker version >/dev/null 2>&1 || die 'cannot reach the root Docker daemon'
-docker_server_version=$(as_root docker version --format '{{.Server.Version}}' 2>/dev/null) ||
-  die 'cannot determine the Docker server version'
-docker_server_major=${docker_server_version%%.*}
-case "$docker_server_major" in
-  ''|*[!0-9]*) die "cannot parse Docker server version: $docker_server_version" ;;
-esac
-[ "$docker_server_major" -ge 25 ] ||
-  die "Docker 25 or newer is required (found $docker_server_version)"
+
+preflight_errors=()
+missing_system_tools=()
+
+preflight_error() { preflight_errors+=("$1"); }
+
+run_preflight() {
+  preflight_errors=()
+  missing_system_tools=()
+
+  [ "$(uname -s 2>/dev/null || true)" = Linux ] ||
+    preflight_error 'a Linux host is required'
+  case "$(uname -m 2>/dev/null || true)" in
+    x86_64|amd64) ;;
+    *) preflight_error "amd64/x86_64 is required (found $(uname -m 2>/dev/null || printf unknown))" ;;
+  esac
+
+  for tool in tar flock openssl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      missing_system_tools+=("$tool")
+      preflight_error "$tool is required"
+    fi
+  done
+  for tool in readlink stat awk grep mktemp; do
+    command -v "$tool" >/dev/null 2>&1 || preflight_error "$tool is required"
+  done
+
+  local can_elevate=1
+  if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
+    preflight_error 'root access is required; install sudo or run this command as root'
+    can_elevate=0
+  fi
+
+  if ! command -v docker >/dev/null 2>&1; then
+    preflight_error 'Docker 25 or newer is required: https://docs.docker.com/engine/install/'
+  elif [ "$can_elevate" -eq 1 ]; then
+    local docker_server_version docker_server_major
+    if ! as_root docker version >/dev/null 2>&1; then
+      preflight_error 'cannot reach the root Docker daemon'
+    elif ! docker_server_version=$(as_root docker version --format '{{.Server.Version}}' 2>/dev/null); then
+      preflight_error 'cannot determine the Docker server version'
+    else
+      docker_server_major=${docker_server_version%%.*}
+      case "$docker_server_major" in
+        ''|*[!0-9]*) preflight_error "cannot parse Docker server version: $docker_server_version" ;;
+        *) [ "$docker_server_major" -ge 25 ] || preflight_error "Docker 25 or newer is required (found $docker_server_version)" ;;
+      esac
+      as_root docker compose version >/dev/null 2>&1 ||
+        preflight_error 'the Docker Compose v2 plugin is required'
+    fi
+  fi
+
+  if command -v readlink >/dev/null 2>&1 && command -v stat >/dev/null 2>&1; then
+    [ "$(readlink -f /opt 2>/dev/null || true)" = /opt ] ||
+      preflight_error '/opt must exist and must not resolve through a symlink'
+    [ "$(stat -c '%u' /opt 2>/dev/null || true)" = 0 ] ||
+      preflight_error '/opt must be owned by root'
+    local opt_mode
+    opt_mode=$(printf '%04d' "$(stat -c '%a' /opt 2>/dev/null || printf 777)")
+    case "${opt_mode#??}" in
+      *[2367]*) preflight_error '/opt must not be writable by group or other users' ;;
+    esac
+  fi
+}
+
+install_system_tools() {
+  [ "${#missing_system_tools[@]}" -gt 0 ] || return 0
+  local packages=()
+  for tool in "${missing_system_tools[@]}"; do
+    case "$tool" in
+      tar) packages+=(tar) ;;
+      flock) packages+=(util-linux) ;;
+      openssl) packages+=(openssl) ;;
+    esac
+  done
+
+  if command -v apt-get >/dev/null 2>&1; then
+    as_root apt-get update
+    as_root apt-get install -y "${packages[@]}"
+  elif command -v dnf >/dev/null 2>&1; then
+    as_root dnf install -y "${packages[@]}"
+  elif command -v yum >/dev/null 2>&1; then
+    as_root yum install -y "${packages[@]}"
+  elif command -v zypper >/dev/null 2>&1; then
+    as_root zypper --non-interactive install "${packages[@]}"
+  else
+    die "cannot install ${missing_system_tools[*]} automatically; no supported package manager was found"
+  fi
+}
+
+run_preflight
+if [ "$INSTALL_MISSING" -eq 1 ] && [ "${#missing_system_tools[@]}" -gt 0 ]; then
+  if [ "$(id -u)" -eq 0 ] || command -v sudo >/dev/null 2>&1; then
+    printf 'verity-install: installing missing system tools: %s\n' "${missing_system_tools[*]}"
+    install_system_tools
+    run_preflight
+  fi
+fi
+
+if [ "${#preflight_errors[@]}" -gt 0 ]; then
+  printf 'verity-install: preflight failed (%d issues):\n' "${#preflight_errors[@]}" >&2
+  printf '  - %s\n' "${preflight_errors[@]}" >&2
+  if [ "${#missing_system_tools[@]}" -gt 0 ] && [ "$INSTALL_MISSING" -eq 0 ]; then
+    printf '%s\n' 'verity-install: re-run with --install-missing to install tar/flock/OpenSSL automatically.' >&2
+  fi
+  exit 1
+fi
+printf '%s\n' 'verity-install: preflight passed'
+[ "$PREFLIGHT_ONLY" -eq 0 ] || exit 0
+
 run_docker() {
   as_root docker "$@"
 }
-run_docker compose version >/dev/null 2>&1 || die 'the Docker Compose v2 plugin is required'
 
 managed_names=()
 if ! managed_output=$(run_docker ps -a --filter 'name=^/verity-managed-server' --format '{{.Names}}'); then
@@ -121,7 +242,7 @@ as_root test -f "$privileged_root/deploy/bin/verity-compose" || die 'release ima
 as_root test ! -L "$privileged_root/deploy/bin/verity-compose" || die 'release Compose wrapper must not be a symlink'
 
 if [ "$(id -u)" -eq 0 ]; then
-  "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "$@"
+  "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "${installer_args[@]}"
 else
-  sudo "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "$@"
+  sudo "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "${installer_args[@]}"
 fi

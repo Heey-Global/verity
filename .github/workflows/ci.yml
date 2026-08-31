@@ -356,10 +356,16 @@ jobs:
                 docs/website/site/install.sh)
                   lint=true
                   test=true
+                  installer=true
                   # The public bootstrap executes the payload baked into the
                   # Server image. A PR that changes it must rebuild and inspect
                   # that image rather than passing only the mocked shell test.
                   server_image=true
+                  ;;
+                docs/website/site/install.test.mjs)
+                  lint=true
+                  test=true
+                  installer=true
                   ;;
                 # Same reason for `test`: verity-git-guard.test.ts executes
                 # `agent-seed/bin/git`, and the drift job compares the two copies
@@ -788,7 +794,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             --workdir /workspace \
             "$VERITY_INSTALLER_IMAGE" \
-            node --test deploy/bin/verity-install.test.mjs
+            node --test deploy/bin/verity-install.test.mjs docs/website/site/install.test.mjs
 
   runner-postgres-race:
     needs: changes

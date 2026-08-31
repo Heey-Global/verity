@@ -346,6 +346,19 @@ describe('mobile native patch CI', () => {
 });
 
 describe('native iOS compile gate', () => {
+  it('dispatches the pinned organization Gitleaks policy for generated release PRs', () => {
+    const workflow = parse(readFileSync('.github/workflows/gitleaks-dispatch.yml', 'utf8')) as {
+      on?: { workflow_dispatch?: unknown };
+      permissions?: { contents?: string };
+      jobs: Record<string, { uses?: string }>;
+    };
+    expect(workflow.on?.workflow_dispatch).toBeDefined();
+    expect(workflow.permissions?.contents).toBe('read');
+    expect(workflow.jobs.gitleaks?.uses).toMatch(
+      /^Heey-Global\/\.github\/\.github\/workflows\/gitleaks\.yml@[0-9a-f]{40}$/,
+    );
+  });
+
   it('compiles a non-publishing simulator build on a GitHub macOS runner', () => {
     const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
       on?: { pull_request?: unknown };
@@ -382,6 +395,7 @@ describe('native iOS compile gate', () => {
     const releaseSource = readFileSync('.github/workflows/release.yml', 'utf8');
     expect(releaseSource).toContain("grep -q '^apps/mobile/'");
     expect(releaseSource).toContain('gh workflow run mobile-native-verify.yml');
+    expect(releaseSource).toContain('gh workflow run gitleaks-dispatch.yml');
 
     const appConfig = readFileSync('apps/mobile/app.config.ts', 'utf8');
     expect(appConfig).toContain("'expo-channel-name': expoUpdateChannel");
