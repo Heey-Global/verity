@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.0](https://github.com/Heey-Global/verity/compare/mobile-v1.12.0...mobile-v1.13.0) (2026-08-31)
+
+
+### Features
+
+* port source update a417cd4 ([20eb25b](https://github.com/Heey-Global/verity/commit/20eb25b89a9f5e2bba35fd5d8c7fa5aa8bcda0ce))
+* port source update a417cd4 ([eb4029a](https://github.com/Heey-Global/verity/commit/eb4029a09a5d867fd70f062714dee211ad6e42c8))
+
 ## [1.12.0](https://github.com/Heey-Global/verity/compare/mobile-v1.11.0...mobile-v1.12.0) (2026-08-31)
 
 
