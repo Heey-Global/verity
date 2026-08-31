@@ -699,19 +699,19 @@ describe('self-update release gate', () => {
     );
   });
 
-  it('stages the workflow smoke driver before replacing the checkout with the candidate', () => {
+  it('stages the workflow smoke harness before replacing the checkout with the candidate', () => {
     const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
       jobs: Record<string, { steps?: WorkflowStep[] }>;
     };
     const steps = parsed.jobs['live-smoke']?.steps ?? [];
     const stageIndex = steps.findIndex(
-      (step) => step.name === 'Stage the workflow-owned live smoke driver',
+      (step) => step.name === 'Stage the workflow-owned live smoke harness',
     );
     const candidateCheckoutIndex = steps.findIndex(
       (step) => step.uses?.startsWith('actions/checkout@') && step.with?.ref !== undefined,
     );
     const restoreIndex = steps.findIndex(
-      (step) => step.name === 'Restore the workflow-owned live smoke driver',
+      (step) => step.name === 'Restore the workflow-owned live smoke harness',
     );
     const smoke = steps.find((step) => step.name === 'Run the live self-update smoke');
     const smokeIndex = steps.indexOf(smoke as WorkflowStep);
@@ -723,10 +723,14 @@ describe('self-update release gate', () => {
     expect(steps[stageIndex]?.run).toContain(
       'install -m 0755 deploy/bin/verity-self-update-live-smoke',
     );
+    expect(steps[stageIndex]?.run).toContain(
+      'install -m 0644 packages/server/src/self-update-live-smoke.ts',
+    );
     expect(steps[restoreIndex]?.run).toContain(
-      'install -m 0755 "$RUNNER_TEMP/verity-self-update-live-smoke"',
+      'install -m 0755 "$RUNNER_TEMP/verity-self-update-harness/verity-self-update-live-smoke"',
     );
     expect(steps[restoreIndex]?.run).toContain('deploy/bin/verity-self-update-live-smoke');
+    expect(steps[restoreIndex]?.run).toContain('packages/server/src/self-update-live-smoke.ts');
     expect(smoke?.run).toContain('deploy/bin/verity-self-update-live-smoke');
   });
 

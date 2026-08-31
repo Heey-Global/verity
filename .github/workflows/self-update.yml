@@ -66,24 +66,30 @@ jobs:
         with:
           minimum-free-gib: '25'
 
-      - name: Stage the workflow-owned live smoke driver
+      - name: Stage the workflow-owned live smoke harness
         run: |
+          mkdir -p "$RUNNER_TEMP/verity-self-update-harness"
           install -m 0755 deploy/bin/verity-self-update-live-smoke \
-            "$RUNNER_TEMP/verity-self-update-live-smoke"
+            "$RUNNER_TEMP/verity-self-update-harness/verity-self-update-live-smoke"
+          install -m 0644 packages/server/src/self-update-live-smoke.ts \
+            "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke.ts"
 
       # Replace the workflow checkout only after its local setup action and live
-      # smoke driver have been staged. Product source belongs to the exact
-      # candidate; release-gate repairs remain usable for an immutable old tag.
+      # smoke harness have been staged. Product source belongs to the exact
+      # candidate; the gate's driver source remains repairable for an immutable
+      # old tag and is compiled against that candidate's production internals.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.candidate-sha || github.sha }}
           fetch-depth: 0
 
-      - name: Restore the workflow-owned live smoke driver
+      - name: Restore the workflow-owned live smoke harness
         run: |
-          install -m 0755 "$RUNNER_TEMP/verity-self-update-live-smoke" \
+          install -m 0755 "$RUNNER_TEMP/verity-self-update-harness/verity-self-update-live-smoke" \
             deploy/bin/verity-self-update-live-smoke
+          install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke.ts" \
+            packages/server/src/self-update-live-smoke.ts
 
       # Deliberately at the START of the job, not only in the teardown. The
       # teardown removes THIS run's volume, and it is an `if: always()` step — but
