@@ -473,6 +473,7 @@ function managedClientIdentitySecret(key: Buffer): Buffer {
 }
 
 async function main(): Promise<void> {
+  const directServerMode = process.argv[2] === 'direct-server';
   if (process.argv[2] === 'managed-gateway') {
     const tls = await tlsFromEnvironment();
     const gateway = await startManagedGateway({
@@ -995,9 +996,14 @@ async function main(): Promise<void> {
   if (tlsMode !== undefined && tlsMode !== 'direct' && tlsMode !== 'backend') {
     throw new Error('VERITY_TLS_MODE must be direct or backend');
   }
-  const backendTls = tlsMode === 'backend' || (tlsMode === undefined && managedDeployment);
-  const https = backendTls ? undefined : await tlsFromEnvironment();
-  const managedTls = backendTls ? await tlsFromEnvironment() : undefined;
+  const backendTls =
+    !directServerMode && (tlsMode === 'backend' || (tlsMode === undefined && managedDeployment));
+  const configuredTls = await tlsFromEnvironment();
+  const https = backendTls ? undefined : configuredTls;
+  if (directServerMode && https === undefined) {
+    throw new Error('direct-server mode requires TLS key and certificate paths');
+  }
+  const managedTls = backendTls ? configuredTls : undefined;
 
   /** The build itself, split out only so the failure unwind above can wrap it. */
   const buildAndListen = async (context: {
@@ -1266,7 +1272,7 @@ async function main(): Promise<void> {
     // password auth gate is the real protection (and ideally TLS in front); flag a
     // routable bind so an accidental `HOST=0.0.0.0` over plain HTTP is not silent.
     const routableBind = host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
-    if (routableBind) {
+    if (routableBind && https === undefined) {
       server.app.log.warn(
         { host, port },
         'verity: control plane bound to a non-loopback interface over plain HTTP — ' +

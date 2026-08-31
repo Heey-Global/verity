@@ -101,7 +101,7 @@ afterEach(() => {
 describe('deploy/bin/verity-compose', () => {
   it('keeps direct Server TLS and pairing identity in the runner overlay', () => {
     const base = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
-      services: Record<string, { environment?: Record<string, string> }>;
+      services: Record<string, { command?: string[]; environment?: Record<string, string> }>;
     };
     const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
       services: Record<string, { environment?: Record<string, string> }>;
@@ -118,6 +118,7 @@ describe('deploy/bin/verity-compose', () => {
     ];
     const baseEnvironment = base.services['verity']?.environment ?? {};
     const overlayEnvironment = overlay.services['verity']?.environment ?? {};
+    expect(base.services['verity']?.command).toEqual(['direct-server']);
     expect(Object.fromEntries(names.map((name) => [name, overlayEnvironment[name]]))).toEqual(
       Object.fromEntries(names.map((name) => [name, baseEnvironment[name]])),
     );

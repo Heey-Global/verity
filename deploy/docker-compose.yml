@@ -15,6 +15,7 @@ services:
     # VERITY_SERVER_IMAGE to that tag — the product compose is byte-identical either
     # way, the only difference is which image it runs.
     image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
+    command: [direct-server]
     restart: unless-stopped
     # Host resource guardrails. Compose enforces these on the control-plane
     # container itself; sandbox limits below only apply to spawned project
