@@ -2963,12 +2963,58 @@ export class ProvisionerImpl implements Provisioner {
       await this.initLocalRepo(dirs.clonePath, configuredDefaultBranch ?? 'main');
       return;
     }
+    const token = await this.resolveProjectToken(project);
+    const authHeader = gitAuthHeader(token);
+    const url = `https://github.com/${project.owner}/${project.repo}`;
+    let remoteIsEmpty: boolean;
+    try {
+      const remoteHeads = await this.git([
+        '-c',
+        `http.extraheader=${authHeader}`,
+        'ls-remote',
+        '--heads',
+        url,
+      ]);
+      remoteIsEmpty = remoteHeads.stdout.trim().length === 0;
+    } catch (cause) {
+      const safeCause = new Error(
+        redactSensitive(commandFailureMessage(cause), [token, authHeader]),
+      );
+      // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
+      throw new Error(safeCause.message, { cause: safeCause });
+    }
     if (this.isDir(dirs.clonePath) && this.isRepoDir(dirs.clonePath)) {
       // The minted token is used for THIS server-side fetch only — it is never
       // written into the sandbox (the sandbox redeems its capability at the token
       // broker instead), so nothing is persisted to a `.gh-token` file.
-      const token = await this.resolveProjectToken(project);
-      const authHeader = gitAuthHeader(token);
+      let defaultBranch = configuredDefaultBranch;
+      if (!defaultBranch) {
+        if (remoteIsEmpty) {
+          defaultBranch = 'main';
+        } else {
+          try {
+            const remoteHead = await this.git([
+              '-C',
+              dirs.clonePath,
+              'symbolic-ref',
+              '--short',
+              'refs/remotes/origin/HEAD',
+            ]);
+            defaultBranch = remoteHead.stdout.trim().replace(/^origin\//, '') || 'main';
+          } catch {
+            defaultBranch = 'main';
+          }
+        }
+      }
+      if (remoteIsEmpty) {
+        await this.bootstrapEmptyGitHubRepo(
+          dirs.clonePath,
+          defaultBranch ?? 'main',
+          token,
+          authHeader,
+        );
+        return;
+      }
       try {
         await this.git([
           '-C',
@@ -2985,32 +3031,16 @@ export class ProvisionerImpl implements Provisioner {
         // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
         throw new Error(safeCause.message, { cause: safeCause });
       }
-      let defaultBranch = configuredDefaultBranch;
-      if (!defaultBranch) {
-        try {
-          const remoteHead = await this.git([
-            '-C',
-            dirs.clonePath,
-            'symbolic-ref',
-            '--short',
-            'refs/remotes/origin/HEAD',
-          ]);
-          defaultBranch = remoteHead.stdout.trim().replace(/^origin\//, '') || 'main';
-        } catch {
-          defaultBranch = 'main';
-        }
-      }
       await this.git(['-C', dirs.clonePath, 'reset', '--hard', `origin/${defaultBranch}`]);
     } else {
-      const token = await this.resolveProjectToken(project);
-      const authHeader = gitAuthHeader(token);
-      const url = `https://github.com/${project.owner}/${project.repo}`;
       try {
         const cloneArgs = [
           '-c',
           `http.extraheader=${authHeader}`,
           'clone',
-          ...(configuredDefaultBranch ? ['--branch', configuredDefaultBranch] : []),
+          ...(!remoteIsEmpty && configuredDefaultBranch
+            ? ['--branch', configuredDefaultBranch]
+            : []),
           url,
           dirs.clonePath,
         ];
@@ -3023,6 +3053,74 @@ export class ProvisionerImpl implements Provisioner {
         throw new Error(safeCause.message, { cause: safeCause });
       }
       await this.git(['-C', dirs.clonePath, 'remote', 'set-url', 'origin', url]);
+      if (remoteIsEmpty) {
+        await this.bootstrapEmptyGitHubRepo(
+          dirs.clonePath,
+          configuredDefaultBranch ?? 'main',
+          token,
+          authHeader,
+        );
+      }
+    }
+  }
+
+  /** Finish an empty GitHub clone so worktrees and pull requests have a real base. */
+  private async bootstrapEmptyGitHubRepo(
+    clonePath: string,
+    defaultBranch: string,
+    token: string | undefined,
+    authHeader: string,
+  ): Promise<void> {
+    let existingHead: string | undefined;
+    try {
+      existingHead = (
+        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
+      ).stdout.trim();
+    } catch {
+      // The clone is genuinely unborn; create the first commit below.
+    }
+    if (existingHead !== undefined && existingHead.length > 0) {
+      // A retry may find the bootstrap commit on a different local branch (for
+      // example after the configured default changed). Preserve that history
+      // before repointing HEAD; symbolic-ref alone would make it unreachable.
+      await this.git(['-C', clonePath, 'update-ref', `refs/heads/${defaultBranch}`, existingHead]);
+    }
+    await this.git(['-C', clonePath, 'symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`]);
+    if (existingHead === undefined || existingHead.length === 0) {
+      await this.git([
+        '-C',
+        clonePath,
+        '-c',
+        'user.name=Verity',
+        '-c',
+        'user.email=verity@localhost',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'chore: initialize project',
+      ]);
+    }
+    try {
+      await this.git([
+        '-C',
+        clonePath,
+        '-c',
+        `http.extraheader=${authHeader}`,
+        'push',
+        '-u',
+        'origin',
+        defaultBranch,
+      ]);
+    } catch (cause) {
+      const detail = redactSensitive(commandFailureMessage(cause), [token, authHeader]);
+      const safeCause = new Error(detail);
+      const safeError = new Error(
+        `initializing the empty GitHub repository failed: push to '${defaultBranch}' was rejected: ${detail}`,
+        { cause: safeCause },
+      );
+      throw safeError;
     }
   }
 

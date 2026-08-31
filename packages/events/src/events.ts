@@ -512,6 +512,13 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     message: z.string(),
   }),
   z.object({
+    t: z.literal('session_progress'),
+    summary: z.string().min(1).max(1_000),
+    outcomeDelivered: z.boolean(),
+    blocker: z.string().min(1).max(500).optional(),
+    requiredDecision: z.string().min(1).max(500).optional(),
+  }),
+  z.object({
     t: z.literal('raw'),
     backend: z.string().min(1),
     payload: z.unknown(),

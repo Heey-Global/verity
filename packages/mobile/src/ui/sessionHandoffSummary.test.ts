@@ -13,6 +13,8 @@ import {
   sessionHandoffCaveats,
   sessionHandoffSummary,
   sessionHandoffTitle,
+  sessionProgressSummary,
+  recentSessionMessagesSummary,
 } from './sessionHandoffSummary.js';
 
 describe('sessionHandoffSummary', () => {
@@ -45,6 +47,21 @@ describe('sessionHandoffSummary', () => {
     });
     expect(sessionHandoffTitle(summary!)).toBe('Send briefing to project acme/website?');
     expect(summary!.targetKind).toBe('project');
+  });
+
+  it('shows that New session creates the target before delivering the first turn', () => {
+    const summary = sessionHandoffSummary({
+      target: { newSession: { project: 'acme/website' } },
+      title: 't',
+      briefing: 'b',
+    });
+    expect(sessionHandoffTitle(summary!)).toBe(
+      'Send briefing to a new session in project acme/website?',
+    );
+    expect(summary!.targetKind).toBe('new-session');
+    expect(sessionHandoffCaveats(summary)).toContain(
+      'creates that session and delivers the briefing as its first turn',
+    );
   });
 
   it('says on a project target that the destination is chosen after the decision', () => {
@@ -297,6 +314,34 @@ describe('sessionHandoffSummary', () => {
     expect(rejectedByCard).toEqual(probes.slice(0, 14));
     expect(rejectedByCard).toContain(0x202e);
     expect(rejectedByCard).not.toContain(0x200d);
+  });
+});
+
+describe('session observation approval summaries', () => {
+  it('names the exact progress target', () => {
+    expect(sessionProgressSummary({ sessionId: 'sess-web' })).toEqual({ sessionId: 'sess-web' });
+    expect(sessionProgressSummary({ project: 'acme/web' })).toBeNull();
+  });
+
+  it('shows the exact recent-message scope and purpose', () => {
+    expect(
+      recentSessionMessagesSummary({
+        sessionId: 'sess-web',
+        count: 12,
+        sinceMinutes: 60,
+        beforeSeq: 900,
+        purpose: 'Check the handoff',
+      }),
+    ).toEqual({
+      sessionId: 'sess-web',
+      count: 12,
+      sinceMinutes: 60,
+      beforeSeq: 900,
+      purpose: 'Check the handoff',
+    });
+    expect(
+      recentSessionMessagesSummary({ sessionId: 'sess-web', purpose: 'Check the handoff' }),
+    ).toMatchObject({ count: 20 });
   });
 });
 

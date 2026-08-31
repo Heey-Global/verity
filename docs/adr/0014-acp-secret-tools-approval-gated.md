@@ -439,3 +439,44 @@ with a card in the first place.
   session, but the durable record of where a briefing landed is the target
   session's transcript, not the audit row. That is a gap in evidence, not in
   approval, and it is named here rather than left in a code comment.
+
+## Amendment 3 (2026-08-29) — selected targets and bounded observation
+
+The gateway additionally serves `verity_session_progress`,
+`verity_recent_session_messages`, and `verity_publish_session_progress`; the
+served-set count is now eight. The two reads are
+on-demand reads under D2: every invocation raises a fresh card, neither supports
+a standing grant, and callers must not poll them.
+
+Handoffs no longer use a project name to choose among multiple sessions. The
+Control session lists the eligible sessions and presents those exact ids plus a
+New session option. The approved handoff then names either that `sessionId` or
+`newSession.project`; the latter creates the session and delivers the briefing as
+its first turn. A bare project target remains compatible only when exactly one
+eligible session exists and fails closed otherwise.
+
+`verity_session_progress` returns lifecycle/timing and local or already-cached
+branch, Issue and PR facts. It never refreshes GitHub and never returns transcript
+text. A completed turn is reported separately from an outcome-delivered claim;
+absence of a bounded published claim is `null`, not inferred success.
+`projectionTruncated` says when the bounded event tail may have omitted an older
+turn start or publication.
+The publish tool is bound to its authenticated calling session and writes a
+bounded canonical event containing summary, blocker/decision when present, and
+an explicit outcome-delivered boolean. It cannot name or update another session.
+
+`verity_recent_session_messages` names one exact session, a purpose, a bounded
+count (20 by default, 50 maximum), and an optional time window. It returns only
+prompt, top-level assistant and system-error text, with recognized credential
+patterns conservatively redacted. Attachments, tool inputs/results, hidden
+prompts and capabilities are excluded. Because arbitrary free text cannot be
+proven secret-free, the approval card explicitly warns that the selected content
+scope may still contain sensitive material. Pagination is a
+new invocation with the returned `nextBeforeSeq` cursor and therefore a new
+approval. Audit logs record caller, target, purpose and scope but never returned
+message content.
+Assistant responses crossing an internal event-page boundary are omitted rather
+than returned as fragments that could split one credential across approvals.
+Responses exceeding the bounded raw assembly buffer are likewise represented by
+an omission marker rather than returning a tail that may have lost a credential
+prefix.

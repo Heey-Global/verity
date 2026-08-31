@@ -91,7 +91,15 @@ function build(
         ? ['verity_http_request', 'verity_secret_run']
         : ['verity_http_request'],
     ...(options.sessionTools === true
-      ? { extraToolsForProject: () => ['verity_list_sessions', 'verity_session_handoff'] as const }
+      ? {
+          extraToolsForProject: () =>
+            [
+              'verity_list_sessions',
+              'verity_session_handoff',
+              'verity_session_progress',
+              'verity_recent_session_messages',
+            ] as const,
+        }
       : {}),
     resolveCaller: (input) => Promise.resolve(tokens.resolve(input)),
     invokeTool: ({ sessionId, turnId, toolName, request: toolRequest }) => {
@@ -760,9 +768,56 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
           status: expect.any(String),
           resumable: true,
           eventCount: expect.any(Number),
+          lastActivityAt: null,
           handoffEligible: true,
         },
       ]);
+
+      await harness.store.appendEvent('sess-web', {
+        t: 'prompt',
+        text: 'Authorization: Bearer project-secret',
+      });
+      await harness.store.appendEvent('sess-web', { t: 'text', delta: 'Investigating safely.' });
+      const observed = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 61,
+        method: 'tools/call',
+        params: {
+          name: 'verity_recent_session_messages',
+          arguments: {
+            sessionId: 'sess-web',
+            count: 2,
+            purpose: 'Confirm the handed-off task state',
+          },
+        },
+      });
+      const observedResult = JSON.parse(observed.body) as {
+        result: { isError?: boolean; content: Array<{ text: string }> };
+      };
+      expect(observedResult.result.isError).toBeUndefined();
+      expect(JSON.parse(observedResult.result.content[0]!.text)).toMatchObject({
+        sessionId: 'sess-web',
+        purpose: 'Confirm the handed-off task state',
+        messages: [
+          { role: 'user', text: 'Authorization: [REDACTED]' },
+          { role: 'assistant', text: 'Investigating safely.' },
+        ],
+        hasMore: false,
+      });
+      expect(harness.approvals).toContainEqual(
+        expect.objectContaining({
+          sessionId: 'control-s1',
+          toolName: 'verity_recent_session_messages',
+          allowStandingGrant: false,
+        }),
+      );
+      expect(harness.records).toContainEqual(
+        expect.objectContaining({
+          kind: 'gateway_call_served',
+          toolName: 'verity_recent_session_messages',
+          decision: 'card',
+        }),
+      );
 
       const handed = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
         jsonrpc: '2.0',

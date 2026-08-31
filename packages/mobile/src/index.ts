@@ -134,6 +134,8 @@ export {
   sessionHandoffCaveats,
   sessionHandoffSummary,
   sessionHandoffTitle,
+  sessionProgressSummary,
+  recentSessionMessagesSummary,
   type ListSessionsSummary,
   type SessionHandoffSummary,
 } from './ui/sessionHandoffSummary.js';

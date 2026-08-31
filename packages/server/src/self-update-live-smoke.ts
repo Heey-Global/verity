@@ -90,6 +90,11 @@ import { join } from 'node:path';
 
 import { createDockerClient, type DockerClient } from './docker.js';
 import {
+  MANAGED_SERVER_DEFAULT_RESOURCES,
+  sealDeploymentSpec,
+  type ServerDeploymentSpecBody,
+} from './self-update/deployment-spec.js';
+import {
   initializeManagedDeployment,
   readManagedDeployment,
 } from './self-update/managed-deployment.js';
@@ -142,11 +147,6 @@ import {
   type UpdateJournal,
   type UpdatePhase,
 } from './self-update/update-journal.js';
-import {
-  MANAGED_SERVER_DEFAULT_RESOURCES,
-  type ServerDeploymentSpecBody,
-} from './self-update/deployment-spec.js';
-
 /** Resolved from a `file:` deployment-spec source rather than the process
  *  environment, so the smoke covers both env-source kinds. `/run/secrets` is not
  *  writable on a CI runner, so the read is injected instead of faked away. */
@@ -271,6 +271,14 @@ function deploymentSpec(
   image: string,
 ): Omit<ServerDeploymentSpecBody, 'schemaVersion' | 'deploymentId'> {
   const fromEnv = (name: string) => ({ name, source: { kind: 'env' as const, name } });
+  const availableCpus = Number(required('VERITY_SMOKE_DAEMON_CPUS'));
+  if (!Number.isFinite(availableCpus) || availableCpus < 0.01)
+    fail(`the isolated daemon reported an invalid CPU capacity: ${String(availableCpus)}`);
+  const availableNanoCpus = Math.floor(availableCpus * 1_000_000_000);
+  const resources =
+    availableNanoCpus < MANAGED_SERVER_DEFAULT_RESOURCES.nanoCpus
+      ? { ...MANAGED_SERVER_DEFAULT_RESOURCES, nanoCpus: availableNanoCpus }
+      : undefined;
   return {
     image,
     environment: [
@@ -314,6 +322,7 @@ function deploymentSpec(
     network: 'verity-net',
     platform: { os: 'linux', architecture: 'amd64' },
     security: { noNewPrivileges: true, readOnlyRootFilesystem: false, capAdd: ['CHOWN'] },
+    ...(resources === undefined ? {} : { resources }),
   };
 }
 
@@ -383,18 +392,20 @@ async function adopt(managedRoot: string): Promise<void> {
   const inspect = await client.inspectContainer(first.containerId);
   expect(inspect.image === previousDigest, `managed Server runs ${String(inspect.image)}`);
   expect(inspect.running, 'managed Server is not running');
-  // The spec sealed above carries no `resources`, exactly like every deployment
-  // adopted before the field existed — so this is the old-spec/new-Server
-  // direction against a real daemon, and it is the only place the ceilings can be
-  // proved to survive the Docker API rather than merely be put in the request.
-  // Re-adoption above already ran first: a limit the matcher rejected would have
-  // failed there, not here.
+  // On a daemon large enough for the production default, the spec sealed above
+  // carries no `resources`, exactly like every deployment adopted before the
+  // field existed. A smaller CI daemon receives the same guardrails with only
+  // its CPU ceiling fitted to the capacity Docker accepts. In both cases this is
+  // the place the sealed ceilings are proved to survive the Docker API rather
+  // than merely be put in the request. Re-adoption above already ran first: a
+  // limit the matcher rejected would have failed there, not here.
+  const expectedResources = state.spec.resources ?? MANAGED_SERVER_DEFAULT_RESOURCES;
   expect(
-    inspect.memoryBytes === MANAGED_SERVER_DEFAULT_RESOURCES.memoryBytes &&
-      inspect.memorySwapBytes === MANAGED_SERVER_DEFAULT_RESOURCES.memorySwapBytes &&
-      inspect.nanoCpus === MANAGED_SERVER_DEFAULT_RESOURCES.nanoCpus &&
-      inspect.pidsLimit === MANAGED_SERVER_DEFAULT_RESOURCES.pidsLimit,
-    `managed Server host limits are not the Compose guardrails: ${JSON.stringify({
+    inspect.memoryBytes === expectedResources.memoryBytes &&
+      inspect.memorySwapBytes === expectedResources.memorySwapBytes &&
+      inspect.nanoCpus === expectedResources.nanoCpus &&
+      inspect.pidsLimit === expectedResources.pidsLimit,
+    `managed Server host limits are not the sealed guardrails: ${JSON.stringify({
       memoryBytes: inspect.memoryBytes,
       memorySwapBytes: inspect.memorySwapBytes,
       nanoCpus: inspect.nanoCpus,
@@ -427,6 +438,38 @@ async function adopt(managedRoot: string): Promise<void> {
     managedContainerMatchesSpec(inspect, weakened, imageEnv, false, 'ignored'),
     'the legacy host-limit tolerance rejected a container it must accept',
   );
+  if (state.spec.resources !== undefined) {
+    // A daemon smaller than the production four-core default cannot physically
+    // create the old-spec/new-Server direction above: Docker rejects NanoCpus=4
+    // before reconciliation can inspect anything. Still seal that exact legacy
+    // authority and compare it with the real container the daemon did create,
+    // so the backward-compatible ignored-limit adoption path remains a live
+    // Docker assertion rather than falling back entirely to fixtures.
+    const legacySpec = { ...deploymentSpec(previousDigest) };
+    Reflect.deleteProperty(legacySpec, 'resources');
+    const legacyRoot = await mkdtemp(join(tmpdir(), 'verity-smoke-legacy-adoption-'));
+    const legacyState = await initializeManagedDeployment({
+      root: legacyRoot,
+      spec: legacySpec,
+      deploymentId: state.spec.deploymentId,
+    });
+    if (!legacyState.managed)
+      fail(`legacy adoption did not produce a managed authority: ${legacyState.reason}`);
+    expect(
+      legacyState.spec.resources === undefined,
+      'legacy adoption unexpectedly sealed resources',
+    );
+    const legacyDesired = await managedServerContainerSpec(
+      legacyState.spec,
+      serverEnvironment(databaseUrl, legacyState.spec.deploymentId),
+      readSecret,
+    );
+    expect(
+      !managedContainerMatchesSpec(inspect, legacyDesired, imageEnv, false, 'exact') &&
+        managedContainerMatchesSpec(inspect, legacyDesired, imageEnv, false, 'ignored'),
+      'the real limited container did not preserve legacy host-limit tolerance',
+    );
+  }
   process.stdout.write(`adopted ${MANAGED_SERVER_NAME} as ${state.spec.deploymentId}\n`);
 }
 
@@ -2603,6 +2646,48 @@ async function composeEnvironment(
   process.stdout.write(`${service}: ${String(lines.length)} variables rendered by Compose\n`);
 }
 
+/**
+ * Fit the drift fixture to the daemon that CI supplied.
+ *
+ * The drift stage is about preserving a previously sealed environment across
+ * releases. GitHub's standard hosted runner exposes two CPUs, while production
+ * Compose and therefore every real bootstrap seal four. Docker rejects that
+ * fixture before either Updater can exercise the environment contract. Keep the
+ * production default intact and narrow only this throwaway authority, after the
+ * previous release sealed it and before either release reads it.
+ */
+async function fitDriftFixtureResources(root: string, availableCpus: number): Promise<void> {
+  if (!Number.isFinite(availableCpus) || availableCpus < 0.01)
+    fail(`the isolated daemon reported an invalid CPU capacity: ${String(availableCpus)}`);
+  const state = await readManagedDeployment(root);
+  if (!state.managed) fail(`cannot fit an unmanaged drift fixture: ${state.reason}`);
+  const nanoCpus = Math.min(
+    MANAGED_SERVER_DEFAULT_RESOURCES.nanoCpus,
+    Math.floor(availableCpus * 1_000_000_000),
+  );
+  if (nanoCpus === state.spec.resources?.nanoCpus) return;
+  const body: ServerDeploymentSpecBody = {
+    ...state.spec,
+    resources: { ...MANAGED_SERVER_DEFAULT_RESOURCES, nanoCpus },
+  };
+  const { checksum, ...withoutChecksum } = body as ServerDeploymentSpecBody & {
+    readonly checksum?: string;
+  };
+  const replacement = sealDeploymentSpec(withoutChecksum);
+  if (replacement.checksum === checksum)
+    fail('fitting the drift fixture CPU ceiling did not reseal its deployment spec');
+  const path = join(root, 'server-deployment.json');
+  const temporary = `${path}.smoke-${randomBytes(8).toString('hex')}`;
+  await writeFile(temporary, `${JSON.stringify(replacement, null, 2)}\n`, {
+    mode: 0o600,
+    flag: 'wx',
+  });
+  await rename(temporary, path);
+  process.stdout.write(
+    `drift fixture CPU ceiling fitted to ${String(nanoCpus / 1_000_000_000)} core(s)\n`,
+  );
+}
+
 async function main(): Promise<void> {
   const stage = process.argv[2];
   const managedRoot = (): string => required('VERITY_SMOKE_MANAGED_ROOT');
@@ -2614,6 +2699,11 @@ async function main(): Promise<void> {
       requiredArgument(4, 'the service to read'),
       requiredArgument(5, 'the env file to write'),
       process.argv.slice(6),
+    );
+  else if (stage === 'fit-drift-fixture-resources')
+    await fitDriftFixtureResources(
+      managedRoot(),
+      Number(requiredArgument(3, 'the isolated daemon CPU capacity')),
     );
   else if (stage === 'adopt') await adopt(managedRoot());
   else if (stage === 'prepare') await prepare(managedRoot());

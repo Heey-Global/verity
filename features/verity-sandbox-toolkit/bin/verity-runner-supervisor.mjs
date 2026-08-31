@@ -5,8 +5,8 @@ import { spawn } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { constants as osConstants } from 'node:os';
-import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { access, chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
@@ -992,6 +992,65 @@ function boundedSpawnError(value) {
     : `runner worker spawn failed with error code ${errorCode}`;
 }
 
+function spawnFailureDiagnostic(error, request, workerCommand) {
+  const code =
+    typeof error?.code === 'string' && /^E[A-Z]{2,20}$/.test(error.code) ? error.code : undefined;
+  const declared = error?.veritySpawnDiagnostic;
+  if (
+    isObject(declared) &&
+    ['cwd-traverse', 'worker-executable', 'spawn'].includes(declared.stage) &&
+    ['cwd', 'worker-executable', 'unknown'].includes(declared.target)
+  ) {
+    return {
+      stage: declared.stage,
+      target: declared.target,
+      ...(declared.target === 'cwd' ? { path: request.cwd } : {}),
+      ...(declared.target === 'worker-executable'
+        ? { path: declared.path ?? resolve(request.cwd, workerCommand) }
+        : {}),
+      ...(code !== undefined ? { code } : {}),
+    };
+  }
+  const target = error?.path === workerCommand ? 'worker-executable' : 'unknown';
+  return {
+    stage: 'spawn',
+    target,
+    ...(target === 'worker-executable' ? { path: resolve(request.cwd, workerCommand) } : {}),
+    ...(code !== undefined ? { code } : {}),
+  };
+}
+
+async function assertSpawnBoundary(request, workerCommand, workerPath) {
+  try {
+    await access(request.cwd, constants.X_OK);
+  } catch (error) {
+    error.veritySpawnDiagnostic = { stage: 'cwd-traverse', target: 'cwd' };
+    throw error;
+  }
+  const candidates = workerCommand.includes('/')
+    ? [resolve(request.cwd, workerCommand)]
+    : (workerPath ?? '')
+        .split(delimiter)
+        .map((entry) => resolve(request.cwd, entry, workerCommand));
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  const error =
+    lastError ?? Object.assign(new Error('worker executable is not on PATH'), { code: 'ENOENT' });
+  error.veritySpawnDiagnostic = {
+    stage: 'worker-executable',
+    target: 'worker-executable',
+    path: candidates[0] ?? resolve(request.cwd, workerCommand),
+  };
+  throw error;
+}
+
 function redactWorkerError(value) {
   const credentialPatterns = [
     /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
@@ -1239,7 +1298,17 @@ export async function readTurnState(runtimeDir, turnId) {
       !Number.isInteger(parsed.workerExitCode)) ||
     (parsed.workerError !== undefined &&
       (typeof parsed.workerError !== 'string' ||
-        Buffer.byteLength(parsed.workerError) > MAX_WORKER_ERROR_BYTES))
+        Buffer.byteLength(parsed.workerError) > MAX_WORKER_ERROR_BYTES)) ||
+    (parsed.workerSpawnFailure !== undefined &&
+      (!isObject(parsed.workerSpawnFailure) ||
+        !['cwd-traverse', 'worker-executable', 'spawn'].includes(parsed.workerSpawnFailure.stage) ||
+        !['cwd', 'worker-executable', 'unknown'].includes(parsed.workerSpawnFailure.target) ||
+        (parsed.workerSpawnFailure.path !== undefined &&
+          (typeof parsed.workerSpawnFailure.path !== 'string' ||
+            !parsed.workerSpawnFailure.path.startsWith('/'))) ||
+        (parsed.workerSpawnFailure.code !== undefined &&
+          (typeof parsed.workerSpawnFailure.code !== 'string' ||
+            !/^E[A-Z]{2,20}$/.test(parsed.workerSpawnFailure.code)))))
   ) {
     throw new Error(`invalid state for ${turnId}`);
   }
@@ -1587,6 +1656,11 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       await writeJsonAtomic(requestPath, request, 0o600);
       await updateTurnState(runtimeDir, request.turnId, { workerLock: true });
       workerLock = await acquireFileLock(workerLockPath);
+      await assertSpawnBoundary(
+        request,
+        workerCommand,
+        options.workerEnv?.PATH ?? process.env.PATH,
+      );
       child = spawnWorker(workerCommand, [...(options.workerArgs ?? []), requestPath], {
         cwd: request.cwd,
         stdio: stdioWithWorkerLock(workerLock.fd),
@@ -1632,6 +1706,13 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       });
     } catch (error) {
       const workerError = boundedSpawnError(error instanceof Error ? error.message : String(error));
+      const workerSpawnFailure = spawnFailureDiagnostic(error, request, workerCommand);
+      logTelemetry({
+        event: 'worker-spawn-failed',
+        turnId: request.turnId,
+        sessionId: request.sessionId,
+        ...workerSpawnFailure,
+      });
       // The frame below declares this turn dead, so nothing may still be alive under
       // it. Reaching here with a live child is not the ordinary `spawn`-failed case
       // — that child has no pid at all — but the guards above can also reject a
@@ -1696,6 +1777,7 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       await updateTurnState(runtimeDir, request.turnId, {
         status: 'settled',
         ...(workerError.length > 0 ? { workerError } : {}),
+        workerSpawnFailure,
       });
       // eslint-disable-next-line preserve-caught-error -- raw spawn exceptions may contain credentials.
       throw new Error(workerError);

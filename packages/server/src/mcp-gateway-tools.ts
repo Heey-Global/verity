@@ -54,7 +54,13 @@ export function createMcpGatewayToolExecutor(options: {
         request,
       });
     }
-    if (toolName === 'verity_list_sessions' || toolName === 'verity_session_handoff') {
+    if (
+      toolName === 'verity_list_sessions' ||
+      toolName === 'verity_session_handoff' ||
+      toolName === 'verity_session_progress' ||
+      toolName === 'verity_recent_session_messages' ||
+      toolName === 'verity_publish_session_progress'
+    ) {
       // Not served from here. Both need the conductor and the route's session projection,
       // neither of which exists in the composition that builds this executor, so `buildServer`
       // intercepts them ahead of it — the same reason `requestApproval` is bound there. A call

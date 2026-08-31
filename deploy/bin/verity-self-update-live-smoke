@@ -486,6 +486,7 @@ export VERITY_SMOKE_DOCKER_SOCKET="$socket"
 export VERITY_SMOKE_MANAGED_ROOT="$managed_root"
 export VERITY_SMOKE_PREVIOUS_DIGEST="$previous_digest"
 export VERITY_SMOKE_TARGET_DIGEST="$target_digest"
+export VERITY_SMOKE_DAEMON_CPUS="$(docker info --format '{{.NCPU}}')"
 export VERITY_SMOKE_DATABASE_URL='postgres://verity@verity-postgres:5432/verity'
 export VERITY_SMOKE_UNMIGRATED_DATABASE_URL='postgres://verity@verity-postgres-unmigrated:5432/verity'
 # The other half of the same gate: a host that is up with nothing listening on
@@ -916,6 +917,17 @@ docker run --rm --user 0:0 --network none \
   --env-file "$compose_dir/previous-bootstrap.env" \
   --mount "type=volume,src=$drift_deployment_volume,dst=/var/lib/verity/updater/managed-deployment" \
   "$previous_digest" managed-bootstrap
+# Standard GitHub-hosted runners expose two CPUs. Production Compose seals four,
+# and Docker refuses a four-CPU container on that daemon before either Updater
+# can exercise the environment-compatibility contract this stage exists for.
+# Narrow only the throwaway authority, with the candidate's smoke helper; the
+# previous release still owns the seal and both Updaters still read the same
+# spec. Memory, PID, environment and every other production guardrail stay exact.
+docker run --rm --user 0:0 --network none \
+  --env VERITY_SMOKE_MANAGED_ROOT=/var/lib/verity/updater/managed-deployment \
+  --mount "type=volume,src=$drift_deployment_volume,dst=/var/lib/verity/updater/managed-deployment" \
+  --entrypoint=node "$image" packages/server/dist/self-update-live-smoke.js \
+  fit-drift-fixture-resources "$VERITY_SMOKE_DAEMON_CPUS"
 start_drift_updater verity-smoke-drift-updater-previous "$previous_digest" \
   "$compose_dir/previous-updater.env"
 expect_drift_updater_reconciled verity-smoke-drift-updater-previous "$previous_digest" \

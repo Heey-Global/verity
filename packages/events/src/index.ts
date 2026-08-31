@@ -83,6 +83,16 @@ export {
   type SessionHandoffRequest,
 } from './session-handoff-tool.js';
 export {
+  RECENT_SESSION_MESSAGES_DEFAULT,
+  RECENT_SESSION_MESSAGES_MAX,
+  RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
+  PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
+  SESSION_PROGRESS_TOOL_DESCRIPTION,
+  recentSessionMessagesRequestSchema,
+  publishSessionProgressRequestSchema,
+  sessionProgressRequestSchema,
+} from './session-observation-tool.js';
+export {
   aggregateUsage,
   codexRateLimitReached,
   codexRateLimitWindow,
