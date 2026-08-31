@@ -327,7 +327,7 @@ describe('mobile native patch CI', () => {
   const steps = workflow.jobs['mobile-app'].steps;
 
   // scripts/patch-mobile-native-deps.mjs rewrites an installed native dependency
-  // on the EAS builder, against byte-exact anchors. This job holds the only full
+  // before the GitHub-hosted Xcode build, against byte-exact anchors. This job holds the only full
   // mobile install in CI, so it is the only place the anchors are checked against
   // the real tree before a release build finds out — which makes both the step and
   // its position load-bearing rather than incidental.
@@ -336,72 +336,87 @@ describe('mobile native patch CI', () => {
     const patch = steps.findIndex((step) =>
       step.run?.includes('npm run -w @verity/mobile-app patch:native'),
     );
-    // Before the build, not merely after the install: the job mirrors the order
-    // `eas-build-post-install` runs these in, so a reordering here is a reordering
-    // of the hook the release build runs — checked in the one place CI can see it.
+    // Before the build, not merely after the install: the release workflow uses
+    // the same order before generating the native project.
     const build = steps.findIndex((step) => step.run?.includes('npm run -w @verity/mobile build'));
     expect(install, 'the patch needs an installed dependency to check').toBeGreaterThanOrEqual(0);
     expect(patch, 'nothing else in CI runs the native patches').toBeGreaterThan(install);
     expect(build, 'this job builds the mobile data layer').toBeGreaterThan(patch);
   });
-
-  // The `.easignore` half of the same guarantee. `eas-build-post-install` runs the
-  // runner from `apps/mobile` as `../../scripts/…`, so the archive EAS uploads has
-  // to carry it: excluded, every release build dies on MODULE_NOT_FOUND in a hook,
-  // and no CI job would notice because CI runs it from a full checkout.
-  it('uploads the patch runner to the EAS builder', () => {
-    const runner = 'scripts/patch-mobile-native-deps.mjs';
-
-    // Read, not inferred: without this file EAS falls back to `.gitignore`, and a
-    // test that quietly treated a missing `.easignore` as "nothing is excluded"
-    // would assert nothing at all.
-    expect(
-      existsSync('.easignore'),
-      'without .easignore, EAS excludes by .gitignore instead and this check is ' +
-        'reading the wrong file',
-    ).toBe(true);
-    // The archive is the monorepo, not the workspace — `eas build` runs from
-    // `apps/mobile` but uploads from the repo root, which is why the root file's own
-    // patterns read `apps/*/ios`. A second one next to `eas.json` would make which
-    // file governs a question this test answers by assumption, so it may not exist.
-    expect(
-      existsSync(join('apps', 'mobile', '.easignore')),
-      'a workspace-level .easignore may shadow the root one — decide which EAS ' +
-        'reads before adding it, and point this check at that file',
-    ).toBe(false);
-
-    // Use the same mature gitignore semantics EAS documents instead of maintaining
-    // a partial glob translation here. In particular, this handles escaped
-    // metacharacters, bracket ranges, directory traversal and ordered negations.
-    const archive = ignore().add(readFileSync('.easignore', 'utf8'));
-    expect(
-      archive.ignores(runner),
-      `.easignore excludes ${runner}, so eas-build-post-install cannot run it on ` +
-        'the builder — every release build would die on MODULE_NOT_FOUND',
-    ).toBe(false);
-  });
 });
 
 describe('native iOS compile gate', () => {
-  it('delegates a non-publishing simulator build from GitHub to EAS', () => {
+  it('compiles a non-publishing simulator build on a GitHub macOS runner', () => {
     const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      on?: { pull_request?: unknown };
       jobs: Record<string, { 'runs-on': string; steps: WorkflowStep[] }>;
     };
-    const eas = parse(readFileSync('apps/mobile/.eas/workflows/verify-ios.yml', 'utf8')) as {
-      jobs: Record<string, { type: string; params: Record<string, string> }>;
-    };
     const job = github.jobs['verify-ios'];
-    expect(job?.['runs-on']).toBe('ubuntu-24.04');
+    expect(job?.['runs-on']).toBe('macos-26');
+    expect(github.on?.pull_request).toBeDefined();
     const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
-    expect(commands).toContain('eas-cli@21.0.1 workflow:run');
-    expect(commands).toContain('.eas/workflows/verify-ios.yml');
-    expect(commands).toContain('--wait');
+    expect(commands).toContain('expo prebuild --platform ios');
+    expect(commands).toContain('pod install');
+    expect(commands).toContain('xcodebuild');
+    expect(commands).toContain('CODE_SIGNING_ALLOWED=NO');
+    expect(commands).not.toContain('eas-cli');
     expect(commands).not.toMatch(/testflight|submit/iu);
-    expect(eas.jobs['build_ios_simulator']).toMatchObject({
-      type: 'build',
-      params: { platform: 'ios', profile: 'simulator' },
-    });
-    expect(JSON.stringify(eas)).not.toMatch(/testflight|submit/iu);
+  });
+
+  it('builds and uploads TestFlight releases on GitHub instead of EAS Build', () => {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { 'runs-on': string; steps: WorkflowStep[] }>;
+    };
+    const job = release.jobs['publish-mobile-native'];
+    expect(job?.['runs-on']).toBe('macos-26');
+    const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
+    expect(commands).toContain('expo prebuild --platform ios');
+    expect(commands).toContain('xcodebuild');
+    expect(commands).toContain('archive');
+    expect(commands).toContain('altool --upload-app');
+    expect(commands).not.toContain('eas-cli');
+    expect(commands.indexOf('patch:native')).toBeLessThan(commands.indexOf('expo prebuild'));
+    expect(commands).toContain('scheme=Verity');
+    expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/builds');
+    expect(commands).toContain('CURRENT_PROJECT_VERSION="$next_build"');
+    const releaseSource = readFileSync('.github/workflows/release.yml', 'utf8');
+    expect(releaseSource).toContain("grep -q '^apps/mobile/'");
+    expect(releaseSource).toContain('gh workflow run mobile-native-verify.yml');
+
+    const appConfig = readFileSync('apps/mobile/app.config.ts', 'utf8');
+    expect(appConfig).toContain("'expo-channel-name': expoUpdateChannel");
+    const prebuild = job?.steps.find((step) => step.name === 'Generate the iOS project');
+    expect(prebuild?.env?.EXPO_UPDATE_CHANNEL).toBe('testflight');
+  });
+});
+
+describe('mobile OTA promotion', () => {
+  it('stages an immutable candidate and opens a promotion PR', () => {
+    const source = readFileSync('.github/workflows/mobile-ota.yml', 'utf8');
+    expect(source).toContain('--branch "${{ steps.version.outputs.branch }}"');
+    expect(source).toContain('channel:edit staging');
+    expect(source).toContain('automation/promote-${OTA_TAG}');
+    expect(source).toContain('--state open');
+    expect(source).toContain('gh workflow run ci.yml --ref "$promotion_branch"');
+    expect(source).toContain('git push origin "refs/tags/${OTA_TAG}"');
+    expect(source).not.toContain('--channel testflight');
+    expect(source).not.toContain('gh release create');
+  });
+
+  it('moves TestFlight to the approved EAS branch without rebuilding', () => {
+    const source = readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8');
+    expect(source).toContain("github.ref == 'refs/heads/main'");
+    expect(source).toContain('paths: [apps/mobile/ota-promotion.json]');
+    expect(source).toContain('channel:edit testflight');
+    expect(source).toContain('--branch "${{ steps.candidate.outputs.branch }}"');
+    expect(source).toContain('git merge-base --is-ancestor');
+    expect(source).toContain('for _ in {1..12}');
+    expect(source).toContain('git fetch --quiet --tags origin');
+    expect(source).toContain('Reserved tag does not point at the approved candidate');
+    expect(source).toContain('refusing to move TestFlight backwards');
+    expect(source).toContain('gh release create');
+    expect(source).toContain('gh release edit');
+    expect(source).not.toContain('eas-cli@21.0.1 update');
   });
 });
 
@@ -933,10 +948,11 @@ describe('GitHub-hosted runner boundary', () => {
     expect(jobs.filter(declaresRunner).length).toBeGreaterThanOrEqual(30);
   });
 
-  it('runs every concrete job on an ephemeral GitHub-hosted runner', () => {
+  it('runs every concrete job on an approved ephemeral GitHub-hosted runner', () => {
+    const hostedImages = new Set(['ubuntu-24.04', 'macos-26']);
     const offenders = jobs
       .filter(declaresRunner)
-      .filter(({ job }) => job['runs-on'] !== 'ubuntu-24.04')
+      .filter(({ job }) => typeof job['runs-on'] !== 'string' || !hostedImages.has(job['runs-on']))
       .map(({ id }) => id);
     expect(offenders).toEqual([]);
   });

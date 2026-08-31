@@ -334,7 +334,7 @@ describe('mobile native dependency patches', () => {
 
   it('runs through a symlinked entry point instead of exiting green', () => {
     // A guard that compares paths without realpath is a silent no-op: the script
-    // does nothing, exits 0, and `eas-build-post-install` ships an unpatched build.
+    // does nothing, exits 0, and the release workflow ships an unpatched build.
     const root = makeRoot();
     const target = installCopy(
       root,
@@ -356,15 +356,12 @@ describe('mobile native dependency patches', () => {
     expect(() => isFixedUpstream('next', '4.6.0')).toThrow(/Cannot compare version/);
   });
 
-  it('keeps the EAS hook running the patch before the build', () => {
-    // The hook is the only thing that applies the patch on the builder, and the
-    // `&&` chain is what keeps a failed patch from reaching prebuild.
+  it('keeps the mobile patch entry point resolvable', () => {
     const manifest = JSON.parse(
       readFileSync(join(repoRoot, 'apps', 'mobile', 'package.json'), 'utf8'),
     ) as { scripts: Record<string, string> };
-    expect(manifest.scripts['eas-build-post-install']).toMatch(/^npm run patch:native &&/);
 
-    // The hook runs from `apps/mobile`, so the relative path it names has to
+    // The npm script runs from `apps/mobile`, so the relative path it names has to
     // resolve from there. Moving or renaming this file would otherwise leave every
     // test green and fail on the builder with MODULE_NOT_FOUND, inside a hook no
     // CI job runs from anywhere but a full checkout.
@@ -427,7 +424,7 @@ describe('mobile native dependency patches', () => {
 
   it('exits non-zero and names the cause when a patch cannot be applied', () => {
     const root = makeRoot();
-    // `eas-build-post-install` chains on `&&`, so this exit code is what keeps a
+    // The workflow shell is fail-fast, so this exit code is what keeps a
     // build that could not be patched from reaching prebuild.
     const lines: string[] = [];
     const errors: string[] = [];
