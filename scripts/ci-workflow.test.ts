@@ -631,6 +631,12 @@ describe('self-update release gate', () => {
       required: true,
       type: 'string',
     });
+    expect(workflow.on.workflow_call?.inputs?.['bootstrap-version']).toEqual({
+      description: 'Explicit one-time version allowed to create the first Server package',
+      required: false,
+      default: '',
+      type: 'string',
+    });
     expect(workflow.on.workflow_dispatch).toBeDefined();
   });
 
@@ -664,6 +670,35 @@ describe('self-update release gate', () => {
     // the text of this step would agree with a broken version of it.
   });
 
+  it('prepares a candidate-backed predecessor only for the first package bootstrap', () => {
+    const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = parsed.jobs['live-smoke']?.steps ?? [];
+    const load = steps.find(
+      (step) => step.name === 'Load the previous release into the isolated daemon',
+    );
+    const build = steps.find(
+      (step) => step.name === 'Build the Server image into the isolated daemon',
+    );
+    const bootstrap = steps.find(
+      (step) => step.name === 'Prepare the first-release bootstrap predecessor',
+    );
+    const smoke = steps.find((step) => step.name === 'Run the live self-update smoke');
+
+    expect(load?.if).toBe("env.VERITY_SMOKE_BOOTSTRAP != 'true'");
+    expect(bootstrap?.if).toBe("env.VERITY_SMOKE_BOOTSTRAP == 'true'");
+    expect(bootstrap?.run).toContain(
+      'docker tag "$VERITY_SMOKE_IMAGE" "$VERITY_SMOKE_PREVIOUS_IMAGE"',
+    );
+    expect(steps.indexOf(build as WorkflowStep)).toBeLessThan(
+      steps.indexOf(bootstrap as WorkflowStep),
+    );
+    expect(steps.indexOf(bootstrap as WorkflowStep)).toBeLessThan(
+      steps.indexOf(smoke as WorkflowStep),
+    );
+  });
+
   it('blocks every backend publish on the cutover verdict', () => {
     // The trigger above only produces a verdict; this is what makes it a gate.
     // Split across two files, so each half looks removable on its own: the gate
@@ -684,6 +719,7 @@ describe('self-update release gate', () => {
     expect(gate?.if).toBe("needs.release-please.outputs.backend-release-created == 'true'");
     expect(gate?.uses).toBe('./.github/workflows/self-update.yml');
     expect(gate?.with?.['candidate-sha']).toBe('${{ needs.release-please.outputs.backend-sha }}');
+    expect(gate?.with?.['bootstrap-version']).toBe('16.4.0');
 
     // Every job that pushes an artifact a managed deployment resolves at the
     // released version. The mobile train is deliberately absent: it carries no

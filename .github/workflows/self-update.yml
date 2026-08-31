@@ -10,6 +10,11 @@ on:
         description: Exact backend release commit to exercise
         required: true
         type: string
+      bootstrap-version:
+        description: Explicit one-time version allowed to create the first Server package
+        required: false
+        default: ''
+        type: string
   # Recovery and deliberate ad-hoc validation remain possible. A manual run
   # checks the ref selected in GitHub's workflow-dispatch UI.
   workflow_dispatch: {}
@@ -176,6 +181,7 @@ jobs:
           # through the daemon, so it needs the credential in its own hand;
           # docker/login-action only wrote it into the daemon's config.
           VERITY_GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERITY_BOOTSTRAP_VERSION: ${{ inputs.bootstrap-version }}
         run: |
           set -euo pipefail
           # This step asks the REGISTRY which Server images exist. It used to ask
@@ -322,15 +328,34 @@ jobs:
           # wrong costs a page rather than a wrong answer.
           next="/v2/${repository}/tags/list?n=1000"
           pages=0
+          bootstrap=false
           while [[ -n "$next" ]]; do
             pages=$((pages + 1))
             if (( pages > 50 )); then
               echo '::error::ghcr.io kept paginating its tag catalogue past 50 pages.' >&2
               exit 1
             fi
-            curl --fail --silent --show-error --retry 3 --dump-header "$headers" \
-              --output "$body" \
+            curl --silent --show-error --retry 3 --retry-all-errors \
+              --dump-header "$headers" --output "$body" \
               --header "Authorization: Bearer ${registry_token}" "https://ghcr.io${next}"
+            status="$(tr -d '\r' <"$headers" | awk '/^HTTP\// { code=$2 } END { print code }')"
+            if [[ "$status" == 404 && "$pages" == 1 ]]; then
+              # The authenticated registry says the package itself does not
+              # exist. This is the one valid no-predecessor state: bootstrap the
+              # first public release from the candidate built below. A 401/403,
+              # a later-page 404, or any other response remains a hard failure.
+              if [[ "$VERITY_BOOTSTRAP_VERSION" != "$under_test" ]]; then
+                echo "::error::Server package is missing and v${under_test} has no explicit bootstrap authorization." >&2
+                exit 1
+              fi
+              bootstrap=true
+              next=''
+              break
+            fi
+            if [[ "$status" != 200 ]]; then
+              echo "::error::ghcr.io tag catalogue returned HTTP ${status:-unknown}." >&2
+              exit 1
+            fi
             node -e '
               const body = require("node:fs").readFileSync(process.argv[1], "utf8");
               let parsed;
@@ -387,6 +412,12 @@ jobs:
           echo "ghcr.io lists $(wc -l <"$published" | tr -d ' ') published Server releases"
           rm -f "$published" "$headers" "$body"
           if [[ -z "$previous_tag" ]]; then
+            if [[ "$bootstrap" == true ]]; then
+              printf 'VERITY_SMOKE_BOOTSTRAP=true\n' >>"$GITHUB_ENV"
+              printf 'VERITY_SMOKE_PREVIOUS_TAG=v%s\n' "$under_test" >>"$GITHUB_ENV"
+              echo "No Server package exists yet; testing v${under_test} as the first-release bootstrap."
+              exit 0
+            fi
             echo "::error::ghcr.io publishes no Server image at or below ${under_test}." >&2
             exit 1
           fi
@@ -495,6 +526,7 @@ jobs:
           done
 
       - name: Load the previous release into the isolated daemon
+        if: env.VERITY_SMOKE_BOOTSTRAP != 'true'
         run: |
           set -euo pipefail
           docker load --input "$RUNNER_TEMP/verity-smoke-previous.tar"
@@ -565,6 +597,15 @@ jobs:
             --load \
             --tag "$VERITY_SMOKE_IMAGE" \
             .
+
+      - name: Prepare the first-release bootstrap predecessor
+        if: env.VERITY_SMOKE_BOOTSTRAP == 'true'
+        run: |
+          # There is no older public image or deployment contract to compare.
+          # Use the candidate as the behavioural baseline; the smoke still
+          # derives distinct registry digests for every cutover generation and
+          # exercises fresh installation, update, rollback and restart paths.
+          docker tag "$VERITY_SMOKE_IMAGE" "$VERITY_SMOKE_PREVIOUS_IMAGE"
 
       - name: Run the live self-update smoke
         run: >-

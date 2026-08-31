@@ -188,6 +188,8 @@ describe('self-update workflow image', () => {
         tokenBody?: string;
         tokenFails?: boolean;
         catalogueFails?: boolean;
+        catalogueMissing?: boolean;
+        bootstrapVersion?: string;
         pullFails?: { tag: string; error: string };
       } = {},
     ): Promise<{
@@ -286,8 +288,14 @@ describe('self-update workflow image', () => {
             `  exit 0\n` +
             `fi\n` +
             `if [[ -n "\${STUB_CATALOGUE_FAILS:-}" ]]; then\n` +
-            `  echo 'curl: (22) The requested URL returned error: 401' >&2\n` +
-            `  exit 22\n` +
+            `  printf 'HTTP/2 401\\r\\n\\r\\n' >"$headers"\n` +
+            `  printf '{"errors":[{"code":"UNAUTHORIZED"}]}' >"$output"\n` +
+            `  exit 0\n` +
+            `fi\n` +
+            `if [[ -n "\${STUB_CATALOGUE_MISSING:-}" ]]; then\n` +
+            `  printf 'HTTP/2 404\\r\\n\\r\\n' >"$headers"\n` +
+            `  printf '{"errors":[{"code":"NAME_UNKNOWN"}]}' >"$output"\n` +
+            `  exit 0\n` +
             `fi\n` +
             pages
               .map((_tags, index) => {
@@ -315,6 +323,8 @@ describe('self-update workflow image', () => {
           ...(parentVersion === null ? {} : { STUB_PARENT_VERSION: parentVersion }),
           ...(options.tokenFails === true ? { STUB_TOKEN_FAILS: '1' } : {}),
           ...(options.catalogueFails === true ? { STUB_CATALOGUE_FAILS: '1' } : {}),
+          ...(options.catalogueMissing === true ? { STUB_CATALOGUE_MISSING: '1' } : {}),
+          VERITY_BOOTSTRAP_VERSION: options.bootstrapVersion ?? '',
           ...(options.pullFails === undefined
             ? {}
             : { STUB_PULL_FAILS: options.pullFails.tag, STUB_PULL_ERROR: options.pullFails.error }),
@@ -412,7 +422,11 @@ describe('self-update workflow image', () => {
       });
 
       expect(code).not.toBe(0);
-      expect(out).toContain('The requested URL returned error: 401');
+      expect(out).toContain(
+        'tokenFails' in failure && failure.tokenFails === true
+          ? 'The requested URL returned error: 401'
+          : 'tag catalogue returned HTTP 401',
+      );
       // And it has to fail AS a refusal. "Nothing is published" is the reading an
       // unchecked HTTP call degrades into — an empty body parses to an empty
       // catalogue perfectly happily — and it is a lie about the registry that
@@ -420,6 +434,36 @@ describe('self-update workflow image', () => {
       // credential. Non-zero is not enough here; the reason has to survive.
       expect(out).not.toContain('publishes no Server image');
       expect(out).not.toContain('Testing candidate against');
+    });
+
+    it('bootstraps only when the authenticated registry says the package does not exist', async () => {
+      const { code, out, docker, exported } = await runStep([], {
+        underTest: '16.4.0',
+        parentVersion: '16.3.1',
+        catalogueMissing: true,
+        bootstrapVersion: '16.4.0',
+      });
+
+      expect(code, out).toBe(0);
+      expect(out).toContain('testing v16.4.0 as the first-release bootstrap');
+      expect(exported).toContain('VERITY_SMOKE_BOOTSTRAP=true');
+      expect(exported).toContain('VERITY_SMOKE_PREVIOUS_TAG=v16.4.0');
+      expect(docker).toEqual([]);
+    });
+
+    it('rejects a missing package without exact one-time bootstrap authorization', async () => {
+      for (const bootstrapVersion of ['', '16.3.1', '16.4.1']) {
+        const { code, out, exported } = await runStep([], {
+          underTest: '16.4.0',
+          parentVersion: '16.3.1',
+          catalogueMissing: true,
+          bootstrapVersion,
+        });
+
+        expect(code).toBe(1);
+        expect(out).toContain('has no explicit bootstrap authorization');
+        expect(exported).not.toContain('VERITY_SMOKE_BOOTSTRAP=true');
+      }
     });
 
     // Same reasoning one level in: a 200 that carries no token is not a token.
