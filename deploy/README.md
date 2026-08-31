@@ -50,6 +50,19 @@ Docker 25+, Compose v2, and root access through either the current account or
 `sudo`. The privileged installer deliberately uses the root Docker daemon;
 Rootless Docker is not accepted as a source for code that will execute as root.
 
+Every run starts with an aggregated host preflight and reports all missing
+requirements before pulling an image or changing installation state. To run only
+that check, or to let the bootstrap install missing `tar`, `flock`, and OpenSSL packages through
+a supported host package manager, use:
+
+```sh
+curl -fsSL https://verity.build/install.sh | bash -s -- --preflight
+curl -fsSL https://verity.build/install.sh | bash -s -- --install-missing
+```
+
+The package opt-in never installs or reconfigures Docker or Compose; those remain
+explicit host prerequisites.
+
 For a host-managed or development deployment from a checkout:
 
 ```sh
