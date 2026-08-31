@@ -633,23 +633,26 @@ wait_for_new_seal() {
 # spec gives it, reads the token the Updater published to its group, asks the
 # Updater over that socket, and compares. Prints `<state> <version> <image>`.
 #
-# The version it compares against is injected because every generation in this
-# run is built from one image and reports the `0.0.0-dev` sentinel, which the
-# comparison correctly declines to draw any conclusion from. What is under test
-# is that the seed's provenance survives a cutover intact and reaches the Server
-# — not how semantic-release stamps a build.
+# The version and immutable image it compares against are injected because the
+# probe imports the shipped client directly rather than going through main's
+# runtime wiring. Both are required for a provenance match; omitting the image
+# makes an otherwise valid seed deliberately unattributable.
 agent_seed_state() {
-  docker exec --env "VERITY_SMOKE_SERVER_VERSION=$2" "$1" node -e \
+  docker exec --env "VERITY_SMOKE_SERVER_VERSION=$2" \
+    --env "VERITY_SMOKE_SERVER_IMAGE=$3" "$1" node -e \
     "const m = await import('file:///app/packages/server/dist/self-update/server-update-controller.js');
-     const client = await m.createAgentSeedProvenanceClient(process.env.VERITY_SMOKE_SERVER_VERSION);
+     const client = await m.createAgentSeedProvenanceClient(
+       process.env.VERITY_SMOKE_SERVER_VERSION,
+       process.env.VERITY_SMOKE_SERVER_IMAGE,
+     );
      if (client === undefined) { process.stdout.write('no-control-channel - -'); process.exit(0); }
      const seed = await client.read();
      process.stdout.write([seed.state, seed.stamp?.version ?? '-', seed.stamp?.image ?? '-'].join(' '));"
 }
 
 expect_agent_seed() {
-  local container="$1" version="$2" want="$3" got=''
-  got="$(agent_seed_state "$container" "$version" || true)"
+  local container="$1" version="$2" image="$3" want="$4" got=''
+  got="$(agent_seed_state "$container" "$version" "$image" || true)"
   if [[ "$got" != "$want" ]]; then
     docker logs --tail=120 verity-smoke-handoff-relay >&2 || true
     echo "expected $container to report the agent seed as '$want', got '$got'" >&2
@@ -1238,11 +1241,11 @@ if [[ "$(docker inspect --format '{{.Image}}' "$server")" != \
   echo 'the commit did not move the Server, so the seed assertion proves nothing' >&2
   exit 1
 fi
-expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" 'unknown - -'
+expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" "$target_digest" 'unknown - -'
 
 echo '--- stage: reconcile every managed companion after the fifth-generation commit'
 node packages/server/dist/self-update-live-smoke.js companion-handoff
-expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" \
+expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" "$target_digest" \
   "matched $VERITY_SMOKE_SERVER_VERSION $target_digest"
 
 # Everything above fails a cutover the way a protocol fails: a directive that is
