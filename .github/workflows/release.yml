@@ -192,9 +192,17 @@ jobs:
               echo "::error::Could not resolve the release PR for $branch." >&2
               exit 1
             fi
+            # Release Please normally changes only these three mobile metadata
+            # files. Native source changes were compiled on their originating
+            # PRs, and the final signed device archive is built from the merged
+            # release SHA below. Keep a defensive fallback in case future
+            # release configuration starts editing another mobile file.
             changed_files="$(gh pr diff "$pr_number" --name-only)"
-            if grep -q '^apps/mobile/' <<< "$changed_files"; then
-              echo "Dispatching native iOS compile for $branch"
+            unexpected_mobile_files="$(grep '^apps/mobile/' <<< "$changed_files" \
+              | grep -Ev '^apps/mobile/(CHANGELOG\.md|app\.config\.ts|version\.txt)$' || true)"
+            if [[ -n "$unexpected_mobile_files" ]]; then
+              echo "Release PR changes native-relevant mobile files; dispatching iOS compile:"
+              echo "$unexpected_mobile_files"
               gh workflow run mobile-native-verify.yml --ref "$branch" -f ref="$branch"
             fi
           done
@@ -350,18 +358,22 @@ jobs:
           xcodebuild -workspace "$workspace" -list -json \
             | ruby -rjson -e 'schemes=JSON.parse(STDIN.read).dig("workspace", "schemes") || []; abort "missing #{ARGV[0]} scheme" unless schemes.include?(ARGV[0])' "$scheme"
 
-          asc_jwt="$(ruby -ropenssl -rjson -rbase64 -e '
-            b64 = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
-            header = b64.call({ alg: "ES256", kid: ENV.fetch("ASC_KEY_ID"), typ: "JWT" }.to_json)
-            now = Time.now.to_i
-            claims = b64.call({ iss: ENV.fetch("ASC_ISSUER_ID"), iat: now - 60, exp: now + 1200, aud: "appstoreconnect-v1" }.to_json)
-            input = "#{header}.#{claims}"
-            der = OpenSSL::PKey.read(File.read(ARGV.fetch(0))).sign(OpenSSL::Digest::SHA256.new, input)
-            r, s = OpenSSL::ASN1.decode(der).value.map(&:value)
-            raw = [r, s].map { |part| [part.to_s(16).rjust(64, "0")].pack("H*") }.join
-            print "#{input}.#{b64.call(raw)}"
-          ' "$key_path")"
+          mint_asc_jwt() {
+            ruby -ropenssl -rjson -rbase64 -e '
+              b64 = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
+              header = b64.call({ alg: "ES256", kid: ENV.fetch("ASC_KEY_ID"), typ: "JWT" }.to_json)
+              now = Time.now.to_i
+              claims = b64.call({ iss: ENV.fetch("ASC_ISSUER_ID"), iat: now - 60, exp: now + 1200, aud: "appstoreconnect-v1" }.to_json)
+              input = "#{header}.#{claims}"
+              der = OpenSSL::PKey.read(File.read(ARGV.fetch(0))).sign(OpenSSL::Digest::SHA256.new, input)
+              r, s = OpenSSL::ASN1.decode(der).value.map(&:value)
+              raw = [r, s].map { |part| [part.to_s(16).rjust(64, "0")].pack("H*") }.join
+              print "#{input}.#{b64.call(raw)}"
+            ' "$key_path"
+          }
+          asc_jwt="$(mint_asc_jwt)"
           builds_json="$(curl --fail-with-body --get \
+            --retry 3 --retry-all-errors --max-time 30 \
             --header "Authorization: Bearer $asc_jwt" \
             --data-urlencode "filter[app]=$ASC_APP_ID" \
             --data-urlencode 'sort=-uploadedDate' \
@@ -411,6 +423,54 @@ jobs:
           cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           xcrun altool --upload-app --type ios --file "$ipa" \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+          # altool success means only that Apple accepted the upload. Keep the
+          # draft GitHub release closed until App Store Connect has processed
+          # this exact build and declared it valid.
+          for attempt in {1..60}; do
+            asc_jwt="$(mint_asc_jwt)"
+            if ! uploaded_builds="$(curl --fail-with-body --get \
+              --retry 3 --retry-all-errors --max-time 30 \
+              --header "Authorization: Bearer $asc_jwt" \
+              --data-urlencode "filter[app]=$ASC_APP_ID" \
+              --data-urlencode "filter[version]=$next_build" \
+              --data-urlencode 'limit=1' \
+              https://api.appstoreconnect.apple.com/v1/builds)"; then
+              if [[ "$attempt" == 60 ]]; then
+                echo "::error::App Store Connect remained unavailable while checking build $next_build." >&2
+                exit 1
+              fi
+              echo "App Store Connect check failed transiently; retrying ($attempt/60)."
+              sleep 30
+              continue
+            fi
+            processing_state="$(ruby -rjson -e '
+              data = JSON.parse(STDIN.read).fetch("data")
+              print(data.empty? ? "MISSING" : data.first.dig("attributes", "processingState"))
+            ' <<< "$uploaded_builds")"
+            case "$processing_state" in
+              VALID)
+                echo "App Store Connect processed build $next_build successfully."
+                break
+                ;;
+              FAILED|INVALID)
+                echo "::error::App Store Connect rejected build $next_build during processing ($processing_state)." >&2
+                exit 1
+                ;;
+              MISSING|PROCESSING)
+                if [[ "$attempt" == 60 ]]; then
+                  echo "::error::Timed out waiting for App Store Connect to process build $next_build." >&2
+                  exit 1
+                fi
+                echo "Build $next_build is $processing_state; waiting for App Store Connect ($attempt/60)."
+                sleep 30
+                ;;
+              *)
+                echo "::error::Unexpected App Store Connect processing state '$processing_state'." >&2
+                exit 1
+                ;;
+            esac
+          done
 
       - name: Publish verified native GitHub release
         env:
