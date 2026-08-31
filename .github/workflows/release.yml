@@ -222,6 +222,10 @@ jobs:
     uses: ./.github/workflows/self-update.yml
     with:
       candidate-sha: ${{ needs.release-please.outputs.backend-sha }}
+      # One-time, version-bounded authorization for the first public Server
+      # package. A later missing/renamed package must fail closed rather than
+      # silently treating an established release train as a bootstrap.
+      bootstrap-version: '16.4.0'
 
   publish-mobile-native:
     # Not gated on the cutover: the native app is its own release train and
