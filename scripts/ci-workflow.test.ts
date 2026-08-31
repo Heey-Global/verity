@@ -747,6 +747,13 @@ describe('self-update release gate', () => {
 
   it('keeps maintenance bridge promises immutable and release-controlled', () => {
     const source = readFileSync('.github/workflows/release.yml', 'utf8');
+    const parsed = parse(source) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const validation = parsed.jobs['release-please']?.steps?.find(
+      (step) => step.name === 'Validate maintenance backend release',
+    );
+    expect(validation?.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(source).toContain('backend-schema-forward-max:');
     expect(source).toContain('VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}');
     expect(source).toContain('finalize-maintenance-backend:');
