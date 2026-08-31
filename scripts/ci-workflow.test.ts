@@ -392,8 +392,17 @@ describe('native iOS compile gate', () => {
     expect(commands).toContain('scheme=Verity');
     expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/builds');
     expect(commands).toContain('CURRENT_PROJECT_VERSION="$next_build"');
+    expect(commands).toContain('filter[version]=$next_build');
+    expect(commands).toContain('processingState');
+    expect(commands).toContain('--retry 3 --retry-all-errors --max-time 30');
+    expect(commands).toContain('App Store Connect check failed transiently');
+    expect(commands.indexOf('altool --upload-app')).toBeLessThan(
+      commands.indexOf('filter[version]=$next_build'),
+    );
     const releaseSource = readFileSync('.github/workflows/release.yml', 'utf8');
-    expect(releaseSource).toContain("grep -q '^apps/mobile/'");
+    expect(releaseSource).toContain(
+      '^apps/mobile/(CHANGELOG\\.md|app\\.config\\.ts|version\\.txt)$',
+    );
     expect(releaseSource).toContain('gh workflow run mobile-native-verify.yml');
     expect(releaseSource).toContain('gh workflow run gitleaks-dispatch.yml');
 
@@ -431,6 +440,11 @@ describe('mobile OTA promotion', () => {
     expect(source).toContain('gh release create');
     expect(source).toContain('gh release edit');
     expect(source).not.toContain('eas-cli@21.0.1 update');
+  });
+
+  it('does not compile the native app for an OTA promotion manifest', () => {
+    const source = readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8');
+    expect(source).toContain("'!apps/mobile/ota-promotion.json'");
   });
 });
 
