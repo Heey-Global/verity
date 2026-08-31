@@ -1,16 +1,13 @@
 name: verity-mobile-ota
 
-# Ships a patch-versioned EAS Update to the TestFlight channel on every merge to
-# main that touches the mobile bundle. This is the "always ship JS/asset changes" half of the
-# mobile release split: installed TestFlight builds pull the compatible update on
-# next launch/foreground (apps/mobile/lib/automaticUpdates.ts).
+# Publishes a patch-versioned EAS Update to an isolated staging branch on every
+# eligible merge to main, then opens a promotion PR. Merging that PR moves the
+# TestFlight channel to the exact staged branch; this workflow never exposes an
+# unapproved bundle to installed TestFlight builds.
 #
-# It NEVER builds a native binary. A new TestFlight build is produced only when you
-# deliberately run the native `deploy-testflight` EAS workflow
-# (`eas workflow:run deploy-testflight.yml`), so routine merges stop spending native
-# builds. The explicit X.Y.0 runtime guarantees that patches only reach their
-# native release line; after X.(Y+1).0 ships, older X.Y.0 installs receive no newer
-# OTA bundles.
+# It NEVER builds a native binary. Native-sensitive changes wait for the mobile
+# release PR and GitHub-hosted TestFlight build instead. The explicit X.Y.0
+# runtime guarantees that patches only reach their native release line.
 #
 # Each successful publish gets the next patch in the current native line:
 # `mobile-v1.4.0` is the TestFlight build, followed by OTA releases
@@ -32,12 +29,14 @@ on:
       - 'package-lock.json'
 
 permissions:
+  actions: write
   contents: write
+  pull-requests: write
 
 concurrency:
   # Never cancel an in-flight publish: a cancelled `eas update` can leave a
   # half-rolled-out update. Serialize back-to-back merges instead of racing them.
-  group: mobile-ota-testflight
+  group: mobile-ota-staging
   cancel-in-progress: false
 
 jobs:
@@ -52,12 +51,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect native release commit
+      - name: Detect commits owned by another mobile workflow
         id: release-kind
         shell: bash
         run: |
           set -euo pipefail
-          if ! git diff --quiet HEAD^ HEAD -- apps/mobile/version.txt; then
+          changed="$(git diff --name-only HEAD^ HEAD)"
+          if [[ "$changed" == 'apps/mobile/ota-promotion.json' ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "OTA promotion commit detected; the promotion workflow owns it."
+          elif ! git diff --quiet HEAD^ HEAD -- apps/mobile/version.txt; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Native mobile release commit detected; its TestFlight workflow owns this version."
           else
@@ -176,6 +179,7 @@ jobs:
 
           echo "version=$next_version" >> "$GITHUB_OUTPUT"
           echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "branch=staging-${next_tag}" >> "$GITHUB_OUTPUT"
           echo "Allocating OTA release $next_tag from native line $native_tag"
 
       # Stamp the exact release into a JS-only source file before Metro
@@ -186,7 +190,7 @@ jobs:
           MOBILE_RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: node scripts/stamp-mobile-build-info.mjs
 
-      - name: Publish OTA update to the testflight channel
+      - name: Publish isolated OTA staging update
         if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
         working-directory: apps/mobile
         env:
@@ -200,22 +204,88 @@ jobs:
           # The explicit X.Y.0 runtime comes from app.config.ts, so this update can
           # only reach the corresponding native TestFlight release line.
           npx eas-cli@21.0.1 update \
-            --channel testflight \
+            --branch "${{ steps.version.outputs.branch }}" \
             --platform ios \
             --message "v${{ steps.version.outputs.version }} · main@${GITHUB_SHA::7}" \
             --non-interactive
 
-      - name: Record OTA GitHub release
+      - name: Point the staging channel at the candidate
         if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
+        working-directory: apps/mobile
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OTA_TAG: ${{ steps.version.outputs.tag }}
-          OTA_VERSION: ${{ steps.version.outputs.version }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$OTA_TAG" \
-            --target "$GITHUB_SHA" \
-            --title "Mobile $OTA_VERSION (OTA)" \
-            --notes "OTA release $OTA_VERSION for the TestFlight channel, built from commit $GITHUB_SHA." \
-            --latest=false
+          if npx eas-cli@21.0.1 channel:view staging --json --non-interactive >/dev/null 2>&1; then
+            npx eas-cli@21.0.1 channel:edit staging \
+              --branch "${{ steps.version.outputs.branch }}" --non-interactive
+          else
+            npx eas-cli@21.0.1 channel:create staging \
+              --branch "${{ steps.version.outputs.branch }}" --non-interactive
+          fi
+
+      - name: Create immutable OTA promotion PR
+        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OTA_BRANCH: ${{ steps.version.outputs.branch }}
+          OTA_TAG: ${{ steps.version.outputs.tag }}
+          OTA_VERSION: ${{ steps.version.outputs.version }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          promotion_branch="automation/promote-${OTA_TAG}"
+          title="chore(mobile): promote OTA $OTA_VERSION"
+          body="Promotes the tested **$OTA_TAG** candidate from EAS branch **$OTA_BRANCH** to the TestFlight channel. Merging does not rebuild the bundle."
+          open_pr="$(gh pr list --head "$promotion_branch" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$open_pr" ]]; then
+            git fetch origin "$promotion_branch"
+            git show FETCH_HEAD:apps/mobile/ota-promotion.json > "$RUNNER_TEMP/existing-ota-promotion.json"
+            node -e '
+              const existing = require(process.env.RUNNER_TEMP + "/existing-ota-promotion.json");
+              const expected = {
+                branch: process.env.OTA_BRANCH,
+                commit: process.env.CANDIDATE_SHA,
+                tag: process.env.OTA_TAG,
+                version: process.env.OTA_VERSION,
+              };
+              if (JSON.stringify(existing) !== JSON.stringify(expected))
+                throw new Error("open promotion PR belongs to a different candidate");
+            '
+          else
+            git switch --force-create "$promotion_branch" "$GITHUB_SHA"
+            node -e '
+              const fs = require("node:fs");
+              const candidate = {
+                branch: process.env.OTA_BRANCH,
+                commit: process.env.CANDIDATE_SHA,
+                tag: process.env.OTA_TAG,
+                version: process.env.OTA_VERSION,
+              };
+              fs.writeFileSync("apps/mobile/ota-promotion.json", `${JSON.stringify(candidate, null, 2)}\n`);
+            '
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add apps/mobile/ota-promotion.json
+            git commit -m "chore(mobile): promote OTA $OTA_VERSION"
+            git push origin "HEAD:refs/heads/${promotion_branch}"
+            gh pr create --base main --head "$promotion_branch" --title "$title" --body "$body"
+          fi
+          # GITHUB_TOKEN-created commits intentionally emit no new push/PR event.
+          # Dispatch CI explicitly so the approval PR always has a current verdict.
+          gh workflow run ci.yml --ref "$promotion_branch"
+
+      # Reserve only after the approval PR and its CI run exist. This is the last
+      # action in the serialized staging workflow, so a reserved version can no
+      # longer be orphaned by a later step failure.
+      - name: Reserve immutable OTA version
+        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
+        env:
+          OTA_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag "$OTA_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/${OTA_TAG}"

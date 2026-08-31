@@ -8,6 +8,7 @@ const expoProjectId = process.env.EXPO_PROJECT_ID?.trim() || 'b38b4675-5fef-4eb5
 const officialGoogleOAuthClientId =
   '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com';
 const googleOAuthClientId = process.env.GOOGLE_AUTH_ID?.trim() || officialGoogleOAuthClientId;
+const expoUpdateChannel = process.env.EXPO_UPDATE_CHANNEL?.trim();
 const googleOAuthClientPattern = /^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/;
 
 if (!googleOAuthClientPattern.test(googleOAuthClientId)) {
@@ -17,8 +18,8 @@ if (!googleOAuthClientPattern.test(googleOAuthClientId)) {
 const googleOAuthScheme = `com.googleusercontent.apps.${googleOAuthClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`;
 
 // Expo config (SDK 57). New Arch is forced by SDK 57 (no `newArchEnabled`
-// field). EAS Update checks on launch; eas.json binds each distributed build to
-// an explicit channel, and .eas/workflows publishes compatible updates.
+// field). EAS Update checks on launch; native build workflows inject the target
+// channel and the OTA workflow publishes compatible updates.
 const config: ExpoConfig = {
   name: 'Verity',
   slug: 'verity',
@@ -40,6 +41,10 @@ const config: ExpoConfig = {
   icon: './assets/icon.png',
   updates: {
     url: `https://u.expo.dev/${expoProjectId}`,
+    // GitHub's native build does not receive an EAS build profile. Its release
+    // workflow supplies the channel explicitly; development and preview builds
+    // must not inherit the TestFlight channel.
+    ...(expoUpdateChannel ? { requestHeaders: { 'expo-channel-name': expoUpdateChannel } } : {}),
     // Let the native runtime start a non-blocking update check as early as possible
     // (fallbackToCacheTimeout=0), while the root JS gate/foreground sync actively
     // downloads + reloads compatible updates so they apply without multiple manual

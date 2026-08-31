@@ -273,11 +273,8 @@ jobs:
                   mobile_app=true
                   ;;
                 # `test` because scripts/patch-mobile-native-deps.test.ts reads the
-                # app's manifest: the EAS hook chain in it is what applies the
-                # backported native patches before prebuild, and an edit that drops
-                # `npm run patch:native &&` from it is exactly the change that must
-                # not go unchecked. Keep this narrower than the whole app so an
-                # unrelated screen edit does not pull in the full root suite.
+                # app's patch entry point. Keep this narrower than the whole app so
+                # an unrelated screen edit does not pull in the full root suite.
                 apps/mobile/package.json)
                   lint=true
                   typecheck=true
@@ -289,6 +286,14 @@ jobs:
                 # Keep this narrower than the whole app to avoid running the full
                 # suite for an unrelated screen edit.
                 apps/mobile/app.config.ts)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  mobile_app=true
+                  ;;
+                # The workflow contract suite validates this approval boundary.
+                # Its merge is intentionally also routed to the normal app checks.
+                apps/mobile/ota-promotion.json)
                   lint=true
                   typecheck=true
                   test=true

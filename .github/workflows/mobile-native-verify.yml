@@ -1,8 +1,16 @@
 name: verity-mobile-native-verify
 
-# Manual and non-publishing. GitHub orchestrates the run; Expo/EAS performs the
-# native build on its hosted iOS infrastructure. No developer Mac is involved.
+# Non-publishing. Mobile pull requests and manual refs compile on a GitHub-hosted
+# macOS runner, so native changes are tested before their release PR is merged.
 on:
+  pull_request:
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/mobile/**'
+      - 'packages/events/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/patch-mobile-native-deps.mjs'
   workflow_dispatch:
     inputs:
       ref:
@@ -20,7 +28,7 @@ concurrency:
 
 jobs:
   verify-ios:
-    runs-on: ubuntu-24.04
+    runs-on: macos-26
     timeout-minutes: 120
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -41,23 +49,29 @@ jobs:
           npm run -w @verity/mobile build
           npm run -w @verity/mobile-app typecheck
 
-      - name: Require Expo authentication
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${EXPO_TOKEN:-}" ]]; then
-            echo '::error::EXPO_TOKEN is required for the EAS native compile gate.' >&2
-            exit 1
-          fi
-
-      - name: Compile iOS in EAS Cloud
+      - name: Generate the iOS project
         working-directory: apps/mobile
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           GOOGLE_AUTH_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
-        run: >-
-          npx --yes eas-cli@21.0.1 workflow:run
-          .eas/workflows/verify-ios.yml
-          --non-interactive
-          --wait
+        run: npx expo prebuild --platform ios --no-install --clean
+
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install
+
+      - name: Compile the iOS simulator app
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          scheme=Verity
+          xcodebuild -workspace "$workspace" -list -json \
+            | ruby -rjson -e 'schemes=JSON.parse(STDIN.read).dig("workspace", "schemes") || []; abort "missing #{ARGV[0]} scheme" unless schemes.include?(ARGV[0])' "$scheme"
+          xcodebuild \
+            -workspace "$workspace" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build

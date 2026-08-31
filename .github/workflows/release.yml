@@ -185,6 +185,16 @@ jobs:
           ' | while IFS= read -r branch; do
             echo "Dispatching CI for $branch"
             gh workflow run ci.yml --ref "$branch"
+            pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
+            if [[ -z "$pr_number" ]]; then
+              echo "::error::Could not resolve the release PR for $branch." >&2
+              exit 1
+            fi
+            changed_files="$(gh pr diff "$pr_number" --name-only)"
+            if grep -q '^apps/mobile/' <<< "$changed_files"; then
+              echo "Dispatching native iOS compile for $branch"
+              gh workflow run mobile-native-verify.yml --ref "$branch" -f ref="$branch"
+            fi
           done
 
   self-update-gate:
@@ -212,7 +222,9 @@ jobs:
       always() &&
       (needs.release-please.outputs.mobile-release-created == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
-    runs-on: ubuntu-24.04
+    # Public-repository GitHub-hosted runners are free. Keep the expensive macOS
+    # allocation scoped to the native release job only.
+    runs-on: macos-26
     timeout-minutes: 120
     env:
       MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
@@ -259,23 +271,28 @@ jobs:
           git tag --force "$MOBILE_TAG" "$build_sha"
           git push --force origin "refs/tags/${MOBILE_TAG}"
 
-      # The release job must not depend on ambient Node.js
-      # installation. Install the pinned project runtime before invoking npx/EAS.
+      # The release job must not depend on the ambient Node.js installation.
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24.19.0'
 
-      - name: Require EXPO_TOKEN
+      - name: Require App Store Connect credentials
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${EXPO_TOKEN:-}" ]]; then
-            echo "::error::EXPO_TOKEN secret is required to start the native TestFlight release." >&2
-            exit 1
-          fi
+          for name in ASC_ISSUER_ID ASC_KEY_ID ASC_KEY_P8 ASC_APP_ID APPLE_TEAM_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required for the native TestFlight release." >&2
+              exit 1
+            fi
+          done
 
       - name: Require Google Drive OAuth client
         env:
@@ -288,12 +305,110 @@ jobs:
             exit 1
           fi
 
+      - name: Install mobile dependencies
+        run: npm ci
+
+      - name: Prepare mobile sources
+        run: |
+          npm run -w @verity/mobile-app patch:native
+          npm run -w @verity/mobile build
+
+      - name: Generate the iOS project
+        working-directory: apps/mobile
+        env:
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+          EXPO_UPDATE_CHANNEL: testflight
+        run: npx expo prebuild --platform ios --no-install --clean
+
+      - name: Install CocoaPods
+        working-directory: apps/mobile/ios
+        run: pod install
+
       - name: Build and upload native TestFlight release
         working-directory: apps/mobile
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-        run: npx --yes eas-cli@21.0.1 workflow:run .eas/workflows/deploy-testflight.yml --non-interactive --wait
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_dir="$RUNNER_TEMP/app-store-connect"
+          key_path="$key_dir/AuthKey_${ASC_KEY_ID}.p8"
+          archive_path="$RUNNER_TEMP/Verity.xcarchive"
+          export_path="$RUNNER_TEMP/verity-export"
+          mkdir -p "$key_dir" "$export_path"
+          printf '%s' "$ASC_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+
+          workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          scheme=Verity
+          xcodebuild -workspace "$workspace" -list -json \
+            | ruby -rjson -e 'schemes=JSON.parse(STDIN.read).dig("workspace", "schemes") || []; abort "missing #{ARGV[0]} scheme" unless schemes.include?(ARGV[0])' "$scheme"
+
+          asc_jwt="$(ruby -ropenssl -rjson -rbase64 -e '
+            b64 = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
+            header = b64.call({ alg: "ES256", kid: ENV.fetch("ASC_KEY_ID"), typ: "JWT" }.to_json)
+            now = Time.now.to_i
+            claims = b64.call({ iss: ENV.fetch("ASC_ISSUER_ID"), iat: now - 60, exp: now + 1200, aud: "appstoreconnect-v1" }.to_json)
+            input = "#{header}.#{claims}"
+            der = OpenSSL::PKey.read(File.read(ARGV.fetch(0))).sign(OpenSSL::Digest::SHA256.new, input)
+            r, s = OpenSSL::ASN1.decode(der).value.map(&:value)
+            raw = [r, s].map { |part| [part.to_s(16).rjust(64, "0")].pack("H*") }.join
+            print "#{input}.#{b64.call(raw)}"
+          ' "$key_path")"
+          builds_json="$(curl --fail-with-body --get \
+            --header "Authorization: Bearer $asc_jwt" \
+            --data-urlencode "filter[app]=$ASC_APP_ID" \
+            --data-urlencode 'sort=-uploadedDate' \
+            --data-urlencode 'limit=1' \
+            https://api.appstoreconnect.apple.com/v1/builds)"
+          latest_build="$(ruby -rjson -e 'data=JSON.parse(STDIN.read).fetch("data"); puts(data.empty? ? 0 : Integer(data.first.dig("attributes", "version")))' <<< "$builds_json")"
+          next_build="$((latest_build + 1))"
+          echo "Using App Store build number $next_build (latest is $latest_build)."
+          auth=(
+            -allowProvisioningUpdates
+            -authenticationKeyPath "$key_path"
+            -authenticationKeyID "$ASC_KEY_ID"
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          )
+          xcodebuild \
+            -workspace "$workspace" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$archive_path" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            CURRENT_PROJECT_VERSION="$next_build" \
+            "${auth[@]}" \
+            archive
+
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>destination</key><string>export</string>
+            <key>method</key><string>app-store-connect</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$archive_path" \
+            -exportPath "$export_path" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            "${auth[@]}"
+
+          ipa="$(find "$export_path" -maxdepth 1 -name '*.ipa' -print -quit)"
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          xcrun altool --upload-app --type ios --file "$ipa" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 
       - name: Publish verified native GitHub release
         env:
