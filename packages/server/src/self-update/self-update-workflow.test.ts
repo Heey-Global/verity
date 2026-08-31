@@ -109,10 +109,10 @@ describe('self-update workflow image', () => {
     expect(
       invocation.slice(0, /^ {6}- (?:name|uses):/m.exec(invocation.slice(1))?.index ?? undefined),
     ).toContain(
-      'deploy/bin/verity-self-update-live-smoke\n' +
-        '          "$VERITY_SMOKE_IMAGE"\n' +
-        '          "$VERITY_SMOKE_PREVIOUS_IMAGE"\n' +
-        '          "$VERITY_SMOKE_PREVIOUS_TAG"',
+      'deploy/bin/verity-self-update-live-smoke \\\n' +
+        '            "$VERITY_SMOKE_IMAGE" \\\n' +
+        '            "$VERITY_SMOKE_PREVIOUS_IMAGE" \\\n' +
+        '            "$VERITY_SMOKE_PREVIOUS_TAG"',
     );
   });
 

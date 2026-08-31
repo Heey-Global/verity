@@ -699,6 +699,27 @@ describe('self-update release gate', () => {
     );
   });
 
+  it('provides the live smoke with a fresh masked database password', () => {
+    const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const smoke = parsed.jobs['live-smoke']?.steps?.find(
+      (step) => step.name === 'Run the live self-update smoke',
+    );
+    const run = smoke?.run ?? '';
+
+    const generate = run.indexOf('postgres_password="$(openssl rand -hex 32)"');
+    const mask = run.indexOf('echo "::add-mask::$postgres_password"');
+    const exportPassword = run.indexOf('export VERITY_POSTGRES_PASSWORD="$postgres_password"');
+    const invoke = run.indexOf('deploy/bin/verity-self-update-live-smoke');
+
+    expect(generate).toBeGreaterThanOrEqual(0);
+    expect(mask).toBeGreaterThan(generate);
+    expect(exportPassword).toBeGreaterThan(mask);
+    expect(invoke).toBeGreaterThan(exportPassword);
+    expect(run).not.toMatch(/VERITY_POSTGRES_PASSWORD=['"][0-9a-f]{64}['"]/);
+  });
+
   it('blocks every backend publish on the cutover verdict', () => {
     // The trigger above only produces a verdict; this is what makes it a gate.
     // Split across two files, so each half looks removable on its own: the gate
