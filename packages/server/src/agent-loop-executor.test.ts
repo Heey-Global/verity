@@ -98,6 +98,19 @@ describe('Agent Loop executor', () => {
     expect(dispatched).not.toContain(`\n\n${attack}`);
   });
 
+  it('rejects an empty structured stdout prompt before adding the envelope', async () => {
+    const { executor, dispatchTurnWhenIdle } = setup({
+      exitCode: 0,
+      stdout: JSON.stringify({ spawn: true, prompt: '  \n ' }),
+    });
+
+    await expect(executor.execute(loop, project)).resolves.toMatchObject({
+      outcome: 'error',
+      detail: 'Spawn signal needs a prompt',
+    });
+    expect(dispatchTurnWhenIdle).not.toHaveBeenCalled();
+  });
+
   it('rejects an unsupported model supplied by script output', async () => {
     const dispatchTurnWhenIdle = vi.fn(async () => ({ accepted: true }));
     const executor = createAgentLoopExecutor({

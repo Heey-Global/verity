@@ -16,7 +16,7 @@ export function appendExternalPromptData(
 ): string {
   const normalizedSource = source.trim();
   if (normalizedSource.length === 0) throw new Error('external prompt data needs a source');
-  if (/[\r\n]/u.test(normalizedSource))
+  if (/[\n\r\u2028\u2029]/u.test(normalizedSource))
     throw new Error('external prompt data source must fit on one line');
   const serialized = JSON.stringify(data) ?? 'null';
 

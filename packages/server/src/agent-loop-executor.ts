@@ -105,6 +105,9 @@ export function createAgentLoopExecutor(deps: AgentLoopExecutorDeps): AgentLoopE
         }
         if (!shouldAct) return finish('ok', result.exitCode, null);
 
+        if (signal.prompt !== undefined && signal.prompt.trim().length === 0) {
+          return finish('error', result.exitCode, 'Spawn signal needs a prompt');
+        }
         const prompt =
           signal.prompt === undefined
             ? loop.reactionPrompt
