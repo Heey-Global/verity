@@ -2459,7 +2459,7 @@ const mergePullRequestBody = z.object({
   number: z.number().int().positive(),
 });
 
-function buildLocalMergeDisplayPrompt(_branch: string, _base: string): string {
+function buildLocalMergeDisplayPrompt(): string {
   // This durable transcript text may later be replayed as a model prompt. Keep
   // Git-controlled ref names out of the operator-authored prompt channel.
   return 'Merged local branch into its base';
@@ -11160,7 +11160,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // moment the reset releases it — never before the worktree is settled.
           await conductor
             .dispatchTurn(id, buildLocalMergedPrompt(branch, base, note), undefined, {
-              displayPrompt: buildLocalMergeDisplayPrompt(branch, base),
+              displayPrompt: buildLocalMergeDisplayPrompt(),
             })
             .catch(() => undefined);
         })

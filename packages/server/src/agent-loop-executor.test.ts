@@ -39,9 +39,12 @@ function setup(result: {
   timedOut?: boolean;
 }) {
   const appendNotice = vi.fn(async () => undefined);
-  const dispatchTurnWhenIdle = vi.fn(
-    async (_sessionId: string, _prompt: string, _model?: string) => ({ accepted: true }),
-  );
+  const dispatchTurnWhenIdle = vi.fn(async (sessionId: string, prompt: string, model?: string) => {
+    void sessionId;
+    void prompt;
+    void model;
+    return { accepted: true };
+  });
   const executor = createAgentLoopExecutor({
     ensureSession: vi.fn(async () => session),
     runScript: vi.fn(async () => ({ stderr: '', timedOut: false, ...result })),
