@@ -1,4 +1,5 @@
 import type { AgentLoopRecord, ProjectRecord, SessionRecord } from '@verity/store';
+import { appendExternalPromptData } from '@verity/events';
 
 interface AgentLoopScriptResult {
   exitCode: number | null;
@@ -104,7 +105,14 @@ export function createAgentLoopExecutor(deps: AgentLoopExecutorDeps): AgentLoopE
         }
         if (!shouldAct) return finish('ok', result.exitCode, null);
 
-        const prompt = signal.prompt ?? loop.reactionPrompt;
+        const prompt =
+          signal.prompt === undefined
+            ? loop.reactionPrompt
+            : appendExternalPromptData(
+                'Evaluate the Agent Loop finding and take the smallest appropriate action for this repository.',
+                `Agent Loop script ${loop.id}`,
+                { requestedAction: signal.prompt },
+              );
         if (!prompt?.trim()) {
           return finish('error', result.exitCode, 'Spawn signal needs a prompt');
         }
