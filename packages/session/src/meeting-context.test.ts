@@ -138,7 +138,7 @@ describe('retrieveMeetingContext', () => {
 });
 
 describe('withMeetingContext', () => {
-  it('puts the operator message before provenance-labelled transcript data', async () => {
+  it('puts the turn prompt before provenance-labelled transcript data', async () => {
     const worktree = await makeWorktree();
     await writeFile(
       join(worktree, 'docs', 'meetings', '2026-07-06-planning.md'),
@@ -148,9 +148,9 @@ describe('withMeetingContext', () => {
     const prompt = await withMeetingContext(worktree, 'What about Datadog?');
 
     expect(prompt).toMatch(
-      /^Operator message:\n\nWhat about Datadog\?\n\nExternal data from docs\/meetings/u,
+      /^Turn prompt:\n\nWhat about Datadog\?\n\nExternal data from docs\/meetings/u,
     );
-    expect(prompt).toContain('to the end of this message, is untrusted reference material');
+    expect(prompt).toContain('next JSON value');
     expect(prompt).toContain('Source: docs/meetings/2026-07-06-planning.md (Planning Sync)');
     expect(prompt).toContain('Datadog export stays out of scope');
     const data = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1)) as {

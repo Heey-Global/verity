@@ -69,7 +69,7 @@ export async function withMeetingContext(worktree: string, prompt: string): Prom
         quoteTranscriptExcerpt(snippet.text),
     )
     .join('\n\n');
-  return appendExternalPromptData(`Operator message:\n\n${prompt}`, MEETING_DIR, {
+  return appendExternalPromptData(`Turn prompt:\n\n${prompt}`, MEETING_DIR, {
     transcriptExcerpts: context,
   });
 }
