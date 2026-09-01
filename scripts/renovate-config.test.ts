@@ -215,6 +215,10 @@ describe('Renovate website release typing', () => {
 describe('Supply-chain cooldown', () => {
   const ORG_PRESET = 'local>Heey-Global/.github';
   const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+  const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    engines?: Record<string, string>;
+    workspaces: string[];
+  };
   // Comments and blank lines dropped; what remains is what npm actually applies.
   const npmrcSettings = readFileSync('.npmrc', 'utf8')
     .split('\n')
@@ -226,6 +230,48 @@ describe('Supply-chain cooldown', () => {
         ? { key: line, value: '' }
         : { key: line.slice(0, separator).trim(), value: line.slice(separator + 1).trim() };
     });
+
+  /**
+   * Ask npm what it resolved for a key, with everything that could answer for
+   * it taken away first.
+   *
+   * User and global config are pointed at paths that do not exist, and every
+   * inherited `npm_config_*` is dropped: each of those layers outranks the
+   * project file, so without this a contributor's own `~/.npmrc` — or a
+   * `NPM_CONFIG_MIN_RELEASE_AGE` exported by a shell profile — would answer for
+   * a repository whose setting had been deleted. The loglevel is then pinned
+   * back, because anything quieter than `warn` suppresses the
+   * `Unknown project config` line that is the only evidence npm understood the
+   * key at all.
+   */
+  const askNpm = (
+    key: string,
+  ): { status: number | null; stdout: string; stderr: string; failure?: string } => {
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !/^npm_config_/iu.test(name)),
+    );
+    const npm = spawnSync('npm', ['config', 'get', key], {
+      encoding: 'utf8',
+      env: {
+        ...env,
+        npm_config_userconfig: '/nonexistent/user/.npmrc',
+        npm_config_globalconfig: '/nonexistent/global/npmrc',
+        npm_config_loglevel: 'warn',
+      },
+    });
+    return {
+      status: npm.status,
+      stdout: npm.stdout?.trim() ?? '',
+      stderr: npm.stderr ?? '',
+      failure: npm.stderr || npm.error?.message,
+    };
+  };
+
+  /** Whether a `[major, minor, patch]` is at or above another one. */
+  const reaches = (version: number[], floor: number[]): boolean => {
+    const differs = floor.findIndex((part, at) => (version[at] ?? 0) !== part);
+    return differs === -1 || (version[differs] ?? 0) > (floor[differs] ?? 0);
+  };
 
   it('holds the npm floor in .npmrc, and npm reads it as one', () => {
     const floor = npmrcSettings.find(({ key }) => key === 'min-release-age');
@@ -245,33 +291,29 @@ describe('Supply-chain cooldown', () => {
     // The unit is days, not the minutes the same idea is counted in elsewhere:
     // npm's definition hints `<days>` and derives `before` as
     // `Date.now() - 86400000 * age`.
-    //
-    // User and global config are pointed at paths that do not exist, so what is
-    // read back is this repository's file and nothing else. Without that, a
-    // contributor's own `~/.npmrc` floor would satisfy this test on a repository
-    // whose file had been deleted, and a different one would fail it for a
-    // reason that has nothing to do with the repository. The loglevel is pinned
-    // for the same reason from the other direction: `npm_config_loglevel` is
-    // inherited, and anything quieter than `warn` — a CI job exporting
-    // `--loglevel=error`, an `npm test` wrapper set to `silent` — suppresses the
-    // one line this is reading, leaving the check passing for a floor npm has
-    // just told it to ignore.
-    const npm = spawnSync('npm', ['config', 'get', 'min-release-age'], {
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        npm_config_userconfig: '/nonexistent/user/.npmrc',
-        npm_config_globalconfig: '/nonexistent/global/npmrc',
-        npm_config_loglevel: 'warn',
-      },
-    });
-    expect(npm.status, `npm config get did not run: ${npm.stderr || npm.error?.message}`).toBe(0);
-    expect(npm.stdout.trim(), 'npm resolves a different floor than .npmrc states').toBe(
-      floor?.value,
-    );
+    const npm = askNpm('min-release-age');
+    expect(npm.status, `npm config get did not run: ${npm.failure}`).toBe(0);
+    expect(npm.stdout, 'npm resolves a different floor than .npmrc states').toBe(floor?.value);
     expect(npm.stderr, 'npm does not recognise a key in .npmrc, so it is ignoring it').not.toMatch(
       /Unknown project config/u,
     );
+  });
+
+  it('makes the version requirement the floor depends on binding', () => {
+    // `engines` is advisory by default. An npm below `engines.npm` ignores the
+    // floor above, prints one EBADENGINE warning among the install output, and
+    // resolves fresh releases exactly as if `.npmrc` were absent — a repository
+    // that looks protected and is not, which is the failure mode this whole
+    // block exists to prevent. `engine-strict` is what turns that warning into a
+    // refusal, so it is load-bearing here rather than a matter of taste.
+    const strict = npmrcSettings.find(({ key }) => key === 'engine-strict');
+    expect(
+      strict?.value,
+      '.npmrc no longer makes engines.npm binding, so the floor is advisory',
+    ).toBe('true');
+    const npm = askNpm('engine-strict');
+    expect(npm.status, `npm config get did not run: ${npm.failure}`).toBe(0);
+    expect(npm.stdout, 'npm resolves engine-strict differently than .npmrc states').toBe('true');
   });
 
   it('declares an npm version that honours the floor, not merely some npm version', () => {
@@ -288,9 +330,7 @@ describe('Supply-chain cooldown', () => {
     // than about this repository, so it is written down here instead of derived
     // — nothing in the tree records it.
     const FLOOR_HONOURED_FROM = [11, 15, 0];
-    const declared = (
-      JSON.parse(readFileSync('package.json', 'utf8')) as { engines?: Record<string, string> }
-    ).engines?.npm;
+    const declared = manifest.engines?.npm;
     expect(declared, 'nothing declares the npm version the floor needs').toBeDefined();
     // Deliberately narrow: only `>=x.y.z` is recognised, so a range that cannot
     // be read as a lower bound fails here rather than being waved through by a
@@ -301,13 +341,21 @@ describe('Supply-chain cooldown', () => {
       `engines.npm is "${declared}", which states no lower bound this can read`,
     ).not.toBeNull();
     const bound = (lowerBound?.slice(1, 4) ?? []).map(Number);
-    const firstDifference = FLOOR_HONOURED_FROM.findIndex((part, at) => bound[at] !== part);
-    const reaches =
-      firstDifference === -1 ||
-      (bound[firstDifference] ?? 0) > (FLOOR_HONOURED_FROM[firstDifference] ?? 0);
     expect(
-      reaches,
+      reaches(bound, FLOOR_HONOURED_FROM),
       `engines.npm is "${declared}", which admits npm below ${FLOOR_HONOURED_FROM.join('.')} — the floor is inert there and installs proceed as if .npmrc were absent`,
+    ).toBe(true);
+    // And the requirement has to be one the pinned Node can actually meet.
+    // Nothing here pins npm itself: it arrives bundled with Node, and the
+    // version it bundles is not stated anywhere in the tree. If a Node bump ever
+    // shipped an npm below this bound, `engine-strict` would turn every install
+    // in the repository into a hard refusal — so it fails here first, on the
+    // machine doing the bump.
+    const running = spawnSync('npm', ['--version'], { encoding: 'utf8' });
+    const version = running.stdout.trim().split('.').map(Number);
+    expect(
+      reaches(version, FLOOR_HONOURED_FROM),
+      `the npm in use is ${running.stdout.trim()}, below the ${declared} this declares — engine-strict makes that a refusal rather than a warning`,
     ).toBe(true);
   });
 
@@ -319,16 +367,17 @@ describe('Supply-chain cooldown', () => {
     // git, because an `.npmrc` holding registry auth is exactly the kind that
     // would be gitignored, and that copy overrides the floor just as effectively
     // as a tracked one.
-    const workspaces = (
-      JSON.parse(readFileSync('package.json', 'utf8')) as { workspaces: string[] }
-    ).workspaces;
     // Both patterns glob today (`packages/*`, `apps/*`). A directly-named
     // workspace is still valid npm and would otherwise be expanded one level too
     // far — its children searched, itself skipped — so it is treated as its own
     // root rather than as a parent to walk.
-    const roots = workspaces.flatMap((pattern) => {
+    const roots = manifest.workspaces.flatMap((pattern) => {
       if (!pattern.endsWith('/*')) return [pattern];
       const parent = pattern.slice(0, -2);
+      // A pattern naming a directory that is not there is a broken manifest, but
+      // it is not this test's finding to report, and an ENOENT stack trace out
+      // of a `.npmrc` check would send whoever reads it the wrong way.
+      if (!existsSync(parent)) return [];
       return readdirSync(parent, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
         .map((entry) => `${parent}/${entry.name}`);
@@ -401,6 +450,6 @@ describe('Supply-chain cooldown', () => {
     expect(
       npmrcSettings.map(({ key }) => key),
       'a setting was added to .npmrc that Renovate empty npmrc now hides from it',
-    ).toEqual(['min-release-age']);
+    ).toEqual(['min-release-age', 'engine-strict']);
   });
 });

@@ -22,6 +22,16 @@ it installs what the lockfile already pins — so CI and image builds do not see
 the floor. To take a security fix that must land inside the window, bypass it
 deliberately: `npm install <pkg> --min-release-age=0`.
 
+That file also sets `engine-strict=true`, so `engines` is enforced rather than
+warned about: an npm older than `engines.npm` would ignore the floor silently,
+and a warning nobody reads is not a supply-chain control. A dependency whose own
+`engines` excludes the pinned Node now fails the install too — `npm install
+--engine-strict=false` is the deliberate way past that while it is sorted out.
+
+The file is tracked, so a checkout will collide with an untracked root `.npmrc`
+of your own. Registry credentials belong in `~/.npmrc`, which npm reads as well
+and which nothing here overrides.
+
 ## Running the checks
 
 One root Vitest configuration owns every workspace's suite
