@@ -7,7 +7,8 @@ interface RenovateConfig {
   extends?: string[];
   semanticCommits?: string;
   ignorePaths?: string[];
-  ignoreNpmrcFile?: boolean;
+  npmrc?: string;
+  npmrcMerge?: boolean;
   enabledManagers?: string[];
   customManagers: Array<{
     description?: string;
@@ -249,13 +250,19 @@ describe('Supply-chain cooldown', () => {
     // read back is this repository's file and nothing else. Without that, a
     // contributor's own `~/.npmrc` floor would satisfy this test on a repository
     // whose file had been deleted, and a different one would fail it for a
-    // reason that has nothing to do with the repository.
+    // reason that has nothing to do with the repository. The loglevel is pinned
+    // for the same reason from the other direction: `npm_config_loglevel` is
+    // inherited, and anything quieter than `warn` — a CI job exporting
+    // `--loglevel=error`, an `npm test` wrapper set to `silent` — suppresses the
+    // one line this is reading, leaving the check passing for a floor npm has
+    // just told it to ignore.
     const npm = spawnSync('npm', ['config', 'get', 'min-release-age'], {
       encoding: 'utf8',
       env: {
         ...process.env,
         npm_config_userconfig: '/nonexistent/user/.npmrc',
         npm_config_globalconfig: '/nonexistent/global/npmrc',
+        npm_config_loglevel: 'warn',
       },
     });
     expect(npm.status, `npm config get did not run: ${npm.stderr || npm.error?.message}`).toBe(0);
@@ -267,31 +274,61 @@ describe('Supply-chain cooldown', () => {
     );
   });
 
-  it('declares the npm version that understands the floor', () => {
+  it('declares an npm version that honours the floor, not merely some npm version', () => {
     // Below npm 11.15.0 the key is either unknown or does not survive being read
     // from an `.npmrc` (it was added in 11.10.0 and the npmrc path was fixed in
     // 11.15.0). Either way npm only warns, so on an older npm the floor is
     // inert and everything still installs — which is the whole failure mode this
     // suite exists for, one layer below the file. `engines` is what states the
     // requirement to anyone whose npm did not come from the pinned Node.
-    const engines = (
+    //
+    // Asserting the range and not just its presence: a `>=9` inherited from
+    // whatever the repository last cared about is present, plausible, and admits
+    // every npm the floor does nothing on. 11.15.0 is knowledge about npm rather
+    // than about this repository, so it is written down here instead of derived
+    // — nothing in the tree records it.
+    const FLOOR_HONOURED_FROM = [11, 15, 0];
+    const declared = (
       JSON.parse(readFileSync('package.json', 'utf8')) as { engines?: Record<string, string> }
-    ).engines;
-    expect(engines?.npm, 'nothing declares the npm version the floor needs').toBeDefined();
+    ).engines?.npm;
+    expect(declared, 'nothing declares the npm version the floor needs').toBeDefined();
+    // Deliberately narrow: only `>=x.y.z` is recognised, so a range that cannot
+    // be read as a lower bound fails here rather than being waved through by a
+    // parse that guessed. Widen it when a real need for another form turns up.
+    const lowerBound = /^>=(\d+)\.(\d+)\.(\d+)$/u.exec(declared ?? '');
+    expect(
+      lowerBound,
+      `engines.npm is "${declared}", which states no lower bound this can read`,
+    ).not.toBeNull();
+    const bound = (lowerBound?.slice(1, 4) ?? []).map(Number);
+    const firstDifference = FLOOR_HONOURED_FROM.findIndex((part, at) => bound[at] !== part);
+    const reaches =
+      firstDifference === -1 ||
+      (bound[firstDifference] ?? 0) > (FLOOR_HONOURED_FROM[firstDifference] ?? 0);
+    expect(
+      reaches,
+      `engines.npm is "${declared}", which admits npm below ${FLOOR_HONOURED_FROM.join('.')} — the floor is inert there and installs proceed as if .npmrc were absent`,
+    ).toBe(true);
   });
 
   it('is the only .npmrc npm would read', () => {
     // npm reads the `.npmrc` of the project root nearest the directory it runs
     // in, so a file in a workspace would override this floor for anything
-    // installed from there — and `ignoreNpmrcFile` would hide it from Renovate
-    // as well. Checked on disk rather than through git, because an `.npmrc`
-    // holding registry auth is exactly the kind that would be gitignored, and
-    // that copy overrides the floor just as effectively as a tracked one.
+    // installed from there — and Renovate's empty `npmrc` would override it
+    // there too, in the opposite direction. Checked on disk rather than through
+    // git, because an `.npmrc` holding registry auth is exactly the kind that
+    // would be gitignored, and that copy overrides the floor just as effectively
+    // as a tracked one.
     const workspaces = (
       JSON.parse(readFileSync('package.json', 'utf8')) as { workspaces: string[] }
     ).workspaces;
+    // Both patterns glob today (`packages/*`, `apps/*`). A directly-named
+    // workspace is still valid npm and would otherwise be expanded one level too
+    // far — its children searched, itself skipped — so it is treated as its own
+    // root rather than as a parent to walk.
     const roots = workspaces.flatMap((pattern) => {
-      const parent = pattern.replace(/\/\*$/u, '');
+      if (!pattern.endsWith('/*')) return [pattern];
+      const parent = pattern.slice(0, -2);
       return readdirSync(parent, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
         .map((entry) => `${parent}/${entry.name}`);
@@ -331,19 +368,31 @@ describe('Supply-chain cooldown', () => {
 
   it('keeps the npm floor out of Renovate own lockfile updates', () => {
     // Renovate runs npm to refresh the lockfile and reads this `.npmrc` while
-    // doing it. Left unignored, the floor would apply to Renovate's resolution
+    // doing it. Left in place, the floor would apply to Renovate's resolution
     // too and quietly outrank `vulnerabilityAlerts.minimumReleaseAge: 0 days` —
     // blocking exactly the same-day security bumps the fast-track exists for.
     // Nothing fails; the fast-track just stops being fast.
+    //
+    // A defined `npmrc` is what makes Renovate override the repository file, and
+    // an empty one overrides it with nothing. Not `ignoreNpmrcFile: true`, which
+    // Renovate dropped in v25 and now only honours through a deprecation shim
+    // that rewrites it to exactly this — and which, being deprecated, earns a
+    // "Migrate config" PR rather than doing its job quietly.
+    expect(config.npmrc, 'the npm floor would override the vulnerability fast-track').toBe('');
+    // The override only happens because `npmrcMerge` is false. Set to true, the
+    // config value is PREPENDED to the repository file instead of replacing it,
+    // so the floor comes back — with the config still reading as though the file
+    // were being ignored.
     expect(
-      config.ignoreNpmrcFile,
-      'the npm floor would override the vulnerability fast-track',
-    ).toBe(true);
+      config.npmrcMerge ?? false,
+      'npmrcMerge prepends instead of overriding, so the floor applies to Renovate after all',
+    ).toBe(false);
   });
 
   it('carries nothing in .npmrc that Renovate would need', () => {
-    // `ignoreNpmrcFile` discards the whole file, not the one setting it was
-    // added for. A registry, a scope mapping or an auth line added here later
+    // The empty `npmrc` in renovate.json replaces the whole file, not the one
+    // setting it was added for. A registry, a scope mapping or an auth line
+    // added here later
     // would be silently invisible to Renovate's npm runs, and the symptom —
     // lockfile updates resolving against the wrong registry — points nowhere
     // near this file. Deliberately exact rather than a deny-list of the risky
@@ -351,7 +400,7 @@ describe('Supply-chain cooldown', () => {
     // is cheaper than deciding after the fact which keys Renovate needed.
     expect(
       npmrcSettings.map(({ key }) => key),
-      'a setting was added to .npmrc that ignoreNpmrcFile now hides from Renovate',
+      'a setting was added to .npmrc that Renovate empty npmrc now hides from it',
     ).toEqual(['min-release-age']);
   });
 });
