@@ -600,9 +600,24 @@ jobs:
             lint_batched "(non-package files)" "${rest[@]}"
           fi
       - run: npm run format
-      # Export-only by design. Dependency and entry-file discovery need more
-      # runtime knowledge than this static lane has, while unused exports are a
-      # closed TypeScript graph and can fail deterministically here.
+
+  knip:
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+          # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
+      # Knip analyzes the whole monorepo, so install every workspace. Its parser
+      # has a platform-specific optional binding, which rules out the lint lane's
+      # deliberately narrow `--omit=optional` install. No lifecycle script is
+      # needed for static export analysis.
+      - run: npm ci --ignore-scripts
       - run: npm run knip
 
   typecheck:
@@ -1358,6 +1373,7 @@ jobs:
         changes,
         public-snapshot,
         lint,
+        knip,
         typecheck,
         test,
         installer,
@@ -1403,6 +1419,7 @@ jobs:
           require_success changes "${{ needs.changes.result }}"
           require_success public-snapshot "${{ needs.public-snapshot.result }}"
           require_when_changed lint "${{ needs.lint.result }}" "${{ needs.changes.outputs.lint }}"
+          require_when_changed knip "${{ needs.knip.result }}" "${{ needs.changes.outputs.lint }}"
           require_when_changed agent-seed-drift "${{ needs.agent-seed-drift.result }}" "${{ needs.changes.outputs.agent_seed_drift }}"
           require_when_changed typecheck "${{ needs.typecheck.result }}" "${{ needs.changes.outputs.typecheck }}"
           require_when_changed test "${{ needs.test.result }}" "${{ needs.changes.outputs.test }}"
