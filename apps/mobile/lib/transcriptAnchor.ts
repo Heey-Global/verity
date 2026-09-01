@@ -99,18 +99,18 @@ export function rowMatchesAnchor(row: Row, anchor: ScrollAnchor): boolean {
   return anchor.rowKey !== null && rowKey(row) === anchor.rowKey;
 }
 
-export function anchorSeq(anchor: ScrollAnchor): number | null {
+function anchorSeq(anchor: ScrollAnchor): number | null {
   if (anchor.messageId !== null) return messageSeq(anchor.messageId);
   return anchor.rowKey !== null ? messageSeq(anchor.rowKey) : null;
 }
 
-export function anchorIsAgentText(anchor: ScrollAnchor): boolean {
+function anchorIsAgentText(anchor: ScrollAnchor): boolean {
   return (
     anchor.messageId?.startsWith('text-') === true || anchor.rowKey?.startsWith('text-') === true
   );
 }
 
-export function rowSeq(row: Row): number | null {
+function rowSeq(row: Row): number | null {
   return messageSeq(anchorMessageId(row) ?? rowKey(row));
 }
 
@@ -130,7 +130,7 @@ export function nextNewerTopLevelSeq(rows: Row[], index: number, order: RowOrder
   return null;
 }
 
-export function rowMatchesAnchorAt(
+function rowMatchesAnchorAt(
   rows: Row[],
   index: number,
   anchor: ScrollAnchor,

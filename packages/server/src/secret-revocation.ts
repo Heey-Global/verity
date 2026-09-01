@@ -6,7 +6,7 @@ import {
 import type { Database } from '@verity/store';
 import type { Kysely } from 'kysely';
 
-export type SecretRevocationSubject =
+type SecretRevocationSubject =
   | { kind: 'project'; id: string; version: 0 }
   | { kind: 'profile' | 'alias' | 'provider_binding'; id: string; version: number };
 

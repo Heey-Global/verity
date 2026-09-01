@@ -1,0 +1,17 @@
+# Blank issues are off so that the security route below is seen before the
+# report is written. SECURITY.md asks for vulnerabilities privately, and a
+# public issue cannot be un-published — the credential or the unpatched path is
+# disclosed the moment it is filed, whoever deletes it afterwards.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Heey-Global/verity/security/advisories/new
+    about: >-
+      Private disclosure. Do not open a public issue for a suspected
+      vulnerability — see SECURITY.md.
+  - name: Hosted Verity Uplink, billing or account questions
+    url: https://verity.build
+    about: >-
+      This repository is the self-hosted core and the open Uplink client. The
+      hosted service, billing and managed operations are separate products and
+      are not developed here.

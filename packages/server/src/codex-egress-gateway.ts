@@ -42,7 +42,7 @@ const FORBIDDEN_RESPONSE_HEADERS = new Set([
   'www-authenticate',
 ]);
 
-export interface CodexEgressUpstreamResponse {
+interface CodexEgressUpstreamResponse {
   status: number;
   headers: IncomingHttpHeaders;
   body: Readable;
@@ -61,8 +61,7 @@ export type CodexEgressForward = (
   request: CodexEgressForwardRequest,
 ) => Promise<CodexEgressUpstreamResponse>;
 
-export type CodexEgressOutcome =
-  'rejected' | 'cancelled' | 'aborted' | 'consumer-closed' | 'completed';
+type CodexEgressOutcome = 'rejected' | 'cancelled' | 'aborted' | 'consumer-closed' | 'completed';
 
 /** Data-minimised request-end telemetry. No raw request or response content is exposed. */
 export interface CodexEgressRequestEnd {

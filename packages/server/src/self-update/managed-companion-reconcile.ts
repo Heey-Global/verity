@@ -33,7 +33,7 @@ const UPDATER_ROLE = 'updater';
 const HANDOFF_ROLE = 'companion-handoff';
 const AGENT_SEED_SOURCE = '/opt/verity-features/verity-sandbox-toolkit/agent-seed';
 const AGENT_SEED_PARENT = '/opt/agent-seed-host-parent';
-export const AGENT_SEED_CURRENT = '.current';
+const AGENT_SEED_CURRENT = '.current';
 const REQUIRED_AGENT_SEED_FILES = [
   'README.md',
   'code-review-prompt.md',

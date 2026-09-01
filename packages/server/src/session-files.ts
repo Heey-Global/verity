@@ -1,7 +1,7 @@
 import { lstat, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
 
-export type SessionFileKind = 'directory' | 'file' | 'symlink' | 'other';
+type SessionFileKind = 'directory' | 'file' | 'symlink' | 'other';
 
 export interface SessionFileEntry {
   name: string;

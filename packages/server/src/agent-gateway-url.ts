@@ -1,7 +1,5 @@
 import { isIP } from 'node:net';
 
-export const AGENT_GATEWAY_SERVER_NAME = 'verity-agent-gateway';
-
 export function parseAgentGatewayUrl(raw: string, expectedPort?: number): URL {
   const url = new URL(raw);
   if (

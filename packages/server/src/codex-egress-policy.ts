@@ -1,7 +1,7 @@
 import type { CodexGatewayCredential } from './codex-credential-authority.js';
 
 export const CODEX_EGRESS_ORIGIN = 'https://chatgpt.com';
-export const CODEX_EGRESS_PLACEHOLDER = 'Bearer verity-codex-gateway-placeholder-v1';
+const CODEX_EGRESS_PLACEHOLDER = 'Bearer verity-codex-gateway-placeholder-v1';
 
 const ROUTES = new Map<string, { method: string; upstreamPath: string }>([
   ['/codex/models', { method: 'GET', upstreamPath: '/backend-api/codex/models' }],

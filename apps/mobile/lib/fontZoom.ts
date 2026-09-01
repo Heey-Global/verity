@@ -10,7 +10,7 @@ import { baseText, type TypeRamp } from '../theme/tokens';
 
 export const MIN_FONT_SCALE = 0.8;
 export const MAX_FONT_SCALE = 1.5;
-export const FONT_SCALE_STEP = 0.1;
+const FONT_SCALE_STEP = 0.1;
 export const DEFAULT_FONT_SCALE = 1;
 
 const PERSIST_KEY = 'verity.fontScale';

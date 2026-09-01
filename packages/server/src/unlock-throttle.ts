@@ -23,7 +23,7 @@ export interface UnlockThrottleOptions {
   now?: () => number;
 }
 
-export interface ThrottleDecision {
+interface ThrottleDecision {
   allowed: boolean;
   /** When blocked, how long the caller should wait (ms) — surfaced as Retry-After. */
   retryAfterMs?: number;

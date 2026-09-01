@@ -267,7 +267,7 @@ export interface OpenedPullRequest {
 /** Raised when GitHub declines to open the pull request. `message` carries GitHub's
  *  own explanation (e.g. "No commits between main and verity/import-…"), never the
  *  token: only `body.message` is read, and the request is never echoed back. */
-export class PullRequestCreateError extends Error {}
+class PullRequestCreateError extends Error {}
 
 /**
  * Open a pull request with a ONE-SHOT token, outside {@link createGitHubPrService}'s
@@ -1276,7 +1276,7 @@ export function createGitHubReleaseService(
  * the `projects` table lowercases on persist), plus GitHub's archive flag so
  * pickers can hide archived repos.
  */
-export interface InstallationRepo {
+interface InstallationRepo {
   owner: string;
   repo: string;
   archived?: boolean;

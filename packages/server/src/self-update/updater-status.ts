@@ -70,7 +70,7 @@ const OFFICIAL_DIGEST = /^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a
 const IDEMPOTENCY_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/;
 
 /** Closed set of machine-readable outcomes the Server may relay to a device. */
-export const UPDATER_ERROR_CODES = [
+const UPDATER_ERROR_CODES = [
   'invalid-request',
   'unauthorized',
   'unmanaged',

@@ -41,7 +41,7 @@ import { isTerminalOperationState, type UpdateOperation } from './self-update/up
  *
  * Both use this one type so the client has one renderer for both placements.
  */
-export type AttentionCode =
+type AttentionCode =
   'secret_sealed' | 'updater_unhealthy' | 'sandbox_disconnected' | 'usage_probe_unhealthy';
 
 /**
@@ -53,7 +53,7 @@ export type AttentionCode =
  * still render the sentence, which stands on its own — the action is an
  * accelerator, never the only way to learn what to do.
  */
-export type AttentionAction = 'codex-login';
+type AttentionAction = 'codex-login';
 
 export interface AttentionSignal {
   readonly code: AttentionCode;

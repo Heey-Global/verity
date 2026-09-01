@@ -138,7 +138,7 @@ export function createManifestStateStore(opts: ManifestStateStoreOptions = {}): 
 /** Result of exchanging a manifest `code` for the created App. `privateKey` is
  *  the PEM — SECRET; callers store it via the sealed settings store and never
  *  put it in a response body or log. */
-export interface ManifestConvertResult {
+interface ManifestConvertResult {
   appId: string;
   slug: string;
   privateKey: string;

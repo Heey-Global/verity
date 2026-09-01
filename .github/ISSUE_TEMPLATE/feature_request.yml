@@ -1,0 +1,53 @@
+name: Feature or change proposal
+description: Propose a change before investing in a large implementation.
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        CONTRIBUTING.md asks for a proposal before a large implementation, so
+        the design discussion happens before the work rather than in review of
+        it. Small, obvious fixes can go straight to a pull request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: >-
+        What is hard or impossible today, for whom, and what you do instead
+        right now. Describe the situation, not the feature you have in mind —
+        the workaround usually says more about the shape of a fix than the
+        proposal does.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would like to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Effect on isolation or credential handling
+      description: >-
+        Whether this would move a trust boundary described in SECURITY.md —
+        what a project Sandbox can reach, where reusable credentials live, what
+        an approval covers. Answer "none that I can see" if that is the case;
+        it is a question worth having been asked.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: >-
+            This is about the self-hosted core, mobile app or open Uplink
+            client — not the hosted Uplink service, billing, entitlements or
+            managed operations, which are separate products.
+          required: true

@@ -21,7 +21,7 @@ import { runtimeSchemaForwardMax } from '../runtime-schema-compat.js';
  * compatible when each side's `current` is at least the other side's `min`
  * (so N/N−1 is accepted while an N/N−2 gap is rejected).
  */
-export interface ProtocolRange {
+interface ProtocolRange {
   readonly min: number;
   readonly current: number;
 }
@@ -34,7 +34,7 @@ export interface ProtocolRange {
  * can read/write, which is what preserves N−1 rollback across an additive
  * (expand/contract) migration.
  */
-export interface SchemaRange {
+interface SchemaRange {
   readonly min: string;
   readonly current: string;
   readonly max: string;

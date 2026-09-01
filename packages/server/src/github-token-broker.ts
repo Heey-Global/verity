@@ -28,7 +28,7 @@ import type { Kysely } from 'kysely';
 
 /** The server-side entitlement a capability maps to. `owner`/`repo` are what the
  *  token is minted for; the sandbox cannot influence them. */
-export interface GhTokenCapabilityBinding {
+interface GhTokenCapabilityBinding {
   projectId: string;
   owner: string;
   repo: string;

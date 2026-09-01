@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { open, readdir, realpath, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 
-export const UPDATE_JOURNAL_SCHEMA_VERSION = 2 as const;
+const UPDATE_JOURNAL_SCHEMA_VERSION = 2 as const;
 export const UPDATE_JOURNAL_FILE = 'update-journal.json';
 
 export type PreparationPhase =
@@ -35,7 +35,7 @@ export type CutoverPhase =
 
 export type UpdatePhase = PreparationPhase | CutoverPhase;
 
-export interface UpdateJournalBody {
+interface UpdateJournalBody {
   readonly schemaVersion: typeof UPDATE_JOURNAL_SCHEMA_VERSION;
   readonly deploymentId: string;
   readonly updateId: string;

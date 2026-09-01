@@ -224,7 +224,7 @@ interface WorktreeSidecar {
  * The sidecar lives in the checkout, which no prune touches, so the entry can be
  * rebuilt exactly instead of guessed at from branch names.
  */
-export function writeWorktreeSidecar(worktreePath: string, sidecar: WorktreeSidecar): void {
+function writeWorktreeSidecar(worktreePath: string, sidecar: WorktreeSidecar): void {
   const file = join(worktreePath, WORKTREE_SIDECAR);
   // Written beside it and renamed over it: this file is the only copy of what a
   // rebuild needs, and a process killed mid-write would otherwise leave half a

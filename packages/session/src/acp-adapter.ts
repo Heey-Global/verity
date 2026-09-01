@@ -8,7 +8,7 @@ import {
 
 /** Each ACP agent carries its non-standard extras under its own `_meta` key.
  *  The Claude adapter uses `claudeCode`; codex-acp uses `codex`. */
-export const CLAUDE_ACP_META = 'claudeCode';
+const CLAUDE_ACP_META = 'claudeCode';
 const CLAUDE_WEEKLY_RATE_LIMIT_TYPES = new Set([
   // `weekly` was emitted by the native Claude stream before the ACP migration.
   'weekly',

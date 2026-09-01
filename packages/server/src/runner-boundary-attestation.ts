@@ -488,7 +488,7 @@ export function evaluateRunnerBoundaryEvidence(
 /** The bundled toolkit directory whose binaries are the attestation trust root.
  *  Baked into the Server image by `deploy/Dockerfile`; `VERITY_FEATURE_DIR`
  *  overrides it for tests and alternate layouts. */
-export function defaultRunnerBoundaryFeatureDir(): string {
+function defaultRunnerBoundaryFeatureDir(): string {
   return process.env.VERITY_FEATURE_DIR ?? '/opt/verity-features/verity-sandbox-toolkit';
 }
 

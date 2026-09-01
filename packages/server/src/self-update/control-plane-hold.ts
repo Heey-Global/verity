@@ -215,7 +215,7 @@ export interface ControlPlaneHoldOptions {
   readonly onError?: (error: unknown) => void;
 }
 
-export const DEFAULT_HEARTBEAT_MS = 15_000;
+const DEFAULT_HEARTBEAT_MS = 15_000;
 
 /**
  * Watch a claim that this process already holds.

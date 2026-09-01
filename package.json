@@ -6,7 +6,8 @@
   "type": "module",
   "description": "Open-core, self-hosted mobile control plane for steering coding agents across a development fleet",
   "engines": {
-    "node": "^24.19.0 || >=26.0.0"
+    "node": "^24.19.0 || >=26.0.0",
+    "npm": ">=11.15.0"
   },
   "workspaces": [
     "packages/*",
@@ -29,6 +30,7 @@
     "lint": "eslint .",
     "licenses:check": "node scripts/third-party-notices.ts --check",
     "licenses:write": "node scripts/third-party-notices.ts --write",
+    "knip": "knip --exports",
     "lint:changed": "eslint --no-warn-ignored --cache --cache-location .cache/eslint --",
     "format": "prettier --check --cache --cache-strategy content --cache-location .cache/prettier .",
     "format:changed": "prettier --check --ignore-unknown --",
@@ -45,10 +47,12 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "@openai/codex": "0.149.0",
     "@types/node": "24.13.3",
+    "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "4.1.11",
     "esbuild": "0.28.2",
     "eslint": "10.8.1",
     "ignore": "7.0.5",
+    "knip": "6.33.0",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
@@ -56,6 +60,7 @@
     "prettier": "3.9.6",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "semver": "7.8.5",
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "uuid": "11.1.1",

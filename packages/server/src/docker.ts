@@ -517,7 +517,7 @@ async function boundedResponseBytes(res: HttpResponse, limit: number): Promise<B
 }
 
 /** Per-call options for {@link DockerClient.pullImage}. */
-export interface PullImageOptions {
+interface PullImageOptions {
   /** Override the client-level `registryAuth` for this single pull. */
   registryAuth?: string;
 }

@@ -1182,6 +1182,26 @@ describe('GitHub-hosted runner boundary', () => {
     );
   });
 
+  it('runs Knip with its optional parser binding and makes it part of CI-Checks', () => {
+    const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs: Record<string, { if?: string; needs?: string | string[]; steps?: WorkflowStep[] }>;
+    };
+    const knip = ci.jobs.knip;
+    const commands = (knip?.steps ?? []).flatMap((step) => (step.run ? [step.run] : []));
+    expect(knip?.if).toBe("needs.changes.outputs.lint == 'true'");
+    expect(commands).toContain('npm ci --ignore-scripts');
+    expect(commands).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('--omit=optional')]),
+    );
+    expect(commands).toContain('npm run knip');
+
+    const gate = ci.jobs['ci-checks'];
+    expect(gate?.needs).toContain('knip');
+    expect((gate?.steps ?? []).map((step) => step.run ?? '').join('\n')).toContain(
+      'require_when_changed knip "${{ needs.knip.result }}" "${{ needs.changes.outputs.lint }}"',
+    );
+  });
+
   it('runs the installer suite in an isolated container', () => {
     // The suite drives the real installer under `unshare -r`, and the runner
     // containers get Docker's default seccomp profile, which rejects CLONE_NEWUSER.

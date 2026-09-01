@@ -50,7 +50,7 @@ export const CONTAINER_RESTARTING_REASON =
   'Sandbox container keeps restarting — Repair to recreate it.';
 /** A `docker pause`d container can also report `Running: true`; it is frozen, not gone. */
 export const CONTAINER_PAUSED_REASON = 'Sandbox container is paused — Repair to resume it.';
-export const DEFAULT_PROVISIONING_STALE_MS = 2 * 60_000;
+const DEFAULT_PROVISIONING_STALE_MS = 2 * 60_000;
 
 /** Return the reason when Docker's combined status says the container is unusable. */
 function stoppedReason(running: boolean, status: string | undefined): string | undefined {

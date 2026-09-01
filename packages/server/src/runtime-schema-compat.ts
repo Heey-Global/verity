@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-export const SCHEMA_FORWARD_MAX_STAMP = '/app/.verity-schema-forward-max';
+const SCHEMA_FORWARD_MAX_STAMP = '/app/.verity-schema-forward-max';
 const MIGRATION_KEY = /^\d{4}_[a-z0-9_]+$/;
 
 /**

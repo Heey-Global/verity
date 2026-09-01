@@ -31,7 +31,7 @@ function origin(value: string): string {
   return url.origin;
 }
 
-export function validateServerProfile(value: unknown): VerityServerProfile {
+function validateServerProfile(value: unknown): VerityServerProfile {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid server profile.');
   const candidate = value as Partial<VerityServerProfile>;

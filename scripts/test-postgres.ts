@@ -127,7 +127,7 @@ export function mintNamespace(bytes: (n: number) => Buffer = randomBytes): strin
  * that runs the unit tests has no server binaries. A Bash re-implementation of
  * the same steps in the workflow would drift from this file silently.
  */
-export class CommandError extends Error {
+class CommandError extends Error {
   command: string;
   code: number | null;
   output: string;
@@ -166,10 +166,10 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proces
  * "fall back to pglite", so a killed binary costs the run its speed and nothing
  * else. Set well clear of the slowest step, an `initdb` on a cold container.
  */
-export const COMMAND_TIMEOUT_MS = 120_000;
+const COMMAND_TIMEOUT_MS = 120_000;
 
 /** Runs a binary to completion, capturing both streams for the error message. */
-export async function run(
+async function run(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv = scrubbedEnv(),

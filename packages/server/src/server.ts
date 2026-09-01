@@ -548,12 +548,12 @@ interface PublicProjectRecord extends Omit<ProjectRecord, 'hiddenAt' | 'kind'> {
 /** The drift verdict as the app needs it: the judgement, plus the carrier that
  *  decides which remedy applies. The report's `name` is omitted — the client
  *  already knows which project it is holding. */
-export interface ProjectToolkitDrift {
+interface ProjectToolkitDrift {
   verdict: ToolkitDriftVerdict;
   carrier: ToolkitCarrier;
 }
 
-export interface MeetingTranscriptSegment {
+interface MeetingTranscriptSegment {
   speaker: string;
   text: string;
   start?: number | undefined;
@@ -704,7 +704,7 @@ function githubAppConfiguredFromSettings(settings: VeritySettingsRecord | undefi
  * takes the whole backend selection with it, and environment credentials are
  * only inherited by a stored URL that names the SAME endpoint.
  */
-export interface EffectiveExternalTranscription {
+interface EffectiveExternalTranscription {
   readonly baseUrl: string | null;
   readonly model: string | null;
   readonly apiKeyConfigured: boolean;
@@ -723,7 +723,7 @@ export interface EffectiveExternalTranscription {
  * so a custom-command deployment that had chosen `external` — the only choice
  * the app still offers — had every upload rejected.
  */
-export function customMeetingTranscribeCommandConfigured(): boolean {
+function customMeetingTranscribeCommandConfigured(): boolean {
   return (process.env.VERITY_MEETING_TRANSCRIBE_COMMAND?.trim() ?? '').length > 0;
 }
 
@@ -733,7 +733,7 @@ export function customMeetingTranscribeCommandConfigured(): boolean {
  * URL AND a model; the API key is optional). This is what the app renders as
  * "set up", so it must answer the same question the upload path enforces.
  */
-export function externalMeetingTranscriptionConfigured(
+function externalMeetingTranscriptionConfigured(
   settings:
     | Pick<VeritySettingsRecord, 'transcribeBaseUrl' | 'transcribeModel' | 'transcribeApiKey'>
     | null
@@ -744,7 +744,7 @@ export function externalMeetingTranscriptionConfigured(
   return effective.baseUrl !== null && effective.model !== null;
 }
 
-export function effectiveExternalTranscription(
+function effectiveExternalTranscription(
   settings:
     | Pick<VeritySettingsRecord, 'transcribeBaseUrl' | 'transcribeModel' | 'transcribeApiKey'>
     | null
@@ -1397,7 +1397,7 @@ export function sortModelIds(ids: readonly string[]): string[] {
 }
 
 /** Response of `GET /models`: the currently usable model ids plus spawn default. */
-export interface ModelList {
+interface ModelList {
   /** Every currently usable model id. Claude and Codex appear only when the matching
    * subscription login exists in Verity settings; OpenCode provider-qualified ids
    * appear when the backend enumerates them. */
@@ -1923,7 +1923,7 @@ export type MeetingTranscriptionSettings = Pick<
  * app that still offers the local option is told its choice no longer exists
  * instead of silently being switched to an off-host service.
  */
-export const SELECTABLE_TRANSCRIBE_BACKEND_MODES = ['external'] as const;
+const SELECTABLE_TRANSCRIBE_BACKEND_MODES = ['external'] as const;
 
 export function meetingTranscriptionSettingsWhileSealed(
   settings: MeetingTranscriptionSettings | undefined,
@@ -2682,7 +2682,7 @@ function agentLoopSetupPrompt(project: ProjectRecord, loop: AgentLoopRecord): st
 /** Compact PR status for a session's current branch, carried on the list so the
  * overview can mark merge-ready / merge-blocked / CI-failed sessions (#387). A projection of the
  * richer {@link PullRequestStatus} (drops title/url/checks the list doesn't need). */
-export interface SessionPrSummary {
+interface SessionPrSummary {
   phase: PullRequestStatus['phase'];
   pipeline: PullRequestStatus['pipeline'];
   mergeable: PullRequestStatus['mergeable'];
@@ -2741,7 +2741,7 @@ export interface SessionSummary extends SessionRecord {
  * absent when the Server is healthy — see `attention.ts` for why it rides this
  * response instead of a channel of its own.
  */
-export interface SessionListEnvelope {
+interface SessionListEnvelope {
   sessions: SessionSummary[];
   attention?: AttentionSignal[];
 }
@@ -2758,13 +2758,13 @@ export interface SessionDetail extends SessionSummary {
   queued: { id: string; text: string; attachments?: Attachment[] }[];
 }
 
-export interface MeetingTranscriptCreated {
+interface MeetingTranscriptCreated {
   path: string;
   title: string;
   segments: number;
 }
 
-export interface ProjectDetail {
+interface ProjectDetail {
   project: PublicProjectRecord;
   settings: PublicProjectSettingsRecord | null;
   sessions: SessionSummary[];

@@ -41,11 +41,7 @@ export type SshSignSpawner = (args: {
   payloadPath: string;
 }) => Promise<void>;
 
-export const defaultSshSignSpawner: SshSignSpawner = async ({
-  keyPath,
-  namespace,
-  payloadPath,
-}) => {
+const defaultSshSignSpawner: SshSignSpawner = async ({ keyPath, namespace, payloadPath }) => {
   // `-Y sign` needs only the private key (it derives the public key); it writes
   // the armored signature to `<payloadPath>.sig`.
   await execFileAsync('ssh-keygen', ['-Y', 'sign', '-n', namespace, '-f', keyPath, payloadPath]);

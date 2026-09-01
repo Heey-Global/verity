@@ -32,7 +32,7 @@ export function splitImageTagRef(ref: string): {
  * startup — an unbounded registry read is what turned an overview poll into a
  * 30-second request.
  */
-export const REGISTRY_RESOLVE_TIMEOUT_MS = 10_000;
+const REGISTRY_RESOLVE_TIMEOUT_MS = 10_000;
 
 /**
  * Anonymous pull tokens, keyed by `registry/repo`.

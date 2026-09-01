@@ -16,8 +16,8 @@ import type { DopplerSecretCatalog } from './doppler-secret-resolver.js';
 
 export class SecretProviderCatalogError extends Error {}
 
-export type SecretPermissionScope = 'once' | 'session' | 'timed' | 'project';
-export interface SecretProviderPermission {
+type SecretPermissionScope = 'once' | 'session' | 'timed' | 'project';
+interface SecretProviderPermission {
   id: string;
   projectId: string;
   bindingId: string;

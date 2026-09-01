@@ -35,11 +35,11 @@ export function sendableCloseCode(code: number): boolean {
   return code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006;
 }
 
-export const MAX_TUNNEL_HEADER_BYTES = 32 * 1024;
-export const MAX_TUNNEL_PATH_CHARACTERS = 8192;
-export const MAX_UTF8_BYTES_PER_CHARACTER = 4;
-export const MAX_JSON_ESCAPE_EXPANSION = 2;
-export const TUNNEL_FRAME_FIXED_BYTES = 4096;
+const MAX_TUNNEL_HEADER_BYTES = 32 * 1024;
+const MAX_TUNNEL_PATH_CHARACTERS = 8192;
+const MAX_UTF8_BYTES_PER_CHARACTER = 4;
+const MAX_JSON_ESCAPE_EXPANSION = 2;
+const TUNNEL_FRAME_FIXED_BYTES = 4096;
 
 export const HOP_BY_HOP = new Set([
   'connection',
@@ -58,7 +58,7 @@ export type StreamChannel = 'http' | 'ws';
  * `stream.reset` codes. `protocol_error` is the only one raised against a peer
  * that broke the contract; the rest report a bound this side enforced.
  */
-export const STREAM_RESET_CODES = [
+const STREAM_RESET_CODES = [
   'timeout',
   'client_gone',
   'body_limit',
@@ -104,14 +104,14 @@ export interface WsAcceptMeta {
   protocol?: string;
 }
 
-export interface StreamOpen {
+interface StreamOpen {
   kind: 'stream.open';
   streamId: string;
   channel: StreamChannel;
   meta: HttpRequestMeta | HttpResponseMeta | WsOpenMeta | WsAcceptMeta;
 }
 
-export interface StreamData {
+interface StreamData {
   kind: 'stream.data';
   streamId: string;
   /** Starts at 0 and increments by one, counted per stream **per direction**. */
@@ -125,14 +125,14 @@ export interface StreamData {
  * both directions have ended, or at any point by `stream.reset`. Treating this
  * as a full close would truncate every response whose request body ends first —
  * which is all of them. */
-export interface StreamEnd {
+interface StreamEnd {
   kind: 'stream.end';
   streamId: string;
   /** On `ws`, the peer's close status, so it reaches the other endpoint intact. */
   meta?: { code?: number; reason?: string };
 }
 
-export interface StreamReset {
+interface StreamReset {
   kind: 'stream.reset';
   streamId: string;
   code: StreamResetCode;
@@ -216,10 +216,7 @@ export const FORBIDDEN_REQUEST_HEADERS: ReadonlySet<string> = new Set(['host', '
 
 /** `set-cookie` would escape the share's cookie isolation; `content-length` is
  * re-derived by the receiving hop and a stale one would desynchronise it. */
-export const FORBIDDEN_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
-  'set-cookie',
-  'content-length',
-]);
+const FORBIDDEN_RESPONSE_HEADERS: ReadonlySet<string> = new Set(['set-cookie', 'content-length']);
 
 function validStreamId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_STREAM_ID_CHARACTERS;
