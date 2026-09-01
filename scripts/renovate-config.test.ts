@@ -220,12 +220,13 @@ describe('Supply-chain cooldown', () => {
     workspaces: string[];
   };
   // Comments and blank lines dropped; what remains is what npm actually applies.
-  // Trailing comments go too — `min-release-age=3 # three days` is a natural
-  // thing to write, and keeping it would turn a working floor into a `NaN` here
-  // and a confusing failure about the value not being a number.
+  // Trailing comments go too, with or without the space npm's ini parser does
+  // not require — `min-release-age=3 # three days` and `...=3# three days` are
+  // both a working floor to npm, and keeping the tail would turn either into a
+  // `NaN` here and a failure about the value not being a number.
   const npmrcSettings = readFileSync('.npmrc', 'utf8')
     .split('\n')
-    .map((line) => line.replace(/\s+[#;].*$/u, '').trim())
+    .map((line) => line.replace(/\s*[#;].*$/u, '').trim())
     .filter((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith(';'))
     .map((line) => {
       const separator = line.indexOf('=');
@@ -249,7 +250,12 @@ describe('Supply-chain cooldown', () => {
    */
   const neutralEnv = (): NodeJS.ProcessEnv => ({
     ...Object.fromEntries(
-      Object.entries(process.env).filter(([name]) => !/^npm_config_/iu.test(name)),
+      Object.entries(process.env).filter(
+        // The cache location survives: it answers for no setting under test,
+        // and CI runners that relocate it would otherwise have these runs
+        // reaching for a `~/.npm` their image never populated.
+        ([name]) => !/^npm_config_/iu.test(name) || /^npm_config_cache$/iu.test(name),
+      ),
     ),
     npm_config_userconfig: '/nonexistent/user/.npmrc',
     npm_config_globalconfig: '/nonexistent/global/npmrc',
@@ -323,6 +329,64 @@ describe('Supply-chain cooldown', () => {
     const npm = askNpm('engine-strict');
     expect(npm.status, `npm config get did not run: ${npm.failure}`).toBe(0);
     expect(npm.stdout, 'npm resolves engine-strict differently than .npmrc states').toBe('true');
+    expect(npm.stderr, 'npm does not recognise a key in .npmrc, so it is ignoring it').not.toMatch(
+      /Unknown project config/u,
+    );
+  });
+
+  it('is enforced by every workflow that installs, not only on a contributor machine', () => {
+    // `engine-strict` is the one setting here that applies to `npm ci`, so CI is
+    // where it is actually enforced: a runner on a Node outside `engines.node`
+    // stops warning and starts failing the install, before any job in it runs.
+    // Every workflow pins a version today; the failure worth catching is the
+    // next one that takes a floating `24.x` or an `lts/*` and lands green until
+    // the day upstream moves.
+    const pinned = readdirSync('.github/workflows')
+      .filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))
+      .flatMap((file) =>
+        [
+          ...readFileSync(`.github/workflows/${file}`, 'utf8').matchAll(
+            /^\s*node-version:\s*['"]?(?<version>[^'"\s#]+)/gmu,
+          ),
+        ].map((match) => `${file}: ${match.groups?.version ?? ''}`),
+      );
+    expect(
+      pinned.length,
+      'no workflow pins a Node version, so this guards nothing',
+    ).toBeGreaterThan(0);
+    // Compared against the manifest rather than a literal: the range and the
+    // runners have to move together, and this is the place that notices when
+    // only one of them did.
+    const admitted = new Set(
+      [...(manifest.engines?.node ?? '').matchAll(/(?<version>\d+\.\d+\.\d+)/gu)].map(
+        (match) => match.groups?.version ?? '',
+      ),
+    );
+    expect(
+      pinned.filter((entry) => !admitted.has(entry.slice(entry.indexOf(': ') + 2))),
+      `engine-strict fails the install on any runner outside engines.node (${manifest.engines?.node ?? ''})`,
+    ).toEqual([]);
+  });
+
+  it('stays out of the image builds, which never asked for it', () => {
+    // The Dockerfiles run `npm ci` too, but none of them copies this `.npmrc`
+    // into the build context, so none of them is subject to the strict setting —
+    // which is what the file itself claims. A `COPY . .` added later would
+    // quietly make every image build enforce it, on whatever Node that stage
+    // pins, and the first sign would be a red deploy.
+    const copyingEverything = readdirSync('deploy')
+      .filter((file) => file.includes('Dockerfile'))
+      .filter((file) => {
+        const dockerfile = readFileSync(`deploy/${file}`, 'utf8');
+        return (
+          /^COPY\s+(?:--\S+\s+)*\.\s+\S+\s*$/mu.test(dockerfile) ||
+          /^COPY\s+.*\.npmrc/mu.test(dockerfile)
+        );
+      });
+    expect(
+      copyingEverything,
+      'these image builds now read the root .npmrc, so engine-strict applies to them as well',
+    ).toEqual([]);
   });
 
   it('carries no dependency whose own engines the strict setting would refuse', () => {
@@ -348,10 +412,19 @@ describe('Supply-chain cooldown', () => {
       /EBADENGINE.*(?:\n.*)?/u.exec(`${npm.stdout ?? ''}${npm.stderr ?? ''}`)?.[0] ?? '',
       'engine-strict makes this a refused install rather than a warning',
     ).toBe('');
-    expect(npm.status, `npm ci --dry-run failed: ${npm.error?.message ?? npm.stderr ?? ''}`).toBe(
-      0,
-    );
-  });
+    // Anything else npm refuses to resolve lands here rather than above, and it
+    // is worth keeping: a lockfile out of step with the manifests fails a real
+    // `npm ci` the same way. The message says so, so the exit code is not read
+    // as an engines problem it is not.
+    expect(
+      npm.status,
+      `npm ci --dry-run refused this tree for a reason other than engines: ${
+        npm.error?.message ?? npm.stderr ?? ''
+      }`,
+    ).toBe(0);
+    // Roughly a second when it was written, against a warm and a cold cache
+    // alike. The allowance is for a loaded machine, not for a slow resolution.
+  }, 60_000);
 
   it('declares an npm version that honours the floor, not merely some npm version', () => {
     // Below npm 11.15.0 the key is either unknown or does not survive being read
