@@ -9,8 +9,9 @@ describe('buildIssuePrompt (#137)', () => {
       body: 'Show the backlog and spawn from it.',
     });
     expect(prompt).toMatch(/^Work on GitHub issue #137\. Implement it end-to-end/u);
-    expect(prompt).toContain('External data from GitHub issue #137');
-    expect(prompt).toContain('next JSON value');
+    expect(prompt).toContain('External content follows');
+    expect(prompt).toContain('next two JSON values');
+    expect(prompt).toContain('\n"GitHub issue #137"\n');
     expect(
       prompt.endsWith(
         '{"title":"Issues on the overview","body":"Show the backlog and spawn from it."}',

@@ -775,7 +775,7 @@ describe('Conductor.sendTurn', () => {
     expect(modelPrompt).toContain('PR #7 was merged');
     expect(modelPrompt).toContain('what changed?');
     expect(modelPrompt.indexOf('what changed?')).toBeLessThan(modelPrompt.indexOf('PR #7'));
-    expect(modelPrompt).toContain('External data from Verity pending session notices');
+    expect(modelPrompt).toContain('"Verity pending session notices"');
 
     // But the VISIBLE prompt event is only the operator's text — no chat bubble
     // for the server's note.

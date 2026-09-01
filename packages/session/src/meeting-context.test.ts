@@ -147,10 +147,9 @@ describe('withMeetingContext', () => {
 
     const prompt = await withMeetingContext(worktree, 'What about Datadog?');
 
-    expect(prompt).toMatch(
-      /^Turn prompt:\n\nWhat about Datadog\?\n\nExternal data from docs\/meetings/u,
-    );
-    expect(prompt).toContain('next JSON value');
+    expect(prompt).toMatch(/^Turn prompt:\n\nWhat about Datadog\?\n\nExternal content follows/u);
+    expect(prompt).toContain('next two JSON values');
+    expect(prompt).toContain('\n"docs/meetings"\n');
     expect(prompt).toContain('Source: docs/meetings/2026-07-06-planning.md (Planning Sync)');
     expect(prompt).toContain('Datadog export stays out of scope');
     const data = JSON.parse(prompt.slice(prompt.lastIndexOf('\n') + 1)) as {

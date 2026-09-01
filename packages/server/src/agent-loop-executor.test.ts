@@ -78,7 +78,7 @@ describe('Agent Loop executor', () => {
     expect(dispatchTurnWhenIdle).toHaveBeenCalledWith(
       's1',
       expect.stringMatching(
-        /^Evaluate the Agent Loop finding[\s\S]*External data from Agent Loop script l1[\s\S]*\{"requestedAction":"Fix issue 42"\}$/u,
+        /^Evaluate the Agent Loop finding[\s\S]*External content follows[\s\S]*"Agent Loop script l1"[\s\S]*\{"requestedAction":"Fix issue 42"\}$/u,
       ),
       'codex/default',
     );
