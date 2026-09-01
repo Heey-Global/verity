@@ -30,7 +30,11 @@
  * here — operator versus not-operator — so that is the one written down.
  */
 
-/** The credential a caller presents. `operator` is the default and is implied. */
+/** The credential a caller presents. `operator` is the default and is implied.
+ *  Documentation, not enforcement: nothing dispatches on this value — what the
+ *  gate acts on is whether a key is present at all — so grouping a route under a
+ *  scope grants it nothing and checks nothing. The handler's own credential
+ *  check is what makes the exception safe. */
 export type RouteScope =
   | 'public'
   | 'onboarding'

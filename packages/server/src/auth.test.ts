@@ -289,6 +289,32 @@ describe('global auth gate (onRequest)', () => {
           expect(response.statusCode, `${method} ${url}`).toBe(404);
           expect(response.json(), `${method} ${url}`).toEqual({ error: 'not found' });
         }
+
+        // The other half of deriving exemptions from registration: for the
+        // conditionally-registered `/internal/*` routes an exemption exists only
+        // where the route does. None of their deps are wired in any shape here —
+        // including `capabilities but no store`, which wires the GitHub-token
+        // capability registry WITHOUT the mint that registration also requires —
+        // so the gate must still demand the operator token. This is what pins
+        // the claim that each registration condition matches the exemption
+        // condition the old static list spelled out: a registration that drifted
+        // looser would answer 404 (route absent, but exempt) instead of 401.
+        for (const [method, url] of [
+          ['POST', '/internal/git/sign'],
+          ['POST', '/internal/github/token'],
+          ['POST', '/internal/project/memory'],
+          ['POST', '/internal/mcp'],
+          ['GET', '/internal/mcp'],
+          ['POST', '/internal/control-plane/mcp'],
+          ['GET', '/internal/control-plane/mcp'],
+        ] as const) {
+          const response = await app.inject({
+            method,
+            url,
+            ...(method === 'POST' ? { payload: {} } : {}),
+          });
+          expect(response.statusCode, `${method} ${url}`).toBe(401);
+        }
       } finally {
         await app.close();
       }

@@ -45,6 +45,9 @@ const COMPUTED_ROUTE_PATTERN = new RegExp(
  *  `${...}` text. Interpolation is what makes a path computed, not the quote. */
 const INTERPOLATED_PATH = /\$\{/;
 const HEAD_ROUTE_PATTERN = new RegExp(`\\b${receiver}\\.head\\(`, 'g');
+/** OPTIONS is the one method the gate stopped exempting; a hand-written OPTIONS
+ *  handler on a declared pathname would meet a 401 it never used to. */
+const OPTIONS_ROUTE_PATTERN = new RegExp(`\\b${receiver}\\.options\\(`, 'g');
 /** `app.all(...)` / `app.route({ method })` register a path under several verbs
  *  at once, which neither the scan above nor the declaration keys model. */
 const MULTI_METHOD_PATTERN = new RegExp(`\\b${receiver}\\.(?:all|route)\\(`, 'g');
@@ -52,13 +55,18 @@ const MULTI_METHOD_PATTERN = new RegExp(`\\b${receiver}\\.(?:all|route)\\(`, 'g'
 const FASTIFY_PARAM_PATTERN = /([A-Za-z_$][\w$]*)\s*:\s*FastifyInstance\b/g;
 /** An inline plugin binds its instance with an INFERRED type, so the annotation
  *  above never sees it. Catch the callback's first parameter directly. */
-const INLINE_PLUGIN_PATTERN =
+const INLINE_PLUGIN_PATTERN = new RegExp(
   // Two shapes, because a bare identifier is a plugin reference in one and the
   // bound instance in the other: `register((app) => …)` / `register(function
   // (app) …)` versus the parenless `register(app => …)`. Matching an unqualified
   // identifier would read `register(websocketPlugin)` as a receiver named
-  // `websocketPlugin`, so the parenless form is anchored on its arrow.
-  /\.register\(\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?\(\s*([A-Za-z_$][\w$]*)|\.register\(\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/g;
+  // `websocketPlugin`, so the parenless form is anchored on its arrow. The
+  // receiver is anchored too, so an unrelated `registry.register((entry) => …)`
+  // does not read as a Fastify instance named `entry`.
+  `\\b${receiver}\\.register\\(\\s*(?:async\\s+)?(?:function\\s*[\\w$]*\\s*)?\\(\\s*([A-Za-z_$][\\w$]*)` +
+    `|\\b${receiver}\\.register\\(\\s*(?:async\\s+)?([A-Za-z_$][\\w$]*)\\s*=>`,
+  'g',
+);
 /** A `prefix` shifts the url `onRoute` reports away from the literal in the
  *  source, so a declaration would name a path that never arrives. */
 const PREFIXED_REGISTER_PATTERN = /\.register\([^)]*\bprefix\s*:/g;
@@ -285,6 +293,13 @@ describe('route scope declarations', () => {
     ) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     const dependencies = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies });
     expect(dependencies.filter((name) => name.includes('cors'))).toEqual([]);
+    // A hand-written OPTIONS handler is the same hazard without the dependency:
+    // it would answer where nothing answers today, and now meet a 401. Declare
+    // its pathname for OPTIONS if one is ever wanted. What neither check can see
+    // is a CORS layer in front of the process — a reverse proxy that synthesises
+    // preflight responses is unaffected either way, one that forwards them is
+    // not, and that is a deployment fact rather than a repository one.
+    expect(filesMatching(OPTIONS_ROUTE_PATTERN)).toEqual([]);
   });
 
   it('writes no plugin in a shape the receiver check cannot see', () => {
