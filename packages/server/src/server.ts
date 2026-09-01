@@ -131,6 +131,7 @@ import {
 } from './attention.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
+import { isDeclaredNonOperatorRoute } from './route-scopes.js';
 import { createUnlockThrottle } from './unlock-throttle.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
@@ -3865,70 +3866,33 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   // ── Global auth gate (audit finding C1) ───────────────────────────────────
-  // Every route requires a valid per-device bearer token EXCEPT a narrow
-  // pre-auth allowlist: the health probe, the master-password lifecycle (the
-  // on-ramp that mints the token), the onboarding status probe, and the three
-  // GitHub manifest URLs GitHub's browser must reach (those carry their own
-  // single-use CSRF `state`). Registering the check as a global `onRequest`
-  // hook — rather than per route — means a newly added route is protected by
-  // default; you must consciously add it to the allowlist to expose it.
+  // Every route requires a valid per-device bearer token EXCEPT the routes
+  // declared in `NON_OPERATOR_ROUTES` — the health probe, the master-password
+  // lifecycle (the on-ramp that mints the token), the onboarding status probe,
+  // the GitHub manifest URLs GitHub's browser must reach, the webhook, and the
+  // sandbox-facing `/internal/*` brokers. Registering the check as a global
+  // `onRequest` hook — rather than per route — means a newly added route is
+  // protected by default; you must consciously declare it to expose it.
   //
   // The gate only enforces once a master password is configured (registry
   // enabled). Env-key/headless deployments have no interactive credential and
   // keep the previous open behaviour, relying on network isolation.
-  const preAuthPaths: ReadonlySet<string> = new Set([
-    '/healthz',
-    '/secret/status',
-    // `/secret/init` is pre-auth: it is the on-ramp that sets the first master
-    // password (onboarding). Until it runs the store is uninitialized and the gate
-    // is open, so the deployment must sit behind a trusted network/firewall on
-    // first run (documented first-run trust-on-first-use residual).
-    '/secret/init',
-    '/secret/unlock',
-    '/onboarding/status',
-    ...(deps.devicePairing !== undefined ? (['/pair/identity', '/pair/redeem'] as const) : []),
-    '/github/app/manifest/start',
-    '/github/app/manifest/callback',
-    '/github/app/manifest/installed',
-    ...(deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined
-      ? (['/providers/github/webhook'] as const)
-      : []),
-    // Called by the sandbox commit-signing wrapper, not the operator — it
-    // authenticates itself with the broker token (SHA-256 of the signing key), so
-    // it must bypass the operator bearer gate. Only present when broker mode is on
-    // (the route itself is only registered then), so a non-broker deployment
-    // exposes no signing route. See POST /internal/git/sign.
-    ...(deps.signingCapabilities !== undefined ? (['/internal/git/sign'] as const) : []),
-    // Called by the sandbox git credential helper / gh wrapper, not the operator —
-    // it authenticates with a per-container capability, so it bypasses the operator
-    // bearer gate. Only present when the token broker is wired. See
-    // POST /internal/github/token.
-    ...(deps.ghTokenCapabilities !== undefined && deps.ghTokenMint !== undefined
-      ? (['/internal/github/token'] as const)
-      : []),
-    // Called by the sandbox `verity-memory` wrapper, not the operator — it
-    // authenticates with the same per-container capability as the gh-token broker
-    // and bypasses the operator bearer gate. Gated ONLY on capability resolution
-    // (ADR 0008): unlike the gh-token route it needs no token-mint, so a deployment
-    // with capabilities but no mint still gets memory. See POST /internal/project/memory.
-    ...(deps.ghTokenCapabilities !== undefined ? (['/internal/project/memory'] as const) : []),
-    // Called by an ACP agent's MCP client, not the operator — it authenticates with the
-    // per-turn gateway bearer the Server minted for that turn, so it bypasses the operator
-    // bearer gate. Only present when the gateway is wired. See POST /internal/mcp.
-    // The control-plane variant is the same gateway for the one caller that arrives on the
-    // shared internal listener rather than a project socket — see POST
-    // /internal/control-plane/mcp for why stating that project is not a hole.
-    ...(deps.mcpGateway !== undefined
-      ? (['/internal/mcp', '/internal/control-plane/mcp'] as const)
-      : []),
-    ...(deps.workflowStore !== undefined && deps.ghTokenCapabilities !== undefined
-      ? (['/internal/workflow/result'] as const)
-      : []),
-  ]);
+  //
+  // The exception set used to be written out here as a second, conditional list
+  // that had to stay in step with the equally conditional route registrations.
+  // It is now derived from the routes this instance actually registers, so the
+  // two cannot drift: `preAuthPaths` holds a pathname only if a route for it was
+  // registered AND its method is declared as an exception. See route-scopes.ts.
+  const preAuthPaths = new Set<string>();
+  app.addHook('onRoute', (route) => {
+    if (isDeclaredNonOperatorRoute(route)) preAuthPaths.add(route.url);
+  });
   app.addHook('onRequest', async (request, reply) => {
-    // Match on the concrete pathname (query stripped); none of the pre-auth
-    // routes carry path params, so an exact-set lookup is sufficient and avoids
-    // depending on Fastify's route-pattern internals.
+    // Match on the concrete pathname (query stripped); no pre-auth route carries
+    // a path param, so an exact-set lookup is sufficient and avoids depending on
+    // Fastify's route-pattern internals. That is no longer an assumption a reader
+    // has to hold: the `onRoute` hook above refuses to register a declared
+    // exception whose url has a param or wildcard.
     const pathname = request.url.split('?', 1)[0] ?? request.url;
     // Network-origin gate for `/internal/*` (audit H1 follow-up), enforced BEFORE
     // and independent of the auth gate: when an internal listener is wired, these
