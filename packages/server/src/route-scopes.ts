@@ -282,6 +282,9 @@ export function declaredNonOperatorKeys(
     // route quietly falls back to requiring the operator token. Fail loudly on
     // the one case where that is certainly wrong: the path the module wrote IS
     // declared, and only the prefix moved it out from under its own declaration.
+    // A prefix that does not literally prefix `route.url` — Fastify normalising
+    // a slash, say — is not caught here and stays a silent fallback to the
+    // operator token, which is why the source scan bans plugin prefixes too.
     if (route.prefix !== undefined && route.prefix !== '' && route.url.startsWith(route.prefix)) {
       const unprefixed = route.url.slice(route.prefix.length) || '/';
       if (routes.has(routeScopeKey(declaredAs, unprefixed))) {

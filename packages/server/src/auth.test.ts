@@ -184,6 +184,12 @@ describe('global auth gate (onRequest)', () => {
       // A HEAD request inherits its GET's declaration (Fastify auto-adds the
       // route, sharing the handler), so it must not start needing a token.
       expect((await app.inject({ method: 'HEAD', url: '/healthz' })).statusCode).toBe(200);
+      // OPTIONS is the one method the old pathname-keyed set exempted and this
+      // one does not. Pinned rather than fixed: nothing here answers OPTIONS, so
+      // a browser preflight got a 404 from the router before and gets a 401 from
+      // the gate now — no on-ramp is lost. It would be lost the moment a CORS
+      // plugin arrives, which `route-scopes.test.ts` refuses for this reason.
+      expect((await app.inject({ method: 'OPTIONS', url: '/secret/unlock' })).statusCode).toBe(401);
 
       // Valid token in the Authorization header → allowed.
       expect(
@@ -214,7 +220,9 @@ describe('global auth gate (onRequest)', () => {
   // not buy back is Fastify's own body parsing, which runs before any handler:
   // on a half-configured deployment those POSTs now parse an unauthenticated
   // body (bounded by `bodyLimit`) before answering 404, where the gate used to
-  // 401 them in `onRequest`. Cost, not exposure — nothing reads the parsed body.
+  // 401 them in `onRequest`. Cost, not exposure — nothing reads the parsed body,
+  // and on the webhook the digest-capturing `preParsing` hook is conditional on
+  // the very deps these shapes are missing, so it does not run either.
   // Two of those conditions are
   // conjunctions — the webhook wants a store AND an HMAC secret, the workflow
   // result wants a store AND capabilities — so a half-configured deployment is

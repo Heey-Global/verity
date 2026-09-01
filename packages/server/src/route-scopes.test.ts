@@ -73,6 +73,17 @@ const ANY_ROUTE_PATTERN = new RegExp(
   `\\b${receiver}\\.(?:get|post|put|patch|delete|head|all|route)\\(`,
   'g',
 );
+/** `app.get<{ Params: … }>('/x', …)` — idiomatic Fastify + TS, and invisible to
+ *  BOTH patterns above, which expect `(` right after the verb. A route in that
+ *  shape would be missed by the scan and by the computed-path backstop that is
+ *  supposed to catch what the scan misses, so it is refused outright. */
+const GENERIC_ROUTE_PATTERN = new RegExp(
+  `\\b${receiver}\\.(?:get|post|put|patch|delete|head|all|route)<`,
+  'g',
+);
+/** Anchored on the receiver allowlist so `registry.register(` and friends do not
+ *  read as plugin registrations. */
+const PLUGIN_REGISTER_PATTERN = new RegExp(`\\b${receiver}\\.register\\(`, 'g');
 
 /**
  * Resolve against the repo root rather than the process cwd, so the scan does
@@ -253,6 +264,29 @@ describe('route scope declarations', () => {
     expect(stray).toEqual([]);
   });
 
+  it('passes no type arguments to a route registration', () => {
+    // The generic form is perfectly good Fastify; the scan just cannot see it,
+    // and neither can the computed-path guard that backstops the scan. Wanting
+    // it means teaching ROUTE_PATTERN and COMPUTED_ROUTE_PATTERN about `<…>`
+    // first — the anchors above keep passing either way, so nothing else would
+    // notice the routes going unscanned.
+    expect(filesMatching(GENERIC_ROUTE_PATTERN)).toEqual([]);
+  });
+
+  it('registers no CORS plugin, which is what makes an undeclared OPTIONS free', () => {
+    // Method-keyed exemptions mean `OPTIONS /secret/unlock` is not exempt where
+    // the old pathname-keyed set exempted it. That costs nothing while nothing
+    // answers OPTIONS: a browser preflight hit a route that does not exist and
+    // got a 404 before, and gets a 401 now. Adding CORS changes that — its
+    // preflight short-circuit would have to run before the gate, or the declared
+    // pathnames would need their OPTIONS declared too.
+    const manifest = JSON.parse(
+      readFileSync(join(REPO_ROOT, 'packages/server/package.json'), 'utf8'),
+    ) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    const dependencies = Object.keys({ ...manifest.dependencies, ...manifest.devDependencies });
+    expect(dependencies.filter((name) => name.includes('cors'))).toEqual([]);
+  });
+
   it('writes no plugin in a shape the receiver check cannot see', () => {
     // Neither shape is used anywhere today, and both would be invisible to the
     // check above rather than caught by it: the instance name is either bound by
@@ -265,7 +299,9 @@ describe('route scope declarations', () => {
     // What makes scanning only `packages/server/src` sound. A route plugin
     // contributed by another workspace package would be covered by the runtime
     // hook — it registers on the same instance — but by none of the source
-    // guarantees above.
+    // guarantees above. A type-only import registers nothing and trips this
+    // anyway; that is the conservative side of the line, and the fix is to widen
+    // the scan rather than to except the file.
     // A directory pathspec for the same reason as in `routeSourceFiles`: a glob
     // like `packages/*/src` matches the directory and not what is under it, so
     // it would search nothing and pass for the wrong reason.
@@ -442,9 +478,12 @@ describe('the onRoute hook in buildServer', () => {
     expect(firstRoute!.index, 'a route is registered above the onRoute hook').toBeGreaterThan(hook);
     // A plugin gets its own encapsulated context, which inherits the hooks that
     // existed when it was created — and only those.
-    const firstRegister = source.indexOf('.register(');
-    if (firstRegister !== -1) {
-      expect(firstRegister, 'a plugin is registered above the onRoute hook').toBeGreaterThan(hook);
+    PLUGIN_REGISTER_PATTERN.lastIndex = 0;
+    const firstRegister = PLUGIN_REGISTER_PATTERN.exec(source);
+    if (firstRegister !== null) {
+      expect(firstRegister.index, 'a plugin is registered above the onRoute hook').toBeGreaterThan(
+        hook,
+      );
     }
   });
 
