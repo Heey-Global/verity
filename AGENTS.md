@@ -29,8 +29,9 @@ and a warning nobody reads is not a supply-chain control. A dependency whose own
 --engine-strict=false` is the deliberate way past that while it is sorted out.
 
 The file is tracked, so a checkout will collide with an untracked root `.npmrc`
-of your own. Registry credentials belong in `~/.npmrc`, which npm reads as well
-and which nothing here overrides.
+of your own. Move yours rather than merging the two: registry credentials belong
+in `~/.npmrc`, which npm reads as well and which nothing here overrides, and a
+token pasted into the tracked file is one `git add` from being published.
 
 ## Running the checks
 

@@ -220,9 +220,12 @@ describe('Supply-chain cooldown', () => {
     workspaces: string[];
   };
   // Comments and blank lines dropped; what remains is what npm actually applies.
+  // Trailing comments go too — `min-release-age=3 # three days` is a natural
+  // thing to write, and keeping it would turn a working floor into a `NaN` here
+  // and a confusing failure about the value not being a number.
   const npmrcSettings = readFileSync('.npmrc', 'utf8')
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => line.replace(/\s+[#;].*$/u, '').trim())
     .filter((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith(';'))
     .map((line) => {
       const separator = line.indexOf('=');
@@ -263,7 +266,10 @@ describe('Supply-chain cooldown', () => {
       status: npm.status,
       stdout: npm.stdout?.trim() ?? '',
       stderr: npm.stderr ?? '',
-      failure: npm.stderr || npm.error?.message,
+      // The spawn error first: stderr carries the warnings this deliberately
+      // keeps enabled, so preferring it would report a warning as the reason npm
+      // never ran.
+      failure: npm.error?.message ?? npm.stderr,
     };
   };
 
@@ -352,10 +358,18 @@ describe('Supply-chain cooldown', () => {
     // in the repository into a hard refusal — so it fails here first, on the
     // machine doing the bump.
     const running = spawnSync('npm', ['--version'], { encoding: 'utf8' });
-    const version = running.stdout.trim().split('.').map(Number);
+    const reported = running.stdout?.trim() ?? '';
+    // Parsed strictly: a prerelease (`12.0.0-pre.1`) or a failed spawn would
+    // otherwise reach the comparison as NaN and fail as though npm were too old,
+    // which is a different problem with a different fix.
+    const parts = /^(\d+)\.(\d+)\.(\d+)/u.exec(reported);
     expect(
-      reaches(version, FLOOR_HONOURED_FROM),
-      `the npm in use is ${running.stdout.trim()}, below the ${declared} this declares — engine-strict makes that a refusal rather than a warning`,
+      parts,
+      `could not read a version from \`npm --version\`: ${running.error?.message ?? reported}`,
+    ).not.toBeNull();
+    expect(
+      reaches((parts?.slice(1, 4) ?? []).map(Number), FLOOR_HONOURED_FROM),
+      `the npm in use is ${reported}, below the ${declared} this declares — engine-strict makes that a refusal rather than a warning`,
     ).toBe(true);
   });
 
@@ -383,9 +397,10 @@ describe('Supply-chain cooldown', () => {
         .map((entry) => `${parent}/${entry.name}`);
     });
     const found = ['.', ...roots].filter((root) => existsSync(`${root}/.npmrc`));
-    expect(found, 'a workspace .npmrc overrides the root floor for installs run from it').toEqual([
-      '.',
-    ]);
+    expect(
+      found,
+      'a workspace .npmrc overrides the root floor for installs run from it — if this is your own file, registry credentials belong in ~/.npmrc, which npm reads as well and nothing here overrides',
+    ).toEqual(['.']);
   });
 
   it('inherits the Renovate window instead of restating it', () => {
@@ -416,17 +431,21 @@ describe('Supply-chain cooldown', () => {
   });
 
   it('keeps the npm floor out of Renovate own lockfile updates', () => {
-    // Renovate runs npm to refresh the lockfile and reads this `.npmrc` while
-    // doing it. Left in place, the floor would apply to Renovate's resolution
-    // too and quietly outrank `vulnerabilityAlerts.minimumReleaseAge: 0 days` —
-    // blocking exactly the same-day security bumps the fast-track exists for.
-    // Nothing fails; the fast-track just stops being fast.
+    // Renovate reads this `.npmrc` while refreshing the lockfile, and it knows
+    // this key specifically: finding `min-release-age` in a repository's file,
+    // it skips passing its OWN `--before` and defers to the file. So the 3-day
+    // floor would not merely apply alongside the org policy, it would replace
+    // it — including replacing `vulnerabilityAlerts.minimumReleaseAge: 0 days`,
+    // so same-day security bumps would wait three days. Nothing fails; the
+    // fast-track just stops being fast.
     //
-    // A defined `npmrc` is what makes Renovate override the repository file, and
-    // an empty one overrides it with nothing. Not `ignoreNpmrcFile: true`, which
-    // Renovate dropped in v25 and now only honours through a deprecation shim
-    // that rewrites it to exactly this — and which, being deprecated, earns a
-    // "Migrate config" PR rather than doing its job quietly.
+    // A DEFINED `npmrc` is what makes Renovate override the repository file
+    // (`isString(config.npmrc) && !config.npmrcMerge`, so an empty string
+    // qualifies), and an empty one overrides it with nothing. Not
+    // `ignoreNpmrcFile: true`, which Renovate dropped in v25 and now only
+    // honours through a deprecation shim that rewrites it to exactly this — and
+    // which, being deprecated, earns a "Migrate config" PR rather than doing its
+    // job quietly.
     expect(config.npmrc, 'the npm floor would override the vulnerability fast-track').toBe('');
     // The override only happens because `npmrcMerge` is false. Set to true, the
     // config value is PREPENDED to the repository file instead of replacing it,
@@ -441,15 +460,16 @@ describe('Supply-chain cooldown', () => {
   it('carries nothing in .npmrc that Renovate would need', () => {
     // The empty `npmrc` in renovate.json replaces the whole file, not the one
     // setting it was added for. A registry, a scope mapping or an auth line
-    // added here later
-    // would be silently invisible to Renovate's npm runs, and the symptom —
-    // lockfile updates resolving against the wrong registry — points nowhere
-    // near this file. Deliberately exact rather than a deny-list of the risky
-    // keys: a harmless-looking addition still has to be argued for here, which
-    // is cheaper than deciding after the fact which keys Renovate needed.
+    // added here later would be silently invisible to Renovate's npm runs, and
+    // the symptom — lockfile updates resolving against the wrong registry —
+    // points nowhere near this file. Deliberately exact rather than a deny-list
+    // of the risky keys: a harmless-looking addition still has to be argued for
+    // here, which is cheaper than deciding after the fact which keys Renovate
+    // needed. Sorted, because the order of two independent settings in a file is
+    // not something to fail a build over.
     expect(
-      npmrcSettings.map(({ key }) => key),
+      npmrcSettings.map(({ key }) => key).sort(),
       'a setting was added to .npmrc that Renovate empty npmrc now hides from it',
-    ).toEqual(['min-release-age', 'engine-strict']);
+    ).toEqual(['engine-strict', 'min-release-age']);
   });
 });
