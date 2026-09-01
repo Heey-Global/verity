@@ -1,6 +1,6 @@
 import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
-import { EventStore, createSealableSecretCipher } from '@verity/store';
+import { EventStore, WorkflowStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -10,6 +10,7 @@ import {
   wsOriginAllowed,
   type AuthTokenStore,
 } from './auth.js';
+import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { buildServer } from './server.js';
 
 const conductor = {} as unknown as Conductor;
@@ -205,53 +206,81 @@ describe('global auth gate (onRequest)', () => {
     }
   });
 
-  it('exposes nothing new on the routes whose exemption is no longer deps-conditional', async () => {
-    // Deriving the exemption set from route registrations widened it for the four
-    // routes that register unconditionally and refuse themselves in the handler:
-    // the old static list made their exemption conditional on the same deps the
-    // handler checks. That is only harmless if each handler's FIRST act, ahead of
-    // any parsing or state access, is to refuse — so assert it, with the gate
-    // armed and every one of those deps absent. The prose in route-scopes.ts
-    // makes this claim; this is what holds it.
-    const cipher = createSealableSecretCipher();
-    const store = new EventStore(ctx.db, cipher);
-    const registry = await createAuthTokenRegistry(store, { enabled: false });
-    const app = buildServer({
-      eventStore: store,
-      bus: new InMemoryEventBus(),
-      conductor,
-      secretCipher: cipher,
-      authRegistry: registry,
-      // devicePairing, workflowStore, workflowGithubWebhookSecret and
-      // ghTokenCapabilities are all deliberately absent.
-    });
-    try {
-      const init = await app.inject({
-        method: 'POST',
-        url: '/secret/init',
-        payload: { password: PASSWORD, deviceLabel: 'iPhone' },
-      });
-      expect(init.statusCode).toBe(200);
-      // The gate is armed now, and an ordinary route proves it.
-      expect((await app.inject({ method: 'GET', url: '/settings' })).statusCode).toBe(401);
+  // Deriving the exemption set from route registrations widened it for the four
+  // routes that register unconditionally and refuse themselves in the handler:
+  // the old static list made their exemption conditional on the same deps the
+  // handler checks. That is only harmless if each handler's FIRST act, ahead of
+  // any parsing or state access, is to refuse. Two of those conditions are
+  // conjunctions — the webhook wants a store AND an HMAC secret, the workflow
+  // result wants a store AND capabilities — so a half-configured deployment is
+  // the interesting case, not the empty one: if a handler checked only one
+  // conjunct, the other half-configuration would now reach the handler body
+  // unauthenticated where it used to get a 401. Hence a case per combination.
+  const halfConfigurations = [
+    { label: 'no workflow deps at all', workflowStore: false, secret: false, capabilities: false },
+    {
+      label: 'webhook secret but no store',
+      workflowStore: false,
+      secret: true,
+      capabilities: false,
+    },
+    {
+      label: 'store but neither webhook secret nor capabilities',
+      workflowStore: true,
+      secret: false,
+      capabilities: false,
+    },
+    { label: 'capabilities but no store', workflowStore: false, secret: false, capabilities: true },
+  ] as const;
 
-      for (const [method, url] of [
-        ['GET', '/pair/identity'],
-        ['POST', '/pair/redeem'],
-        ['POST', '/providers/github/webhook'],
-        ['POST', '/internal/workflow/result'],
-      ] as const) {
-        // 404, not 200 and not a parse error: the handler refuses before it reads
-        // anything the caller sent. An unauthenticated caller saw 401 here before
-        // this change and sees 404 now, which is the whole of the difference.
-        const response = await app.inject({ method, url, payload: {} });
-        expect(response.statusCode, `${method} ${url}`).toBe(404);
-        expect(response.json(), `${method} ${url}`).toEqual({ error: 'not found' });
+  for (const shape of halfConfigurations) {
+    it(`exposes nothing new on the newly unconditional exemptions — ${shape.label}`, async () => {
+      const cipher = createSealableSecretCipher();
+      const store = new EventStore(ctx.db, cipher);
+      const registry = await createAuthTokenRegistry(store, { enabled: false });
+      const app = buildServer({
+        eventStore: store,
+        bus: new InMemoryEventBus(),
+        conductor,
+        secretCipher: cipher,
+        authRegistry: registry,
+        // `devicePairing` is absent throughout: the pairing routes have a single
+        // condition, so the empty case is the whole of their surface.
+        ...(shape.workflowStore ? { workflowStore: new WorkflowStore(ctx.db) } : {}),
+        ...(shape.secret ? { workflowGithubWebhookSecret: 'not-a-real-secret' } : {}),
+        ...(shape.capabilities
+          ? { ghTokenCapabilities: createGhTokenCapabilityRegistry(ctx.db) }
+          : {}),
+      });
+      try {
+        const init = await app.inject({
+          method: 'POST',
+          url: '/secret/init',
+          payload: { password: PASSWORD, deviceLabel: 'iPhone' },
+        });
+        expect(init.statusCode).toBe(200);
+        // The gate is armed now, and an ordinary route proves it.
+        expect((await app.inject({ method: 'GET', url: '/settings' })).statusCode).toBe(401);
+
+        for (const [method, url] of [
+          ['GET', '/pair/identity'],
+          ['POST', '/pair/redeem'],
+          ['POST', '/providers/github/webhook'],
+          ['POST', '/internal/workflow/result'],
+        ] as const) {
+          // 404, not 200 and not a parse error: the handler refuses before it
+          // reads anything the caller sent. An unauthenticated caller saw 401
+          // here before this change and sees 404 now, which is the whole of the
+          // difference.
+          const response = await app.inject({ method, url, payload: {} });
+          expect(response.statusCode, `${method} ${url}`).toBe(404);
+          expect(response.json(), `${method} ${url}`).toEqual({ error: 'not found' });
+        }
+      } finally {
+        await app.close();
       }
-    } finally {
-      await app.close();
-    }
-  });
+    });
+  }
 
   it('rate-limits /secret/unlock after repeated wrong passwords from one IP', async () => {
     const cipher = createSealableSecretCipher();

@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import { join } from 'node:path';
 import {
+  LOCKOUT_CRITICAL_KEYS,
   NON_OPERATOR_ROUTES,
   declaredNonOperatorKeys,
+  missingLockoutKeys,
   nonOperatorDeclarationError,
   routeScopeKey,
   type RouteScopeDeclaration,
@@ -46,7 +48,8 @@ const MULTI_METHOD_PATTERN = new RegExp(`\\b${receiver}\\.(?:all|route)\\(`, 'g'
 const FASTIFY_PARAM_PATTERN = /([A-Za-z_$][\w$]*)\s*:\s*FastifyInstance\b/g;
 /** An inline plugin binds its instance with an INFERRED type, so the annotation
  *  above never sees it. Catch the callback's first parameter directly. */
-const INLINE_PLUGIN_PATTERN = /\.register\(\s*(?:async\s*)?\(\s*([A-Za-z_$][\w$]*)/g;
+const INLINE_PLUGIN_PATTERN =
+  /\.register\(\s*(?:async\s+)?(?:function\s*[A-Za-z_$\w]*\s*)?\(\s*([A-Za-z_$][\w$]*)/g;
 /** A `prefix` shifts the url `onRoute` reports away from the literal in the
  *  source, so a declaration would name a path that never arrives. */
 const PREFIXED_REGISTER_PATTERN = /\.register\([^)]*\bprefix\s*:/g;
@@ -184,11 +187,33 @@ describe('route scope declarations', () => {
   });
 
   it('registers no plugin under a url prefix', () => {
-    // `onRoute` reports the prefixed url, but the scan and the declarations both
-    // read the literal in the source. A prefixed exception route would therefore
-    // never match its declaration — it would fail closed, but the staleness test
-    // would still call the declaration live, which is the misleading part.
+    // A source-level nudge only: this pattern sees `register(plugin, { prefix })`
+    // but not a prefix passed past a long inline plugin body. The guarantee lives
+    // at runtime, in the prefix check inside `declaredNonOperatorKeys`, which sees
+    // what Fastify actually resolved rather than what the source looks like.
     expect(filesMatching(PREFIXED_REGISTER_PATTERN)).toEqual([]);
+  });
+});
+
+describe('missingLockoutKeys', () => {
+  it('accepts a gate that got every lockout-critical exemption', () => {
+    expect(missingLockoutKeys(new Set(LOCKOUT_CRITICAL_KEYS))).toEqual([]);
+  });
+
+  it('names the exemptions a gate is missing', () => {
+    const keys = new Set(LOCKOUT_CRITICAL_KEYS);
+    keys.delete('POST /secret/unlock');
+    // buildServer turns this into a refusal to come up. Without it the deployment
+    // starts and 401s the only request that can mint the operator's bearer.
+    expect(missingLockoutKeys(keys)).toEqual(['POST /secret/unlock']);
+    expect(missingLockoutKeys(new Set())).toEqual([...LOCKOUT_CRITICAL_KEYS]);
+  });
+
+  it('holds only keys that the declarations actually contain', () => {
+    // A typo here would be a check that can never pass — buildServer would refuse
+    // to start at all. That failed loudly the moment it was tried, but cheaply
+    // enough to pin.
+    for (const key of LOCKOUT_CRITICAL_KEYS) expect([...NON_OPERATOR_ROUTES.keys()]).toContain(key);
   });
 });
 
@@ -235,6 +260,18 @@ describe('declaredNonOperatorKeys', () => {
       'HEAD /healthz',
     ]);
     expect(declaredNonOperatorKeys({ method: 'HEAD', url: '/projects' })).toEqual([]);
+  });
+
+  it('refuses a declared exception that a plugin prefix moved off its own path', () => {
+    const routes = fixture('GET', '/healthz');
+    expect(() =>
+      declaredNonOperatorKeys({ method: 'GET', url: '/api/healthz', prefix: '/api' }, routes),
+    ).toThrow(/registered under the prefix/);
+    // A prefixed route whose bare path is not declared is an ordinary operator
+    // route; the prefix is then nobody's business.
+    expect(
+      declaredNonOperatorKeys({ method: 'GET', url: '/api/projects', prefix: '/api' }, routes),
+    ).toEqual([]);
   });
 
   it('refuses a declared exception whose url carries a parameter', () => {

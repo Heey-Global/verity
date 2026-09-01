@@ -131,7 +131,7 @@ import {
 } from './attention.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
-import { LOCKOUT_CRITICAL_KEYS, declaredNonOperatorKeys, routeScopeKey } from './route-scopes.js';
+import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
 import { createUnlockThrottle } from './unlock-throttle.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
@@ -3032,6 +3032,33 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           bodyLimit,
           https: deps.https,
         } satisfies FastifyHttpsOptions<HttpsServer>);
+  // Derives the auth gate's pre-auth exception set from the routes this instance
+  // actually registers; the gate that consumes it is far below, next to the rest
+  // of the auth logic. It is attached HERE, in the same statement group as the
+  // instance itself, because `onRoute` is not retroactive — unlike `onRequest` it
+  // sees only routes registered after it. Adjacent to the constructor there is no
+  // "before" to get wrong: no route can exist yet. Anywhere else and a future
+  // route hoisted above it would silently lose its exemption and 401.
+  // `preAuthKeys` holds `"METHOD /pathname"`, so a sibling method on an exempt
+  // pathname is not exempt. See route-scopes.ts.
+  const preAuthKeys = new Set<string>();
+  app.addHook('onRoute', (route) => {
+    for (const key of declaredNonOperatorKeys(route)) preAuthKeys.add(key);
+  });
+  // Defence in depth for the routes whose loss locks the operator out entirely
+  // rather than breaking a feature: refuse to come up instead of 401-ing the
+  // on-ramp that mints the operator bearer. See LOCKOUT_CRITICAL_KEYS.
+  app.addHook('onReady', (done) => {
+    const missing = missingLockoutKeys(preAuthKeys);
+    done(
+      missing.length === 0
+        ? undefined
+        : new Error(
+            `verity: pre-auth exemption missing for ${missing.join(', ')} — the onRoute hook that derives them must precede every route registration`,
+          ),
+    );
+  });
+
   const githubWebhookDigests = new WeakMap<FastifyRequest, Promise<string>>();
   if (deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined) {
     app.addHook('preParsing', (request, _reply, payload, done) => {
@@ -3880,36 +3907,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   //
   // The exception set used to be written out here as a second, conditional list
   // that had to stay in step with the equally conditional route registrations.
-  // It is now derived from the routes this instance actually registers, so the
-  // two cannot drift: `preAuthKeys` holds `"METHOD /pathname"` only if a route
-  // for it was registered AND that method is declared. Keyed by method and not
-  // by pathname, so adding a POST beside a declared GET does not exempt the POST.
-  // See route-scopes.ts.
-  //
-  // The hook must precede every route registration — Fastify runs `onRoute` only
-  // for routes added after it, unlike the retroactive `onRequest` below. It sits
-  // above the first `app.get` in this file, and every other registrar (the
-  // onboarding, agent-loop, dev-server, preview-share, secret-job and
-  // secret-provider modules) is handed this same instance further down.
-  const preAuthKeys = new Set<string>();
-  app.addHook('onRoute', (route) => {
-    for (const key of declaredNonOperatorKeys(route)) preAuthKeys.add(key);
-  });
-  // Ordering is load-bearing and the type system cannot say so, so check it once
-  // the route tree is complete: if a lockout-critical exemption did not reach the
-  // hook, refuse to come up rather than 401 the on-ramp that mints the operator
-  // token. These routes are registered unconditionally, so a miss is a mistake in
-  // this file, not a deployment shape. See LOCKOUT_CRITICAL_KEYS.
-  app.addHook('onReady', (done) => {
-    const missing = LOCKOUT_CRITICAL_KEYS.filter((key) => !preAuthKeys.has(key));
-    done(
-      missing.length === 0
-        ? undefined
-        : new Error(
-            `verity: pre-auth exemption missing for ${missing.join(', ')} — the onRoute hook that derives them must precede every route registration`,
-          ),
-    );
-  });
+  // It is now `preAuthKeys`, derived from the routes this instance actually
+  // registers by the `onRoute` hook attached next to the Fastify constructor
+  // above — see there for why it cannot live at this point in the file.
   app.addHook('onRequest', async (request, reply) => {
     // Match on the concrete pathname (query stripped) plus the request method; no
     // pre-auth route carries a path param, so an exact-set lookup is sufficient

@@ -197,6 +197,15 @@ export const LOCKOUT_CRITICAL_KEYS: readonly string[] = [
   'GET /pair/identity',
 ];
 
+/** Which lockout-critical exemptions the gate did not end up with. Separate from
+ *  the hook that calls it so its failure path is reachable from a test. */
+export function missingLockoutKeys(
+  preAuthKeys: ReadonlySet<string>,
+  critical: readonly string[] = LOCKOUT_CRITICAL_KEYS,
+): readonly string[] {
+  return critical.filter((key) => !preAuthKeys.has(key));
+}
+
 /**
  * The gate matches on the concrete request pathname with the query stripped,
  * deliberately not on Fastify's route pattern. That is only sound while no
@@ -247,7 +256,11 @@ export function nonOperatorDeclarationError(
  * compares against.
  */
 export function declaredNonOperatorKeys(
-  route: { readonly method: string | readonly string[]; readonly url: string },
+  route: {
+    readonly method: string | readonly string[];
+    readonly url: string;
+    readonly prefix?: string;
+  },
   routes: ReadonlyMap<string, RouteScopeDeclaration> = NON_OPERATOR_ROUTES,
 ): readonly string[] {
   const methods = (
@@ -256,6 +269,19 @@ export function declaredNonOperatorKeys(
   const keys: string[] = [];
   for (const method of methods) {
     const declaredAs = method.toUpperCase() === 'HEAD' ? 'GET' : method;
+    // Under a plugin `prefix`, `route.url` is the prefixed path while the
+    // declaration names the bare one, so the lookup below simply misses and the
+    // route quietly falls back to requiring the operator token. Fail loudly on
+    // the one case where that is certainly wrong: the path the module wrote IS
+    // declared, and only the prefix moved it out from under its own declaration.
+    if (route.prefix !== undefined && route.prefix !== '' && route.url.startsWith(route.prefix)) {
+      const unprefixed = route.url.slice(route.prefix.length) || '/';
+      if (routes.has(routeScopeKey(declaredAs, unprefixed))) {
+        throw new Error(
+          `verity: route ${routeScopeKey(declaredAs, unprefixed)} is declared as an operator-gate exception but is registered under the prefix \`${route.prefix}\`; the gate would match neither path, so declare the prefixed url or drop the prefix`,
+        );
+      }
+    }
     const error = nonOperatorDeclarationError(declaredAs, route.url, routes);
     // A programming error in this repository, not a runtime condition: fail at
     // registration, where it is cheap to see, rather than at the first request.
