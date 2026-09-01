@@ -5,7 +5,7 @@ import type { MeetingTranscriptUpload, Message } from '@verity/mobile';
 // that reports the backend ready while the upload flow sends the operator back
 // to Settings to configure it is the same lie told twice. Re-exported here
 // because this module remains the app's door to the meeting-upload helpers.
-export { meetingTranscriptionReadiness, type MeetingTranscriptionReadiness } from '@verity/mobile';
+export { meetingTranscriptionReadiness } from '@verity/mobile';
 
 /** Decide whether a first-use choice can continue an already staged upload
  * immediately or still needs the external service fields from Settings. */
@@ -45,7 +45,7 @@ export interface PendingMeetingUpload {
 
 const pendingMeetingUploads = new Map<string, PendingMeetingUpload>();
 
-export function setPendingMeetingUpload(sessionId: string, pending: PendingMeetingUpload): void {
+function setPendingMeetingUpload(sessionId: string, pending: PendingMeetingUpload): void {
   pendingMeetingUploads.set(sessionId, pending);
 }
 

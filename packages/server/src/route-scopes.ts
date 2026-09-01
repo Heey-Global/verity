@@ -35,7 +35,7 @@
  *  gate acts on is whether a key is present at all — so grouping a route under a
  *  scope grants it nothing and checks nothing. The handler's own credential
  *  check is what makes the exception safe. */
-export type RouteScope =
+type RouteScope =
   | 'public'
   | 'onboarding'
   | 'device-pairing'

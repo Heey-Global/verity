@@ -5,7 +5,7 @@ import { request as httpsRequest } from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath, URL } from 'node:url';
 
-export const CONNECTOR_PROTOCOL_VERSION = 1;
+const CONNECTOR_PROTOCOL_VERSION = 1;
 export const CONNECTOR_HOST = '127.0.0.1';
 const READY_PATH = '/__verity/ready';
 const CONSUMED_HEADERS = new Set([
@@ -120,7 +120,7 @@ export function validateEgressConnectorOptions(options) {
   return { port, egressUrl, codexEgressUrl };
 }
 
-export function createEgressConnectorHandler(options) {
+function createEgressConnectorHandler(options) {
   const { egressUrl, codexEgressUrl } = validateEgressConnectorOptions(options);
   const forward = options.forward ?? forwardRequest;
   return (request, response) => {
@@ -153,7 +153,7 @@ export async function runEgressConnector(options) {
   };
 }
 
-export function closeServerBounded(server, graceMs) {
+function closeServerBounded(server, graceMs) {
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) {
     return Promise.reject(new Error('Claude connector shutdown grace must be non-negative'));
   }

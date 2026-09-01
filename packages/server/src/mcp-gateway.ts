@@ -97,7 +97,7 @@ function dopplerResolutionMessage(error: DopplerSecretResolutionError): string |
 /** MCP revisions this gateway speaks, newest first. */
 export const MCP_GATEWAY_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const;
 
-export const MCP_GATEWAY_SERVER_NAME = 'verity-secret-gateway';
+const MCP_GATEWAY_SERVER_NAME = 'verity-secret-gateway';
 
 /** How long an unanswered card may hold one call open before the caller is denied. Long
  *  enough that an operator who stepped away can still answer, short enough that an
@@ -132,7 +132,7 @@ const toolCallParamsSchema = z
   })
   .loose();
 
-export interface McpGatewayResponse {
+interface McpGatewayResponse {
   status: number;
   /** Absent for a notification, which is acknowledged with an empty 202. */
   body?: unknown;

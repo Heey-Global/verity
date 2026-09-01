@@ -47,7 +47,7 @@ export interface DockerProjectRelayOptions {
   log?: { warn(obj: unknown, msg?: string): void } | undefined;
 }
 
-export interface SocketTreeValidation {
+interface SocketTreeValidation {
   dataVolumeRoot: string;
   socketRoot: string;
   bindingDirectory: string;
@@ -352,7 +352,7 @@ function exactSocketDirectorySubpath(
   return subpath.split(sep).join('/');
 }
 
-export function isTrustedSocketTree(input: SocketTreeValidation): boolean {
+function isTrustedSocketTree(input: SocketTreeValidation): boolean {
   try {
     if (
       realpathSync(input.dataVolumeRoot) !== input.dataVolumeRoot ||

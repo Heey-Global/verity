@@ -33,7 +33,7 @@ import {
  * against a different one supersedes the previous binding outright rather than
  * accumulating beside it.
  */
-export interface SecretKeyHandoffMailboxView {
+interface SecretKeyHandoffMailboxView {
   /** Identity the promoted Server must require of the envelope's sender. */
   readonly senderIdentityPublicKey?: string;
   /** Ephemeral offer the outgoing Server seals its key to. */

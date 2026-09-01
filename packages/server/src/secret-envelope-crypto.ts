@@ -1,7 +1,6 @@
 import {
   createCipheriv,
   createDecipheriv,
-  createHash,
   createPrivateKey,
   createPublicKey,
   diffieHellman,
@@ -316,9 +315,4 @@ export function openSecretEnvelope(
 /** Recover a recipient's raw X25519 public key from its raw private key. */
 export function publicKeyFromKeyObjectRaw(rawPrivate: Uint8Array): Uint8Array {
   return rawPublicKey(createPublicKey(privateKeyFromRaw(rawPrivate)));
-}
-
-/** SHA-256 hex of a raw public key — a stable, log-safe recipient key id. */
-export function recipientKeyId(rawPublicKey: Uint8Array): string {
-  return createHash('sha256').update(Buffer.from(rawPublicKey)).digest('hex');
 }

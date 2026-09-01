@@ -137,7 +137,7 @@ export class CodexCredentialAuthority {
  * login failing later, at `resolve()`: either the refresh being turned down, or a
  * document that never needed refreshing and cannot be read (see `credentialFrom`).
  */
-export function parseCodexAuthJson(authJson: string): CodexAuthDocument {
+function parseCodexAuthJson(authJson: string): CodexAuthDocument {
   let value: unknown;
   try {
     value = JSON.parse(authJson);

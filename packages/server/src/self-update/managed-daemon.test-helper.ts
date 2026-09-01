@@ -24,14 +24,14 @@ export const newImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.r
 export const ENVIRONMENT = { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID };
 /** What the official image bakes in, including the version the Updater's own
  *  offline attestation reads back off the pulled image. */
-export const IMAGE_ENV = [
+const IMAGE_ENV = [
   'PATH=/usr/local/bin:/usr/bin:/bin',
   'PORT=8082',
   'VERITY_ROOT=/srv/verity',
   'VERITY_SERVER_VERSION=10.6.0',
 ];
 
-export const sealedSpec = (): Omit<ServerDeploymentSpecBody, 'schemaVersion' | 'deploymentId'> => ({
+const sealedSpec = (): Omit<ServerDeploymentSpecBody, 'schemaVersion' | 'deploymentId'> => ({
   image: oldImage,
   environment: [
     { name: 'DATABASE_URL', source: { kind: 'env', name: 'DATABASE_URL' } },
@@ -60,7 +60,7 @@ export const sealedSpec = (): Omit<ServerDeploymentSpecBody, 'schemaVersion' | '
 /** What a daemon reports for a container created from `spec`: the image's baked
  *  environment with the create request applied on top, and volume mounts
  *  carrying both the volume name and the host path it resolves to. */
-export function inspectFromSpec(id: string, spec: ContainerSpec, status: string): ContainerInspect {
+function inspectFromSpec(id: string, spec: ContainerSpec, status: string): ContainerInspect {
   const env = new Map<string, string>();
   for (const entry of [...IMAGE_ENV, ...(spec.env ?? [])])
     env.set(entry.slice(0, entry.indexOf('=')), entry.slice(entry.indexOf('=') + 1));
@@ -104,7 +104,7 @@ export type FakeDaemon = ReturnType<typeof fakeDaemon>;
  * correctness argument is about container lifetime under crash and retry, which
  * per-call mocks cannot express.
  */
-export function fakeDaemon() {
+function fakeDaemon() {
   const containers = new Map<string, { spec: ContainerSpec; status: string }>();
   const exitCodes = new Map<string, number>();
   const logs = new Map<string, string>();

@@ -29,7 +29,7 @@ export interface SecretJobGrant {
 }
 
 /** What the channel receives for a job: the claims plus a job-bound broker seal. */
-export interface SecretJobGrantBinding {
+interface SecretJobGrantBinding {
   claims: RunGrantClaims;
   sealEnvelope: (redemption: RunGrantRedemption) => Promise<SecretEnvelope>;
 }

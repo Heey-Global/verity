@@ -3,9 +3,9 @@ import { DockerError, type DockerClient, type ContainerInspect } from './docker.
 import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
 import { CONTAINER_GENERATION_LABEL } from './project-relay-migration.js';
 
-export type SandboxUpdateKind = 'normal' | 'security';
-export type SandboxUpdateCategory = 'software' | 'security' | 'configuration';
-export type SandboxUpdateState = 'current' | 'available' | 'unknown';
+type SandboxUpdateKind = 'normal' | 'security';
+type SandboxUpdateCategory = 'software' | 'security' | 'configuration';
+type SandboxUpdateState = 'current' | 'available' | 'unknown';
 
 /**
  * Whether Verity's own automatic recreate is still expected to close the gap this
@@ -27,7 +27,7 @@ export type SandboxUpdateState = 'current' | 'available' | 'unknown';
  *
  * Clients decide what to surface from this, not from `state` alone.
  */
-export type SandboxSelfRepairState = 'converging' | 'stalled';
+type SandboxSelfRepairState = 'converging' | 'stalled';
 
 export interface SandboxUpdateStatus {
   state: SandboxUpdateState;
@@ -57,7 +57,7 @@ export interface SandboxUpdateStatus {
  * `statusAll` resolves this once and each project then only needs its own
  * container inspect.
  */
-export interface SandboxUpdateTarget {
+interface SandboxUpdateTarget {
   defaultProjectImage: string;
   targetVersion?: string | undefined;
   toolkitFeatureRef?: string | undefined;

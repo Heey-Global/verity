@@ -81,7 +81,7 @@ export const TEMPLATE_CACHE_VAR = 'VERITY_TEST_PGLITE_CACHE';
  * skippable, and a developer chasing a phantom should not have to find this file
  * to skip it.
  */
-export const TEMPLATE_ENABLED_VAR = 'VERITY_TEST_PGLITE_TEMPLATE';
+const TEMPLATE_ENABLED_VAR = 'VERITY_TEST_PGLITE_TEMPLATE';
 
 /**
  * How long a working copy may sit around before it is assumed abandoned.
@@ -110,7 +110,7 @@ export const TEMPLATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
  * How long a half-built template is kept. Comfortably past the point where the
  * build that owns it would have been killed for running too long.
  */
-export const SCRATCH_MAX_AGE_MS = 2 * BUILD_TIMEOUT_MS;
+const SCRATCH_MAX_AGE_MS = 2 * BUILD_TIMEOUT_MS;
 
 /** Scratch directories, mid-build. Skipped by every lookup; swept when stale. */
 const SCRATCH_PREFIX = '.building-';

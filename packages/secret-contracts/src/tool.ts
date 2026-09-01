@@ -324,15 +324,11 @@ const trustedCliEnvNameSchema = z
  * which is exactly what the ownership rule exists to prevent. Verity writing the
  * file removes the reason to try.
  *
- * The path is fixed at {@link TRUSTED_CLI_SECRET_DIR}/<env>, so an argument that
+ * The path is fixed at `/run/verity-runner/secrets/<env>`, so an argument that
  * must name it (`--secret=file:/run/verity-runner/secrets/EXAMPLE_TOKEN`) can be
  * written without Verity substituting anything into argv.
  */
-export const trustedCliInjectionSchema = z.enum(['env', 'file']);
-export type TrustedCliInjection = z.infer<typeof trustedCliInjectionSchema>;
-
-/** Root-owned, agent-readable, emptied after every run. */
-export const TRUSTED_CLI_SECRET_DIR = '/run/verity-runner/secrets';
+const trustedCliInjectionSchema = z.enum(['env', 'file']);
 
 /** One secret and where the command receives it. */
 export const trustedCliSecretSchema = z

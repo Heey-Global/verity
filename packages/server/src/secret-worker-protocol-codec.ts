@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 const DOCKER_HEADER_BYTES = 8;
 export const MAX_DOCKER_ATTACH_FRAME_BYTES = 1_048_576;
-export const MAX_WORKER_MESSAGE_BYTES = 262_144;
+const MAX_WORKER_MESSAGE_BYTES = 262_144;
 
 export class SecretWorkerProtocolError extends Error {}
 
@@ -12,7 +12,7 @@ export interface DockerAttachFrame {
   payload: Uint8Array;
 }
 
-export const secretWorkerWireMessageSchema = z
+const secretWorkerWireMessageSchema = z
   .object({
     protocolVersion: z.literal(1),
     type: z.enum(['challenge', 'proof', 'bootstrap', 'frame', 'result', 'error']),

@@ -48,7 +48,7 @@ import type { SecretWorkerWireMessage } from './secret-worker-protocol-codec.js'
  * into opening the envelope before it has authenticated itself.
  */
 
-export class SecretWorkerRuntimeError extends Error {}
+class SecretWorkerRuntimeError extends Error {}
 
 /** Deterministic seams for tests; production injects none and gets fresh keys and a live clock. */
 export interface SecretWorkerRuntimeSeams {

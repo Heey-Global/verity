@@ -8,7 +8,7 @@ import {
   type ReleaseChannelMetadata,
 } from './release-channel.js';
 
-export interface ReleaseChannelPublishInput {
+interface ReleaseChannelPublishInput {
   /** Digest-pinned reference to the image this release publishes. */
   readonly serverImage: string;
   /** Full commit SHA the release was built from. */
@@ -33,7 +33,7 @@ export interface ReleaseChannelPublishInput {
  * The returned string is the byte sequence that gets signed and published — the
  * signature covers exactly this, never a re-serialization.
  */
-export function renderReleaseChannelMetadata(input: ReleaseChannelPublishInput): string {
+function renderReleaseChannelMetadata(input: ReleaseChannelPublishInput): string {
   const metadata: ReleaseChannelMetadata = {
     schemaVersion: RELEASE_CHANNEL_SCHEMA_VERSION,
     channel: 'stable',

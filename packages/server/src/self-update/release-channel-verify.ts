@@ -23,7 +23,7 @@ const OID_SOURCE_REPOSITORY_IDENTIFIER = '1.3.6.1.4.1.57264.1.15';
 
 /** The parts of a Sigstore `Signer` this module reads, restated structurally so
  *  the verifier can be exercised without the Sigstore stack. */
-export interface SignerObjectIdentifier {
+interface SignerObjectIdentifier {
   readonly oid?: { readonly id?: readonly number[] } | undefined;
   readonly value: Uint8Array;
 }
@@ -40,7 +40,7 @@ export interface VerifiedSigner {
 
 /** Verify a Sigstore bundle against the exact signed bytes, returning the signer
  *  whose certificate the bundle chains to. Throws on any cryptographic failure. */
-export type SigstoreBundleVerifier = (bundle: unknown, data: Buffer) => Promise<VerifiedSigner>;
+type SigstoreBundleVerifier = (bundle: unknown, data: Buffer) => Promise<VerifiedSigner>;
 
 export interface ReleaseChannelVerifierOptions {
   /** Where the Sigstore TUF trusted root is cached between restarts. */

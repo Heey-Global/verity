@@ -18,7 +18,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
  * about. `nextStep` is the first INCOMPLETE required step in this order; Doppler is
  * optional and never blocks `complete`.
  */
-export type OnboardingStep = 'master-password' | 'github' | 'first-project';
+type OnboardingStep = 'master-password' | 'github' | 'first-project';
 
 export interface OnboardingStatus {
   /** The at-rest cipher is sealed (no key loaded). Mirrors `/secret/status`. */
@@ -57,7 +57,7 @@ function present(value: string | null | undefined): boolean {
  * sealed flag. Pure over its inputs (the two async store calls it awaits) so the
  * route handler is a thin wrapper and the logic is unit-testable directly.
  */
-export async function computeOnboardingStatus(
+async function computeOnboardingStatus(
   store: EventStore,
   cipher: SealableSecretCipher | undefined,
 ): Promise<OnboardingStatus> {

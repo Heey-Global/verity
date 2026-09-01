@@ -29,7 +29,7 @@ export interface ControlEnvelope {
   leaseEpoch: number;
 }
 
-export interface ControlAttachRequest {
+interface ControlAttachRequest {
   kind: 'attach';
   turnId: string;
   controllerId: string;
@@ -57,7 +57,7 @@ export interface ControlAttachSnapshot {
   outstandingPermissions: PermissionRequest[];
 }
 
-export type ControlAttachReply =
+type ControlAttachReply =
   | ({
       kind: 'inspected';
       turnId: string;

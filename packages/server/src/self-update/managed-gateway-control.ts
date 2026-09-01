@@ -41,7 +41,7 @@ import type {
 export const MANAGED_GATEWAY_CONTROL_SOCKET = '/run/verity-gateway/control.sock';
 
 /** Maximum startup grace for a Gateway container to bind its control socket. */
-export const GATEWAY_CONTROL_BIND_TIMEOUT_MS = 60_000;
+const GATEWAY_CONTROL_BIND_TIMEOUT_MS = 60_000;
 const BIND_POLL_MS = 250;
 
 /** Diagnostic prefix for transport-level failures on this channel. */
@@ -53,7 +53,7 @@ const CONTROL_LABEL = 'Managed gateway control';
  * stall. Any real drain is a few seconds; this only stops a typo from wedging
  * the channel until the Gateway restarts.
  */
-export const MAX_DRAIN_TIMEOUT_MS = 300_000;
+const MAX_DRAIN_TIMEOUT_MS = 300_000;
 
 /** The part of the runtime this channel is allowed to reach. */
 export type ManagedGatewayControlTarget = Pick<

@@ -51,7 +51,7 @@ export interface AuthTokenStore {
   insertAuthToken(record: { id: string; tokenHash: string; label?: string | null }): Promise<void>;
 }
 
-export interface MintedAuthToken {
+interface MintedAuthToken {
   /** The RAW bearer token — returned to the device exactly once, never re-derivable. */
   token: string;
   /** The token's opaque public id (for later revocation). */

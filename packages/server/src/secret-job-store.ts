@@ -8,7 +8,7 @@ import type { Database } from '@verity/store';
 import type { Kysely } from 'kysely';
 import type { AuthenticatedApprovalActor } from './secret-authorization.js';
 
-export interface StoredSecretJob {
+interface StoredSecretJob {
   jobId: string;
   actorId: string;
   authorizationHash: string;

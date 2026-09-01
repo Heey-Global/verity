@@ -12,7 +12,7 @@ const BOOTSTRAP_BYTES = 32;
 
 export class DevicePairingRejectedError extends Error {}
 
-export interface DevicePairingIdentity {
+interface DevicePairingIdentity {
   serverId: string;
   identityKey: string;
 }

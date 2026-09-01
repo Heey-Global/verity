@@ -166,7 +166,7 @@ export const DEFAULT_DOCKER_GC_POLICY: DockerGcPolicy = {
   lowDiskKeepImagesPerRepo: 1,
 };
 
-export interface DockerGcLogger {
+interface DockerGcLogger {
   info(obj: unknown, msg?: string): void;
   warn(obj: unknown, msg?: string): void;
 }

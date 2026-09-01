@@ -194,7 +194,7 @@ export interface GitBranchServiceOptions {
   mergeInProgress?: (basePath: string) => boolean;
 }
 
-export interface SwitchOptions {
+interface SwitchOptions {
   /** Create and switch to a NEW branch off the base. */
   newBranch?: string;
   /** Switch to an EXISTING local branch. */
@@ -388,7 +388,7 @@ export function isValidBranchName(name: string): boolean {
  * branch name, so it cannot reject a ref that arrived from there, and it keeps an
  * absurd argument out of argv.
  */
-export function isSafeRefName(name: string): boolean {
+function isSafeRefName(name: string): boolean {
   if (name.length === 0 || name.length > 255) return false;
   if (name.startsWith('-')) return false;
   // Control characters, space, DEL, and the characters git itself forbids in a ref.

@@ -61,7 +61,7 @@ export class SandboxUnavailableError extends Error {
  *  one field this module reads. Rejects the way {@link DockerClient} does: a
  *  {@link DockerError} of kind `container_not_found` when the container is gone,
  *  `network` when the daemon is unreachable. */
-export type SandboxInspect = () => Promise<{ running: boolean }>;
+type SandboxInspect = () => Promise<{ running: boolean }>;
 
 export interface SandboxGitOptions {
   /** The project's sandbox container. */

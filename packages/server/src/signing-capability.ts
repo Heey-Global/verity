@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Database } from '@verity/store';
 import type { Kysely } from 'kysely';
 
-export interface SigningCapabilityBinding {
+interface SigningCapabilityBinding {
   projectId: string;
   containerGeneration: string;
 }

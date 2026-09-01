@@ -502,7 +502,7 @@ export async function specImageEnvironment(
  * resolved; refusing to exist does not get that value back, it only removes the
  * channel through which the value could be restored.
  */
-export class ManagedServerEnvironmentSourceError extends Error {
+class ManagedServerEnvironmentSourceError extends Error {
   /** The sealed entry whose source failed — reported as the drifting name, since
    *  the running Server is serving on whatever that source used to yield. */
   readonly variable: string;

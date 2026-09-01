@@ -926,12 +926,12 @@ export interface EmbeddedServer {
  * app entirely: the key travels between two Verity processes over the Updater's
  * control socket, and never over a route a device could reach.
  */
-export interface EmbeddedSecretKeyHandoff {
+interface EmbeddedSecretKeyHandoff {
   /** Key material to seal for the successor, or undefined while sealed. */
   exportKeyMaterial(): string | undefined;
 }
 
-export interface EmbeddedSecretJobs {
+interface EmbeddedSecretJobs {
   broker: ReturnType<typeof createSecretGrantBroker>;
   executor: BrokeredSecretJobExecutor;
   frames: SecretJobFrameSpool;
@@ -1399,7 +1399,7 @@ export function runnerSandboxPath(
  * with {@link candidateRunnerProjectIds} so that a purge searching for those transcripts
  * and the factory that put them there cannot disagree about where they are.
  */
-export const CONTROL_PLANE_RUNNER_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
+const CONTROL_PLANE_RUNNER_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
 
 /** How long {@link EmbeddedServer.close} waits for the transcript sweep's two boot
  * queries before destroying the database under them. Generous for a query that has

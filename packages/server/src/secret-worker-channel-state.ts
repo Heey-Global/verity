@@ -84,7 +84,7 @@ export const secretWorkerProofPayloadSchema = z
 export type SecretWorkerProofPayload = z.infer<typeof secretWorkerProofPayloadSchema>;
 
 /** Worker → server: a terminal error that ends the channel without a validated result. */
-export const secretWorkerErrorPayloadSchema = z
+const secretWorkerErrorPayloadSchema = z
   .object({
     protocolVersion: brokeredSecretsProtocolVersionSchema,
     jobId: secretContractIdSchema,
@@ -152,7 +152,7 @@ export interface SecretWorkerChannelBinding {
   containerId: string;
 }
 
-export type SecretWorkerChannelState = 'challenge' | 'proof' | 'bootstrap' | 'streaming' | 'closed';
+type SecretWorkerChannelState = 'challenge' | 'proof' | 'bootstrap' | 'streaming' | 'closed';
 
 export interface SecretWorkerChannelStateMachine {
   /** The state the channel will interpret the *next* message in. */

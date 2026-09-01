@@ -16,7 +16,7 @@ import type { AcpSessionSetup } from './acp-backend.js';
 /** The `select` option with this id, or undefined when the session offers none.
  *  A non-select option of the same id is deliberately NOT returned: the caller's
  *  only vocabulary is a value list, which a non-select does not have. */
-export function selectOption(
+function selectOption(
   options: readonly SessionConfigOption[] | null | undefined,
   id: string,
 ): (SessionConfigOption & { type: 'select' }) | undefined {
@@ -28,7 +28,7 @@ export function selectOption(
 
 /** ACP allows a select's values to arrive flat or grouped; both agents Verity
  *  drives send them flat. Flatten either shape so callers only see values. */
-export function selectValues(option: SessionConfigOption & { type: 'select' }): string[] {
+function selectValues(option: SessionConfigOption & { type: 'select' }): string[] {
   return option.options.flatMap((entry) =>
     'value' in entry ? [entry.value] : entry.options.map((grouped) => grouped.value),
   );

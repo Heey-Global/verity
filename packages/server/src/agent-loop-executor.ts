@@ -1,13 +1,13 @@
 import type { AgentLoopRecord, ProjectRecord, SessionRecord } from '@verity/store';
 
-export interface AgentLoopScriptResult {
+interface AgentLoopScriptResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
 }
 
-export interface AgentLoopExecutionResult {
+interface AgentLoopExecutionResult {
   outcome: 'ok' | 'acted' | 'error' | 'skipped';
   exitCode: number | null;
   detail: string | null;

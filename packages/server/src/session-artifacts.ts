@@ -27,7 +27,7 @@ import { codexRolloutFiles, RUNNER_CLAUDE_HOME_DIRNAME } from './runner-transcri
 
 /** One backend's binding for a session: which backend, and the id it knows the
  * session by. Mirrors a `session_backend_state` row. */
-export interface SessionBackendBinding {
+interface SessionBackendBinding {
   backend: string;
   backendSessionId: string;
 }

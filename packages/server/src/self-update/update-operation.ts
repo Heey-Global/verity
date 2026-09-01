@@ -15,7 +15,7 @@ export type UpdateOperationState =
   'preparing' | 'prepared' | 'activating' | 'completed' | 'rolling-back' | 'rolled-back' | 'failed';
 
 /** Codes the preparation pipeline can record; anything else projects as `unknown`. */
-export const UPDATE_FAILURE_CODES = [
+const UPDATE_FAILURE_CODES = [
   'requested-failed',
   'pulling-failed',
   'verifying-image-failed',
@@ -23,7 +23,7 @@ export const UPDATE_FAILURE_CODES = [
   'creating-standby-failed',
 ] as const;
 
-export type UpdateFailureCode = (typeof UPDATE_FAILURE_CODES)[number] | 'unknown';
+type UpdateFailureCode = (typeof UPDATE_FAILURE_CODES)[number] | 'unknown';
 
 /** Ordered forward plan; `step`/`totalSteps` are positions within it. */
 const FORWARD_PLAN = [

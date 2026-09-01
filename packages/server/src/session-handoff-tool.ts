@@ -125,7 +125,7 @@ export class ControlPlaneSessionAuthorityError extends ControlPlaneSessionToolEr
 }
 
 /** One gateway call, in the identity the gateway already proved for it. */
-export interface ControlPlaneSessionCall {
+interface ControlPlaneSessionCall {
   projectId: string;
   sessionId: string;
   turnId: string;

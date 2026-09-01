@@ -13,7 +13,7 @@
 
 import type { StreamChannel, StreamResetCode } from './framing.js';
 
-export type DirectionState = 'idle' | 'open' | 'ended';
+type DirectionState = 'idle' | 'open' | 'ended';
 
 interface Direction {
   state: DirectionState;

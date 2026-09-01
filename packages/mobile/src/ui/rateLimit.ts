@@ -193,7 +193,7 @@ export const FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60;
 export const WEEKLY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 
 /** Total length of a quota window, in seconds. */
-export function windowSeconds(window: RateLimitWindow): number {
+function windowSeconds(window: RateLimitWindow): number {
   return window === 'weekly' ? WEEKLY_WINDOW_SECONDS : FIVE_HOUR_WINDOW_SECONDS;
 }
 

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 
-export const SERVER_DEPLOYMENT_SPEC_VERSION = 2 as const;
+const SERVER_DEPLOYMENT_SPEC_VERSION = 2 as const;
 const MAX_LINUX_ID = 0xfffffffe;
 /** Ceilings for the sealed resource limits. Wide enough for any host Verity is
  *  plausibly installed on, narrow enough that a corrupted or hostile spec cannot

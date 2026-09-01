@@ -42,7 +42,7 @@ import type { SecretWorkerRecipientKeyRegistry } from './secret-worker-recipient
 
 /** The broker capability redemption the resolver needs: consume a capability, return the sealed
  * envelope bound to the redeeming workload. Structurally the `redeem` of {@link createSecretGrantBroker}. */
-export interface BrokeredSecretGrantRedeemer {
+interface BrokeredSecretGrantRedeemer {
   redeem: (capability: string, redemption: RunGrantRedemption) => Promise<SecretEnvelope>;
 }
 

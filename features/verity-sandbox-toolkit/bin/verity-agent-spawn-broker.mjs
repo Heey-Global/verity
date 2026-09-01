@@ -22,7 +22,7 @@ import { constants, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
-export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
+const AGENT_SPAWN_PROTOCOL_VERSION = 1;
 /**
  * Where `opencode acp` keeps everything that is not its config: session storage
  * and logs (`$XDG_DATA_HOME/opencode`), lock files (`$XDG_STATE_HOME/opencode`),
@@ -48,10 +48,10 @@ export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
  * root-owned, which is correct: nothing writes into the parent itself, and the
  * agent's three subdirectories are created under a leaf it owns.
  */
-export const OPENCODE_STATE_DIR = '/run/verity/opencode';
-export const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
-export const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
-export const DEFAULT_WORKTREE_ROOT = '/work';
+const OPENCODE_STATE_DIR = '/run/verity/opencode';
+const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
+const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
+const DEFAULT_WORKTREE_ROOT = '/work';
 /**
  * The ONE additional namespace a Runner may be told about, and it is a literal
  * here rather than anything a caller can name.
@@ -705,7 +705,7 @@ export const PRIVILEGE_DROP_FLAGS = Object.freeze([
  * runtime gid. `dockerGid` is absent for every project Sandbox, whose argv is
  * byte-for-byte unchanged.
  */
-export function privilegeDropFlags(dockerGid, runnerGid) {
+function privilegeDropFlags(dockerGid, runnerGid) {
   if (dockerGid === undefined || dockerGid === '') return [...PRIVILEGE_DROP_FLAGS];
   const gid = Number(dockerGid);
   // Fail closed, and loudly. A bad value must not quietly degrade to
@@ -1281,9 +1281,9 @@ export async function validateTrustedCliArguments(
   }
 }
 
-export const TRUSTED_CLI_SECRET_DIR = '/run/verity-runner/secrets';
+const TRUSTED_CLI_SECRET_DIR = '/run/verity-runner/secrets';
 
-export function trustedCliSecretPath(name, options) {
+function trustedCliSecretPath(name, options) {
   if (!isSafeTrustedCliEnvName(name)) throw new Error('unsafe trusted CLI environment variable');
   return `${options?.secretDir ?? TRUSTED_CLI_SECRET_DIR}/${name}`;
 }

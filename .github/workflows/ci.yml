@@ -600,6 +600,10 @@ jobs:
             lint_batched "(non-package files)" "${rest[@]}"
           fi
       - run: npm run format
+      # Export-only by design. Dependency and entry-file discovery need more
+      # runtime knowledge than this static lane has, while unused exports are a
+      # closed TypeScript graph and can fail deterministically here.
+      - run: npm run knip
 
   typecheck:
     needs: changes

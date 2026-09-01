@@ -26,7 +26,7 @@ export interface AgentLoopSchedulerStore {
   getProject(id: string): Promise<ProjectRecord | undefined>;
 }
 
-export interface AgentLoopSchedulerLogger {
+interface AgentLoopSchedulerLogger {
   info(obj: unknown, msg?: string): void;
   warn(obj: unknown, msg?: string): void;
 }

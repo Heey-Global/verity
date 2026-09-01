@@ -191,10 +191,7 @@ function isExternalInterruptionExitCode(exitCode: number): boolean {
 }
 
 export {
-  EXTERNAL_PERMISSION_ABORT_MESSAGE,
   formatBrokeredSecretAliases,
-  turnSystemPrompt,
-  withBackendSystemPrompt,
   type ExternalPermissionAnswer,
   type PermissionDecisionSource,
 } from './turn-system-prompt.js';

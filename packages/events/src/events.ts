@@ -94,7 +94,7 @@ export type RateLimitWindow = z.infer<typeof rateLimitWindowSchema>;
  * first `result` can fire while the task is still open and the backend re-invokes
  * with a later `result` once it finishes.
  */
-export const taskPhaseSchema = z.enum(['started', 'progress', 'ended']);
+const taskPhaseSchema = z.enum(['started', 'progress', 'ended']);
 export type TaskPhase = z.infer<typeof taskPhaseSchema>;
 
 /**

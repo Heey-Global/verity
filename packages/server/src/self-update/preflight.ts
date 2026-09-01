@@ -21,7 +21,7 @@ import type { Kysely } from 'kysely';
 import { SERVER_COMPAT, compareSchemaGenerations } from './compat.js';
 
 /** A filesystem mount the candidate requires. */
-export interface MountRequirement {
+interface MountRequirement {
   /** Absolute path expected to be present. */
   readonly path: string;
   /** When true, the candidate must also be able to write here (W_OK). */
@@ -31,7 +31,7 @@ export interface MountRequirement {
 }
 
 /** A listener port the candidate must be able to bind. */
-export interface CandidatePort {
+interface CandidatePort {
   /** A short label for the report (e.g. `public`, `internal`). */
   readonly label: string;
   readonly port: number;
@@ -65,7 +65,7 @@ export interface PreflightDeps {
   };
 }
 
-export type PreflightCheckStatus = 'pass' | 'fail';
+type PreflightCheckStatus = 'pass' | 'fail';
 
 export interface PreflightCheck {
   readonly name: string;
@@ -73,7 +73,7 @@ export interface PreflightCheck {
   readonly detail: string | null;
 }
 
-export interface PreflightSchemaReport {
+interface PreflightSchemaReport {
   /** The schema generation this build targets (SERVER_COMPAT.schema.current). */
   readonly expected: string;
   /** The generation actually applied to the DB, or null when none/unreadable. */

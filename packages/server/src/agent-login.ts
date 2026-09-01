@@ -13,8 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { VeritySettingsPatch } from '@verity/store';
 
-export type AgentLoginProvider = 'claude' | 'codex';
-export type AgentLoginStatus = 'starting' | 'ready' | 'waiting' | 'complete' | 'failed';
+type AgentLoginProvider = 'claude' | 'codex';
+type AgentLoginStatus = 'starting' | 'ready' | 'waiting' | 'complete' | 'failed';
 
 export interface AgentLoginPublic {
   sessionId: string;

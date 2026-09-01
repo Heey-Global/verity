@@ -43,10 +43,10 @@ separately by `TRADEMARKS.md`.
 | Apache-2.0 | 52 |
 | BlueOak-1.0.0 | 7 |
 | BSD-2-Clause | 15 |
-| BSD-3-Clause | 27 |
+| BSD-3-Clause | 28 |
 | CC-BY-4.0 | 1 |
-| ISC | 64 |
-| MIT | 980 |
+| ISC | 67 |
+| MIT | 1031 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -163,8 +163,11 @@ separately by `TRADEMARKS.md`.
 | @egjs/hammerjs | 2.0.17 | MIT | [source](https://registry.npmjs.org/@egjs/hammerjs/-/hammerjs-2.0.17.tgz) |
 | @electric-sql/pglite | 0.5.7 | Apache-2.0 | [source](https://registry.npmjs.org/@electric-sql/pglite/-/pglite-0.5.7.tgz) |
 | @emnapi/core | 1.10.0 | MIT | [source](https://registry.npmjs.org/@emnapi/core/-/core-1.10.0.tgz) |
+| @emnapi/core | 1.11.2 | MIT | [source](https://registry.npmjs.org/@emnapi/core/-/core-1.11.2.tgz) |
 | @emnapi/runtime | 1.10.0 | MIT | [source](https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.10.0.tgz) |
+| @emnapi/runtime | 1.11.2 | MIT | [source](https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.11.2.tgz) |
 | @emnapi/wasi-threads | 1.2.1 | MIT | [source](https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-1.2.1.tgz) |
+| @emnapi/wasi-threads | 1.2.2 | MIT | [source](https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-1.2.2.tgz) |
 | @esbuild/aix-ppc64 | 0.28.2 | MIT | [source](https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.28.2.tgz) |
 | @esbuild/android-arm | 0.28.2 | MIT | [source](https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.28.2.tgz) |
 | @esbuild/android-arm64 | 0.28.2 | MIT | [source](https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.28.2.tgz) |
@@ -278,7 +281,7 @@ separately by `TRADEMARKS.md`.
 | @jridgewell/sourcemap-codec | 1.5.5 | MIT | [source](https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz) |
 | @jridgewell/trace-mapping | 0.3.31 | MIT | [source](https://registry.npmjs.org/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz) |
 | @modelcontextprotocol/sdk | 1.30.0 | MIT | [source](https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.30.0.tgz) |
-| @napi-rs/wasm-runtime | 1.1.5 | MIT | [source](https://registry.npmjs.org/@napi-rs/wasm-runtime/-/wasm-runtime-1.1.5.tgz) |
+| @napi-rs/wasm-runtime | 1.2.3 | MIT | [source](https://registry.npmjs.org/@napi-rs/wasm-runtime/-/wasm-runtime-1.2.3.tgz) |
 | @npmcli/agent | 5.0.2 | ISC | [source](https://registry.npmjs.org/@npmcli/agent/-/agent-5.0.2.tgz) |
 | @npmcli/fs | 6.0.0 | ISC | [source](https://registry.npmjs.org/@npmcli/fs/-/fs-6.0.0.tgz) |
 | @npmcli/redact | 5.0.0 | ISC | [source](https://registry.npmjs.org/@npmcli/redact/-/redact-5.0.0.tgz) |
@@ -296,7 +299,46 @@ separately by `TRADEMARKS.md`.
 | @openai/codex-win32-x64 | 0.149.0-win32-x64 | Apache-2.0 | [source](https://registry.npmjs.org/@openai/codex/-/codex-0.149.0-win32-x64.tgz) |
 | @openai/codex | 0.148.0 | Apache-2.0 | [source](https://registry.npmjs.org/@openai/codex/-/codex-0.148.0.tgz) |
 | @openai/codex | 0.149.0 | Apache-2.0 | [source](https://registry.npmjs.org/@openai/codex/-/codex-0.149.0.tgz) |
+| @oxc-parser/binding-android-arm-eabi | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-android-arm-eabi/-/binding-android-arm-eabi-0.147.0.tgz) |
+| @oxc-parser/binding-android-arm64 | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-android-arm64/-/binding-android-arm64-0.147.0.tgz) |
+| @oxc-parser/binding-darwin-arm64 | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-darwin-arm64/-/binding-darwin-arm64-0.147.0.tgz) |
+| @oxc-parser/binding-darwin-x64 | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-darwin-x64/-/binding-darwin-x64-0.147.0.tgz) |
+| @oxc-parser/binding-freebsd-x64 | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-freebsd-x64/-/binding-freebsd-x64-0.147.0.tgz) |
+| @oxc-parser/binding-linux-arm-gnueabihf | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-0.147.0.tgz) |
+| @oxc-parser/binding-linux-arm-musleabihf | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-arm-musleabihf/-/binding-linux-arm-musleabihf-0.147.0.tgz) |
+| @oxc-parser/binding-linux-arm64-gnu | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-0.147.0.tgz) |
+| @oxc-parser/binding-linux-arm64-musl | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-arm64-musl/-/binding-linux-arm64-musl-0.147.0.tgz) |
+| @oxc-parser/binding-linux-ppc64-gnu | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-0.147.0.tgz) |
+| @oxc-parser/binding-linux-riscv64-gnu | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-riscv64-gnu/-/binding-linux-riscv64-gnu-0.147.0.tgz) |
+| @oxc-parser/binding-linux-riscv64-musl | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-riscv64-musl/-/binding-linux-riscv64-musl-0.147.0.tgz) |
+| @oxc-parser/binding-linux-s390x-gnu | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-0.147.0.tgz) |
+| @oxc-parser/binding-linux-x64-gnu | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-x64-gnu/-/binding-linux-x64-gnu-0.147.0.tgz) |
+| @oxc-parser/binding-linux-x64-musl | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-linux-x64-musl/-/binding-linux-x64-musl-0.147.0.tgz) |
+| @oxc-parser/binding-openharmony-arm64 | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-openharmony-arm64/-/binding-openharmony-arm64-0.147.0.tgz) |
+| @oxc-parser/binding-win32-arm64-msvc | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-0.147.0.tgz) |
+| @oxc-parser/binding-win32-ia32-msvc | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-win32-ia32-msvc/-/binding-win32-ia32-msvc-0.147.0.tgz) |
+| @oxc-parser/binding-win32-x64-msvc | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-parser/binding-win32-x64-msvc/-/binding-win32-x64-msvc-0.147.0.tgz) |
 | @oxc-project/types | 0.133.0 | MIT | [source](https://registry.npmjs.org/@oxc-project/types/-/types-0.133.0.tgz) |
+| @oxc-project/types | 0.147.0 | MIT | [source](https://registry.npmjs.org/@oxc-project/types/-/types-0.147.0.tgz) |
+| @oxc-resolver/binding-android-arm-eabi | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-android-arm-eabi/-/binding-android-arm-eabi-11.24.2.tgz) |
+| @oxc-resolver/binding-android-arm64 | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-android-arm64/-/binding-android-arm64-11.24.2.tgz) |
+| @oxc-resolver/binding-darwin-arm64 | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-darwin-arm64/-/binding-darwin-arm64-11.24.2.tgz) |
+| @oxc-resolver/binding-darwin-x64 | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-darwin-x64/-/binding-darwin-x64-11.24.2.tgz) |
+| @oxc-resolver/binding-freebsd-x64 | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-freebsd-x64/-/binding-freebsd-x64-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-arm-gnueabihf | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-arm-gnueabihf/-/binding-linux-arm-gnueabihf-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-arm-musleabihf | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-arm-musleabihf/-/binding-linux-arm-musleabihf-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-arm64-gnu | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-arm64-gnu/-/binding-linux-arm64-gnu-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-arm64-musl | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-arm64-musl/-/binding-linux-arm64-musl-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-ppc64-gnu | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-ppc64-gnu/-/binding-linux-ppc64-gnu-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-riscv64-gnu | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-riscv64-gnu/-/binding-linux-riscv64-gnu-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-riscv64-musl | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-riscv64-musl/-/binding-linux-riscv64-musl-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-s390x-gnu | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-s390x-gnu/-/binding-linux-s390x-gnu-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-x64-gnu | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-x64-gnu/-/binding-linux-x64-gnu-11.24.2.tgz) |
+| @oxc-resolver/binding-linux-x64-musl | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-linux-x64-musl/-/binding-linux-x64-musl-11.24.2.tgz) |
+| @oxc-resolver/binding-openharmony-arm64 | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-openharmony-arm64/-/binding-openharmony-arm64-11.24.2.tgz) |
+| @oxc-resolver/binding-wasm32-wasi | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-wasm32-wasi/-/binding-wasm32-wasi-11.24.2.tgz) |
+| @oxc-resolver/binding-win32-arm64-msvc | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-win32-arm64-msvc/-/binding-win32-arm64-msvc-11.24.2.tgz) |
+| @oxc-resolver/binding-win32-x64-msvc | 11.24.2 | MIT | [source](https://registry.npmjs.org/@oxc-resolver/binding-win32-x64-msvc/-/binding-win32-x64-msvc-11.24.2.tgz) |
 | @pinojs/redact | 0.4.0 | MIT | [source](https://registry.npmjs.org/@pinojs/redact/-/redact-0.4.0.tgz) |
 | @radix-ui/primitive | 1.1.4 | MIT | [source](https://registry.npmjs.org/@radix-ui/primitive/-/primitive-1.1.4.tgz) |
 | @radix-ui/react-collection | 1.1.10 | MIT | [source](https://registry.npmjs.org/@radix-ui/react-collection/-/react-collection-1.1.10.tgz) |
@@ -369,7 +411,7 @@ separately by `TRADEMARKS.md`.
 | @tootallnate/once | 2.0.1 | MIT | [source](https://registry.npmjs.org/@tootallnate/once/-/once-2.0.1.tgz) |
 | @tufjs/canonical-json | 2.0.0 | MIT | [source](https://registry.npmjs.org/@tufjs/canonical-json/-/canonical-json-2.0.0.tgz) |
 | @tufjs/models | 5.0.0 | MIT | [source](https://registry.npmjs.org/@tufjs/models/-/models-5.0.0.tgz) |
-| @tybys/wasm-util | 0.10.2 | MIT | [source](https://registry.npmjs.org/@tybys/wasm-util/-/wasm-util-0.10.2.tgz) |
+| @tybys/wasm-util | 0.10.3 | MIT | [source](https://registry.npmjs.org/@tybys/wasm-util/-/wasm-util-0.10.3.tgz) |
 | @types/babel__core | 7.20.5 | MIT | [source](https://registry.npmjs.org/@types/babel__core/-/babel__core-7.20.5.tgz) |
 | @types/babel__generator | 7.27.0 | MIT | [source](https://registry.npmjs.org/@types/babel__generator/-/babel__generator-7.27.0.tgz) |
 | @types/babel__template | 7.4.4 | MIT | [source](https://registry.npmjs.org/@types/babel__template/-/babel__template-7.4.4.tgz) |
@@ -673,6 +715,7 @@ separately by `TRADEMARKS.md`.
 | fastq | 1.20.1 | ISC | [source](https://registry.npmjs.org/fastq/-/fastq-1.20.1.tgz) |
 | fb-dotslash | 0.5.8 | (MIT OR Apache-2.0) | [source](https://registry.npmjs.org/fb-dotslash/-/fb-dotslash-0.5.8.tgz) |
 | fb-watchman | 2.0.2 | Apache-2.0 | [source](https://registry.npmjs.org/fb-watchman/-/fb-watchman-2.0.2.tgz) |
+| fd-package-json | 2.0.0 | MIT | [source](https://registry.npmjs.org/fd-package-json/-/fd-package-json-2.0.0.tgz) |
 | fdir | 6.5.0 | MIT | [source](https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz) |
 | fetch-nodeshim | 0.4.10 | MIT | [source](https://registry.npmjs.org/fetch-nodeshim/-/fetch-nodeshim-0.4.10.tgz) |
 | file-entry-cache | 8.0.0 | MIT | [source](https://registry.npmjs.org/file-entry-cache/-/file-entry-cache-8.0.0.tgz) |
@@ -688,6 +731,7 @@ separately by `TRADEMARKS.md`.
 | flow-enums-runtime | 0.0.6 | MIT | [source](https://registry.npmjs.org/flow-enums-runtime/-/flow-enums-runtime-0.0.6.tgz) |
 | fontfaceobserver | 2.3.0 | BSD-2-Clause | [source](https://registry.npmjs.org/fontfaceobserver/-/fontfaceobserver-2.3.0.tgz) |
 | form-data | 4.0.6 | MIT | [source](https://registry.npmjs.org/form-data/-/form-data-4.0.6.tgz) |
+| formatly | 0.7.0 | MIT | [source](https://registry.npmjs.org/formatly/-/formatly-0.7.0.tgz) |
 | forwarded | 0.2.0 | MIT | [source](https://registry.npmjs.org/forwarded/-/forwarded-0.2.0.tgz) |
 | fresh | 0.5.2 | MIT | [source](https://registry.npmjs.org/fresh/-/fresh-0.5.2.tgz) |
 | fresh | 2.0.0 | MIT | [source](https://registry.npmjs.org/fresh/-/fresh-2.0.0.tgz) |
@@ -702,6 +746,7 @@ separately by `TRADEMARKS.md`.
 | get-package-type | 0.1.0 | MIT | [source](https://registry.npmjs.org/get-package-type/-/get-package-type-0.1.0.tgz) |
 | get-proto | 1.0.1 | MIT | [source](https://registry.npmjs.org/get-proto/-/get-proto-1.0.1.tgz) |
 | get-stream | 6.0.1 | MIT | [source](https://registry.npmjs.org/get-stream/-/get-stream-6.0.1.tgz) |
+| get-tsconfig | 4.14.3 | MIT | [source](https://registry.npmjs.org/get-tsconfig/-/get-tsconfig-4.14.3.tgz) |
 | getenv | 2.0.0 | MIT | [source](https://registry.npmjs.org/getenv/-/getenv-2.0.0.tgz) |
 | glob-parent | 6.0.2 | ISC | [source](https://registry.npmjs.org/glob-parent/-/glob-parent-6.0.2.tgz) |
 | glob | 13.0.6 | BlueOak-1.0.0 | [source](https://registry.npmjs.org/glob/-/glob-13.0.6.tgz) |
@@ -804,6 +849,7 @@ separately by `TRADEMARKS.md`.
 | jest-worker | 29.7.0 | MIT | [source](https://registry.npmjs.org/jest-worker/-/jest-worker-29.7.0.tgz) |
 | jest | 29.7.0 | MIT | [source](https://registry.npmjs.org/jest/-/jest-29.7.0.tgz) |
 | jimp-compact | 0.16.1 | MIT | [source](https://registry.npmjs.org/jimp-compact/-/jimp-compact-0.16.1.tgz) |
+| jiti | 2.7.0 | MIT | [source](https://registry.npmjs.org/jiti/-/jiti-2.7.0.tgz) |
 | jose | 6.2.8 | MIT | [source](https://registry.npmjs.org/jose/-/jose-6.2.8.tgz) |
 | js-tokens | 10.0.0 | MIT | [source](https://registry.npmjs.org/js-tokens/-/js-tokens-10.0.0.tgz) |
 | js-tokens | 4.0.0 | MIT | [source](https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz) |
@@ -824,6 +870,7 @@ separately by `TRADEMARKS.md`.
 | jsonrepair | 3.14.1 | ISC | [source](https://registry.npmjs.org/jsonrepair/-/jsonrepair-3.14.1.tgz) |
 | keyv | 4.5.4 | MIT | [source](https://registry.npmjs.org/keyv/-/keyv-4.5.4.tgz) |
 | kleur | 3.0.3 | MIT | [source](https://registry.npmjs.org/kleur/-/kleur-3.0.3.tgz) |
+| knip | 6.33.0 | ISC | [source](https://registry.npmjs.org/knip/-/knip-6.33.0.tgz) |
 | kysely | 0.29.5 | MIT | [source](https://registry.npmjs.org/kysely/-/kysely-0.29.5.tgz) |
 | lan-network | 0.2.1 | MIT | [source](https://registry.npmjs.org/lan-network/-/lan-network-0.2.1.tgz) |
 | leven | 3.1.0 | MIT | [source](https://registry.npmjs.org/leven/-/leven-3.1.0.tgz) |
@@ -934,12 +981,15 @@ separately by `TRADEMARKS.md`.
 | open | 7.4.2 | MIT | [source](https://registry.npmjs.org/open/-/open-7.4.2.tgz) |
 | optionator | 0.9.4 | MIT | [source](https://registry.npmjs.org/optionator/-/optionator-0.9.4.tgz) |
 | ora | 3.4.0 | MIT | [source](https://registry.npmjs.org/ora/-/ora-3.4.0.tgz) |
+| oxc-parser | 0.147.0 | MIT | [source](https://registry.npmjs.org/oxc-parser/-/oxc-parser-0.147.0.tgz) |
+| oxc-resolver | 11.24.2 | MIT | [source](https://registry.npmjs.org/oxc-resolver/-/oxc-resolver-11.24.2.tgz) |
 | p-limit | 2.3.0 | MIT | [source](https://registry.npmjs.org/p-limit/-/p-limit-2.3.0.tgz) |
 | p-limit | 3.1.0 | MIT | [source](https://registry.npmjs.org/p-limit/-/p-limit-3.1.0.tgz) |
 | p-locate | 4.1.0 | MIT | [source](https://registry.npmjs.org/p-locate/-/p-locate-4.1.0.tgz) |
 | p-locate | 5.0.0 | MIT | [source](https://registry.npmjs.org/p-locate/-/p-locate-5.0.0.tgz) |
 | p-map | 7.0.6 | MIT | [source](https://registry.npmjs.org/p-map/-/p-map-7.0.6.tgz) |
 | p-try | 2.2.0 | MIT | [source](https://registry.npmjs.org/p-try/-/p-try-2.2.0.tgz) |
+| package-manager-detector | 1.8.0 | MIT | [source](https://registry.npmjs.org/package-manager-detector/-/package-manager-detector-1.8.0.tgz) |
 | parse-json | 5.2.0 | MIT | [source](https://registry.npmjs.org/parse-json/-/parse-json-5.2.0.tgz) |
 | parse-png | 2.1.0 | MIT | [source](https://registry.npmjs.org/parse-png/-/parse-png-2.1.0.tgz) |
 | parse5 | 7.3.0 | MIT | [source](https://registry.npmjs.org/parse5/-/parse5-7.3.0.tgz) |
@@ -1045,6 +1095,7 @@ separately by `TRADEMARKS.md`.
 | requires-port | 1.0.0 | MIT | [source](https://registry.npmjs.org/requires-port/-/requires-port-1.0.0.tgz) |
 | resolve-cwd | 3.0.0 | MIT | [source](https://registry.npmjs.org/resolve-cwd/-/resolve-cwd-3.0.0.tgz) |
 | resolve-from | 5.0.0 | MIT | [source](https://registry.npmjs.org/resolve-from/-/resolve-from-5.0.0.tgz) |
+| resolve-pkg-maps | 1.0.0 | MIT | [source](https://registry.npmjs.org/resolve-pkg-maps/-/resolve-pkg-maps-1.0.0.tgz) |
 | resolve-workspace-root | 2.0.1 | MIT | [source](https://registry.npmjs.org/resolve-workspace-root/-/resolve-workspace-root-2.0.1.tgz) |
 | resolve.exports | 2.0.3 | MIT | [source](https://registry.npmjs.org/resolve.exports/-/resolve.exports-2.0.3.tgz) |
 | resolve | 1.22.12 | MIT | [source](https://registry.npmjs.org/resolve/-/resolve-1.22.12.tgz) |
@@ -1096,6 +1147,7 @@ separately by `TRADEMARKS.md`.
 | slash | 5.1.0 | MIT | [source](https://registry.npmjs.org/slash/-/slash-5.1.0.tgz) |
 | slugify | 1.6.9 | MIT | [source](https://registry.npmjs.org/slugify/-/slugify-1.6.9.tgz) |
 | smart-buffer | 4.2.0 | MIT | [source](https://registry.npmjs.org/smart-buffer/-/smart-buffer-4.2.0.tgz) |
+| smol-toml | 1.8.0 | BSD-3-Clause | [source](https://registry.npmjs.org/smol-toml/-/smol-toml-1.8.0.tgz) |
 | socks-proxy-agent | 10.1.0 | MIT | [source](https://registry.npmjs.org/socks-proxy-agent/-/socks-proxy-agent-10.1.0.tgz) |
 | socks | 2.8.9 | MIT | [source](https://registry.npmjs.org/socks/-/socks-2.8.9.tgz) |
 | sonic-boom | 4.2.1 | MIT | [source](https://registry.npmjs.org/sonic-boom/-/sonic-boom-4.2.1.tgz) |
@@ -1134,6 +1186,7 @@ separately by `TRADEMARKS.md`.
 | strip-final-newline | 2.0.0 | MIT | [source](https://registry.npmjs.org/strip-final-newline/-/strip-final-newline-2.0.0.tgz) |
 | strip-indent | 3.0.0 | MIT | [source](https://registry.npmjs.org/strip-indent/-/strip-indent-3.0.0.tgz) |
 | strip-json-comments | 3.1.1 | MIT | [source](https://registry.npmjs.org/strip-json-comments/-/strip-json-comments-3.1.1.tgz) |
+| strip-json-comments | 5.0.3 | MIT | [source](https://registry.npmjs.org/strip-json-comments/-/strip-json-comments-5.0.3.tgz) |
 | structured-headers | 0.4.1 | MIT | [source](https://registry.npmjs.org/structured-headers/-/structured-headers-0.4.1.tgz) |
 | supports-color | 5.5.0 | MIT | [source](https://registry.npmjs.org/supports-color/-/supports-color-5.5.0.tgz) |
 | supports-color | 7.2.0 | MIT | [source](https://registry.npmjs.org/supports-color/-/supports-color-7.2.0.tgz) |
@@ -1170,6 +1223,7 @@ separately by `TRADEMARKS.md`.
 | type-is | 2.1.0 | MIT | [source](https://registry.npmjs.org/type-is/-/type-is-2.1.0.tgz) |
 | typescript-eslint | 8.67.0 | MIT | [source](https://registry.npmjs.org/typescript-eslint/-/typescript-eslint-8.67.0.tgz) |
 | typescript | 6.0.3 | Apache-2.0 | [source](https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz) |
+| unbash | 4.0.10 | ISC | [source](https://registry.npmjs.org/unbash/-/unbash-4.0.10.tgz) |
 | undici-types | 7.18.2 | MIT | [source](https://registry.npmjs.org/undici-types/-/undici-types-7.18.2.tgz) |
 | undici | 7.29.0 | MIT | [source](https://registry.npmjs.org/undici/-/undici-7.29.0.tgz) |
 | unicode-canonical-property-names-ecmascript | 2.0.1 | MIT | [source](https://registry.npmjs.org/unicode-canonical-property-names-ecmascript/-/unicode-canonical-property-names-ecmascript-2.0.1.tgz) |
@@ -1196,6 +1250,7 @@ separately by `TRADEMARKS.md`.
 | vlq | 1.0.1 | MIT | [source](https://registry.npmjs.org/vlq/-/vlq-1.0.1.tgz) |
 | vscode-jsonrpc | 9.0.1 | MIT | [source](https://registry.npmjs.org/vscode-jsonrpc/-/vscode-jsonrpc-9.0.1.tgz) |
 | w3c-xmlserializer | 4.0.0 | MIT | [source](https://registry.npmjs.org/w3c-xmlserializer/-/w3c-xmlserializer-4.0.0.tgz) |
+| walk-up-path | 4.0.0 | ISC | [source](https://registry.npmjs.org/walk-up-path/-/walk-up-path-4.0.0.tgz) |
 | walker | 1.0.8 | Apache-2.0 | [source](https://registry.npmjs.org/walker/-/walker-1.0.8.tgz) |
 | warn-once | 0.1.1 | MIT | [source](https://registry.npmjs.org/warn-once/-/warn-once-0.1.1.tgz) |
 | wcwidth | 1.0.1 | MIT | [source](https://registry.npmjs.org/wcwidth/-/wcwidth-1.0.1.tgz) |
