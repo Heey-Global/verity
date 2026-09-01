@@ -1,0 +1,79 @@
+name: Bug report
+description: Something in the self-hosted core, mobile app or open Uplink client behaves incorrectly.
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not paste credentials, tokens, customer data, production logs or
+        private repository content. Redact before pasting — an issue is public
+        from the moment it is filed. Suspected vulnerabilities go through the
+        private flow in
+        [SECURITY.md](https://github.com/Heey-Global/verity/blob/main/SECURITY.md)
+        instead of here.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The released version, image tag or commit SHA the behavior was seen on.
+      placeholder: 'verity-v16.5.0, or 6783b28'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server (control plane, API)
+        - Runner (host-side control plane)
+        - Sandbox (project container, agent seed)
+        - Mobile app
+        - Uplink client, connector or transport
+        - Deployment (installer, images, migrations)
+        - Documentation or website
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: topology
+    attributes:
+      label: Deployment topology
+      description: >-
+        How this deployment is put together — host OS, container runtime,
+        whether the Runner holds the Docker socket, database, TLS termination,
+        and whether Uplink is configured. Most reports that stall, stall here.
+      placeholder: |
+        Debian 13 host, Docker 29, Runner with the socket, external PostgreSQL 18,
+        Caddy terminating TLS, no Uplink configured.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: The smallest sequence that reproduces it. Numbered steps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or output
+      description: >-
+        Relevant excerpts, redacted. Attach a screenshot for visual issues and a
+        short recording for interaction issues.
+      render: text
+    validations:
+      required: false
