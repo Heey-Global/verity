@@ -22,7 +22,7 @@ import { constants, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
-const AGENT_SPAWN_PROTOCOL_VERSION = 1;
+export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
 /**
  * Where `opencode acp` keeps everything that is not its config: session storage
  * and logs (`$XDG_DATA_HOME/opencode`), lock files (`$XDG_STATE_HOME/opencode`),
@@ -49,9 +49,9 @@ const AGENT_SPAWN_PROTOCOL_VERSION = 1;
  * agent's three subdirectories are created under a leaf it owns.
  */
 const OPENCODE_STATE_DIR = '/run/verity/opencode';
-const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
-const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
-const DEFAULT_WORKTREE_ROOT = '/work';
+export const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
+export const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
+export const DEFAULT_WORKTREE_ROOT = '/work';
 /**
  * The ONE additional namespace a Runner may be told about, and it is a literal
  * here rather than anything a caller can name.
@@ -705,7 +705,7 @@ export const PRIVILEGE_DROP_FLAGS = Object.freeze([
  * runtime gid. `dockerGid` is absent for every project Sandbox, whose argv is
  * byte-for-byte unchanged.
  */
-function privilegeDropFlags(dockerGid, runnerGid) {
+export function privilegeDropFlags(dockerGid, runnerGid) {
   if (dockerGid === undefined || dockerGid === '') return [...PRIVILEGE_DROP_FLAGS];
   const gid = Number(dockerGid);
   // Fail closed, and loudly. A bad value must not quietly degrade to
