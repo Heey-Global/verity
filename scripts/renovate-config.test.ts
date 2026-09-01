@@ -247,20 +247,21 @@ describe('Supply-chain cooldown', () => {
    * `Unknown project config` line that is the only evidence npm understood the
    * key at all.
    */
+  const neutralEnv = (): NodeJS.ProcessEnv => ({
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !/^npm_config_/iu.test(name)),
+    ),
+    npm_config_userconfig: '/nonexistent/user/.npmrc',
+    npm_config_globalconfig: '/nonexistent/global/npmrc',
+    npm_config_loglevel: 'warn',
+  });
+
   const askNpm = (
     key: string,
   ): { status: number | null; stdout: string; stderr: string; failure?: string } => {
-    const env = Object.fromEntries(
-      Object.entries(process.env).filter(([name]) => !/^npm_config_/iu.test(name)),
-    );
     const npm = spawnSync('npm', ['config', 'get', key], {
       encoding: 'utf8',
-      env: {
-        ...env,
-        npm_config_userconfig: '/nonexistent/user/.npmrc',
-        npm_config_globalconfig: '/nonexistent/global/npmrc',
-        npm_config_loglevel: 'warn',
-      },
+      env: neutralEnv(),
     });
     return {
       status: npm.status,
@@ -282,10 +283,12 @@ describe('Supply-chain cooldown', () => {
   it('holds the npm floor in .npmrc, and npm reads it as one', () => {
     const floor = npmrcSettings.find(({ key }) => key === 'min-release-age');
     expect(floor, '.npmrc no longer holds a release-age floor for manual installs').toBeDefined();
-    expect(
-      Number(floor?.value),
-      'the floor is set but not to a positive number of days',
-    ).toBeGreaterThan(0);
+    // The exact number, not merely a positive one. It has to match the org
+    // preset's `minimumReleaseAge: "3 days"`, which lives outside this
+    // repository and cannot be read from here — so the only thing that can hold
+    // the two together is that changing one side forces someone to come here and
+    // change the number deliberately.
+    expect(Number(floor?.value), 'the floor no longer matches the org preset 3-day window').toBe(3);
     // Asking npm rather than trusting the file. A misspelled or unsupported key
     // is not an error to npm: it warns `Unknown project config` and then
     // installs exactly as if the line were absent, so a floor that protects
@@ -320,6 +323,44 @@ describe('Supply-chain cooldown', () => {
     const npm = askNpm('engine-strict');
     expect(npm.status, `npm config get did not run: ${npm.failure}`).toBe(0);
     expect(npm.stdout, 'npm resolves engine-strict differently than .npmrc states').toBe('true');
+  });
+
+  it('carries no dependency whose own engines the strict setting would refuse', () => {
+    // The price of `engine-strict`: it applies to dependencies' `engines` too,
+    // so one transitive package declaring an upper bound below the pinned Node
+    // stops being a warning and becomes a refused `npm ci` — in CI, in the image
+    // builds, on every machine. That arrives with a lockfile bump nobody
+    // associates with this setting, so it is worth catching in the branch that
+    // proposes the bump.
+    //
+    // Read from the lockfile because that is where the resolved tree records
+    // what it needs. Only upper bounds matter: an unbounded `>=18` admits the
+    // pinned Node and everything after it, which is what almost every package
+    // writes.
+    const lowestSupported = Math.min(
+      ...[...(manifest.engines?.node ?? '').matchAll(/(\d+)\.\d+\.\d+/gu)].map((match) =>
+        Number(match[1]),
+      ),
+    );
+    const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as {
+      packages: Record<string, { engines?: Record<string, string> }>;
+    };
+    const refusing = Object.entries(lock.packages)
+      .filter(([path, pkg]) => {
+        const range = pkg.engines?.node;
+        if (path === '' || !range) return false;
+        // `<X` excludes the pinned Node when X is at or below it; `<=X` only
+        // when X is below it. A bound inside an alternation (`<18 || >=20`) is
+        // reported too — rare enough to be worth a look rather than a parser.
+        return [...range.matchAll(/(<=?)\s*(\d+)/gu)].some(([, operator, major]) =>
+          operator === '<' ? Number(major) <= lowestSupported : Number(major) < lowestSupported,
+        );
+      })
+      .map(([path, pkg]) => `${path} needs node ${pkg.engines?.node}`);
+    expect(
+      refusing,
+      `engine-strict turns these into a refused install on node ${lowestSupported}, not a warning`,
+    ).toEqual([]);
   });
 
   it('declares an npm version that honours the floor, not merely some npm version', () => {
@@ -357,7 +398,7 @@ describe('Supply-chain cooldown', () => {
     // shipped an npm below this bound, `engine-strict` would turn every install
     // in the repository into a hard refusal — so it fails here first, on the
     // machine doing the bump.
-    const running = spawnSync('npm', ['--version'], { encoding: 'utf8' });
+    const running = spawnSync('npm', ['--version'], { encoding: 'utf8', env: neutralEnv() });
     const reported = running.stdout?.trim() ?? '';
     // Parsed strictly: a prerelease (`12.0.0-pre.1`) or a failed spawn would
     // otherwise reach the comparison as NaN and fail as though npm were too old,
@@ -430,7 +471,7 @@ describe('Supply-chain cooldown', () => {
     ).toEqual([]);
   });
 
-  it('keeps the npm floor out of Renovate own lockfile updates', () => {
+  it("keeps the npm floor out of Renovate's own lockfile updates", () => {
     // Renovate reads this `.npmrc` while refreshing the lockfile, and it knows
     // this key specifically: finding `min-release-age` in a repository's file,
     // it skips passing its OWN `--before` and defers to the file. So the 3-day
@@ -469,7 +510,7 @@ describe('Supply-chain cooldown', () => {
     // not something to fail a build over.
     expect(
       npmrcSettings.map(({ key }) => key).sort(),
-      'a setting was added to .npmrc that Renovate empty npmrc now hides from it',
+      "a setting was added to .npmrc that Renovate's empty npmrc now hides from it",
     ).toEqual(['engine-strict', 'min-release-age']);
   });
 });
