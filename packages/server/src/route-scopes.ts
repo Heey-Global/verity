@@ -68,6 +68,20 @@ const declare = (
  * token, and it is the reason `buildServer` refuses to start a route whose
  * declaration is malformed. Removing a route without removing its entry fails
  * the stale-declaration test.
+ *
+ * One behaviour difference against the old conditional list, deliberate and
+ * checked route by route. Four of these — `/pair/identity`, `/pair/redeem`,
+ * `/providers/github/webhook`, `/internal/workflow/result` — are registered
+ * unconditionally and refuse themselves inside the handler when their deps are
+ * absent, while the old list made their exemption conditional on those same
+ * deps. Deriving from registration therefore exempts them in a deployment where
+ * the feature is off. Nothing is reachable that was not reachable before: each
+ * of those handlers answers 404 in its first statement, so the only change is
+ * that an unauthenticated caller sees that 404 rather than a 401. The routes
+ * whose registration is itself conditional (`/internal/git/sign`,
+ * `/internal/github/token`, `/internal/project/memory`, `/internal/mcp` and its
+ * control-plane variant) carry exactly the conditions the old list spelled out,
+ * which is the duplication this replaces.
  */
 export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = new Map([
   declare('GET', '/healthz', 'public', 'none — liveness probe, no operator data in the response'),
@@ -188,9 +202,14 @@ export function nonOperatorDeclarationError(
  * The whole body of `buildServer`'s `onRoute` hook, so that the hook and its
  * test exercise one implementation rather than two copies that can drift.
  *
- * Throws when a route contradicts its own declaration. Returns true when the
- * route is a declared exception, which is the gate's signal to let its pathname
- * past the operator bearer check.
+ * Returns the gate keys this registration earns — one per method that is
+ * declared, empty for an ordinary operator route. The gate stores them and
+ * looks the incoming request up by `routeScopeKey(request.method, pathname)`,
+ * so a method that is NOT declared does not ride in on a sibling that is. That
+ * is the whole point of keying declarations by method; a pathname-keyed gate
+ * would throw it away again and reproduce the hole this map exists to close.
+ *
+ * Throws when a route contradicts its own declaration.
  *
  * Fastify reports `method` as one verb or several, and — with `exposeHeadRoutes`
  * at its default — auto-adds a HEAD route for every GET. That HEAD shares the
@@ -198,23 +217,27 @@ export function nonOperatorDeclarationError(
  * its own; folding it here keeps `HEAD /healthz` reachable exactly as it was
  * before this map existed. Nothing in this package registers HEAD explicitly
  * (`route-scopes.test.ts` holds that), so the fold cannot launder a hand-written
- * HEAD route past a declaration meant for a GET.
+ * HEAD route past a declaration meant for a GET. The key is emitted under the
+ * method as REQUESTED rather than as declared, because that is what the gate
+ * compares against.
  */
-export function isDeclaredNonOperatorRoute(
+export function declaredNonOperatorKeys(
   route: { readonly method: string | readonly string[]; readonly url: string },
   routes: ReadonlyMap<string, RouteScopeDeclaration> = NON_OPERATOR_ROUTES,
-): boolean {
+): readonly string[] {
   const methods = (
     Array.isArray(route.method) ? route.method : [route.method]
   ) as readonly string[];
-  let declared = false;
-  for (const raw of methods) {
-    const method = raw.toUpperCase() === 'HEAD' ? 'GET' : raw;
-    const error = nonOperatorDeclarationError(method, route.url, routes);
+  const keys: string[] = [];
+  for (const method of methods) {
+    const declaredAs = method.toUpperCase() === 'HEAD' ? 'GET' : method;
+    const error = nonOperatorDeclarationError(declaredAs, route.url, routes);
     // A programming error in this repository, not a runtime condition: fail at
     // registration, where it is cheap to see, rather than at the first request.
     if (error !== undefined) throw new Error(`verity: ${error}`);
-    if (routes.has(routeScopeKey(method, route.url))) declared = true;
+    if (routes.has(routeScopeKey(declaredAs, route.url))) {
+      keys.push(routeScopeKey(method, route.url));
+    }
   }
-  return declared;
+  return keys;
 }

@@ -131,7 +131,7 @@ import {
 } from './attention.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
-import { isDeclaredNonOperatorRoute } from './route-scopes.js';
+import { declaredNonOperatorKeys, routeScopeKey } from './route-scopes.js';
 import { createUnlockThrottle } from './unlock-throttle.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
@@ -3881,18 +3881,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // The exception set used to be written out here as a second, conditional list
   // that had to stay in step with the equally conditional route registrations.
   // It is now derived from the routes this instance actually registers, so the
-  // two cannot drift: `preAuthPaths` holds a pathname only if a route for it was
-  // registered AND its method is declared as an exception. See route-scopes.ts.
-  const preAuthPaths = new Set<string>();
+  // two cannot drift: `preAuthKeys` holds `"METHOD /pathname"` only if a route
+  // for it was registered AND that method is declared. Keyed by method and not
+  // by pathname, so adding a POST beside a declared GET does not exempt the POST.
+  // See route-scopes.ts.
+  //
+  // The hook must precede every route registration — Fastify runs `onRoute` only
+  // for routes added after it, unlike the retroactive `onRequest` below. It sits
+  // above the first `app.get` in this file, and every other registrar (the
+  // onboarding, agent-loop, dev-server, preview-share, secret-job and
+  // secret-provider modules) is handed this same instance further down.
+  const preAuthKeys = new Set<string>();
   app.addHook('onRoute', (route) => {
-    if (isDeclaredNonOperatorRoute(route)) preAuthPaths.add(route.url);
+    for (const key of declaredNonOperatorKeys(route)) preAuthKeys.add(key);
   });
   app.addHook('onRequest', async (request, reply) => {
-    // Match on the concrete pathname (query stripped); no pre-auth route carries
-    // a path param, so an exact-set lookup is sufficient and avoids depending on
-    // Fastify's route-pattern internals. That is no longer an assumption a reader
-    // has to hold: the `onRoute` hook above refuses to register a declared
-    // exception whose url has a param or wildcard.
+    // Match on the concrete pathname (query stripped) plus the request method; no
+    // pre-auth route carries a path param, so an exact-set lookup is sufficient
+    // and avoids depending on Fastify's route-pattern internals. That is no longer
+    // an assumption a reader has to hold: the `onRoute` hook above refuses to
+    // register a declared exception whose url has a param or wildcard.
     const pathname = request.url.split('?', 1)[0] ?? request.url;
     // Network-origin gate for `/internal/*` (audit H1 follow-up), enforced BEFORE
     // and independent of the auth gate: when an internal listener is wired, these
@@ -3910,7 +3918,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     const registry = deps.authRegistry;
     if (registry === undefined || !registry.isEnabled()) return; // gate off
-    if (preAuthPaths.has(pathname)) return;
+    if (preAuthKeys.has(routeScopeKey(request.method, pathname))) return;
     const websocketStream =
       (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
       WS_STREAM_PATH.test(pathname);

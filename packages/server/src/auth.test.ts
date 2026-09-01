@@ -172,6 +172,17 @@ describe('global auth gate (onRequest)', () => {
       for (const url of ['/healthz', '/secret/status', '/onboarding/status']) {
         expect((await app.inject({ method: 'GET', url })).statusCode).toBe(200);
       }
+      // …and the exemption is scoped to the METHOD that was declared, not to the
+      // pathname. The declarations are keyed by method, but that only reaches the
+      // request if the gate looks itself up by method too — so assert it here,
+      // where a regression to a pathname-keyed set shows up as the router's 404
+      // instead of the gate's 401 (the root hooks run on the not-found path too).
+      const siblingMethod = await app.inject({ method: 'POST', url: '/secret/status' });
+      expect(siblingMethod.statusCode).toBe(401);
+      expect(siblingMethod.json()).toEqual({ error: 'unauthorized' });
+      // A HEAD request inherits its GET's declaration (Fastify auto-adds the
+      // route, sharing the handler), so it must not start needing a token.
+      expect((await app.inject({ method: 'HEAD', url: '/healthz' })).statusCode).toBe(200);
 
       // Valid token in the Authorization header → allowed.
       expect(
