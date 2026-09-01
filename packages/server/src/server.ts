@@ -131,7 +131,7 @@ import {
 } from './attention.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
-import { declaredNonOperatorKeys, routeScopeKey } from './route-scopes.js';
+import { LOCKOUT_CRITICAL_KEYS, declaredNonOperatorKeys, routeScopeKey } from './route-scopes.js';
 import { createUnlockThrottle } from './unlock-throttle.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
@@ -3894,6 +3894,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const preAuthKeys = new Set<string>();
   app.addHook('onRoute', (route) => {
     for (const key of declaredNonOperatorKeys(route)) preAuthKeys.add(key);
+  });
+  // Ordering is load-bearing and the type system cannot say so, so check it once
+  // the route tree is complete: if a lockout-critical exemption did not reach the
+  // hook, refuse to come up rather than 401 the on-ramp that mints the operator
+  // token. These routes are registered unconditionally, so a miss is a mistake in
+  // this file, not a deployment shape. See LOCKOUT_CRITICAL_KEYS.
+  app.addHook('onReady', (done) => {
+    const missing = LOCKOUT_CRITICAL_KEYS.filter((key) => !preAuthKeys.has(key));
+    done(
+      missing.length === 0
+        ? undefined
+        : new Error(
+            `verity: pre-auth exemption missing for ${missing.join(', ')} — the onRoute hook that derives them must precede every route registration`,
+          ),
+    );
   });
   app.addHook('onRequest', async (request, reply) => {
     // Match on the concrete pathname (query stripped) plus the request method; no

@@ -44,6 +44,12 @@ const HEAD_ROUTE_PATTERN = new RegExp(`\\b${receiver}\\.head\\(`, 'g');
 const MULTI_METHOD_PATTERN = new RegExp(`\\b${receiver}\\.(?:all|route)\\(`, 'g');
 /** The binding a route module receives its Fastify instance under. */
 const FASTIFY_PARAM_PATTERN = /([A-Za-z_$][\w$]*)\s*:\s*FastifyInstance\b/g;
+/** An inline plugin binds its instance with an INFERRED type, so the annotation
+ *  above never sees it. Catch the callback's first parameter directly. */
+const INLINE_PLUGIN_PATTERN = /\.register\(\s*(?:async\s*)?\(\s*([A-Za-z_$][\w$]*)/g;
+/** A `prefix` shifts the url `onRoute` reports away from the literal in the
+ *  source, so a declaration would name a path that never arrives. */
+const PREFIXED_REGISTER_PATTERN = /\.register\([^)]*\bprefix\s*:/g;
 
 /**
  * Resolve against the repo root rather than the process cwd, so the scan does
@@ -95,7 +101,11 @@ describe('route scope declarations', () => {
     // assertion in this file would pass vacuously against an empty set.
     const keys = registeredRouteKeys();
     expect(keys.length).toBeGreaterThan(100);
-    expect(new Set(keys).size).toBe(keys.length);
+    // Name the duplicates rather than comparing two counts. The scan includes
+    // untracked files, so the likeliest cause is a scratch copy of a route module
+    // sitting in src/ — a bare `104 !== 97` points nowhere near that.
+    const seen = new Set<string>();
+    expect(keys.filter((key) => (seen.has(key) ? true : (seen.add(key), false)))).toEqual([]);
   });
 
   it('declares no route that is not registered', () => {
@@ -156,15 +166,29 @@ describe('route scope declarations', () => {
   it('names its Fastify instance consistently in every route module', () => {
     // What makes the receiver allowlist in the patterns safe. A module that calls
     // its instance `fastify` or `api` would be invisible to the scan, and every
-    // guarantee above would quietly stop covering it.
+    // guarantee above would quietly stop covering it. Both forms are checked: the
+    // annotated parameter a route module declares, and the inferred one an inline
+    // `register` callback binds — the latter has no annotation to find.
     const stray: string[] = [];
     for (const file of routeSourceFiles()) {
-      for (const match of readFileSync(file, 'utf8').matchAll(FASTIFY_PARAM_PATTERN)) {
-        const name = match[1]!;
-        if (!(RECEIVERS as readonly string[]).includes(name)) stray.push(`${file}: ${name}`);
+      const source = readFileSync(file, 'utf8');
+      for (const pattern of [FASTIFY_PARAM_PATTERN, INLINE_PLUGIN_PATTERN]) {
+        pattern.lastIndex = 0;
+        for (const match of source.matchAll(pattern)) {
+          const name = match[1]!;
+          if (!(RECEIVERS as readonly string[]).includes(name)) stray.push(`${file}: ${name}`);
+        }
       }
     }
     expect(stray).toEqual([]);
+  });
+
+  it('registers no plugin under a url prefix', () => {
+    // `onRoute` reports the prefixed url, but the scan and the declarations both
+    // read the literal in the source. A prefixed exception route would therefore
+    // never match its declaration — it would fail closed, but the staleness test
+    // would still call the declaration live, which is the misleading part.
+    expect(filesMatching(PREFIXED_REGISTER_PATTERN)).toEqual([]);
   });
 });
 

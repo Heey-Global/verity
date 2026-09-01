@@ -173,6 +173,31 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
 ]);
 
 /**
+ * The exemptions whose loss locks the operator out rather than merely breaking a
+ * feature: the probe a fresh app reads, the master-password on-ramp that mints
+ * the very token the gate demands, and the pairing redemption that mints it for
+ * a second device. Without these a deployment answers 401 to the only requests
+ * that could ever produce a valid bearer, and no client-side retry recovers it.
+ *
+ * `buildServer` asserts at `onReady` that each of these produced a gate key.
+ * Every one of them is registered unconditionally, so their absence is never a
+ * deployment shape — it is the `onRoute` hook having missed the registration,
+ * which is what happens if a route is ever hoisted above the hook (Fastify runs
+ * `onRoute` only for routes added after it). That is the one failure this
+ * derived-set design can have that the old static list could not, so it is
+ * checked at boot instead of being left to a 401 during someone's first run.
+ */
+export const LOCKOUT_CRITICAL_KEYS: readonly string[] = [
+  'GET /healthz',
+  'GET /secret/status',
+  'GET /onboarding/status',
+  'POST /secret/init',
+  'POST /secret/unlock',
+  'POST /pair/redeem',
+  'GET /pair/identity',
+];
+
+/**
  * The gate matches on the concrete request pathname with the query stripped,
  * deliberately not on Fastify's route pattern. That is only sound while no
  * exception carries a path parameter or wildcard — otherwise the declared key
