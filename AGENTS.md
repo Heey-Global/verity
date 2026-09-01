@@ -29,8 +29,8 @@ One root Vitest configuration owns every workspace's suite
 all of it and the packages have no `test` script of their own. Scope it while
 iterating with a path — `npx vitest run packages/server/src/auth.test.ts`, or
 `npx vitest run packages/server` for one package — and run the full suite once
-before pushing. The mobile app is the exception: it runs Jest, via
-`npm test --workspace @verity/mobile-app`.
+before pushing. `apps/mobile` is the exception — it is outside that glob and
+runs Jest, via `npm test --workspace @verity/mobile-app`.
 
 Sandboxes run under a container memory limit shared with other sessions.
 Treat the checked-in `maxWorkers` / `-j` / `--parallel` values as an upper

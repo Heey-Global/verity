@@ -1,5 +1,5 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
@@ -8,7 +8,6 @@ interface RenovateConfig {
   semanticCommits?: string;
   ignorePaths?: string[];
   ignoreNpmrcFile?: boolean;
-  minimumReleaseAge?: string | null;
   enabledManagers?: string[];
   customManagers: Array<{
     description?: string;
@@ -23,7 +22,6 @@ interface RenovateConfig {
     matchFileNames?: string[];
     matchManagers?: string[];
     matchPackageNames?: string[];
-    minimumReleaseAge?: string | null;
     semanticCommitType?: string;
   }>;
   dockerfile?: { managerFilePatterns?: string[]; fileMatch?: string[] };
@@ -246,8 +244,21 @@ describe('Supply-chain cooldown', () => {
     // The unit is days, not the minutes the same idea is counted in elsewhere:
     // npm's definition hints `<days>` and derives `before` as
     // `Date.now() - 86400000 * age`.
-    const npm = spawnSync('npm', ['config', 'get', 'min-release-age'], { encoding: 'utf8' });
-    expect(npm.status, `npm config get failed: ${npm.stderr}`).toBe(0);
+    //
+    // User and global config are pointed at paths that do not exist, so what is
+    // read back is this repository's file and nothing else. Without that, a
+    // contributor's own `~/.npmrc` floor would satisfy this test on a repository
+    // whose file had been deleted, and a different one would fail it for a
+    // reason that has nothing to do with the repository.
+    const npm = spawnSync('npm', ['config', 'get', 'min-release-age'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        npm_config_userconfig: '/nonexistent/user/.npmrc',
+        npm_config_globalconfig: '/nonexistent/global/npmrc',
+      },
+    });
+    expect(npm.status, `npm config get did not run: ${npm.stderr || npm.error?.message}`).toBe(0);
     expect(npm.stdout.trim(), 'npm resolves a different floor than .npmrc states').toBe(
       floor?.value,
     );
@@ -256,19 +267,39 @@ describe('Supply-chain cooldown', () => {
     );
   });
 
-  it('is the only .npmrc in the repository', () => {
-    // npm reads the `.npmrc` nearest the directory it runs in, so a workspace-
-    // level file would override this floor for anything installed from that
-    // directory — and `ignoreNpmrcFile` would hide it from Renovate as well.
-    // Neither shows up in the root file this suite otherwise reads.
-    const tracked = execFileSync(
-      'git',
-      ['ls-files', '--cached', '--others', '--exclude-standard'],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    )
-      .split('\n')
-      .filter((path) => path.endsWith('.npmrc'));
-    expect(tracked).toEqual(['.npmrc']);
+  it('declares the npm version that understands the floor', () => {
+    // Below npm 11.15.0 the key is either unknown or does not survive being read
+    // from an `.npmrc` (it was added in 11.10.0 and the npmrc path was fixed in
+    // 11.15.0). Either way npm only warns, so on an older npm the floor is
+    // inert and everything still installs — which is the whole failure mode this
+    // suite exists for, one layer below the file. `engines` is what states the
+    // requirement to anyone whose npm did not come from the pinned Node.
+    const engines = (
+      JSON.parse(readFileSync('package.json', 'utf8')) as { engines?: Record<string, string> }
+    ).engines;
+    expect(engines?.npm, 'nothing declares the npm version the floor needs').toBeDefined();
+  });
+
+  it('is the only .npmrc npm would read', () => {
+    // npm reads the `.npmrc` of the project root nearest the directory it runs
+    // in, so a file in a workspace would override this floor for anything
+    // installed from there — and `ignoreNpmrcFile` would hide it from Renovate
+    // as well. Checked on disk rather than through git, because an `.npmrc`
+    // holding registry auth is exactly the kind that would be gitignored, and
+    // that copy overrides the floor just as effectively as a tracked one.
+    const workspaces = (
+      JSON.parse(readFileSync('package.json', 'utf8')) as { workspaces: string[] }
+    ).workspaces;
+    const roots = workspaces.flatMap((pattern) => {
+      const parent = pattern.replace(/\/\*$/u, '');
+      return readdirSync(parent, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => `${parent}/${entry.name}`);
+    });
+    const found = ['.', ...roots].filter((root) => existsSync(`${root}/.npmrc`));
+    expect(found, 'a workspace .npmrc overrides the root floor for installs run from it').toEqual([
+      '.',
+    ]);
   });
 
   it('inherits the Renovate window instead of restating it', () => {
