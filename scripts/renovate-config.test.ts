@@ -327,40 +327,30 @@ describe('Supply-chain cooldown', () => {
 
   it('carries no dependency whose own engines the strict setting would refuse', () => {
     // The price of `engine-strict`: it applies to dependencies' `engines` too,
-    // so one transitive package declaring an upper bound below the pinned Node
-    // stops being a warning and becomes a refused `npm ci` — in CI, in the image
-    // builds, on every machine. That arrives with a lockfile bump nobody
-    // associates with this setting, so it is worth catching in the branch that
-    // proposes the bump.
+    // so one transitive package that excludes the running Node stops being a
+    // warning and becomes a refused `npm ci` — in CI, in the image builds, on
+    // every machine. That arrives with a lockfile bump nobody associates with
+    // this setting, so it is worth catching in the branch that proposes it.
     //
-    // Read from the lockfile because that is where the resolved tree records
-    // what it needs. Only upper bounds matter: an unbounded `>=18` admits the
-    // pinned Node and everything after it, which is what almost every package
-    // writes.
-    const lowestSupported = Math.min(
-      ...[...(manifest.engines?.node ?? '').matchAll(/(\d+)\.\d+\.\d+/gu)].map((match) =>
-        Number(match[1]),
-      ),
-    );
-    const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as {
-      packages: Record<string, { engines?: Record<string, string> }>;
-    };
-    const refusing = Object.entries(lock.packages)
-      .filter(([path, pkg]) => {
-        const range = pkg.engines?.node;
-        if (path === '' || !range) return false;
-        // `<X` excludes the pinned Node when X is at or below it; `<=X` only
-        // when X is below it. A bound inside an alternation (`<18 || >=20`) is
-        // reported too — rare enough to be worth a look rather than a parser.
-        return [...range.matchAll(/(<=?)\s*(\d+)/gu)].some(([, operator, major]) =>
-          operator === '<' ? Number(major) <= lowestSupported : Number(major) < lowestSupported,
-        );
-      })
-      .map(([path, pkg]) => `${path} needs node ${pkg.engines?.node}`);
+    // Ask npm rather than reading the ranges out of the lockfile. Exclusion is
+    // written as often as `^18.0.0` or `20.x` as it is as `<24`, so a scan
+    // looking for upper bounds passes the caret forms without a word and
+    // reports a tree it never checked — the shape of green this suite exists to
+    // avoid. `--dry-run` builds the same ideal tree as a real `npm ci`, and
+    // runs the same engine check against it, without writing node_modules;
+    // `--offline` keeps the answer about this lockfile rather than about the
+    // network, and needs nothing from the cache to do it.
+    const npm = spawnSync('npm', ['ci', '--dry-run', '--ignore-scripts', '--offline'], {
+      encoding: 'utf8',
+      env: neutralEnv(),
+    });
     expect(
-      refusing,
-      `engine-strict turns these into a refused install on node ${lowestSupported}, not a warning`,
-    ).toEqual([]);
+      /EBADENGINE.*(?:\n.*)?/u.exec(`${npm.stdout ?? ''}${npm.stderr ?? ''}`)?.[0] ?? '',
+      'engine-strict makes this a refused install rather than a warning',
+    ).toBe('');
+    expect(npm.status, `npm ci --dry-run failed: ${npm.error?.message ?? npm.stderr ?? ''}`).toBe(
+      0,
+    );
   });
 
   it('declares an npm version that honours the floor, not merely some npm version', () => {
