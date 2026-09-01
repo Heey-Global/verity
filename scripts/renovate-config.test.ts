@@ -6,6 +6,8 @@ interface RenovateConfig {
   extends?: string[];
   semanticCommits?: string;
   ignorePaths?: string[];
+  ignoreNpmrcFile?: boolean;
+  minimumReleaseAge?: string | null;
   enabledManagers?: string[];
   customManagers: Array<{
     description?: string;
@@ -20,6 +22,7 @@ interface RenovateConfig {
     matchFileNames?: string[];
     matchManagers?: string[];
     matchPackageNames?: string[];
+    minimumReleaseAge?: string | null;
     semanticCommitType?: string;
   }>;
   dockerfile?: { managerFilePatterns?: string[]; fileMatch?: string[] };
@@ -200,5 +203,75 @@ describe('Renovate website release typing', () => {
         );
       }
     }
+  });
+});
+
+/**
+ * Two files carry the same supply-chain cooldown for two different update
+ * paths: the org Renovate preset for what Renovate proposes, and `.npmrc` for
+ * what a person typing `npm install` gets. Each of the checks below guards a
+ * way the pair can come apart while both files still look deliberate.
+ */
+describe('Supply-chain cooldown', () => {
+  const ORG_PRESET = 'local>Heey-Global/.github';
+  const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+  // Comments and blank lines dropped; what remains is what npm actually applies.
+  const npmrcSettings = readFileSync('.npmrc', 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith(';'))
+    .map((line) => {
+      const separator = line.indexOf('=');
+      return separator === -1
+        ? { key: line, value: '' }
+        : { key: line.slice(0, separator).trim(), value: line.slice(separator + 1).trim() };
+    });
+
+  it('holds the npm floor in .npmrc', () => {
+    const floor = npmrcSettings.find(({ key }) => key === 'min-release-age');
+    expect(floor, '.npmrc no longer holds a release-age floor for manual installs').toBeDefined();
+    expect(
+      Number(floor?.value),
+      'the floor is set but not to a positive number of days',
+    ).toBeGreaterThan(0);
+  });
+
+  it('inherits the Renovate window instead of restating it', () => {
+    // `minimumReleaseAge` and the 0-day vulnerability fast-track come from the
+    // org preset. Setting either here would override the org policy for this
+    // repository alone, which is the kind of drift the preset exists to stop —
+    // and the number would then disagree with `.npmrc` the moment one moved.
+    expect(config.extends ?? [], 'the org preset is where the window comes from').toContain(
+      ORG_PRESET,
+    );
+    expect(config.minimumReleaseAge, 'a local window overrides the org policy').toBeUndefined();
+    for (const rule of config.packageRules) {
+      const named = `"${rule.description ?? 'a rule'}"`;
+      expect(
+        rule.minimumReleaseAge,
+        `${named} re-sets the release-age window for the packages it matches`,
+      ).toBeUndefined();
+    }
+  });
+
+  it('keeps the npm floor out of Renovate own lockfile updates', () => {
+    // Renovate runs npm to refresh the lockfile and reads this `.npmrc` while
+    // doing it. Left unignored, the floor would apply to Renovate's resolution
+    // too and quietly outrank `vulnerabilityAlerts.minimumReleaseAge: 0 days` —
+    // blocking exactly the same-day security bumps the fast-track exists for.
+    // Nothing fails; the fast-track just stops being fast.
+    expect(
+      config.ignoreNpmrcFile,
+      'the npm floor would override the vulnerability fast-track',
+    ).toBe(true);
+  });
+
+  it('carries nothing in .npmrc that Renovate would need', () => {
+    // `ignoreNpmrcFile` discards the whole file, not the one setting it was
+    // added for. A registry, a scope mapping or an auth line added here later
+    // would be silently invisible to Renovate's npm runs, and the symptom —
+    // lockfile updates resolving against the wrong registry — points nowhere
+    // near this file.
+    expect(npmrcSettings.map(({ key }) => key)).toEqual(['min-release-age']);
   });
 });
