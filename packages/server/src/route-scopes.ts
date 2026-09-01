@@ -174,10 +174,17 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
 
 /**
  * The exemptions whose loss locks the operator out rather than merely breaking a
- * feature: the probe a fresh app reads, the master-password on-ramp that mints
- * the very token the gate demands, and the pairing redemption that mints it for
- * a second device. Without these a deployment answers 401 to the only requests
- * that could ever produce a valid bearer, and no client-side retry recovers it.
+ * feature. The criterion is narrow on purpose: can a client with no bearer still
+ * obtain one? That is the two status probes a fresh app reads to decide which
+ * on-ramp to show, the master-password pair that mints the very token the gate
+ * demands, and the pairing exchange that mints it for a second device. Without
+ * these a deployment answers 401 to the only requests that could ever produce a
+ * valid bearer, and no client-side retry recovers it.
+ *
+ * Exemptions that fail some other way are deliberately not listed. `/healthz`
+ * behind the gate breaks a liveness probe; the GitHub and `/internal/*` routes
+ * break a feature. Those are visible failures with a working way in, so they are
+ * left to the stale-declaration test rather than to a refusal to boot.
  *
  * `buildServer` asserts at `onReady` that each of these produced a gate key.
  * Every one of them is registered unconditionally, so their absence is never a
@@ -188,7 +195,6 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
  * checked at boot instead of being left to a 401 during someone's first run.
  */
 export const LOCKOUT_CRITICAL_KEYS: readonly string[] = [
-  'GET /healthz',
   'GET /secret/status',
   'GET /onboarding/status',
   'POST /secret/init',

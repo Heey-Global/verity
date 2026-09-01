@@ -40,6 +40,10 @@ const COMPUTED_ROUTE_PATTERN = new RegExp(
   `\\b${receiver}\\.(?:get|post|put|patch|delete|head)\\(\\s*([^'"\`\\s)])`,
   'g',
 );
+/** A template literal opens with a quote character, so COMPUTED_ROUTE_PATTERN
+ *  reads it as a literal and ROUTE_PATTERN keys the route under the raw
+ *  `${...}` text. Interpolation is what makes a path computed, not the quote. */
+const INTERPOLATED_PATH = /\$\{/;
 const HEAD_ROUTE_PATTERN = new RegExp(`\\b${receiver}\\.head\\(`, 'g');
 /** `app.all(...)` / `app.route({ method })` register a path under several verbs
  *  at once, which neither the scan above nor the declaration keys model. */
@@ -49,7 +53,12 @@ const FASTIFY_PARAM_PATTERN = /([A-Za-z_$][\w$]*)\s*:\s*FastifyInstance\b/g;
 /** An inline plugin binds its instance with an INFERRED type, so the annotation
  *  above never sees it. Catch the callback's first parameter directly. */
 const INLINE_PLUGIN_PATTERN =
-  /\.register\(\s*(?:async\s+)?(?:function\s*[A-Za-z_$\w]*\s*)?\(\s*([A-Za-z_$][\w$]*)/g;
+  // Two shapes, because a bare identifier is a plugin reference in one and the
+  // bound instance in the other: `register((app) => …)` / `register(function
+  // (app) …)` versus the parenless `register(app => …)`. Matching an unqualified
+  // identifier would read `register(websocketPlugin)` as a receiver named
+  // `websocketPlugin`, so the parenless form is anchored on its arrow.
+  /\.register\(\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?\(\s*([A-Za-z_$][\w$]*)|\.register\(\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/g;
 /** A `prefix` shifts the url `onRoute` reports away from the literal in the
  *  source, so a declaration would name a path that never arrives. */
 const PREFIXED_REGISTER_PATTERN = /\.register\([^)]*\bprefix\s*:/g;
@@ -67,11 +76,13 @@ const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
 function routeSourceFiles(): readonly string[] {
   return execFileSync(
     'git',
-    ['ls-files', '--cached', '--others', '--exclude-standard', 'packages/server/src/*.ts'],
+    // A directory pathspec, not a glob: whether `*` crosses `/` depends on
+    // pathspec magic and on --literal-pathspecs being absent. Filter here instead.
+    ['ls-files', '--cached', '--others', '--exclude-standard', 'packages/server/src'],
     { encoding: 'utf8', cwd: REPO_ROOT },
   )
     .split('\n')
-    .filter((path) => path !== '' && !path.endsWith('.test.ts'))
+    .filter((path) => path.endsWith('.ts') && !path.endsWith('.test.ts'))
     .map((path) => join(REPO_ROOT, path));
 }
 
@@ -101,12 +112,30 @@ describe('route scope declarations', () => {
   it('finds the route surface it is supposed to be checking', () => {
     // A guard on the extraction itself. If the pattern stopped matching — a
     // Fastify upgrade, a reformat, a move to `route({ method })` — every other
-    // assertion in this file would pass vacuously against an empty set.
+    // assertion in this file would pass vacuously against an empty set. Anchored
+    // on routes that are NOT exceptions and that live in more than one module, so
+    // a scan that has narrowed to server.ts, or to the declared paths, still
+    // fails here. A count would only say "fewer than last time".
     const keys = registeredRouteKeys();
-    expect(keys.length).toBeGreaterThan(100);
-    // Name the duplicates rather than comparing two counts. The scan includes
-    // untracked files, so the likeliest cause is a scratch copy of a route module
-    // sitting in src/ — a bare `104 !== 97` points nowhere near that.
+    for (const anchor of [
+      'GET /sessions',
+      'GET /projects',
+      'GET /sessions/:id',
+      'GET /projects/:projectId/agent-loops',
+      'GET /projects/:projectId/dev-servers',
+    ]) {
+      expect(
+        NON_OPERATOR_ROUTES.has(anchor),
+        `${anchor} must not be a declared exception, or it stops proving the scan reaches ordinary operator routes`,
+      ).toBe(false);
+      expect(keys, `${anchor} is registered in this package; the scan must see it`).toContain(
+        anchor,
+      );
+    }
+    // Name the duplicates rather than comparing two counts. Fastify itself
+    // refuses a genuinely duplicated registration, so a hit here is more likely a
+    // second copy of a route module inside the scan — which the repeated paths
+    // identify, and a bare `104 !== 97` would not.
     const seen = new Set<string>();
     expect(keys.filter((key) => (seen.has(key) ? true : (seen.add(key), false)))).toEqual([]);
   });
@@ -137,15 +166,22 @@ describe('route scope declarations', () => {
     }
   });
 
-  it('has no computed route paths that the source scan would miss', () => {
+  it('has no computed route paths that the source scan would miss or mis-key', () => {
     // What makes the scan above trustworthy: every registration passes a literal.
-    // A template literal or a variable would register a route this test cannot
-    // see. That is only safe because the gate requires the operator token by
-    // default — this keeps the default the sole reason an undeclared route is ok.
+    // A variable would register a route this test cannot see at all; a template
+    // literal is worse, because it opens with a quote and so reads as a literal —
+    // the key would be the raw `${…}` text, which silently satisfies both the
+    // staleness and duplicate checks. Both are ruled out here. That is only safe
+    // because the gate requires the operator token by default; this keeps the
+    // default the sole reason an undeclared route is acceptable.
     const computed: string[] = [];
     for (const file of routeSourceFiles()) {
-      for (const match of readFileSync(file, 'utf8').matchAll(COMPUTED_ROUTE_PATTERN)) {
+      const source = readFileSync(file, 'utf8');
+      for (const match of source.matchAll(COMPUTED_ROUTE_PATTERN)) {
         computed.push(`${file}: ${match[1]!}`);
+      }
+      for (const match of source.matchAll(ROUTE_PATTERN)) {
+        if (INTERPOLATED_PATH.test(match[3]!)) computed.push(`${file}: ${match[3]!}`);
       }
     }
     expect(computed).toEqual([]);
@@ -175,11 +211,15 @@ describe('route scope declarations', () => {
     const stray: string[] = [];
     for (const file of routeSourceFiles()) {
       const source = readFileSync(file, 'utf8');
-      for (const pattern of [FASTIFY_PARAM_PATTERN, INLINE_PLUGIN_PATTERN]) {
+      for (const pattern of [FASTIFY_PARAM_PATTERN, INLINE_PLUGIN_PATTERN] as const) {
         pattern.lastIndex = 0;
         for (const match of source.matchAll(pattern)) {
-          const name = match[1]!;
-          if (!(RECEIVERS as readonly string[]).includes(name)) stray.push(`${file}: ${name}`);
+          // INLINE_PLUGIN_PATTERN has two alternatives, so the name lands in
+          // whichever group matched.
+          const name = match[1] ?? match[2];
+          if (name !== undefined && !(RECEIVERS as readonly string[]).includes(name)) {
+            stray.push(`${file}: ${name}`);
+          }
         }
       }
     }
