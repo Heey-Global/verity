@@ -405,8 +405,12 @@ describe('Supply-chain cooldown', () => {
       // case-insensitive here.
       const dockerfile = readFileSync(file, 'utf8').replaceAll(/\\\r?\n\s*/gu, ' ');
       return (
-        /^\s*COPY\s+(?:--\S+\s+)*\.\/?\s+\S+\s*$/imu.test(dockerfile) ||
-        /^\s*COPY\s+.*\.npmrc/imu.test(dockerfile)
+        // `ADD` as well as `COPY`, and the JSON array form of either: all three
+        // bring the file in, and only one of them is the obvious one to look
+        // for. `./`, `.` and an explicit `.npmrc` likewise.
+        /^\s*(?:COPY|ADD)\s+(?:--\S+\s+)*(?:\.\/?\s+\S+\s*$|\[\s*"\.\/?"\s*,)/imu.test(
+          dockerfile,
+        ) || /^\s*(?:COPY|ADD)\s+.*\.npmrc/imu.test(dockerfile)
       );
     });
     expect(
