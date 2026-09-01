@@ -78,7 +78,7 @@ describe('Agent Loop executor', () => {
     expect(dispatchTurnWhenIdle).toHaveBeenCalledWith(
       's1',
       expect.stringMatching(
-        /^Evaluate the Agent Loop finding[\s\S]*External content follows[\s\S]*"Agent Loop script l1"[\s\S]*\{"requestedAction":"Fix issue 42"\}$/u,
+        /^An Agent Loop proposed an action[\s\S]*carry it out if it is safe and relevant[\s\S]*External content follows[\s\S]*"Agent Loop script l1"[\s\S]*\{"proposedAction":"Fix issue 42"\}$/u,
       ),
       'codex/default',
     );
@@ -94,7 +94,7 @@ describe('Agent Loop executor', () => {
     await executor.execute(loop, project);
 
     const dispatched = dispatchTurnWhenIdle.mock.calls[0]?.[1] ?? '';
-    expect(dispatched.endsWith(JSON.stringify({ requestedAction: attack }))).toBe(true);
+    expect(dispatched.endsWith(JSON.stringify({ proposedAction: attack }))).toBe(true);
     expect(dispatched).not.toContain(`\n\n${attack}`);
   });
 
