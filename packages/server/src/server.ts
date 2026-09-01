@@ -5207,6 +5207,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const pairingRedeemBody = z.object({ code: z.string().min(32).max(128) }).strict();
   const pairingIdentityQuery = z.object({ challenge: z.string().min(32).max(128) }).strict();
 
+  // Both pairing routes register unconditionally and refuse themselves in the
+  // handler when pairing is not wired, rather than being registered
+  // conditionally. `LOCKOUT_CRITICAL_KEYS` (route-scopes.ts) relies on that:
+  // pairing is how a second device obtains a bearer, so the gate must always
+  // exempt these, and making either registration conditional would turn that
+  // boot-time assertion into a refusal to start.
   app.get('/pair/identity', (request, reply) => {
     if (deps.devicePairing === undefined) {
       reply.code(404);

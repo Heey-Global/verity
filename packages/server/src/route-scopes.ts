@@ -117,9 +117,11 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'github-webhook',
     'GitHub HMAC signature over the delivery body',
   ),
-  // The `/internal/*` routes are additionally unreachable off the internal
-  // listener: the network-origin guard in the gate 404s them on the public/LAN
-  // port, so the broker is off the LAN entirely on top of its own credential.
+  // Where an internal listener is wired, the `/internal/*` routes are
+  // additionally unreachable off it: the network-origin guard in the gate 404s
+  // them on the public/LAN port, putting the broker off the LAN entirely on top
+  // of its own credential. That guard is conditional on the listener, so in a
+  // deployment without one the credential named below is the whole check.
   declare(
     'POST',
     '/internal/git/sign',
@@ -284,7 +286,10 @@ export function declaredNonOperatorKeys(
       const unprefixed = route.url.slice(route.prefix.length) || '/';
       if (routes.has(routeScopeKey(declaredAs, unprefixed))) {
         throw new Error(
-          `verity: route ${routeScopeKey(declaredAs, unprefixed)} is declared as an operator-gate exception but is registered under the prefix \`${route.prefix}\`; the gate would match neither path, so declare the prefixed url or drop the prefix`,
+          // Both keys, because they can differ: an auto-added HEAD is declared
+          // as its GET, so naming only the declaration would report a method
+          // nobody wrote.
+          `verity: route ${routeScopeKey(declaredAs, unprefixed)} is declared as an operator-gate exception but is registered as ${routeScopeKey(method, route.url)} under the prefix \`${route.prefix}\`; the gate would match neither path, so declare the prefixed url or drop the prefix`,
         );
       }
     }

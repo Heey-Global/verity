@@ -62,6 +62,17 @@ const INLINE_PLUGIN_PATTERN =
 /** A `prefix` shifts the url `onRoute` reports away from the literal in the
  *  source, so a declaration would name a path that never arrives. */
 const PREFIXED_REGISTER_PATTERN = /\.register\([^)]*\bprefix\s*:/g;
+/** Two plugin shapes the receiver check cannot see at all: an annotated plugin
+ *  (`const routes: FastifyPluginAsync = async (api) => …`) has no
+ *  `: FastifyInstance` to find and is not an inline `register` callback, and a
+ *  `fastify-plugin` wrapper hides the callback inside a call. */
+const OPAQUE_PLUGIN_PATTERN = /:\s*FastifyPlugin(?:Async|Callback)?\b|from 'fastify-plugin'/g;
+/** Any route registration at all — for the ordering check below, where the
+ *  question is where the first one sits, not what it registers. */
+const ANY_ROUTE_PATTERN = new RegExp(
+  `\\b${receiver}\\.(?:get|post|put|patch|delete|head|all|route)\\(`,
+  'g',
+);
 
 /**
  * Resolve against the repo root rather than the process cwd, so the scan does
@@ -94,6 +105,22 @@ function registeredRouteKeys(): readonly string[] {
     }
   }
   return keys;
+}
+
+function gitGrepFiles(pattern: string, pathspec: string): readonly string[] {
+  try {
+    return execFileSync('git', ['grep', '--untracked', '-l', '-F', pattern, '--', pathspec], {
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+    })
+      .split('\n')
+      .filter(Boolean);
+  } catch (error) {
+    // Exit 1 is "no match", which is the passing case here. Anything else — a
+    // bad pathspec, no work tree — must not read as a clean result.
+    if ((error as { status?: number }).status === 1) return [];
+    throw error;
+  }
 }
 
 function filesMatching(pattern: RegExp): readonly string[] {
@@ -226,6 +253,34 @@ describe('route scope declarations', () => {
     expect(stray).toEqual([]);
   });
 
+  it('writes no plugin in a shape the receiver check cannot see', () => {
+    // Neither shape is used anywhere today, and both would be invisible to the
+    // check above rather than caught by it: the instance name is either bound by
+    // a type annotation or hidden behind `fp(...)`. If one is ever wanted, teach
+    // the receiver patterns about it — do not delete this.
+    expect(filesMatching(OPAQUE_PLUGIN_PATTERN)).toEqual([]);
+  });
+
+  it('keeps Fastify itself confined to this package', () => {
+    // What makes scanning only `packages/server/src` sound. A route plugin
+    // contributed by another workspace package would be covered by the runtime
+    // hook — it registers on the same instance — but by none of the source
+    // guarantees above.
+    // A directory pathspec for the same reason as in `routeSourceFiles`: a glob
+    // like `packages/*/src` matches the directory and not what is under it, so
+    // it would search nothing and pass for the wrong reason.
+    const importers = gitGrepFiles("from 'fastify'", 'packages');
+    expect(
+      importers.some((path) => path.startsWith('packages/server/src/')),
+      'this package imports Fastify, so an empty result means the search is broken',
+    ).toBe(true);
+    expect(
+      importers.filter(
+        (path) => path.includes('/src/') && !path.startsWith('packages/server/src/'),
+      ),
+    ).toEqual([]);
+  });
+
   it('registers no plugin under a url prefix', () => {
     // A source-level nudge only: this pattern sees `register(plugin, { prefix })`
     // but not a prefix passed past a long inline plugin body. The guarantee lives
@@ -306,7 +361,12 @@ describe('declaredNonOperatorKeys', () => {
     const routes = fixture('GET', '/healthz');
     expect(() =>
       declaredNonOperatorKeys({ method: 'GET', url: '/api/healthz', prefix: '/api' }, routes),
-    ).toThrow(/registered under the prefix/);
+    ).toThrow(/GET \/healthz .* registered as GET \/api\/healthz under the prefix/);
+    // Named as HEAD, not as the GET it inherits its declaration from: the
+    // message has to point at a registration the reader can find.
+    expect(() =>
+      declaredNonOperatorKeys({ method: 'HEAD', url: '/api/healthz', prefix: '/api' }, routes),
+    ).toThrow(/registered as HEAD \/api\/healthz under the prefix/);
     // A prefixed route whose bare path is not declared is an ordinary operator
     // route; the prefix is then nobody's business.
     expect(
@@ -361,6 +421,31 @@ describe('the onRoute hook in buildServer', () => {
     await app.close();
     expect(seen).toContain('/after');
     expect(seen).not.toContain('/before');
+  });
+
+  it('is attached above every route registration in server.ts', () => {
+    // The one runtime failure this derived set has that the old static list did
+    // not. `onRoute` is not retroactive, so a route hoisted above the hook keeps
+    // its declaration and silently loses its exemption. The boot check covers
+    // that for the exemptions nobody can recover from; the conditional ones —
+    // the signing broker, the container capabilities, the MCP gateway — would
+    // just start answering 401 to their own callers, with no test failing. This
+    // covers all of them at once, where the ordering actually has to hold. The
+    // route modules are covered by the same fact: they are called from
+    // `buildServer`, which is below this hook.
+    const source = readFileSync(join(REPO_ROOT, 'packages/server/src/server.ts'), 'utf8');
+    const hook = source.indexOf("addHook('onRoute'");
+    expect(hook, 'server.ts must attach an onRoute hook').toBeGreaterThan(-1);
+    ANY_ROUTE_PATTERN.lastIndex = 0;
+    const firstRoute = ANY_ROUTE_PATTERN.exec(source);
+    expect(firstRoute, 'nothing to order the hook against — the scan broke').not.toBeNull();
+    expect(firstRoute!.index, 'a route is registered above the onRoute hook').toBeGreaterThan(hook);
+    // A plugin gets its own encapsulated context, which inherits the hooks that
+    // existed when it was created — and only those.
+    const firstRegister = source.indexOf('.register(');
+    if (firstRegister !== -1) {
+      expect(firstRegister, 'a plugin is registered above the onRoute hook').toBeGreaterThan(hook);
+    }
   });
 
   it('refuses to register a declared exception under a parameterised url', () => {

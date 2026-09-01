@@ -209,8 +209,13 @@ describe('global auth gate (onRequest)', () => {
   // Deriving the exemption set from route registrations widened it for the four
   // routes that register unconditionally and refuse themselves in the handler:
   // the old static list made their exemption conditional on the same deps the
-  // handler checks. That is only harmless if each handler's FIRST act, ahead of
-  // any parsing or state access, is to refuse. Two of those conditions are
+  // handler checks. That is only harmless if each handler's FIRST statement,
+  // ahead of any use of the body or of store state, is to refuse. What that does
+  // not buy back is Fastify's own body parsing, which runs before any handler:
+  // on a half-configured deployment those POSTs now parse an unauthenticated
+  // body (bounded by `bodyLimit`) before answering 404, where the gate used to
+  // 401 them in `onRequest`. Cost, not exposure — nothing reads the parsed body.
+  // Two of those conditions are
   // conjunctions — the webhook wants a store AND an HMAC secret, the workflow
   // result wants a store AND capabilities — so a half-configured deployment is
   // the interesting case, not the empty one: if a handler checked only one
