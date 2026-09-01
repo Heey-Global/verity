@@ -1,3 +1,4 @@
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
@@ -227,13 +228,47 @@ describe('Supply-chain cooldown', () => {
         : { key: line.slice(0, separator).trim(), value: line.slice(separator + 1).trim() };
     });
 
-  it('holds the npm floor in .npmrc', () => {
+  it('holds the npm floor in .npmrc, and npm reads it as one', () => {
     const floor = npmrcSettings.find(({ key }) => key === 'min-release-age');
     expect(floor, '.npmrc no longer holds a release-age floor for manual installs').toBeDefined();
     expect(
       Number(floor?.value),
       'the floor is set but not to a positive number of days',
     ).toBeGreaterThan(0);
+    // Asking npm rather than trusting the file. A misspelled or unsupported key
+    // is not an error to npm: it warns `Unknown project config` and then
+    // installs exactly as if the line were absent, so a floor that protects
+    // nothing looks identical from the file alone. That warning is the only
+    // signal, and it goes to stderr — `npm config get` still prints the value it
+    // was handed, whether or not it means anything, so reading stdout alone
+    // would have missed this.
+    //
+    // The unit is days, not the minutes the same idea is counted in elsewhere:
+    // npm's definition hints `<days>` and derives `before` as
+    // `Date.now() - 86400000 * age`.
+    const npm = spawnSync('npm', ['config', 'get', 'min-release-age'], { encoding: 'utf8' });
+    expect(npm.status, `npm config get failed: ${npm.stderr}`).toBe(0);
+    expect(npm.stdout.trim(), 'npm resolves a different floor than .npmrc states').toBe(
+      floor?.value,
+    );
+    expect(npm.stderr, 'npm does not recognise a key in .npmrc, so it is ignoring it').not.toMatch(
+      /Unknown project config/u,
+    );
+  });
+
+  it('is the only .npmrc in the repository', () => {
+    // npm reads the `.npmrc` nearest the directory it runs in, so a workspace-
+    // level file would override this floor for anything installed from that
+    // directory — and `ignoreNpmrcFile` would hide it from Renovate as well.
+    // Neither shows up in the root file this suite otherwise reads.
+    const tracked = execFileSync(
+      'git',
+      ['ls-files', '--cached', '--others', '--exclude-standard'],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    )
+      .split('\n')
+      .filter((path) => path.endsWith('.npmrc'));
+    expect(tracked).toEqual(['.npmrc']);
   });
 
   it('inherits the Renovate window instead of restating it', () => {
@@ -244,14 +279,23 @@ describe('Supply-chain cooldown', () => {
     expect(config.extends ?? [], 'the org preset is where the window comes from').toContain(
       ORG_PRESET,
     );
-    expect(config.minimumReleaseAge, 'a local window overrides the org policy').toBeUndefined();
-    for (const rule of config.packageRules) {
-      const named = `"${rule.description ?? 'a rule'}"`;
-      expect(
-        rule.minimumReleaseAge,
-        `${named} re-sets the release-age window for the packages it matches`,
-      ).toBeUndefined();
-    }
+    // Searched rather than enumerated. Renovate honours `minimumReleaseAge` in
+    // more places than the two worth naming — inside `vulnerabilityAlerts`,
+    // under `patch`/`minor`/`major`, per-manager, and nested in a `packageRules`
+    // entry's own children. Listing the ones thought of leaves the rest silent,
+    // and the most damaging of them is the `vulnerabilityAlerts` override, which
+    // would cancel the fast-track the test below exists to keep.
+    const locate = (node: unknown, path: string): string[] => {
+      if (Array.isArray(node)) return node.flatMap((item, at) => locate(item, `${path}[${at}]`));
+      if (node === null || typeof node !== 'object') return [];
+      return Object.entries(node).flatMap(([key, value]) =>
+        key === 'minimumReleaseAge' ? [`${path}.${key}`] : locate(value, `${path}.${key}`),
+      );
+    };
+    expect(
+      locate(config, 'renovate.json'),
+      'a local window overrides the org policy and drifts from .npmrc',
+    ).toEqual([]);
   });
 
   it('keeps the npm floor out of Renovate own lockfile updates', () => {
@@ -271,7 +315,12 @@ describe('Supply-chain cooldown', () => {
     // added for. A registry, a scope mapping or an auth line added here later
     // would be silently invisible to Renovate's npm runs, and the symptom —
     // lockfile updates resolving against the wrong registry — points nowhere
-    // near this file.
-    expect(npmrcSettings.map(({ key }) => key)).toEqual(['min-release-age']);
+    // near this file. Deliberately exact rather than a deny-list of the risky
+    // keys: a harmless-looking addition still has to be argued for here, which
+    // is cheaper than deciding after the fact which keys Renovate needed.
+    expect(
+      npmrcSettings.map(({ key }) => key),
+      'a setting was added to .npmrc that ignoreNpmrcFile now hides from Renovate',
+    ).toEqual(['min-release-age']);
   });
 });
