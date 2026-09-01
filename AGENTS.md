@@ -27,6 +27,9 @@ warned about: an npm older than `engines.npm` would ignore the floor silently,
 and a warning nobody reads is not a supply-chain control. A dependency whose own
 `engines` excludes the pinned Node now fails the install too — `npm install
 --engine-strict=false` is the deliberate way past that while it is sorted out.
+Renovate does not see the setting, since it overrides this file for its own
+lockfile runs, so that failure surfaces first on its pull request rather than in
+the branch that added the dependency. That is where it belongs; expect it there.
 
 The file is tracked, so a checkout will collide with an untracked root `.npmrc`
 of your own. Move yours rather than merging the two: registry credentials belong

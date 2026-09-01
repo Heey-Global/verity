@@ -46,7 +46,7 @@ separately by `TRADEMARKS.md`.
 | BSD-3-Clause | 27 |
 | CC-BY-4.0 | 1 |
 | ISC | 64 |
-| MIT | 979 |
+| MIT | 980 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -392,6 +392,7 @@ separately by `TRADEMARKS.md`.
 | @types/qrcode | 1.5.6 | MIT | [source](https://registry.npmjs.org/@types/qrcode/-/qrcode-1.5.6.tgz) |
 | @types/react-test-renderer | 19.1.0 | MIT | [source](https://registry.npmjs.org/@types/react-test-renderer/-/react-test-renderer-19.1.0.tgz) |
 | @types/react | 19.2.18 | MIT | [source](https://registry.npmjs.org/@types/react/-/react-19.2.18.tgz) |
+| @types/semver | 7.8.0 | MIT | [source](https://registry.npmjs.org/@types/semver/-/semver-7.8.0.tgz) |
 | @types/stack-utils | 2.0.3 | MIT | [source](https://registry.npmjs.org/@types/stack-utils/-/stack-utils-2.0.3.tgz) |
 | @types/tough-cookie | 4.0.5 | MIT | [source](https://registry.npmjs.org/@types/tough-cookie/-/tough-cookie-4.0.5.tgz) |
 | @types/ws | 8.18.1 | MIT | [source](https://registry.npmjs.org/@types/ws/-/ws-8.18.1.tgz) |

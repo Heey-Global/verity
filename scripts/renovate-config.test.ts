@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
+import { satisfies, subset, valid } from 'semver';
 import { describe, expect, it } from 'vitest';
 
 interface RenovateConfig {
@@ -224,7 +225,11 @@ describe('Supply-chain cooldown', () => {
   // not require — `min-release-age=3 # three days` and `...=3# three days` are
   // both a working floor to npm, and keeping the tail would turn either into a
   // `NaN` here and a failure about the value not being a number.
-  const npmrcSettings = readFileSync('.npmrc', 'utf8')
+  // Read defensively rather than at face value: a deleted `.npmrc` would
+  // otherwise throw here, in the describe body, and take the unrelated suites
+  // in this file down as a collection error — losing the one message that names
+  // what actually happened.
+  const npmrcSettings = (existsSync('.npmrc') ? readFileSync('.npmrc', 'utf8') : '')
     .split('\n')
     .map((line) => line.replace(/\s*[#;].*$/u, '').trim())
     .filter((line) => line.length > 0 && !line.startsWith('#') && !line.startsWith(';'))
@@ -280,12 +285,6 @@ describe('Supply-chain cooldown', () => {
     };
   };
 
-  /** Whether a `[major, minor, patch]` is at or above another one. */
-  const reaches = (version: number[], floor: number[]): boolean => {
-    const differs = floor.findIndex((part, at) => (version[at] ?? 0) !== part);
-    return differs === -1 || (version[differs] ?? 0) > (floor[differs] ?? 0);
-  };
-
   it('holds the npm floor in .npmrc, and npm reads it as one', () => {
     const floor = npmrcSettings.find(({ key }) => key === 'min-release-age');
     expect(floor, '.npmrc no longer holds a release-age floor for manual installs').toBeDefined();
@@ -338,33 +337,44 @@ describe('Supply-chain cooldown', () => {
     // `engine-strict` is the one setting here that applies to `npm ci`, so CI is
     // where it is actually enforced: a runner on a Node outside `engines.node`
     // stops warning and starts failing the install, before any job in it runs.
-    // Every workflow pins a version today; the failure worth catching is the
-    // next one that takes a floating `24.x` or an `lts/*` and lands green until
-    // the day upstream moves.
-    const pinned = readdirSync('.github/workflows')
+    // Every workflow pins an exact version today; the failure worth catching is
+    // the next one that takes a floating `24.x`, an `lts/*` or a matrix
+    // expression and lands green until the day upstream moves under it.
+    const workflows = '.github/workflows';
+    expect(existsSync(workflows), 'the workflows moved, so this guards nothing').toBe(true);
+    const selected = readdirSync(workflows)
       .filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))
       .flatMap((file) =>
         [
-          ...readFileSync(`.github/workflows/${file}`, 'utf8').matchAll(
-            /^\s*node-version:\s*['"]?(?<version>[^'"\s#]+)/gmu,
+          ...readFileSync(`${workflows}/${file}`, 'utf8').matchAll(
+            // `node-version-file` too: it defers the choice to a file this test
+            // does not read, which is the same loss of a pin by another route.
+            /^\s*(?<setting>node-version(?:-file)?):\s*(?<value>[^#\n]*)/gmu,
           ),
-        ].map((match) => `${file}: ${match.groups?.version ?? ''}`),
+        ].map((match) => ({
+          where: `${file}: ${match.groups?.setting ?? ''}: ${(match.groups?.value ?? '').trim()}`,
+          version: (match.groups?.value ?? '').trim().replaceAll(/^['"]|['"]$/gu, ''),
+          exact:
+            match.groups?.setting === 'node-version' &&
+            valid((match.groups?.value ?? '').trim().replaceAll(/^['"]|['"]$/gu, '')) !== null,
+        })),
       );
     expect(
-      pinned.length,
-      'no workflow pins a Node version, so this guards nothing',
+      selected.length,
+      'no workflow selects a Node version, so this guards nothing',
     ).toBeGreaterThan(0);
-    // Compared against the manifest rather than a literal: the range and the
-    // runners have to move together, and this is the place that notices when
-    // only one of them did.
-    const admitted = new Set(
-      [...(manifest.engines?.node ?? '').matchAll(/(?<version>\d+\.\d+\.\d+)/gu)].map(
-        (match) => match.groups?.version ?? '',
-      ),
-    );
     expect(
-      pinned.filter((entry) => !admitted.has(entry.slice(entry.indexOf(': ') + 2))),
-      `engine-strict fails the install on any runner outside engines.node (${manifest.engines?.node ?? ''})`,
+      selected.filter((entry) => !entry.exact).map((entry) => entry.where),
+      'engine-strict makes the runner Node a hard install requirement, so it has to be pinned to read it here',
+    ).toEqual([]);
+    // Compared against the manifest range rather than a literal, and with
+    // semver rather than string membership: `engines.node` legitimately admits
+    // versions it does not spell out, and a patch bump on both sides should
+    // not have to come through here.
+    const range = manifest.engines?.node ?? '';
+    expect(
+      selected.filter((entry) => !satisfies(entry.version, range)).map((entry) => entry.where),
+      `engine-strict fails the install on any runner outside engines.node (${range})`,
     ).toEqual([]);
   });
 
@@ -374,15 +384,31 @@ describe('Supply-chain cooldown', () => {
     // which is what the file itself claims. A `COPY . .` added later would
     // quietly make every image build enforce it, on whatever Node that stage
     // pins, and the first sign would be a red deploy.
-    const copyingEverything = readdirSync('deploy')
-      .filter((file) => file.includes('Dockerfile'))
-      .filter((file) => {
-        const dockerfile = readFileSync(`deploy/${file}`, 'utf8');
-        return (
-          /^COPY\s+(?:--\S+\s+)*\.\s+\S+\s*$/mu.test(dockerfile) ||
-          /^COPY\s+.*\.npmrc/mu.test(dockerfile)
-        );
-      });
+    // Asked of git rather than walked: every Dockerfile in the repository,
+    // wherever it moves to, and none of the thousands under node_modules.
+    const tracked = spawnSync('git', ['ls-files', '-z'], { encoding: 'utf8' });
+    expect(
+      tracked.status,
+      `git ls-files did not run: ${tracked.error?.message ?? tracked.stderr}`,
+    ).toBe(0);
+    const dockerfiles = (tracked.stdout ?? '')
+      .split('\0')
+      .filter((file) => /(?:^|\/)[^/]*Dockerfile[^/]*$/u.test(file));
+    expect(
+      dockerfiles.length,
+      'no Dockerfile was found, so an image build could copy this file and nothing would say so',
+    ).toBeGreaterThan(0);
+    const copyingEverything = dockerfiles.filter((file) => {
+      // Continuations folded first, so a `COPY \` split across lines is read as
+      // the one instruction it is. `./`, `.` and an explicit `.npmrc` all bring
+      // the file in; the instruction is case-insensitive to Docker, so it is
+      // case-insensitive here.
+      const dockerfile = readFileSync(file, 'utf8').replaceAll(/\\\r?\n\s*/gu, ' ');
+      return (
+        /^\s*COPY\s+(?:--\S+\s+)*\.\/?\s+\S+\s*$/imu.test(dockerfile) ||
+        /^\s*COPY\s+.*\.npmrc/imu.test(dockerfile)
+      );
+    });
     expect(
       copyingEverything,
       'these image builds now read the root .npmrc, so engine-strict applies to them as well',
@@ -439,21 +465,15 @@ describe('Supply-chain cooldown', () => {
     // every npm the floor does nothing on. 11.15.0 is knowledge about npm rather
     // than about this repository, so it is written down here instead of derived
     // — nothing in the tree records it.
-    const FLOOR_HONOURED_FROM = [11, 15, 0];
+    const FLOOR_HONOURED_FROM = '11.15.0';
     const declared = manifest.engines?.npm;
     expect(declared, 'nothing declares the npm version the floor needs').toBeDefined();
-    // Deliberately narrow: only `>=x.y.z` is recognised, so a range that cannot
-    // be read as a lower bound fails here rather than being waved through by a
-    // parse that guessed. Widen it when a real need for another form turns up.
-    const lowerBound = /^>=(\d+)\.(\d+)\.(\d+)$/u.exec(declared ?? '');
+    // Asked the other way round: does the declared range admit an npm the floor
+    // is inert on? `subset` answers that for any form the range is written in,
+    // where reading a lower bound out of it only works for the forms thought of.
     expect(
-      lowerBound,
-      `engines.npm is "${declared}", which states no lower bound this can read`,
-    ).not.toBeNull();
-    const bound = (lowerBound?.slice(1, 4) ?? []).map(Number);
-    expect(
-      reaches(bound, FLOOR_HONOURED_FROM),
-      `engines.npm is "${declared}", which admits npm below ${FLOOR_HONOURED_FROM.join('.')} — the floor is inert there and installs proceed as if .npmrc were absent`,
+      subset(declared ?? '', `>=${FLOOR_HONOURED_FROM}`),
+      `engines.npm is "${declared}", which admits npm below ${FLOOR_HONOURED_FROM} — the floor is inert there and installs proceed as if .npmrc were absent`,
     ).toBe(true);
     // And the requirement has to be one the pinned Node can actually meet.
     // Nothing here pins npm itself: it arrives bundled with Node, and the
@@ -463,17 +483,16 @@ describe('Supply-chain cooldown', () => {
     // machine doing the bump.
     const running = spawnSync('npm', ['--version'], { encoding: 'utf8', env: neutralEnv() });
     const reported = running.stdout?.trim() ?? '';
-    // Parsed strictly: a prerelease (`12.0.0-pre.1`) or a failed spawn would
-    // otherwise reach the comparison as NaN and fail as though npm were too old,
-    // which is a different problem with a different fix.
-    const parts = /^(\d+)\.(\d+)\.(\d+)/u.exec(reported);
+    // Read strictly: a failed spawn would otherwise reach the comparison as an
+    // empty string and fail as though npm were too old, which is a different
+    // problem with a different fix.
     expect(
-      parts,
+      valid(reported),
       `could not read a version from \`npm --version\`: ${running.error?.message ?? reported}`,
     ).not.toBeNull();
     expect(
-      reaches((parts?.slice(1, 4) ?? []).map(Number), FLOOR_HONOURED_FROM),
-      `the npm in use is ${reported}, below the ${declared} this declares — engine-strict makes that a refusal rather than a warning`,
+      satisfies(reported, declared ?? ''),
+      `the npm in use is ${reported}, outside the ${declared} this declares — engine-strict makes that a refusal rather than a warning`,
     ).toBe(true);
   });
 
