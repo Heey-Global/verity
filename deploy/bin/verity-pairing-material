@@ -73,6 +73,13 @@ if [ -n "$pair_host" ]; then
   else
     [[ "$pair_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
       || die 'VERITY_PAIRING_HOST is not a valid DNS name'
+    [ "${#pair_host}" -le 253 ] || die 'VERITY_PAIRING_HOST is not a valid DNS name'
+    IFS=. read -ra dns_labels <<<"$pair_host"
+    for label in "${dns_labels[@]}"; do
+      [ -n "$label" ] && [ "${#label}" -le 63 ] \
+        && [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] \
+        || die 'VERITY_PAIRING_HOST is not a valid DNS name'
+    done
     san="$san,DNS:$pair_host"
   fi
   suggested="https://$pair_host:$port"

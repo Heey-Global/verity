@@ -120,3 +120,17 @@ test('rejects an invalid selected pairing address', () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /not an IPv4 address or DNS name/);
 });
+
+test('rejects malformed DNS labels', () => {
+  for (const host of [
+    'foo..bar',
+    'foo.-bar.com',
+    `${'a'.repeat(64)}.example`,
+    [63, 63, 63, 62].map((length) => 'a'.repeat(length)).join('.'),
+  ]) {
+    const state = mkdtempSync(join(tmpdir(), 'verity-pairing-invalid-dns-'));
+    const result = run(state, { VERITY_PAIRING_HOST: host });
+    assert.notEqual(result.status, 0, host);
+    assert.match(result.stderr, /not a valid DNS name/, host);
+  }
+});
