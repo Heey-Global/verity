@@ -32,6 +32,10 @@ jobs:
         with:
           node-version: '24.19.0'
 
+      # EAS resolves the Expo app config before editing a channel. Install the
+      # locked workspace so config plugins such as expo-router are available.
+      - run: npm ci
+
       - name: Read and validate approved candidate
         id: candidate
         env:
