@@ -92,6 +92,9 @@ describe('onboarding connection entry', () => {
   it('welcomes first-run users with installer guidance and no manual address field', () => {
     render(<OnboardingServerUrl />);
     expect(screen.getByText('Secure pairing')).toBeOnTheScreen();
+    expect(screen.getByText('Install Verity on your server')).toBeOnTheScreen();
+    expect(screen.getByText('Pair this device')).toBeOnTheScreen();
+    expect(screen.getAllByText(/^Step [12]$/)).toHaveLength(2);
     expect(screen.getByText(/curl -fsSL https:\/\/verity\.build\/install\.sh/)).toBeOnTheScreen();
     expect(screen.getByLabelText('Scan QR code')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Server address')).toBeNull();

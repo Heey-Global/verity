@@ -150,7 +150,7 @@ export default function OnboardingServerUrl() {
       keyboardVerticalOffset={0}
     >
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingTop: insets.top + 32 }]}
+        contentContainerStyle={[styles.content, { paddingTop: insets.top + 24 }]}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.eyebrow}>{isReconfigure ? 'Verity connection' : 'Secure pairing'}</Text>
@@ -163,10 +163,12 @@ export default function OnboardingServerUrl() {
             : 'Verity runs on your own Linux server. Install it there first; the installer will show a QR code that securely connects this app.'}
         </Text>
 
-        <View style={styles.card}>
-          {!isReconfigure ? (
-            <>
-              <Text style={styles.label}>Run on an x86-64 Linux host with Docker:</Text>
+        {!isReconfigure ? (
+          <>
+            <View style={[styles.card, styles.infoCard]}>
+              <Text style={styles.stepLabel}>Step 1</Text>
+              <Text style={styles.cardTitle}>Install Verity on your server</Text>
+              <Text style={styles.hint}>Run this on an x86-64 Linux host with Docker:</Text>
               <View style={styles.commandRow}>
                 <Text style={styles.command} selectable>
                   curl -fsSL https://verity.build/install.sh | bash
@@ -184,84 +186,119 @@ export default function OnboardingServerUrl() {
                   <Text style={styles.copyButtonLabel}>{copied ? 'Copied' : 'Copy'}</Text>
                 </Pressable>
               </View>
-              <Text style={styles.hint}>Already installed? Keep the QR code on screen.</Text>
-            </>
-          ) : (
-            <View style={styles.field}>
-              <Text style={styles.label}>Verity server address</Text>
-              <TextInput
-                style={styles.input}
-                value={url}
-                onChangeText={(next) => {
-                  setUrl(next);
-                  // Editing invalidates a prior test result.
-                  if (test.kind !== 'idle') setTest({ kind: 'idle' });
-                }}
-                placeholder="verity.tailnet.ts.net:8082"
-                placeholderTextColor={theme.colors.textFaint}
-                autoCapitalize="none"
-                autoCorrect={false}
-                spellCheck={false}
-                keyboardType="url"
-                inputMode="url"
-                returnKeyType="go"
-                onSubmitEditing={runTest}
-                accessibilityLabel="Server address"
-              />
+              <Text style={styles.hint}>The installer finishes by showing a pairing QR code.</Text>
             </View>
-          )}
 
-          {test.kind === 'error' ? (
-            <Text style={styles.error} accessibilityRole="alert">
-              {test.message}
-            </Text>
-          ) : null}
+            <View style={[styles.card, styles.actionCard]}>
+              <Text style={styles.stepLabel}>Step 2</Text>
+              <Text style={styles.cardTitle}>Pair this device</Text>
+              <Text style={styles.hint}>
+                Keep the installer QR code visible, then scan it with this device.
+              </Text>
 
-          {test.kind === 'ok' && isReconfigure ? (
-            <Text style={styles.connected} accessibilityRole="alert">
-              Connected
-            </Text>
-          ) : null}
+              {test.kind === 'error' ? (
+                <Text style={styles.error} accessibilityRole="alert">
+                  {test.message}
+                </Text>
+              ) : null}
 
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryButton,
-              (isReconfigure ? !canSubmit : testing) ? styles.buttonDisabled : null,
-              pressed ? styles.pressed : null,
-            ]}
-            onPress={isReconfigure ? runTest : openScanner}
-            disabled={isReconfigure ? !canSubmit : testing}
-            accessibilityRole="button"
-            accessibilityLabel={isReconfigure ? 'Test connection' : 'Scan QR code'}
-          >
-            {testing ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
-            <Text style={styles.primaryButtonLabel}>
-              {testing ? 'Connecting…' : isReconfigure ? 'Test connection' : 'Scan QR code'}
-            </Text>
-          </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  testing ? styles.buttonDisabled : null,
+                  pressed ? styles.pressed : null,
+                ]}
+                onPress={openScanner}
+                disabled={testing}
+                accessibilityRole="button"
+                accessibilityLabel="Scan QR code"
+              >
+                {testing ? (
+                  <ActivityIndicator size="small" color={theme.colors.background} />
+                ) : null}
+                <Text style={styles.primaryButtonLabel}>
+                  {testing ? 'Connecting…' : 'Scan QR code'}
+                </Text>
+              </Pressable>
 
-          {!isReconfigure ? (
-            <Pressable
-              style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
-              onPress={pastePairingLink}
-              accessibilityRole="button"
-              accessibilityLabel="Paste pairing link"
-            >
-              <Text style={styles.cancelLabel}>Paste pairing link</Text>
-            </Pressable>
-          ) : null}
+              <Pressable
+                style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
+                onPress={pastePairingLink}
+                accessibilityRole="button"
+                accessibilityLabel="Paste pairing link"
+              >
+                <Text style={styles.cancelLabel}>Paste pairing link instead</Text>
+              </Pressable>
+            </View>
+          </>
+        ) : (
+          <View style={styles.card}>
+            <>
+              <View style={styles.field}>
+                <Text style={styles.label}>Verity server address</Text>
+                <TextInput
+                  style={styles.input}
+                  value={url}
+                  onChangeText={(next) => {
+                    setUrl(next);
+                    // Editing invalidates a prior test result.
+                    if (test.kind !== 'idle') setTest({ kind: 'idle' });
+                  }}
+                  placeholder="verity.tailnet.ts.net:8082"
+                  placeholderTextColor={theme.colors.textFaint}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  spellCheck={false}
+                  keyboardType="url"
+                  inputMode="url"
+                  returnKeyType="go"
+                  onSubmitEditing={runTest}
+                  accessibilityLabel="Server address"
+                />
+              </View>
 
-          {isReconfigure ? (
-            <Pressable
-              style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
-              onPress={() => router.back()}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel"
-            >
-              <Text style={styles.cancelLabel}>Cancel</Text>
-            </Pressable>
-          ) : null}
-        </View>
+              {test.kind === 'error' ? (
+                <Text style={styles.error} accessibilityRole="alert">
+                  {test.message}
+                </Text>
+              ) : null}
+
+              {test.kind === 'ok' ? (
+                <Text style={styles.connected} accessibilityRole="alert">
+                  Connected
+                </Text>
+              ) : null}
+
+              <Pressable
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  !canSubmit ? styles.buttonDisabled : null,
+                  pressed ? styles.pressed : null,
+                ]}
+                onPress={runTest}
+                disabled={!canSubmit}
+                accessibilityRole="button"
+                accessibilityLabel="Test connection"
+              >
+                {testing ? (
+                  <ActivityIndicator size="small" color={theme.colors.background} />
+                ) : null}
+                <Text style={styles.primaryButtonLabel}>
+                  {testing ? 'Connecting…' : 'Test connection'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
+                onPress={() => router.back()}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+              >
+                <Text style={styles.cancelLabel}>Cancel</Text>
+              </Pressable>
+            </>
+          </View>
+        )}
       </ScrollView>
       <Modal
         visible={scannerOpen}
@@ -336,6 +373,23 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
+  },
+  infoCard: {
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  actionCard: {
+    borderColor: theme.colors.accent,
+  },
+  stepLabel: {
+    color: theme.colors.accent,
+    fontSize: theme.text.xs,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  cardTitle: {
+    color: theme.colors.text,
+    fontSize: theme.text.lg,
+    fontWeight: '800',
   },
   scanButton: {
     minHeight: 48,

@@ -12,7 +12,7 @@ export default function OnboardingWelcome() {
   return (
     <View style={styles.root}>
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingTop: insets.top + 32 }]}
+        contentContainerStyle={[styles.content, { paddingTop: insets.top + 24 }]}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.eyebrow}>Verity</Text>
@@ -67,7 +67,7 @@ const styles = StyleSheet.create((theme) => ({
   content: {
     flexGrow: 1,
     gap: theme.spacing.lg,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
   },
