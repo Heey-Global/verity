@@ -450,6 +450,10 @@ describe('mobile OTA promotion', () => {
 
   it('moves TestFlight to the approved EAS branch without rebuilding', () => {
     const source = readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8');
+    const workflow = parse(source) as { jobs: { promote: WorkflowJob } };
+    const steps = workflow.jobs.promote.steps;
+    const install = steps.findIndex((step) => step.run === 'npm ci');
+    const promote = steps.findIndex((step) => step.run?.includes('channel:edit testflight'));
     expect(source).toContain("github.ref == 'refs/heads/main'");
     expect(source).toContain('paths: [apps/mobile/ota-promotion.json]');
     expect(source).toContain('channel:edit testflight');
@@ -462,6 +466,10 @@ describe('mobile OTA promotion', () => {
     expect(source).toContain('gh release create');
     expect(source).toContain('gh release edit');
     expect(source).not.toContain('eas-cli@21.0.1 update');
+    // EAS loads app.config.ts for channel edits; without installed config
+    // plugins, promotion fails before it can move the channel.
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(promote);
   });
 
   it('does not compile the native app for an OTA promotion manifest', () => {
