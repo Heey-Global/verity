@@ -24,7 +24,7 @@ export interface DevicePairingManager {
   consumeBootstrap(token: string): boolean;
   signChallenge(challenge: string): { serverId: string; signature: string };
   issueInvitation(): { code: string; expiresAt: string };
-  consumeInvitation(code: string): boolean;
+  claimInvitation(code: string): { release(): void } | undefined;
 }
 
 function digest(domain: string, value: string): Buffer {
@@ -160,15 +160,22 @@ export function createDevicePairingManager(options: {
       invitations.set(digest(`${PAIRING_DOMAIN}.invitation`, code).toString('base64url'), expiry);
       return { code, expiresAt: new Date(expiry).toISOString() };
     },
-    consumeInvitation(code) {
+    claimInvitation(code) {
       const hash = digest(`${PAIRING_DOMAIN}.invitation`, code).toString('base64url');
       const expiry = invitations.get(hash);
       if (expiry === undefined || expiry <= now().getTime()) {
         if (expiry !== undefined) invitations.delete(hash);
-        return false;
+        return undefined;
       }
       invitations.delete(hash);
-      return true;
+      let released = false;
+      return {
+        release() {
+          if (released || expiry <= now().getTime()) return;
+          released = true;
+          invitations.set(hash, expiry);
+        },
+      };
     },
   };
 }

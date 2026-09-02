@@ -3,6 +3,7 @@ const clients: Array<{
   fetchOnboardingStatus: jest.Mock;
 }> = [];
 const mockEnroll = jest.fn();
+const mockRedeem = jest.fn();
 const mockStatus = jest.fn();
 
 jest.mock('@verity/mobile', () => ({
@@ -15,6 +16,7 @@ jest.mock('@verity/mobile', () => ({
       signature: 'signature',
     });
     enrollPairingInvitation = mockEnroll;
+    redeemPairingCode = mockRedeem;
     constructor(opts: { getToken?: () => string | null | undefined }) {
       this.opts = opts;
       clients.push(this);
@@ -50,10 +52,57 @@ import { establishPairing } from './pairingSession';
 beforeEach(() => {
   clients.length = 0;
   mockEnroll.mockReset().mockResolvedValue({ token: 'new-device-token', tokenId: 'device-id' });
+  mockRedeem
+    .mockReset()
+    .mockResolvedValue({
+      bootstrapToken: 'bootstrap-token',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
   mockStatus.mockReset().mockResolvedValue({ complete: true });
   mockSetAuthToken.mockReset().mockResolvedValue(undefined);
   mockSetBaseUrl.mockReset().mockResolvedValue(undefined);
   mockSaveProfile.mockReset().mockResolvedValue(undefined);
+});
+
+it('enrolls a device even when an installer bootstrap is retained for the same server', async () => {
+  mockStatus.mockRejectedValueOnce(new TypeError('temporary network failure'));
+  await expect(
+    establishPairing(
+      {
+        version: 1,
+        kind: 'installer',
+        serverId: 'server-id',
+        identityKey: 'identity-key',
+        tlsPin: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        pairingCode: 'installer-pairing-code-0123456789',
+        suggestedUrl: 'https://verity.example:8082',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      },
+      'https://verity.example:8082',
+    ),
+  ).rejects.toThrow('temporary network failure');
+
+  await establishPairing(
+    {
+      version: 1,
+      kind: 'device',
+      serverId: 'server-id',
+      identityKey: 'identity-key',
+      tlsPin: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      pairingCode: 'device-pairing-code-0123456789',
+      suggestedUrl: 'https://verity.example:8082',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    },
+    'https://verity.example:8082',
+  );
+
+  expect(mockRedeem).toHaveBeenCalledTimes(1);
+  expect(mockEnroll).toHaveBeenCalledTimes(1);
+  expect(mockSetAuthToken).toHaveBeenCalledWith(
+    'https://verity.example:8082',
+    'new-device-token',
+    'device-id',
+  );
 });
 
 it('uses the newly enrolled bearer for the post-pairing status request', async () => {

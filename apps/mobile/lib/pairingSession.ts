@@ -51,7 +51,11 @@ export async function establishPairing(
     signature: identity.signature,
   });
   const retained =
-    bootstrap?.serverId === payload.serverId && bootstrap.expiresAt > Date.now() ? bootstrap : null;
+    payload.kind === 'installer' &&
+    bootstrap?.serverId === payload.serverId &&
+    bootstrap.expiresAt > Date.now()
+      ? bootstrap
+      : null;
   if (retained === null) {
     if (payload.kind === 'device') {
       const retained =

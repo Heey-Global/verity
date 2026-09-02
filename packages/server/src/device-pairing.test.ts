@@ -30,21 +30,32 @@ describe('device pairing', () => {
     const second = fixtureState.manager.issueInvitation();
     expect(first.code).toHaveLength(43);
     expect(second.code).toHaveLength(43);
-    expect(fixtureState.manager.consumeInvitation(first.code)).toBe(true);
-    expect(fixtureState.manager.consumeInvitation(first.code)).toBe(false);
-    expect(fixtureState.manager.consumeInvitation(second.code)).toBe(true);
+    expect(fixtureState.manager.claimInvitation(first.code)).toBeDefined();
+    expect(fixtureState.manager.claimInvitation(first.code)).toBeUndefined();
+    expect(fixtureState.manager.claimInvitation(second.code)).toBeDefined();
 
     const expiring = fixture();
     const invitation = expiring.manager.issueInvitation();
     expiring.advance('2026-08-29T12:05:00.001Z');
-    expect(expiring.manager.consumeInvitation(invitation.code)).toBe(false);
+    expect(expiring.manager.claimInvitation(invitation.code)).toBeUndefined();
+  });
+
+  it('can release a claimed invitation when enrollment persistence fails', () => {
+    const { manager } = fixture();
+    const invitation = manager.issueInvitation();
+    const claim = manager.claimInvitation(invitation.code);
+    expect(claim).toBeDefined();
+    expect(manager.claimInvitation(invitation.code)).toBeUndefined();
+
+    claim?.release();
+    expect(manager.claimInvitation(invitation.code)).toBeDefined();
   });
 
   it('bounds outstanding invitations by evicting the oldest', () => {
     const { manager } = fixture();
     const invitations = Array.from({ length: 33 }, () => manager.issueInvitation());
-    expect(manager.consumeInvitation(invitations[0]!.code)).toBe(false);
-    expect(manager.consumeInvitation(invitations[32]!.code)).toBe(true);
+    expect(manager.claimInvitation(invitations[0]!.code)).toBeUndefined();
+    expect(manager.claimInvitation(invitations[32]!.code)).toBeDefined();
   });
 
   it('redeems the installer code once and consumes the bootstrap token once', () => {

@@ -4686,11 +4686,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return reply.code(404).send({ error: 'not found' });
     }
     const { code, deviceLabel } = pairingEnrollBody.parse(request.body);
-    if (!pairing.consumeInvitation(code)) {
+    const invitation = pairing.claimInvitation(code);
+    if (invitation === undefined) {
       return reply.code(401).send({ error: 'invalid or expired pairing invitation' });
     }
-    const minted = await registry.mint(deviceLabel ?? null);
-    return { token: minted.token, tokenId: minted.id };
+    try {
+      const minted = await registry.mint(deviceLabel ?? null);
+      return { token: minted.token, tokenId: minted.id };
+    } catch (error) {
+      invitation.release();
+      throw error;
+    }
   });
 
   app.get('/devices', async (request, reply) => {
