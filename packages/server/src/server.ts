@@ -171,6 +171,7 @@ import { registerTaskRoutes } from './task-routes.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
+import { registerPushTokenRoute } from './push-token-route.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -2232,16 +2233,6 @@ const turnBody = z
     path: ['prompt'],
   });
 
-const devicePushTokenBody = z.object({
-  expoToken: z
-    .string()
-    .max(256)
-    .regex(/^(?:ExpoPushToken|ExponentPushToken)\[[A-Za-z0-9_-]+\]$/),
-  // ADR 0008 is iOS/watchOS first. Reject Android until its actions and delivery
-  // behaviour are explicitly implemented instead of storing unusable rows.
-  platform: z.literal('ios'),
-});
-
 // Body for POST /sessions: create a visible Verity session/worktree immediately.
 // No backend turn starts here; the first LLM call happens when the operator sends
 // the first message via POST /sessions/:id/turns. `prompt` is accepted only as
@@ -3962,23 +3953,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerServerUpdateRoutes(app, deps);
 
-  app.post('/devices/:id/push-token', async (request, reply) => {
-    if (deps.pushEnabled !== true) {
-      return reply.code(503).send({ error: 'Push notifications are not configured' });
-    }
-    const registry = deps.authRegistry;
-    const rawToken = bearerToken(request.headers.authorization);
-    const authTokenId = registry?.resolveId(rawToken);
-    if (registry === undefined || !registry.isEnabled() || authTokenId === undefined) {
-      return reply.code(401).send({ error: 'unauthorized' });
-    }
-    const { id } = request.params as { id: string };
-    if (id !== authTokenId) {
-      return reply.code(403).send({ error: 'device id does not match authenticated device' });
-    }
-    const body = devicePushTokenBody.parse(request.body);
-    await deps.eventStore.upsertDevicePushToken({ authTokenId, ...body });
-    return { registered: true as const };
+  registerPushTokenRoute(app, {
+    store: deps.eventStore,
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
+    ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
   });
 
   // A session's live status badge. The event log lags the conductor: between a
