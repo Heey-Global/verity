@@ -503,6 +503,14 @@ function SettingsView({
             >
               <Text style={styles.disclosureTitle}>Change server address</Text>
             </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.disclosure, pressed ? styles.pressed : null]}
+              onPress={() => router.push('/devices')}
+              accessibilityRole="button"
+              accessibilityLabel="Manage paired devices"
+            >
+              <Text style={styles.disclosureTitle}>Paired devices</Text>
+            </Pressable>
           </View>
         </View>
 

@@ -9,6 +9,7 @@ import {
 
 const PAIRING_DOMAIN = 'verity.device-pairing.v1';
 const BOOTSTRAP_BYTES = 32;
+const MAX_INVITATIONS = 32;
 
 export class DevicePairingRejectedError extends Error {}
 
@@ -22,6 +23,9 @@ export interface DevicePairingManager {
   redeem(code: string): { bootstrapToken: string; expiresAt: string };
   consumeBootstrap(token: string): boolean;
   signChallenge(challenge: string): { serverId: string; signature: string };
+  issueInvitation(): { code: string; expiresAt: string };
+  claimInvitation(code: string): { expiresAt: number; release(): void } | undefined;
+  enrollmentCredential(code: string, enrollmentId: string): { token: string; id: string };
 }
 
 function digest(domain: string, value: string): Buffer {
@@ -92,6 +96,7 @@ export function createDevicePairingManager(options: {
   const consumedCodeHashes = new Set<string>();
   let bootstrapHash: Buffer | undefined;
   let bootstrapExpiry = 0;
+  const invitations = new Map<string, number>();
 
   return {
     identity: () => ({ serverId, identityKey }),
@@ -142,6 +147,45 @@ export function createDevicePairingManager(options: {
       }
       const transcript = Buffer.from(`${PAIRING_DOMAIN}\0${serverId}\0${challenge}`);
       return { serverId, signature: sign(null, transcript, privateKey).toString('base64url') };
+    },
+    issueInvitation() {
+      const instant = now().getTime();
+      for (const [hash, expiry] of invitations) if (expiry <= instant) invitations.delete(hash);
+      while (invitations.size >= MAX_INVITATIONS) {
+        const oldest = invitations.keys().next().value;
+        if (oldest === undefined) break;
+        invitations.delete(oldest);
+      }
+      const code = random(BOOTSTRAP_BYTES).toString('base64url');
+      const expiry = instant + 5 * 60_000;
+      invitations.set(digest(`${PAIRING_DOMAIN}.invitation`, code).toString('base64url'), expiry);
+      return { code, expiresAt: new Date(expiry).toISOString() };
+    },
+    enrollmentCredential(code, enrollmentId) {
+      const transcript = Buffer.from(`${PAIRING_DOMAIN}.enrollment\0${code}\0${enrollmentId}`);
+      const token = sign(null, transcript, privateKey).toString('base64url');
+      const id = digest(`${PAIRING_DOMAIN}.enrollment-id`, token)
+        .subarray(0, 16)
+        .toString('base64url');
+      return { token, id };
+    },
+    claimInvitation(code) {
+      const hash = digest(`${PAIRING_DOMAIN}.invitation`, code).toString('base64url');
+      const expiry = invitations.get(hash);
+      if (expiry === undefined || expiry <= now().getTime()) {
+        if (expiry !== undefined) invitations.delete(hash);
+        return undefined;
+      }
+      invitations.delete(hash);
+      let released = false;
+      return {
+        expiresAt: expiry,
+        release() {
+          if (released || expiry <= now().getTime()) return;
+          released = true;
+          invitations.set(hash, expiry);
+        },
+      };
     },
   };
 }

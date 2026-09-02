@@ -9,6 +9,9 @@ function pairingManager(overrides: Partial<DevicePairingManager> = {}): DevicePa
     signChallenge: (challenge) => ({ serverId: 'server-1', signature: `signed:${challenge}` }),
     redeem: () => ({ bootstrapToken: 'bootstrap', expiresAt: '2030-01-01T00:00:00.000Z' }),
     consumeBootstrap: () => false,
+    issueInvitation: () => ({ code: 'invitation', expiresAt: '2030-01-01T00:00:00.000Z' }),
+    claimInvitation: () => undefined,
+    enrollmentCredential: () => ({ token: 'token', id: 'token-id' }),
     ...overrides,
   };
 }

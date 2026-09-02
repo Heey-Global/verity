@@ -87,7 +87,7 @@ function makeHost({ docker = [], state = {} } = {}) {
     join(binDir, 'verity-pairing-material'),
     `#!/usr/bin/env bash\nset -euo pipefail\n` +
       `state_dir="\${VERITY_STATE_DIR:?}"\n` +
-      `printf 'VERITY_STATE_DIR=%s\\nVERITY_API_HOST_PORT=%s\\nVERITY_SERVER_UID=%s\\nVERITY_SERVER_GID=%s\\n' "$state_dir" "\${VERITY_API_HOST_PORT:?}" "\${VERITY_SERVER_UID:?}" "\${VERITY_SERVER_GID:?}" >${JSON.stringify(pairingHandoff)}\n` +
+      `printf 'VERITY_STATE_DIR=%s\\nVERITY_API_HOST_PORT=%s\\nVERITY_PAIRING_HOST=%s\\nVERITY_SERVER_UID=%s\\nVERITY_SERVER_GID=%s\\n' "$state_dir" "\${VERITY_API_HOST_PORT:?}" "\${VERITY_PAIRING_HOST-}" "\${VERITY_SERVER_UID:?}" "\${VERITY_SERVER_GID:?}" >${JSON.stringify(pairingHandoff)}\n` +
       `chmod 0711 "$state_dir"\n` +
       `printf '%s' 'test-identity' >"$state_dir/pairing-identity.pem"\n` +
       `printf '%s' 'test-key' >"$state_dir/tls-key.pem"\n` +
@@ -281,14 +281,34 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         .split('\n')
         .map((line) => line.split('=', 2)),
     );
-    assert.deepEqual(pairingEnv, {
-      VERITY_STATE_DIR: host.stateDir,
-      VERITY_API_HOST_PORT: '8082',
-      VERITY_SERVER_UID: '0',
-      VERITY_SERVER_GID: '0',
-    });
+    assert.deepEqual(
+      { ...pairingEnv, VERITY_PAIRING_HOST: undefined },
+      {
+        VERITY_STATE_DIR: host.stateDir,
+        VERITY_API_HOST_PORT: '8082',
+        VERITY_PAIRING_HOST: undefined,
+        VERITY_SERVER_UID: '0',
+        VERITY_SERVER_GID: '0',
+      },
+    );
+    // No controlling terminal means the pairing-material helper performs its
+    // own automatic interface detection instead of attempting to prompt.
+    assert.equal(pairingEnv.VERITY_PAIRING_HOST, '');
     assert.equal(env.VERITY_MANAGED_DEPLOYMENT_ID, stateFile(host, 'deployment-id'));
     assert.match(env.VERITY_MANAGED_DEPLOYMENT_ID, /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
+  });
+
+  test('forwards an automated DNS selection to pairing material', () => {
+    const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
+    const result = run(host, [], { VERITY_PAIRING_HOST: 'verity.home.example' });
+    assert.equal(result.status, 0, result.output);
+    const pairingEnv = Object.fromEntries(
+      readFileSync(host.pairingHandoff, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => line.split('=', 2)),
+    );
+    assert.equal(pairingEnv.VERITY_PAIRING_HOST, 'verity.home.example');
   });
 
   test('fresh installs seal the ACP Runner supervisor by default', () => {

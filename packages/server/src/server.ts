@@ -4697,6 +4697,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerPairingRoutes(app, {
     ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
   });
 
   // Brute-force throttle for /secret/unlock (audit C2): per-IP lockout with

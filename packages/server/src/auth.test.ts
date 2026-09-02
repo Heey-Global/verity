@@ -1,4 +1,5 @@
 import type { Conductor } from '@verity/session';
+import { generateKeyPairSync } from 'node:crypto';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, WorkflowStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -11,21 +12,29 @@ import {
   type AuthTokenStore,
 } from './auth.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
+import { createDevicePairingManager } from './device-pairing.js';
 import { buildServer } from './server.js';
 
 const conductor = {} as unknown as Conductor;
 const PASSWORD = 'correct-horse-battery';
 
 /** An in-memory {@link AuthTokenStore} so the registry unit tests need no DB. */
-function fakeStore(): AuthTokenStore & { rows: { id: string; tokenHash: string }[] } {
-  const rows: { id: string; tokenHash: string }[] = [];
+function fakeStore(): AuthTokenStore & {
+  rows: { id: string; tokenHash: string; label: string | null; createdAt: number }[];
+} {
+  const rows: { id: string; tokenHash: string; label: string | null; createdAt: number }[] = [];
   return {
     rows,
-    listAuthTokens: (): Promise<Array<{ id: string; tokenHash: string }>> =>
-      Promise.resolve([...rows]),
+    listAuthTokens: () => Promise.resolve([...rows]),
     insertAuthToken: (r): Promise<void> => {
-      rows.push({ id: r.id, tokenHash: r.tokenHash });
+      rows.push({ id: r.id, tokenHash: r.tokenHash, label: r.label ?? null, createdAt: 1 });
       return Promise.resolve();
+    },
+    deleteAuthToken: (id): Promise<boolean> => {
+      const index = rows.findIndex((row) => row.id === id);
+      if (index < 0) return Promise.resolve(false);
+      rows.splice(index, 1);
+      return Promise.resolve(true);
     },
   };
 }
@@ -37,6 +46,112 @@ describe('bearerToken parsing', () => {
     expect(bearerToken('Basic abc')).toBeUndefined();
     expect(bearerToken(undefined)).toBeUndefined();
     expect(bearerToken('Bearer')).toBeUndefined();
+    expect(bearerToken(`Bearer${' '.repeat(100_000)}token`)).toBe('token');
+  });
+});
+
+describe('paired device management', () => {
+  let ctx: TestDb;
+  beforeAll(async () => {
+    ctx = await createTestDb();
+  });
+  afterAll(async () => ctx.close());
+  beforeEach(async () => truncateAll(ctx.db));
+
+  it('lets an authenticated device invite, list, and revoke another device', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const current = await registry.mint('iPad');
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const pairing = createDevicePairingManager({
+      privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
+      pairingCode: 'abcdefghijklmnopqrstuvwxyz_0123456789',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      loadConsumedCodeHash: () => [],
+      storeConsumedCodeHash: () => true,
+    });
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+      devicePairing: pairing,
+    });
+    try {
+      const authorization = `Bearer ${current.token}`;
+      const invitation = await app.inject({
+        method: 'POST',
+        url: '/devices/pairing-invitations',
+        headers: { authorization },
+      });
+      expect(invitation.statusCode).toBe(200);
+      const enrollment = await app.inject({
+        method: 'POST',
+        url: '/pair/enroll',
+        payload: {
+          code: invitation.json().code,
+          enrollmentId: 'enrollment_attempt_abcdefghijklmnopqrstuvwxyz',
+          deviceLabel: 'Mac',
+        },
+      });
+      expect(enrollment.statusCode).toBe(200);
+      const enrollmentRetry = await app.inject({
+        method: 'POST',
+        url: '/pair/enroll',
+        payload: {
+          code: invitation.json().code,
+          enrollmentId: 'enrollment_attempt_abcdefghijklmnopqrstuvwxyz',
+        },
+      });
+      expect(enrollmentRetry.statusCode).toBe(200);
+      expect(enrollmentRetry.json()).toEqual(enrollment.json());
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/pair/enroll',
+            payload: {
+              code: invitation.json().code,
+              enrollmentId: 'different_attempt_abcdefghijklmnopqrstuvwxyz',
+            },
+          })
+        ).statusCode,
+      ).toBe(401);
+
+      const listed = await app.inject({
+        method: 'GET',
+        url: '/devices',
+        headers: { authorization },
+      });
+      expect(listed.json().devices).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: 'iPad', isCurrent: true }),
+          expect.objectContaining({ label: 'Mac', isCurrent: false }),
+        ]),
+      );
+      const secondId = enrollment.json().tokenId as string;
+      expect(
+        (
+          await app.inject({
+            method: 'DELETE',
+            url: `/devices/${secondId}`,
+            headers: { authorization },
+          })
+        ).statusCode,
+      ).toBe(204);
+      expect(registry.verify(enrollment.json().token as string)).toBe(false);
+      expect(
+        (
+          await app.inject({
+            method: 'DELETE',
+            url: `/devices/${current.id}`,
+            headers: { authorization },
+          })
+        ).statusCode,
+      ).toBe(409);
+    } finally {
+      await app.close();
+    }
   });
 
   it('parses long runs of separator spaces in linear time', () => {
@@ -76,6 +191,20 @@ describe('auth token registry', () => {
     expect(registry.verify(null)).toBe(false);
   });
 
+  it('recovers a deterministic enrollment token after a registry restart', async () => {
+    const store = fakeStore();
+    const first = await createAuthTokenRegistry(store, { enabled: true });
+    await first.register('deterministic-token', 'device-id', 'iPad');
+
+    const restarted = await createAuthTokenRegistry(store, { enabled: true });
+    await expect(restarted.register('deterministic-token', 'device-id', 'iPad')).resolves.toEqual({
+      token: 'deterministic-token',
+      id: 'device-id',
+    });
+    expect(restarted.resolveId('deterministic-token')).toBe('device-id');
+    expect(store.rows).toHaveLength(1);
+  });
+
   it('is disabled until enabled (env-key/headless mode gates nothing)', async () => {
     const registry = await createAuthTokenRegistry(fakeStore(), { enabled: false });
     expect(registry.isEnabled()).toBe(false);
@@ -102,6 +231,20 @@ describe('auth token registry', () => {
     expect(registry.verify(b.token)).toBe(true);
     registry.clear();
     expect(registry.verify(b.token)).toBe(false);
+  });
+
+  it('lists safe device metadata and revokes the selected token', async () => {
+    const registry = await createAuthTokenRegistry(fakeStore(), { enabled: true });
+    const first = await registry.mint('iPad');
+    const second = await registry.mint('Mac');
+    expect(await registry.list()).toEqual([
+      { id: first.id, label: 'iPad', createdAt: 1 },
+      { id: second.id, label: 'Mac', createdAt: 1 },
+    ]);
+    expect(await registry.revoke(first.id)).toBe(true);
+    expect(registry.verify(first.token)).toBe(false);
+    expect(registry.verify(second.token)).toBe(true);
+    expect(await registry.revoke(first.id)).toBe(false);
   });
 });
 
@@ -131,6 +274,12 @@ describe('global auth gate (onRequest)', () => {
     try {
       // Gate disabled → a protected route is reachable with no token.
       expect((await app.inject({ method: 'GET', url: '/settings' })).statusCode).not.toBe(401);
+      // Device administration is stricter than the bootstrap gate: no paired
+      // bearer exists yet, so it must remain closed before first initialization.
+      expect((await app.inject({ method: 'GET', url: '/devices' })).statusCode).toBe(401);
+      expect(
+        (await app.inject({ method: 'POST', url: '/devices/pairing-invitations' })).statusCode,
+      ).toBe(401);
 
       // Init sets the password, mints this device's token, and arms the gate.
       const init = await app.inject({

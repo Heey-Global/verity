@@ -87,9 +87,9 @@ export async function setAuthToken(
   baseUrl: string | null,
   token: string,
   tokenId?: string,
-): Promise<void> {
+): Promise<boolean> {
   const key = await tokenKey(baseUrl);
-  if (key === null) return;
+  if (key === null) return false;
   currentTokenBaseUrl = baseUrl;
   currentToken = token;
   // Reset (not preserve) when absent, so a base-URL switch can't leave the prior
@@ -107,10 +107,16 @@ export async function setAuthToken(
         keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
       });
     }
-    await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
   } catch {
     // Keep the in-memory token; persistence is a convenience, not a requirement.
+    return false;
   }
+  try {
+    await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
+  } catch {
+    // The scoped credential is durable; stale legacy cleanup must not invalidate it.
+  }
+  return true;
 }
 
 /** Copy the currently unlocked device credential to another verified endpoint of
