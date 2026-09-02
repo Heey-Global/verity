@@ -46,6 +46,7 @@ describe('bearerToken parsing', () => {
     expect(bearerToken('Basic abc')).toBeUndefined();
     expect(bearerToken(undefined)).toBeUndefined();
     expect(bearerToken('Bearer')).toBeUndefined();
+    expect(bearerToken(`Bearer${' '.repeat(100_000)}token`)).toBe('token');
   });
 });
 
