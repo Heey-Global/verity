@@ -201,8 +201,6 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { internalConnectionIdentity, requestArrivedInternally } from './internal-listener.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
-import type { UpdateOperation } from './self-update/update-operation.js';
-import { UpdaterRequestError } from './self-update/updater-status.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import { createMcpGateway, type McpGatewayDeps } from './mcp-gateway.js';
@@ -254,7 +252,8 @@ import {
   type ToolkitDriftVerdict,
 } from './toolkit-drift.js';
 import { cachedTrustedToolkitIdentity } from './runner-boundary-attestation.js';
-import { SERVER_COMPAT } from './self-update/compat.js';
+import { registerServerUpdateRoutes, type ServerUpdateController } from './server-update-routes.js';
+export type { ServerUpdateController } from './server-update-routes.js';
 
 function isProjectSessionModel(model: string | undefined): boolean {
   return model === undefined || !model.includes('/') || isCodexModel(model);
@@ -902,19 +901,6 @@ function publicProjectSettings(
     updatedAt: settings.updatedAt,
   };
   return rest;
-}
-
-/**
- * Narrow view of the privileged Updater the Server is allowed to drive: read the
- * current operation, or request exactly one digest-pinned update. The Server
- * never learns Docker verbs, journal paths, or container identities.
- */
-export interface ServerUpdateController {
-  readOperation(): Promise<UpdateOperation | null>;
-  requestUpdate(input: {
-    readonly idempotencyKey: string;
-    readonly targetDigest: string;
-  }): Promise<UpdateOperation>;
 }
 
 export interface ServerDeps {
@@ -3966,80 +3952,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
   });
 
-  // Read-only compatibility surface this build advertises (ADR 0008 slice 1).
-  // Authenticated by default — it is NOT in `preAuthPaths`, so the global bearer
-  // gate protects it like any other route. Returns the baked `SERVER_COMPAT`
-  // constant only; no DB access, no mutation. A later slice's Updater/preflight
-  // reads this to gate a blue-green cutover.
-  app.get('/server/compat', () => SERVER_COMPAT);
-
-  // Mirrors the Updater's own request contract so a malformed body is refused
-  // here instead of costing a round trip over the privileged control socket.
-  const serverUpdateRequestBody = z.object({
-    idempotencyKey: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/),
-    targetDigest: z
-      .string()
-      .regex(/^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a-f0-9]{64}$/),
-  });
-
-  // Update availability plus the live operation (ADR 0008 D4). Like
-  // `/server/compat`, this stays behind the global device bearer gate. The
-  // resolver only accepts signed, official, digest-pinned channel metadata; the
-  // operation is the Updater's own journal projection, never local guesswork.
-  app.get('/server/updates', async (_request, reply) => {
-    const availability = (await deps.serverUpdateResolver?.resolve()) ?? {
-      state: 'unsupported' as const,
-      reason: 'deployment is not managed',
-      operation: null,
-    };
-    if (deps.serverUpdateController === undefined) return availability;
-    try {
-      return { ...availability, operation: await deps.serverUpdateController.readOperation() };
-    } catch {
-      // A managed deployment whose Updater cannot be reached must not report a
-      // reassuring "no operation" — the client is told the state is unknown.
-      return reply.code(503).send({ error: 'update status is unavailable' });
-    }
-  });
-
-  // The single mutating update action. Authorization is deliberately stricter
-  // than the ambient bearer gate: an unpaired deployment (no master password,
-  // so the gate is off) must never be able to replace its own control plane
-  // from the LAN. The target digest is not caller-chosen either — it has to be
-  // exactly the digest the signed release channel currently offers.
-  app.post('/server/updates', async (request, reply) => {
-    const controller = deps.serverUpdateController;
-    if (controller === undefined || deps.serverUpdateResolver === undefined) {
-      return reply.code(503).send({ error: 'deployment is not managed' });
-    }
-    const registry = deps.authRegistry;
-    if (registry === undefined || !registry.isEnabled()) {
-      return reply.code(403).send({ error: 'updates require a paired device' });
-    }
-    const body = serverUpdateRequestBody.parse(request.body);
-    const availability = await deps.serverUpdateResolver.resolve();
-    if (availability.state !== 'available') {
-      return reply.code(409).send({ error: `no update is available (${availability.state})` });
-    }
-    if (availability.release.serverImage !== body.targetDigest) {
-      return reply.code(409).send({ error: 'target digest is not the available release' });
-    }
-    try {
-      const operation = await controller.requestUpdate({
-        idempotencyKey: body.idempotencyKey,
-        targetDigest: body.targetDigest,
-      });
-      return reply.code(202).send({ operation });
-    } catch (error) {
-      if (error instanceof UpdaterRequestError) {
-        // Relay the Updater's closed outcome code; it carries no internal detail.
-        return reply
-          .code(error.status === 401 ? 503 : error.status)
-          .send({ error: error.status === 401 ? 'updater is unavailable' : error.code });
-      }
-      return reply.code(503).send({ error: 'updater is unavailable' });
-    }
-  });
+  registerServerUpdateRoutes(app, deps);
 
   app.post('/devices/:id/push-token', async (request, reply) => {
     if (deps.pushEnabled !== true) {
