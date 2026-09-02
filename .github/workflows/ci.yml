@@ -291,6 +291,14 @@ jobs:
                   test=true
                   mobile_app=true
                   ;;
+                # Release workflow tests guard the App Store destination in this
+                # otherwise declarative native-build configuration.
+                apps/mobile/eas.json)
+                  lint=true
+                  typecheck=true
+                  test=true
+                  mobile_app=true
+                  ;;
                 # The workflow contract suite validates this approval boundary.
                 # Its merge is intentionally also routed to the normal app checks.
                 apps/mobile/ota-promotion.json)
