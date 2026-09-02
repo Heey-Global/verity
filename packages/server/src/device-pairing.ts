@@ -25,6 +25,7 @@ export interface DevicePairingManager {
   signChallenge(challenge: string): { serverId: string; signature: string };
   issueInvitation(): { code: string; expiresAt: string };
   claimInvitation(code: string): { expiresAt: number; release(): void } | undefined;
+  enrollmentCredential(code: string, enrollmentId: string): { token: string; id: string };
 }
 
 function digest(domain: string, value: string): Buffer {
@@ -159,6 +160,14 @@ export function createDevicePairingManager(options: {
       const expiry = instant + 5 * 60_000;
       invitations.set(digest(`${PAIRING_DOMAIN}.invitation`, code).toString('base64url'), expiry);
       return { code, expiresAt: new Date(expiry).toISOString() };
+    },
+    enrollmentCredential(code, enrollmentId) {
+      const transcript = Buffer.from(`${PAIRING_DOMAIN}.enrollment\0${code}\0${enrollmentId}`);
+      const token = sign(null, transcript, privateKey).toString('base64url');
+      const id = digest(`${PAIRING_DOMAIN}.enrollment-id`, token)
+        .subarray(0, 16)
+        .toString('base64url');
+      return { token, id };
     },
     claimInvitation(code) {
       const hash = digest(`${PAIRING_DOMAIN}.invitation`, code).toString('base64url');

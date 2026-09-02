@@ -24,6 +24,19 @@ jest.mock('@verity/mobile', () => ({
   },
 }));
 jest.mock('expo-crypto', () => ({ getRandomBytes: () => new Uint8Array(32).fill(1) }));
+const mockSecureItems = new Map<string, string>();
+jest.mock('expo-secure-store', () => ({
+  AFTER_FIRST_UNLOCK: 'after-first-unlock',
+  getItemAsync: (key: string) => Promise.resolve(mockSecureItems.get(key) ?? null),
+  setItemAsync: (key: string, value: string) => {
+    mockSecureItems.set(key, value);
+    return Promise.resolve();
+  },
+  deleteItemAsync: (key: string) => {
+    mockSecureItems.delete(key);
+    return Promise.resolve();
+  },
+}));
 jest.mock('./pinnedTransport', () => ({
   createPinnedFetch: () => jest.fn(),
   verifyPairedIdentity: jest.fn().mockResolvedValue(undefined),
@@ -60,6 +73,7 @@ beforeEach(() => {
   mockSetAuthToken.mockReset().mockResolvedValue(undefined);
   mockSetBaseUrl.mockReset().mockResolvedValue(undefined);
   mockSaveProfile.mockReset().mockResolvedValue(undefined);
+  mockSecureItems.clear();
 });
 
 it('enrolls a device even when an installer bootstrap is retained for the same server', async () => {
@@ -96,6 +110,7 @@ it('enrolls a device even when an installer bootstrap is retained for the same s
 
   expect(mockRedeem).toHaveBeenCalledTimes(1);
   expect(mockEnroll).toHaveBeenCalledTimes(1);
+  expect(mockSecureItems.size).toBe(0);
   expect(mockSetAuthToken).toHaveBeenCalledWith(
     'https://verity.example:8082',
     'new-device-token',
@@ -141,6 +156,7 @@ it('keeps the verified profile and enrolled token when the final status read fai
       'https://verity.example:8082',
     ),
   ).rejects.toThrow('temporary network failure');
+  expect(mockSecureItems.size).toBe(1);
   expect(mockSaveProfile).toHaveBeenCalledTimes(1);
   expect(mockSetBaseUrl).toHaveBeenCalledWith('https://verity.example:8082');
   expect(mockSetAuthToken).toHaveBeenCalledWith(
@@ -164,6 +180,7 @@ it('keeps the verified profile and enrolled token when the final status read fai
   );
   expect(mockEnroll).toHaveBeenCalledTimes(1);
   expect(mockSaveProfile).toHaveBeenCalledTimes(2);
+  expect(mockSecureItems.size).toBe(0);
 });
 
 it('does not configure local routing when enrollment is rejected', async () => {

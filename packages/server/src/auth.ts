@@ -85,6 +85,7 @@ export interface AuthTokenRegistry {
   isKnownId?(id: string): boolean;
   /** Mint a new device token, persist its hash, and return the raw token once. */
   mint(label?: string | null): Promise<MintedAuthToken>;
+  register(token: string, id: string, label?: string | null): Promise<MintedAuthToken>;
   list(): Promise<PairedDevice[]>;
   revoke(id: string): Promise<boolean>;
   /** Drop a single hash from the in-memory set (after the row is deleted). */
@@ -125,6 +126,18 @@ export async function createAuthTokenRegistry(
       const token = randomBytes(TOKEN_BYTES).toString('base64url');
       const id = randomBytes(ID_BYTES).toString('base64url');
       const tokenHash = hashAuthToken(token);
+      await store.insertAuthToken({ id, tokenHash, label: label ?? null });
+      tokenIdsByHash.set(tokenHash, id);
+      return { token, id };
+    },
+    async register(token, id, label): Promise<MintedAuthToken> {
+      const tokenHash = hashAuthToken(token);
+      const existingId = tokenIdsByHash.get(tokenHash);
+      if (existingId !== undefined) {
+        if (existingId !== id) throw new Error('auth token identity collision');
+        return { token, id };
+      }
+      if ([...tokenIdsByHash.values()].includes(id)) throw new Error('auth token id collision');
       await store.insertAuthToken({ id, tokenHash, label: label ?? null });
       tokenIdsByHash.set(tokenHash, id);
       return { token, id };

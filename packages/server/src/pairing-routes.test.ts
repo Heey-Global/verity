@@ -11,6 +11,7 @@ function pairingManager(overrides: Partial<DevicePairingManager> = {}): DevicePa
     consumeBootstrap: () => false,
     issueInvitation: () => ({ code: 'invitation', expiresAt: '2030-01-01T00:00:00.000Z' }),
     claimInvitation: () => undefined,
+    enrollmentCredential: () => ({ token: 'token', id: 'token-id' }),
     ...overrides,
   };
 }

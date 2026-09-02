@@ -186,6 +186,20 @@ describe('auth token registry', () => {
     expect(registry.verify(null)).toBe(false);
   });
 
+  it('recovers a deterministic enrollment token after a registry restart', async () => {
+    const store = fakeStore();
+    const first = await createAuthTokenRegistry(store, { enabled: true });
+    await first.register('deterministic-token', 'device-id', 'iPad');
+
+    const restarted = await createAuthTokenRegistry(store, { enabled: true });
+    await expect(restarted.register('deterministic-token', 'device-id', 'iPad')).resolves.toEqual({
+      token: 'deterministic-token',
+      id: 'device-id',
+    });
+    expect(restarted.resolveId('deterministic-token')).toBe('device-id');
+    expect(store.rows).toHaveLength(1);
+  });
+
   it('is disabled until enabled (env-key/headless mode gates nothing)', async () => {
     const registry = await createAuthTokenRegistry(fakeStore(), { enabled: false });
     expect(registry.isEnabled()).toBe(false);

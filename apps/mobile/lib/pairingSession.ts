@@ -1,5 +1,6 @@
 import { VerityClient, type OnboardingStatus } from '@verity/mobile';
 import { getRandomBytes } from 'expo-crypto';
+import * as SecureStore from 'expo-secure-store';
 
 import { setVerityBaseUrl } from './client';
 import { deviceLabel } from './deviceLabel';
@@ -20,12 +21,43 @@ let enrollment: { serverId: string; pairingCode: string; token: string; tokenId:
   null;
 let enrollmentAttempt: { serverId: string; pairingCode: string; enrollmentId: string } | null =
   null;
+const ENROLLMENT_ATTEMPT_KEY = 'verity.pairingEnrollmentAttempt.v1';
 
 function challenge(): string {
   const bytes = getRandomBytes(32);
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function getEnrollmentAttempt(
+  serverId: string,
+  pairingCode: string,
+): Promise<NonNullable<typeof enrollmentAttempt>> {
+  if (enrollmentAttempt?.serverId === serverId && enrollmentAttempt.pairingCode === pairingCode) {
+    return enrollmentAttempt;
+  }
+  try {
+    const encoded = await SecureStore.getItemAsync(ENROLLMENT_ATTEMPT_KEY);
+    if (encoded !== null) {
+      const stored = JSON.parse(encoded) as Partial<NonNullable<typeof enrollmentAttempt>>;
+      if (
+        stored.serverId === serverId &&
+        stored.pairingCode === pairingCode &&
+        typeof stored.enrollmentId === 'string'
+      ) {
+        enrollmentAttempt = stored as NonNullable<typeof enrollmentAttempt>;
+        return enrollmentAttempt;
+      }
+    }
+  } catch {
+    // A corrupt or inaccessible retry record is replaced below.
+  }
+  enrollmentAttempt = { serverId, pairingCode, enrollmentId: challenge() };
+  await SecureStore.setItemAsync(ENROLLMENT_ATTEMPT_KEY, JSON.stringify(enrollmentAttempt), {
+    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+  });
+  return enrollmentAttempt;
 }
 
 /** Complete TLS pinning + signed identity verification before persisting anything. */
@@ -64,16 +96,7 @@ export async function establishPairing(
         enrollment?.serverId === payload.serverId && enrollment.pairingCode === payload.pairingCode
           ? enrollment
           : null;
-      const attempt =
-        enrollmentAttempt?.serverId === payload.serverId &&
-        enrollmentAttempt.pairingCode === payload.pairingCode
-          ? enrollmentAttempt
-          : {
-              serverId: payload.serverId,
-              pairingCode: payload.pairingCode,
-              enrollmentId: challenge(),
-            };
-      enrollmentAttempt = attempt;
+      const attempt = await getEnrollmentAttempt(payload.serverId, payload.pairingCode);
       const enrolled =
         retained ??
         (await client.enrollPairingInvitation(
@@ -97,6 +120,7 @@ export async function establishPairing(
       const status = await authenticatedClient.fetchOnboardingStatus();
       enrollment = null;
       enrollmentAttempt = null;
+      await SecureStore.deleteItemAsync(ENROLLMENT_ATTEMPT_KEY);
       return status;
     }
     const redeemed = await client.redeemPairingCode(payload.pairingCode);

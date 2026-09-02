@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bearerToken, hashAuthToken, type AuthTokenRegistry } from './auth.js';
+import { bearerToken, type AuthTokenRegistry } from './auth.js';
 import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
 
 export interface PairingRouteDeps {
@@ -21,10 +21,6 @@ const deviceParams = z.object({ id: z.string().min(1).max(128) });
 
 /** Installer pairing and signed Server-identity challenge routes. */
 export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDeps): void {
-  const completedEnrollments = new Map<
-    string,
-    { enrollmentId: string; expiresAt: number; result: { token: string; tokenId: string } }
-  >();
   // Register both routes even when pairing is not wired. The lockout declaration
   // depends on these paths always existing so another device can obtain a bearer.
   app.get('/pair/identity', (request, reply) => {
@@ -67,22 +63,21 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
       return reply.code(404).send({ error: 'not found' });
     }
     const { code, enrollmentId, deviceLabel } = pairingEnrollBody.parse(request.body);
-    const codeHash = hashAuthToken(code);
-    const now = Date.now();
-    for (const [hash, completed] of completedEnrollments) {
-      if (completed.expiresAt <= now) completedEnrollments.delete(hash);
+    const credential = pairing.enrollmentCredential(code, enrollmentId);
+    if (registry.resolveId(credential.token) === credential.id) {
+      return { token: credential.token, tokenId: credential.id };
     }
-    const completed = completedEnrollments.get(codeHash);
-    if (completed?.enrollmentId === enrollmentId) return completed.result;
     const invitation = pairing.claimInvitation(code);
     if (invitation === undefined) {
       return reply.code(401).send({ error: 'invalid or expired pairing invitation' });
     }
     try {
-      const minted = await registry.mint(deviceLabel ?? null);
-      const result = { token: minted.token, tokenId: minted.id };
-      completedEnrollments.set(codeHash, { enrollmentId, expiresAt: invitation.expiresAt, result });
-      return result;
+      const enrolled = await registry.register(
+        credential.token,
+        credential.id,
+        deviceLabel ?? null,
+      );
+      return { token: enrolled.token, tokenId: enrolled.id };
     } catch (error) {
       invitation.release();
       throw error;
