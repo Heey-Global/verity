@@ -184,12 +184,8 @@ import { registerGitHubManifestRoutes } from './github-manifest-routes.js';
 import type { SshKeygenSpawner } from './signing-key.js';
 import { registerSigningKeyRoutes } from './signing-key-routes.js';
 import { createProcessAgentLoginService, type AgentLoginService } from './agent-login.js';
-import {
-  resolveSigningPrivateKey,
-  signGitPayload,
-  GitSignError,
-  type SshSignSpawner,
-} from './git-signer.js';
+import type { SshSignSpawner } from './git-signer.js';
+import { registerGitSignRoute } from './git-sign-route.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { internalConnectionIdentity, requestArrivedInternally } from './internal-listener.js';
@@ -4783,99 +4779,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
     ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
   });
-  // ── Commit-signing broker (audit finding H1) ──────────────────────────────
-  // `POST /internal/git/sign` — called by the sandbox's `gpg.ssh.program`
-  // wrapper, NOT the operator, so it's in the pre-auth allowlist and authenticates
-  // itself with the broker token (the SHA-256 of the fleet signing key, which the
-  // provisioner injects into the container and this route re-derives). The private
-  // key stays server-side in the sealed store — it never enters a sandbox — so a
-  // compromised package can no longer exfiltrate it and forge verified commits
-  // fleet-wide; the residual is a signing oracle usable only while the container
-  // runs. Requires the cipher unsealed (to read the key) → a sealed store surfaces
-  // as a clean 503 via the error boundary.
-  const gitSignBody = z.object({
-    // git uses `git` for both commit and tag signatures; signGitPayload refuses
-    // anything else so the broker can't be turned into a generic signing oracle.
-    namespace: z.string().min(1).max(64),
-    // The commit/tag payload git handed the signing program, base64-encoded.
-    payload: z.string().min(1).max(1_000_000),
+  registerGitSignRoute(app, {
+    eventStore: deps.eventStore,
+    ...(deps.signingCapabilities !== undefined
+      ? { signingCapabilities: deps.signingCapabilities }
+      : {}),
+    ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
   });
-  if (deps.signingCapabilities !== undefined)
-    app.post(
-      '/internal/git/sign',
-      async (request, reply): Promise<{ signature: string } | { error: string }> => {
-        // Reject a token-less probe up front, BEFORE reading settings, so an
-        // unauthenticated caller can't distinguish the server's state (sealed 503 /
-        // no-key 409 / bad-token 401) by drive-by requests — all it ever sees is 401.
-        const presented = bearerToken(request.headers.authorization) ?? '';
-        if (presented === '') {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const socketIdentity = internalConnectionIdentity(request);
-        const capabilityBinding =
-          socketIdentity === undefined
-            ? undefined
-            : await deps.signingCapabilities?.resolve(presented);
-        const capabilityAuthorized =
-          socketIdentity !== undefined &&
-          capabilityBinding?.projectId === socketIdentity.projectId &&
-          capabilityBinding.containerGeneration === socketIdentity.containerGeneration;
-
-        // A project socket accepts only its own generation-bound capability. Reject
-        // before decrypting settings so an invalid UDS caller cannot distinguish a
-        // sealed store from a missing signing key.
-        if (socketIdentity !== undefined && !capabilityAuthorized) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        if (socketIdentity === undefined) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-
-        // Decrypting read — throws SealedError (→ 503) while the store is sealed.
-        const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-        // DB contents OR the file at gitSshPrivateKeyPath — the SAME resolution the
-        // provisioner uses to derive the sandbox token, so the two agree on the key.
-        const privateKey = resolveSigningPrivateKey(settings);
-        if (privateKey === null || privateKey.trim().length === 0) {
-          reply.code(409);
-          return { error: 'no signing key configured' };
-        }
-        if (!capabilityAuthorized) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const { namespace, payload } = gitSignBody.parse(request.body);
-        const buffer = Buffer.from(payload, 'base64');
-        try {
-          const signature = await signGitPayload(privateKey, buffer, namespace, deps.sshSign);
-          // Audit trail (the cheap 80% win): what was signed, when — not the payload.
-          request.log.info(
-            {
-              namespace,
-              bytes: buffer.length,
-              ...(socketIdentity !== undefined
-                ? {
-                    projectId: socketIdentity.projectId,
-                    containerGeneration: socketIdentity.containerGeneration,
-                  }
-                : {}),
-            },
-            'verity: brokered a git commit signature',
-          );
-          return { signature };
-        } catch (err) {
-          if (err instanceof GitSignError) {
-            reply.code(400);
-            return { error: 'signing refused' };
-          }
-          throw err;
-        }
-      },
-    );
-
   // ── GitHub-token broker (security review) ─────────────────────────────────
   // `POST /internal/github/token` — called by the sandbox's git credential helper
   // / gh wrapper, NOT the operator, so it's in the pre-auth allowlist and
