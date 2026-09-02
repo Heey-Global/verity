@@ -1,5 +1,38 @@
 # Changelog
 
+## [16.5.0](https://github.com/Heey-Global/verity/compare/v16.4.1...v16.5.0) (2026-09-02)
+
+
+### Features
+
+* port source update a417cd4 ([20eb25b](https://github.com/Heey-Global/verity/commit/20eb25b89a9f5e2bba35fd5d8c7fa5aa8bcda0ce))
+* port source update a417cd4 ([eb4029a](https://github.com/Heey-Global/verity/commit/eb4029a09a5d867fd70f062714dee211ad6e42c8))
+* **security:** isolate external prompt content ([58c314a](https://github.com/Heey-Global/verity/commit/58c314ab845049941552858b8a238274027fc1db))
+* **security:** isolate external prompt content ([dcaf68b](https://github.com/Heey-Global/verity/commit/dcaf68bf139e4e61b8aebec7697944d9b83a0d12))
+* **server:** derive the auth gate's pre-auth set from route declarations ([6783b28](https://github.com/Heey-Global/verity/commit/6783b2886f6140f939d30a5a501d8885f22b4ffc))
+* **server:** derive the pre-auth route set from route declarations ([dc97f6e](https://github.com/Heey-Global/verity/commit/dc97f6e342ff9417c48f346543df7bacc1b58d18))
+
+
+### Bug Fixes
+
+* **ci:** run knip where its native parser is installed ([ed4a226](https://github.com/Heey-Global/verity/commit/ed4a22651810c903741d1e4df3315971d106318c))
+* **deps:** declare the npm version the floor needs, and isolate the probe ([48d68dd](https://github.com/Heey-Global/verity/commit/48d68dd569491ceff156ef2eb29514696f8c9572))
+* **deps:** make the version the floor depends on binding, not advisory ([2b7617c](https://github.com/Heey-Global/verity/commit/2b7617c744cc0625b4b86d6a92ed0c55ec532405))
+* **deps:** use the option Renovate still has for ignoring the npm floor ([4bb8f32](https://github.com/Heey-Global/verity/commit/4bb8f3208c8b2cb02766b37b893bb6ae4e5065e3))
+* **release:** retry transient registry failures ([ba8bd02](https://github.com/Heey-Global/verity/commit/ba8bd020754dd157c327cb0b2d338387707c02dc))
+* **release:** retry transient registry failures ([42a44b0](https://github.com/Heey-Global/verity/commit/42a44b00aa1bd2d2c1156f99b1fbc892ad9d579a))
+* **release:** target Verity App Store record ([#29](https://github.com/Heey-Global/verity/issues/29)) ([73f2d43](https://github.com/Heey-Global/verity/commit/73f2d43162cc39bb86deb639b21ef0dbcff5ab28))
+* **release:** use local EAS signing on GitHub ([7fab681](https://github.com/Heey-Global/verity/commit/7fab681f2e59779acb9a085fb7dd3bed454ddead))
+* **release:** use local EAS signing on GitHub ([d39a017](https://github.com/Heey-Global/verity/commit/d39a017b07af8e75a0434003b3ed881d310f8119))
+* **security:** escape Unicode prompt line separators ([b8c34e2](https://github.com/Heey-Global/verity/commit/b8c34e2e4927d8732f6889b574e6446d7970c50d))
+* **security:** preserve Agent Loop action semantics ([80181fc](https://github.com/Heey-Global/verity/commit/80181fcb8194f4a4979c3512a0253f083165e9dd))
+* **security:** preserve provenance during prompt composition ([14c3e0e](https://github.com/Heey-Global/verity/commit/14c3e0e4382d75694840c65a3239ffdad19a32db))
+* **security:** reject malformed external prompt metadata ([3703f3d](https://github.com/Heey-Global/verity/commit/3703f3d755752d45accf0d7d18470590c0fb663b))
+* **security:** serialize external provenance labels ([3180ee8](https://github.com/Heey-Global/verity/commit/3180ee8e36f808a9260212518673e95e900ed8bf))
+* **server:** fail at boot when a lockout-critical exemption is missing ([948aceb](https://github.com/Heey-Global/verity/commit/948acebd9bbf9a9682d0e2957994b888f7c24ab7))
+* **server:** key the pre-auth gate by method, not by pathname ([6d75973](https://github.com/Heey-Global/verity/commit/6d75973c8a168a483b15b1d82f757d4206afb80a))
+* **server:** rate-limit Drive authorization ([1f65009](https://github.com/Heey-Global/verity/commit/1f65009e497754b00246dd17a107eda1aaafe7d3))
+
 ## [16.4.1](https://github.com/Heey-Global/verity/compare/v16.4.0...v16.4.1) (2026-08-31)
 
 
