@@ -93,6 +93,7 @@ export {
   publishSessionProgressRequestSchema,
   sessionProgressRequestSchema,
 } from './session-observation-tool.js';
+export { SESSION_PROJECTION_EVENT_TYPES, sessionProjectionEvents } from './projection.js';
 export {
   aggregateUsage,
   codexRateLimitReached,
