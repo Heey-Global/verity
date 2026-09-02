@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { bearerToken, type AuthTokenRegistry } from './auth.js';
+import { bearerToken, hashAuthToken, type AuthTokenRegistry } from './auth.js';
 import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
 
 export interface PairingRouteDeps {
@@ -20,6 +20,10 @@ const deviceParams = z.object({ id: z.string().min(1).max(128) });
 
 /** Installer pairing and signed Server-identity challenge routes. */
 export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDeps): void {
+  const completedEnrollments = new Map<
+    string,
+    { expiresAt: number; result: { token: string; tokenId: string } }
+  >();
   // Register both routes even when pairing is not wired. The lockout declaration
   // depends on these paths always existing so another device can obtain a bearer.
   app.get('/pair/identity', (request, reply) => {
@@ -62,13 +66,22 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
       return reply.code(404).send({ error: 'not found' });
     }
     const { code, deviceLabel } = pairingEnrollBody.parse(request.body);
+    const codeHash = hashAuthToken(code);
+    const now = Date.now();
+    for (const [hash, completed] of completedEnrollments) {
+      if (completed.expiresAt <= now) completedEnrollments.delete(hash);
+    }
+    const completed = completedEnrollments.get(codeHash);
+    if (completed !== undefined) return completed.result;
     const invitation = pairing.claimInvitation(code);
     if (invitation === undefined) {
       return reply.code(401).send({ error: 'invalid or expired pairing invitation' });
     }
     try {
       const minted = await registry.mint(deviceLabel ?? null);
-      return { token: minted.token, tokenId: minted.id };
+      const result = { token: minted.token, tokenId: minted.id };
+      completedEnrollments.set(codeHash, { expiresAt: invitation.expiresAt, result });
+      return result;
     } catch (error) {
       invitation.release();
       throw error;

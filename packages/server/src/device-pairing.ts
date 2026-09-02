@@ -24,7 +24,7 @@ export interface DevicePairingManager {
   consumeBootstrap(token: string): boolean;
   signChallenge(challenge: string): { serverId: string; signature: string };
   issueInvitation(): { code: string; expiresAt: string };
-  claimInvitation(code: string): { release(): void } | undefined;
+  claimInvitation(code: string): { expiresAt: number; release(): void } | undefined;
 }
 
 function digest(domain: string, value: string): Buffer {
@@ -170,6 +170,7 @@ export function createDevicePairingManager(options: {
       invitations.delete(hash);
       let released = false;
       return {
+        expiresAt: expiry,
         release() {
           if (released || expiry <= now().getTime()) return;
           released = true;

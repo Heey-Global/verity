@@ -91,15 +91,13 @@ describe('paired device management', () => {
         payload: { code: invitation.json().code, deviceLabel: 'Mac' },
       });
       expect(enrollment.statusCode).toBe(200);
-      expect(
-        (
-          await app.inject({
-            method: 'POST',
-            url: '/pair/enroll',
-            payload: { code: invitation.json().code },
-          })
-        ).statusCode,
-      ).toBe(401);
+      const enrollmentRetry = await app.inject({
+        method: 'POST',
+        url: '/pair/enroll',
+        payload: { code: invitation.json().code },
+      });
+      expect(enrollmentRetry.statusCode).toBe(200);
+      expect(enrollmentRetry.json()).toEqual(enrollment.json());
 
       const listed = await app.inject({
         method: 'GET',
