@@ -26,8 +26,13 @@ export function hashAuthToken(token: string): string {
 /** Pull the token out of an `Authorization: Bearer <token>` header. */
 export function bearerToken(header: string | undefined): string | undefined {
   if (header === undefined) return undefined;
-  const match = /^Bearer[ ]+(.+)$/i.exec(header.trim());
-  return match ? match[1] : undefined;
+  const value = header.trim();
+  if (value.length < 8 || value.slice(0, 6).toLowerCase() !== 'bearer' || value[6] !== ' ') {
+    return undefined;
+  }
+  let tokenStart = 7;
+  while (value[tokenStart] === ' ') tokenStart += 1;
+  return tokenStart < value.length ? value.slice(tokenStart) : undefined;
 }
 
 /** Decide whether a WebSocket upgrade may proceed given an optional Origin
