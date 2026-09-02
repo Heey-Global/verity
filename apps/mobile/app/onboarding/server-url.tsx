@@ -53,6 +53,7 @@ export default function OnboardingServerUrl() {
   const [copied, setCopied] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const mounted = useRef(true);
+  const pairingInFlight = useRef(false);
   useEffect(
     () => () => {
       mounted.current = false;
@@ -105,6 +106,8 @@ export default function OnboardingServerUrl() {
   };
 
   const connectPairing = (pairing: VerityPairingPayload) => {
+    if (pairingInFlight.current) return;
+    pairingInFlight.current = true;
     setScannerOpen(false);
     setTest({ kind: 'testing' });
     void establishPairing(pairing, pairing.suggestedUrl)
@@ -118,6 +121,7 @@ export default function OnboardingServerUrl() {
       })
       .catch((error: unknown) => {
         if (!mounted.current) return;
+        pairingInFlight.current = false;
         setTest({
           kind: 'error',
           message: error instanceof Error ? error.message : 'Could not pair with this server.',

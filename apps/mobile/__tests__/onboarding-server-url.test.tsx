@@ -112,13 +112,17 @@ describe('onboarding connection entry', () => {
     render(<OnboardingServerUrl />);
     fireEvent.press(screen.getByLabelText('Scan QR code'));
     expect(await screen.findByTestId('camera')).toBeOnTheScreen();
-    act(() => scan?.({ data: 'verity-pair://payload' }));
+    act(() => {
+      scan?.({ data: 'verity-pair://payload' });
+      scan?.({ data: 'verity-pair://payload' });
+    });
     await waitFor(() =>
       expect(mockEstablishPairing).toHaveBeenCalledWith(
         expect.objectContaining({ serverId: 'server-1' }),
         'https://verity.example.test:8082',
       ),
     );
+    expect(mockEstablishPairing).toHaveBeenCalledTimes(1);
     expect(mockReplace).toHaveBeenCalledWith('/onboarding/master-password');
   });
 
