@@ -39,14 +39,16 @@ separately by `TRADEMARKS.md`.
 | (BSD-3-Clause OR GPL-2.0) | 1 |
 | (MIT OR Apache-2.0) | 1 |
 | (MIT OR CC0-1.0) | 3 |
+| (Unlicense OR Apache-2.0) | 1 |
 | 0BSD | 2 |
 | Apache-2.0 | 52 |
 | BlueOak-1.0.0 | 7 |
-| BSD-2-Clause | 15 |
+| BSD-2-Clause | 22 |
 | BSD-3-Clause | 28 |
 | CC-BY-4.0 | 1 |
-| ISC | 67 |
-| MIT | 1034 |
+| CC0-1.0 | 1 |
+| ISC | 68 |
+| MIT | 1039 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -522,6 +524,7 @@ separately by `TRADEMARKS.md`.
 | baseline-browser-mapping | 2.10.38 | Apache-2.0 | [source](https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.10.38.tgz) |
 | big-integer | 1.6.52 | Unlicense | [source](https://registry.npmjs.org/big-integer/-/big-integer-1.6.52.tgz) |
 | body-parser | 2.3.0 | MIT | [source](https://registry.npmjs.org/body-parser/-/body-parser-2.3.0.tgz) |
+| boolbase | 1.0.0 | ISC | [source](https://registry.npmjs.org/boolbase/-/boolbase-1.0.0.tgz) |
 | bplist-creator | 0.1.0 | MIT | [source](https://registry.npmjs.org/bplist-creator/-/bplist-creator-0.1.0.tgz) |
 | bplist-parser | 0.3.1 | MIT | [source](https://registry.npmjs.org/bplist-parser/-/bplist-parser-0.3.1.tgz) |
 | brace-expansion | 1.1.18 | MIT | [source](https://registry.npmjs.org/brace-expansion/-/brace-expansion-1.1.18.tgz) |
@@ -583,6 +586,9 @@ separately by `TRADEMARKS.md`.
 | cors | 2.8.6 | MIT | [source](https://registry.npmjs.org/cors/-/cors-2.8.6.tgz) |
 | create-jest | 29.7.0 | MIT | [source](https://registry.npmjs.org/create-jest/-/create-jest-29.7.0.tgz) |
 | cross-spawn | 7.0.6 | MIT | [source](https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz) |
+| css-select | 5.2.2 | BSD-2-Clause | [source](https://registry.npmjs.org/css-select/-/css-select-5.2.2.tgz) |
+| css-tree | 1.1.3 | MIT | [source](https://registry.npmjs.org/css-tree/-/css-tree-1.1.3.tgz) |
+| css-what | 6.2.2 | BSD-2-Clause | [source](https://registry.npmjs.org/css-what/-/css-what-6.2.2.tgz) |
 | cssom | 0.3.8 | MIT | [source](https://registry.npmjs.org/cssom/-/cssom-0.3.8.tgz) |
 | cssom | 0.5.0 | MIT | [source](https://registry.npmjs.org/cssom/-/cssom-0.5.0.tgz) |
 | cssstyle | 2.3.0 | MIT | [source](https://registry.npmjs.org/cssstyle/-/cssstyle-2.3.0.tgz) |
@@ -612,7 +618,11 @@ separately by `TRADEMARKS.md`.
 | diff | 9.0.0 | BSD-3-Clause | [source](https://registry.npmjs.org/diff/-/diff-9.0.0.tgz) |
 | dijkstrajs | 1.0.3 | MIT | [source](https://registry.npmjs.org/dijkstrajs/-/dijkstrajs-1.0.3.tgz) |
 | dnssd-advertise | 1.1.6 | MIT | [source](https://registry.npmjs.org/dnssd-advertise/-/dnssd-advertise-1.1.6.tgz) |
+| dom-serializer | 2.0.0 | MIT | [source](https://registry.npmjs.org/dom-serializer/-/dom-serializer-2.0.0.tgz) |
+| domelementtype | 2.3.0 | BSD-2-Clause | [source](https://registry.npmjs.org/domelementtype/-/domelementtype-2.3.0.tgz) |
 | domexception | 4.0.0 | MIT | [source](https://registry.npmjs.org/domexception/-/domexception-4.0.0.tgz) |
+| domhandler | 5.0.3 | BSD-2-Clause | [source](https://registry.npmjs.org/domhandler/-/domhandler-5.0.3.tgz) |
+| domutils | 3.2.2 | BSD-2-Clause | [source](https://registry.npmjs.org/domutils/-/domutils-3.2.2.tgz) |
 | dunder-proto | 1.0.1 | MIT | [source](https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz) |
 | duplexify | 4.1.3 | MIT | [source](https://registry.npmjs.org/duplexify/-/duplexify-4.1.3.tgz) |
 | ee-first | 1.1.1 | MIT | [source](https://registry.npmjs.org/ee-first/-/ee-first-1.1.1.tgz) |
@@ -622,6 +632,7 @@ separately by `TRADEMARKS.md`.
 | encodeurl | 1.0.2 | MIT | [source](https://registry.npmjs.org/encodeurl/-/encodeurl-1.0.2.tgz) |
 | encodeurl | 2.0.0 | MIT | [source](https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.0.tgz) |
 | end-of-stream | 1.4.5 | MIT | [source](https://registry.npmjs.org/end-of-stream/-/end-of-stream-1.4.5.tgz) |
+| entities | 4.5.0 | BSD-2-Clause | [source](https://registry.npmjs.org/entities/-/entities-4.5.0.tgz) |
 | entities | 6.0.1 | BSD-2-Clause | [source](https://registry.npmjs.org/entities/-/entities-6.0.1.tgz) |
 | err-code | 2.0.3 | MIT | [source](https://registry.npmjs.org/err-code/-/err-code-2.0.3.tgz) |
 | error-ex | 1.3.4 | MIT | [source](https://registry.npmjs.org/error-ex/-/error-ex-1.3.4.tgz) |
@@ -910,6 +921,7 @@ separately by `TRADEMARKS.md`.
 | makeerror | 1.0.12 | BSD-3-Clause | [source](https://registry.npmjs.org/makeerror/-/makeerror-1.0.12.tgz) |
 | marky | 1.3.0 | Apache-2.0 | [source](https://registry.npmjs.org/marky/-/marky-1.3.0.tgz) |
 | math-intrinsics | 1.1.0 | MIT | [source](https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz) |
+| mdn-data | 2.0.14 | CC0-1.0 | [source](https://registry.npmjs.org/mdn-data/-/mdn-data-2.0.14.tgz) |
 | media-typer | 1.1.1 | MIT | [source](https://registry.npmjs.org/media-typer/-/media-typer-1.1.1.tgz) |
 | memoize-one | 5.2.1 | MIT | [source](https://registry.npmjs.org/memoize-one/-/memoize-one-5.2.1.tgz) |
 | merge-descriptors | 2.0.0 | MIT | [source](https://registry.npmjs.org/merge-descriptors/-/merge-descriptors-2.0.0.tgz) |
@@ -966,6 +978,7 @@ separately by `TRADEMARKS.md`.
 | normalize-path | 3.0.0 | MIT | [source](https://registry.npmjs.org/normalize-path/-/normalize-path-3.0.0.tgz) |
 | npm-package-arg | 11.0.3 | ISC | [source](https://registry.npmjs.org/npm-package-arg/-/npm-package-arg-11.0.3.tgz) |
 | npm-run-path | 4.0.1 | MIT | [source](https://registry.npmjs.org/npm-run-path/-/npm-run-path-4.0.1.tgz) |
+| nth-check | 2.1.1 | BSD-2-Clause | [source](https://registry.npmjs.org/nth-check/-/nth-check-2.1.1.tgz) |
 | nullthrows | 1.1.1 | MIT | [source](https://registry.npmjs.org/nullthrows/-/nullthrows-1.1.1.tgz) |
 | nwsapi | 2.2.24 | MIT | [source](https://registry.npmjs.org/nwsapi/-/nwsapi-2.2.24.tgz) |
 | ob1 | 0.84.4 | MIT | [source](https://registry.npmjs.org/ob1/-/ob1-0.84.4.tgz) |
@@ -1044,6 +1057,7 @@ separately by `TRADEMARKS.md`.
 | promise-retry | 2.0.1 | MIT | [source](https://registry.npmjs.org/promise-retry/-/promise-retry-2.0.1.tgz) |
 | promise | 8.3.0 | MIT | [source](https://registry.npmjs.org/promise/-/promise-8.3.0.tgz) |
 | prompts | 2.4.2 | MIT | [source](https://registry.npmjs.org/prompts/-/prompts-2.4.2.tgz) |
+| prop-types | 15.8.1 | MIT | [source](https://registry.npmjs.org/prop-types/-/prop-types-15.8.1.tgz) |
 | proxy-addr | 2.0.7 | MIT | [source](https://registry.npmjs.org/proxy-addr/-/proxy-addr-2.0.7.tgz) |
 | proxy-agent-negotiate | 1.1.0 | MIT | [source](https://registry.npmjs.org/proxy-agent-negotiate/-/proxy-agent-negotiate-1.1.0.tgz) |
 | psl | 1.15.0 | MIT | [source](https://registry.npmjs.org/psl/-/psl-1.15.0.tgz) |
@@ -1069,9 +1083,11 @@ separately by `TRADEMARKS.md`.
 | react-native-is-edge-to-edge | 1.3.1 | MIT | [source](https://registry.npmjs.org/react-native-is-edge-to-edge/-/react-native-is-edge-to-edge-1.3.1.tgz) |
 | react-native-keyboard-controller | 1.21.9 | MIT | [source](https://registry.npmjs.org/react-native-keyboard-controller/-/react-native-keyboard-controller-1.21.9.tgz) |
 | react-native-nitro-modules | 0.32.2 | MIT | [source](https://registry.npmjs.org/react-native-nitro-modules/-/react-native-nitro-modules-0.32.2.tgz) |
+| react-native-qrcode-svg | 6.3.21 | MIT | [source](https://registry.npmjs.org/react-native-qrcode-svg/-/react-native-qrcode-svg-6.3.21.tgz) |
 | react-native-reanimated | 4.5.1 | MIT | [source](https://registry.npmjs.org/react-native-reanimated/-/react-native-reanimated-4.5.1.tgz) |
 | react-native-safe-area-context | 5.7.0 | MIT | [source](https://registry.npmjs.org/react-native-safe-area-context/-/react-native-safe-area-context-5.7.0.tgz) |
 | react-native-screens | 4.26.2 | MIT | [source](https://registry.npmjs.org/react-native-screens/-/react-native-screens-4.26.2.tgz) |
+| react-native-svg | 15.15.5 | MIT | [source](https://registry.npmjs.org/react-native-svg/-/react-native-svg-15.15.5.tgz) |
 | react-native-uitextview | 2.2.0 | MIT | [source](https://registry.npmjs.org/react-native-uitextview/-/react-native-uitextview-2.2.0.tgz) |
 | react-native-unistyles | 3.2.5 | MIT | [source](https://registry.npmjs.org/react-native-unistyles/-/react-native-unistyles-3.2.5.tgz) |
 | react-native-worklets | 0.10.4 | MIT | [source](https://registry.npmjs.org/react-native-worklets/-/react-native-worklets-0.10.4.tgz) |
@@ -1201,6 +1217,7 @@ separately by `TRADEMARKS.md`.
 | terminal-link | 2.1.1 | MIT | [source](https://registry.npmjs.org/terminal-link/-/terminal-link-2.1.1.tgz) |
 | terser | 5.48.0 | BSD-2-Clause | [source](https://registry.npmjs.org/terser/-/terser-5.48.0.tgz) |
 | test-exclude | 6.0.0 | ISC | [source](https://registry.npmjs.org/test-exclude/-/test-exclude-6.0.0.tgz) |
+| text-encoding | 0.7.0 | (Unlicense OR Apache-2.0) | [source](https://registry.npmjs.org/text-encoding/-/text-encoding-0.7.0.tgz) |
 | thread-stream | 4.2.0 | MIT | [source](https://registry.npmjs.org/thread-stream/-/thread-stream-4.2.0.tgz) |
 | throat | 5.0.0 | MIT | [source](https://registry.npmjs.org/throat/-/throat-5.0.0.tgz) |
 | tinybench | 2.9.0 | MIT | [source](https://registry.npmjs.org/tinybench/-/tinybench-2.9.0.tgz) |
