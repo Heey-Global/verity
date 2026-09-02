@@ -1,17 +1,8 @@
-// Onboarding step 0: server URL (#320). The FIRST step — a distributable Verity
-// build ships without a hardcoded server, so the operator enters the control-plane
-// address here (a LAN IP or Tailscale name). The address is validated with a live
-// GET /onboarding/status, persisted on the device, and only THEN does the wizard
-// advance — the app can't do anything useful without a reachable server.
-//
-// Advance is gated on a successful connection test: a bad address must not be
-// persisted and must not let the operator move on to a dead flow.
-import {
-  VerityClient,
-  normalizeServerUrl,
-  resumeStep,
-  type OnboardingStatus,
-} from '@verity/mobile';
+// The first-run entry point explains how to install Verity, then pairs exclusively
+// through the installer's QR code. Manual addresses remain a recovery control for
+// an already-paired server, where its pinned identity can be verified.
+import { normalizeServerUrl, resumeStep, type OnboardingStatus } from '@verity/mobile';
+import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useEffect, useRef, useState } from 'react';
@@ -30,10 +21,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getAuthToken } from '../../lib/authToken';
-import { getVerityBaseUrl, setVerityBaseUrl } from '../../lib/client';
+import { getVerityBaseUrl } from '../../lib/client';
 import { parsePairingUri, type VerityPairingPayload } from '../../lib/pairing';
 import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairingSession';
-import { getServerProfile } from '../../lib/serverProfile';
 
 function onboardingRoute(status: OnboardingStatus): string {
   return status.complete ? '/' : `/onboarding/${resumeStep(status)}`;
@@ -59,8 +49,8 @@ export default function OnboardingServerUrl() {
   // reconfigure starts from the existing address rather than a blank field.
   const [url, setUrl] = useState(getVerityBaseUrl() ?? '');
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
-  const [pairing, setPairing] = useState<VerityPairingPayload | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const mounted = useRef(true);
   useEffect(
@@ -80,35 +70,11 @@ export default function OnboardingServerUrl() {
     const probeUrl = normalizeServerUrl(url);
     if (probeUrl === null) return;
     setTest({ kind: 'testing' });
-    // QR pairing uses the native pinned transport for every request. A manually
-    // entered public/Uplink endpoint uses the platform trust store.
-    const existingProfile = getServerProfile();
-    const statusPromise = pairing
-      ? establishPairing(pairing, probeUrl)
-      : existingProfile
-        ? verifyAndSaveDirectEndpoint(probeUrl)
-        : new VerityClient({ baseUrl: probeUrl }).fetchOnboardingStatus();
-    void statusPromise
-      .then((status) => {
-        // Reachable AND it parsed as a Verity onboarding-status payload → persist
-        // the normalized URL, then advance. (`setVerityBaseUrl` re-normalizes; same
-        // input → same result.)
-        return pairing || existingProfile ? status : setVerityBaseUrl(probeUrl).then(() => status);
-      })
+    void verifyAndSaveDirectEndpoint(probeUrl)
       .then((status) => {
         if (!mounted.current) return;
         setTest({ kind: 'ok' });
-        // Reconfigure (from Settings) → back home. First-run/preflight → route
-        // from the server's actual setup state, so an interrupted onboarding flow
-        // resumes at the first incomplete step instead of falling through to home.
-        const target = onboardingRoute(status);
-        if (isReconfigure) {
-          router.replace('/');
-        } else if (status.masterPasswordSet && getAuthToken(probeUrl) === null) {
-          router.replace(unlockRoute(target));
-        } else {
-          router.replace(target);
-        }
+        router.replace('/');
       })
       .catch((caught: unknown) => {
         if (!mounted.current) return;
@@ -124,6 +90,55 @@ export default function OnboardingServerUrl() {
 
   const testing = test.kind === 'testing';
 
+  const openScanner = () => {
+    void (async () => {
+      const permission =
+        cameraPermission?.granted === true ? cameraPermission : await requestCameraPermission();
+      if (!mounted.current) return;
+      if (permission.granted) setScannerOpen(true);
+      else
+        setTest({
+          kind: 'error',
+          message: 'Camera access is required to scan the installer pairing code.',
+        });
+    })();
+  };
+
+  const connectPairing = (pairing: VerityPairingPayload) => {
+    setScannerOpen(false);
+    setTest({ kind: 'testing' });
+    void establishPairing(pairing, pairing.suggestedUrl)
+      .then((status) => {
+        if (!mounted.current) return;
+        setTest({ kind: 'ok' });
+        const target = onboardingRoute(status);
+        if (status.masterPasswordSet && getAuthToken(pairing.suggestedUrl) === null)
+          router.replace(unlockRoute(target));
+        else router.replace(target);
+      })
+      .catch((error: unknown) => {
+        if (!mounted.current) return;
+        setTest({
+          kind: 'error',
+          message: error instanceof Error ? error.message : 'Could not pair with this server.',
+        });
+      });
+  };
+
+  const pastePairingLink = () => {
+    void Clipboard.getStringAsync().then((value) => {
+      if (!mounted.current) return;
+      try {
+        connectPairing(parsePairingUri(value));
+      } catch (error) {
+        setTest({
+          kind: 'error',
+          message: error instanceof Error ? error.message : 'Invalid pairing link.',
+        });
+      }
+    });
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.root}
@@ -134,67 +149,63 @@ export default function OnboardingServerUrl() {
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 32 }]}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.eyebrow}>Verity connection</Text>
+        <Text style={styles.eyebrow}>{isReconfigure ? 'Verity connection' : 'Secure pairing'}</Text>
         <Text style={styles.title} accessibilityRole="header">
-          Connect your server
+          {isReconfigure ? 'Change server address' : 'Connect your server'}
         </Text>
         <Text style={styles.lead}>
-          Enter the Verity server this device should control. If it is already set up, you will
-          unlock this device next. If it is fresh, setup starts after the connection succeeds.
+          {isReconfigure
+            ? 'Enter another address for your paired Verity server. Its identity will be verified before the address is saved.'
+            : 'Verity runs on your own Linux server. Install it there first; the installer will show a QR code that securely connects this app.'}
         </Text>
 
         <View style={styles.card}>
-          <Pressable
-            style={({ pressed }) => [styles.scanButton, pressed ? styles.pressed : null]}
-            onPress={() => {
-              void (async () => {
-                const permission =
-                  cameraPermission?.granted === true
-                    ? cameraPermission
-                    : await requestCameraPermission();
-                if (!mounted.current) return;
-                if (permission.granted) setScannerOpen(true);
-                else
-                  setTest({
-                    kind: 'error',
-                    message: 'Camera access is required to scan the installer pairing code.',
-                  });
-              })();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Scan secure pairing code"
-          >
-            <Text style={styles.scanButtonLabel}>Scan secure pairing code</Text>
-          </Pressable>
-
-          {pairing !== null ? (
-            <Text style={styles.connected} accessibilityRole="alert">
-              Pairing code loaded. You may adjust the address; Verity will still verify the same
-              server identity.
-            </Text>
-          ) : null}
-          <View style={styles.field}>
-            <Text style={styles.label}>Verity server address</Text>
-            <TextInput
-              style={styles.input}
-              value={url}
-              onChangeText={(next) => {
-                setUrl(next);
-                // Editing invalidates a prior test result.
-                if (test.kind !== 'idle') setTest({ kind: 'idle' });
-              }}
-              placeholder="verity.tailnet.ts.net:8082"
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-              keyboardType="url"
-              inputMode="url"
-              returnKeyType="go"
-              onSubmitEditing={runTest}
-              accessibilityLabel="Server address"
-            />
-          </View>
+          {!isReconfigure ? (
+            <>
+              <Text style={styles.label}>Run on an x86-64 Linux host with Docker:</Text>
+              <View style={styles.commandRow}>
+                <Text style={styles.command} selectable>
+                  curl -fsSL https://verity.build/install.sh | bash
+                </Text>
+                <Pressable
+                  style={({ pressed }) => [styles.copyButton, pressed ? styles.pressed : null]}
+                  onPress={() =>
+                    void Clipboard.setStringAsync(
+                      'curl -fsSL https://verity.build/install.sh | bash',
+                    ).then(() => setCopied(true))
+                  }
+                  accessibilityRole="button"
+                  accessibilityLabel="Copy install command"
+                >
+                  <Text style={styles.copyButtonLabel}>{copied ? 'Copied' : 'Copy'}</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.hint}>Already installed? Keep the QR code on screen.</Text>
+            </>
+          ) : (
+            <View style={styles.field}>
+              <Text style={styles.label}>Verity server address</Text>
+              <TextInput
+                style={styles.input}
+                value={url}
+                onChangeText={(next) => {
+                  setUrl(next);
+                  // Editing invalidates a prior test result.
+                  if (test.kind !== 'idle') setTest({ kind: 'idle' });
+                }}
+                placeholder="verity.tailnet.ts.net:8082"
+                placeholderTextColor={theme.colors.textFaint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                spellCheck={false}
+                keyboardType="url"
+                inputMode="url"
+                returnKeyType="go"
+                onSubmitEditing={runTest}
+                accessibilityLabel="Server address"
+              />
+            </View>
+          )}
 
           {test.kind === 'error' ? (
             <Text style={styles.error} accessibilityRole="alert">
@@ -202,7 +213,7 @@ export default function OnboardingServerUrl() {
             </Text>
           ) : null}
 
-          {test.kind === 'ok' ? (
+          {test.kind === 'ok' && isReconfigure ? (
             <Text style={styles.connected} accessibilityRole="alert">
               Connected
             </Text>
@@ -211,19 +222,30 @@ export default function OnboardingServerUrl() {
           <Pressable
             style={({ pressed }) => [
               styles.primaryButton,
-              !canSubmit ? styles.buttonDisabled : null,
+              (isReconfigure ? !canSubmit : testing) ? styles.buttonDisabled : null,
               pressed ? styles.pressed : null,
             ]}
-            onPress={runTest}
-            disabled={!canSubmit}
+            onPress={isReconfigure ? runTest : openScanner}
+            disabled={isReconfigure ? !canSubmit : testing}
             accessibilityRole="button"
-            accessibilityLabel="Test connection"
+            accessibilityLabel={isReconfigure ? 'Test connection' : 'Scan QR code'}
           >
             {testing ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
             <Text style={styles.primaryButtonLabel}>
-              {testing ? 'Testing…' : 'Test connection'}
+              {testing ? 'Connecting…' : isReconfigure ? 'Test connection' : 'Scan QR code'}
             </Text>
           </Pressable>
+
+          {!isReconfigure ? (
+            <Pressable
+              style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
+              onPress={pastePairingLink}
+              accessibilityRole="button"
+              accessibilityLabel="Paste pairing link"
+            >
+              <Text style={styles.cancelLabel}>Paste pairing link</Text>
+            </Pressable>
+          ) : null}
 
           {isReconfigure ? (
             <Pressable
@@ -248,11 +270,7 @@ export default function OnboardingServerUrl() {
             barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
             onBarcodeScanned={({ data }) => {
               try {
-                const parsed = parsePairingUri(data);
-                setPairing(parsed);
-                setUrl(parsed.suggestedUrl);
-                setTest({ kind: 'idle' });
-                setScannerOpen(false);
+                connectPairing(parsePairingUri(data));
               } catch (error) {
                 setScannerOpen(false);
                 setTest({
@@ -364,6 +382,39 @@ const styles = StyleSheet.create((theme) => ({
   },
   field: {
     gap: theme.spacing.xs,
+  },
+  commandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  command: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+    lineHeight: 20 * theme.fontScale,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
+  },
+  copyButton: {
+    minHeight: 40,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  copyButtonLabel: {
+    color: theme.colors.accent,
+    fontSize: theme.text.sm,
+    fontWeight: '800',
+  },
+  hint: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
   },
   label: {
     color: theme.colors.textMuted,

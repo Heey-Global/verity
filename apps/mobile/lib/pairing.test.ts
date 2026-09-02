@@ -1,4 +1,4 @@
-import { parsePairingUri } from './pairing';
+import { createPairingUri, parsePairingUri } from './pairing';
 
 const now = new Date('2026-08-29T12:00:00.000Z');
 const basePayload = {
@@ -24,6 +24,12 @@ describe('parsePairingUri', () => {
       suggestedUrl: 'https://192.168.1.42:8082',
       expiresAt: '2026-08-29T12:15:00.000Z',
     });
+  });
+
+  it('round-trips an additional-device invitation', () => {
+    const parsed = parsePairingUri(uri({ kind: 'device' }), now);
+    expect(parsePairingUri(createPairingUri(parsed), now)).toEqual(parsed);
+    expect(parsed.kind).toBe('device');
   });
 
   it('rejects plaintext and embedded credentials', () => {

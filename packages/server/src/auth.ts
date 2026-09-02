@@ -47,8 +47,11 @@ export function wsOriginAllowed(
 /** The slice of the store the registry needs — kept structural so the registry
  *  is trivially unit-testable without a real database. */
 export interface AuthTokenStore {
-  listAuthTokens(): Promise<Array<{ id: string; tokenHash: string }>>;
+  listAuthTokens(): Promise<
+    Array<{ id: string; tokenHash: string; label?: string | null; createdAt?: number }>
+  >;
   insertAuthToken(record: { id: string; tokenHash: string; label?: string | null }): Promise<void>;
+  deleteAuthToken(id: string): Promise<boolean>;
 }
 
 interface MintedAuthToken {
@@ -56,6 +59,12 @@ interface MintedAuthToken {
   token: string;
   /** The token's opaque public id (for later revocation). */
   id: string;
+}
+
+export interface PairedDevice {
+  id: string;
+  label: string | null;
+  createdAt: number;
 }
 
 export interface AuthTokenRegistry {
@@ -73,6 +82,8 @@ export interface AuthTokenRegistry {
   isKnownId?(id: string): boolean;
   /** Mint a new device token, persist its hash, and return the raw token once. */
   mint(label?: string | null): Promise<MintedAuthToken>;
+  list(): Promise<PairedDevice[]>;
+  revoke(id: string): Promise<boolean>;
   /** Drop a single hash from the in-memory set (after the row is deleted). */
   forget(tokenHash: string): void;
   /** Clear the whole in-memory set (after deleteAllAuthTokens). */
@@ -114,6 +125,19 @@ export async function createAuthTokenRegistry(
       await store.insertAuthToken({ id, tokenHash, label: label ?? null });
       tokenIdsByHash.set(tokenHash, id);
       return { token, id };
+    },
+    async list(): Promise<PairedDevice[]> {
+      return (await store.listAuthTokens()).map((record) => ({
+        id: record.id,
+        label: record.label ?? null,
+        createdAt: record.createdAt ?? 0,
+      }));
+    },
+    async revoke(id): Promise<boolean> {
+      const record = (await store.listAuthTokens()).find((candidate) => candidate.id === id);
+      if (record === undefined || !(await store.deleteAuthToken(id))) return false;
+      tokenIdsByHash.delete(record.tokenHash);
+      return true;
     },
     forget(tokenHash): void {
       tokenIdsByHash.delete(tokenHash);

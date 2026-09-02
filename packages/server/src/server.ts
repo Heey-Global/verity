@@ -4635,6 +4635,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deviceLabel: deviceLabelField,
   });
   const pairingRedeemBody = z.object({ code: z.string().min(32).max(128) }).strict();
+  const pairingEnrollBody = z
+    .object({ code: z.string().min(32).max(128), deviceLabel: deviceLabelField })
+    .strict();
   const pairingIdentityQuery = z.object({ challenge: z.string().min(32).max(128) }).strict();
 
   // Both pairing routes register unconditionally and refuse themselves in the
@@ -4674,6 +4677,65 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       throw error;
     }
+  });
+
+  app.post('/pair/enroll', { bodyLimit: 1_024 }, async (request, reply) => {
+    const registry = deps.authRegistry;
+    const pairing = deps.devicePairing;
+    if (registry === undefined || pairing === undefined) {
+      return reply.code(404).send({ error: 'not found' });
+    }
+    const { code, deviceLabel } = pairingEnrollBody.parse(request.body);
+    if (!pairing.consumeInvitation(code)) {
+      return reply.code(401).send({ error: 'invalid or expired pairing invitation' });
+    }
+    const minted = await registry.mint(deviceLabel ?? null);
+    return { token: minted.token, tokenId: minted.id };
+  });
+
+  app.get('/devices', async (request, reply) => {
+    const registry = deps.authRegistry;
+    if (registry === undefined || !registry.isEnabled()) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const currentId = registry.resolveId(bearerToken(request.headers.authorization));
+    if (currentId === undefined) return reply.code(401).send({ error: 'unauthorized' });
+    return {
+      devices: (await registry.list()).map((device) => ({
+        ...device,
+        isCurrent: device.id === currentId,
+      })),
+    };
+  });
+
+  app.post('/devices/pairing-invitations', async (request, reply) => {
+    const registry = deps.authRegistry;
+    if (
+      registry === undefined ||
+      !registry.isEnabled() ||
+      registry.resolveId(bearerToken(request.headers.authorization)) === undefined
+    ) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    if (deps.devicePairing === undefined) {
+      return reply.code(409).send({ error: 'device pairing is not configured' });
+    }
+    return deps.devicePairing.issueInvitation();
+  });
+
+  app.delete('/devices/:id', async (request, reply) => {
+    const registry = deps.authRegistry;
+    if (registry === undefined || !registry.isEnabled()) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const { id } = z.object({ id: z.string().min(1).max(128) }).parse(request.params);
+    const currentId = registry.resolveId(bearerToken(request.headers.authorization));
+    if (currentId === undefined) return reply.code(401).send({ error: 'unauthorized' });
+    if (id === currentId) {
+      return reply.code(409).send({ error: 'the current device cannot revoke itself' });
+    }
+    if (!(await registry.revoke(id))) return reply.code(404).send({ error: 'device not found' });
+    return reply.code(204).send();
   });
 
   // Brute-force throttle for /secret/unlock (audit C2): per-IP lockout with

@@ -111,9 +111,9 @@ host directory to prepare.
 The installer creates a stable local TLS/server identity and a short-lived pairing
 capability under `/etc/verity`. On first run, in the mobile app:
 
-1. Scan the QR code printed by `verity-install`. It pre-fills the detected
-   `https://<host>:8082` address, which you may edit to use a DNS name. The app
-   verifies both the pinned TLS certificate and the stable signed server identity.
+1. Choose one of the detected IP addresses, or enter a DNS name, when prompted by
+   `verity-install`. Then scan its QR code in the app. The app verifies both the
+   pinned TLS certificate and the stable signed server identity.
 2. **Set or unlock the master password.** This derives the at-rest encryption key for DB
    secrets (ADR 0002 D3). The secret store starts sealed until you do this — the
    server logs `secret store is UNINITIALIZED and SEALED` on boot, which is
@@ -122,6 +122,14 @@ capability under `/etc/verity`. On first run, in the mobile app:
    These are encrypted and stored in the DB — no host-mounted `.pem`.
 4. **Add a project** by naming its repo. Verity clones it into the clone-root and
    runs a container from the standard base image; the agent is ready.
+
+### Pair another device
+
+After the first device is set up, open **Settings → Paired devices → Pair another
+device**. Verity creates a five-minute, one-use invitation. Scan its QR code on a
+phone or tablet, or copy and paste the pairing link into the iPad app running on a
+Mac. Each device receives its own bearer token and can be removed independently
+from the same screen. The master password is never included in the invitation.
 
 The master password is the only way to unlock the secret store — there is no
 env-key/headless auto-unlock. On restart the store comes up sealed and is

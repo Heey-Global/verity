@@ -76,3 +76,47 @@ test('refuses a symlink at every generated-material boundary', () => {
   assert.match(result.stderr, /pairing-code must not be a symlink/);
   assert.equal(readFileSync(victim, 'utf8'), 'unchanged');
 });
+
+test('uses a selected DNS name in both the QR URL and renewed certificate', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-dns-'));
+  const initial = run(state);
+  assert.equal(initial.status, 0, initial.stderr);
+  const key = readFileSync(join(state, 'tls-key.pem'), 'utf8');
+  const firstPin = JSON.parse(
+    Buffer.from(new URL(initial.stdout.trim()).searchParams.get('payload'), 'base64url').toString(),
+  ).tlsPin;
+  const selected = run(state, { VERITY_PAIRING_HOST: 'verity.home.example' });
+  assert.equal(selected.status, 0, selected.stderr);
+  const payload = JSON.parse(
+    Buffer.from(
+      new URL(selected.stdout.trim()).searchParams.get('payload'),
+      'base64url',
+    ).toString(),
+  );
+  assert.equal(payload.url, 'https://verity.home.example:8082');
+  assert.equal(payload.tlsPin, firstPin);
+  assert.equal(readFileSync(join(state, 'tls-key.pem'), 'utf8'), key);
+  const certificate = spawnSync(
+    'openssl',
+    ['x509', '-in', join(state, 'tls-cert.pem'), '-noout', '-ext', 'subjectAltName'],
+    { encoding: 'utf8' },
+  );
+  assert.match(certificate.stdout, /DNS:verity\.home\.example/);
+
+  const moved = run(state, { VERITY_PAIRING_HOST: 'verity-new.home.example' });
+  assert.equal(moved.status, 0, moved.stderr);
+  const renewed = spawnSync(
+    'openssl',
+    ['x509', '-in', join(state, 'tls-cert.pem'), '-noout', '-ext', 'subjectAltName'],
+    { encoding: 'utf8' },
+  );
+  assert.match(renewed.stdout, /DNS:verity\.home\.example/);
+  assert.match(renewed.stdout, /DNS:verity-new\.home\.example/);
+});
+
+test('rejects an invalid selected pairing address', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-host-'));
+  const result = run(state, { VERITY_PAIRING_HOST: 'https://verity.example' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not an IPv4 address or DNS name/);
+});

@@ -1591,6 +1591,25 @@ const pairingRedeemedSchema = z.object({
 });
 export type PairingRedeemed = z.infer<typeof pairingRedeemedSchema>;
 
+const pairingInvitationSchema = z.object({
+  code: z.string().min(32).max(128),
+  expiresAt: z.string().datetime(),
+});
+export type PairingInvitation = z.infer<typeof pairingInvitationSchema>;
+
+const pairedDeviceSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().nullable(),
+  createdAt: z.number(),
+  isCurrent: z.boolean(),
+});
+export type PairedDevice = z.infer<typeof pairedDeviceSchema>;
+
+const deviceEnrolledSchema = z.object({
+  token: z.string().min(1),
+  tokenId: z.string().min(1),
+});
+
 const streamTicketSchema = z.object({
   ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
   expiresAt: z.string().datetime(),
@@ -2024,6 +2043,32 @@ export class VerityClient {
       body: JSON.stringify({ code }),
     });
     return pairingRedeemedSchema.parse(await res.json());
+  }
+
+  async enrollPairingInvitation(
+    code: string,
+    deviceLabel?: string,
+  ): Promise<{ token: string; tokenId: string }> {
+    const res = await this.request('/pair/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, ...(deviceLabel ? { deviceLabel } : {}) }),
+    });
+    return deviceEnrolledSchema.parse(await res.json());
+  }
+
+  async createPairingInvitation(): Promise<PairingInvitation> {
+    const res = await this.request('/devices/pairing-invitations', { method: 'POST' });
+    return pairingInvitationSchema.parse(await res.json());
+  }
+
+  async listPairedDevices(): Promise<PairedDevice[]> {
+    const res = await this.request('/devices', { method: 'GET' });
+    return z.object({ devices: z.array(pairedDeviceSchema) }).parse(await res.json()).devices;
+  }
+
+  async revokePairedDevice(id: string): Promise<void> {
+    await this.request(`/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
   /** First-run: set the master password (derives + stores the key, unlocks) and

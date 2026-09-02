@@ -62,23 +62,49 @@ for ip in $ips; do
 done
 pair_host="${VERITY_PAIRING_HOST:-}"
 if [ -n "$pair_host" ]; then
-  [[ "$pair_host" =~ ^[A-Za-z0-9.-]+$ ]] || die 'VERITY_PAIRING_HOST is not a DNS name'
-  san="$san,DNS:$pair_host"
+  [[ "$pair_host" =~ ^[A-Za-z0-9.-]+$ ]] || die 'VERITY_PAIRING_HOST is not an IPv4 address or DNS name'
+  if [[ "$pair_host" =~ ^[0-9.]+$ ]]; then
+    [[ "$pair_host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+      || die 'VERITY_PAIRING_HOST is not a valid IPv4 address'
+    IFS=. read -r a b c d <<<"$pair_host"
+    [ "$a" -le 255 ] && [ "$b" -le 255 ] && [ "$c" -le 255 ] && [ "$d" -le 255 ] \
+      || die 'VERITY_PAIRING_HOST is not a valid IPv4 address'
+    san="$san,IP:$pair_host"
+  else
+    [[ "$pair_host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+      || die 'VERITY_PAIRING_HOST is not a valid DNS name'
+    san="$san,DNS:$pair_host"
+  fi
   suggested="https://$pair_host:$port"
 fi
 [ -n "$suggested" ] || suggested="https://127.0.0.1:$port"
 
-if [ ! -s "$tls_cert" ] || ! openssl x509 -checkend 604800 -noout -in "$tls_cert" >/dev/null 2>&1; then
-  temporary="$tls_cert.$$.tmp"
-  openssl req -new -x509 -sha256 -days 397 -key "$tls_key" -out "$temporary" \
-    -subj '/CN=Verity local control plane' \
-    -addext "subjectAltName=$san" \
-    -addext 'keyUsage=digitalSignature,keyEncipherment' \
-    -addext 'extendedKeyUsage=serverAuth'
-  chmod 0644 "$temporary"
-  if [ "$(id -u)" = 0 ]; then chown root:root "$temporary"; fi
-  mv -f "$temporary" "$tls_cert"
+# Retain names and addresses from the previous leaf certificate. Existing paired
+# devices may still reach the same pinned TLS key through one of those endpoints;
+# choosing a new address must add a SAN, never silently remove an old one.
+if [ -s "$tls_cert" ]; then
+  while IFS= read -r existing_san; do
+    [ -n "$existing_san" ] || continue
+    existing_san="${existing_san/IP Address:/IP:}"
+    case ",$san," in
+      *",$existing_san,"*) ;;
+      *) san="$san,$existing_san" ;;
+    esac
+  done <<<"$(openssl x509 -in "$tls_cert" -noout -ext subjectAltName 2>/dev/null \
+    | grep -oE 'DNS:[A-Za-z0-9.-]+|IP Address:[0-9.]+' || true)"
 fi
+
+# Reissue the leaf certificate so a newly selected IP or DNS name is always in
+# its SANs. The stable TLS key keeps the public-key pin unchanged for paired apps.
+temporary="$tls_cert.$$.tmp"
+openssl req -new -x509 -sha256 -days 397 -key "$tls_key" -out "$temporary" \
+  -subj '/CN=Verity local control plane' \
+  -addext "subjectAltName=$san" \
+  -addext 'keyUsage=digitalSignature,keyEncipherment' \
+  -addext 'extendedKeyUsage=serverAuth'
+chmod 0644 "$temporary"
+if [ "$(id -u)" = 0 ]; then chown root:root "$temporary"; fi
+mv -f "$temporary" "$tls_cert"
 
 code="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 expires_at="$(date -u -d '+15 minutes' '+%Y-%m-%dT%H:%M:%S.000Z')"

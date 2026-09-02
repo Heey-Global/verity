@@ -7,12 +7,13 @@ function fixture() {
   const { privateKey } = generateKeyPairSync('ed25519');
   let instant = new Date('2026-08-29T12:00:00.000Z');
   let consumedHash: string | undefined;
+  let randomByte = 7;
   const manager = createDevicePairingManager({
     privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
     pairingCode: 'abcdefghijklmnopqrstuvwxyz_0123456789',
     expiresAt: '2026-08-29T12:15:00.000Z',
     now: () => instant,
-    random: () => Buffer.alloc(32, 7),
+    random: () => Buffer.alloc(32, randomByte++),
     loadConsumedCodeHash: () => consumedHash,
     storeConsumedCodeHash: (hash) => {
       consumedHash = hash;
@@ -23,6 +24,29 @@ function fixture() {
 }
 
 describe('device pairing', () => {
+  it('issues independent one-use invitations and expires them', () => {
+    const fixtureState = fixture();
+    const first = fixtureState.manager.issueInvitation();
+    const second = fixtureState.manager.issueInvitation();
+    expect(first.code).toHaveLength(43);
+    expect(second.code).toHaveLength(43);
+    expect(fixtureState.manager.consumeInvitation(first.code)).toBe(true);
+    expect(fixtureState.manager.consumeInvitation(first.code)).toBe(false);
+    expect(fixtureState.manager.consumeInvitation(second.code)).toBe(true);
+
+    const expiring = fixture();
+    const invitation = expiring.manager.issueInvitation();
+    expiring.advance('2026-08-29T12:05:00.001Z');
+    expect(expiring.manager.consumeInvitation(invitation.code)).toBe(false);
+  });
+
+  it('bounds outstanding invitations by evicting the oldest', () => {
+    const { manager } = fixture();
+    const invitations = Array.from({ length: 33 }, () => manager.issueInvitation());
+    expect(manager.consumeInvitation(invitations[0]!.code)).toBe(false);
+    expect(manager.consumeInvitation(invitations[32]!.code)).toBe(true);
+  });
+
   it('redeems the installer code once and consumes the bootstrap token once', () => {
     const { manager } = fixture();
     const issued = manager.redeem('abcdefghijklmnopqrstuvwxyz_0123456789');

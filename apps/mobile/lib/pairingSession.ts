@@ -2,7 +2,9 @@ import { VerityClient, type OnboardingStatus } from '@verity/mobile';
 import { getRandomBytes } from 'expo-crypto';
 
 import { setVerityBaseUrl } from './client';
+import { deviceLabel } from './deviceLabel';
 import { copyAuthTokenToEndpoint } from './authToken';
+import { setAuthToken } from './authToken';
 import type { VerityPairingPayload } from './pairing';
 import { createPinnedFetch, verifyPairedIdentity } from './pinnedTransport';
 import {
@@ -14,6 +16,8 @@ import {
 } from './serverProfile';
 
 let bootstrap: { serverId: string; token: string; expiresAt: number } | null = null;
+let enrollment: { serverId: string; pairingCode: string; token: string; tokenId: string } | null =
+  null;
 
 function challenge(): string {
   const bytes = getRandomBytes(32);
@@ -49,6 +53,30 @@ export async function establishPairing(
   const retained =
     bootstrap?.serverId === payload.serverId && bootstrap.expiresAt > Date.now() ? bootstrap : null;
   if (retained === null) {
+    if (payload.kind === 'device') {
+      const retained =
+        enrollment?.serverId === payload.serverId && enrollment.pairingCode === payload.pairingCode
+          ? enrollment
+          : null;
+      const enrolled =
+        retained ?? (await client.enrollPairingInvitation(payload.pairingCode, deviceLabel()));
+      enrollment = { serverId: payload.serverId, pairingCode: payload.pairingCode, ...enrolled };
+      // Enrollment consumes the invitation. Persist its token and the already
+      // verified identity before the best-effort status read, but never mutate
+      // local routing for a rejected/expired invitation.
+      await setAuthToken(profile.activeUrl, enrolled.token, enrolled.tokenId);
+      await saveServerProfile(profile);
+      await setVerityBaseUrl(profile.activeUrl);
+      const authenticatedClient = new VerityClient({
+        baseUrl: profile.activeUrl,
+        fetch: pinnedFetch,
+        uploadFetch: pinnedFetch,
+        getToken: () => enrolled.token,
+      });
+      const status = await authenticatedClient.fetchOnboardingStatus();
+      enrollment = null;
+      return status;
+    }
     const redeemed = await client.redeemPairingCode(payload.pairingCode);
     const expiry = Date.parse(redeemed.expiresAt);
     if (!Number.isFinite(expiry) || expiry <= Date.now())

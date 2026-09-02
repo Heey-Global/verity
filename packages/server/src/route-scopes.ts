@@ -110,6 +110,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   declare('POST', '/secret/unlock', 'onboarding', 'master password'),
   declare('GET', '/pair/identity', 'device-pairing', 'pairing code issued out of band'),
   declare('POST', '/pair/redeem', 'device-pairing', 'single-use pairing code'),
+  declare(
+    'POST',
+    '/pair/enroll',
+    'device-pairing',
+    'single-use invitation issued by an authenticated paired device',
+  ),
   // Reached by GitHub's browser redirect, not by the app, so no bearer can be
   // attached; each carries a single-use CSRF `state` instead.
   declare('GET', '/github/app/manifest/start', 'github-app-manifest', 'single-use CSRF state'),
@@ -206,6 +212,7 @@ export const LOCKOUT_CRITICAL_KEYS: readonly string[] = [
   'POST /secret/init',
   'POST /secret/unlock',
   'POST /pair/redeem',
+  'POST /pair/enroll',
   'GET /pair/identity',
 ];
 
