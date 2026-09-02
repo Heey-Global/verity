@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.15.0](https://github.com/Heey-Global/verity/compare/mobile-v1.14.0...mobile-v1.15.0) (2026-09-02)
+
+
+### Features
+
+* **pairing:** add secure device onboarding ([6c89bb0](https://github.com/Heey-Global/verity/commit/6c89bb0b32c4c05db79704135191cccbbb7df98f))
+* **pairing:** add secure device onboarding ([86efbf4](https://github.com/Heey-Global/verity/commit/86efbf46d674e04a0f8476b7c0378b1be29f3738))
+
+
+### Bug Fixes
+
+* **auth:** ignore legacy token cleanup failures ([64faa59](https://github.com/Heey-Global/verity/commit/64faa59e425a341ae362a07e1a15aee355e7ad5b))
+* **pairing:** bind enrollment retries to clients ([0dd1ffd](https://github.com/Heey-Global/verity/commit/0dd1ffd1e6a7ce9020d76dc2f7f5b5dc8b8faa7e))
+* **pairing:** hide expired invitations ([c2c6eda](https://github.com/Heey-Global/verity/commit/c2c6eda23c5f86e00f9e2e25ea62e8089a49bb6c))
+* **pairing:** latch duplicate QR scans ([106e83c](https://github.com/Heey-Global/verity/commit/106e83c1bfddce810771bfe5a77de2e069c11278))
+* **pairing:** preserve recoverable enrollment state ([bbb3e81](https://github.com/Heey-Global/verity/commit/bbb3e816dc14cdb5d5767b4e1e01485191bde1f0))
+* **pairing:** recover enrollment across restarts ([57014e5](https://github.com/Heey-Global/verity/commit/57014e55ff76cd0c3a2cf7de65fc063422538f1a))
+* **pairing:** require durable device credentials ([9a1fe1a](https://github.com/Heey-Global/verity/commit/9a1fe1a144129ee315f3f3df333ae0bc8d8cf2cd))
+
 ## [1.14.0](https://github.com/Heey-Global/verity/compare/mobile-v1.13.0...mobile-v1.14.0) (2026-09-02)
 
 
