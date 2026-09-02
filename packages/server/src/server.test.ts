@@ -644,6 +644,11 @@ beforeAll(async () => {
     spawnWorktreeRoot: worktreeRoot,
     projectCloneRoot: tmpdir(),
     branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+    // This instance is shared by every test in the file and the branch cache is
+    // keyed by worktree, which the tests reuse — a cached label would leak from
+    // one test's git mock into the next. The cache's own behavior is covered by
+    // its own server instance below.
+    branchCacheTtlMs: 0,
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
   port = (app.server.address() as AddressInfo).port;
@@ -13734,5 +13739,392 @@ describe('VERITY_CONTROL_SYSTEM_PROMPT', () => {
   it('keeps the standing rules that are still true', () => {
     expect(VERITY_CONTROL_SYSTEM_PROMPT).toContain('Never merge pull requests by yourself');
     expect(VERITY_CONTROL_SYSTEM_PROMPT).toContain('Never print secret values');
+  });
+});
+
+describe('overview projections read only the narrow event slice', () => {
+  const resultEvent = {
+    t: 'result' as const,
+    usage: { inputTokens: 5, outputTokens: 7, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    stopReason: 'end_turn',
+  };
+
+  /** A log whose bulk is transcript text — the shape the overview must not load. */
+  const seedChattySession = async (sessionId: string): Promise<void> => {
+    await ctx.store.createSession({ sessionId, worktree: `/wt/${sessionId}`, model: 'm' });
+    await ctx.store.appendEvent(sessionId, { t: 'prompt', text: 'go' });
+    for (let i = 0; i < 20; i += 1) {
+      await ctx.store.appendEvent(sessionId, { t: 'text', delta: `chunk ${i}` });
+    }
+    await ctx.store.appendEvent(sessionId, resultEvent);
+  };
+
+  // The regression this guards is invisible from the response: hydrating whole
+  // logs produces byte-identical output and only shows up as latency that grows
+  // with history, on the three routes the app polls hardest.
+  it('answers list, detail and activity without hydrating a full log', async () => {
+    await seedChattySession('s-chatty');
+    const getEvents = vi.spyOn(ctx.store, 'getEvents');
+    const getEventsAfter = vi.spyOn(ctx.store, 'getEventsAfter');
+    const countingReads = vi.spyOn(ctx.store, 'listSessionProjectionFacts');
+    const sliceOnlyReads = vi.spyOn(ctx.store, 'listSessionProjectionEvents');
+    try {
+      const list = await app.inject({ method: 'GET', url: '/sessions' });
+      expect(list.json()).toHaveLength(1);
+      expect(list.json()[0]).toMatchObject({
+        sessionId: 's-chatty',
+        status: 'completed',
+        eventCount: 22,
+        usage: { inputTokens: 5, outputTokens: 7 },
+      });
+
+      const detail = await app.inject({ method: 'GET', url: '/sessions/s-chatty' });
+      expect(detail.json()).toMatchObject({
+        status: 'completed',
+        eventCount: 22,
+        usage: { inputTokens: 5, outputTokens: 7 },
+      });
+
+      const activity = await app.inject({ method: 'GET', url: '/sessions/s-chatty/activity' });
+      expect(activity.json()).toMatchObject({ busy: false });
+
+      expect(getEvents).not.toHaveBeenCalled();
+      expect(getEventsAfter).not.toHaveBeenCalled();
+      // The list and the detail carry `eventCount`, so they pay for the counters.
+      // The activity poll — the most frequent of the three, and the only one whose
+      // response carries neither counter — must not: `count(*)` is the one part of
+      // the projection read that still grows with the log, and paying it 40 times
+      // a minute per open session is the shape of waste this whole change removed.
+      expect(countingReads).toHaveBeenCalledTimes(2);
+      expect(sliceOnlyReads).toHaveBeenCalledTimes(1);
+    } finally {
+      getEvents.mockRestore();
+      getEventsAfter.mockRestore();
+      countingReads.mockRestore();
+      sliceOnlyReads.mockRestore();
+    }
+  });
+
+  it('still reports a session whose log holds nothing the projection reads as running', async () => {
+    // The count is what separates this from an untouched session; without it the
+    // filtered log would read as empty and badge `idle` mid-turn.
+    await ctx.store.createSession({ sessionId: 's-quiet', worktree: '/wt/s-quiet', model: 'm' });
+    await ctx.store.appendEvent('s-quiet', { t: 'text', delta: 'streaming…' });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s-quiet' });
+    expect(res.json()).toMatchObject({ status: 'running', eventCount: 1 });
+
+    await ctx.store.createSession({ sessionId: 's-fresh', worktree: '/wt/s-fresh', model: 'm' });
+    const fresh = await app.inject({ method: 'GET', url: '/sessions/s-fresh' });
+    expect(fresh.json()).toMatchObject({ status: 'idle', eventCount: 0 });
+  });
+
+  it('keeps a session with an open background task busy on the activity poll', async () => {
+    // The activity route reads the log ONLY to catch this case, so narrowing that
+    // read must not lose it: the turn's result already landed while the task runs.
+    await ctx.store.createSession({ sessionId: 's-task', worktree: '/wt/s-task', model: 'm' });
+    await ctx.store.appendEvent('s-task', { t: 'prompt', text: 'go' });
+    await ctx.store.appendEvent('s-task', { t: 'task', id: 'bg1', phase: 'started' });
+    await ctx.store.appendEvent('s-task', { t: 'text', delta: 'working' });
+    await ctx.store.appendEvent('s-task', resultEvent);
+    const res = await app.inject({ method: 'GET', url: '/sessions/s-task/activity' });
+    expect(res.json()).toMatchObject({ busy: true });
+  });
+});
+
+describe('the session branch label is cached between activity polls', () => {
+  const cachedBranchServer = (): FastifyInstance =>
+    buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+    });
+
+  it('reads git once across polls and again after an operator switch', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const server = cachedBranchServer();
+    try {
+      branchSvc.current.mockResolvedValue('feat/a');
+      const first = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(first.json()).toMatchObject({ branch: 'feat/a' });
+
+      // A second poll 1.5 s later must not spawn another git/docker call.
+      branchSvc.current.mockResolvedValue('feat/b');
+      const second = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(second.json()).toMatchObject({ branch: 'feat/a' });
+      expect(branchSvc.current).toHaveBeenCalledTimes(1);
+
+      // The operator's own switch is visible to the server, so it drops the label
+      // rather than showing the old branch until the TTL runs out.
+      branchSvc.switch.mockResolvedValue('feat/b');
+      const switched = await server.inject({
+        method: 'POST',
+        url: '/sessions/s1/branch',
+        payload: { branch: 'feat/b' },
+      });
+      expect(switched.statusCode).toBe(200);
+      const third = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(third.json()).toMatchObject({ branch: 'feat/b' });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('converges on a branch changed from inside the sandbox once the TTL passes', async () => {
+    // The case no invalidation hook can see: the agent checks out its own work
+    // inside the worktree. A cache that only ever refreshed on the switch route
+    // would pin the header to a branch the session left — the TTL is the only
+    // thing that makes the label converge, so it is the thing worth guarding.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchCacheTtlMs: 1,
+    });
+    try {
+      branchSvc.current.mockResolvedValue('feat/a');
+      const first = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(first.json()).toMatchObject({ branch: 'feat/a' });
+
+      branchSvc.current.mockResolvedValue('agent/self-checkout');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // Stale-while-revalidate: this poll still answers 'feat/a' and refreshes
+      // behind the response, so the NEXT poll is the one that shows the change.
+      await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      await vi.waitFor(() => expect(branchSvc.current).toHaveBeenCalledTimes(2));
+
+      const settled = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(settled.json()).toMatchObject({ branch: 'agent/self-checkout' });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('discards a refresh that was already reading git when the operator switched', async () => {
+    // The refresh read git BEFORE the switch, so its answer is the branch the
+    // session just left. Writing it back after the invalidation would pin the
+    // header to the old branch for a full TTL — the cache undoing the one
+    // invalidation that exists to correct it, and only under the interleaving
+    // nobody reproduces by hand.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchCacheTtlMs: 1,
+    });
+    try {
+      branchSvc.current.mockResolvedValue('feat/a');
+      await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+
+      // Hold the next git read open so the switch below lands mid-flight.
+      let answerHeldRead: (branch: string) => void = () => {};
+      branchSvc.current.mockReturnValueOnce(
+        new Promise<string>((resolve) => {
+          answerHeldRead = resolve;
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      await vi.waitFor(() => expect(branchSvc.current).toHaveBeenCalledTimes(2));
+
+      branchSvc.switch.mockResolvedValue('feat/b');
+      const switched = await server.inject({
+        method: 'POST',
+        url: '/sessions/s1/branch',
+        payload: { branch: 'feat/b' },
+      });
+      expect(switched.statusCode).toBe(200);
+
+      // Only now does the held read answer — with the pre-switch branch.
+      answerHeldRead('feat/a');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      branchSvc.current.mockResolvedValue('feat/b');
+      const after = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(after.json()).toMatchObject({ branch: 'feat/b' });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('discards a COLD read that was already reading git when the operator switched', async () => {
+    // The same race one step earlier, and the one a `delete` cannot cover: on a
+    // session's first poll there is no cache entry for the invalidation to drop,
+    // so an undisownable cold read lands the pre-switch branch on the empty slot
+    // and pins the header there for a full TTL — with no second git call due for
+    // ten seconds to correct it.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const server = cachedBranchServer();
+    try {
+      let answerHeldRead: (branch: string) => void = () => {};
+      branchSvc.current.mockReturnValueOnce(
+        new Promise<string>((resolve) => {
+          answerHeldRead = resolve;
+        }),
+      );
+      // Left unawaited on purpose: a cold read blocks its own response, so the
+      // switch below has to be issued while this poll is still inside git.
+      const coldPoll = server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      await vi.waitFor(() => expect(branchSvc.current).toHaveBeenCalledTimes(1));
+
+      branchSvc.switch.mockResolvedValue('feat/b');
+      const switched = await server.inject({
+        method: 'POST',
+        url: '/sessions/s1/branch',
+        payload: { branch: 'feat/b' },
+      });
+      expect(switched.statusCode).toBe(200);
+
+      // The old read is still unresolved. A poll in this window must not join
+      // it merely because its token remains in the single-flight map.
+      branchSvc.current.mockResolvedValueOnce('feat/b');
+      const afterSwitch = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(afterSwitch.json()).toMatchObject({ branch: 'feat/b' });
+      expect(branchSvc.current).toHaveBeenCalledTimes(2);
+
+      answerHeldRead('feat/a');
+      // The poll that asked still hears what git said — it is the CACHE that must
+      // not keep the answer.
+      expect((await coldPoll).json()).toMatchObject({ branch: 'feat/a' });
+
+      branchSvc.current.mockResolvedValue('feat/b');
+      const after = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(after.json()).toMatchObject({ branch: 'feat/b' });
+      expect(branchSvc.current).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('paces a failing refresh like a successful one', async () => {
+    // A refresh that rejects must still advance the entry's clock. Otherwise the
+    // first git failure turns the cache back into a per-poll git call — every
+    // 1.5 s, per open session, against a worktree that is already unhappy.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      // The window has to outlast everything between the failed refresh settling
+      // and the third request below — `vi.waitFor` polling included — on a loaded
+      // machine running the whole suite in parallel. A tight window here does not
+      // test the pacing harder, it just makes the guard flaky.
+      branchCacheTtlMs: 1_000,
+    });
+    try {
+      branchSvc.current.mockResolvedValue('feat/a');
+      await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+
+      branchSvc.current.mockRejectedValue(new Error('git boom'));
+      await new Promise((resolve) => setTimeout(resolve, 1_050));
+      await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      await vi.waitFor(() => expect(branchSvc.current).toHaveBeenCalledTimes(2));
+
+      // Well inside the window the failed attempt just started: no third call,
+      // and the last known good label is still what the header gets.
+      const during = await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+      expect(branchSvc.current).toHaveBeenCalledTimes(2);
+      expect(during.json()).toMatchObject({ branch: 'feat/a' });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('drops the label of a worktree that no longer exists', async () => {
+    // Keyed by worktree, so without eviction a long-lived server accumulates one
+    // entry per session ever created — and a recreated worktree of the same path
+    // would be answered from the deleted session's label for a whole TTL window.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.createSession({ sessionId: 's2', worktree: '/wt/s2', model: 'm' });
+    const server = cachedBranchServer();
+    try {
+      branchSvc.current.mockResolvedValue('feat/a');
+      await server.inject({ method: 'GET', url: '/sessions/s1/activity' });
+
+      await ctx.store.deleteSession('s1');
+      // The full list is where every live worktree is visible at once, so it is
+      // where the eviction happens.
+      await server.inject({ method: 'GET', url: '/sessions' });
+
+      await ctx.store.createSession({ sessionId: 's3', worktree: '/wt/s1', model: 'm' });
+      branchSvc.current.mockResolvedValue('feat/reused');
+      const reused = await server.inject({ method: 'GET', url: '/sessions/s3/activity' });
+      expect(reused.json()).toMatchObject({ branch: 'feat/reused' });
+      expect(branchSvc.current).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('GET /projects/:id release resolution', () => {
+  it('serves the cached release instead of blocking the request on GitHub', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-detail-rel',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    const release: ReleaseSummary = {
+      tag: 'v2.0.0',
+      name: 'Release 2.0.0',
+      url: 'https://github.com/heey-global/verity/releases/tag/v2.0.0',
+      publishedAt: '2026-08-01T10:00:00Z',
+    };
+    const refreshLatestRelease = vi.fn(async () => release);
+    const withRelease = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      latestRelease: () => release,
+      refreshLatestRelease,
+    });
+    try {
+      const res = await withRelease.inject({ method: 'GET', url: '/projects/p-detail-rel' });
+      expect(res.json().project).toMatchObject({ latestReleaseTag: 'v2.0.0' });
+      // The detail screen polls every 15 s; awaiting a refresh there put a GitHub
+      // round trip in front of every one of them.
+      expect(refreshLatestRelease).not.toHaveBeenCalled();
+    } finally {
+      await withRelease.close();
+    }
+  });
+
+  it('still awaits one refresh while the release cache is cold', async () => {
+    // This is what populates the badge on deployments with no PAT, where the
+    // non-blocking cache can only be filled by an awaited lookup.
+    await ctx.store.upsertProject({
+      id: 'p-detail-cold',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    const refreshLatestRelease = vi.fn(async () => ({
+      tag: 'v2.1.0',
+      name: 'Release 2.1.0',
+      url: 'https://github.com/heey-global/verity/releases/tag/v2.1.0',
+      publishedAt: '2026-08-02T10:00:00Z',
+    }));
+    const withRelease = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      latestRelease: () => undefined,
+      refreshLatestRelease,
+    });
+    try {
+      const res = await withRelease.inject({ method: 'GET', url: '/projects/p-detail-cold' });
+      expect(res.json().project).toMatchObject({ latestReleaseTag: 'v2.1.0' });
+      expect(refreshLatestRelease).toHaveBeenCalledTimes(1);
+    } finally {
+      await withRelease.close();
+    }
   });
 });

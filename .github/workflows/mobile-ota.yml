@@ -217,13 +217,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if npx eas-cli@21.0.1 channel:view staging --json --non-interactive >/dev/null 2>&1; then
-            npx eas-cli@21.0.1 channel:edit staging \
-              --branch "${{ steps.version.outputs.branch }}" --non-interactive
-          else
-            npx eas-cli@21.0.1 channel:create staging \
-              --branch "${{ steps.version.outputs.branch }}" --non-interactive
+          if ! npx eas-cli@21.0.1 channel:view staging --json --non-interactive >/dev/null 2>&1; then
+            npx eas-cli@21.0.1 channel:create staging --non-interactive
           fi
+          npx eas-cli@21.0.1 channel:edit staging \
+            --branch "${{ steps.version.outputs.branch }}" --non-interactive
 
       - name: Create immutable OTA promotion PR
         if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'

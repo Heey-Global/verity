@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
+  SESSION_PROJECTION_EVENT_TYPES,
   externalizeToolResultImages,
   externalizeToolResultText,
   parseAgentEvent,
@@ -662,6 +663,41 @@ export interface SequencedEvent {
   /** The row's `created_at` as epoch milliseconds (non-decreasing with `seq`). */
   ts: number;
   event: AgentEvent;
+}
+
+/**
+ * How many session ids one `in (…)` list carries — see
+ * {@link EventStore.listSessionProjectionFacts}. Postgres refuses a statement
+ * with more than 65535 bind parameters outright, and `GET /sessions` passes
+ * EVERY session of a deployment at once, so an unchunked list turns a big
+ * install into a route that throws rather than one that is slow. Well under the
+ * ceiling on purpose: the extra round trips are cheap next to the per-session
+ * reads this replaced, and the queries spend parameters on the type filter too.
+ */
+const PROJECTION_ID_CHUNK = 500;
+
+/** Split `items` into chunks of at most {@link PROJECTION_ID_CHUNK}. */
+function idChunks<T>(items: readonly T[]): T[][] {
+  const chunks: T[][] = [];
+  for (let at = 0; at < items.length; at += PROJECTION_ID_CHUNK) {
+    chunks.push(items.slice(at, at + PROJECTION_ID_CHUNK));
+  }
+  return chunks;
+}
+
+/**
+ * What the overview projections need from one session's log — see
+ * {@link EventStore.listSessionProjectionFacts}.
+ */
+export interface SessionProjectionFacts {
+  /** Total persisted events (#387) — the unread counter, and the ONLY thing that
+   *  distinguishes an empty log (status `idle`) from one holding nothing the
+   *  status projection reads (status `running`). */
+  eventCount: number;
+  /** `created_at` of the newest event in epoch ms; null for an empty log. */
+  lastActivityAt: number | null;
+  /** Ascending by seq, filtered to {@link SESSION_PROJECTION_EVENT_TYPES}. */
+  events: SequencedEvent[];
 }
 
 /** A turn persisted in the durable backlog (issue #80): its retract handle, the
@@ -2533,6 +2569,174 @@ export class EventStore implements EventSink {
       }
       return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
     });
+  }
+
+  /**
+   * Read what the overview projections need from a set of session logs, WITHOUT
+   * hydrating those logs.
+   *
+   * The session list, the session detail and the project detail each derive five
+   * things per session: the status badge, the cumulative usage, the latest
+   * rate-limit states, `eventCount` (the unread badge compares it against
+   * `lastSeenEventCount`) and `lastActivityAt`. Deriving them used to mean
+   * `getEventsAfter(id, 0)` per
+   * session on a route the app polls every two seconds: every row of every log
+   * off the heap, its jsonb payload parsed and Zod-validated, to answer a badge
+   * and two numbers — enough of it to saturate the connection pool and stall
+   * every other request behind it.
+   *
+   * The first three read only {@link SESSION_PROJECTION_EVENT_TYPES}, which the
+   * denormalized `events.type` column can filter on directly (index
+   * `events_session_id_type_id_idx`). What that removes is the payload: the heap
+   * fetches, the JSON parse and the validation, which is where essentially all of
+   * the cost was.
+   *
+   * WHAT IT DOES NOT REMOVE: the counters still scan one index entry per event,
+   * because both are exact facts about the whole log — `count(*)` for the unread
+   * badge, `max(id)` for "last activity", which an event OUTSIDE the slice (a
+   * streaming `text`) also moves. So this is still linear in log length, just
+   * index-only rather than a heap sweep. Making it sublinear means maintaining a
+   * per-session counter on the append path, which is a bigger change than a read
+   * path can make on its own. A caller that does not need the counters should ask
+   * {@link listSessionProjectionEvents} instead and skip that scan entirely —
+   * which is what the activity poll, the most frequent of these routes, does.
+   *
+   * BATCHED ON PURPOSE: `GET /sessions` needs every session at once, so this
+   * answers all of them in two queries (the slice, then the counters) rather than
+   * two per session — two per {@link PROJECTION_ID_CHUNK} sessions, precisely,
+   * since the bind-parameter ceiling forces a chunk loop above that many ids.
+   * Sessions with an empty log are present in the map with
+   * `eventCount: 0` — absent from the map means the session id was not asked for.
+   */
+  async listSessionProjectionFacts(
+    sessionIds: readonly string[],
+  ): Promise<Map<string, SessionProjectionFacts>> {
+    const facts = new Map<string, SessionProjectionFacts>(
+      sessionIds.map((sessionId) => [
+        sessionId,
+        { eventCount: 0, lastActivityAt: null, events: [] },
+      ]),
+    );
+    if (facts.size === 0) return facts;
+    const chunks = idChunks([...facts.keys()]);
+
+    // The slice and totals must describe the SAME log prefix. Under Postgres'
+    // default READ COMMITTED isolation each statement gets a new snapshot, so a
+    // result or rate-limit event appended between them could appear in only one
+    // half and briefly produce a status/usage combination that never existed.
+    // REPEATABLE READ fixes the snapshot for the complete batched read, including
+    // every chunk on installs large enough to cross the bind-parameter ceiling.
+    await this.db
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .execute(async (tx) => {
+        await this.readProjectionSlices(
+          chunks,
+          new Map([...facts].map(([sessionId, entry]) => [sessionId, entry.events])),
+          tx,
+        );
+
+        // `count(*)` and the newest row's timestamp, in one index scan per session.
+        //
+        // The timestamp rides along as a correlated subquery keyed by the group's own
+        // `max(id)` — a primary-key lookup per session, not a second scan — rather than
+        // as a follow-up statement. That is one round trip instead of two, and it puts
+        // the count and the timestamp in ONE snapshot, so they can no longer disagree
+        // about where the log ends.
+        //
+        // The timestamp is that of the row with the highest id rather than
+        // `max(created_at)`: `created_at` defaults to `now()`, which is transaction-
+        // START time, so two events appended from overlapping transactions can carry
+        // timestamps in the opposite order from their seq. The transcript's own
+        // ordering is by seq, and this has to agree with it.
+        for (const ids of chunks) {
+          const totals = await tx
+            .selectFrom('events')
+            .select((eb) => [
+              'session_id',
+              eb.fn.countAll<string | number | bigint>().as('event_count'),
+              sql<Date | null>`(select newest.created_at from events as newest
+                 where newest.id = max(events.id))`.as('last_activity_at'),
+            ])
+            .where('session_id', 'in', ids)
+            .groupBy('session_id')
+            .execute();
+          for (const row of totals) {
+            const entry = facts.get(row.session_id);
+            if (entry === undefined) continue;
+            entry.eventCount = Number(row.event_count);
+            entry.lastActivityAt = row.last_activity_at?.getTime() ?? null;
+          }
+        }
+      });
+    return facts;
+  }
+
+  /**
+   * The projection slice ALONE, for callers that need the events and not the
+   * counters.
+   *
+   * `GET /sessions/:id/activity` is the whole reason this exists. It polls every
+   * 1.5 s per open session, and it reads the log for exactly one question: is a
+   * background task still open behind a turn that already reported its result. It
+   * never returns `eventCount` or `lastActivityAt` — and those are the half of
+   * {@link listSessionProjectionFacts} that stays LINEAR in log length, because
+   * `count(*)` is an exact fact about the whole log while the slice is an index
+   * range over eight discriminants. Charging the hottest poll a full-log index
+   * scan for two numbers it discards is the same shape of waste this change
+   * removed from the routes, one level down.
+   *
+   * A separate method rather than a flag on the other one, because the flag would
+   * have to leave `eventCount: 0` behind — and a zero count is not an absence,
+   * it is what {@link deriveSessionStatusFromProjection} reads as `idle`.
+   */
+  async listSessionProjectionEvents(
+    sessionIds: readonly string[],
+  ): Promise<Map<string, SequencedEvent[]>> {
+    const slices = new Map<string, SequencedEvent[]>(
+      sessionIds.map((sessionId) => [sessionId, []]),
+    );
+    if (slices.size === 0) return slices;
+    await this.readProjectionSlices(idChunks([...slices.keys()]), slices);
+    return slices;
+  }
+
+  /** The slice read shared by {@link listSessionProjectionFacts} and
+   *  {@link listSessionProjectionEvents}: appends each session's projected events,
+   *  in `seq` order, to the array already sitting under its id. */
+  private async readProjectionSlices(
+    chunks: readonly (readonly string[])[],
+    into: ReadonlyMap<string, SequencedEvent[]>,
+    db: Kysely<Database> | Transaction<Database> = this.db,
+  ): Promise<void> {
+    for (const ids of chunks) {
+      const rows = await db
+        .selectFrom('events')
+        .select(['session_id', 'id', 'payload', 'created_at'])
+        .where('session_id', 'in', ids)
+        .where('type', 'in', [...SESSION_PROJECTION_EVENT_TYPES])
+        .orderBy('session_id', 'asc')
+        .orderBy('id', 'asc')
+        .execute();
+      for (const row of rows) {
+        const events = into.get(row.session_id);
+        if (events === undefined) continue;
+        const parsed = parseAgentEvent(row.payload);
+        if (!parsed.success) {
+          // Same contract as {@link getEventsAfter}: a payload that does not
+          // parse is a corrupted log, not a row to skip past. Batching widens the
+          // blast radius — one bad row now fails the whole list rather than one
+          // session — and that is the right trade: events are validated on the
+          // way IN, so a row that fails on the way out means the database no
+          // longer holds what the server wrote, and a badge quietly rendered from
+          // the surviving rows would hide it.
+          throw new Error(
+            `corrupt event payload in session ${row.session_id}: ${parsed.error.message}`,
+          );
+        }
+        events.push({ seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data });
+      }
+    }
   }
 
   /**

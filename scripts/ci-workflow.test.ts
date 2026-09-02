@@ -428,6 +428,11 @@ describe('mobile OTA promotion', () => {
     const source = readFileSync('.github/workflows/mobile-ota.yml', 'utf8');
     expect(source).toContain('--branch "${{ steps.version.outputs.branch }}"');
     expect(source).toContain('channel:edit staging');
+    const create = source.match(/channel:create staging[^\n]*/)?.[0];
+    expect(create).toBeDefined();
+    // EAS channel:create only creates the named channel; branch assignment is a
+    // separate channel:edit operation, so passing --branch aborts the OTA job.
+    expect(create).not.toContain('--branch');
     expect(source).toContain('automation/promote-${OTA_TAG}');
     expect(source).toContain('--state open');
     expect(source).toContain('gh workflow run ci.yml --ref "$promotion_branch"');

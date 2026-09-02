@@ -19,7 +19,28 @@ export type SessionStatus = AgentStatus | 'idle';
  * from an older turn cannot keep every later, normally completed turn running.
  */
 export function deriveSessionStatus(events: readonly AgentEvent[]): SessionStatus {
-  if (events.length === 0) return 'idle';
+  return deriveSessionStatusFromProjection(events, events.length);
+}
+
+/**
+ * {@link deriveSessionStatus} over a log already narrowed to
+ * `SESSION_PROJECTION_EVENT_TYPES`, so the overview does not have to hydrate
+ * whole logs to render a badge.
+ *
+ * The narrowing is lossless HERE and nowhere else: the forward pass reads only
+ * `prompt` and `task`, and the backward scan returns on `status`, `result`,
+ * `interrupted`, `error`, `permission` or a non-steered `prompt` and otherwise
+ * keeps scanning — so dropping every other kind cannot change which event the
+ * scan settles on. The single exception is the empty-log case, which is why
+ * `totalEventCount` is passed separately: a session whose log holds nothing but
+ * `text` events is running, not idle, and `events.length` can no longer tell
+ * those apart.
+ */
+export function deriveSessionStatusFromProjection(
+  events: readonly AgentEvent[],
+  totalEventCount: number,
+): SessionStatus {
+  if (totalEventCount === 0) return 'idle';
   const openTasks = new Set<string>();
   for (const event of events) {
     // A new operator turn cannot belong to a background task from the preceding

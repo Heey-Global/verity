@@ -28,6 +28,7 @@ export {
   type RunnerFrameIngestResult,
   type AttachmentBlob,
   type SequencedEvent,
+  type SessionProjectionFacts,
   type SessionRecord,
   type SessionInput,
   type RunningTurnRecord,
