@@ -79,7 +79,7 @@ import {
   toSessionFileEntry,
   type SessionFileEntry,
 } from './session-files.js';
-import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
+import type { DevicePairingManager } from './device-pairing.js';
 import { repairSessionWorktreePermissions } from './session-worktree-recovery.js';
 import {
   currentPublishedProgress,
@@ -170,6 +170,7 @@ import type { GitHubTaskService } from './github-tasks.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
+import { registerPairingRoutes } from './pairing-routes.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -4716,46 +4717,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }),
     deviceLabel: deviceLabelField,
   });
-  const pairingRedeemBody = z.object({ code: z.string().min(32).max(128) }).strict();
-  const pairingIdentityQuery = z.object({ challenge: z.string().min(32).max(128) }).strict();
-
-  // Both pairing routes register unconditionally and refuse themselves in the
-  // handler when pairing is not wired, rather than being registered
-  // conditionally. `LOCKOUT_CRITICAL_KEYS` (route-scopes.ts) relies on that:
-  // pairing is how a second device obtains a bearer, so the gate must always
-  // exempt these, and making either registration conditional would turn that
-  // boot-time assertion into a refusal to start.
-  app.get('/pair/identity', (request, reply) => {
-    if (deps.devicePairing === undefined) {
-      reply.code(404);
-      return { error: 'not found' };
-    }
-    try {
-      const { challenge } = pairingIdentityQuery.parse(request.query);
-      return { ...deps.devicePairing.identity(), ...deps.devicePairing.signChallenge(challenge) };
-    } catch (error) {
-      if (error instanceof DevicePairingRejectedError) {
-        reply.code(400);
-        return { error: error.message };
-      }
-      throw error;
-    }
-  });
-
-  app.post('/pair/redeem', { bodyLimit: 1_024 }, (request, reply) => {
-    if (deps.devicePairing === undefined) {
-      reply.code(404);
-      return { error: 'not found' };
-    }
-    try {
-      return deps.devicePairing.redeem(pairingRedeemBody.parse(request.body).code);
-    } catch (error) {
-      if (error instanceof DevicePairingRejectedError) {
-        reply.code(401);
-        return { error: error.message };
-      }
-      throw error;
-    }
+  registerPairingRoutes(app, {
+    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
   });
 
   // Brute-force throttle for /secret/unlock (audit C2): per-IP lockout with
