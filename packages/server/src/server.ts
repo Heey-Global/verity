@@ -49,6 +49,7 @@ import {
   recentSessionMessagesRequestSchema,
   publishSessionProgressRequestSchema,
   aggregateUsage,
+  appendExternalPromptData,
   attachmentUploadSchema,
   type AgentEvent,
   type Attachment,
@@ -2458,16 +2459,18 @@ const mergePullRequestBody = z.object({
   number: z.number().int().positive(),
 });
 
-function buildLocalMergeDisplayPrompt(branch: string, base: string): string {
-  return `Merged ${branch} into ${base}`;
+function buildLocalMergeDisplayPrompt(): string {
+  // This durable transcript text may later be replayed as a model prompt. Keep
+  // Git-controlled ref names out of the operator-authored prompt channel.
+  return 'Merged local branch into its base';
 }
 
 function buildLocalMergedPrompt(branch: string, base: string, note: string): string {
-  return `${buildLocalMergeDisplayPrompt(branch, base)}
-
-${note}
-
-Please continue from this post-merge state.`;
+  return appendExternalPromptData(
+    'A local merge completed. Please continue from this post-merge state.',
+    'local Git metadata and merge result',
+    { branch, base, note },
+  );
 }
 
 function buildPullRequestMergeRejectedDisplayPrompt(number: number): string {
@@ -2489,9 +2492,11 @@ function buildPullRequestCiFailurePrompt(pr: PullRequestStatus): string {
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} checks are failing` : 'CI is failing';
-  return `${buildPullRequestCiFailureDisplayPrompt(pr.number)}
-
-${checks} on pull request #${String(pr.number)} (${pr.title}). Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`;
+  return appendExternalPromptData(
+    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
+    `GitHub pull request #${String(pr.number)}`,
+    { title: pr.title },
+  );
 }
 
 function pullRequestCiFailureKey(sessionId: string, pr: PullRequestStatus): string {
@@ -2516,11 +2521,15 @@ function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus): string {
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} Actions failed` : 'GitHub Actions failed';
-  return `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
+  return appendExternalPromptData(
+    `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
 
-${checks} after pull request #${String(pr.number)} (${pr.title}) was merged. Inspect the concrete failed GitHub Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
+${checks} after pull request #${String(pr.number)} was merged. Inspect the concrete failed GitHub Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
 
-Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`;
+Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`,
+    `GitHub pull request #${String(pr.number)}`,
+    { title: pr.title },
+  );
 }
 
 function postMergeActionsFailureKey(sessionId: string, pr: PullRequestStatus): string {
@@ -2545,9 +2554,11 @@ function buildPullRequestConflictDisplayPrompt(number: number): string {
  * run, because there is none. */
 function buildPullRequestConflictPrompt(pr: PullRequestStatus): string {
   const base = pr.baseRef ?? 'the base branch';
-  return `${buildPullRequestConflictDisplayPrompt(pr.number)}
-
-Pull request #${String(pr.number)} (${pr.title}) conflicts with ${base}, so GitHub cannot merge it and does not run the pull-request checks for it. Please fetch the latest ${base}, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`;
+  return appendExternalPromptData(
+    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so GitHub cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
+    `GitHub pull request #${String(pr.number)}`,
+    { title: pr.title, baseRef: base },
+  );
 }
 
 function pullRequestConflictKey(sessionId: string, pr: PullRequestStatus): string {
@@ -11149,7 +11160,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // moment the reset releases it — never before the worktree is settled.
           await conductor
             .dispatchTurn(id, buildLocalMergedPrompt(branch, base, note), undefined, {
-              displayPrompt: buildLocalMergeDisplayPrompt(branch, base),
+              displayPrompt: buildLocalMergeDisplayPrompt(),
             })
             .catch(() => undefined);
         })

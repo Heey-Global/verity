@@ -65,6 +65,7 @@ export { REPO_CONVENTIONS_SYSTEM_PROMPT } from './repo-conventions.js';
 export { SANDBOX_RESOURCES_SYSTEM_PROMPT } from './sandbox-resources.js';
 export { TERMINOLOGY_SYSTEM_PROMPT } from './terminology.js';
 export { VISIBLE_MEDIA_SYSTEM_PROMPT } from './visible-media.js';
+export { appendExternalPromptData } from './external-content.js';
 export {
   CREATE_DELIVERY_TOOL_DESCRIPTION,
   createDeliveryRequestSchema,
