@@ -59,6 +59,7 @@ describe('verity-transcribe-meeting', () => {
     writeFileSync(audio, 'audio');
     const server = await listen(async (req, res) => {
       expect(req.url).toBe('/v1/audio/transcriptions');
+      expect(await readBody(req)).toContain('parakeet-tdt-0.6b');
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ text: 'legacy configuration still works' }));
     });
@@ -72,13 +73,37 @@ describe('verity-transcribe-meeting', () => {
           ...env,
           VERITY_TRANSCRIBE_BASE_URL: '',
           VERITY_PARAKEET_BASE_URL: server.baseUrl,
-          VERITY_PARAKEET_MODEL: 'whisper-1',
           VERITY_PARAKEET_RESPONSE_FORMAT: 'json',
         },
       });
       expect(JSON.parse(stdout)).toMatchObject({
         segments: [{ text: 'legacy configuration still works' }],
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('never sends a legacy credential to a new transcription URL', async () => {
+    const dir = makeTmp();
+    const audio = join(dir, 'meeting.mp3');
+    writeFileSync(audio, 'audio');
+    const server = await listen(async (req, res) => {
+      expect(req.headers.authorization).toBeUndefined();
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ text: 'safe' }));
+    });
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [script, audio], {
+        env: {
+          ...testEnv(),
+          VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+          VERITY_TRANSCRIBE_API_KEY: '',
+          VERITY_TRANSCRIBE_RESPONSE_FORMAT: 'json',
+          VERITY_PARAKEET_API_KEY: 'legacy-secret',
+        },
+      });
+      expect(JSON.parse(stdout)).toMatchObject({ segments: [{ text: 'safe' }] });
     } finally {
       await server.close();
     }

@@ -227,6 +227,7 @@ describe('CommandMeetingTranscriber settings', () => {
       baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
       apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
       model: process.env.VERITY_TRANSCRIBE_MODEL,
+      legacyApiKey: process.env.VERITY_PARAKEET_API_KEY,
     };
     const script =
       "console.log(JSON.stringify({segments:[{text:[process.env.VERITY_TRANSCRIBE_BASE_URL,process.env.VERITY_TRANSCRIBE_API_KEY,process.env.VERITY_TRANSCRIBE_MODEL].join('|')}]}))";
@@ -235,6 +236,7 @@ describe('CommandMeetingTranscriber settings', () => {
     process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
     process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
     process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
+    process.env.VERITY_PARAKEET_API_KEY = 'must-not-leak';
     try {
       const configured = new CommandMeetingTranscriber(command, async () => ({
         transcribeBaseUrl: ' https://settings.test/v1 ',
@@ -291,6 +293,8 @@ describe('CommandMeetingTranscriber settings', () => {
       else process.env.VERITY_TRANSCRIBE_API_KEY = original.apiKey;
       if (original.model === undefined) delete process.env.VERITY_TRANSCRIBE_MODEL;
       else process.env.VERITY_TRANSCRIBE_MODEL = original.model;
+      if (original.legacyApiKey === undefined) delete process.env.VERITY_PARAKEET_API_KEY;
+      else process.env.VERITY_PARAKEET_API_KEY = original.legacyApiKey;
     }
   });
 
@@ -964,6 +968,23 @@ describe('startProjectRelayMigrationScheduler', () => {
     // No throw, returns a no-op stopper.
     expect(typeof stop).toBe('function');
     stop();
+  });
+});
+
+describe('POST /google-drive/connect', () => {
+  it('rate-limits authorization attempts', async () => {
+    const request = {
+      method: 'POST' as const,
+      url: '/google-drive/connect',
+      payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
+    };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await app.inject(request)).statusCode).toBe(400);
+    }
+    const blocked = await app.inject(request);
+    expect(blocked.statusCode, blocked.body).toBe(429);
+    expect(blocked.headers['retry-after']).toBe('60');
+    expect(blocked.json()).toEqual({ error: 'invalid request' });
   });
 });
 

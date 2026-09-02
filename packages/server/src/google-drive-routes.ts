@@ -1,5 +1,6 @@
 import type { EventStore, SealableSecretCipher, VeritySettingsRecord } from '@verity/store';
 import { SealedError } from '@verity/store';
+import rateLimitPlugin from '@fastify/rate-limit';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -39,16 +40,21 @@ const filesQuery = z.object({
 const importBody = z.object({ fileId: z.string().trim().min(1).max(512) });
 
 type SettingsStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'>;
+interface GoogleDriveRouteDeps {
+  eventStore: SettingsStore & Pick<EventStore, 'getSession'>;
+  googleDriveClientId?: string;
+  secretCipher?: SealableSecretCipher;
+}
 
 /** Google Drive PKCE connection, browsing, and reference-document import routes. */
-export function registerGoogleDriveRoutes(
-  app: FastifyInstance,
-  deps: {
-    eventStore: SettingsStore & Pick<EventStore, 'getSession'>;
-    googleDriveClientId?: string;
-    secretCipher?: SealableSecretCipher;
-  },
-): void {
+export function registerGoogleDriveRoutes(app: FastifyInstance, deps: GoogleDriveRouteDeps): void {
+  app.register(async (instance) => {
+    await instance.register(rateLimitPlugin, { global: false });
+    registerGoogleDriveRouteHandlers(instance, deps);
+  });
+}
+
+function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriveRouteDeps): void {
   const resolveCredentials = async (): Promise<
     { clientId: string; refreshToken: string } | undefined
   > => {
@@ -65,43 +71,46 @@ export function registerGoogleDriveRoutes(
     return clientId && refreshToken ? { clientId, refreshToken } : undefined;
   };
   const accessToken = createCachedGoogleAccessToken(resolveCredentials);
-
-  app.post('/google-drive/connect', async (request, reply) => {
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    const body = connectBody.parse(request.body);
-    const clientId = deps.googleDriveClientId ?? '';
-    if (!clientId) {
-      reply.code(400);
-      return { error: 'Google Drive is not configured on this server' };
-    }
-    let tokens;
-    try {
-      tokens = await exchangeGoogleAuthCode({ clientId, ...body });
-    } catch (error) {
-      const reason = error instanceof GoogleDriveError ? error.reason : 'exchange_failed';
-      request.log.error({ reason }, 'verity: google drive code exchange failed');
-      reply.code(502);
-      return { error: `Google sign-in failed (${reason})` };
-    }
-    if (tokens.refreshToken === undefined) {
-      reply.code(400);
-      return {
-        error: 'Google did not return a refresh token — reconnect and allow offline access',
-      };
-    }
-    let accountEmail: string | undefined;
-    try {
-      accountEmail = await getDriveAccountEmail(tokens.accessToken);
-    } catch {
-      accountEmail = undefined;
-    }
-    await deps.eventStore.updateVeritySettings({
-      googleDriveClientId: clientId,
-      googleDriveRefreshToken: tokens.refreshToken,
-      googleDriveAccountEmail: accountEmail ?? null,
-    });
-    return { connected: true as const, accountEmail: accountEmail ?? null };
-  });
+  app.post(
+    '/google-drive/connect',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
+      const body = connectBody.parse(request.body);
+      const clientId = deps.googleDriveClientId ?? '';
+      if (!clientId) {
+        reply.code(400);
+        return { error: 'Google Drive is not configured on this server' };
+      }
+      let tokens;
+      try {
+        tokens = await exchangeGoogleAuthCode({ clientId, ...body });
+      } catch (error) {
+        const reason = error instanceof GoogleDriveError ? error.reason : 'exchange_failed';
+        request.log.error({ reason }, 'verity: google drive code exchange failed');
+        reply.code(502);
+        return { error: `Google sign-in failed (${reason})` };
+      }
+      if (tokens.refreshToken === undefined) {
+        reply.code(400);
+        return {
+          error: 'Google did not return a refresh token — reconnect and allow offline access',
+        };
+      }
+      let accountEmail: string | undefined;
+      try {
+        accountEmail = await getDriveAccountEmail(tokens.accessToken);
+      } catch {
+        accountEmail = undefined;
+      }
+      await deps.eventStore.updateVeritySettings({
+        googleDriveClientId: clientId,
+        googleDriveRefreshToken: tokens.refreshToken,
+        googleDriveAccountEmail: accountEmail ?? null,
+      });
+      return { connected: true as const, accountEmail: accountEmail ?? null };
+    },
+  );
 
   app.post('/google-drive/disconnect', async () => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();

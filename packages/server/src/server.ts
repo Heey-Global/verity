@@ -672,10 +672,8 @@ function configured(value: string | null | undefined): boolean {
   return Boolean(value?.trim());
 }
 
-/** Provider-neutral names win; the legacy fallback keeps direct `.env` upgrades working. */
 function transcriptionEnvironment(name: string): string | undefined {
-  const current = process.env[`VERITY_TRANSCRIBE_${name}`];
-  return current?.trim() ? current : process.env[`VERITY_PARAKEET_${name}`];
+  return process.env[`VERITY_TRANSCRIBE_${name}`];
 }
 
 function githubAppConfiguredFromSettings(settings: VeritySettingsRecord | undefined): boolean {
@@ -2099,7 +2097,7 @@ async function runMeetingTranscriptionCommand(
               (sameBackend ? (transcriptionEnvironment('MODEL') ?? '') : ''),
           }
         : {};
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     VERITY_AUDIO_FILE: audioPath,
     VERITY_AUDIO_MEDIA_TYPE: mediaType,
