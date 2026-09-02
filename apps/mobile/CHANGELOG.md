@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/Heey-Global/verity/compare/mobile-v1.13.0...mobile-v1.14.0) (2026-09-02)
+
+
+### Bug Fixes
+
+* **release:** target Verity App Store record ([#29](https://github.com/Heey-Global/verity/issues/29)) ([73f2d43](https://github.com/Heey-Global/verity/commit/73f2d43162cc39bb86deb639b21ef0dbcff5ab28))
+
 ## [1.13.0](https://github.com/Heey-Global/verity/compare/mobile-v1.12.0...mobile-v1.13.0) (2026-08-31)
 
 
