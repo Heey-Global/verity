@@ -172,6 +172,12 @@ import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
 import { registerPushTokenRoute } from './push-token-route.js';
+import {
+  createDeviceTokenMinter,
+  registerSecretStatusRoute,
+  secretInitBody,
+  secretUnlockBody,
+} from './secret-lifecycle-routes.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -4669,32 +4675,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // and verifies it after a restart (scrypt over the stored salt, checked
   // against the stored verifier before the key is trusted). A deployment
   // without a managed cipher reports 'unmanaged' and rejects init/unlock.
-  // `deviceLabel` names the device in the token registry (for a later
-  // device-management view); optional and purely cosmetic. Max bounds the scrypt
-  // input (DoS defence).
-  //
-  // Two schemas on purpose: UNLOCK keeps the historical 8-char floor so a
-  // password set before this change still opens the store; INIT (setting a NEW
-  // password) requires a stronger 12-char minimum. Raising the floor on unlock
-  // would lock out an existing shorter password — so the strength gate lives
-  // only where a password is chosen. (A full zxcvbn gate is a follow-up.)
-  const deviceLabelField = z.string().trim().min(1).max(100).optional();
-  const secretUnlockBody = z.object({
-    password: z.string().min(8).max(1024),
-    deviceLabel: deviceLabelField,
-  });
-  const secretInitBody = z.object({
-    password: z
-      .string()
-      .min(12)
-      .max(1024)
-      // Reject degenerate inputs (e.g. a single repeated character) that clear
-      // the length bar but carry almost no entropy.
-      .refine((p) => new Set(p).size >= 5, {
-        message: 'password is too weak (use a longer, more varied passphrase)',
-      }),
-    deviceLabel: deviceLabelField,
-  });
   registerPairingRoutes(app, {
     ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
@@ -4708,19 +4688,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // arm the gate. Independent of the derived AES key — the raw token, not the
   // key, is what travels to the client. When no registry is wired (tests /
   // unmanaged deployments) this is a no-op and no token is returned.
-  const mintDeviceToken = async (
-    label: string | undefined,
-  ): Promise<{ token: string; tokenId: string } | undefined> => {
-    const registry = deps.authRegistry;
-    if (registry === undefined) return undefined;
-    registry.enable();
-    const minted = await registry.mint(label ?? null);
-    return { token: minted.token, tokenId: minted.id };
-  };
+  const mintDeviceToken = createDeviceTokenMinter(deps.authRegistry);
 
-  app.get('/secret/status', async (): Promise<{ status: SecretStatus }> => ({
-    status: await readSecretStatus(),
-  }));
+  registerSecretStatusRoute(app, readSecretStatus);
 
   app.post(
     '/secret/init',
