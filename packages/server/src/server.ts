@@ -4773,23 +4773,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.manifestConvert !== undefined ? { manifestConvert: deps.manifestConvert } : {}),
     ...(deps.manifestStateNow !== undefined ? { manifestStateNow: deps.manifestStateNow } : {}),
   });
-  // `POST /settings/github/disconnect` — authenticated (behind the API gate, NOT
-  // in the pre-auth allowlist): clear the stored GitHub App creds (app id +
-  // installation id + PEM), reopening the refuse-overwrite lock so the operator
-  // can connect a different App / rotate keys. This is the ONLY sanctioned way to
-  // replace a connected App — an unauthenticated re-onboarding is refused. Env-
-  // configured legacy Apps are managed out-of-band and untouched by this.
-  app.post('/settings/github/disconnect', async (): Promise<{ disconnected: true }> => {
-    // updateVeritySettings reads the row back decrypted, so it needs the cipher
-    // unsealed even though we only write nulls — surface a clean 503 when sealed.
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    await veritySettingsStore(deps.eventStore).updateVeritySettings({
-      githubAppId: null,
-      githubAppInstallationId: null,
-      githubAppPrivateKey: null,
-    });
-    return { disconnected: true };
-  });
 
   // `GET /settings/signing-key` — the CURRENT signing PUBLIC key, so Settings can
   // re-display it long after onboarding (a common need: registering it on GitHub

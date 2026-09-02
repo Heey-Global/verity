@@ -87,6 +87,21 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: SettingsRoute
     return { settings: deps.publicSettings(settings) };
   });
 
+  // Clearing all three stored credentials is the only supported way to reopen
+  // GitHub manifest onboarding for a different App. Environment configuration
+  // remains out-of-band and is intentionally untouched.
+  app.post('/settings/github/disconnect', async (): Promise<{ disconnected: true }> => {
+    // Updating settings reads the row back decrypted, even though this patch
+    // contains only nulls, so expose the standard sealed-store response.
+    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
+    await deps.store().updateVeritySettings({
+      githubAppId: null,
+      githubAppInstallationId: null,
+      githubAppPrivateKey: null,
+    });
+    return { disconnected: true };
+  });
+
   app.post('/settings/agent-logins/:provider/start', async (request) => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
     const { provider } = agentLoginProviderParam.parse(request.params);
