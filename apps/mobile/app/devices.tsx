@@ -1,7 +1,7 @@
 import type { PairedDevice } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { Stack, useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,7 +20,10 @@ export default function DevicesScreen() {
     return configured;
   }, []);
   const [devices, setDevices] = useState<PairedDevice[]>([]);
-  const [pairingLink, setPairingLink] = useState<string | null>(null);
+  const [pairingInvitation, setPairingInvitation] = useState<{
+    link: string;
+    expiresAt: number;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +39,17 @@ export default function DevicesScreen() {
       .finally(() => setLoading(false));
   }, [client]);
   useFocusEffect(load);
+
+  useEffect(() => {
+    if (pairingInvitation === null) return;
+    const remaining = pairingInvitation.expiresAt - Date.now();
+    if (remaining <= 0) {
+      setPairingInvitation(null);
+      return;
+    }
+    const timeout = setTimeout(() => setPairingInvitation(null), remaining);
+    return () => clearTimeout(timeout);
+  }, [pairingInvitation]);
 
   const createInvitation = () => {
     const profile = getServerProfile();
@@ -53,9 +67,13 @@ export default function DevicesScreen() {
     setError(null);
     void client
       .createPairingInvitation()
-      .then((invitation) =>
-        setPairingLink(
-          createPairingUri({
+      .then((invitation) => {
+        const expiresAt = Date.parse(invitation.expiresAt);
+        if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+          throw new Error('The server returned an expired pairing code.');
+        }
+        setPairingInvitation({
+          link: createPairingUri({
             version: 1,
             kind: 'device',
             serverId: profile.serverId,
@@ -65,8 +83,9 @@ export default function DevicesScreen() {
             suggestedUrl: direct.url,
             expiresAt: invitation.expiresAt,
           }),
-        ),
-      )
+          expiresAt,
+        });
+      })
       .catch((caught: unknown) =>
         setError(caught instanceof Error ? caught.message : 'Could not create a pairing code.'),
       )
@@ -106,15 +125,20 @@ export default function DevicesScreen() {
       </Text>
       <View style={styles.panel}>
         <Text style={styles.title}>Add a device</Text>
-        {pairingLink ? (
+        {pairingInvitation ? (
           <>
             <View style={styles.qr}>
-              <QRCode value={pairingLink} size={220} backgroundColor="#ffffff" color="#000000" />
+              <QRCode
+                value={pairingInvitation.link}
+                size={220}
+                backgroundColor="#ffffff"
+                color="#000000"
+              />
             </View>
             <Text style={styles.hint}>This code expires after five minutes and works once.</Text>
             <Pressable
               style={({ pressed }) => [styles.secondaryButton, pressed ? styles.pressed : null]}
-              onPress={() => void Clipboard.setStringAsync(pairingLink)}
+              onPress={() => void Clipboard.setStringAsync(pairingInvitation.link)}
               accessibilityRole="button"
               accessibilityLabel="Copy pairing link"
             >
@@ -131,7 +155,7 @@ export default function DevicesScreen() {
         >
           {working ? <ActivityIndicator color={theme.colors.background} /> : null}
           <Text style={styles.primaryLabel}>
-            {pairingLink ? 'Create a new code' : 'Pair another device'}
+            {pairingInvitation ? 'Create a new code' : 'Pair another device'}
           </Text>
         </Pressable>
       </View>

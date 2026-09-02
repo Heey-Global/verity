@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-router', () => ({
   Stack: Object.assign(() => null, { Screen: () => null }),
@@ -71,4 +71,22 @@ it('lists the current device and creates a copyable pairing invitation', async (
   const encoded = new URL(copied).searchParams.get('payload')!;
   const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString()) as { url: string };
   expect(payload.url).toBe('https://verity-new.example:8082');
+});
+
+it('removes an invitation when it expires', async () => {
+  jest.useFakeTimers();
+  mockInvite.mockResolvedValue({
+    code: 'abcdefghijklmnopqrstuvwxyz_0123456789',
+    expiresAt: new Date(Date.now() + 1_000).toISOString(),
+  });
+  render(<DevicesScreen />);
+  await act(async () => Promise.resolve());
+
+  fireEvent.press(screen.getByLabelText('Pair another device'));
+  expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
+  act(() => jest.advanceTimersByTime(1_000));
+
+  expect(screen.queryByTestId('pairing-qr')).not.toBeOnTheScreen();
+  expect(screen.queryByLabelText('Copy pairing link')).not.toBeOnTheScreen();
+  jest.useRealTimers();
 });
