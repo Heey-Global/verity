@@ -87,9 +87,9 @@ export async function setAuthToken(
   baseUrl: string | null,
   token: string,
   tokenId?: string,
-): Promise<void> {
+): Promise<boolean> {
   const key = await tokenKey(baseUrl);
-  if (key === null) return;
+  if (key === null) return false;
   currentTokenBaseUrl = baseUrl;
   currentToken = token;
   // Reset (not preserve) when absent, so a base-URL switch can't leave the prior
@@ -108,8 +108,10 @@ export async function setAuthToken(
       });
     }
     await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
+    return true;
   } catch {
     // Keep the in-memory token; persistence is a convenience, not a requirement.
+    return false;
   }
 }
 

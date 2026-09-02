@@ -70,7 +70,7 @@ beforeEach(() => {
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
   mockStatus.mockReset().mockResolvedValue({ complete: true });
-  mockSetAuthToken.mockReset().mockResolvedValue(undefined);
+  mockSetAuthToken.mockReset().mockResolvedValue(true);
   mockSetBaseUrl.mockReset().mockResolvedValue(undefined);
   mockSaveProfile.mockReset().mockResolvedValue(undefined);
   mockSecureItems.clear();
@@ -203,4 +203,25 @@ it('does not configure local routing when enrollment is rejected', async () => {
   expect(mockSetAuthToken).not.toHaveBeenCalled();
   expect(mockSaveProfile).not.toHaveBeenCalled();
   expect(mockSetBaseUrl).not.toHaveBeenCalled();
+});
+
+it('keeps the enrollment retry record when the device credential cannot be persisted', async () => {
+  mockSetAuthToken.mockResolvedValue(false);
+  await expect(
+    establishPairing(
+      {
+        version: 1,
+        kind: 'device',
+        serverId: 'server-id',
+        identityKey: 'identity-key',
+        tlsPin: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        pairingCode: 'persistent-attempt-code-0123456789',
+        suggestedUrl: 'https://verity.example:8082',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      },
+      'https://verity.example:8082',
+    ),
+  ).rejects.toThrow('Could not save the device credential');
+  expect(mockSecureItems.size).toBe(1);
+  expect(mockSaveProfile).not.toHaveBeenCalled();
 });

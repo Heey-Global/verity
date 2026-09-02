@@ -108,7 +108,14 @@ export async function establishPairing(
       // Enrollment consumes the invitation. Persist its token and the already
       // verified identity before the best-effort status read, but never mutate
       // local routing for a rejected/expired invitation.
-      await setAuthToken(profile.activeUrl, enrolled.token, enrolled.tokenId);
+      const tokenPersisted = await setAuthToken(
+        profile.activeUrl,
+        enrolled.token,
+        enrolled.tokenId,
+      );
+      if (!tokenPersisted) {
+        throw new Error('Could not save the device credential. Try pairing again.');
+      }
       await saveServerProfile(profile);
       await setVerityBaseUrl(profile.activeUrl);
       const authenticatedClient = new VerityClient({

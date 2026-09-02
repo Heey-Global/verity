@@ -134,3 +134,20 @@ test('rejects malformed DNS labels', () => {
     assert.match(result.stderr, /not a valid DNS name/, host);
   }
 });
+
+test('bounds retained certificate addresses across repeated host changes', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-bounded-sans-'));
+  for (let index = 0; index < 20; index += 1) {
+    const result = run(state, { VERITY_PAIRING_HOST: `verity-${index}.home.example` });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const certificate = spawnSync(
+    'openssl',
+    ['x509', '-in', join(state, 'tls-cert.pem'), '-noout', '-ext', 'subjectAltName'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(certificate.status, 0, certificate.stderr);
+  const retainedHosts = certificate.stdout.match(/DNS:verity-[0-9]+\.home\.example/g) ?? [];
+  assert.ok(retainedHosts.length <= 17, retainedHosts.join(', '));
+  assert.match(certificate.stdout, /DNS:verity-19\.home\.example/);
+});
