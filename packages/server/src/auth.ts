@@ -61,7 +61,7 @@ interface MintedAuthToken {
   id: string;
 }
 
-export interface PairedDevice {
+interface PairedDevice {
   id: string;
   label: string | null;
   createdAt: number;
