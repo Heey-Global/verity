@@ -435,6 +435,13 @@ describe('mobile OTA promotion', () => {
     expect(create).not.toContain('--branch');
     expect(source).toContain('automation/promote-${OTA_TAG}');
     expect(source).toContain('--state open');
+    expect(source).toContain('git/ref/heads/${promotion_branch}');
+    expect(source).toContain('--method PATCH');
+    expect(source).toContain('-F force=true');
+    expect(source).toContain('^automation/promote-mobile-v');
+    expect(source).toContain('createCommitOnBranch');
+    expect(source).toContain('signature.isValid');
+    expect(source).not.toContain('git commit -m "chore(mobile): promote OTA');
     expect(source).toContain('gh workflow run ci.yml --ref "$promotion_branch"');
     expect(source).toContain('git push origin "refs/tags/${OTA_TAG}"');
     expect(source).not.toContain('--channel testflight');
