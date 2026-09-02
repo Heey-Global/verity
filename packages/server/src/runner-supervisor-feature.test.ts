@@ -3533,15 +3533,25 @@ describe('verity-runner supervisor runtime', () => {
       });
       expect(workerStarts).toBe(1);
 
-      await expect(supervisorRequest(supervisor.socketPath, start)).resolves.toMatchObject({
+      const retry = await supervisorRequest(supervisor.socketPath, start);
+      expect(retry).toMatchObject({
         ok: true,
-        outcome: 'already-running',
         state: {
           runnerInstanceId: supervisor.instanceId,
           startCommandId: start.startCommandId,
           status: 'running',
           workerPid: stateAfterLostAck?.workerPid,
         },
+      });
+      // The durable worker artifact is written just before the original start
+      // promise settles. A retry in that narrow window joins that promise and
+      // truthfully receives its `created` result; after it settles, replay reads
+      // the durable claim and reports `already-running`.
+      expect(['created', 'already-running']).toContain(retry.outcome);
+      await expect(supervisorRequest(supervisor.socketPath, start)).resolves.toMatchObject({
+        ok: true,
+        outcome: 'already-running',
+        state: { workerPid: stateAfterLostAck?.workerPid },
       });
       expect(workerStarts).toBe(1);
       expect((await readFile(startedPath, 'utf8')).trim().split('\n')).toHaveLength(1);

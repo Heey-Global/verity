@@ -168,6 +168,7 @@ import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } 
 import type { GitHubTaskService } from './github-tasks.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
+import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -186,11 +187,7 @@ import {
   type ManifestStateStore,
 } from './github-manifest.js';
 import { generateSigningKey, type SshKeygenSpawner } from './signing-key.js';
-import {
-  createProcessAgentLoginService,
-  type AgentLoginPublic,
-  type AgentLoginService,
-} from './agent-login.js';
+import { createProcessAgentLoginService, type AgentLoginService } from './agent-login.js';
 import {
   resolveSigningPrivateKey,
   signGitPayload,
@@ -1879,7 +1876,6 @@ export type MeetingTranscriptionSettings = Pick<
  * app that still offers the local option is told its choice no longer exists
  * instead of silently being switched to an off-host service.
  */
-const SELECTABLE_TRANSCRIBE_BACKEND_MODES = ['external'] as const;
 
 export function meetingTranscriptionSettingsWhileSealed(
   settings: MeetingTranscriptionSettings | undefined,
@@ -4492,107 +4488,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // configured it may sync installation repos into the cache before returning;
   // otherwise the route still returns the local cache so manually-added projects
   // work without GitHub App setup.
-  app.get('/settings', async (): Promise<{ settings: PublicVeritySettingsRecord | null }> => {
-    // Raw read (no decrypt): the public record only strips/`configured`-checks
-    // secrets, so this works while the store is sealed.
-    const settings = (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw()) ?? null;
-    return { settings: settings ? publicVeritySettings(settings, deps.googleDriveClientId) : null };
+  registerSettingsRoutes(app, {
+    store: () => veritySettingsStore(deps.eventStore),
+    agentLogin,
+    parseSettingsPatch: (body) => veritySettingsBody.parse(body),
+    storeAgentCredentials,
+    publicSettings: (settings) => publicVeritySettings(settings, deps.googleDriveClientId),
+    effectiveTranscription: effectiveExternalTranscription,
+    transcriptionConfigured: externalMeetingTranscriptionConfigured,
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.onUplinkCredentialsChanged !== undefined
+      ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
   });
-
-  app.get('/settings/transcription', async () => {
-    const settings = (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw()) ?? null;
-    const effective = effectiveExternalTranscription(settings);
-    return {
-      transcribeBackendMode: settings?.transcribeBackendMode ?? null,
-      transcribeBaseUrl: effective.baseUrl,
-      transcribeModel: effective.model,
-      transcribeApiKeyConfigured: effective.apiKeyConfigured,
-      transcribeLocalAvailable: false,
-      // Same answer the Settings pill uses, so the upload flow and the settings
-      // screen cannot disagree about whether this deployment is set up — a
-      // deployment-supplied transcriber command has no URL or model to report
-      // here, yet it transcribes perfectly well.
-      transcribeExternalConfigured: externalMeetingTranscriptionConfigured(settings),
-    };
-  });
-
-  app.patch('/settings/transcription/backend', async (request) => {
-    const { mode } = z
-      .object({ mode: z.enum(SELECTABLE_TRANSCRIBE_BACKEND_MODES) })
-      .parse(request.body);
-    await veritySettingsStore(deps.eventStore).updateTranscribeBackendMode(mode);
-    return { mode };
-  });
-
-  app.patch('/settings', async (request): Promise<{ settings: PublicVeritySettingsRecord }> => {
-    // Block while sealed BEFORE writing: a non-secret patch would otherwise
-    // commit, then the decrypt-on-return would 503 — a confusing partial success.
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    const patch = veritySettingsBody.parse(request.body);
-    if (patch.transcribeBaseUrl !== undefined && patch.transcribeApiKey === undefined) {
-      const current = await veritySettingsStore(deps.eventStore).getVeritySettings();
-      const currentBaseUrl = current?.transcribeBaseUrl?.trim() || null;
-      const nextBaseUrl = patch.transcribeBaseUrl?.trim() || null;
-      if (currentBaseUrl !== nextBaseUrl) patch.transcribeApiKey = null;
-    }
-    const containsAgentCredentials =
-      patch.claudeCodeOauthCredentialsJson !== undefined || patch.codexAuthJson !== undefined;
-    let settings: VeritySettingsRecord | undefined;
-    if (containsAgentCredentials) {
-      await storeAgentCredentials(patch);
-      settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-    } else {
-      settings = await veritySettingsStore(deps.eventStore).updateVeritySettings(patch);
-    }
-    if (settings === undefined) throw new Error('Verity settings disappeared after update');
-    if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
-    return { settings: publicVeritySettings(settings, deps.googleDriveClientId) };
-  });
-
-  const agentLoginProviderParam = z.object({ provider: z.enum(['claude', 'codex']) });
-  const agentLoginSessionParam = z.object({ sessionId: z.string().uuid() });
-  const agentLoginCodeBody = z.object({ code: z.string().trim().min(1).max(20_000) });
-
-  app.post(
-    '/settings/agent-logins/:provider/start',
-    async (request): Promise<{ login: AgentLoginPublic }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { provider } = agentLoginProviderParam.parse(request.params);
-      return { login: await agentLogin.start(provider) };
-    },
-  );
-
-  app.delete(
-    '/settings/agent-logins/:provider',
-    async (request): Promise<{ settings: PublicVeritySettingsRecord }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { provider } = agentLoginProviderParam.parse(request.params);
-      const patch: VeritySettingsPatch =
-        provider === 'claude' ? { claudeCodeOauthCredentialsJson: null } : { codexAuthJson: null };
-      await storeAgentCredentials(patch);
-      const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-      if (settings === undefined) throw new Error('Verity settings disappeared after agent logout');
-      return { settings: publicVeritySettings(settings, deps.googleDriveClientId) };
-    },
-  );
-
-  app.get(
-    '/settings/agent-logins/:sessionId',
-    async (request): Promise<{ login: AgentLoginPublic }> => {
-      const { sessionId } = agentLoginSessionParam.parse(request.params);
-      return { login: await agentLogin.get(sessionId) };
-    },
-  );
-
-  app.post(
-    '/settings/agent-logins/:sessionId/submit-code',
-    async (request): Promise<{ login: AgentLoginPublic }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { sessionId } = agentLoginSessionParam.parse(request.params);
-      const { code } = agentLoginCodeBody.parse(request.body);
-      return { login: await agentLogin.submitCode(sessionId, code) };
-    },
-  );
 
   registerGoogleDriveRoutes(app, {
     eventStore: deps.eventStore,
