@@ -52,12 +52,10 @@ import { establishPairing } from './pairingSession';
 beforeEach(() => {
   clients.length = 0;
   mockEnroll.mockReset().mockResolvedValue({ token: 'new-device-token', tokenId: 'device-id' });
-  mockRedeem
-    .mockReset()
-    .mockResolvedValue({
-      bootstrapToken: 'bootstrap-token',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
+  mockRedeem.mockReset().mockResolvedValue({
+    bootstrapToken: 'bootstrap-token',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  });
   mockStatus.mockReset().mockResolvedValue({ complete: true });
   mockSetAuthToken.mockReset().mockResolvedValue(undefined);
   mockSetBaseUrl.mockReset().mockResolvedValue(undefined);
