@@ -18,6 +18,8 @@ import {
 let bootstrap: { serverId: string; token: string; expiresAt: number } | null = null;
 let enrollment: { serverId: string; pairingCode: string; token: string; tokenId: string } | null =
   null;
+let enrollmentAttempt: { serverId: string; pairingCode: string; enrollmentId: string } | null =
+  null;
 
 function challenge(): string {
   const bytes = getRandomBytes(32);
@@ -62,8 +64,23 @@ export async function establishPairing(
         enrollment?.serverId === payload.serverId && enrollment.pairingCode === payload.pairingCode
           ? enrollment
           : null;
+      const attempt =
+        enrollmentAttempt?.serverId === payload.serverId &&
+        enrollmentAttempt.pairingCode === payload.pairingCode
+          ? enrollmentAttempt
+          : {
+              serverId: payload.serverId,
+              pairingCode: payload.pairingCode,
+              enrollmentId: challenge(),
+            };
+      enrollmentAttempt = attempt;
       const enrolled =
-        retained ?? (await client.enrollPairingInvitation(payload.pairingCode, deviceLabel()));
+        retained ??
+        (await client.enrollPairingInvitation(
+          payload.pairingCode,
+          attempt.enrollmentId,
+          deviceLabel(),
+        ));
       enrollment = { serverId: payload.serverId, pairingCode: payload.pairingCode, ...enrolled };
       // Enrollment consumes the invitation. Persist its token and the already
       // verified identity before the best-effort status read, but never mutate
@@ -79,6 +96,7 @@ export async function establishPairing(
       });
       const status = await authenticatedClient.fetchOnboardingStatus();
       enrollment = null;
+      enrollmentAttempt = null;
       return status;
     }
     const redeemed = await client.redeemPairingCode(payload.pairingCode);

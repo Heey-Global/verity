@@ -13,6 +13,7 @@ const pairingIdentityQuery = z.object({ challenge: z.string().min(32).max(128) }
 const pairingEnrollBody = z
   .object({
     code: z.string().min(32).max(128),
+    enrollmentId: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
     deviceLabel: z.string().trim().min(1).max(100).optional(),
   })
   .strict();
@@ -22,7 +23,7 @@ const deviceParams = z.object({ id: z.string().min(1).max(128) });
 export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDeps): void {
   const completedEnrollments = new Map<
     string,
-    { expiresAt: number; result: { token: string; tokenId: string } }
+    { enrollmentId: string; expiresAt: number; result: { token: string; tokenId: string } }
   >();
   // Register both routes even when pairing is not wired. The lockout declaration
   // depends on these paths always existing so another device can obtain a bearer.
@@ -65,14 +66,14 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     if (registry === undefined || pairing === undefined) {
       return reply.code(404).send({ error: 'not found' });
     }
-    const { code, deviceLabel } = pairingEnrollBody.parse(request.body);
+    const { code, enrollmentId, deviceLabel } = pairingEnrollBody.parse(request.body);
     const codeHash = hashAuthToken(code);
     const now = Date.now();
     for (const [hash, completed] of completedEnrollments) {
       if (completed.expiresAt <= now) completedEnrollments.delete(hash);
     }
     const completed = completedEnrollments.get(codeHash);
-    if (completed !== undefined) return completed.result;
+    if (completed?.enrollmentId === enrollmentId) return completed.result;
     const invitation = pairing.claimInvitation(code);
     if (invitation === undefined) {
       return reply.code(401).send({ error: 'invalid or expired pairing invitation' });
@@ -80,7 +81,7 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     try {
       const minted = await registry.mint(deviceLabel ?? null);
       const result = { token: minted.token, tokenId: minted.id };
-      completedEnrollments.set(codeHash, { expiresAt: invitation.expiresAt, result });
+      completedEnrollments.set(codeHash, { enrollmentId, expiresAt: invitation.expiresAt, result });
       return result;
     } catch (error) {
       invitation.release();

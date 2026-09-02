@@ -2047,12 +2047,13 @@ export class VerityClient {
 
   async enrollPairingInvitation(
     code: string,
+    enrollmentId: string,
     deviceLabel?: string,
   ): Promise<{ token: string; tokenId: string }> {
     const res = await this.request('/pair/enroll', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ code, ...(deviceLabel ? { deviceLabel } : {}) }),
+      body: JSON.stringify({ code, enrollmentId, ...(deviceLabel ? { deviceLabel } : {}) }),
     });
     return deviceEnrolledSchema.parse(await res.json());
   }

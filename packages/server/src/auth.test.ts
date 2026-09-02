@@ -88,16 +88,35 @@ describe('paired device management', () => {
       const enrollment = await app.inject({
         method: 'POST',
         url: '/pair/enroll',
-        payload: { code: invitation.json().code, deviceLabel: 'Mac' },
+        payload: {
+          code: invitation.json().code,
+          enrollmentId: 'enrollment_attempt_abcdefghijklmnopqrstuvwxyz',
+          deviceLabel: 'Mac',
+        },
       });
       expect(enrollment.statusCode).toBe(200);
       const enrollmentRetry = await app.inject({
         method: 'POST',
         url: '/pair/enroll',
-        payload: { code: invitation.json().code },
+        payload: {
+          code: invitation.json().code,
+          enrollmentId: 'enrollment_attempt_abcdefghijklmnopqrstuvwxyz',
+        },
       });
       expect(enrollmentRetry.statusCode).toBe(200);
       expect(enrollmentRetry.json()).toEqual(enrollment.json());
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/pair/enroll',
+            payload: {
+              code: invitation.json().code,
+              enrollmentId: 'different_attempt_abcdefghijklmnopqrstuvwxyz',
+            },
+          })
+        ).statusCode,
+      ).toBe(401);
 
       const listed = await app.inject({
         method: 'GET',
