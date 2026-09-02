@@ -107,12 +107,16 @@ export async function setAuthToken(
         keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
       });
     }
-    await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
-    return true;
   } catch {
     // Keep the in-memory token; persistence is a convenience, not a requirement.
     return false;
   }
+  try {
+    await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
+  } catch {
+    // The scoped credential is durable; stale legacy cleanup must not invalidate it.
+  }
+  return true;
 }
 
 /** Copy the currently unlocked device credential to another verified endpoint of
