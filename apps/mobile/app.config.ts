@@ -9,10 +9,14 @@ const officialGoogleOAuthClientId =
   '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com';
 const googleOAuthClientId = process.env.GOOGLE_AUTH_ID?.trim() || officialGoogleOAuthClientId;
 const expoUpdateChannel = process.env.EXPO_UPDATE_CHANNEL?.trim();
+const iosBuildNumber = process.env.VERITY_IOS_BUILD_NUMBER?.trim();
 const googleOAuthClientPattern = /^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$/;
 
 if (!googleOAuthClientPattern.test(googleOAuthClientId)) {
   throw new Error('GOOGLE_AUTH_ID must be a Google iOS OAuth client ID');
+}
+if (iosBuildNumber && !/^[0-9]+$/.test(iosBuildNumber)) {
+  throw new Error('VERITY_IOS_BUILD_NUMBER must be numeric');
 }
 
 const googleOAuthScheme = `com.googleusercontent.apps.${googleOAuthClientId.replace(/\.apps\.googleusercontent\.com$/, '')}`;
@@ -56,6 +60,7 @@ const config: ExpoConfig = {
   // Shared iOS and Android application identifier (reverse-DNS of verity.build).
   ios: {
     bundleIdentifier: 'build.verity.app',
+    ...(iosBuildNumber ? { buildNumber: iosBuildNumber } : {}),
     // Enables native iPad builds and lets App Store Connect/TestFlight offer the
     // same iPad binary on Apple Silicon Macs unless Mac availability is disabled
     // there.

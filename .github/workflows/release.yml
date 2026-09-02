@@ -301,10 +301,11 @@ jobs:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          for name in ASC_ISSUER_ID ASC_KEY_ID ASC_KEY_P8 ASC_APP_ID APPLE_TEAM_ID; do
+          for name in ASC_ISSUER_ID ASC_KEY_ID ASC_KEY_P8 ASC_APP_ID APPLE_TEAM_ID EXPO_TOKEN; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::$name is required for the native TestFlight release." >&2
               exit 1
@@ -330,17 +331,6 @@ jobs:
           npm run -w @verity/mobile-app patch:native
           npm run -w @verity/mobile build
 
-      - name: Generate the iOS project
-        working-directory: apps/mobile
-        env:
-          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-          EXPO_UPDATE_CHANNEL: testflight
-        run: npx expo prebuild --platform ios --no-install --clean
-
-      - name: Install CocoaPods
-        working-directory: apps/mobile/ios
-        run: pod install
-
       - name: Build and upload native TestFlight release
         working-directory: apps/mobile
         env:
@@ -349,21 +339,17 @@ jobs:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
         shell: bash
         run: |
           set -euo pipefail
           key_dir="$RUNNER_TEMP/app-store-connect"
           key_path="$key_dir/AuthKey_${ASC_KEY_ID}.p8"
-          archive_path="$RUNNER_TEMP/Verity.xcarchive"
-          export_path="$RUNNER_TEMP/verity-export"
-          mkdir -p "$key_dir" "$export_path"
+          ipa="$RUNNER_TEMP/Verity.ipa"
+          mkdir -p "$key_dir"
           printf '%s' "$ASC_KEY_P8" > "$key_path"
           chmod 600 "$key_path"
-
-          workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
-          scheme=Verity
-          xcodebuild -workspace "$workspace" -list -json \
-            | ruby -rjson -e 'schemes=JSON.parse(STDIN.read).dig("workspace", "schemes") || []; abort "missing #{ARGV[0]} scheme" unless schemes.include?(ARGV[0])' "$scheme"
 
           mint_asc_jwt() {
             ruby -ropenssl -rjson -rbase64 -e '
@@ -388,44 +374,38 @@ jobs:
             https://api.appstoreconnect.apple.com/v1/builds)"
           latest_build="$(ruby -rjson -e 'data=JSON.parse(STDIN.read).fetch("data"); puts(data.empty? ? 0 : Integer(data.first.dig("attributes", "version")))' <<< "$builds_json")"
           next_build="$((latest_build + 1))"
-          echo "Using App Store build number $next_build (latest is $latest_build)."
-          auth=(
-            -allowProvisioningUpdates
-            -authenticationKeyPath "$key_path"
-            -authenticationKeyID "$ASC_KEY_ID"
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
-          )
-          xcodebuild \
-            -workspace "$workspace" \
-            -scheme "$scheme" \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$archive_path" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
-            CURRENT_PROJECT_VERSION="$next_build" \
-            "${auth[@]}" \
-            archive
+          export VERITY_IOS_BUILD_NUMBER="$next_build"
 
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>destination</key><string>export</string>
-            <key>method</key><string>app-store-connect</string>
-            <key>signingStyle</key><string>automatic</string>
-            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
-            <key>uploadSymbols</key><true/>
-          </dict></plist>
-          PLIST
-          xcodebuild \
-            -exportArchive \
-            -archivePath "$archive_path" \
-            -exportPath "$export_path" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            "${auth[@]}"
+          # The repository normally lets EAS manage its remote counter. This
+          # release instead uses the next number observed in App Store Connect,
+          # so make only this runner's temporary EAS config use the local value.
+          ruby -rjson -e '
+            path = "eas.json"
+            config = JSON.parse(File.read(path))
+            config.fetch("cli")["appVersionSource"] = "local"
+            config.fetch("build").fetch("testflight")["autoIncrement"] = false
+            File.write(path, JSON.pretty_generate(config) + "\n")
+          '
 
-          ipa="$(find "$export_path" -maxdepth 1 -name '*.ipa' -print -quit)"
+          # Build on the GitHub macOS runner while EAS supplies the remote
+          # distribution certificate and provisioning profile. This does not
+          # consume an EAS cloud-build slot or its build minutes.
+          npx --yes eas-cli@20.3.0 build \
+            --platform ios \
+            --profile testflight \
+            --local \
+            --non-interactive \
+            --output "$ipa"
+
+          info_plist="$RUNNER_TEMP/Verity-Info.plist"
+          unzip -p "$ipa" 'Payload/*.app/Info.plist' > "$info_plist"
+          next_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist")"
+          if [[ "$next_build" != "$VERITY_IOS_BUILD_NUMBER" ]]; then
+            echo "::error::The locally built IPA has build number '$next_build', expected '$VERITY_IOS_BUILD_NUMBER'." >&2
+            exit 1
+          fi
+          echo "Built App Store build number $next_build locally on GitHub Actions."
+
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           xcrun altool --upload-app --type ios --file "$ipa" \

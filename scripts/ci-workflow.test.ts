@@ -376,22 +376,28 @@ describe('native iOS compile gate', () => {
     expect(commands).not.toMatch(/testflight|submit/iu);
   });
 
-  it('builds and uploads TestFlight releases on GitHub instead of EAS Build', () => {
+  it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { 'runs-on': string; steps: WorkflowStep[] }>;
     };
     const job = release.jobs['publish-mobile-native'];
     expect(job?.['runs-on']).toBe('macos-26');
     const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
-    expect(commands).toContain('expo prebuild --platform ios');
-    expect(commands).toContain('xcodebuild');
-    expect(commands).toContain('archive');
+    expect(commands).toContain('eas-cli@20.3.0 build');
+    expect(commands).toContain('--platform ios');
+    expect(commands).toContain('--profile testflight');
+    expect(commands).toContain('--local');
+    expect(commands).toContain('--non-interactive');
+    expect(commands).toContain('--output "$ipa"');
     expect(commands).toContain('altool --upload-app');
-    expect(commands).not.toContain('eas-cli');
-    expect(commands.indexOf('patch:native')).toBeLessThan(commands.indexOf('expo prebuild'));
-    expect(commands).toContain('scheme=Verity');
+    expect(commands).not.toContain('xcodebuild');
+    expect(commands.indexOf('patch:native')).toBeLessThan(commands.indexOf('eas-cli@20.3.0 build'));
     expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/builds');
-    expect(commands).toContain('CURRENT_PROJECT_VERSION="$next_build"');
+    expect(commands).toContain('latest_build + 1');
+    expect(commands).toContain('export VERITY_IOS_BUILD_NUMBER="$next_build"');
+    expect(commands).toContain('config.fetch("cli")["appVersionSource"] = "local"');
+    expect(commands).toContain('["autoIncrement"] = false');
+    expect(commands).toContain('Print :CFBundleVersion');
     expect(commands).toContain('filter[version]=$next_build');
     expect(commands).toContain('processingState');
     expect(commands).toContain('--retry 3 --retry-all-errors --max-time 30');
@@ -408,8 +414,6 @@ describe('native iOS compile gate', () => {
 
     const appConfig = readFileSync('apps/mobile/app.config.ts', 'utf8');
     expect(appConfig).toContain("'expo-channel-name': expoUpdateChannel");
-    const prebuild = job?.steps.find((step) => step.name === 'Generate the iOS project');
-    expect(prebuild?.env?.EXPO_UPDATE_CHANNEL).toBe('testflight');
   });
 });
 
