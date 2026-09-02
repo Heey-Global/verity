@@ -393,6 +393,8 @@ describe('native iOS compile gate', () => {
     expect(commands).not.toContain('xcodebuild');
     expect(commands.indexOf('patch:native')).toBeLessThan(commands.indexOf('eas-cli@20.3.0 build'));
     expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/builds');
+    expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/apps/$ASC_APP_ID');
+    expect(commands).toContain('actual_bundle_id" != "$expected_bundle_id');
     expect(commands).toContain('latest_build + 1');
     expect(commands).toContain('export VERITY_IOS_BUILD_NUMBER="$next_build"');
     expect(commands).toContain('config.fetch("cli")["appVersionSource"] = "local"');
@@ -414,6 +416,10 @@ describe('native iOS compile gate', () => {
 
     const appConfig = readFileSync('apps/mobile/app.config.ts', 'utf8');
     expect(appConfig).toContain("'expo-channel-name': expoUpdateChannel");
+    const easConfig = JSON.parse(readFileSync('apps/mobile/eas.json', 'utf8')) as {
+      submit: { testflight: { ios: { ascAppId: string } } };
+    };
+    expect(easConfig.submit.testflight.ios.ascAppId).toBe('6807746931');
   });
 });
 

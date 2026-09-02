@@ -365,6 +365,18 @@ jobs:
             ' "$key_path"
           }
           asc_jwt="$(mint_asc_jwt)"
+          expected_bundle_id="$(npx expo config --type public --json \
+            | ruby -rjson -e 'print JSON.parse(STDIN.read).dig("ios", "bundleIdentifier")')"
+          app_json="$(curl --fail-with-body \
+            --retry 3 --retry-all-errors --max-time 30 \
+            --header "Authorization: Bearer $asc_jwt" \
+            "https://api.appstoreconnect.apple.com/v1/apps/$ASC_APP_ID")"
+          actual_bundle_id="$(ruby -rjson -e 'print JSON.parse(STDIN.read).dig("data", "attributes", "bundleId")' <<< "$app_json")"
+          if [[ "$actual_bundle_id" != "$expected_bundle_id" ]]; then
+            echo "::error::ASC_APP_ID $ASC_APP_ID belongs to '$actual_bundle_id', expected '$expected_bundle_id'." >&2
+            exit 1
+          fi
+
           builds_json="$(curl --fail-with-body --get \
             --retry 3 --retry-all-errors --max-time 30 \
             --header "Authorization: Bearer $asc_jwt" \
