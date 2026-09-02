@@ -153,6 +153,11 @@ describe('paired device management', () => {
       await app.close();
     }
   });
+
+  it('parses long runs of separator spaces in linear time', () => {
+    expect(bearerToken(`Bearer${' '.repeat(100_000)}token`)).toBe('token');
+    expect(bearerToken(`Bearer${' '.repeat(100_000)}`)).toBeUndefined();
+  });
 });
 
 describe('wsOriginAllowed (anti-CSWSH)', () => {
