@@ -100,10 +100,6 @@ import type {
   WorkflowView,
 } from '@verity/store';
 import {
-  createKeyVerifier,
-  deriveKeyFromPassword,
-  generateSalt,
-  keyMatchesVerifier,
   PROJECT_MEMORY_MAX_CHARS,
   DeletedProjectError,
   DevServerPortRangeExhaustedError,
@@ -134,7 +130,6 @@ import {
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
 import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
-import { createUnlockThrottle } from './unlock-throttle.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
   createPushFirePoints,
@@ -172,12 +167,7 @@ import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
 import { registerPushTokenRoute } from './push-token-route.js';
-import {
-  createDeviceTokenMinter,
-  registerSecretStatusRoute,
-  secretInitBody,
-  secretUnlockBody,
-} from './secret-lifecycle-routes.js';
+import { registerSecretLifecycleRoutes } from './secret-lifecycle-routes.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -4680,156 +4670,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
   });
 
-  // Brute-force throttle for /secret/unlock (audit C2): per-IP lockout with
-  // exponential backoff + a coarse global cap. In-memory (online-attack defence).
-  const unlockThrottle = createUnlockThrottle();
-
-  // On a successful init/unlock, mint a per-device bearer token (audit C1) and
-  // arm the gate. Independent of the derived AES key — the raw token, not the
-  // key, is what travels to the client. When no registry is wired (tests /
-  // unmanaged deployments) this is a no-op and no token is returned.
-  const mintDeviceToken = createDeviceTokenMinter(deps.authRegistry);
-
-  registerSecretStatusRoute(app, readSecretStatus);
-
-  app.post(
-    '/secret/init',
-    // Small body limit on this pre-auth route (audit M7): the global limit is ~71 MiB
-    // to fit media turns, but an unauthenticated `{password, deviceLabel}` payload
-    // must not let a caller force the server to buffer tens of MB before the handler
-    // (and its throttle) runs.
-    { bodyLimit: 4_096 },
-    async (
-      request,
-      reply,
-    ): Promise<{ status: 'unlocked'; token?: string; tokenId?: string } | { error: string }> => {
-      const cipher = deps.secretCipher;
-      if (cipher === undefined) {
-        reply.code(409);
-        return { error: 'secret store is not managed by this deployment' };
-      }
-      const { password, deviceLabel } = secretInitBody.parse(request.body);
-      if (deps.devicePairing !== undefined) {
-        const bootstrap = request.headers['x-verity-pairing'];
-        if (typeof bootstrap !== 'string' || !deps.devicePairing.consumeBootstrap(bootstrap)) {
-          reply.code(401);
-          return { error: 'valid device pairing is required' };
-        }
-      }
-      // Refuse if already unlocked (a password was already set + entered this run)
-      // — re-initializing would derive a DIFFERENT key than the one secrets were
-      // encrypted under (re-key is a follow-up).
-      if (!cipher.isSealed()) {
-        reply.code(409);
-        return { error: 'secret store is already unlocked' };
-      }
-      const salt = generateSalt();
-      const key = deriveKeyFromPassword(password, salt);
-      // Atomic insert-if-absent closes the first-run race: a concurrent init
-      // that lost the insert must NOT unlock under its (divergent) key.
-      const won = await deps.eventStore.insertSecretKeyMetaIfAbsent({
-        salt,
-        verifier: createKeyVerifier(key),
-      });
-      if (!won) {
-        reply.code(409);
-        return { error: 'a master password is already set — use /secret/unlock' };
-      }
-      cipher.unlock(key);
-      // Arm authentication before deferred broker activation. If activation
-      // fails, no device token is minted, but the now-unsealed control plane is
-      // still inaccessible through protected routes.
-      deps.authRegistry?.enable();
-      try {
-        await deps.onSecretUnlocked?.();
-      } catch (error: unknown) {
-        request.log.error({ err: error }, 'Post-unlock activation failed');
-        // Initialization created the password verifier but issued no device
-        // token. Re-seal so the public /secret/unlock route remains the sole,
-        // retryable recovery path instead of leaving an inaccessible open store.
-        cipher.seal();
-        reply.code(503);
-        return { error: 'secret store unlocked, but broker activation is still pending' };
-      }
-      // First password set → mint this device's token only after every deferred
-      // authority is active, so a failed activation cannot orphan a valid token.
-      const auth = await mintDeviceToken(deviceLabel);
-      recoverQueuedTurns('secret-init');
-      return { status: 'unlocked', ...auth };
-    },
-  );
-
-  app.post(
-    '/secret/unlock',
-    // Small body limit on this pre-auth route (audit M7) — same rationale as
-    // /secret/init: bound an unauthenticated payload well below the global limit.
-    { bodyLimit: 4_096 },
-    async (
-      request,
-      reply,
-    ): Promise<{ status: 'unlocked'; token?: string; tokenId?: string } | { error: string }> => {
-      const cipher = deps.secretCipher;
-      if (cipher === undefined) {
-        reply.code(409);
-        return { error: 'secret store is not managed by this deployment' };
-      }
-      if (deps.devicePairing !== undefined) {
-        const existingDeviceToken = bearerToken(request.headers.authorization);
-        const existingDevice = deps.authRegistry?.verify(existingDeviceToken) === true;
-        const bootstrap = request.headers['x-verity-pairing'];
-        if (!existingDevice && typeof bootstrap !== 'string') {
-          reply.code(401);
-          return { error: 'valid device pairing is required' };
-        }
-      }
-      // Brute-force gate (C2): reject before deriving if this IP is locked out
-      // or the global failure floor is tripped. Cheap and runs before scrypt.
-      const throttleIdentity = deps.unlockClientIdentity?.(request) ?? request.ip;
-      const gate = unlockThrottle.check(throttleIdentity);
-      if (!gate.allowed) {
-        reply.code(429);
-        if (gate.retryAfterMs !== undefined) {
-          reply.header('retry-after', String(Math.ceil(gate.retryAfterMs / 1000)));
-        }
-        return { error: 'too many attempts — try again later' };
-      }
-      const { password, deviceLabel } = secretUnlockBody.parse(request.body);
-      const meta = await deps.eventStore.getSecretKeyMeta();
-      if (meta === undefined) {
-        reply.code(409);
-        return { error: 'no master password set — use /secret/init' };
-      }
-      const key = deriveKeyFromPassword(password, meta.salt);
-      if (!keyMatchesVerifier(key, meta.verifier)) {
-        unlockThrottle.recordFailure(throttleIdentity);
-        reply.code(401);
-        return { error: 'incorrect master password' };
-      }
-      if (deps.devicePairing !== undefined) {
-        const existingDeviceToken = bearerToken(request.headers.authorization);
-        const existingDevice = deps.authRegistry?.verify(existingDeviceToken) === true;
-        const bootstrap = request.headers['x-verity-pairing'];
-        if (!existingDevice && !deps.devicePairing.consumeBootstrap(bootstrap as string)) {
-          reply.code(401);
-          return { error: 'valid device pairing is required' };
-        }
-      }
-      unlockThrottle.recordSuccess(throttleIdentity);
-      cipher.unlock(key);
-      try {
-        await deps.onSecretUnlocked?.();
-      } catch (error: unknown) {
-        request.log.error({ err: error }, 'Post-unlock activation failed');
-        cipher.seal();
-        reply.code(503);
-        return { error: 'secret store unlocked, but broker activation is still pending' };
-      }
-      // Correct password → enroll this device only after broker activation.
-      const auth = await mintDeviceToken(deviceLabel);
-      recoverQueuedTurns('secret-unlock');
-      return { status: 'unlocked', ...auth };
-    },
-  );
+  registerSecretLifecycleRoutes(app, {
+    store: deps.eventStore,
+    readStatus: readSecretStatus,
+    recoverQueuedTurns,
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
+    ...(deps.unlockClientIdentity !== undefined
+      ? { unlockClientIdentity: deps.unlockClientIdentity }
+      : {}),
+    ...(deps.onSecretUnlocked !== undefined ? { onSecretUnlocked: deps.onSecretUnlocked } : {}),
+  });
 
   // ── GitHub-App live validation (#320, onboarding) ─────────────────────────
   // `POST /github/app/validate` — a "do these App creds actually work" check the
