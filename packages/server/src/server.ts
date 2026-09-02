@@ -168,6 +168,7 @@ import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './s
 import { registerPairingRoutes } from './pairing-routes.js';
 import { registerPushTokenRoute } from './push-token-route.js';
 import { registerSecretLifecycleRoutes } from './secret-lifecycle-routes.js';
+import { registerGitHubAppRoutes } from './github-app-routes.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -4683,42 +4684,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.onSecretUnlocked !== undefined ? { onSecretUnlocked: deps.onSecretUnlocked } : {}),
   });
 
-  // ── GitHub-App live validation (#320, onboarding) ─────────────────────────
-  // `POST /github/app/validate` — a "do these App creds actually work" check the
-  // onboarding wizard gates its GitHub step on. Requires the cipher UNSEALED (the
-  // PEM must decrypt to sign the JWT). It NEVER returns/logs the token or PEM: on
-  // success it optionally echoes the installation's account login (a public
-  // handle); on failure it returns a fixed, redacted message. Always resolves —
-  // sealed/not-configured are `{ ok: false, error }`, not thrown errors.
-  app.post('/github/app/validate', async (): Promise<GitHubAppValidateResult> => {
-    // Sealed → the PEM can't decrypt. Report locked WITHOUT throwing (the wizard
-    // shows "unlock first", not a 5xx).
-    if (deps.secretCipher?.isSealed() === true) return { ok: false, error: 'locked' };
-    if (deps.githubAppValidate === undefined) return { ok: false, error: 'not configured' };
-
-    // Decrypting read (safe: unsealed). Missing any of the three creds → not
-    // configured; a SealedError here (racing seal) degrades to `locked`.
-    let settings;
-    try {
-      settings = await deps.eventStore.getVeritySettings();
-    } catch (err) {
-      if (err instanceof SealedError) return { ok: false, error: 'locked' };
-      throw err;
-    }
-    if (
-      !settings?.githubAppId ||
-      !settings.githubAppInstallationId ||
-      !settings.githubAppPrivateKey
-    ) {
-      return { ok: false, error: 'not configured' };
-    }
-    // The validator itself is contractually redaction-safe (see
-    // `validateGitHubAppCreds`); we pass creds in and return its result verbatim.
-    return deps.githubAppValidate({
-      appId: settings.githubAppId,
-      installationId: settings.githubAppInstallationId,
-      privateKey: settings.githubAppPrivateKey,
-    });
+  registerGitHubAppRoutes(app, {
+    store: () => veritySettingsStore(deps.eventStore),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.githubAppValidate !== undefined ? { validate: deps.githubAppValidate } : {}),
   });
 
   // `POST /doppler/validate` — a "does this Doppler Service Account token actually
