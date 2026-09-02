@@ -1,5 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { type AgentEvent, extractToolResultImages } from '@verity/events';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { extractToolResultImages, sessionProjectionEvents, type AgentEvent } from '@verity/events';
+import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   backfillInlineAttachments,
@@ -1392,5 +1396,239 @@ describe('EventStore — project memory (ADR 0008)', () => {
     const settings = await ctx.store.getProjectSettingsRaw('p1');
     expect(settings?.memory).toBe('sticky');
     expect(settings?.defaultBranch).toBe('main');
+  });
+});
+
+describe('EventStore — session projection facts', () => {
+  const other = { sessionId: 's2', worktree: '/wt/agent-s2', model: 'claude-opus-5' };
+  // Both status-bearing and neutral kinds, so the filter has something to drop.
+  const projected: AgentEvent[] = [
+    { t: 'prompt', text: 'go' },
+    { t: 'task', id: 'bg1', phase: 'started' },
+    { t: 'rate_limit', status: 'allowed', resetsAt: 1, window: 'five_hour', usedPercent: 12 },
+    {
+      t: 'result',
+      usage: { inputTokens: 3, outputTokens: 4, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      stopReason: 'end_turn',
+    },
+  ];
+
+  beforeEach(async () => {
+    await ctx.store.createSession(session);
+    await ctx.store.createSession(other);
+  });
+
+  it('writes a `type` column that always equals the payload discriminant', async () => {
+    // The filter is a SQL predicate on the DENORMALIZED column, while every
+    // projection downstream reads `payload.t`. The two agreeing is what makes the
+    // narrowed read equivalent to the full log; a writer that ever set one
+    // without the other would drop those events from the overview silently, and
+    // only for the sessions that happened to contain them.
+    for (const event of [...sampleEvents, ...projected]) await ctx.store.appendEvent('s1', event);
+
+    const mismatched = await ctx.db
+      .selectFrom('events')
+      .select(['id', 'type'])
+      .where('session_id', '=', 's1')
+      .where((eb) => eb('type', '!=', sql<string>`payload->>'t'`))
+      .execute();
+    expect(mismatched).toEqual([]);
+    // …and no row can be missing one: the column is NOT NULL from the migration
+    // that created the table, so there are no pre-denormalization rows to miss.
+    const rows = await ctx.db
+      .selectFrom('events')
+      .select(({ fn }) => fn.countAll<string>().as('n'))
+      .where('session_id', '=', 's1')
+      .executeTakeFirstOrThrow();
+    expect(Number(rows.n)).toBe(sampleEvents.length + projected.length);
+  });
+
+  it('has no writer into `events` that sources `type` anywhere but the parsed payload', async () => {
+    // The test above proves the invariant for rows THIS suite wrote through
+    // `appendEvent`. It cannot see the writer added next week. So read the
+    // writers out of the source instead of listing them: every insert into
+    // `events` anywhere in the repo has to take its `type` from the discriminant
+    // of the payload it is storing in the same statement, because the overview's
+    // SQL filter believes the column and every projection downstream believes
+    // `payload.t`. A writer that disagreed would not fail — those events would
+    // just stop existing as far as the badge, the token total and the limit
+    // banner are concerned.
+    const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+    }).trim();
+    const sources = execFileSync(
+      'git',
+      ['ls-files', '--cached', '--others', '--exclude-standard', '--', '*.ts'],
+      { encoding: 'utf8', cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 },
+    )
+      .split('\n')
+      .filter((path) => path.length > 0 && !path.endsWith('.test.ts'));
+
+    // The two spellings the repo uses: Kysely's builder and a raw statement.
+    const insertPattern = /insertInto\(\s*'events'\s*\)|insert\s+into\s+events\b/g;
+    // `event.t` and `eventRow.type` are read off a `parseAgentEvent` result;
+    // `${type}` is the destructured half of `prepareEventRow`, which is the only
+    // producer of both (asserted below). Anything else has to justify itself here.
+    const fromPayload = /type:\s*(?:eventRow\.type|event\.t)\b|,\s*\$\{type\},/;
+    let writers = 0;
+    for (const path of sources) {
+      const source = readFileSync(join(repoRoot, path), 'utf8');
+      for (const match of source.matchAll(insertPattern)) {
+        writers += 1;
+        const statement = source.slice(match.index, match.index + 400);
+        expect(statement, `${path} writes \`events.type\` from something else`).toMatch(
+          fromPayload,
+        );
+      }
+    }
+    // The scan finding nothing would pass vacuously, which is the one way a
+    // pattern-based guard rots without saying so.
+    expect(writers).toBeGreaterThanOrEqual(3);
+
+    // …and the expressions above are only trustworthy because one function mints
+    // them, right after `parseAgentEvent` succeeds.
+    const storeSource = readFileSync(join(repoRoot, 'packages/store/src/store.ts'), 'utf8');
+    for (const binding of storeSource.matchAll(/const (?:eventRow|\{ type, payload \}) =\s*/g)) {
+      expect(storeSource.slice(binding.index, binding.index + 200)).toContain('prepareEventRow');
+    }
+  });
+
+  it('answers one query for many sessions, matching each full log’s projection', async () => {
+    for (const event of [...sampleEvents, ...projected]) await ctx.store.appendEvent('s1', event);
+    for (const event of sampleEvents) await ctx.store.appendEvent('s2', event);
+
+    const facts = await ctx.store.listSessionProjectionFacts(['s1', 's2']);
+
+    for (const sessionId of ['s1', 's2']) {
+      const full = await ctx.store.getEventsAfter(sessionId, 0);
+      const entry = facts.get(sessionId);
+      // Expectations come from the same filter the server applies in memory, so a
+      // divergence between the SQL `type in (…)` and the projection set fails here
+      // rather than quietly serving a short log to the overview.
+      const expected = full.filter((row) => sessionProjectionEvents([row.event]).length === 1);
+      expect(entry?.events).toEqual(expected);
+      expect(entry?.eventCount).toBe(full.length);
+      expect(entry?.lastActivityAt).toBe(full.at(-1)?.ts);
+    }
+    // s2 holds none of the projected kinds — the count still separates it from an
+    // empty log, which is the whole reason it travels alongside the events.
+    expect(facts.get('s2')?.events).toEqual([]);
+    expect(facts.get('s2')?.eventCount).toBe(sampleEvents.length);
+  });
+
+  it('returns a zeroed entry for a session with no events and for an unknown id', async () => {
+    const facts = await ctx.store.listSessionProjectionFacts(['s1', 'nope']);
+    for (const sessionId of ['s1', 'nope']) {
+      expect(facts.get(sessionId)).toEqual({
+        eventCount: 0,
+        lastActivityAt: null,
+        events: [],
+      });
+    }
+    expect(await ctx.store.listSessionProjectionFacts([])).toEqual(new Map());
+  });
+
+  it('answers for more sessions than one statement can bind', async () => {
+    // `GET /sessions` passes EVERY session of a deployment in one call, and each
+    // id is a bind parameter. Postgres refuses a statement carrying more than
+    // 65535 of them outright, so an unchunked `in (…)` turns a large install into
+    // a route that throws — a failure mode the per-session reads this replaced
+    // did not have, and one that only appears once the install is big enough.
+    const ids = Array.from({ length: 70_000 }, (_, at) => `absent-${String(at)}`);
+    const facts = await ctx.store.listSessionProjectionFacts(ids);
+    expect(facts.size).toBe(ids.length);
+    expect(facts.get('absent-69999')).toEqual({
+      eventCount: 0,
+      lastActivityAt: null,
+      events: [],
+    });
+  });
+
+  it('takes lastActivityAt from the newest seq, not the newest timestamp', async () => {
+    // `created_at` defaults to the TRANSACTION start, so two overlapping appends
+    // can land timestamps ordered opposite to their ids. The overview's
+    // "last activity" has always been the newest event's timestamp — reading a
+    // `max(created_at)` instead would silently change that to a different row's.
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:05:00.000Z');
+    await ctx.db
+      .insertInto('events')
+      .values([
+        {
+          session_id: 's1',
+          type: 'prompt',
+          payload: JSON.stringify({ t: 'prompt', text: 'a' }),
+          created_at: newer.toISOString(),
+        },
+        {
+          session_id: 's1',
+          type: 'prompt',
+          payload: JSON.stringify({ t: 'prompt', text: 'b' }),
+          created_at: older.toISOString(),
+        },
+      ])
+      .execute();
+
+    // Read the ids back rather than assuming the multi-row VALUES assigned them
+    // in listed order, and assert the premise: the newest row by seq and the
+    // newest by timestamp must actually differ, or this guard is a tautology
+    // that would keep passing against a `max(created_at)` implementation.
+    const rows = await ctx.db
+      .selectFrom('events')
+      .select(['id', 'created_at'])
+      .where('session_id', '=', 's1')
+      .orderBy('id', 'asc')
+      .execute();
+    const newestBySeq = rows.at(-1);
+    const newestByTimestamp = [...rows].sort(
+      (a, b) => a.created_at.getTime() - b.created_at.getTime(),
+    );
+    expect(newestBySeq?.created_at.getTime()).not.toBe(
+      newestByTimestamp.at(-1)?.created_at.getTime(),
+    );
+
+    const facts = await ctx.store.listSessionProjectionFacts(['s1']);
+    expect(facts.get('s1')?.lastActivityAt).toBe(newestBySeq?.created_at.getTime());
+    expect(facts.get('s1')?.lastActivityAt).toBe(older.getTime());
+    expect(facts.get('s1')?.eventCount).toBe(2);
+  });
+
+  it('reads the same slice with and without the counters', async () => {
+    // Two entry points, one filter. Derive the expectation from the counting read
+    // rather than restating the slice: a filter that drifted in only one of them
+    // would leave the activity poll deciding "still busy" from a different set of
+    // events than the badge next to it.
+    for (const event of [...sampleEvents, ...projected]) await ctx.store.appendEvent('s1', event);
+    await ctx.store.appendEvent('s2', { t: 'text', delta: 'nothing projected' });
+
+    const ids = ['s1', 's2', 'nope'];
+    const facts = await ctx.store.listSessionProjectionFacts(ids);
+    const slices = await ctx.store.listSessionProjectionEvents(ids);
+    expect([...slices.keys()]).toEqual(ids);
+    for (const id of ids) expect(slices.get(id)).toEqual(facts.get(id)?.events);
+    expect(slices.get('s1')?.length).toBeGreaterThan(0);
+    expect(await ctx.store.listSessionProjectionEvents([])).toEqual(new Map());
+  });
+
+  it('fails the whole list rather than projecting from a log it could not read', async () => {
+    // Batching widened the blast radius on purpose: one bad row now fails every
+    // requested session instead of one. Events are validated on the way IN, so a
+    // payload that fails on the way OUT means the database no longer holds what
+    // the server wrote — and a badge quietly derived from the rows that did
+    // survive is exactly how that stays invisible.
+    await ctx.store.appendEvent('s2', { t: 'prompt', text: 'intact' });
+    await ctx.db
+      .insertInto('events')
+      .values({
+        session_id: 's1',
+        // In the projection slice, so the read reaches it — and missing the
+        // required `text`, so the schema rejects it.
+        type: 'prompt',
+        payload: JSON.stringify({ t: 'prompt' }),
+      })
+      .execute();
+    await expect(ctx.store.listSessionProjectionFacts(['s1', 's2'])).rejects.toThrow(
+      /corrupt event payload in session s1/,
+    );
   });
 });

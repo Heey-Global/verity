@@ -15701,6 +15701,21 @@ var publishSessionProgressRequestSchema = external_exports.object({
 }).strict();
 var RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION = `Read a small recent window from one exact project session after user approval. The request must state sessionId, purpose and optional count/time window; count defaults to ${String(RECENT_SESSION_MESSAGES_DEFAULT)} and is capped at ${String(RECENT_SESSION_MESSAGES_MAX)}. Returns only user/assistant/error text with recognized credential patterns redacted, without attachments, tools, hidden prompts or capabilities. Freely written text can contain unrecognizable sensitive material, so the approval must be treated as authorizing the displayed content scope. If hasMore is true, pass nextBeforeSeq as beforeSeq in a fresh approved request for the next older page; never poll it.`;
 
+// node_modules/@verity/events/dist/projection.js
+var SESSION_PROJECTION_EVENT_TYPES = [
+  // Read by `deriveSessionStatus` (the backward scan and the open-task pass).
+  "prompt",
+  "task",
+  "status",
+  "result",
+  "interrupted",
+  "error",
+  "permission",
+  // Read by `aggregateUsage` (`result`, already listed) and `latestRateLimits`.
+  "rate_limit"
+];
+var PROJECTION_TYPES = new Set(SESSION_PROJECTION_EVENT_TYPES);
+
 // node_modules/@verity/events/dist/usage.js
 var WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
 var FIVE_HOUR_WINDOW_MINUTES = 5 * 60;

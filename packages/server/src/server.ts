@@ -94,6 +94,7 @@ import type {
   EventStore,
   SealableSecretCipher,
   SequencedEvent,
+  SessionProjectionFacts,
   SessionRecord,
   WorkflowStore,
   WorkflowView,
@@ -122,7 +123,7 @@ import Fastify, {
   type FastifyHttpsOptions,
 } from 'fastify';
 import { z, ZodError } from 'zod';
-import { deriveSessionStatus, type SessionStatus } from './status.js';
+import { deriveSessionStatusFromProjection, type SessionStatus } from './status.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -284,6 +285,10 @@ const PROJECT_RELAY_MIGRATION_INTERVAL_MS = 60_000;
  * transferring instead of leaving broker access down for the normal minute. */
 const PROJECT_RELAY_HANDOFF_RETRY_MS = 2_000;
 const PROJECT_RELAY_HANDOFF_RETRY_WINDOW_MS = 30_000;
+
+/** Default lifetime of a cached session branch label — see the cache in
+ *  `buildServer` and {@link ServerDeps.branchCacheTtlMs}. */
+const BRANCH_TTL_MS = 10_000;
 
 /** Shared empty answer for a deployment whose provisioner does not classify
  *  sandboxes (tests, non-relay setups) — allocating one per session summary on a
@@ -1051,6 +1056,12 @@ export interface ServerDeps {
    * (#91). Absent → the branch routes return 503 (no project repo configured).
    */
   branches?: GitBranchService;
+  /**
+   * How long the session header's branch label may be served from memory before
+   * the next activity poll re-reads git. Defaults to {@link BRANCH_TTL_MS}; `0`
+   * reads git on every poll, which is what tests asserting a live read want.
+   */
+  branchCacheTtlMs?: number;
   /**
    * Looks up the open PR number for a branch (#125) — used to add `currentPr` to the
    * branches response so the header can show `PR #N`. Absent → no PR chip (GitHub not
@@ -3985,8 +3996,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // over the overlay; only the non-live derivations (idle/completed/crashed) are
   // upgraded to `running` when the conductor still has a turn in flight.
   const AWAITING: ReadonlySet<SessionStatus> = new Set(['awaiting_input', 'awaiting_dependency']);
-  const liveStatus = (sessionId: string, events: readonly AgentEvent[]): SessionStatus => {
-    const derived = deriveSessionStatus(events);
+  const liveStatus = (sessionId: string, events: readonly AgentEvent[]): SessionStatus =>
+    liveStatusFromProjection(sessionId, events, events.length);
+  /** {@link liveStatus} over a projection-narrowed log — see
+   *  {@link deriveSessionStatusFromProjection} for why the count travels separately. */
+  const liveStatusFromProjection = (
+    sessionId: string,
+    events: readonly AgentEvent[],
+    totalEventCount: number,
+  ): SessionStatus => {
+    const derived = deriveSessionStatusFromProjection(events, totalEventCount);
     if (!AWAITING.has(derived) && conductor.isBusy(sessionId)) return 'running';
     return derived;
   };
@@ -4028,6 +4047,117 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return deps.branches;
   };
+  /**
+   * The session header's branch label, cached stale-while-revalidate.
+   *
+   * `branches.current()` is a git invocation, and inside a project sandbox that
+   * means a `docker exec` — tens of milliseconds at best, and it was running on
+   * the activity poll, i.e. every 1.5 s per open session per device, to render a
+   * label that changes when the operator switches branches. A cold entry still
+   * awaits the call so the first poll after opening a session shows the branch;
+   * after that the poll answers from memory and refreshes in the background.
+   *
+   * Bounded staleness is the point: a branch can also change from INSIDE the
+   * sandbox (the agent checking out its own work), which no invalidation hook
+   * here would see, so the TTL — not {@link invalidateBranchCache} — is what
+   * guarantees the label converges.
+   *
+   * Keyed by worktree alone, and that is sufficient rather than sloppy:
+   * {@link branchesForSession} resolves to the single `deps.branches` service or
+   * to nothing, so there is no project-scoped service that could read the same
+   * path differently.
+   *
+   * Cold reads and refreshes go through the same single-flight entry, like the
+   * sandbox-update target cache in `sandbox-updates.ts`. Sharing one read per
+   * worktree matters less for the duplicated `docker exec` than for the write
+   * back: a read that is not in the map cannot be disowned, and a cold read is
+   * exactly the case where there is no cache entry for an invalidation to delete
+   * either — so a first poll racing a branch switch would land the pre-switch
+   * label on the empty slot and pin it for a whole TTL.
+   */
+  const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
+  const branchCache = new Map<string, { branch: string; at: number }>();
+  /** The git read currently running for a worktree, if any — both the
+   *  single-flight guard and the handle an invalidation uses to disown it. A read
+   *  in flight started BEFORE the switch it raced, so writing its answer back
+   *  afterwards would restore the label the operator just left, freshly stamped,
+   *  for a whole TTL: the cache would defeat the very invalidation written to
+   *  correct it. Marking the token beats comparing map presence, because another
+   *  read may have repopulated the entry in the meantime and a `delete` leaves no
+   *  trace. */
+  const branchInFlight = new Map<string, { disowned: boolean; read: Promise<string> }>();
+  const disownBranchRefresh = (worktree: string): void => {
+    const running = branchInFlight.get(worktree);
+    if (running !== undefined) running.disowned = true;
+  };
+  const invalidateBranchCache = (worktree: string): void => {
+    branchCache.delete(worktree);
+    disownBranchRefresh(worktree);
+  };
+  /** Read git for this worktree, or join the read already running for it, and
+   *  write the answer back unless it was disowned meanwhile. */
+  const readBranch = (branches: GitBranchService, worktree: string): Promise<string> => {
+    const running = branchInFlight.get(worktree);
+    // An invalidation disowns the pre-switch read immediately, but the promise
+    // can remain unsettled for arbitrarily long. A poll arriving in that window
+    // must start a post-switch read rather than joining the known-stale one.
+    if (running !== undefined && !running.disowned) return running.read;
+    const token = { disowned: false, read: branches.current(worktree) };
+    branchInFlight.set(worktree, token);
+    token.read
+      .then((branch) => {
+        if (token.disowned) return;
+        branchCache.set(worktree, { branch, at: Date.now() });
+      })
+      .catch(() => {
+        // A FAILED read has to advance the clock too. Leaving the entry stale
+        // means every later poll kicks another git call against the same broken
+        // worktree — the per-poll cost this cache exists to remove, reinstated
+        // exactly when the sandbox is least able to absorb it. Only re-stamp an
+        // entry that is still there: an invalidation in the meantime must not be
+        // undone by a read that failed, and a cold read has nothing to stamp.
+        if (token.disowned) return;
+        const current = branchCache.get(worktree);
+        if (current !== undefined) branchCache.set(worktree, { ...current, at: Date.now() });
+      })
+      .finally(() => {
+        if (branchInFlight.get(worktree) === token) branchInFlight.delete(worktree);
+      });
+    return token.read;
+  };
+  const currentBranchCached = async (
+    branches: GitBranchService,
+    worktree: string,
+  ): Promise<string | undefined> => {
+    if (branchTtlMs <= 0) return branches.current(worktree);
+    const cached = branchCache.get(worktree);
+    // A cold read is awaited so the first poll after opening a session shows a
+    // branch at all; a stale one is answered from memory while git runs behind
+    // it. The rejection is handled inside {@link readBranch}, and the caller of a
+    // cold read gets it — whoever asked first is who should hear that git failed.
+    if (cached === undefined) return readBranch(branches, worktree);
+    if (Date.now() - cached.at >= branchTtlMs) void readBranch(branches, worktree);
+    return cached.branch;
+  };
+  /** Evict labels for worktrees that no longer exist, so a long-lived server does
+   *  not keep one entry per session ever created — and a recreated worktree can
+   *  never be answered from the deleted one's label. Same lifecycle and same call
+   *  site as {@link prunePrSummaryCache}: the full-list route is where every live
+   *  worktree is visible at once. A client that never listed sessions would never
+   *  prune, but it also could not have opened one, so the map stays bounded by the
+   *  worktrees this process actually served. */
+  const pruneBranchCache = (liveWorktrees: ReadonlySet<string>): void => {
+    for (const worktree of branchCache.keys()) {
+      if (!liveWorktrees.has(worktree)) invalidateBranchCache(worktree);
+    }
+    // A refresh can outlive the entry it was started for, so eviction has to reach
+    // the in-flight ones too — otherwise the dead worktree's label is written back
+    // after the prune and the map grows by exactly the entries this is here to drop.
+    for (const worktree of branchInFlight.keys()) {
+      if (!liveWorktrees.has(worktree)) disownBranchRefresh(worktree);
+    }
+  };
+
   /** The managed base checkout a session can merge into WITHOUT GitHub. Only
    *  `local` projects have one: a GitHub-backed project merges through its pull
    *  request, which stays the single canonical path for anything with a remote.
@@ -4189,13 +4319,58 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     events: readonly SequencedEvent[],
   ): RateLimitState | undefined => latestRateLimitsFromSequenced(events)[0];
 
+  /** A fresh zeroed fact set for a session the store returned nothing for. A
+   *  shared constant would hand every caller the same mutable `events` array —
+   *  the field is a plain array by contract, and the store's own path pushes into
+   *  it. */
+  const emptyProjectionFacts = (): SessionProjectionFacts => ({
+    eventCount: 0,
+    lastActivityAt: null,
+    events: [],
+  });
+
+  /**
+   * Summarize several sessions with ONE pass over the event table.
+   *
+   * The overview reads four things out of a log — badge, token totals, rate-limit
+   * states and the event count — and every one of them is decided by a handful of
+   * event kinds (`SESSION_PROJECTION_EVENT_TYPES`). Summarizing per session used
+   * to hydrate each FULL log to get them, so this route's cost grew with total
+   * history rather than with session count, on a path polled every ~2 s per
+   * device. `listSessionProjectionFacts` answers all of it over the narrow slice
+   * instead, in two batched queries per 500 sessions.
+   */
+  const summarizeSessions = async (
+    sessions: readonly SessionRecord[],
+  ): Promise<SessionSummary[]> => {
+    const facts = await deps.eventStore.listSessionProjectionFacts(
+      sessions.map((session) => session.sessionId),
+    );
+    return Promise.all(
+      sessions.map((session) =>
+        summarizeSessionWithFacts(session, facts.get(session.sessionId) ?? emptyProjectionFacts()),
+      ),
+    );
+  };
+
   const summarizeSession = async (session: SessionRecord): Promise<SessionSummary> => {
-    const sequencedEvents = await deps.eventStore.getEventsAfter(session.sessionId, 0);
+    const facts = await deps.eventStore.listSessionProjectionFacts([session.sessionId]);
+    return summarizeSessionWithFacts(
+      session,
+      facts.get(session.sessionId) ?? emptyProjectionFacts(),
+    );
+  };
+
+  const summarizeSessionWithFacts = async (
+    session: SessionRecord,
+    facts: SessionProjectionFacts,
+  ): Promise<SessionSummary> => {
+    const sequencedEvents = facts.events;
     const events = sequencedEvents.map((event) => event.event);
     const pr = prSummaryFor(session);
     const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
     const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
-    const status = liveStatus(session.sessionId, events);
+    const status = liveStatusFromProjection(session.sessionId, events, facts.eventCount);
     const pendingPermissions = conductor.pendingPermissions(session.sessionId);
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
@@ -4212,11 +4387,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ? { permissionAwaitingInput: true as const }
         : {}),
       usage: aggregateUsage(events),
-      lastActivityAt: sequencedEvents.at(-1)?.ts ?? null,
+      lastActivityAt: facts.lastActivityAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable: await worktreeExists(session.worktree),
-      eventCount: events.length,
+      eventCount: facts.eventCount,
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
@@ -4267,12 +4442,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   // Project list / status badges + token totals — a read-time projection over
-  // each session's event log.
-  // NOTE (follow-up): this hydrates each session's FULL event log to derive a
-  // one-word badge AND sum usage (N+1, O(total events)/request). The status and
-  // usage projections share that one load, so usage is essentially free here.
-  // Fine for single-operator Tailscale v1; add store-side latest-status +
-  // usage-SUM queries before this scales.
+  // each session's event log, served through `summarizeSessions` so the whole
+  // list costs a fixed number of queries over the narrow projection slice rather
+  // than one full-log hydration per session.
   /**
    * The at-rest-encryption state, as `GET /secret/status` reports it. Shared
    * with the attention probe below so the two can never disagree about what
@@ -4386,8 +4558,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    */
   app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
     const sessions = await deps.eventStore.listSessions();
-    prunePrSummaryCache(new Set(sessions.map((s) => s.worktree)));
-    const summaries = await Promise.all(sessions.map(summarizeSession));
+    const liveWorktrees = new Set(sessions.map((s) => s.worktree));
+    prunePrSummaryCache(liveWorktrees);
+    pruneBranchCache(liveWorktrees);
+    const summaries = await summarizeSessions(sessions);
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
     const attention = await collectAttention();
     // Absent when healthy, so the envelope stays quiet in the steady state.
@@ -7054,7 +7228,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const projectStore = projectSettingsStore(deps.eventStore);
     const settings = (await projectStore.getProjectSettingsRaw(id)) ?? null;
     const sessions = (await deps.eventStore.listSessions()).filter((s) => s.projectId === id);
-    const resolved = await resolveProjectRelease(project, { awaitRefresh: true });
+    // No forced refresh: this screen polls every 15 s, and forcing a GitHub
+    // round trip on each poll put the network in front of the project detail
+    // rendering at all. The default path still awaits ONE refresh while the
+    // in-memory cache is cold — which is what populates the release badge on
+    // GitHub-App deployments — and serves the cached tag instantly afterwards.
+    // What keeps that tag from pinning to the first value resolved after boot is
+    // {@link GitHubReleaseService.latestRelease} itself: non-blocking by
+    // contract, it answers from its own 5-minute entry and kicks a background
+    // refresh whenever that entry is stale. So the revalidation lives there, not
+    // here, and this route has no reason to await one.
+    const resolved = await resolveProjectRelease(project);
     const sandboxUpdate = withSelfRepair(
       resolved.project,
       (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
@@ -7068,7 +7252,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
       ),
       settings: publicProjectSettings(settings),
-      sessions: await Promise.all(sessions.map(summarizeSession)),
+      sessions: await summarizeSessions(sessions),
     };
   });
 
@@ -8120,11 +8304,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(404);
       return { error: `session ${id} not found` };
     }
-    const sequencedEvents = await deps.eventStore.getEventsAfter(id, 0);
+    // Opening a session hits this route first, and the transcript arrives over a
+    // separate paged read — so hydrating the whole log here bought nothing but
+    // latency in front of the first paint. The header's status, usage,
+    // rate-limit and count fields all come out of the projection slice.
+    const facts =
+      (await deps.eventStore.listSessionProjectionFacts([id])).get(id) ?? emptyProjectionFacts();
+    const sequencedEvents = facts.events;
     const events = sequencedEvents.map((event) => event.event);
     const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
     const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
-    const status = liveStatus(id, events);
+    const status = liveStatusFromProjection(id, events, facts.eventCount);
     const pendingPermissions = conductor.pendingPermissions(id);
     return {
       ...session,
@@ -8137,8 +8327,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable: await worktreeExists(session.worktree),
-      eventCount: events.length,
-      lastActivityAt: sequencedEvents.at(-1)?.ts ?? null,
+      eventCount: facts.eventCount,
+      lastActivityAt: facts.lastActivityAt,
       busy: conductor.isBusy(id) || hasMeetingJob(id),
       queued: conductor.queuedItems(id),
     };
@@ -8968,14 +9158,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // the display name so the header reflects an auto-generated (or externally
         // renamed) title within a poll, without a remount. `branch` is still gated on
         // the branch-switching dep (a git read).
-        const events = base.busy ? [] : await deps.eventStore.getEvents(id);
+        // The read is narrowed to the projection slice: `task` and every kind the
+        // status derivation reads are in it, and nothing else here looks at the
+        // log — so an idle session with a long transcript stops re-hydrating it
+        // once per poll. The SLICE ONLY, deliberately: this response carries
+        // neither `eventCount` nor `lastActivityAt`, and counting a whole log is
+        // the one part of the projection read that is still linear in its length.
+        const events = base.busy
+          ? []
+          : ((await deps.eventStore.listSessionProjectionEvents([id])).get(id) ?? []).map(
+              (event) => event.event,
+            );
         // Log hydration exists specifically for a background task that outlived
         // conductor tracking. Neutral notices (including meeting progress) are
         // not turns and must not make an otherwise-finished session busy forever.
         const hasTaskLifecycle = events.some((event) => event.t === 'task');
-        const busy = base.busy || (hasTaskLifecycle && deriveSessionStatus(events) === 'running');
+        // `events.length` stands in for the total count, and only ever behind
+        // `hasTaskLifecycle`: the count exists solely to tell an empty log (idle)
+        // from one holding nothing the projection reads (running), and a slice
+        // containing a `task` event is not empty either way.
+        const busy =
+          base.busy ||
+          (hasTaskLifecycle &&
+            deriveSessionStatusFromProjection(events, events.length) === 'running');
         const branches = await branchesForSession(session);
-        const branch = branches ? await branches.current(session.worktree) : undefined;
+        const branch = branches ? await currentBranchCached(branches, session.worktree) : undefined;
         return {
           ...base,
           busy,
@@ -10624,6 +10831,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(409);
           return { error: `session ${id} is busy — finish the turn before switching branches` };
         }
+        // The operator's own switch is the one branch change we can see, so drop
+        // the cached label rather than making them wait out its TTL.
+        invalidateBranchCache(session.worktree);
         return { branch: attempt.value };
       } catch (error) {
         if (error instanceof DirtyWorktreeError) {
