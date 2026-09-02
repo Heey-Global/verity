@@ -53,6 +53,37 @@ afterEach(() => {
 });
 
 describe('verity-transcribe-meeting', () => {
+  it('keeps a directly configured legacy environment working during migration', async () => {
+    const dir = makeTmp();
+    const audio = join(dir, 'meeting.mp3');
+    writeFileSync(audio, 'audio');
+    const server = await listen(async (req, res) => {
+      expect(req.url).toBe('/v1/audio/transcriptions');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ text: 'legacy configuration still works' }));
+    });
+    try {
+      const env = testEnv();
+      for (const name of Object.keys(env)) {
+        if (name.startsWith('VERITY_TRANSCRIBE_')) delete env[name];
+      }
+      const { stdout } = await execFileAsync(process.execPath, [script, audio], {
+        env: {
+          ...env,
+          VERITY_TRANSCRIBE_BASE_URL: '',
+          VERITY_PARAKEET_BASE_URL: server.baseUrl,
+          VERITY_PARAKEET_MODEL: 'whisper-1',
+          VERITY_PARAKEET_RESPONSE_FORMAT: 'json',
+        },
+      });
+      expect(JSON.parse(stdout)).toMatchObject({
+        segments: [{ text: 'legacy configuration still works' }],
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('aborts an in-flight transcription request on SIGTERM', async () => {
     const dir = makeTmp();
     const audio = join(dir, 'meeting.mp3');
@@ -74,8 +105,8 @@ describe('verity-transcribe-meeting', () => {
       const child = spawn(process.execPath, [script, audio], {
         env: {
           ...testEnv(),
-          VERITY_PARAKEET_BASE_URL: server.baseUrl,
-          VERITY_PARAKEET_TIMEOUT_MS: '5000',
+          VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+          VERITY_TRANSCRIBE_TIMEOUT_MS: '5000',
         },
       });
       await started;
@@ -106,7 +137,7 @@ describe('verity-transcribe-meeting', () => {
         ...testEnv(),
         // Never reached — the probe hangs first — but the client refuses to run
         // at all without a configured backend.
-        VERITY_PARAKEET_BASE_URL: 'http://127.0.0.1:1/v1',
+        VERITY_TRANSCRIBE_BASE_URL: 'http://127.0.0.1:1/v1',
         VERITY_MEETING_CHUNK_SECONDS: '300',
         VERITY_MEETING_FFPROBE_COMMAND: stubbornProbe,
         VERITY_TEST_PROBE_STARTED: probeStarted,
@@ -154,18 +185,18 @@ describe('verity-transcribe-meeting', () => {
           encoding: 'utf8',
           env: {
             ...testEnv(),
-            VERITY_PARAKEET_BASE_URL: server.baseUrl,
-            VERITY_PARAKEET_API_KEY: 'local-token',
-            VERITY_PARAKEET_MODEL: 'parakeet-tdt-0.6b',
-            VERITY_PARAKEET_RESPONSE_FORMAT: 'verbose_json',
-            VERITY_PARAKEET_LANGUAGE: 'de',
-            VERITY_PARAKEET_TIMEOUT_MS: '5000',
+            VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+            VERITY_TRANSCRIBE_API_KEY: 'local-token',
+            VERITY_TRANSCRIBE_MODEL: 'whisper-1',
+            VERITY_TRANSCRIBE_RESPONSE_FORMAT: 'verbose_json',
+            VERITY_TRANSCRIBE_LANGUAGE: 'de',
+            VERITY_TRANSCRIBE_TIMEOUT_MS: '5000',
           },
         },
       );
 
       expect(requestBody).toContain('name="model"');
-      expect(requestBody).toContain('parakeet-tdt-0.6b');
+      expect(requestBody).toContain('whisper-1');
       expect(requestBody).toContain('name="response_format"');
       expect(requestBody).toContain('verbose_json');
       expect(requestBody).toContain('filename="meeting.mp3"');
@@ -206,11 +237,11 @@ describe('verity-transcribe-meeting', () => {
         encoding: 'utf8',
         env: {
           ...testEnv(),
-          VERITY_PARAKEET_BASE_URL: server.baseUrl,
-          VERITY_PARAKEET_RETRIES: '12',
-          VERITY_PARAKEET_HTTP_RETRIES: '1',
-          VERITY_PARAKEET_RETRY_DELAY_MS: '1',
-          VERITY_PARAKEET_TIMEOUT_MS: '5000',
+          VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+          VERITY_TRANSCRIBE_RETRIES: '12',
+          VERITY_TRANSCRIBE_HTTP_RETRIES: '1',
+          VERITY_TRANSCRIBE_RETRY_DELAY_MS: '1',
+          VERITY_TRANSCRIBE_TIMEOUT_MS: '5000',
         },
       });
 
@@ -244,11 +275,11 @@ describe('verity-transcribe-meeting', () => {
         encoding: 'utf8',
         env: {
           ...testEnv(),
-          VERITY_PARAKEET_BASE_URL: server.baseUrl,
-          VERITY_PARAKEET_RETRIES: '12',
-          VERITY_PARAKEET_HTTP_RETRIES: '1',
-          VERITY_PARAKEET_RETRY_DELAY_MS: '1',
-          VERITY_PARAKEET_TIMEOUT_MS: '5000',
+          VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+          VERITY_TRANSCRIBE_RETRIES: '12',
+          VERITY_TRANSCRIBE_HTTP_RETRIES: '1',
+          VERITY_TRANSCRIBE_RETRY_DELAY_MS: '1',
+          VERITY_TRANSCRIBE_TIMEOUT_MS: '5000',
         },
       });
     } catch (error) {
@@ -260,7 +291,7 @@ describe('verity-transcribe-meeting', () => {
     expect(attempts).toBe(2);
     // The wrapper must surface the second attempt's connection error, not the
     // stale retriable response from the first attempt.
-    expect(stderr).toContain('Could not reach the Parakeet server');
+    expect(stderr).toContain('Could not reach the transcription API');
     expect(stderr).not.toContain('warming up');
     expect(stderr).not.toContain('HTTP 503');
   });
@@ -281,8 +312,8 @@ describe('verity-transcribe-meeting', () => {
           encoding: 'utf8',
           env: {
             ...testEnv(),
-            VERITY_PARAKEET_BASE_URL: server.baseUrl,
-            VERITY_PARAKEET_TIMEOUT_MS: '5000',
+            VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+            VERITY_TRANSCRIBE_TIMEOUT_MS: '5000',
           },
         }),
       ).rejects.toThrow(/warming up/);
@@ -308,10 +339,10 @@ describe('verity-transcribe-meeting', () => {
           encoding: 'utf8',
           env: {
             ...testEnv(),
-            VERITY_PARAKEET_BASE_URL: server.baseUrl,
-            VERITY_PARAKEET_RETRIES: '12',
-            VERITY_PARAKEET_HTTP_RETRIES: '0',
-            VERITY_PARAKEET_RETRY_DELAY_MS: '1',
+            VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+            VERITY_TRANSCRIBE_RETRIES: '12',
+            VERITY_TRANSCRIBE_HTTP_RETRIES: '0',
+            VERITY_TRANSCRIBE_RETRY_DELAY_MS: '1',
           },
         }),
       ).rejects.toThrow(/inference failed/);
@@ -339,8 +370,8 @@ describe('verity-transcribe-meeting', () => {
           encoding: 'utf8',
           env: {
             ...testEnv(),
-            VERITY_PARAKEET_BASE_URL: server.baseUrl,
-            VERITY_PARAKEET_RETRIES: '12',
+            VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+            VERITY_TRANSCRIBE_RETRIES: '12',
             // Deliberately far longer than a loopback request needs. The
             // assertion below is that the request was made exactly once, which
             // it can only observe if the request arrives before the abort: at
@@ -348,8 +379,8 @@ describe('verity-transcribe-meeting', () => {
             // leaving `attempts` at 0 and failing a correct implementation for
             // being observed too early. Nothing here waits out this budget —
             // the abort ends the request the moment it fires.
-            VERITY_PARAKEET_TIMEOUT_MS: '500',
-            VERITY_PARAKEET_RETRY_DELAY_MS: '1',
+            VERITY_TRANSCRIBE_TIMEOUT_MS: '500',
+            VERITY_TRANSCRIBE_RETRY_DELAY_MS: '1',
           },
         }),
       ).rejects.toThrow(/timed out/);
@@ -359,7 +390,7 @@ describe('verity-transcribe-meeting', () => {
     }
   });
 
-  it('maps Parakeet text responses to a single speaker segment', async () => {
+  it('maps transcription API text responses to a single speaker segment', async () => {
     const dir = makeTmp();
     const audio = join(dir, 'meeting.mp3');
     writeFileSync(audio, 'audio');
@@ -372,9 +403,9 @@ describe('verity-transcribe-meeting', () => {
         encoding: 'utf8',
         env: {
           ...testEnv(),
-          VERITY_PARAKEET_BASE_URL: server.baseUrl,
-          VERITY_PARAKEET_RESPONSE_FORMAT: 'text',
-          VERITY_PARAKEET_TIMEOUT_MS: '5000',
+          VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+          VERITY_TRANSCRIBE_RESPONSE_FORMAT: 'text',
+          VERITY_TRANSCRIBE_TIMEOUT_MS: '5000',
         },
       });
 
@@ -412,8 +443,8 @@ describe('verity-transcribe-meeting', () => {
         encoding: 'utf8',
         env: {
           ...testEnv(),
-          VERITY_PARAKEET_BASE_URL: server.baseUrl,
-          VERITY_PARAKEET_MAX_UPLOAD_BYTES: '4',
+          VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+          VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES: '4',
           VERITY_MEETING_FFMPEG_COMMAND: ffmpeg,
         },
       });
@@ -476,7 +507,7 @@ describe('verity-transcribe-meeting', () => {
         encoding: 'utf8',
         env: {
           ...testEnv(),
-          VERITY_PARAKEET_BASE_URL: server.baseUrl,
+          VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
           VERITY_MEETING_CHUNK_SECONDS: '600',
           VERITY_MEETING_CHUNK_OVERLAP_SECONDS: '5',
           VERITY_MEETING_FFMPEG_COMMAND: ffmpeg,
@@ -517,8 +548,8 @@ describe('verity-transcribe-meeting', () => {
           ...testEnv(),
           // Never reached — audio preparation stalls first — but the client
           // refuses to run at all without a configured backend.
-          VERITY_PARAKEET_BASE_URL: 'http://127.0.0.1:1/v1',
-          VERITY_PARAKEET_MAX_UPLOAD_BYTES: '4',
+          VERITY_TRANSCRIBE_BASE_URL: 'http://127.0.0.1:1/v1',
+          VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES: '4',
           VERITY_MEETING_FFMPEG_COMMAND: ffmpeg,
           VERITY_MEETING_FFMPEG_TIMEOUT_MS: '50',
         },
@@ -526,7 +557,7 @@ describe('verity-transcribe-meeting', () => {
     ).rejects.toThrow(/ffmpeg timed out while preparing meeting audio/);
   });
 
-  it('reports an unreachable Parakeet server with a clear, actionable message', async () => {
+  it('reports an unreachable transcription API with a clear, actionable message', async () => {
     const dir = makeTmp();
     const audio = join(dir, 'meeting.mp3');
     writeFileSync(audio, 'audio');
@@ -539,16 +570,16 @@ describe('verity-transcribe-meeting', () => {
           ...testEnv(),
           // Port 1 has no listener, so the connection is deterministically refused
           // (no ephemeral-port-reuse race from binding then releasing a real port).
-          VERITY_PARAKEET_BASE_URL: 'http://127.0.0.1:1/v1',
-          VERITY_PARAKEET_RETRIES: '0',
-          VERITY_PARAKEET_TIMEOUT_MS: '5000',
+          VERITY_TRANSCRIBE_BASE_URL: 'http://127.0.0.1:1/v1',
+          VERITY_TRANSCRIBE_RETRIES: '0',
+          VERITY_TRANSCRIBE_TIMEOUT_MS: '5000',
         },
       });
     } catch (error) {
       stderr = (error as { stderr?: string }).stderr ?? '';
     }
 
-    expect(stderr).toContain('Could not reach the Parakeet server');
+    expect(stderr).toContain('Could not reach the transcription API');
     expect(stderr).toContain('/audio/transcriptions');
     // Node's bare "fetch failed" must not be the whole story.
     expect(stderr.trim()).not.toBe('fetch failed');
@@ -570,8 +601,8 @@ describe('verity-transcribe-meeting', () => {
           encoding: 'utf8',
           env: {
             ...testEnv(),
-            VERITY_PARAKEET_BASE_URL: server.baseUrl,
-            VERITY_PARAKEET_API_KEY: apiKey,
+            VERITY_TRANSCRIBE_BASE_URL: server.baseUrl,
+            VERITY_TRANSCRIBE_API_KEY: apiKey,
           },
         });
       } catch (error) {
@@ -592,7 +623,7 @@ describe('verity-transcribe-meeting', () => {
     // Verity bundles no transcription service, so an unset base URL must fail
     // fast and say so — never fall back to a localhost sidecar that no longer
     // exists and time out against it.
-    delete env.VERITY_PARAKEET_BASE_URL;
+    delete env.VERITY_TRANSCRIBE_BASE_URL;
 
     let stderr = '';
     try {

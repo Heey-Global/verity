@@ -302,25 +302,28 @@ services:
       # State the trade plainly: every second of meeting audio leaves this host to
       # be transcribed. Left unset, Verity reports meeting transcription as not
       # configured instead of accepting a recording it cannot process.
-      VERITY_PARAKEET_BASE_URL: ${VERITY_TRANSCRIBE_BASE_URL:-}
-      VERITY_PARAKEET_API_KEY: ${VERITY_TRANSCRIBE_API_KEY:-}
-      VERITY_PARAKEET_MODEL: ${VERITY_TRANSCRIBE_MODEL:-parakeet-tdt-0.6b}
+      VERITY_TRANSCRIBE_BASE_URL: ${VERITY_TRANSCRIBE_BASE_URL:-}
+      VERITY_TRANSCRIBE_API_KEY: ${VERITY_TRANSCRIBE_API_KEY:-}
+      VERITY_TRANSCRIBE_MODEL: ${VERITY_TRANSCRIBE_MODEL:-whisper-1}
+      VERITY_TRANSCRIBE_RESPONSE_FORMAT: ${VERITY_TRANSCRIBE_RESPONSE_FORMAT:-verbose_json}
+      VERITY_TRANSCRIBE_LANGUAGE: ${VERITY_TRANSCRIBE_LANGUAGE:-}
+      VERITY_TRANSCRIBE_TIMEOUT_MS: ${VERITY_TRANSCRIBE_TIMEOUT_MS:-14400000}
       # Largest upload the backend accepts. This is a quality setting, not just a
       # guardrail: with windowing disabled, anything above this ceiling is
       # re-encoded to 24 kbps mono to fit — which destroyed most of the
       # recognizable speech on real meeting audio. Raise it to match the backend
       # (DeepInfra accepts at least 64 MB, measured) before turning windowing off,
       # or the client will quietly compress instead of erroring.
-      VERITY_PARAKEET_MAX_UPLOAD_BYTES: ${VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES:-25000000}
+      VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES: ${VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES:-25000000}
       # Survive a backend that is briefly unreachable — a provider restart, a DNS
       # blip — after Verity is already running. Connection-only, never inference.
-      VERITY_PARAKEET_RETRIES: ${VERITY_PARAKEET_RETRIES:-12}
+      VERITY_TRANSCRIBE_RETRIES: ${VERITY_TRANSCRIBE_RETRIES:-${VERITY_PARAKEET_RETRIES:-12}}
       # Do not resubmit hours of inference after a real HTTP failure. The larger
       # retry budget above is only for requests that never received a response.
-      VERITY_PARAKEET_HTTP_RETRIES: ${VERITY_PARAKEET_HTTP_RETRIES:-0}
-      VERITY_PARAKEET_RETRY_DELAY_MS: ${VERITY_PARAKEET_RETRY_DELAY_MS:-5000}
+      VERITY_TRANSCRIBE_HTTP_RETRIES: ${VERITY_TRANSCRIBE_HTTP_RETRIES:-${VERITY_PARAKEET_HTTP_RETRIES:-0}}
+      VERITY_TRANSCRIBE_RETRY_DELAY_MS: ${VERITY_TRANSCRIBE_RETRY_DELAY_MS:-${VERITY_PARAKEET_RETRY_DELAY_MS:-5000}}
       # Bound what a single request asks the backend to transcribe, so a
-      # multi-hour recording is not one hours-long upload. Parakeet-class models
+      # multi-hour recording is not one hours-long upload. OpenAI Whisper models
       # reject single-pass inputs above 400 seconds; with the default five-second
       # context on both sides, a 300-second core tops out at 310s. Backends that
       # segment long audio themselves (Whisper-class) can set this to 0 — raise
@@ -702,6 +705,15 @@ services:
       VERITY_LOCAL_TRANSCRIBE_AVAILABLE: ${VERITY_LOCAL_TRANSCRIBE_AVAILABLE:-}
       VERITY_LOCAL_TRANSCRIBE_BASE_URL: ${VERITY_LOCAL_TRANSCRIBE_BASE_URL:-}
       VERITY_LOCAL_TRANSCRIBE_MODEL: ${VERITY_LOCAL_TRANSCRIBE_MODEL:-}
+      # Provider-neutral transcription names replaced these internal names. They
+      # remain Updater-only until every older sealed deployment can resolve them.
+      VERITY_PARAKEET_BASE_URL: ${VERITY_PARAKEET_BASE_URL:-}
+      VERITY_PARAKEET_API_KEY: ${VERITY_PARAKEET_API_KEY:-}
+      VERITY_PARAKEET_MODEL: ${VERITY_PARAKEET_MODEL:-}
+      VERITY_PARAKEET_MAX_UPLOAD_BYTES: ${VERITY_PARAKEET_MAX_UPLOAD_BYTES:-}
+      VERITY_PARAKEET_RETRIES: ${VERITY_PARAKEET_RETRIES:-}
+      VERITY_PARAKEET_HTTP_RETRIES: ${VERITY_PARAKEET_HTTP_RETRIES:-}
+      VERITY_PARAKEET_RETRY_DELAY_MS: ${VERITY_PARAKEET_RETRY_DELAY_MS:-}
     volumes:
       - ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       - verity-managed-deployment:/var/lib/verity/updater/managed-deployment

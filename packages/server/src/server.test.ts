@@ -70,7 +70,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import {
   VERITY_CONTROL_SYSTEM_PROMPT,
   buildServer,
-  LocalCommandMeetingTranscriber,
+  CommandMeetingTranscriber,
   meetingTranscriptionSettingsWhileSealed,
   CLAUDE_MODELS,
   DEFAULT_MODEL,
@@ -105,7 +105,7 @@ import {
 // expectations would need rebuilding via `sortModelIds([...CLAUDE_MODELS, ...providerIds])`.
 const CLAUDE_SORTED = sortModelIds(CLAUDE_MODELS);
 
-describe('LocalCommandMeetingTranscriber settings', () => {
+describe('CommandMeetingTranscriber settings', () => {
   it('terminates descendants of a shell-configured transcriber command', async () => {
     const commandDir = mkdtempSync(join(tmpdir(), 'verity-transcriber-shell-abort-'));
     const command = join(commandDir, 'transcriber');
@@ -118,7 +118,7 @@ describe('LocalCommandMeetingTranscriber settings', () => {
     chmodSync(command, 0o755);
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
     const controller = new AbortController();
-    const transcriber = new LocalCommandMeetingTranscriber(command, async () => undefined);
+    const transcriber = new CommandMeetingTranscriber(command, async () => undefined);
     try {
       const running = transcriber.transcribe({
         audio: Buffer.from('audio'),
@@ -144,15 +144,15 @@ describe('LocalCommandMeetingTranscriber settings', () => {
     const marker = join(commandDir, 'completed');
     // The bundled client refuses to run without a configured backend, so this
     // case has to reach the child process through a configured one.
-    const previousBaseUrl = process.env.VERITY_PARAKEET_BASE_URL;
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://environment.test/v1';
+    const previousBaseUrl = process.env.VERITY_TRANSCRIBE_BASE_URL;
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
     writeFileSync(
       command,
       `#!${process.execPath}\nsetTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'done'), 1000);\n`,
     );
     chmodSync(command, 0o755);
     const controller = new AbortController();
-    const transcriber = new LocalCommandMeetingTranscriber(command, async () => undefined);
+    const transcriber = new CommandMeetingTranscriber(command, async () => undefined);
     try {
       const running = transcriber.transcribe({
         audio: Buffer.from('audio'),
@@ -165,19 +165,19 @@ describe('LocalCommandMeetingTranscriber settings', () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
       expect(existsSync(marker)).toBe(false);
     } finally {
-      if (previousBaseUrl === undefined) delete process.env.VERITY_PARAKEET_BASE_URL;
-      else process.env.VERITY_PARAKEET_BASE_URL = previousBaseUrl;
+      if (previousBaseUrl === undefined) delete process.env.VERITY_TRANSCRIBE_BASE_URL;
+      else process.env.VERITY_TRANSCRIBE_BASE_URL = previousBaseUrl;
       rmSync(commandDir, { recursive: true, force: true });
     }
   });
 
   it('reports meeting transcription unavailable when no backend is configured', async () => {
-    const previousBaseUrl = process.env.VERITY_PARAKEET_BASE_URL;
+    const previousBaseUrl = process.env.VERITY_TRANSCRIBE_BASE_URL;
     const previousCommand = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-    delete process.env.VERITY_PARAKEET_BASE_URL;
+    delete process.env.VERITY_TRANSCRIBE_BASE_URL;
     delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     try {
-      const transcriber = new LocalCommandMeetingTranscriber(
+      const transcriber = new CommandMeetingTranscriber(
         'verity-transcribe-meeting',
         async () => undefined,
       );
@@ -191,8 +191,8 @@ describe('LocalCommandMeetingTranscriber settings', () => {
         }),
       ).rejects.toThrow('meeting transcription is not configured');
     } finally {
-      if (previousBaseUrl === undefined) delete process.env.VERITY_PARAKEET_BASE_URL;
-      else process.env.VERITY_PARAKEET_BASE_URL = previousBaseUrl;
+      if (previousBaseUrl === undefined) delete process.env.VERITY_TRANSCRIBE_BASE_URL;
+      else process.env.VERITY_TRANSCRIBE_BASE_URL = previousBaseUrl;
       if (previousCommand === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
       else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previousCommand;
     }
@@ -224,19 +224,19 @@ describe('LocalCommandMeetingTranscriber settings', () => {
   it('passes app settings to the child process ahead of inherited environment values', async () => {
     const original = {
       command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      apiKey: process.env.VERITY_PARAKEET_API_KEY,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
     const script =
-      "console.log(JSON.stringify({segments:[{text:[process.env.VERITY_PARAKEET_BASE_URL,process.env.VERITY_PARAKEET_API_KEY,process.env.VERITY_PARAKEET_MODEL].join('|')}]}))";
+      "console.log(JSON.stringify({segments:[{text:[process.env.VERITY_TRANSCRIBE_BASE_URL,process.env.VERITY_TRANSCRIBE_API_KEY,process.env.VERITY_TRANSCRIBE_MODEL].join('|')}]}))";
     const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://environment.test/v1';
-    process.env.VERITY_PARAKEET_API_KEY = 'environment-key';
-    process.env.VERITY_PARAKEET_MODEL = 'environment-model';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
+    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
+    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
     try {
-      const configured = new LocalCommandMeetingTranscriber(command, async () => ({
+      const configured = new CommandMeetingTranscriber(command, async () => ({
         transcribeBaseUrl: ' https://settings.test/v1 ',
         transcribeApiKey: ' settings-key ',
         transcribeModel: ' settings-model ',
@@ -251,7 +251,7 @@ describe('LocalCommandMeetingTranscriber settings', () => {
         segments: [{ text: 'https://settings.test/v1|settings-key|settings-model' }],
       });
 
-      const fallback = new LocalCommandMeetingTranscriber(command, async () => ({
+      const fallback = new CommandMeetingTranscriber(command, async () => ({
         transcribeBaseUrl: ' ',
         // A stale stored cloud credential/model must be ignored as a bundle
         // once the app URL is cleared.
@@ -268,7 +268,7 @@ describe('LocalCommandMeetingTranscriber settings', () => {
         segments: [{ text: 'https://environment.test/v1|environment-key|environment-model' }],
       });
 
-      const isolatedExternal = new LocalCommandMeetingTranscriber(command, async () => ({
+      const isolatedExternal = new CommandMeetingTranscriber(command, async () => ({
         transcribeBaseUrl: 'https://other-settings.test/v1',
         transcribeApiKey: null,
         transcribeModel: '',
@@ -285,27 +285,27 @@ describe('LocalCommandMeetingTranscriber settings', () => {
     } finally {
       if (original.command === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
       else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = original.command;
-      if (original.baseUrl === undefined) delete process.env.VERITY_PARAKEET_BASE_URL;
-      else process.env.VERITY_PARAKEET_BASE_URL = original.baseUrl;
-      if (original.apiKey === undefined) delete process.env.VERITY_PARAKEET_API_KEY;
-      else process.env.VERITY_PARAKEET_API_KEY = original.apiKey;
-      if (original.model === undefined) delete process.env.VERITY_PARAKEET_MODEL;
-      else process.env.VERITY_PARAKEET_MODEL = original.model;
+      if (original.baseUrl === undefined) delete process.env.VERITY_TRANSCRIBE_BASE_URL;
+      else process.env.VERITY_TRANSCRIBE_BASE_URL = original.baseUrl;
+      if (original.apiKey === undefined) delete process.env.VERITY_TRANSCRIBE_API_KEY;
+      else process.env.VERITY_TRANSCRIBE_API_KEY = original.apiKey;
+      if (original.model === undefined) delete process.env.VERITY_TRANSCRIBE_MODEL;
+      else process.env.VERITY_TRANSCRIBE_MODEL = original.model;
     }
   });
 
   it('reports a stored local choice unavailable instead of using an inherited cloud URL', async () => {
     const original = {
       command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
     };
     const script =
-      'console.log(JSON.stringify({segments:[{text:process.env.VERITY_PARAKEET_BASE_URL}]}))';
+      'console.log(JSON.stringify({segments:[{text:process.env.VERITY_TRANSCRIBE_BASE_URL}]}))';
     const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://cloud.example.test/v1';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://cloud.example.test/v1';
     try {
-      const transcriber = new LocalCommandMeetingTranscriber(command, async () => ({
+      const transcriber = new CommandMeetingTranscriber(command, async () => ({
         transcribeBackendMode: 'local',
         transcribeBaseUrl: 'https://stored-cloud.example.test/v1',
         transcribeApiKey: 'stored-key',
@@ -323,7 +323,7 @@ describe('LocalCommandMeetingTranscriber settings', () => {
     } finally {
       const envNames = {
         command: 'VERITY_MEETING_TRANSCRIBE_COMMAND',
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -336,19 +336,19 @@ describe('LocalCommandMeetingTranscriber settings', () => {
   it('uses a deployment-managed external backend after the explicit external choice', async () => {
     const original = {
       command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      apiKey: process.env.VERITY_PARAKEET_API_KEY,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
     const script =
-      "console.log(JSON.stringify({segments:[{text:[process.env.VERITY_PARAKEET_BASE_URL,process.env.VERITY_PARAKEET_API_KEY,process.env.VERITY_PARAKEET_MODEL].join('|')}]}))";
+      "console.log(JSON.stringify({segments:[{text:[process.env.VERITY_TRANSCRIBE_BASE_URL,process.env.VERITY_TRANSCRIBE_API_KEY,process.env.VERITY_TRANSCRIBE_MODEL].join('|')}]}))";
     const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://environment.test/v1';
-    process.env.VERITY_PARAKEET_API_KEY = 'environment-key';
-    process.env.VERITY_PARAKEET_MODEL = 'environment-model';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
+    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
+    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
     try {
-      const transcriber = new LocalCommandMeetingTranscriber(command, async () => ({
+      const transcriber = new CommandMeetingTranscriber(command, async () => ({
         transcribeBackendMode: 'external',
         transcribeBaseUrl: null,
         transcribeApiKey: null,
@@ -366,9 +366,9 @@ describe('LocalCommandMeetingTranscriber settings', () => {
     } finally {
       const envNames = {
         command: 'VERITY_MEETING_TRANSCRIBE_COMMAND',
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
-        apiKey: 'VERITY_PARAKEET_API_KEY',
-        model: 'VERITY_PARAKEET_MODEL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
+        apiKey: 'VERITY_TRANSCRIBE_API_KEY',
+        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -381,18 +381,18 @@ describe('LocalCommandMeetingTranscriber settings', () => {
   it('runs a deployment-supplied transcriber command after the explicit external choice', async () => {
     const original = {
       command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      apiKey: process.env.VERITY_PARAKEET_API_KEY,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
     const script = "console.log(JSON.stringify({segments:[{text:'custom-command-transcript'}]}))";
     const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
     // The deployment shape from the finding: its own transcriber command and no
     // OpenAI-compatible endpoint anywhere.
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
-    delete process.env.VERITY_PARAKEET_BASE_URL;
-    delete process.env.VERITY_PARAKEET_API_KEY;
-    delete process.env.VERITY_PARAKEET_MODEL;
+    delete process.env.VERITY_TRANSCRIBE_BASE_URL;
+    delete process.env.VERITY_TRANSCRIBE_API_KEY;
+    delete process.env.VERITY_TRANSCRIBE_MODEL;
     const externalWithoutEndpoint = async () => ({
       transcribeBackendMode: 'external' as const,
       transcribeBaseUrl: null,
@@ -404,7 +404,7 @@ describe('LocalCommandMeetingTranscriber settings', () => {
       // such a deployment inevitably lands. The command carries its own
       // configuration; demanding a URL and model it never reads rejected every
       // upload.
-      const withCommand = new LocalCommandMeetingTranscriber(command, externalWithoutEndpoint);
+      const withCommand = new CommandMeetingTranscriber(command, externalWithoutEndpoint);
       await expect(
         withCommand.transcribe({
           audio: Buffer.from('audio'),
@@ -416,7 +416,7 @@ describe('LocalCommandMeetingTranscriber settings', () => {
       // The inverse still fails closed: no command and no endpoint means the
       // recording has nowhere to go, and saying so beats uploading it first.
       delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      const withoutCommand = new LocalCommandMeetingTranscriber(
+      const withoutCommand = new CommandMeetingTranscriber(
         'verity-transcribe-meeting',
         externalWithoutEndpoint,
       );
@@ -430,9 +430,9 @@ describe('LocalCommandMeetingTranscriber settings', () => {
     } finally {
       const envNames = {
         command: 'VERITY_MEETING_TRANSCRIBE_COMMAND',
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
-        apiKey: 'VERITY_PARAKEET_API_KEY',
-        model: 'VERITY_PARAKEET_MODEL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
+        apiKey: 'VERITY_TRANSCRIBE_API_KEY',
+        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -1730,11 +1730,11 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     }
   });
 
-  it('surfaces the local transcriber failure reason in the notice', async () => {
+  it('surfaces the transcription client failure reason in the notice', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-fail-reason-'));
     const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND =
-      'node -e \'process.stderr.write("Could not reach the Parakeet server (ECONNREFUSED)"); process.exit(1)\'';
+      'node -e \'process.stderr.write("Could not reach the transcription API (ECONNREFUSED)"); process.exit(1)\'';
     const meetingApp = buildServer({ eventStore: ctx.store, bus, conductor });
     try {
       await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
@@ -1753,7 +1753,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       expect(notices).toContainEqual({
         t: 'notice',
         role: 'agent',
-        text: expect.stringContaining('Could not reach the Parakeet server (ECONNREFUSED)'),
+        text: expect.stringContaining('Could not reach the transcription API (ECONNREFUSED)'),
       });
     } finally {
       if (previous === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
@@ -1855,12 +1855,12 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     chmodSync(command, 0o755);
     const previousCommand = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     const previousPath = process.env.PATH;
-    const previousBaseUrl = process.env.VERITY_PARAKEET_BASE_URL;
+    const previousBaseUrl = process.env.VERITY_TRANSCRIBE_BASE_URL;
     delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     process.env.PATH = `${commandDir}${delimiter}${previousPath ?? ''}`;
     // The bundled client only runs against a configured backend; the stub above
     // stands in for it.
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://environment.test/v1';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
     const meetingApp = buildServer({
       eventStore: ctx.store,
       bus,
@@ -1890,8 +1890,8 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previousCommand;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
-      if (previousBaseUrl === undefined) delete process.env.VERITY_PARAKEET_BASE_URL;
-      else process.env.VERITY_PARAKEET_BASE_URL = previousBaseUrl;
+      if (previousBaseUrl === undefined) delete process.env.VERITY_TRANSCRIBE_BASE_URL;
+      else process.env.VERITY_TRANSCRIBE_BASE_URL = previousBaseUrl;
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });
       rmSync(commandDir, { recursive: true, force: true });
@@ -2019,7 +2019,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     },
   );
 
-  it('maps invalid local transcriber JSON to a bad gateway response', async () => {
+  it('maps invalid transcription client JSON to a bad gateway response', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-invalid-json-'));
     const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = "printf 'not-json'";
@@ -2050,7 +2050,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     }
   });
 
-  it('maps local transcriber command failures to a bad gateway response', async () => {
+  it('maps transcription client command failures to a bad gateway response', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-command-fail-'));
     const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = "printf 'boom' >&2; exit 2";
@@ -4928,13 +4928,13 @@ describe('GET/PATCH /settings', () => {
 
   it('reports a deployment-managed remote backend as ready for first-use selection', async () => {
     const original = {
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      apiKey: process.env.VERITY_PARAKEET_API_KEY,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://environment.test/v1';
-    process.env.VERITY_PARAKEET_API_KEY = 'environment-key';
-    process.env.VERITY_PARAKEET_MODEL = 'environment-model';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
+    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
+    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
     try {
       await ctx.store.updateVeritySettings({
         transcribeBackendMode: null,
@@ -4959,9 +4959,9 @@ describe('GET/PATCH /settings', () => {
       expect(publicSettings.json().settings.transcribeExternalConfigured).toBe(true);
     } finally {
       const envNames = {
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
-        apiKey: 'VERITY_PARAKEET_API_KEY',
-        model: 'VERITY_PARAKEET_MODEL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
+        apiKey: 'VERITY_TRANSCRIBE_API_KEY',
+        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -4973,15 +4973,15 @@ describe('GET/PATCH /settings', () => {
 
   it('reports no backend at all when the deployment configures none', async () => {
     const original = {
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      apiKey: process.env.VERITY_PARAKEET_API_KEY,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
     // What `VERITY_TRANSCRIBE_BASE_URL:-` renders to in Compose: present but
     // empty must read as "not configured", not as a configured endpoint.
-    process.env.VERITY_PARAKEET_BASE_URL = '';
-    process.env.VERITY_PARAKEET_API_KEY = 'environment-key';
-    process.env.VERITY_PARAKEET_MODEL = 'environment-model';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = '';
+    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
+    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
     try {
       await ctx.store.updateVeritySettings({
         transcribeBackendMode: null,
@@ -5003,9 +5003,9 @@ describe('GET/PATCH /settings', () => {
       expect(publicSettings.json().settings.transcribeExternalConfigured).toBe(false);
     } finally {
       const envNames = {
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
-        apiKey: 'VERITY_PARAKEET_API_KEY',
-        model: 'VERITY_PARAKEET_MODEL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
+        apiKey: 'VERITY_TRANSCRIBE_API_KEY',
+        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -5017,13 +5017,13 @@ describe('GET/PATCH /settings', () => {
 
   it('does not mix stored backend URLs with credentials from a different environment endpoint', async () => {
     const original = {
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      apiKey: process.env.VERITY_PARAKEET_API_KEY,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://environment.test/v1';
-    process.env.VERITY_PARAKEET_API_KEY = 'environment-key';
-    process.env.VERITY_PARAKEET_MODEL = 'environment-model';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
+    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
+    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
     try {
       await ctx.store.updateVeritySettings({
         transcribeBackendMode: 'external',
@@ -5042,9 +5042,9 @@ describe('GET/PATCH /settings', () => {
       });
     } finally {
       const envNames = {
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
-        apiKey: 'VERITY_PARAKEET_API_KEY',
-        model: 'VERITY_PARAKEET_MODEL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
+        apiKey: 'VERITY_TRANSCRIBE_API_KEY',
+        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -5057,12 +5057,12 @@ describe('GET/PATCH /settings', () => {
   it('reports a deployment-supplied transcriber command as a configured backend', async () => {
     const original = {
       command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = 'my-transcriber "$VERITY_AUDIO_FILE"';
-    delete process.env.VERITY_PARAKEET_BASE_URL;
-    delete process.env.VERITY_PARAKEET_MODEL;
+    delete process.env.VERITY_TRANSCRIBE_BASE_URL;
+    delete process.env.VERITY_TRANSCRIBE_MODEL;
     try {
       await ctx.store.updateVeritySettings({
         transcribeBackendMode: 'external',
@@ -5095,8 +5095,8 @@ describe('GET/PATCH /settings', () => {
     } finally {
       const envNames = {
         command: 'VERITY_MEETING_TRANSCRIBE_COMMAND',
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
-        model: 'VERITY_PARAKEET_MODEL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
+        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -5108,13 +5108,13 @@ describe('GET/PATCH /settings', () => {
 
   it('derives external readiness from the effective backend, not the stored fields alone', async () => {
     const original = {
-      baseUrl: process.env.VERITY_PARAKEET_BASE_URL,
-      apiKey: process.env.VERITY_PARAKEET_API_KEY,
-      model: process.env.VERITY_PARAKEET_MODEL,
+      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
+      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
+      model: process.env.VERITY_TRANSCRIBE_MODEL,
     };
-    process.env.VERITY_PARAKEET_BASE_URL = 'https://environment.test/v1';
-    process.env.VERITY_PARAKEET_API_KEY = 'environment-key';
-    process.env.VERITY_PARAKEET_MODEL = 'environment-model';
+    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
+    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
+    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
     const externalConfigured = async (): Promise<unknown> => {
       const response = await app.inject({ method: 'GET', url: '/settings' });
       return response.json().settings.transcribeExternalConfigured;
@@ -5145,13 +5145,13 @@ describe('GET/PATCH /settings', () => {
       expect(await externalConfigured()).toBe(true);
 
       // Neither side configures one.
-      delete process.env.VERITY_PARAKEET_BASE_URL;
+      delete process.env.VERITY_TRANSCRIBE_BASE_URL;
       expect(await externalConfigured()).toBe(false);
     } finally {
       const envNames = {
-        baseUrl: 'VERITY_PARAKEET_BASE_URL',
-        apiKey: 'VERITY_PARAKEET_API_KEY',
-        model: 'VERITY_PARAKEET_MODEL',
+        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
+        apiKey: 'VERITY_TRANSCRIBE_API_KEY',
+        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];

@@ -167,20 +167,7 @@ import { SandboxUnavailableError } from './sandbox-git.js';
 import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } from './github.js';
 import type { GitHubTaskService } from './github-tasks.js';
 import { registerTaskRoutes } from './task-routes.js';
-import {
-  GoogleDriveError,
-  createCachedGoogleAccessToken,
-  downloadDriveFile,
-  exchangeGoogleAuthCode,
-  exportDriveFile,
-  getDriveAccountEmail,
-  getDriveFile,
-  listDriveFiles,
-  planDriveImport,
-  referenceDocFileName,
-  type DriveFileList,
-} from './google-drive.js';
-import { writeReferenceDocFile } from './reference-docs.js';
+import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -685,6 +672,12 @@ function configured(value: string | null | undefined): boolean {
   return Boolean(value?.trim());
 }
 
+/** Provider-neutral names win; the legacy fallback keeps direct `.env` upgrades working. */
+function transcriptionEnvironment(name: string): string | undefined {
+  const current = process.env[`VERITY_TRANSCRIBE_${name}`];
+  return current?.trim() ? current : process.env[`VERITY_PARAKEET_${name}`];
+}
+
 function githubAppConfiguredFromSettings(settings: VeritySettingsRecord | undefined): boolean {
   return (
     configured(settings?.githubAppId) &&
@@ -701,7 +694,7 @@ function githubAppConfiguredFromSettings(settings: VeritySettingsRecord | undefi
  * alone answers "is transcription configured". Unset on both means it is not —
  * there is no bundled backend left to stand in. One function so the answer the
  * app renders (`GET /settings`, `GET /settings/transcription`) cannot drift from
- * the one the upload path enforces in `runLocalMeetingTranscriber`: a stored URL
+ * the one the upload path enforces in `runMeetingTranscriptionCommand`: a stored URL
  * takes the whole backend selection with it, and environment credentials are
  * only inherited by a stored URL that names the SAME endpoint.
  */
@@ -751,21 +744,21 @@ function effectiveExternalTranscription(
     | null
     | undefined,
 ): EffectiveExternalTranscription {
-  const inheritedUrl = process.env.VERITY_PARAKEET_BASE_URL?.trim() || null;
+  const inheritedUrl = transcriptionEnvironment('BASE_URL')?.trim() || null;
   const storedUrl = settings?.transcribeBaseUrl?.trim() || null;
   const sameInheritedBackend = storedUrl !== null && storedUrl === inheritedUrl;
   return {
     baseUrl: storedUrl ?? inheritedUrl,
     model: storedUrl
       ? settings?.transcribeModel?.trim() ||
-        (sameInheritedBackend ? process.env.VERITY_PARAKEET_MODEL?.trim() || null : null)
+        (sameInheritedBackend ? transcriptionEnvironment('MODEL')?.trim() || null : null)
       : inheritedUrl !== null
-        ? process.env.VERITY_PARAKEET_MODEL?.trim() || null
+        ? transcriptionEnvironment('MODEL')?.trim() || null
         : null,
     apiKeyConfigured: storedUrl
       ? configured(settings?.transcribeApiKey) ||
-        (sameInheritedBackend && configured(process.env.VERITY_PARAKEET_API_KEY))
-      : inheritedUrl !== null && configured(process.env.VERITY_PARAKEET_API_KEY),
+        (sameInheritedBackend && configured(transcriptionEnvironment('API_KEY')))
+      : inheritedUrl !== null && configured(transcriptionEnvironment('API_KEY')),
   };
 }
 
@@ -1826,28 +1819,6 @@ async function ensureMeetingDirectory(worktree: string): Promise<string> {
   return meetingReal;
 }
 
-/** Ensure `docs/reference/` exists in the worktree for imported Drive docs
- *  (ADR 0009), with the same symlink/containment guards as the meeting dir. */
-async function ensureReferenceDirectory(worktree: string): Promise<string> {
-  const rootReal = await realpath(worktree);
-  const docsDir = join(worktree, 'docs');
-  await mkdir(docsDir, { recursive: true });
-  if ((await lstat(docsDir)).isSymbolicLink()) throw new Error('invalid reference directory');
-  const docsReal = await realpath(docsDir);
-  if (docsReal !== rootReal && !docsReal.startsWith(`${rootReal}${sep}`)) {
-    throw new Error('invalid reference directory');
-  }
-
-  const referenceDir = join(docsDir, 'reference');
-  await mkdir(referenceDir, { recursive: true });
-  if ((await lstat(referenceDir)).isSymbolicLink()) throw new Error('invalid reference directory');
-  const referenceReal = await realpath(referenceDir);
-  if (referenceReal !== rootReal && !referenceReal.startsWith(`${rootReal}${sep}`)) {
-    throw new Error('invalid reference directory');
-  }
-  return referenceReal;
-}
-
 async function existingMeetingTranscript(
   meetingDir: string,
   relPath: string,
@@ -1950,7 +1921,7 @@ function configuredMeetingTranscriber(
 ): MeetingTranscriber {
   const command =
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND?.trim() || DEFAULT_MEETING_TRANSCRIBE_COMMAND;
-  return new LocalCommandMeetingTranscriber(command, readSettings);
+  return new CommandMeetingTranscriber(command, readSettings);
 }
 
 function parseMeetingTranscriptSegments(value: unknown): MeetingTranscriptSegment[] {
@@ -1977,7 +1948,7 @@ function parseMeetingTranscriptSegments(value: unknown): MeetingTranscriptSegmen
 
 function parseMeetingTranscriptResult(value: unknown): MeetingTranscriptResult {
   if (typeof value !== 'object' || value === null) {
-    throw new MeetingTranscriptionFailedError('local transcriber returned invalid JSON');
+    throw new MeetingTranscriptionFailedError('transcription client returned invalid JSON');
   }
   const body = value as Record<string, unknown>;
   let segments = parseMeetingTranscriptSegments(body.segments ?? body.utterances);
@@ -1985,7 +1956,7 @@ function parseMeetingTranscriptResult(value: unknown): MeetingTranscriptResult {
     segments = [{ speaker: 'Speaker 1', text: body.text.trim() }];
   }
   if (segments.length === 0) {
-    throw new MeetingTranscriptionFailedError('local transcriber returned no text');
+    throw new MeetingTranscriptionFailedError('transcription client returned no text');
   }
   return {
     segments,
@@ -1994,7 +1965,7 @@ function parseMeetingTranscriptResult(value: unknown): MeetingTranscriptResult {
   };
 }
 
-export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
+export class CommandMeetingTranscriber implements MeetingTranscriber {
   constructor(
     private readonly command: string,
     private readonly readSettings: () => Promise<MeetingTranscriptionSettings | undefined>,
@@ -2010,7 +1981,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
     const settings = await this.readSettings();
     if (input.audioPath) {
       try {
-        const stdout = await runLocalMeetingTranscriber(
+        const stdout = await runMeetingTranscriptionCommand(
           this.command,
           input.audioPath,
           input.mediaType,
@@ -2027,7 +1998,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
           throw error;
         }
         if (error instanceof SyntaxError) {
-          throw new MeetingTranscriptionFailedError('local transcriber returned invalid JSON');
+          throw new MeetingTranscriptionFailedError('transcription client returned invalid JSON');
         }
         throw new MeetingTranscriptionFailedError();
       }
@@ -2037,7 +2008,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
     const audioPath = join(dir, `meeting${ext}`);
     try {
       await writeFile(audioPath, input.audio, { mode: 0o600 });
-      const stdout = await runLocalMeetingTranscriber(
+      const stdout = await runMeetingTranscriptionCommand(
         this.command,
         audioPath,
         input.mediaType,
@@ -2054,7 +2025,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
         throw error;
       }
       if (error instanceof SyntaxError) {
-        throw new MeetingTranscriptionFailedError('local transcriber returned invalid JSON');
+        throw new MeetingTranscriptionFailedError('transcription client returned invalid JSON');
       }
       throw new MeetingTranscriptionFailedError();
     } finally {
@@ -2063,7 +2034,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
   }
 }
 
-async function runLocalMeetingTranscriber(
+async function runMeetingTranscriptionCommand(
   command: string,
   audioPath: string,
   mediaType: string,
@@ -2075,7 +2046,7 @@ async function runLocalMeetingTranscriber(
     return trimmed ? trimmed : undefined;
   };
   const settingsBaseUrl = settingEnv(settings?.transcribeBaseUrl);
-  const inheritedBaseUrl = settingEnv(process.env.VERITY_PARAKEET_BASE_URL);
+  const inheritedBaseUrl = settingEnv(transcriptionEnvironment('BASE_URL'));
   const sameBackend = settingsBaseUrl === inheritedBaseUrl;
   // Read once, up here, so every check below sees it. Both exemptions for a
   // deployment-supplied command have to agree, and when this was computed just
@@ -2092,12 +2063,12 @@ async function runLocalMeetingTranscriber(
   const externalBaseUrl = settingsBaseUrl ?? inheritedBaseUrl;
   const externalApiKey = settingsBaseUrl
     ? (settingEnv(settings?.transcribeApiKey) ??
-      (sameBackend ? settingEnv(process.env.VERITY_PARAKEET_API_KEY) : undefined))
-    : settingEnv(process.env.VERITY_PARAKEET_API_KEY);
+      (sameBackend ? settingEnv(transcriptionEnvironment('API_KEY')) : undefined))
+    : settingEnv(transcriptionEnvironment('API_KEY'));
   const externalModel = settingsBaseUrl
     ? (settingEnv(settings?.transcribeModel) ??
-      (sameBackend ? settingEnv(process.env.VERITY_PARAKEET_MODEL) : undefined))
-    : settingEnv(process.env.VERITY_PARAKEET_MODEL);
+      (sameBackend ? settingEnv(transcriptionEnvironment('MODEL')) : undefined))
+    : settingEnv(transcriptionEnvironment('MODEL'));
   // A deployment-supplied command IS the backend and brings its own
   // configuration, so choosing `external` — the only choice the app still offers
   // — must not demand an OpenAI URL and model the command never reads.
@@ -2113,19 +2084,19 @@ async function runLocalMeetingTranscriber(
   const settingsEnv =
     settings?.transcribeBackendMode === 'external'
       ? {
-          VERITY_PARAKEET_BASE_URL: externalBaseUrl ?? '',
-          VERITY_PARAKEET_API_KEY: externalApiKey ?? '',
-          VERITY_PARAKEET_MODEL: externalModel ?? '',
+          VERITY_TRANSCRIBE_BASE_URL: externalBaseUrl ?? '',
+          VERITY_TRANSCRIBE_API_KEY: externalApiKey ?? '',
+          VERITY_TRANSCRIBE_MODEL: externalModel ?? '',
         }
       : settingsBaseUrl
         ? {
-            VERITY_PARAKEET_BASE_URL: settingsBaseUrl,
-            VERITY_PARAKEET_API_KEY:
+            VERITY_TRANSCRIBE_BASE_URL: settingsBaseUrl,
+            VERITY_TRANSCRIBE_API_KEY:
               settingEnv(settings?.transcribeApiKey) ??
-              (sameBackend ? (process.env.VERITY_PARAKEET_API_KEY ?? '') : ''),
-            VERITY_PARAKEET_MODEL:
+              (sameBackend ? (transcriptionEnvironment('API_KEY') ?? '') : ''),
+            VERITY_TRANSCRIBE_MODEL:
               settingEnv(settings?.transcribeModel) ??
-              (sameBackend ? (process.env.VERITY_PARAKEET_MODEL ?? '') : ''),
+              (sameBackend ? (transcriptionEnvironment('MODEL') ?? '') : ''),
           }
         : {};
   const env = {
@@ -2232,7 +2203,7 @@ async function runLocalMeetingTranscriber(
     throw new MeetingTranscriptionFailedError(
       typeof stderr === 'string' && stderr.trim().length > 0
         ? stderr.trim()
-        : 'local transcriber failed',
+        : 'transcription client failed',
     );
   }
 }
@@ -4712,196 +4683,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   );
 
-  // ── Google Drive: connect + browse + import reference docs (ADR 0009) ──────
-  // Native-app OAuth (PKCE): the app forwards { code, codeVerifier, redirectUri }
-  // and the server exchanges them for tokens OUTBOUND, keeping the refresh token
-  // server-side (SecretCipher-encrypted). The Verity server is never publicly
-  // reachable, so there is no browser-facing callback route here (unlike the
-  // GitHub App manifest flow). Access tokens are refreshed + cached on demand.
-  const resolveGoogleDriveCreds = async (): Promise<
-    { clientId: string; refreshToken: string } | undefined
-  > => {
-    if (deps.secretCipher?.isSealed() === true) return undefined;
-    let settings: VeritySettingsRecord | undefined;
-    try {
-      settings = await deps.eventStore.getVeritySettings();
-    } catch (err) {
-      if (err instanceof SealedError) return undefined;
-      throw err;
-    }
-    const clientId = settings?.googleDriveClientId ?? '';
-    const refreshToken = settings?.googleDriveRefreshToken ?? '';
-    if (clientId.length === 0 || refreshToken.length === 0) return undefined;
-    return { clientId, refreshToken };
-  };
-  const googleDriveAccessToken = createCachedGoogleAccessToken(resolveGoogleDriveCreds);
-
-  const googleDriveConnectBody = z.object({
-    code: z.string().trim().min(1).max(4096),
-    codeVerifier: z.string().trim().min(1).max(256),
-    redirectUri: z.string().trim().min(1).max(2048),
+  registerGoogleDriveRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.googleDriveClientId !== undefined
+      ? { googleDriveClientId: deps.googleDriveClientId }
+      : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
   });
-
-  // Exchange the app's one-time PKCE code for tokens and persist the refresh
-  // token. The iOS client id comes from the server env (`GOOGLE_AUTH_ID`);
-  // release images may bake it in, and local/self-built deployments can pass it
-  // at runtime. It is mirrored into settings so the refresh path can read it back
-  // without re-reading the env.
-  app.post(
-    '/google-drive/connect',
-    async (
-      request,
-      reply,
-    ): Promise<{ connected: true; accountEmail: string | null } | { error: string }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const body = googleDriveConnectBody.parse(request.body);
-      const clientId = deps.googleDriveClientId ?? '';
-      if (clientId.length === 0) {
-        reply.code(400);
-        return { error: 'Google Drive is not configured on this server' };
-      }
-      let tokens;
-      try {
-        tokens = await exchangeGoogleAuthCode({
-          clientId,
-          code: body.code,
-          codeVerifier: body.codeVerifier,
-          redirectUri: body.redirectUri,
-        });
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'exchange_failed';
-        request.log.error({ reason }, 'verity: google drive code exchange failed');
-        reply.code(502);
-        return { error: `Google sign-in failed (${reason})` };
-      }
-      if (tokens.refreshToken === undefined) {
-        // No refresh token means Google did not grant offline access (often a
-        // re-consent without `prompt=consent`). The app should retry forcing it.
-        reply.code(400);
-        return {
-          error: 'Google did not return a refresh token — reconnect and allow offline access',
-        };
-      }
-      let accountEmail: string | undefined;
-      try {
-        accountEmail = await getDriveAccountEmail(tokens.accessToken);
-      } catch {
-        accountEmail = undefined; // best-effort display only; not fatal
-      }
-      await veritySettingsStore(deps.eventStore).updateVeritySettings({
-        googleDriveClientId: clientId,
-        googleDriveRefreshToken: tokens.refreshToken,
-        googleDriveAccountEmail: accountEmail ?? null,
-      });
-      return { connected: true, accountEmail: accountEmail ?? null };
-    },
-  );
-
-  app.post('/google-drive/disconnect', async (): Promise<{ connected: false }> => {
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    await veritySettingsStore(deps.eventStore).updateVeritySettings({
-      googleDriveClientId: null,
-      googleDriveRefreshToken: null,
-      googleDriveAccountEmail: null,
-    });
-    return { connected: false };
-  });
-
-  const googleDriveFilesQuery = z.object({
-    parentId: z.string().trim().min(1).max(512).optional(),
-    query: z.string().trim().min(1).max(200).optional(),
-    sharedWithMe: z.enum(['true']).optional(),
-    pageToken: z.string().trim().min(1).max(4096).optional(),
-  });
-
-  // Browse a Drive folder for the in-app picker (defaults to My Drive root).
-  app.get(
-    '/google-drive/files',
-    async (request, reply): Promise<DriveFileList | { error: string }> => {
-      const query = googleDriveFilesQuery.parse(request.query);
-      const accessToken = await googleDriveAccessToken();
-      if (accessToken === undefined) {
-        reply.code(409);
-        return { error: 'Google Drive is not connected' };
-      }
-      try {
-        return await listDriveFiles({
-          accessToken,
-          parentId: query.parentId,
-          query: query.query,
-          sharedWithMe: query.sharedWithMe === 'true',
-          pageToken: query.pageToken,
-        });
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'browse_failed';
-        request.log.error({ reason }, 'verity: google drive browse failed');
-        reply.code(502);
-        return { error: `Could not list Google Drive files (${reason})` };
-      }
-    },
-  );
-
-  const googleDriveImportBody = z.object({ fileId: z.string().trim().min(1).max(512) });
-
-  // Import a Drive file into the session worktree under docs/reference/ (ADR
-  // 0009). Native Google files export to a text-first format; regular files
-  // download raw. Overwrites by the stable target name so a re-import refreshes
-  // the doc. Like the meeting-transcript flow, the file is written into the
-  // working tree but NOT committed — that stays part of the normal session flow.
-  app.post(
-    '/sessions/:id/google-drive/import',
-    async (request, reply): Promise<{ path: string; name: string } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const body = googleDriveImportBody.parse(request.body);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      const accessToken = await googleDriveAccessToken();
-      if (accessToken === undefined) {
-        reply.code(409);
-        return { error: 'Google Drive is not connected' };
-      }
-      let file;
-      try {
-        file = await getDriveFile(accessToken, body.fileId);
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'metadata_failed';
-        reply.code(502);
-        return { error: `Could not read the Google Drive file (${reason})` };
-      }
-      let plan;
-      try {
-        plan = planDriveImport(file.mimeType, file.name);
-      } catch (err) {
-        if (err instanceof GoogleDriveError && err.reason === 'not_importable') {
-          reply.code(415);
-          return { error: err.message };
-        }
-        throw err;
-      }
-      let bytes: Uint8Array;
-      try {
-        bytes =
-          plan.kind === 'export' && plan.exportMimeType !== undefined
-            ? await exportDriveFile(accessToken, body.fileId, plan.exportMimeType)
-            : await downloadDriveFile(accessToken, body.fileId);
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'download_failed';
-        reply.code(502);
-        return { error: `Could not download the Google Drive file (${reason})` };
-      }
-      const fileName = referenceDocFileName(file.name, plan.extension, body.fileId);
-      const referenceDir = await ensureReferenceDirectory(session.worktree);
-      const relPath = `docs/reference/${fileName}`;
-      sessionFilePath(session.worktree, relPath); // defence-in-depth traversal guard
-      // Symlink-safe overwrite (temp file + atomic rename): a pre-planted symlink
-      // at the deterministic target name is replaced, not followed. See module doc.
-      await writeReferenceDocFile(referenceDir, fileName, bytes);
-      return { path: relPath, name: file.name };
-    },
-  );
 
   // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────
   // The cipher holds the at-rest key in memory only. `status` reports the
@@ -8563,8 +8351,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return { error: 'meeting transcription is not configured' };
         }
         request.log.error({ err: error }, 'verity: meeting transcription failed');
-        // Surface the transcriber's own message (e.g. "Could not reach the Parakeet
-        // server … (ECONNREFUSED)") so the operator can act, instead of a generic
+        // Surface the transcriber's own message (e.g. "Could not reach the transcription
+        // API … (ECONNREFUSED)") so the user can act, instead of a generic
         // line that hides which environmental step failed. The default placeholder
         // message carries no signal, so fall back to the generic notice for it.
         const detail =
@@ -8579,8 +8367,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           sessionId: id,
           fileName: body.fileName,
           reason: detail
-            ? `The local transcriber failed:\n\n${detail}`
-            : 'The local transcriber failed before producing a transcript.',
+            ? `The transcription client failed:\n\n${detail}`
+            : 'The transcription client failed before producing a transcript.',
         });
         reply.code(502);
         return { error: 'meeting transcription failed' };

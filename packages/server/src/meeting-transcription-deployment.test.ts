@@ -5,10 +5,14 @@ describe('meeting transcription deployment', () => {
   it('retries a briefly unreachable backend without blocking Verity startup', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
 
-    expect(compose).toContain('VERITY_PARAKEET_RETRIES: ${VERITY_PARAKEET_RETRIES:-12}');
-    expect(compose).toContain('VERITY_PARAKEET_HTTP_RETRIES: ${VERITY_PARAKEET_HTTP_RETRIES:-0}');
     expect(compose).toContain(
-      'VERITY_PARAKEET_RETRY_DELAY_MS: ${VERITY_PARAKEET_RETRY_DELAY_MS:-5000}',
+      'VERITY_TRANSCRIBE_RETRIES: ${VERITY_TRANSCRIBE_RETRIES:-${VERITY_PARAKEET_RETRIES:-12}}',
+    );
+    expect(compose).toContain(
+      'VERITY_TRANSCRIBE_HTTP_RETRIES: ${VERITY_TRANSCRIBE_HTTP_RETRIES:-${VERITY_PARAKEET_HTTP_RETRIES:-0}}',
+    );
+    expect(compose).toContain(
+      'VERITY_TRANSCRIBE_RETRY_DELAY_MS: ${VERITY_TRANSCRIBE_RETRY_DELAY_MS:-${VERITY_PARAKEET_RETRY_DELAY_MS:-5000}}',
     );
     expect(compose).toContain('VERITY_MEETING_CHUNK_SECONDS: ${VERITY_MEETING_CHUNK_SECONDS:-300}');
     expect(compose).toContain(
@@ -27,7 +31,7 @@ describe('meeting transcription deployment', () => {
     // and two CPUs for a backend that sat idle.
     expect(compose).not.toMatch(/^ {2}verity-transcribe:$/m);
     expect(compose).not.toContain('verity-transcribe:5092');
-    expect(compose).not.toContain('parakeet:latest');
+    expect(compose).not.toContain('transcription-service:latest');
     expect(compose).not.toContain('VERITY_TRANSCRIBE_MEMORY');
     expect(compose).not.toContain('VERITY_TRANSCRIBE_CPUS');
 
@@ -42,7 +46,7 @@ describe('meeting transcription deployment', () => {
       compose.indexOf('environment: &verity-server-environment'),
       compose.indexOf('\n    volumes:'),
     );
-    expect(server).toMatch(/^ {6}VERITY_PARAKEET_BASE_URL:/m);
+    expect(server).toMatch(/^ {6}VERITY_TRANSCRIBE_BASE_URL:/m);
     expect(server).not.toContain('VERITY_LOCAL_TRANSCRIBE_AVAILABLE');
     expect(server).not.toContain('VERITY_LOCAL_TRANSCRIBE_BASE_URL');
     expect(server).not.toContain('VERITY_LOCAL_TRANSCRIBE_MODEL');
@@ -53,15 +57,20 @@ describe('meeting transcription deployment', () => {
 
     // Unset must mean "not configured" — never a fallback to a service this
     // deployment no longer runs.
-    expect(compose).toContain('VERITY_PARAKEET_BASE_URL: ${VERITY_TRANSCRIBE_BASE_URL:-}');
-    expect(compose).toContain('VERITY_PARAKEET_API_KEY: ${VERITY_TRANSCRIBE_API_KEY:-}');
+    expect(compose).toContain('VERITY_TRANSCRIBE_BASE_URL: ${VERITY_TRANSCRIBE_BASE_URL:-}');
+    expect(compose).toContain('VERITY_TRANSCRIBE_API_KEY: ${VERITY_TRANSCRIBE_API_KEY:-}');
+    expect(compose).toContain('VERITY_TRANSCRIBE_MODEL: ${VERITY_TRANSCRIBE_MODEL:-whisper-1}');
     expect(compose).toContain(
-      'VERITY_PARAKEET_MODEL: ${VERITY_TRANSCRIBE_MODEL:-parakeet-tdt-0.6b}',
+      'VERITY_TRANSCRIBE_RESPONSE_FORMAT: ${VERITY_TRANSCRIBE_RESPONSE_FORMAT:-verbose_json}',
+    );
+    expect(compose).toContain('VERITY_TRANSCRIBE_LANGUAGE: ${VERITY_TRANSCRIBE_LANGUAGE:-}');
+    expect(compose).toContain(
+      'VERITY_TRANSCRIBE_TIMEOUT_MS: ${VERITY_TRANSCRIBE_TIMEOUT_MS:-14400000}',
     );
     // Reachable from .env: without it, disabling windowing silently re-encodes
     // oversized recordings to 24 kbps instead of uploading them intact.
     expect(compose).toContain(
-      'VERITY_PARAKEET_MAX_UPLOAD_BYTES: ${VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES:-25000000}',
+      'VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES: ${VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES:-25000000}',
     );
   });
 });

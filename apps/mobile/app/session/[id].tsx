@@ -2349,7 +2349,7 @@ export function SessionChat({
         if (readiness.state === 'local-unavailable') {
           Alert.alert(
             'Local transcription unavailable',
-            'This Verity deployment has no local transcription service. Choose an external service in Settings.',
+            'This saved backend is no longer available. Configure the OpenAI-compatible API in Settings.',
             [
               { text: 'Cancel', style: 'cancel' },
               { text: 'Open settings', onPress: () => router.push('/settings') },
@@ -2553,7 +2553,7 @@ export function SessionChat({
             ? 'Local transcription unavailable'
             : 'Finish transcription setup',
           readiness.state === 'local-unavailable'
-            ? 'This deployment has no local transcription service. Choose another backend in Settings.'
+            ? 'This saved backend is no longer available. Configure the transcription API in Settings.'
             : 'Add the external API URL and model before the pending recording can be uploaded.',
           [
             { text: 'Not now', style: 'cancel' },

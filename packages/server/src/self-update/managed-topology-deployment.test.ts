@@ -171,7 +171,7 @@ describe('managed Compose ownership topology', () => {
       compose.indexOf('environment: &verity-server-environment'),
       compose.indexOf('\n    volumes:'),
     );
-    expect(server).toMatch(/^ {6}VERITY_PARAKEET_BASE_URL:/m);
+    expect(server).toMatch(/^ {6}VERITY_TRANSCRIBE_BASE_URL:/m);
 
     expect(RETIRED_MANAGED_SERVER_ENVIRONMENT.length).toBeGreaterThan(0);
     for (const name of RETIRED_MANAGED_SERVER_ENVIRONMENT) {

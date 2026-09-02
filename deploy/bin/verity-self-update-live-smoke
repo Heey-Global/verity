@@ -721,7 +721,7 @@ master_password="$(openssl rand -hex 16)"
 #     environment. Sealed specs go on naming it as an env SOURCE forever, so
 #     every already-installed host's Updater exited on `managed Server
 #     environment source is missing` and restarted into the same failure.
-#   - the same commit changed VERITY_PARAKEET_BASE_URL's default from
+#   - the same commit changed the legacy internal transcription URL's default from
 #     `${VERITY_TRANSCRIBE_BASE_URL:-http://verity-transcribe:5092/v1}` to
 #     `${VERITY_TRANSCRIBE_BASE_URL:-}`. Hosts whose Server container had been
 #     created with the old value then failed on `managed Server container
