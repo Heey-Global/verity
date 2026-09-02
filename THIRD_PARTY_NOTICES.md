@@ -46,7 +46,7 @@ separately by `TRADEMARKS.md`.
 | BSD-3-Clause | 28 |
 | CC-BY-4.0 | 1 |
 | ISC | 67 |
-| MIT | 1031 |
+| MIT | 1034 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -243,6 +243,7 @@ separately by `TRADEMARKS.md`.
 | @fastify/forwarded | 3.0.1 | MIT | [source](https://registry.npmjs.org/@fastify/forwarded/-/forwarded-3.0.1.tgz) |
 | @fastify/merge-json-schemas | 0.2.1 | MIT | [source](https://registry.npmjs.org/@fastify/merge-json-schemas/-/merge-json-schemas-0.2.1.tgz) |
 | @fastify/proxy-addr | 5.1.0 | MIT | [source](https://registry.npmjs.org/@fastify/proxy-addr/-/proxy-addr-5.1.0.tgz) |
+| @fastify/rate-limit | 11.2.0 | MIT | [source](https://registry.npmjs.org/@fastify/rate-limit/-/rate-limit-11.2.0.tgz) |
 | @fastify/websocket | 11.2.0 | MIT | [source](https://registry.npmjs.org/@fastify/websocket/-/websocket-11.2.0.tgz) |
 | @gar/promise-retry | 1.0.3 | MIT | [source](https://registry.npmjs.org/@gar/promise-retry/-/promise-retry-1.0.3.tgz) |
 | @hono/node-server | 2.1.0 | MIT | [source](https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.0.tgz) |
@@ -280,6 +281,7 @@ separately by `TRADEMARKS.md`.
 | @jridgewell/source-map | 0.3.11 | MIT | [source](https://registry.npmjs.org/@jridgewell/source-map/-/source-map-0.3.11.tgz) |
 | @jridgewell/sourcemap-codec | 1.5.5 | MIT | [source](https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz) |
 | @jridgewell/trace-mapping | 0.3.31 | MIT | [source](https://registry.npmjs.org/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz) |
+| @lukeed/ms | 2.0.2 | MIT | [source](https://registry.npmjs.org/@lukeed/ms/-/ms-2.0.2.tgz) |
 | @modelcontextprotocol/sdk | 1.30.0 | MIT | [source](https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.30.0.tgz) |
 | @napi-rs/wasm-runtime | 1.2.3 | MIT | [source](https://registry.npmjs.org/@napi-rs/wasm-runtime/-/wasm-runtime-1.2.3.tgz) |
 | @npmcli/agent | 5.0.2 | ISC | [source](https://registry.npmjs.org/@npmcli/agent/-/agent-5.0.2.tgz) |
@@ -711,6 +713,7 @@ separately by `TRADEMARKS.md`.
 | fast-sha256 | 1.3.0 | Unlicense | [source](https://registry.npmjs.org/fast-sha256/-/fast-sha256-1.3.0.tgz) |
 | fast-uri | 3.1.6 | BSD-3-Clause | [source](https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.6.tgz) |
 | fastify-plugin | 5.1.0 | MIT | [source](https://registry.npmjs.org/fastify-plugin/-/fastify-plugin-5.1.0.tgz) |
+| fastify-plugin | 6.0.0 | MIT | [source](https://registry.npmjs.org/fastify-plugin/-/fastify-plugin-6.0.0.tgz) |
 | fastify | 5.8.5 | MIT | [source](https://registry.npmjs.org/fastify/-/fastify-5.8.5.tgz) |
 | fastq | 1.20.1 | ISC | [source](https://registry.npmjs.org/fastq/-/fastq-1.20.1.tgz) |
 | fb-dotslash | 0.5.8 | (MIT OR Apache-2.0) | [source](https://registry.npmjs.org/fb-dotslash/-/fb-dotslash-0.5.8.tgz) |

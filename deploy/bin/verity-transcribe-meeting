@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-const DEFAULT_MODEL = 'parakeet-tdt-0.6b';
+const DEFAULT_MODEL = 'whisper-1';
+const LEGACY_DEFAULT_MODEL = 'parakeet-tdt-0.6b';
 const DEFAULT_RESPONSE_FORMAT = 'verbose_json';
 // Keep the client side of the request alive for two-hour recordings and allow
 // ffmpeg ample time to prepare them on slower hosts.
@@ -16,7 +17,7 @@ const MAX_ERROR_BODY_BYTES = 8_192;
 const DEFAULT_RETRIES = 0;
 const DEFAULT_HTTP_RETRIES = 0;
 const DEFAULT_RETRY_DELAY_MS = 2_000;
-// Parakeet-class encoders reject inputs above 400 seconds in single-pass mode.
+// OpenAI Whisper encoders reject inputs above 400 seconds in single-pass mode.
 // Keep Verity's normal padded window safely below that ceiling: a 300-second
 // core plus five seconds of context on either side is at most 310 seconds.
 const DEFAULT_CHUNK_SECONDS = 5 * 60;
@@ -86,6 +87,23 @@ function positiveNumberEnv(name, fallback) {
 
 function nonNegativeNumberEnv(name, fallback) {
   const value = Number(process.env[name] ?? fallback);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+// Compatibility for direct installs created from the old `.env.example`.
+// Provider-neutral names always win and are the only names documented now.
+function transcriptionEnv(name) {
+  const current = process.env[`VERITY_TRANSCRIBE_${name}`];
+  return current?.trim() ? current : process.env[`VERITY_PARAKEET_${name}`];
+}
+
+function positiveTranscriptionEnv(name, fallback) {
+  const value = Number(transcriptionEnv(name) ?? fallback);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeTranscriptionEnv(name, fallback) {
+  const value = Number(transcriptionEnv(name) ?? fallback);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
@@ -240,7 +258,7 @@ async function probeAudioDuration(audioPath) {
 }
 
 async function prepareAudioChunks(audioPath, enableOverlap) {
-  const maxBytes = Number(process.env.VERITY_PARAKEET_MAX_UPLOAD_BYTES ?? DEFAULT_MAX_UPLOAD_BYTES);
+  const maxBytes = Number(transcriptionEnv('MAX_UPLOAD_BYTES') ?? DEFAULT_MAX_UPLOAD_BYTES);
   const chunkSeconds = nonNegativeNumberEnv('VERITY_MEETING_CHUNK_SECONDS', DEFAULT_CHUNK_SECONDS);
   const overlapSeconds = enableOverlap
     ? nonNegativeNumberEnv('VERITY_MEETING_CHUNK_OVERLAP_SECONDS', DEFAULT_CHUNK_OVERLAP_SECONDS)
@@ -273,7 +291,7 @@ async function prepareAudioChunks(audioPath, enableOverlap) {
   // lever left.
   const lossless = chunkSeconds > 0;
 
-  const dir = mkdtempSync(join(tmpdir(), 'verity-parakeet-audio-'));
+  const dir = mkdtempSync(join(tmpdir(), 'verity-transcription-audio-'));
   const ffmpeg = process.env.VERITY_MEETING_FFMPEG_COMMAND?.trim() || 'ffmpeg';
   const timeoutMs = Number(
     process.env.VERITY_MEETING_FFMPEG_TIMEOUT_MS ?? DEFAULT_FFMPEG_TIMEOUT_MS,
@@ -353,7 +371,8 @@ async function prepareAudioChunks(audioPath, enableOverlap) {
 async function transcribe(audioPath) {
   // No default: Verity bundles no transcription backend, so an unset base URL is
   // "not configured", not "try localhost".
-  const baseUrl = process.env.VERITY_PARAKEET_BASE_URL?.trim();
+  const currentBaseUrl = process.env.VERITY_TRANSCRIBE_BASE_URL?.trim();
+  const baseUrl = currentBaseUrl || process.env.VERITY_PARAKEET_BASE_URL?.trim();
   if (!baseUrl) {
     throw new Error(
       'No meeting transcription backend is configured. Set VERITY_TRANSCRIBE_BASE_URL ' +
@@ -361,16 +380,21 @@ async function transcribe(audioPath) {
         'OpenAI-compatible transcription API, or configure one in Settings.',
     );
   }
-  const apiKey = process.env.VERITY_PARAKEET_API_KEY?.trim();
-  const model = process.env.VERITY_PARAKEET_MODEL?.trim() || DEFAULT_MODEL;
-  const responseFormat =
-    process.env.VERITY_PARAKEET_RESPONSE_FORMAT?.trim() || DEFAULT_RESPONSE_FORMAT;
-  const language = process.env.VERITY_PARAKEET_LANGUAGE?.trim();
-  const timeoutMs = positiveNumberEnv('VERITY_PARAKEET_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
-  const connectionRetries = nonNegativeNumberEnv('VERITY_PARAKEET_RETRIES', DEFAULT_RETRIES);
-  const httpRetries = nonNegativeNumberEnv('VERITY_PARAKEET_HTTP_RETRIES', DEFAULT_HTTP_RETRIES);
+  // Credentials and model belong to the selected URL as one bundle. Once a new
+  // URL is present, never borrow either from a legacy backend.
+  const apiKey = (
+    currentBaseUrl ? process.env.VERITY_TRANSCRIBE_API_KEY : transcriptionEnv('API_KEY')
+  )?.trim();
+  const model =
+    (currentBaseUrl ? process.env.VERITY_TRANSCRIBE_MODEL : transcriptionEnv('MODEL'))?.trim() ||
+    (currentBaseUrl ? DEFAULT_MODEL : LEGACY_DEFAULT_MODEL);
+  const responseFormat = transcriptionEnv('RESPONSE_FORMAT')?.trim() || DEFAULT_RESPONSE_FORMAT;
+  const language = transcriptionEnv('LANGUAGE')?.trim();
+  const timeoutMs = positiveTranscriptionEnv('TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
+  const connectionRetries = nonNegativeTranscriptionEnv('RETRIES', DEFAULT_RETRIES);
+  const httpRetries = nonNegativeTranscriptionEnv('HTTP_RETRIES', DEFAULT_HTTP_RETRIES);
   const maxAttempts = connectionRetries + httpRetries + 1;
-  const retryDelayMs = positiveNumberEnv('VERITY_PARAKEET_RETRY_DELAY_MS', DEFAULT_RETRY_DELAY_MS);
+  const retryDelayMs = positiveTranscriptionEnv('RETRY_DELAY_MS', DEFAULT_RETRY_DELAY_MS);
   const prepared = await prepareAudioChunks(audioPath, responseFormat === 'verbose_json');
 
   const endpoint = `${baseUrl.replace(/\/+$/, '')}/audio/transcriptions`;
@@ -438,17 +462,19 @@ async function transcribe(audioPath) {
         // out. Surface a concrete, actionable message (endpoint + underlying cause)
         // instead of Node's bare "fetch failed", which is useless for diagnosis.
         if (lastError && lastError.name === 'AbortError') {
-          throw new Error(`Parakeet request to ${endpoint} timed out after ${timeoutMs}ms`);
+          throw new Error(
+            `Transcription API request to ${endpoint} timed out after ${timeoutMs}ms`,
+          );
         }
         const code = connectionErrorCode(lastError);
         const reason =
           code ?? (lastError instanceof Error ? lastError.message : String(lastError ?? 'unknown'));
-        throw new Error(`Could not reach the Parakeet server at ${endpoint} (${reason})`);
+        throw new Error(`Could not reach the transcription API at ${endpoint} (${reason})`);
       }
       if (!response.ok) {
         const text = redactRemoteError(await boundedErrorBody(response).catch(() => ''), [apiKey]);
         throw new Error(
-          `Parakeet transcription failed with HTTP ${response.status} at ${endpoint}${
+          `Transcription API request failed with HTTP ${response.status} at ${endpoint}${
             text.trim() ? `: ${text.trim()}` : ''
           }`,
         );
@@ -464,7 +490,9 @@ async function transcribe(audioPath) {
           (segment) => segment.start === undefined || segment.end === undefined,
         )
       ) {
-        throw new Error('Parakeet returned untimed text for overlapping meeting audio chunks');
+        throw new Error(
+          'The transcription API returned untimed text for overlapping meeting audio chunks',
+        );
       }
       const chunkSegments = normalizedSegments
         .map((segment) => ({
@@ -489,7 +517,7 @@ async function transcribe(audioPath) {
                 : Math.max(0, ...chunkSegments.map((segment) => segment.end ?? 0)) - chunk.offset),
       );
     }
-    if (segments.length === 0) throw new Error('Parakeet returned no transcript text');
+    if (segments.length === 0) throw new Error('The transcription API returned no transcript text');
     return {
       segments,
       ...(detectedLanguage ? { language: detectedLanguage } : {}),
