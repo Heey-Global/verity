@@ -77,7 +77,6 @@ import {
   normalizeSessionRelativePath,
   sessionFilePath,
   toSessionFileEntry,
-  type SessionFileEntry,
 } from './session-files.js';
 import type { DevicePairingManager } from './device-pairing.js';
 import { repairSessionWorktreePermissions } from './session-worktree-recovery.js';
@@ -201,6 +200,8 @@ import {
   MAX_MEETING_AUDIO_BASE64_LEN,
   registerMeetingTranscriptRoutes,
 } from './meeting-transcript-routes.js';
+import { registerSessionFileRoutes } from './session-file-routes.js';
+import { sessionParams } from './session-route-schemas.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -2461,25 +2462,6 @@ const patchSessionBody = z.object({
   model: z.string().min(1).optional(),
 });
 
-const sessionFileQuery = z.object({
-  path: z.string().optional().default(''),
-});
-const sessionFileUploadQuery = z.object({
-  path: z.string().default(''),
-  fileName: z
-    .string()
-    .min(1)
-    .max(255)
-    .refine(
-      (name) =>
-        name !== '.' &&
-        name !== '..' &&
-        !/[\0\\/]/.test(name) &&
-        Buffer.byteLength(name, 'utf8') <= 255,
-      'invalid file name',
-    ),
-});
-
 // Body for POST /sessions/:id/permissions/:toolUseId: the operator's mid-turn
 // allow/deny answer for a parked `can_use_tool` prompt (#27). `allow` may carry an
 // edited `updatedInput` (the tool runs with it); `deny` carries a `message` shown
@@ -2637,12 +2619,6 @@ export interface SessionDetail extends SessionSummary {
   queued: { id: string; text: string; attachments?: Attachment[] }[];
 }
 
-const sessionParams = z.object({
-  id: z
-    .string()
-    .min(1)
-    .regex(/^[A-Za-z0-9_-]+$/),
-});
 const scrollDiagnosticBody = z.object({
   event: z.string().min(1).max(80),
   seq: z.number().int().nonnegative(),
@@ -6811,25 +6787,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  app.get(
-    '/sessions/:id/files',
-    async (
-      request,
-      reply,
-    ): Promise<
-      { path: string; entries: SessionFileEntry[]; truncated: boolean } | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
-      const { path } = sessionFileQuery.parse(request.query);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
+  registerSessionFileRoutes(app, {
+    getWorktree: async (id) => (await deps.eventStore.getSession(id))?.worktree,
+    list: async (reply, worktree, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(session.worktree, path);
+        target = sessionFilePath(worktree, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -6841,7 +6804,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
         );
         await assertSessionRealPath(
-          session.worktree,
+          worktree,
           await realpath(`/proc/self/fd/${String(directoryHandle.fd)}`),
         );
       } catch (error) {
@@ -6881,13 +6844,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await directoryHandle.close();
       }
     },
-  );
-
-  app.post(
-    '/sessions/:id/files',
-    async (request, reply): Promise<{ path: string; size: number } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const query = sessionFileUploadQuery.parse(request.query);
+    upload: async (request, reply, id, query) => {
       const declaredSize = Number(request.headers['content-length']);
       if (!Number.isSafeInteger(declaredSize) || declaredSize < 0) {
         reply.code(411);
@@ -6902,16 +6859,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-
+      const { worktree } = session;
       let directory: { abs: string; rel: string };
       let target: { abs: string; rel: string };
       try {
-        directory = sessionFilePath(session.worktree, query.path);
+        directory = sessionFilePath(worktree, query.path);
         target = sessionFilePath(
-          session.worktree,
+          worktree,
           [directory.rel, query.fileName].filter(Boolean).join('/'),
         );
-        await assertSessionRealPath(session.worktree, directory.abs);
+        await assertSessionRealPath(worktree, directory.abs);
         const directoryStats = await lstat(directory.abs);
         if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
           reply.code(400);
@@ -6935,7 +6892,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const destinationPath = `${descriptorPath}/${query.fileName}`;
       try {
         const openedDirectoryReal = await realpath(descriptorPath);
-        await assertSessionRealPath(session.worktree, openedDirectoryReal);
+        await assertSessionRealPath(worktree, openedDirectoryReal);
         const filesystem = await statfs(descriptorPath);
         const availableBytes = Number(filesystem.bavail) * Number(filesystem.bsize);
         const reserveBytes = Math.min(256_000_000, Math.floor(availableBytes * 0.1));
@@ -6987,25 +6944,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await directoryHandle.close();
       }
     },
-  );
-
-  app.get(
-    '/sessions/:id/files/content',
-    async (
-      request,
-      reply,
-    ): Promise<{ path: string; content: string; size: number } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { path } = sessionFileQuery.parse(request.query);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
+    content: async (reply, worktree, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(session.worktree, path);
+        target = sessionFilePath(worktree, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -7014,7 +6956,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
-          session.worktree,
+          worktree,
           await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
         );
       } catch (error) {
@@ -7046,22 +6988,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await fileHandle.close();
       }
     },
-  );
-
-  app.get(
-    '/sessions/:id/files/download',
-    async (request, reply): Promise<Buffer | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { path } = sessionFileQuery.parse(request.query);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
+    download: async (reply, worktree, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(session.worktree, path);
+        target = sessionFilePath(worktree, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -7070,7 +7000,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
-          session.worktree,
+          worktree,
           await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
         );
       } catch (error) {
@@ -7105,7 +7035,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await fileHandle.close();
       }
     },
-  );
+  });
 
   // Lightweight live activity for a session, polled by the app for the "working"
   // indicator + persistent "waiting" messages. `busy` = the conductor is in-flight
