@@ -196,6 +196,7 @@ import {
   registerProjectConciergeRoutes,
 } from './project-concierge-routes.js';
 import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
+import { registerSessionReadRoutes } from './session-read-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -6360,45 +6361,40 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     };
   };
 
-  app.get('/models', async (): Promise<ModelList> => {
-    return availableModels();
-  });
-
-  app.get('/sessions/:id', async (request, reply): Promise<SessionDetail | { error: string }> => {
-    const { id } = sessionParams.parse(request.params);
-    const session = await deps.eventStore.getSession(id);
-    if (!session) {
-      reply.code(404);
-      return { error: `session ${id} not found` };
-    }
-    // Opening a session hits this route first, and the transcript arrives over a
-    // separate paged read — so hydrating the whole log here bought nothing but
-    // latency in front of the first paint. The header's status, usage,
-    // rate-limit and count fields all come out of the projection slice.
-    const facts =
-      (await deps.eventStore.listSessionProjectionFacts([id])).get(id) ?? emptyProjectionFacts();
-    const sequencedEvents = facts.events;
-    const events = sequencedEvents.map((event) => event.event);
-    const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
-    const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
-    const status = liveStatusFromProjection(id, events, facts.eventCount);
-    const pendingPermissions = conductor.pendingPermissions(id);
-    return {
-      ...session,
-      status,
-      pendingPermissions,
-      ...(status === 'awaiting_input' && pendingPermissions.length > 0
-        ? { permissionAwaitingInput: true as const }
-        : {}),
-      usage: aggregateUsage(events),
-      ...(rateLimit ? { rateLimit } : {}),
-      ...(rateLimits.length > 0 ? { rateLimits } : {}),
-      resumable: await worktreeExists(session.worktree),
-      eventCount: facts.eventCount,
-      lastActivityAt: facts.lastActivityAt,
-      busy: conductor.isBusy(id) || hasMeetingJob(id),
-      queued: conductor.queuedItems(id),
-    };
+  registerSessionReadRoutes(app, {
+    listModels: availableModels,
+    getSession: async (id): Promise<SessionDetail | undefined> => {
+      const session = await deps.eventStore.getSession(id);
+      if (!session) return undefined;
+      // Opening a session hits this route first, and the transcript arrives over a
+      // separate paged read — so hydrating the whole log here bought nothing but
+      // latency in front of the first paint. The header's status, usage,
+      // rate-limit and count fields all come out of the projection slice.
+      const facts =
+        (await deps.eventStore.listSessionProjectionFacts([id])).get(id) ?? emptyProjectionFacts();
+      const sequencedEvents = facts.events;
+      const events = sequencedEvents.map((event) => event.event);
+      const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
+      const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
+      const status = liveStatusFromProjection(id, events, facts.eventCount);
+      const pendingPermissions = conductor.pendingPermissions(id);
+      return {
+        ...session,
+        status,
+        pendingPermissions,
+        ...(status === 'awaiting_input' && pendingPermissions.length > 0
+          ? { permissionAwaitingInput: true as const }
+          : {}),
+        usage: aggregateUsage(events),
+        ...(rateLimit ? { rateLimit } : {}),
+        ...(rateLimits.length > 0 ? { rateLimits } : {}),
+        resumable: await worktreeExists(session.worktree),
+        eventCount: facts.eventCount,
+        lastActivityAt: facts.lastActivityAt,
+        busy: conductor.isBusy(id) || hasMeetingJob(id),
+        queued: conductor.queuedItems(id),
+      };
+    },
   });
 
   app.post(
