@@ -480,6 +480,31 @@ describe('verity-code-review session backend', () => {
       ),
     );
     expect(readFileSync(mirror)).toEqual(readFileSync(review));
+
+    const prompt = fileURLToPath(new URL('../agent-seed/code-review-prompt.md', import.meta.url));
+    const promptMirror = fileURLToPath(
+      new URL(
+        '../features/verity-sandbox-toolkit/agent-seed/code-review-prompt.md',
+        import.meta.url,
+      ),
+    );
+    expect(readFileSync(promptMirror)).toEqual(readFileSync(prompt));
+  });
+
+  it('keeps reviewer findings inside the submitted change', () => {
+    const prompt = readFileSync(
+      fileURLToPath(new URL('../agent-seed/code-review-prompt.md', import.meta.url)),
+      'utf8',
+    );
+    expect(prompt).toMatch(/Do not propose new\s+features, unrelated refactors/);
+    expect(prompt).toMatch(/MEDIUM.*in-scope correctness or maintainability/s);
+    expect(prompt).toMatch(/LOW.*must never be the sole\s+reason.*another review pass/s);
+  });
+
+  it('documents the same triage before marking the reviewed HEAD', () => {
+    const helper = readFileSync(review, 'utf8');
+    expect(helper).toMatch(/fixed or declined with a brief reason/i);
+    expect(helper).toMatch(/Re-run first when a fix changed HEAD/i);
   });
 
   it('retains the historical Codex reviewer for an OpenCode session', () => {
