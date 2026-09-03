@@ -197,6 +197,10 @@ import {
 } from './project-concierge-routes.js';
 import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
+import {
+  MAX_MEETING_AUDIO_BASE64_LEN,
+  registerMeetingTranscriptRoutes,
+} from './meeting-transcript-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -1397,7 +1401,6 @@ const streamQuery = z.object({ sinceSeq: z.coerce.number().int().nonnegative().o
 const DEFAULT_HISTORY_PAGE = 40;
 const MAX_ATTACHMENTS = 8;
 const MAX_ATTACHMENT_BASE64_LEN = 7_000_000;
-const MAX_MEETING_AUDIO_BASE64_LEN = 70_000_000;
 const DEFAULT_MEETING_AUDIO_STREAM_BYTES = 500_000_000;
 // The streamed upload route acknowledges first; transcription of a two-hour
 // recording is allowed to continue server-side without an HTTP request deadline.
@@ -1498,33 +1501,6 @@ const turnAttachment = attachmentUploadSchema.refine(
   (a) => a.data.length <= MAX_ATTACHMENT_BASE64_LEN,
   { message: 'attachment exceeds the size limit', path: ['data'] },
 );
-
-const meetingTranscriptBody = z.object({
-  fileName: z.string().min(1).max(200),
-  mediaType: z.string().min(1).max(100).default('audio/mpeg'),
-  data: z.string().min(1).max(MAX_MEETING_AUDIO_BASE64_LEN),
-  title: z.string().min(1).max(120).optional(),
-  announceRequest: z.boolean().optional(),
-  clientRequestId: z.string().min(1).max(100).optional(),
-});
-
-const streamedMeetingTranscriptQuery = z.object({
-  fileName: z.string().min(1).max(200),
-  mediaType: z.string().min(1).max(100).default('audio/mpeg'),
-  title: z.string().min(1).max(120).optional(),
-  announceRequest: z.enum(['true', 'false']).optional(),
-  clientRequestId: z.string().min(1).max(100).optional(),
-});
-
-const streamedMeetingTranscriptHeaders = z.object({
-  'x-verity-meeting-file-name': z.string().min(1),
-  'x-verity-meeting-media-type': z.string().min(1),
-  'x-verity-meeting-title': z.string().optional(),
-  'x-verity-meeting-announce': z.enum(['true', 'false']).optional(),
-  // encodeURIComponent can expand one Unicode code point to 12 ASCII bytes.
-  // The decoded query schema below remains the authoritative 100-char limit.
-  'x-verity-meeting-client-request-id': z.string().min(1).max(1200).optional(),
-});
 
 function isSupportedMeetingAudio(mediaType: string, fileName: string): boolean {
   const lowerName = fileName.toLowerCase();
@@ -2661,12 +2637,6 @@ export interface SessionDetail extends SessionSummary {
   queued: { id: string; text: string; attachments?: Attachment[] }[];
 }
 
-interface MeetingTranscriptCreated {
-  path: string;
-  title: string;
-  segments: number;
-}
-
 const sessionParams = z.object({
   id: z
     .string()
@@ -2898,6 +2868,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // (MAX_ATTACHMENTS × MAX_ATTACHMENT_BASE64_LEN). Without this, a real screenshot
   // (>1 MiB of base64) is rejected with a 413 BEFORE the schema runs — the turn
   // silently never dispatches. Headroom added for the prompt + JSON envelope.
+  // The same reasoning binds MAX_MEETING_AUDIO_BASE64_LEN, which lives in
+  // meeting-transcript-routes.ts next to the schema that enforces it: this limit
+  // has to stay above it, so lowering one without the other is what turns a field
+  // error into a bare 413.
   const bodyLimit =
     Math.max(MAX_ATTACHMENTS * MAX_ATTACHMENT_BASE64_LEN, MAX_MEETING_AUDIO_BASE64_LEN) + 1_000_000;
   const loggerOption: NonNullable<FastifyServerOptions['logger']> = deps.logger
@@ -6397,11 +6371,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  app.post(
-    '/sessions/:id/meetings/transcripts',
-    async (request, reply): Promise<MeetingTranscriptCreated | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const body = meetingTranscriptBody.parse(request.body);
+  registerMeetingTranscriptRoutes(app, {
+    save: async (request, reply, id, body) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -6612,39 +6583,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         releaseMeetingJob(id, controller);
       }
     },
-  );
-
-  // Large recordings are streamed to disk and acknowledged as soon as upload
-  // finishes. Transcription then continues independently of the mobile request.
-  app.post(
-    '/sessions/:id/meetings/transcripts/stream',
-    async (request, reply): Promise<{ accepted: true } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const metadata = streamedMeetingTranscriptHeaders.parse(request.headers);
-      let query: z.infer<typeof streamedMeetingTranscriptQuery>;
-      try {
-        query = streamedMeetingTranscriptQuery.parse({
-          fileName: decodeURIComponent(metadata['x-verity-meeting-file-name']),
-          mediaType: decodeURIComponent(metadata['x-verity-meeting-media-type']),
-          ...(metadata['x-verity-meeting-title']
-            ? { title: decodeURIComponent(metadata['x-verity-meeting-title']) }
-            : {}),
-          ...(metadata['x-verity-meeting-announce']
-            ? { announceRequest: metadata['x-verity-meeting-announce'] }
-            : {}),
-          ...(metadata['x-verity-meeting-client-request-id']
-            ? {
-                clientRequestId: decodeURIComponent(metadata['x-verity-meeting-client-request-id']),
-              }
-            : {}),
-        });
-      } catch (error) {
-        if (error instanceof URIError) {
-          reply.code(400);
-          return { error: 'invalid meeting metadata encoding' };
-        }
-        throw error;
-      }
+    stream: async (request, reply, id, query) => {
       const configuredMaxBytes = Number(
         process.env.VERITY_MEETING_MAX_UPLOAD_BYTES ?? DEFAULT_MEETING_AUDIO_STREAM_BYTES,
       );
@@ -6870,7 +6809,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(202);
       return { accepted: true };
     },
-  );
+  });
 
   app.get(
     '/sessions/:id/files',
