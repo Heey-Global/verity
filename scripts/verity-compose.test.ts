@@ -335,8 +335,8 @@ describe('deploy/bin/verity-compose', () => {
     );
     // And that route exists on the Server. A URL the three agree on but nothing serves is
     // the same 404-shaped failure by another road.
-    expect(readFileSync('packages/server/src/server.ts', 'utf8')).toContain(
-      "app.post(\n      '/internal/control-plane/mcp',",
+    expect(readFileSync('packages/server/src/mcp-gateway-route.ts', 'utf8')).toContain(
+      "app.post(\n    '/internal/control-plane/mcp',",
     );
   });
 

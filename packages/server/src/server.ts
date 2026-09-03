@@ -189,7 +189,8 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
-import { internalConnectionIdentity, requestArrivedInternally } from './internal-listener.js';
+import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
+import { internalConnectionIdentity } from './internal-listener.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -5186,48 +5187,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           signal,
         }),
     });
-    app.post(
-      '/internal/mcp',
-      // The server-wide limit is ~71 MiB so a turn can carry image attachments. A gateway
-      // call is a JSON-RPC envelope around tool arguments — an HTTP request the operator is
-      // expected to read on a card — so it needs a small fraction of that, and the tool's
-      // `body` is otherwise unbounded JSON that a parked card persists as a permission
-      // event. 256 KiB fits any request worth approving by hand and keeps a caller holding
-      // a valid bearer from making the Server buffer and store tens of MB per call.
-      { bodyLimit: 256 * 1024 },
-      async (request, reply): Promise<unknown> => {
-        const socketIdentity = internalConnectionIdentity(request);
-        if (socketIdentity === undefined) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const presented = bearerToken(request.headers.authorization);
-        const response = await gateway.handle({
-          projectId: socketIdentity.projectId,
-          token: presented,
-          body: request.body,
-        });
-        reply.code(response.status);
-        // MCP acknowledges a notification with an empty 202. Returning undefined from an
-        // async handler leaves the reply unsent and returning null writes the four bytes
-        // `null`, so send the empty payload explicitly and hand Fastify the reply itself.
-        return response.body === undefined ? reply.send() : response.body;
-      },
-    );
-    // `GET /internal/mcp` — the Streamable HTTP stream for server-initiated messages, which
-    // this gateway does not offer: every answer it has is the response to a call. The
-    // transport opens the stream anyway once the handshake completes, and the spec's way of
-    // saying "there is none" is 405; anything else — a 404 from an unregistered route or
-    // from the relay's allowlist — it reports as a connection error, once per ACP turn.
-    app.get('/internal/mcp', async (request, reply): Promise<unknown> => {
-      if (internalConnectionIdentity(request) === undefined) {
-        reply.code(401);
-        return { error: 'unauthorized' };
-      }
-      reply.code(405).header('allow', 'POST');
-      return { error: 'method_not_allowed' };
-    });
-
     // `POST /internal/control-plane/mcp` — the same gateway for the ONE caller that has no
     // project socket to arrive on: the dedicated control-plane runner.
     //
@@ -5261,35 +5220,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // which a composition may leave unwired: this route grants an identity instead of merely
     // failing to find one, so it must fail closed on its own. `/internal/mcp` can lean on the
     // guard because a connection with no project identity gets nothing there anyway.
-    const controlPlaneConnection = (request: FastifyRequest): boolean =>
-      requestArrivedInternally(request) && internalConnectionIdentity(request) === undefined;
-    app.post(
-      '/internal/control-plane/mcp',
-      { bodyLimit: 256 * 1024 },
-      async (request, reply): Promise<unknown> => {
-        if (!controlPlaneConnection(request)) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const presented = bearerToken(request.headers.authorization);
-        const response = await gateway.handle({
-          projectId: VERITY_CONTROL_PROJECT_ID,
-          token: presented,
-          body: request.body,
-        });
-        reply.code(response.status);
-        return response.body === undefined ? reply.send() : response.body;
-      },
-    );
-    // Same 405-not-404 contract as `GET /internal/mcp`: the MCP transport opens the
-    // server-message stream after the handshake and treats a 404 as a connection error.
-    app.get('/internal/control-plane/mcp', async (request, reply): Promise<unknown> => {
-      if (!controlPlaneConnection(request)) {
-        reply.code(401);
-        return { error: 'unauthorized' };
-      }
-      reply.code(405).header('allow', 'POST');
-      return { error: 'method_not_allowed' };
+    registerMcpGatewayRoutes(app, {
+      gateway,
+      controlProjectId: VERITY_CONTROL_PROJECT_ID,
     });
   }
 
