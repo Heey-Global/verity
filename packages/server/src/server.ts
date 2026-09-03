@@ -195,6 +195,7 @@ import {
   parseRecreateContainerBody,
   registerProjectConciergeRoutes,
 } from './project-concierge-routes.js';
+import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -6091,21 +6092,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    *  must be an EXISTING repository the App installation can reach — Verity does
    *  not create repositories. The provisioner merges an existing default branch
    *  before its plain (non-forced) push. */
-  const linkGitHubBody = z.object({ repo: z.string().min(1) });
   /** The linked project, plus how its history reached GitHub — an empty target takes
    *  it directly, a target with history gets a branch and the pull request that
    *  carries it in, which the operator still has to merge. */
   type LinkGitHubResponse = { project: ProjectRecord } & LinkCloneToGitHubResult;
-  app.post(
-    '/projects/:id/link-github',
-    async (request, reply): Promise<LinkGitHubResponse | { error: string }> => {
-      if (!deps.provisioner?.linkCloneToGitHub) {
-        reply.code(503);
-        return { error: 'linking a project to GitHub is not configured' };
-      }
-      const provisioner = deps.provisioner;
-      const { id } = projectParams.parse(request.params);
-      const body = linkGitHubBody.parse(request.body);
+  registerProjectGitHubLinkRoute(app, {
+    isAvailable: () => deps.provisioner?.linkCloneToGitHub !== undefined,
+    link: async (request, reply, id, repository) => {
+      const provisioner = deps.provisioner!;
       const project = await deps.eventStore.getProject(id);
       if (project === undefined || project.hiddenAt !== null) {
         reply.code(404);
@@ -6115,7 +6109,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: 'this project is already backed by a GitHub repository' };
       }
-      const target = parseOwnerRepo(body.repo);
+      const target = parseOwnerRepo(repository);
       if (target === undefined || target.owner === LOCAL_PROJECT_OWNER) {
         reply.code(400);
         return { error: 'invalid repository' };
@@ -6267,7 +6261,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
       }
     },
-  );
+  });
 
   app.post(
     '/concierge/session',
