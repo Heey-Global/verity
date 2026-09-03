@@ -189,6 +189,7 @@ import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { registerWorkflowRoutes } from './workflow-routes.js';
+import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -206,9 +207,8 @@ import {
   isLocalProject,
   type AgentLoopRecord,
   type ProjectRecord,
-  type ProjectUpsertInput,
 } from '@verity/store';
-import { containerNameFor, parseOwnerRepo, slugifyProjectName } from './canonical.js';
+import { parseOwnerRepo } from './canonical.js';
 import { startAgentLoopScheduler, type AgentLoopScheduler } from './agent-loop-scheduler.js';
 import { registerAgentLoopRoutes } from './agent-loop-routes.js';
 import {
@@ -5512,149 +5512,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined,
     githubWebhookDigest: (request) => githubWebhookDigests.get(request),
   });
-  app.get('/projects', async (): Promise<PublicProjectRecord[]> => {
-    const projects = deps.listProjects
-      ? await deps.listProjects()
-      : await deps.eventStore.listProjects();
-    return publicProjects(await projectsForOverview(projects.filter(appearsInProjectOverview)));
-  });
-
-  const projectOrderBody = z.object({
-    ids: z.array(z.string().min(1)),
-  });
-  app.patch(
-    '/projects/order',
-    async (request, reply): Promise<PublicProjectRecord[] | { error: string }> => {
-      const body = projectOrderBody.parse(request.body);
-      if (new Set(body.ids).size !== body.ids.length) {
-        reply.code(400);
-        return { error: 'duplicate project id' };
-      }
-      let projects: ProjectRecord[];
-      try {
-        projects = await deps.eventStore.reorderProjects(body.ids);
-      } catch (err) {
-        if (err instanceof Error && /project order/i.test(err.message)) {
-          reply.code(400);
-          return { error: err.message };
-        }
-        throw err;
-      }
+  registerProjectCollectionRoutes(app, {
+    store: deps.eventStore,
+    listOverview: async () => {
+      const projects = deps.listProjects
+        ? await deps.listProjects()
+        : await deps.eventStore.listProjects();
       return publicProjects(await projectsForOverview(projects.filter(appearsInProjectOverview)));
     },
-  );
-
-  app.get('/github/repositories', async (): Promise<PublicProjectRecord[]> => {
-    const projects = deps.listAvailableRepositories
-      ? await deps.listAvailableRepositories()
-      : deps.listProjects
-        ? await deps.listProjects()
-        : await deps.eventStore.listProjects({ includeHidden: true });
-    // Only offer repos not yet registered as a project. Paused projects are also
-    // `absent`, but carry `overviewVisible=true` and live in the overview's
-    // Paused section instead of showing up as addable duplicates. Soft-deleted
-    // projects are hidden from the overview and must remain addable so POST
-    // /projects can restore the existing row.
-    return publicProjects(
-      projects.filter(
-        (project) =>
-          project.state === 'absent' &&
-          // A local project has no repository to offer, and a soft-deleted one
-          // would otherwise surface here as an addable "repo" that POST /projects
-          // cannot resolve on GitHub.
-          !isLocalProject(project) &&
-          (project.hiddenAt !== null || project.overviewVisible !== true),
+    reorder: async (ids) =>
+      publicProjects(
+        await projectsForOverview(
+          (await deps.eventStore.reorderProjects(ids)).filter(appearsInProjectOverview),
+        ),
       ),
-    );
+    listAvailableRepositories: async () =>
+      deps.listAvailableRepositories
+        ? deps.listAvailableRepositories()
+        : deps.listProjects
+          ? deps.listProjects()
+          : deps.eventStore.listProjects({ includeHidden: true }),
+    presentRepositories: publicProjects,
+    localIdentityReservations: localIdentityLinkReservations,
+    githubTargetReservations: githubTargetLinkReservations,
+    isUniqueViolation,
   });
-
-  /** Two mutually exclusive shapes: `{ repo }` adds an existing GitHub repository
-   *  (the historical form), `{ kind: 'local', name }` creates a project with NO
-   *  GitHub repository behind it, which can be linked to one later via
-   *  `POST /projects/:id/link-github`. */
-  const createProjectBody = z.union([
-    z.object({
-      repo: z.string().min(1),
-      kind: z.literal('github').optional(),
-      imageRef: z.string().min(1).nullable().optional(),
-    }),
-    z.object({
-      kind: z.literal('local'),
-      name: z.string().min(1).max(100),
-      imageRef: z.string().min(1).nullable().optional(),
-    }),
-  ]);
-  app.post(
-    '/projects',
-    async (request, reply): Promise<{ project: ProjectRecord } | { error: string }> => {
-      const body = createProjectBody.parse(request.body);
-      const local = body.kind === 'local';
-      // A local project's identity is the reserved internal owner plus a slug of
-      // the operator's name; a GitHub project's is its canonical `owner/repo`.
-      const parsed = local
-        ? ((slug) => (slug === undefined ? undefined : { owner: LOCAL_PROJECT_OWNER, repo: slug }))(
-            slugifyProjectName(body.name),
-          )
-        : parseOwnerRepo(body.repo);
-      if (parsed === undefined) {
-        reply.code(400);
-        return { error: local ? 'invalid project name' : 'invalid project' };
-      }
-      const parsedKey = `${parsed.owner}/${parsed.repo}`;
-      if (
-        localIdentityLinkReservations.has(parsedKey) ||
-        githubTargetLinkReservations.has(parsedKey)
-      ) {
-        reply.code(409);
-        return {
-          error: local
-            ? 'a project with that name already exists'
-            : `${parsedKey} is currently being linked`,
-        };
-      }
-      const input: ProjectUpsertInput = {
-        id: randomUUID(),
-        owner: parsed.owner,
-        repo: parsed.repo,
-        containerName: containerNameFor(parsed),
-        ...(local
-          ? {
-              kind: 'local' as const,
-              // Pin the host clone directory at creation. Linking to GitHub later
-              // rewrites `(owner, repo)`, and sessions persist ABSOLUTE worktree
-              // paths under this directory — deriving it would move the clone out
-              // from under every session the project already has.
-              cloneDir: `${parsed.owner}-${parsed.repo}`,
-            }
-          : {}),
-        ...(body.imageRef !== undefined ? { imageRef: body.imageRef } : {}),
-        state: 'absent',
-        // Manual add doubles as "restore": if this repo was previously
-        // soft-deleted, un-hide it so it reappears in the picker.
-        restore: true,
-        overviewVisible: true,
-      };
-      let project: ProjectRecord;
-      try {
-        // A local add must be INSERT-only: two concurrent requests for the same
-        // typed name may not both adopt the first request's clone. GitHub adds
-        // retain the historical upsert/restore behavior.
-        project = local
-          ? await deps.eventStore.createProject(input)
-          : await deps.eventStore.upsertProject(input);
-      } catch (error) {
-        if (local && isUniqueViolation(error)) {
-          reply.code(409);
-          return { error: 'a project with that name already exists' };
-        }
-        throw error;
-      }
-      await deps.eventStore.setProjectSetupStatus(project.id, 'pending');
-      reply.code(201);
-      return { project: (await deps.eventStore.getProject(project.id))! };
-    },
-  );
-
   // Project detail (concept §19.6, #174): the cached container lifecycle row plus
   // sessions bound to that project. This reads from the local store; it does not
   // hit the GitHub installation provider, so detail stays available even if the
