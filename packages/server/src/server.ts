@@ -191,6 +191,10 @@ import { registerProjectCollectionRoutes } from './project-collection-routes.js'
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
 import { registerProjectDevServerSetupRoute } from './project-dev-server-setup-route.js';
+import {
+  parseRecreateContainerBody,
+  registerProjectConciergeRoutes,
+} from './project-concierge-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -6024,52 +6028,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  app.post(
-    '/concierge/projects/:id/refresh-token',
-    async (
-      request,
-      reply,
-    ): Promise<{ projectId: string; refreshedAt: string } | { error: string }> => {
-      if (!deps.refreshProjectToken) {
-        reply.code(503);
-        return { error: 'project token refresh is not configured' };
-      }
-      const { id } = projectParams.parse(request.params);
+  registerProjectConciergeRoutes(app, {
+    canRefreshToken: () => deps.refreshProjectToken !== undefined,
+    refreshToken: async (_request, reply, id) => {
       const project = await deps.eventStore.getProject(id);
       if (project === undefined) {
         reply.code(404);
         return { error: `project ${id} not found` };
       }
-      await deps.refreshProjectToken(project);
+      await deps.refreshProjectToken!(project);
       return { projectId: project.id, refreshedAt: new Date().toISOString() };
     },
-  );
-
-  const recreateContainerBody = z
-    .object({
-      confirmWarnings: z.boolean().optional(),
-      // "Rebuild image": recreate AND rebuild the project's derived devcontainer
-      // image instead of reusing the content-hash-cached tag. Separate from
-      // `confirmWarnings` because it changes what is built, not what is
-      // acknowledged — the ordinary update path must keep its cache.
-      forceRebuild: z.boolean().optional(),
-    })
-    .optional();
-  app.post(
-    '/concierge/projects/:id/recreate-container',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { project: ProjectRecord }
-      | { error: string }
-      | { requiresConfirmation: true; warnings: string[] }
-    > => {
-      if (!deps.provisioner?.recreateContainer) {
-        reply.code(503);
-        return { error: 'project container recreate is not configured' };
-      }
-      const { id } = projectParams.parse(request.params);
+    canRecreateContainer: () => deps.provisioner?.recreateContainer !== undefined,
+    recreateContainer: async (request, reply, id) => {
+      const provisioner = deps.provisioner!;
+      const recreateContainer = provisioner.recreateContainer!.bind(provisioner);
       const project = await deps.eventStore.getProject(id);
       // Hidden = soft-deleted: recreate must not resurrect it (mirrors /repair).
       if (project === undefined || project.hiddenAt !== null) {
@@ -6091,10 +6064,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: `project ${id} has a turn in flight — cancel it or wait, then recreate` };
       }
-      const body = recreateContainerBody.parse(request.body);
+      const body = parseRecreateContainerBody(request.body);
       let updated: ProjectRecord;
       try {
-        updated = await deps.provisioner.recreateContainer(project.id, {
+        updated = await recreateContainer(project.id, {
           confirmWarnings: body?.confirmWarnings === true,
           forceRebuild: body?.forceRebuild === true,
         });
@@ -6112,7 +6085,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       return { project: updated };
     },
-  );
+  });
 
   /** The "connect later" bridge for a project created without GitHub. The target
    *  must be an EXISTING repository the App installation can reach — Verity does
