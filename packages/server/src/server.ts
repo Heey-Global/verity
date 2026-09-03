@@ -99,7 +99,6 @@ import type {
   WorkflowStore,
 } from '@verity/store';
 import {
-  PROJECT_MEMORY_MAX_CHARS,
   DeletedProjectError,
   DevServerPortRangeExhaustedError,
   SealedError,
@@ -154,7 +153,6 @@ import {
   NothingToMergeError,
   type GitBranchService,
   type GitOutput,
-  isValidBranchName,
 } from './branches.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } from './github.js';
@@ -190,6 +188,7 @@ import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { registerWorkflowRoutes } from './workflow-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
+import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -2658,12 +2657,6 @@ interface MeetingTranscriptCreated {
   path: string;
   title: string;
   segments: number;
-}
-
-interface ProjectDetail {
-  project: PublicProjectRecord;
-  settings: PublicProjectSettingsRecord | null;
-  sessions: SessionSummary[];
 }
 
 const sessionParams = z.object({
@@ -5537,140 +5530,69 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     githubTargetReservations: githubTargetLinkReservations,
     isUniqueViolation,
   });
-  // Project detail (concept §19.6, #174): the cached container lifecycle row plus
-  // sessions bound to that project. This reads from the local store; it does not
-  // hit the GitHub installation provider, so detail stays available even if the
-  // live repo-list sync is temporarily unavailable.
-  const projectParams = z.object({ id: z.string().min(1) });
-  app.get('/projects/:id', async (request, reply): Promise<ProjectDetail | { error: string }> => {
-    const { id } = projectParams.parse(request.params);
-    const cached = await deps.eventStore.getProject(id);
-    if (cached === undefined) {
-      reply.code(404);
-      return { error: `project ${id} not found` };
-    }
-    // Detail is the screen that offers Repair, so its state has to be the live
-    // container truth, not whatever the last overview poll happened to persist.
-    const project = deps.reconcileProjectState
-      ? await deps.reconcileProjectState(cached).catch(() => cached)
-      : cached;
-    const projectStore = projectSettingsStore(deps.eventStore);
-    const settings = (await projectStore.getProjectSettingsRaw(id)) ?? null;
-    const sessions = (await deps.eventStore.listSessions()).filter((s) => s.projectId === id);
-    // No forced refresh: this screen polls every 15 s, and forcing a GitHub
-    // round trip on each poll put the network in front of the project detail
-    // rendering at all. The default path still awaits ONE refresh while the
-    // in-memory cache is cold — which is what populates the release badge on
-    // GitHub-App deployments — and serves the cached tag instantly afterwards.
-    // What keeps that tag from pinning to the first value resolved after boot is
-    // {@link GitHubReleaseService.latestRelease} itself: non-blocking by
-    // contract, it answers from its own 5-minute entry and kicks a background
-    // refresh whenever that entry is stale. So the revalidation lives there, not
-    // here, and this route has no reason to await one.
-    const resolved = await resolveProjectRelease(project);
-    const sandboxUpdate = withSelfRepair(
-      resolved.project,
-      (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-      unrepairedSandboxes(),
-    );
-    return {
-      project: publicProject(
+  registerProjectDetailRoutes(app, {
+    getDetail: async (id) => {
+      const cached = await deps.eventStore.getProject(id);
+      if (cached === undefined) return undefined;
+      const project = deps.reconcileProjectState
+        ? await deps.reconcileProjectState(cached).catch(() => cached)
+        : cached;
+      const settings =
+        (await projectSettingsStore(deps.eventStore).getProjectSettingsRaw(id)) ?? null;
+      const sessions = (await deps.eventStore.listSessions()).filter(
+        (session) => session.projectId === id,
+      );
+      const resolved = await resolveProjectRelease(project);
+      const sandboxUpdate = withSelfRepair(
+        resolved.project,
+        (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
+        unrepairedSandboxes(),
+      );
+      return {
+        project: publicProject(
+          resolved.project,
+          resolved.release,
+          sandboxUpdate,
+          projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
+        ),
+        settings: publicProjectSettings(settings),
+        sessions: await summarizeSessions(sessions),
+      };
+    },
+    projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
+    ...(deps.listBrokeredGrants !== undefined ? { listGrants: deps.listBrokeredGrants } : {}),
+    ...(deps.revokeBrokeredGrant !== undefined ? { revokeGrant: deps.revokeBrokeredGrant } : {}),
+    setSetupStatus: async (id, status) => {
+      const updated = await deps.eventStore.setProjectSetupStatus(id, status);
+      if (updated === undefined) return undefined;
+      const resolved = await resolveProjectRelease(updated, { awaitRefresh: false });
+      const sandboxUpdate = withSelfRepair(
+        resolved.project,
+        (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
+        unrepairedSandboxes(),
+      );
+      return publicProject(
         resolved.project,
         resolved.release,
         sandboxUpdate,
         projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-      ),
-      settings: publicProjectSettings(settings),
-      sessions: await summarizeSessions(sessions),
-    };
-  });
-
-  // Persist the operator's overview fold state for a project. Global (no per-
-  // device scoping), so every device reading GET /projects sees it — this is
-  // what syncs the sidebar collapse across devices.
-  const projectCollapsedBody = z.object({ collapsed: z.boolean() });
-  const projectSetupStatusBody = z.object({
-    status: z.enum(['pending', 'secrets_skipped', 'complete']),
-  });
-  // ADR 0011 D2: review and end standing brokered-secret grants. A `forever` grant has no
-  // expiry, so without these two routes an approval given once in a prompt could never be
-  // taken back through any operator-reachable surface.
-  const grantParams = z.object({ id: z.string().min(1), grantId: z.string().min(1) });
-  app.get(
-    '/projects/:id/secret-grants',
-    async (
-      request,
-      reply,
-    ): Promise<{ grants: BrokeredGrantRecord[] } | { error: string; grants: [] }> => {
-      const { id } = projectParams.parse(request.params);
-      if (deps.listBrokeredGrants === undefined) {
-        reply.code(501);
-        return { error: 'brokered secret grants are not configured', grants: [] };
-      }
-      if ((await deps.eventStore.getProject(id)) === undefined) {
-        reply.code(404);
-        return { error: 'project not found', grants: [] };
-      }
-      return { grants: await deps.listBrokeredGrants(id) };
+      );
     },
-  );
-  app.delete('/projects/:id/secret-grants/:grantId', async (request, reply) => {
-    const { id, grantId } = grantParams.parse(request.params);
-    if (deps.revokeBrokeredGrant === undefined) {
-      reply.code(501);
-      return { error: 'brokered secret grants are not configured' };
-    }
-    // Scoped by project inside the store, so a grant id belonging to another project
-    // reads as "not found" here rather than being revoked through this project's route.
-    if (!(await deps.revokeBrokeredGrant(id, grantId))) {
-      reply.code(404);
-      return { error: 'grant not found' };
-    }
-    reply.code(204);
-    return null;
-  });
-  app.patch('/projects/:id/setup-status', async (request, reply) => {
-    const { id } = projectParams.parse(request.params);
-    const { status } = projectSetupStatusBody.parse(request.body);
-    const updated = await deps.eventStore.setProjectSetupStatus(id, status);
-    if (!updated) {
-      reply.code(404);
-      return { error: 'project not found' };
-    }
-    const resolved = await resolveProjectRelease(updated, { awaitRefresh: false });
-    const sandboxUpdate = withSelfRepair(
-      resolved.project,
-      (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-      unrepairedSandboxes(),
-    );
-    return publicProject(
-      resolved.project,
-      resolved.release,
-      sandboxUpdate,
-      projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-    );
-  });
-  app.patch(
-    '/projects/:id/collapsed',
-    async (request, reply): Promise<PublicProjectRecord | { error: string }> => {
-      const { id } = projectParams.parse(request.params);
-      const body = projectCollapsedBody.parse(request.body);
-      const updated = await deps.eventStore.setProjectCollapsed(id, body.collapsed);
-      if (!updated) {
-        reply.code(404);
-        return { error: 'project not found' };
-      }
+    setCollapsed: async (id, collapsed) => {
+      if ((await deps.eventStore.setProjectCollapsed(id, collapsed)) === undefined)
+        return undefined;
       const projects = deps.listProjects
         ? await deps.listProjects()
         : await deps.eventStore.listProjects();
       const project = projects.find((candidate) => candidate.id === id);
-      if (!project) {
-        reply.code(404);
-        return { error: 'project not found' };
-      }
-      return (await publicProjects([project]))[0]!;
+      return project === undefined ? undefined : (await publicProjects([project]))[0];
     },
-  );
+    isSealed: () => deps.secretCipher?.isSealed() === true,
+    updateSettings: async (id, patch) => {
+      const settings = await projectSettingsStore(deps.eventStore).updateProjectSettings(id, patch);
+      return settings === undefined ? undefined : publicProjectSettings(settings)!;
+    },
+  });
 
   const veritySettingsBody = z.object({
     advancedModeEnabled: z.boolean().optional(),
@@ -5697,68 +5619,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
   });
 
-  const projectSettingsBody = z
-    .object({
-      // Operator-authorized Doppler binding (#320): server-set project settings,
-      // NOT repo content (a repo can't point Verity at another project's secrets).
-      dopplerProject: z.string().nullable().optional(),
-      dopplerConfig: z.string().nullable().optional(),
-      defaultBranch: z
-        .string()
-        .trim()
-        .refine((branch) => branch.length === 0 || isValidBranchName(branch), 'invalid branch name')
-        .nullable()
-        .optional(),
-      defaultModel: z.string().nullable().optional(),
-      // Operator-curated agent memory (ADR 0008). Capped at the same limit the store
-      // enforces, so an oversized paste is rejected here with a clean 400 rather than
-      // surfacing the store's ProjectMemoryTooLargeError as a 500.
-      memory: z
-        .string()
-        .max(
-          PROJECT_MEMORY_MAX_CHARS,
-          `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters`,
-        )
-        .nullable()
-        .optional(),
-    })
-    .strict();
-  app.patch(
-    '/projects/:id/settings',
-    async (
-      request,
-      reply,
-    ): Promise<{ settings: PublicProjectSettingsRecord } | { error: string }> => {
-      // Block while sealed BEFORE writing, so a non-secret patch can't commit
-      // and then 503 on the decrypt-on-return (confusing partial success).
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { id } = projectParams.parse(request.params);
-      const parsedPatch = projectSettingsBody.parse(request.body);
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      const patch: ProjectSettingsPatch = { ...parsedPatch };
-      const projectStore = projectSettingsStore(deps.eventStore);
-      let settings;
-      try {
-        settings = await projectStore.updateProjectSettings(id, patch);
-      } catch (error) {
-        if (error instanceof DevServerPortRangeExhaustedError) {
-          reply.code(409);
-          return { error: error.message };
-        }
-        throw error;
-      }
-      if (settings === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      return { settings: publicProjectSettings(settings)! };
-    },
-  );
-
+  const projectParams = z.object({ id: z.string().min(1) });
   app.delete(
     '/projects/:id',
     async (request, reply): Promise<{ projectId: string } | { error: string }> => {
