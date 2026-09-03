@@ -21,6 +21,13 @@ describe('AUTONOMY_SYSTEM_PROMPT', () => {
     expect(AUTONOMY_SYSTEM_PROMPT).toContain('authorization to execute that approach');
   });
 
+  it('keeps adjacent findings from expanding the requested outcome', () => {
+    expect(AUTONOMY_SYSTEM_PROMPT).toContain('requested outcome as the scope');
+    expect(AUTONOMY_SYSTEM_PROMPT).toMatch(/Review findings.*do not expand it/);
+    expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('requested outcome');
+    expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toMatch(/review findings do not expand it/i);
+  });
+
   it('keeps the outcome and choice semantics in the compact resume directive', () => {
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('diagnosis is not completion');
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('Verity Quick Actions');

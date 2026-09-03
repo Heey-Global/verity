@@ -12,8 +12,9 @@ usage: verity-code-review status [base-ref]
 "run" performs the adversarial review of the branch diff in an ISOLATED
 reviewer using agent-seed/code-review-prompt.md — never inline in the main
 chat, and without improvising a backend-specific sub-agent or slash command.
-After all findings are addressed, use "verity-code-review mark" to record the
-current HEAD as reviewed for the pre-push hook.
+After the findings are fixed or declined with a brief reason, use
+"verity-code-review mark" to record the current HEAD as reviewed for the
+pre-push hook. Re-run first when a fix changed HEAD.
 EOF
 }
 

@@ -175,6 +175,8 @@ describe('pre-push review gate message', () => {
     // A bare `verity-code-review run` resolves this same base, so the only route
     // out of this branch is naming another one.
     expect(result.stderr).toContain('verity-code-review run <other-base-ref>');
+    expect(result.stderr).toMatch(/Fix findings or decline them with a reason/i);
+    expect(result.stderr).toMatch(/re-run after a fix changes HEAD/i);
     expect(result.stderr.indexOf('verity-code-review run')).toBeLessThan(
       result.stderr.indexOf('verity-code-review mark'),
     );
@@ -247,6 +249,8 @@ describe('pre-push review gate message', () => {
     expect(result.stderr).toContain('code_review');
     expect(result.stderr).toMatch(/not inline in the chat/i);
     expect(result.stderr).toMatch(/without verifying anything/i);
+    expect(result.stderr).toMatch(/fixed or declined with a brief reason/i);
+    expect(result.stderr).toMatch(/Re-run the review first if a fix changed HEAD/i);
   });
 
   it('lets a marked HEAD through', () => {
