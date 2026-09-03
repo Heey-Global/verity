@@ -189,6 +189,7 @@ import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { registerWorkflowRoutes } from './workflow-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
+import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -5620,30 +5621,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   const projectParams = z.object({ id: z.string().min(1) });
-  app.delete(
-    '/projects/:id',
-    async (request, reply): Promise<{ projectId: string } | { error: string }> => {
-      const { id } = projectParams.parse(request.params);
-      const joined = projectDeletesInFlight.get(id);
-      if (joined !== undefined) {
-        const outcome = await joined;
-        reply.code(outcome.code);
-        return outcome.body;
-      }
-      const teardown = runProjectDelete(request, id);
-      // Registered synchronously — the call above ran only up to its first
-      // `await`, so no second request can have slipped past the join check.
-      projectDeletesInFlight.set(id, teardown);
-      try {
-        const outcome = await teardown;
-        reply.code(outcome.code);
-        return outcome.body;
-      } finally {
-        projectDeletesInFlight.delete(id);
-      }
-    },
-  );
-
   async function runProjectDelete(
     request: FastifyRequest,
     id: string,
@@ -5844,89 +5821,58 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
   }
 
-  // Deprovision a project (concept §19.8, #174): stop + remove the container,
-  // transition the store row back to `state='absent'`. The optional `?purge=true`
-  // query param ALSO removes the bind-mount clone path (irreversible — the
-  // operator explicitly chose this; keep is the default). 503 when the
-  // deprovisioner isn't configured; 404 for an unknown project id.
-  const deprovisionQuery = z.object({
-    purge: z
-      .enum(['true', 'false'])
-      .optional()
-      .transform((value) => value === 'true'),
-  });
-  app.post(
-    '/projects/:id/deprovision',
-    async (request, reply): Promise<{ project: ProjectRecord } | { error: string }> => {
+  registerProjectLifecycleRoutes(app, {
+    deleteProject: async (request, id) => {
+      const joined = projectDeletesInFlight.get(id);
+      if (joined !== undefined) return joined;
+      const teardown = runProjectDelete(request, id);
+      projectDeletesInFlight.set(id, teardown);
+      try {
+        return await teardown;
+      } finally {
+        projectDeletesInFlight.delete(id);
+      }
+    },
+    deprovision: async (request, id, purge) => {
       if (!deps.deprovisioner) {
-        reply.code(503);
-        return { error: 'multi-repo provisioning is not configured' };
+        return { code: 503, error: 'multi-repo provisioning is not configured' };
       }
-      const { id } = projectParams.parse(request.params);
-      const { purge } = deprovisionQuery.parse(request.query);
       const project = await deps.eventStore.getProject(id);
-      if (project === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
+      if (project === undefined) return { code: 404, error: `project ${id} not found` };
       const busySession = (await deps.eventStore.listSessions()).find(
         (session) =>
           session.projectId === id &&
           (conductor.isBusy(session.sessionId) || hasMeetingJob(session.sessionId)),
       );
       if (busySession !== undefined) {
-        reply.code(409);
-        return { error: `project session ${busySession.sessionId} is busy` };
+        return { code: 409, error: `project session ${busySession.sessionId} is busy` };
       }
       try {
-        const updated = await deps.deprovisioner.deprovision(id, { purge: purge ?? false });
-        return { project: updated };
+        return {
+          code: 200,
+          project: await deps.deprovisioner.deprovision(id, { purge }),
+        };
       } catch (error) {
         request.log.error({ err: error, projectId: id }, 'verity: deprovision failed');
-        throw error; // unexpected → error boundary → sanitized 500
+        throw error;
       }
     },
-  );
-
-  app.post(
-    '/projects/:id/repair',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { project: ProjectRecord }
-      | { error: string; status?: 'sealed' }
-      | { requiresConfirmation: true; warnings: string[] }
-    > => {
+    repair: async (request, id, confirmWarnings) => {
       if (!deps.provisioner) {
-        reply.code(503);
-        return { error: 'multi-repo provisioning is not configured' };
+        return { code: 503, error: 'multi-repo provisioning is not configured' };
       }
-      const { id } = projectParams.parse(request.params);
       const project = await deps.eventStore.getProject(id);
-      // A soft-deleted (hidden) project must not be repairable: repair flips the
-      // row to `cloning` and provisions it, which resurrects a project the
-      // operator deleted (and left a ghost container behind). Treat it as absent
-      // — the operator re-adds via POST /projects, which un-hides deliberately.
       if (project === undefined || project.hiddenAt !== null) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
+        return { code: 404, error: `project ${id} not found` };
       }
-      if (project.state === 'active') {
-        return { project };
-      }
+      if (project.state === 'active') return { code: 200, project };
       if (deps.secretCipher?.isSealed() === true) {
-        reply.code(503);
-        return { error: 'secret store is sealed', status: 'sealed' as const };
+        return { code: 503, error: 'secret store is sealed', status: 'sealed' as const };
       }
-
-      const confirmWarnings =
-        (request.body as { confirmWarnings?: boolean } | undefined)?.confirmWarnings === true;
       if (!confirmWarnings && deps.provisioner.provisionWarnings !== undefined) {
         const warnings = await deps.provisioner.provisionWarnings(project.id);
         if (warnings.length > 0) {
-          reply.code(409);
-          return { requiresConfirmation: true, warnings };
+          return { code: 409, requiresConfirmation: true as const, warnings };
         }
       }
       const queued =
@@ -5939,10 +5885,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (error) =>
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
-      reply.code(202);
-      return { project: queued };
+      return { code: 202, project: queued };
     },
-  );
+  });
 
   const setupDetectedDevServersBody = z.object({
     fingerprint: z.string().min(1),
