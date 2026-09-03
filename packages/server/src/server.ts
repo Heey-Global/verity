@@ -190,6 +190,7 @@ import { registerWorkflowRoutes } from './workflow-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
+import { registerProjectDevServerSetupRoute } from './project-dev-server-setup-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -5889,45 +5890,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  const setupDetectedDevServersBody = z.object({
-    fingerprint: z.string().min(1),
-    confirmWarnings: z.boolean().optional().default(false),
-    devServers: z
-      .array(
-        z.object({
-          sourceKey: z.string().min(1),
-          name: z.string().min(1),
-          command: z.string().min(1),
-          workdir: z.string().nullable(),
-          containerPort: z.string().min(1).nullable(),
-        }),
-      )
-      .min(1),
-  });
-  const projectSetupLocks = new Map<string, Promise<void>>();
-  const acquireProjectSetupLock = async (projectId: string): Promise<() => void> => {
-    const previous = projectSetupLocks.get(projectId) ?? Promise.resolve();
-    let releaseGate!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
-    const tail = previous.then(() => gate);
-    projectSetupLocks.set(projectId, tail);
-    await previous;
-    return () => {
-      releaseGate();
-      if (projectSetupLocks.get(projectId) === tail) projectSetupLocks.delete(projectId);
-    };
-  };
-  app.post('/projects/:id/setup-dev-servers', async (request, reply) => {
-    if (!deps.provisioner || !deps.deprovisioner) {
-      reply.code(503);
-      return { error: 'project setup is not configured' };
-    }
-    const { id } = projectParams.parse(request.params);
-    const body = setupDetectedDevServersBody.parse(request.body ?? {});
-    const releaseLock = await acquireProjectSetupLock(id);
-    try {
+  registerProjectDevServerSetupRoute(app, {
+    isAvailable: () => deps.provisioner !== undefined && deps.deprovisioner !== undefined,
+    setup: async (request, reply, id, body) => {
+      const provisioner = deps.provisioner!;
+      const deprovisioner = deps.deprovisioner!;
       let project = await deps.eventStore.getProject(id);
       if (!project || project.hiddenAt !== null) {
         reply.code(404);
@@ -5937,8 +5904,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(503);
         return { error: 'secret store is sealed', status: 'sealed' as const };
       }
-      if (!body.confirmWarnings && deps.provisioner.provisionWarnings !== undefined) {
-        const warnings = await deps.provisioner.provisionWarnings(id);
+      if (!body.confirmWarnings && provisioner.provisionWarnings !== undefined) {
+        const warnings = await provisioner.provisionWarnings(id);
         if (warnings.length > 0) {
           reply.code(409);
           return { requiresConfirmation: true, warnings };
@@ -6000,7 +5967,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       try {
         if (project.state !== 'absent' && !canApplyLive) {
-          project = await deps.deprovisioner.deprovision(id, { purge: false });
+          project = await deprovisioner.deprovision(id, { purge: false });
         }
         const existing = await deps.eventStore.listDevServers(id);
         for (const config of body.devServers) {
@@ -6038,7 +6005,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const queued = (await deps.eventStore.updateProjectState(id, 'cloning')) ?? project;
         settleBackgroundProvision(
           id,
-          deps.provisioner.provision(id, { confirmWarnings: body.confirmWarnings }),
+          provisioner.provision(id, { confirmWarnings: body.confirmWarnings }),
           (error) =>
             request.log.error({ err: error, projectId: id }, 'verity: Dev Server setup failed'),
         );
@@ -6054,9 +6021,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         throw error;
       }
-    } finally {
-      releaseLock();
-    }
+    },
   });
 
   app.post(

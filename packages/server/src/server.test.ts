@@ -12759,6 +12759,21 @@ describe('POST /projects/:id/repair', () => {
 });
 
 describe('POST /projects/:id/setup-dev-servers', () => {
+  it('reports unavailable setup before validating the request body', async () => {
+    const a = buildServer({ eventStore: ctx.store, bus, conductor });
+    try {
+      const res = await a.inject({
+        method: 'POST',
+        url: '/projects/missing/setup-dev-servers',
+        payload: {},
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.json()).toEqual({ error: 'project setup is not configured' });
+    } finally {
+      await a.close();
+    }
+  });
+
   it('refuses reconfiguration while a project session is busy', async () => {
     await ctx.store.upsertProject({
       id: 'p-busy-dev-setup',
