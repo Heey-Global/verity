@@ -3519,6 +3519,15 @@ describe('verity-runner supervisor runtime', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line) as Record<string, unknown>);
+      // The worker writes its artifact just before the start promise promotes
+      // the durable claim. On a slow runner, reading immediately can observe
+      // that intentional `claimed` window and fail without a product defect.
+      await vi.waitFor(async () => {
+        expect(await readTurnState(runtimeDir, start.turnId)).toMatchObject({
+          status: 'running',
+          workerPid: expect.any(Number),
+        });
+      });
       const stateAfterLostAck = await readTurnState(runtimeDir, start.turnId);
       expect(stateAfterLostAck).toMatchObject({
         runnerInstanceId: supervisor.instanceId,
