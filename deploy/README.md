@@ -111,9 +111,10 @@ host directory to prepare.
 The installer creates a stable local TLS/server identity and a short-lived pairing
 capability under `/etc/verity`. On first run, in the mobile app:
 
-1. Scan the QR code printed by `verity-install`. It pre-fills the detected
-   `https://<host>:8082` address, which you may edit to use a DNS name. The app
-   verifies both the pinned TLS certificate and the stable signed server identity.
+1. Scan the QR code printed by `verity-install`, or copy the complete pairing code
+   printed below it and use **Paste secure pairing code** in the app. It pre-fills
+   the detected `https://<host>:8082` address, which you may edit to use a DNS name.
+   The app verifies both the pinned TLS certificate and the stable signed server identity.
 2. **Set or unlock the master password.** This derives the at-rest encryption key for DB
    secrets (ADR 0002 D3). The secret store starts sealed until you do this — the
    server logs `secret store is UNINITIALIZED and SEALED` on boot, which is

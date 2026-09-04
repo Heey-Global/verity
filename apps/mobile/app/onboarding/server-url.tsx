@@ -14,6 +14,7 @@ import {
 } from '@verity/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Clipboard from 'expo-clipboard';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -71,6 +72,13 @@ export default function OnboardingServerUrl() {
   );
 
   const canSubmit = url.trim().length > 0 && test.kind !== 'testing';
+
+  const loadPairingCode = (raw: string) => {
+    const parsed = parsePairingUri(raw);
+    setPairing(parsed);
+    setUrl(parsed.suggestedUrl);
+    setTest({ kind: 'idle' });
+  };
 
   const runTest = () => {
     if (!canSubmit) return;
@@ -167,6 +175,29 @@ export default function OnboardingServerUrl() {
             <Text style={styles.scanButtonLabel}>Scan secure pairing code</Text>
           </Pressable>
 
+          <Pressable
+            style={({ pressed }) => [styles.scanButton, pressed ? styles.pressed : null]}
+            onPress={() => {
+              void Clipboard.getStringAsync()
+                .then((code) => {
+                  if (!mounted.current) return;
+                  loadPairingCode(code);
+                })
+                .catch((error: unknown) => {
+                  if (!mounted.current) return;
+                  setTest({
+                    kind: 'error',
+                    message:
+                      error instanceof Error ? error.message : 'Invalid secure pairing code.',
+                  });
+                });
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Paste secure pairing code"
+          >
+            <Text style={styles.scanButtonLabel}>Paste secure pairing code</Text>
+          </Pressable>
+
           {pairing !== null ? (
             <Text style={styles.connected} accessibilityRole="alert">
               Pairing code loaded. You may adjust the address; Verity will still verify the same
@@ -248,10 +279,7 @@ export default function OnboardingServerUrl() {
             barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
             onBarcodeScanned={({ data }) => {
               try {
-                const parsed = parsePairingUri(data);
-                setPairing(parsed);
-                setUrl(parsed.suggestedUrl);
-                setTest({ kind: 'idle' });
+                loadPairingCode(data);
                 setScannerOpen(false);
               } catch (error) {
                 setScannerOpen(false);

@@ -731,12 +731,12 @@ docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
 
 printf '\n'
 if [ "$first_install" = 1 ]; then
-  note 'installed. Scan this one-time code in the app, then create the master password.'
+  note 'installed. Scan the QR code or paste the pairing code in the app, then create the master password.'
 else
-  note 'host side is now on the same release as the Server. Scan to pair another device.'
+  note 'host side is now on the same release as the Server. Scan or paste to pair another device.'
 fi
 printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_image" \
   packages/server/dist/pairing-qr.js \
   || die 'the Server image could not render the pairing QR code'
-printf '  Pairing URI: %s\n' "$pairing_uri"
+printf '  Pairing code (copy all): %s\n' "$pairing_uri"
 note 'normal app-initiated updates carry managed companions forward automatically; re-run this command only for recovery.'

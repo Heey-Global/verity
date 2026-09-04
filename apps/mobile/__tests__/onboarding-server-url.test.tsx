@@ -14,6 +14,11 @@
 import type { OnboardingStatus } from '@verity/mobile';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
+const mockGetStringAsync = jest.fn<Promise<string>, []>();
+jest.mock('expo-clipboard', () => ({
+  getStringAsync: () => mockGetStringAsync(),
+}));
+
 const mockReplace = jest.fn<void, [string]>();
 const mockBack = jest.fn<void, []>();
 let mockParams: Record<string, string> = {};
@@ -82,10 +87,26 @@ beforeEach(() => {
   mockGetVerityBaseUrl.mockReset();
   mockSetVerityBaseUrl.mockReset();
   mockSetVerityBaseUrl.mockResolvedValue(undefined);
+  mockGetStringAsync.mockReset();
   mockGetAuthToken.mockReturnValue(null);
   constructedBaseUrls.length = 0;
   mockGetVerityBaseUrl.mockReturnValue(null);
 });
+
+function pairingUri(): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      v: 1,
+      serverId: `srv_${'a'.repeat(20)}`,
+      identityKey: 'b'.repeat(43),
+      tlsPin: `sha256-${'c'.repeat(43)}`,
+      code: 'd'.repeat(32),
+      url: 'https://verity.example.ts.net:8082',
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    }),
+  ).toString('base64url');
+  return `verity://pair?payload=${payload}`;
+}
 
 describe('onboarding server-url step', () => {
   it('renders as the preflight connection screen with an accessible input + test button', () => {
@@ -101,6 +122,26 @@ describe('onboarding server-url step', () => {
     mockGetVerityBaseUrl.mockReturnValue('http://verity.example.ts.net:8082');
     render(<OnboardingServerUrl />);
     expect(screen.getByDisplayValue('http://verity.example.ts.net:8082')).toBeOnTheScreen();
+  });
+
+  it('loads and validates a secure pairing code from the clipboard', async () => {
+    mockGetStringAsync.mockResolvedValue(pairingUri());
+    render(<OnboardingServerUrl />);
+
+    fireEvent.press(screen.getByLabelText('Paste secure pairing code'));
+
+    expect(await screen.findByDisplayValue('https://verity.example.ts.net:8082')).toBeOnTheScreen();
+    expect(screen.getByText(/Pairing code loaded/)).toBeOnTheScreen();
+  });
+
+  it('rejects an invalid secure pairing code from the clipboard', async () => {
+    mockGetStringAsync.mockResolvedValue('https://example.com/not-a-pairing-code');
+    render(<OnboardingServerUrl />);
+
+    fireEvent.press(screen.getByLabelText('Paste secure pairing code'));
+
+    expect(await screen.findByText('This is not a Verity pairing code.')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Server address').props.value).toBe('');
   });
 
   it('on a successful test: probes status, persists the URL, shows Connected, and advances', async () => {

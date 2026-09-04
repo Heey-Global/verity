@@ -262,6 +262,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, [], { VERITY_RUNNER_SUPERVISOR: '1' });
     assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /Pairing code \(copy all\): verity:\/\/pair\?payload=test/);
     assert.match(stateFile(host, 'updater-token'), /^[a-f0-9]{64}$/);
     assert.equal(readFileSync(join(host.stateDir, 'updater-token'), 'utf8').length, 64);
     assert.equal(stateFile(host, 'compose-project'), 'verity');
