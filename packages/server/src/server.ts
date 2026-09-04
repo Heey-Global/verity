@@ -209,6 +209,7 @@ import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
+import { registerMessageSearchRoute } from './message-search-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -4372,57 +4373,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return { sessions: summaries, ...(attention.length > 0 ? { attention } : {}) };
   });
 
-  const messageSearchCursor = z
-    .string()
-    .max(1024)
-    .transform((value, context): unknown => {
-      try {
-        return JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
-      } catch {
-        context.addIssue({ code: 'custom', message: 'invalid search cursor' });
-        return z.NEVER;
-      }
-    })
-    .pipe(
-      z.object({
-        rank: z.number().finite().nonnegative(),
-        createdAt: z.number().int().nonnegative(),
-        id: z.number().int().positive(),
-      }),
-    );
-  const messageSearchQuery = z.object({
-    q: z.string().trim().min(1),
-    sessionId: z.string().min(1).optional(),
-    projectId: z.string().min(1).optional(),
-    cursor: messageSearchCursor.optional(),
-    limit: z.coerce.number().int().positive().max(100).optional(),
-  });
-  app.get('/search/messages', async (request) => {
-    const query = messageSearchQuery.parse(request.query);
-    const cursor = query.cursor;
-    const limit = query.limit ?? 30;
-    const items = await deps.eventStore.searchMessages({
-      query: query.q,
-      ...(query.sessionId !== undefined ? { sessionId: query.sessionId } : {}),
-      ...(query.projectId !== undefined ? { projectId: query.projectId } : {}),
-      ...(cursor !== undefined ? { cursor } : {}),
-      limit,
-    });
-    const last = items.at(-1);
-    const nextCursor =
-      items.length === limit && last
-        ? Buffer.from(
-            JSON.stringify({ rank: last.rank, createdAt: last.createdAt, id: last.id }),
-          ).toString('base64url')
-        : null;
-    return {
-      items: items.map(({ rank, ...item }) => {
-        void rank;
-        return item;
-      }),
-      nextCursor,
-    };
-  });
+  registerMessageSearchRoute(app, { eventStore: deps.eventStore });
 
   // Both probes are cached, backed off and never throw, so one route can serve the
   // account-global quota for every configured provider. An unconfigured provider
