@@ -207,6 +207,7 @@ import { registerSessionDeleteRoute } from './session-delete-route.js';
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
+import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -7874,25 +7875,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // pushed `origin/*` branches the cockpit can preview live, INCLUDING ones a
   // sibling worktree is developing (#122). 404 unknown session; 503 when no
   // project repo is configured (scratch deployments).
-  app.get(
-    '/sessions/:id/branches',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | {
-          current: string;
-          switchable: string[];
-          previewable: string[];
-          workspaceMissing?: boolean;
-          currentPr?: number | null;
-          pullRequest?: PullRequestStatus | null;
-          owner?: string;
-          repo?: string;
-          localMerge?: { base: string };
-        }
-      | { error: string }
-    > => {
+  registerSessionBranchReadRoute(app, {
+    list: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
       const session = await deps.eventStore.getSession(id);
       if (!session) {
@@ -7996,7 +7980,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(localBase !== null ? { localMerge: { base: localBase } } : {}),
       };
     },
-  );
+  });
 
   app.post(
     '/sessions/:id/pull-request/merge',
