@@ -208,6 +208,7 @@ import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
+import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -2312,23 +2313,6 @@ function normalizeSpawnRequestBody(body: unknown): unknown {
     return body;
   }
 }
-
-// Body for POST /sessions/:id/branch: switch the session worktree's branch.
-// Exactly one of `newBranch` (create off the base, #91) / `branch` (an existing,
-// not-checked-out-elsewhere local branch, #91) / `preview` (a pushed branch
-// checked out DETACHED at `origin/<preview>`, #122 — works even when a sibling
-// worktree has it). `onDirty` picks what to do with uncommitted changes: block
-// (default), stash, or commit a wip checkpoint.
-const branchBody = z
-  .object({
-    newBranch: z.string().min(1).max(200).optional(),
-    branch: z.string().min(1).max(200).optional(),
-    preview: z.string().min(1).max(200).optional(),
-    onDirty: z.enum(['block', 'stash', 'commit']).optional(),
-  })
-  .refine((b) => [b.newBranch, b.branch, b.preview].filter((t) => t !== undefined).length === 1, {
-    message: 'specify exactly one of newBranch / branch / preview',
-  });
 
 const mergePullRequestBody = z.object({
   number: z.number().int().positive(),
@@ -8285,11 +8269,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // to uncommitted changes (block | stash | commit). Error mapping: 409 busy /
   // dirty / branch-in-use / name-exists, 404 no-such-branch, 400 invalid name,
   // 503 unconfigured.
-  app.post(
-    '/sessions/:id/branch',
-    async (request, reply): Promise<{ branch: string } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const body = branchBody.parse(request.body);
+  registerSessionBranchSwitchRoute(app, {
+    switchBranch: async (_request, reply, id, body) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -8346,7 +8327,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         throw error; // unexpected → error boundary → sanitized 500
       }
     },
-  );
+  });
 
   // Live event stream (M3-2). One WS per session: subscribe FIRST (buffer),
   // send the backlog from `sinceSeq`, a `caught_up` watermark, then the live
