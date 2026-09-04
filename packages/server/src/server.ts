@@ -210,6 +210,7 @@ import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
+import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -4375,13 +4376,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });
 
-  // Both probes are cached, backed off and never throw, so one route can serve the
-  // account-global quota for every configured provider. An unconfigured provider
+  // Both probes are cached, backed off and never throw. An unconfigured provider
   // simply contributes nothing.
-  app.get('/provider-limits', async (): Promise<RateLimitState[]> => {
-    const [claude, codex] = await Promise.all([claudeUsage.getLimits(), codexUsage.getLimits()]);
-    return [...claude, ...codex];
-  });
+  registerProviderLimitsRoute(app, { claudeUsage, codexUsage });
 
   registerTaskRoutes(app, {
     ...(deps.taskService !== undefined ? { taskService: deps.taskService } : {}),
