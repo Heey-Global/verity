@@ -44,16 +44,9 @@ jest.mock('../lib/pairingSession', () => ({
   establishPairing: (...args: unknown[]) => mockEstablishPairing(...args),
   verifyAndSaveDirectEndpoint: (...args: unknown[]) => mockVerifyEndpoint(...args),
 }));
+const mockParsePairingUri = jest.fn();
 jest.mock('../lib/pairing', () => ({
-  parsePairingUri: () => ({
-    serverId: 'server-1',
-    kind: 'installer',
-    suggestedUrl: 'https://verity.example.test:8082',
-    identityKey: 'identity',
-    tlsPin: 'pin',
-    pairingCode: 'pairing-code',
-    expiresAt: '2099-01-01T00:00:00.000Z',
-  }),
+  parsePairingUri: (value: string) => mockParsePairingUri(value),
 }));
 
 import OnboardingServerUrl from '../app/onboarding/server-url';
@@ -82,6 +75,15 @@ beforeEach(() => {
   mockRequestPermission.mockReset();
   mockEstablishPairing.mockReset();
   mockVerifyEndpoint.mockReset();
+  mockParsePairingUri.mockReset().mockReturnValue({
+    serverId: 'server-1',
+    kind: 'installer',
+    suggestedUrl: 'https://verity.example.test:8082',
+    identityKey: 'identity',
+    tlsPin: 'pin',
+    pairingCode: 'pairing-code',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  });
   mockGetAuthToken.mockReset().mockReturnValue(null);
   mockGetVerityBaseUrl.mockReset().mockReturnValue(null);
   mockParams = {};
@@ -127,6 +129,46 @@ describe('onboarding connection entry', () => {
     );
     expect(mockEstablishPairing).toHaveBeenCalledTimes(1);
     expect(mockReplace).toHaveBeenCalledWith('/onboarding/master-password');
+  });
+
+  it('pairs immediately from a pasted installer pairing code', async () => {
+    mockPaste.mockResolvedValue('verity://pair?payload=installer');
+    mockEstablishPairing.mockResolvedValue(status());
+    render(<OnboardingServerUrl />);
+
+    fireEvent.press(screen.getByLabelText('Paste pairing code'));
+
+    await waitFor(() =>
+      expect(mockParsePairingUri).toHaveBeenCalledWith('verity://pair?payload=installer'),
+    );
+    expect(mockEstablishPairing).toHaveBeenCalledWith(
+      expect.objectContaining({ serverId: 'server-1' }),
+      'https://verity.example.test:8082',
+    );
+    expect(mockReplace).toHaveBeenCalledWith('/onboarding/master-password');
+  });
+
+  it('reports an invalid pasted pairing code without connecting', async () => {
+    mockPaste.mockResolvedValue('not-a-pairing-code');
+    mockParsePairingUri.mockImplementationOnce(() => {
+      throw new Error('This is not a Verity pairing code.');
+    });
+    render(<OnboardingServerUrl />);
+
+    fireEvent.press(screen.getByLabelText('Paste pairing code'));
+
+    expect(await screen.findByText('This is not a Verity pairing code.')).toBeOnTheScreen();
+    expect(mockEstablishPairing).not.toHaveBeenCalled();
+  });
+
+  it('reports a clipboard read failure without connecting', async () => {
+    mockPaste.mockRejectedValue(new Error('Clipboard is unavailable.'));
+    render(<OnboardingServerUrl />);
+
+    fireEvent.press(screen.getByLabelText('Paste pairing code'));
+
+    expect(await screen.findByText('Clipboard is unavailable.')).toBeOnTheScreen();
+    expect(mockEstablishPairing).not.toHaveBeenCalled();
   });
 
   it('keeps manual address recovery for an already-paired server', async () => {

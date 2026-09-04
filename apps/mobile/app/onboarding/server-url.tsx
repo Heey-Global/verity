@@ -1,6 +1,6 @@
-// The first-run entry point explains how to install Verity, then pairs exclusively
-// through the installer's QR code. Manual addresses remain a recovery control for
-// an already-paired server, where its pinned identity can be verified.
+// The first-run entry point explains how to install Verity, then pairs through the
+// installer's QR or copyable pairing code. Manual addresses remain a recovery
+// control for an already-paired server, where its pinned identity can be verified.
 import { normalizeServerUrl, resumeStep, type OnboardingStatus } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -129,18 +129,19 @@ export default function OnboardingServerUrl() {
       });
   };
 
-  const pastePairingLink = () => {
-    void Clipboard.getStringAsync().then((value) => {
-      if (!mounted.current) return;
-      try {
+  const pastePairingCode = () => {
+    void Clipboard.getStringAsync()
+      .then((value) => {
+        if (!mounted.current) return;
         connectPairing(parsePairingUri(value));
-      } catch (error) {
+      })
+      .catch((error: unknown) => {
+        if (!mounted.current) return;
         setTest({
           kind: 'error',
-          message: error instanceof Error ? error.message : 'Invalid pairing link.',
+          message: error instanceof Error ? error.message : 'Invalid pairing code.',
         });
-      }
-    });
+      });
   };
 
   return (
@@ -186,7 +187,9 @@ export default function OnboardingServerUrl() {
                   <Text style={styles.copyButtonLabel}>{copied ? 'Copied' : 'Copy'}</Text>
                 </Pressable>
               </View>
-              <Text style={styles.hint}>The installer finishes by showing a pairing QR code.</Text>
+              <Text style={styles.hint}>
+                The installer finishes by showing a QR code and a copyable pairing code.
+              </Text>
             </View>
 
             <View style={[styles.card, styles.actionCard]}>
@@ -223,11 +226,11 @@ export default function OnboardingServerUrl() {
 
               <Pressable
                 style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
-                onPress={pastePairingLink}
+                onPress={pastePairingCode}
                 accessibilityRole="button"
-                accessibilityLabel="Paste pairing link"
+                accessibilityLabel="Paste pairing code"
               >
-                <Text style={styles.cancelLabel}>Paste pairing link instead</Text>
+                <Text style={styles.cancelLabel}>Paste pairing code instead</Text>
               </Pressable>
             </View>
           </>
