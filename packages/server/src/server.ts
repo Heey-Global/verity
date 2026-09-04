@@ -211,6 +211,7 @@ import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
+import { registerHealthRoute } from './health-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -3751,35 +3752,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return reply.code(401).send({ error: 'unauthorized' });
   });
 
-  app.get('/healthz', async (_request, reply) => {
-    const base = {
-      version: SERVER_VERSION,
-      pushEnabled: deps.pushEnabled === true,
-      publicPreviewsEnabled: deps.previewShareManager?.isAvailable() === true,
-      // Capability, not a deployment gate: it is true wherever this build runs.
-      // The app needs it because the recreate body schema is non-strict — an
-      // older server drops `forceRebuild` silently rather than refusing it, so
-      // absence here is the only way a newer app can tell it apart.
-      imageRebuildSupported: true,
-    };
-    if (deps.secretJobRuntimeReadiness === undefined) {
-      return { status: 'ok' as const, ...base };
-    }
-    try {
-      await deps.secretJobRuntimeReadiness();
-      return {
-        status: 'ok' as const,
-        ...base,
-        secretJobRuntime: { required: true as const, ready: true as const },
-      };
-    } catch {
-      reply.code(503);
-      return {
-        status: 'degraded' as const,
-        ...base,
-        secretJobRuntime: { required: true as const, ready: false as const },
-      };
-    }
+  registerHealthRoute(app, {
+    version: SERVER_VERSION,
+    pushEnabled: deps.pushEnabled === true,
+    publicPreviewsEnabled: deps.previewShareManager?.isAvailable() === true,
+    ...(deps.secretJobRuntimeReadiness !== undefined
+      ? { secretJobRuntimeReadiness: deps.secretJobRuntimeReadiness }
+      : {}),
   });
 
   registerServerUpdateRoutes(app, deps);
