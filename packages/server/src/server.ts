@@ -204,6 +204,7 @@ import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
+import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -2454,16 +2455,6 @@ function pullRequestConflictKey(sessionId: string, pr: PullRequestStatus): strin
 //  • `model`: switch the engine/model the session uses from its NEXT turn onward
 //    (the engine-switch feature). The model string is the backend-routing
 //    contract (ADR 0001); a turn already in flight is unaffected.
-const patchSessionBody = z.object({
-  name: z
-    .string()
-    .transform((s) => s.trim())
-    .refine((s) => s.length >= 1 && s.length <= 80, 'name must be 1–80 characters')
-    .nullable()
-    .optional(),
-  model: z.string().min(1).optional(),
-});
-
 // Body for POST /sessions/:id/permissions/:toolUseId: the operator's mid-turn
 // allow/deny answer for a parked `can_use_tool` prompt (#27). `allow` may carry an
 // edited `updatedInput` (the tool runs with it); `deny` carries a `message` shown
@@ -7159,145 +7150,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // A PATCH naming the model the session already runs is a no-op and skips the
   // handoff entirely: since the handoff cancels the live turn, treating it as a real
   // switch would let a redundant write kill running work.
-  app.patch(
-    '/sessions/:id',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { sessionId: string; name?: string | null; model?: string; deferred?: boolean }
-      | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
-      const { name, model } = patchSessionBody.parse(request.body);
-
-      // Read once for both the project-model check and the no-op check below.
-      const current = model !== undefined ? await deps.eventStore.getSession(id) : undefined;
-
-      // An unknown session has no backend to hand off, and the barrier is not free:
-      // it fences submissions and cancels the in-flight turn of whatever id it is
-      // handed. Answer the 404 the handoff callback would reach anyway, before
-      // spending a cancel on a typo.
-      if (model !== undefined && !current) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
-      if (model !== undefined && !isProjectSessionModel(model)) {
-        if (current !== undefined && current.projectId !== null) {
-          reply.code(400);
-          return { error: PROJECT_MODEL_ERROR };
-        }
-      }
-
-      // A PATCH carrying the model the session ALREADY has is not a handoff, so it
-      // must not take the barrier: the barrier cancels the in-flight turn, and a
-      // client that re-sends the current model on an unrelated settings save would
-      // then destroy running work. It was harmless before this change (the switch was
-      // deferred and the live turn untouched), so keep it harmless.
-      //
-      // This also stops dropping the session's resume handles, which the old
-      // unconditional write did on every model PATCH including a same-model one. That
-      // is the point: "no change requested" should not silently reset the thread's
-      // context. The barrier callback repeats the check under the fence, because this
-      // read is outside it.
-      const modelUnchanged = model !== undefined && current?.model === model;
-
-      // Ordered BEFORE the handoff: a rename is independent registry metadata, and
-      // doing it first means the 503 path below cannot silently swallow it.
-      if (name !== undefined) {
-        const renamed = await deps.eventStore.renameSession(id, name);
-        if (!renamed) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-      }
-
-      if (model !== undefined && !modelUnchanged) {
-        let switched: boolean;
-        try {
-          switched = await conductor.runBackendHandoff(id, async () => {
-            // Re-read UNDER the fence. The check above ran outside it, and concurrent
-            // patches serialize on the barrier — so by the time this callback runs, an
-            // earlier one may already have applied this very model. Rewriting then
-            // would drop resume handles for a switch that already happened.
-            const live = await deps.eventStore.getSession(id);
-            if (live === undefined) return false;
-            if (live.model === model) return true;
-            const previousBackendStates = await deps.eventStore.getSessionBackendStates(id);
-            const updated = await deps.eventStore.setSessionModel(id, model);
-            if (!updated) return false;
-            try {
-              await deps.eventStore.deleteSessionBackendStates(id);
-            } catch (error) {
-              // Keep model + resume handles all-or-nothing. The delete is one store
-              // statement, so a failure leaves the handles intact; compensate the
-              // preceding model write so a retry cannot mistake this torn switch for
-              // an already-completed one and skip cleanup.
-              try {
-                await deps.eventStore.setSessionModel(id, live.model);
-              } catch (rollbackError) {
-                throw new AggregateError(
-                  [error, rollbackError],
-                  'failed to clear backend state and roll back the session model',
-                  { cause: rollbackError },
-                );
-              }
-              throw error;
-            }
-            conductor.closeSession?.(id);
-            for (const state of previousBackendStates) {
-              conductor.closeSession?.(state.backendSessionId);
-            }
-            return true;
-          });
-        } catch (error) {
-          if (error instanceof BackendTerminationUnconfirmedError) {
-            // The old backend may still be alive, so the switch was NOT applied:
-            // the session keeps its previous model and backend state. Retriable —
-            // and say so in the header too, since both bodies below tell the caller
-            // to retry. A few seconds is the honest hint: the background reaper is
-            // re-issuing the kill on roughly that cadence.
-            reply.code(503);
-            reply.header('retry-after', '5');
-            return {
-              error:
-                `session ${id} still has an unterminated backend — retry the model switch` +
-                (name !== undefined ? ' (the rename in this request was applied)' : ''),
-            };
-          }
-          if (error instanceof SessionBusyError) {
-            // The barrier could not take the session at all — a maintenance action
-            // (bind, purge, local merge) holds it, or it was claimed as the fence
-            // dropped. Nothing ran, nothing changed; it is contention, so 409 like
-            // every other route that loses this race, not a 500.
-            reply.code(409);
-            reply.header('retry-after', '5');
-            return {
-              error:
-                `session ${id} is busy with another operation — retry the model switch` +
-                (name !== undefined ? ' (the rename in this request was applied)' : ''),
-            };
-          }
-          throw error;
-        }
-        if (!switched) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-      }
-
-      return {
-        sessionId: id,
-        ...(name !== undefined ? { name } : {}),
-        // `deferred` is kept on the wire for client compatibility but is now always
-        // false: the handoff completed before this response, so there is no
-        // "applies at the next turn boundary" state left to announce.
-        ...(model !== undefined ? { model, deferred: false } : {}),
-      };
-    },
-  );
-
+  registerSessionMetadataRoute(app, {
+    store: deps.eventStore,
+    runBackendHandoff: (id, handoff) => conductor.runBackendHandoff(id, handoff),
+    closeSession: (id) => conductor.closeSession?.(id),
+    isModelAllowed: isProjectSessionModel,
+    projectModelError: PROJECT_MODEL_ERROR,
+  });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the
   // session; the store advances the mark monotonically (a stale post can't move it
