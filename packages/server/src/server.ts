@@ -206,6 +206,7 @@ import { registerAttachmentRoute } from './attachment-route.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
+import { registerSessionDeleteRoute } from './session-delete-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -7181,17 +7182,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // an unknown id. Worktree removal is best-effort: a session whose worktree was
   // already cleaned up (resumable=false) still deletes cleanly, and the repo-root
   // checkout (`workspaceDir`, e.g. `/work`) is NEVER removed (safety guard #105).
-  const deleteSessionQuery = z.object({
-    force: z
-      .enum(['true', 'false'])
-      .optional()
-      .transform((value) => value === 'true'),
-  });
-  app.delete(
-    '/sessions/:id',
-    async (request, reply): Promise<{ sessionId: string } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { force } = deleteSessionQuery.parse(request.query);
+  registerSessionDeleteRoute(app, {
+    remove: async (request, reply, id, force) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -7305,7 +7297,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       return claimed.value;
     },
-  );
+  });
 
   // Create a NEW session (concept §7 "Parallel-Agent-Spawn", §8): provision a
   // worktree and persist the Verity session row immediately so the client can
