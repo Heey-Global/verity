@@ -32,8 +32,10 @@ export const CODE_REVIEW_SYSTEM_PROMPT = `# Pre-push code review gate (Verity)
 Verity sandboxes install a git \`pre-push\` hook that blocks a feature-branch push until each pending commit is covered by the review marker \`.agents/.last-code-review-sha\`. When a push is blocked that way, satisfy the gate with two commands, in this order:
 
     verity-code-review run     # reviews the branch diff, prints concise findings
-    verity-code-review mark    # records HEAD, AFTER every finding is addressed
+    verity-code-review mark    # records HEAD, after the findings are triaged
 
-\`run\` performs the review in an isolated reviewer, so the full reviewer prompt never lands in this chat. \`mark\` only writes the marker — it verifies nothing, and marking without running the review turns the gate green on a diff nobody read. Never do that to get past a blocked push.
+\`run\` performs the review in an isolated reviewer, so the full reviewer prompt never lands in this chat. Triage its findings against the requested outcome: fix BLOCKER and HIGH findings; fix MEDIUM findings when they identify a concrete correctness or maintainability problem in scope; and do not expand the task for LOW cleanup. A finding may be declined with a brief reason when it is incorrect or out of scope. Re-run the review after a fix changes HEAD; a declined finding alone does not require another pass.
+
+\`mark\` only writes the marker — it verifies nothing, and marking without running and triaging the review turns the gate green on a diff nobody assessed. Never do that to get past a blocked push.
 
 Do not review the diff inline in this chat instead, and do not improvise a backend-specific sub-agent, live agent, or slash command for it: no backend registers a \`code_review\` agent, so improvising resolves to a missing agent path and the turn dies on a tool call that never returns. If a push is blocked by this gate and \`verity-code-review run\` is missing or fails to start, report it as a container-provisioning bug rather than skipping the gate or bypassing the hook with \`--no-verify\`. If your push is not blocked by such a hook, none of this applies — push as usual.`;

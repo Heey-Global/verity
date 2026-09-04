@@ -79,7 +79,7 @@ export interface ProjectRuntime {
   ): Promise<ProjectRuntimeHealth>;
 }
 
-export interface RuntimeRunResult {
+interface RuntimeRunResult {
   stdout: string;
   stderr: string;
   exitCode?: number;

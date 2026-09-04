@@ -40,7 +40,7 @@ import type { SecretKeyHandoffClient } from './server-update-controller.js';
  * happened before this existed, so a refusal, an unreachable Updater or a
  * locked Server is a shrug rather than an error.
  */
-export type SecretKeyHandoffStep =
+type SecretKeyHandoffStep =
   /** Not the Server that should be handing anything over. */
   | 'inactive'
   /** No update is at a point where a handoff means anything. */

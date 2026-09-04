@@ -148,7 +148,7 @@ export interface ProjectsTable {
   state_changed_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-export interface ProjectIdentityClaimsTable {
+interface ProjectIdentityClaimsTable {
   owner: string;
   repo: string;
   project_id: string;
@@ -203,7 +203,7 @@ export interface ProjectSettingsTable {
  * fail-closed direction, and the only one available without provenance that was never
  * recorded.
  */
-export interface BrokeredGrantApprovalsTable {
+interface BrokeredGrantApprovalsTable {
   grant_id: string;
   /** `native` | `acp` — see `brokeredGrantChannel()` in @verity/session. Stored as
    *  text rather than an enum so adding a transport is a code change, not a migration. */
@@ -211,7 +211,7 @@ export interface BrokeredGrantApprovalsTable {
   approved_at: ColumnType<Date, string | undefined, string>;
 }
 
-export interface BrokeredHttpConsumptionsTable {
+interface BrokeredHttpConsumptionsTable {
   project_id: string;
   session_id: string;
   turn_id: string;
@@ -344,7 +344,7 @@ export interface DevicePushTokensTable {
 /** Durable Expo receipt work. A successful send ticket becomes available as a
  * receipt later; persisting it prevents a server restart from losing dead-token
  * pruning. Deleting/rotating the referenced push token cascades stale work. */
-export interface PushReceiptsTable {
+interface PushReceiptsTable {
   receipt_id: string;
   expo_token: string;
   available_at: ColumnType<Date, string, string>;
@@ -364,7 +364,7 @@ export interface EventsTable {
 }
 
 /** Rebuildable visible-message projection derived from the canonical event log. */
-export interface MessagesTable {
+interface MessagesTable {
   id: Generated<number>;
   session_id: string;
   role: 'user' | 'agent';
@@ -377,7 +377,7 @@ export interface MessagesTable {
   created_at: ColumnType<Date, string | Date, never>;
 }
 
-export interface MessageProjectionStateTable {
+interface MessageProjectionStateTable {
   session_id: string;
   last_event_seq: number;
   projection_version: ColumnType<number, number | undefined, number>;
@@ -405,7 +405,7 @@ export interface TranscriptLinesTable {
  * cache key. `prompt` events reference these by `id` (= `hash`) rather than
  * inlining base64, so a session opens without transferring its image backlog.
  */
-export interface AttachmentsTable {
+interface AttachmentsTable {
   /** SHA-256 hex of the raw bytes — primary key + reference id. */
   hash: string;
   media_type: string;
@@ -459,7 +459,7 @@ export interface QueuedTurnsTable {
  * session, written before a turn launches and cleared on its terminal event; a
  * row still present at startup means the turn was abandoned by a crash/restart.
  */
-export interface RunningTurnsTable {
+interface RunningTurnsTable {
   session_id: string;
   /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
   prompt_seq: number;
@@ -497,7 +497,7 @@ export interface SessionBackendStateTable {
  * a `turn_id` binds immutably to one `runner_instance_id` — a mismatch on either is
  * corruption, not a duplicate.
  */
-export interface RunnerFramesTable {
+interface RunnerFramesTable {
   /** The turn this frame belongs to (Server-allocated before StartTurn). */
   turn_id: string;
   /**
@@ -542,7 +542,7 @@ export interface RunnerFramesTable {
  * between turns. The `session_id` FK CASCADES on delete: this is ephemeral runtime
  * context, not part of the durable event log (mirrors `queued_turns`).
  */
-export interface SessionPendingNoteTable {
+interface SessionPendingNoteTable {
   /** Monotonic insert order — notes are consumed `order by id`. */
   id: Generated<number>;
   session_id: string;
@@ -552,7 +552,7 @@ export interface SessionPendingNoteTable {
 }
 
 /** Durable de-dupe markers for server-authored automatic turns. */
-export interface SessionAutomationMarkerTable {
+interface SessionAutomationMarkerTable {
   session_id: string;
   marker: string;
   created_at: ColumnType<Date, string | undefined, never>;
@@ -565,7 +565,7 @@ export interface SessionAutomationMarkerTable {
  *  to running sandboxes — the previous in-memory registry lost them on every
  *  restart, so existing sandboxes' `git push` failed with 401 after any redeploy.
  *  A re-provision UPSERTs (rotating the hash); a deprovision DELETEs (revocation). */
-export interface GhTokenCapabilitiesTable {
+interface GhTokenCapabilitiesTable {
   project_id: string;
   cap_hash: string;
   owner: string;
@@ -575,7 +575,7 @@ export interface GhTokenCapabilitiesTable {
 
 /** Project/container-generation-bound git-signing capabilities. Only the hash of
  * the opaque capability is persisted; one row per project provides rotation. */
-export interface SigningCapabilitiesTable {
+interface SigningCapabilitiesTable {
   project_id: string;
   cap_hash: string;
   container_generation: string;
@@ -626,7 +626,7 @@ export interface SecretRevocationsTable {
  * is int4 (portable number read across pg/pglite); its ~2.1e9 ceiling per project is ample for
  * Phase 1 — the day a single project needs more audit events, migrate this column to bigint.
  */
-export interface SecretAuditEventsTable {
+interface SecretAuditEventsTable {
   project_id: string;
   sequence: number;
   kind: string;
@@ -657,7 +657,7 @@ export interface SecretAuditEventsTable {
  * `key_material` is encrypted at rest under the store cipher, so a database copy without
  * the master password yields no forgeries and no offline guessing against the MACs.
  */
-export interface AuditMacKeysTable {
+interface AuditMacKeysTable {
   key_id: string;
   key_material: string;
   /** `active` | `retired` — at most one active key, enforced by a partial unique index. */
@@ -675,7 +675,7 @@ export interface AuditMacKeysTable {
  * the decoded redacted size, so the per-job size bound is enforced without decrypting. `created_at`
  * is the ingestion time the retention sweep prunes by; the W5 reaper deletes a job's frames outright.
  */
-export interface SecretJobFramesTable {
+interface SecretJobFramesTable {
   job_id: string;
   protocol_version: number;
   sequence: number;
@@ -774,7 +774,7 @@ export interface AgentLoopRunsTable {
  *  is a named preview process with its own command/url/workdir/ports. CASCADEs with
  *  the project — runtime config, not part of the durable event log; nothing here is
  *  a credential, so no column is encrypted. */
-export interface DevServersTable {
+interface DevServersTable {
   id: string;
   project_id: ColumnType<string, string, never>;
   /** Stable detector identity (`workdir:scriptName`). NULL for manually-created servers. */
@@ -844,7 +844,7 @@ export interface UplinkPendingShareRemovalsTable {
  * (same pattern as the verity_settings/project_settings secret columns); the
  * certs + server name are non-secret public material. The CA private key stays
  * server-side and is never projected into a Sandbox. */
-export interface ClaudeEgressCaTable {
+interface ClaudeEgressCaTable {
   id: string;
   ca_cert_pem: ColumnType<string, string, string>;
   ca_key_pem: ColumnType<string, string, string>;
@@ -861,7 +861,7 @@ export interface ClaudeEgressCaTable {
  * projects cascade). `key_pem` is a SECRET (encrypted at rest); the cert +
  * fingerprint are non-secret. The fingerprint feeds the gateway's
  * fingerprint→project peer bindings. */
-export interface ClaudeEgressClientCertTable {
+interface ClaudeEgressClientCertTable {
   project_id: string;
   cert_pem: ColumnType<string, string, string>;
   key_pem: ColumnType<string, string, string>;
@@ -871,7 +871,7 @@ export interface ClaudeEgressClientCertTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-export interface SecretJobsTable {
+interface SecretJobsTable {
   job_id: string;
   actor_id: string;
   authorization_hash: string;
@@ -881,14 +881,14 @@ export interface SecretJobsTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
-export interface SecretProviderCredentialsTable {
+interface SecretProviderCredentialsTable {
   credential_ref: string;
   project_id: string;
   ciphertext: string;
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
-export interface SecretProviderBindingsTable {
+interface SecretProviderBindingsTable {
   id: string;
   project_id: string;
   version: number;
@@ -900,7 +900,7 @@ export interface SecretProviderBindingsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-export interface SecretAliasesTable {
+interface SecretAliasesTable {
   id: string;
   project_id: string;
   version: number;
@@ -914,7 +914,7 @@ export interface SecretAliasesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-export interface SecretExecutionProfilesTable {
+interface SecretExecutionProfilesTable {
   id: string;
   project_id: string;
   version: number;
@@ -923,7 +923,7 @@ export interface SecretExecutionProfilesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-export interface SecretProviderPermissionsTable {
+interface SecretProviderPermissionsTable {
   id: string;
   project_id: string;
   binding_id: string;
@@ -945,7 +945,7 @@ export interface SecretProviderPermissionsTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
-export interface ControlPlaneGenerationTable {
+interface ControlPlaneGenerationTable {
   singleton: boolean;
   generation: number;
   holder_id: string | null;

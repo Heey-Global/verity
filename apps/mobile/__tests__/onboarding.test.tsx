@@ -110,13 +110,11 @@ describe('onboarding wizard shell — step screen', () => {
     render(<OnboardingWelcome />);
     // Welcome is preflight before any server/secret setup, not a numbered wizard step.
     expect(screen.queryByLabelText(/Step \d+ of \d+/)).toBeNull();
-    expect(screen.getByText('Welcome to Verity')).toBeOnTheScreen();
-    expect(screen.getByText(/run AI coding agents on your own projects/)).toBeOnTheScreen();
-    expect(screen.getByText(/keeps credentials encrypted/)).toBeOnTheScreen();
-    expect(
-      screen.getByText(/mints short-lived access only when a project needs it/),
-    ).toBeOnTheScreen();
-    expect(screen.getByText('What happens next')).toBeOnTheScreen();
+    expect(screen.getByText('Secure development. Your choice of AI.')).toBeOnTheScreen();
+    expect(screen.getByText(/Claude Code, Codex, and open-source models/)).toBeOnTheScreen();
+    expect(screen.getByText(/isolated project sandboxes/)).toBeOnTheScreen();
+    expect(screen.getByText(/Switch AI providers/)).toBeOnTheScreen();
+    expect(screen.getByText('Get started')).toBeOnTheScreen();
   });
 
   it('advances via the accessible Next control (router.push to the next step)', () => {

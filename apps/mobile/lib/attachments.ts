@@ -48,7 +48,7 @@ function truncateFileNamePreservingExtension(name: string, maxLength: number): s
  * else (or unknown) is treated as JPEG. The picker keeps a PNG/GIF/WEBP's format at
  * quality < 1, so we trust the asset's own type when it's one we support (a
  * mislabeled PNG is rejected by the vision API). */
-export function pickedImageMediaType(mimeType: string | undefined): ImageUploadMediaType {
+function pickedImageMediaType(mimeType: string | undefined): ImageUploadMediaType {
   switch (mimeType) {
     case 'image/png':
     case 'image/gif':
@@ -343,7 +343,7 @@ export async function readMeetingAudioUpload(
 
 /** Pick a meeting audio file for server-side local transcription and read it as
  * a ready-to-upload payload. */
-export async function pickMeetingAudio(): Promise<MeetingTranscriptUpload | null> {
+async function pickMeetingAudio(): Promise<MeetingTranscriptUpload | null> {
   const picked = await pickMeetingAudioAsset();
   return picked ? readMeetingAudioUpload(picked) : null;
 }

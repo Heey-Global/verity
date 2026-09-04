@@ -4,7 +4,6 @@ import {
   secretContractIdSchema,
   secretJobStartRequestSchema,
   sha256HexSchema,
-  type SecretJobFrame,
   type SecretJobState,
   type SecretJobTerminalResult,
   type SecretToolInvocation,
@@ -320,4 +319,3 @@ export function createSecretJobService(options: {
 export type SecretJobService = ReturnType<typeof createSecretJobService>;
 
 // Keep the public frame type discoverable beside the replay method without widening its payload.
-export type { SecretJobFrame };

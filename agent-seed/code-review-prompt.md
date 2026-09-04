@@ -6,6 +6,13 @@ Focus on correctness, security, data-loss risk, credential exposure, broken
 workflow assumptions, missing tests, and drift from nearby code patterns. Treat
 the submitted diff as potentially flawed even when it looks small.
 
+Keep findings within the purpose of the submitted change. Do not propose new
+features, unrelated refactors, or cleanup outside that scope. `BLOCKER` and
+`HIGH` findings must identify a defect that should block the push. Use `MEDIUM`
+only for a concrete in-scope correctness or maintainability problem. A `LOW`
+finding must be actionable within the existing change and must never be the sole
+reason to request another review pass.
+
 Review only the branch changes unless a referenced file is needed for context.
 Prefer specific findings with `file:line` references. Do not restate the full
 diff. Do not produce a general summary before findings.

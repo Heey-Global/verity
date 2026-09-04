@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-export const CODEX_MODEL_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+const CODEX_MODEL_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 interface CodexCatalogResponse {
   models?: unknown;

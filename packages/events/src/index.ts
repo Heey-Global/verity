@@ -65,6 +65,7 @@ export { REPO_CONVENTIONS_SYSTEM_PROMPT } from './repo-conventions.js';
 export { SANDBOX_RESOURCES_SYSTEM_PROMPT } from './sandbox-resources.js';
 export { TERMINOLOGY_SYSTEM_PROMPT } from './terminology.js';
 export { VISIBLE_MEDIA_SYSTEM_PROMPT } from './visible-media.js';
+export { appendExternalPromptData } from './external-content.js';
 export {
   CREATE_DELIVERY_TOOL_DESCRIPTION,
   createDeliveryRequestSchema,
@@ -82,6 +83,17 @@ export {
   type ListSessionsRequest,
   type SessionHandoffRequest,
 } from './session-handoff-tool.js';
+export {
+  RECENT_SESSION_MESSAGES_DEFAULT,
+  RECENT_SESSION_MESSAGES_MAX,
+  RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
+  PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
+  SESSION_PROGRESS_TOOL_DESCRIPTION,
+  recentSessionMessagesRequestSchema,
+  publishSessionProgressRequestSchema,
+  sessionProgressRequestSchema,
+} from './session-observation-tool.js';
+export { SESSION_PROJECTION_EVENT_TYPES, sessionProjectionEvents } from './projection.js';
 export {
   aggregateUsage,
   codexRateLimitReached,

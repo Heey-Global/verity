@@ -58,6 +58,13 @@ beforeEach(() => {
 });
 
 describe('authToken', () => {
+  it('reports durable storage success when only legacy cleanup fails', async () => {
+    mockDeleteItemAsync.mockRejectedValueOnce(new Error('keychain cleanup failed'));
+
+    await expect(setAuthToken(DOGFOOD, 'dogfood-token', 'device-id')).resolves.toBe(true);
+    expect(await hasStoredAuthToken(DOGFOOD)).toBe(true);
+  });
+
   it('scopes stored and in-memory tokens by Verity server URL', async () => {
     await setAuthToken(DOGFOOD, 'dogfood-token');
 

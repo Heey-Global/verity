@@ -26,7 +26,7 @@ export type SessionHandoffSummary = {
    * exactly one of that project's sessions is eligible. So `'project'` is the case where the
    * card cannot name the destination, and the one the card has to say that about.
    */
-  targetKind: 'session' | 'project';
+  targetKind: 'session' | 'project' | 'new-session';
   title: string;
   /**
    * Unclamped — rendering it in full is this module's reason to exist — and verbatim except
@@ -103,15 +103,25 @@ function onlyKnownKeys(value: Record<string, unknown>, known: readonly string[])
 function targetLabel(raw: unknown): Pick<SessionHandoffSummary, 'target' | 'targetKind'> | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const target = raw as Record<string, unknown>;
-  if (!onlyKnownKeys(target, ['sessionId', 'project'])) return null;
+  if (!onlyKnownKeys(target, ['sessionId', 'project', 'newSession'])) return null;
   // Presence, not definedness: `{ sessionId: undefined, project: 'x' }` is a request naming
   // two keys, and Zod's `.strict()` refuses it as one. Reading it as a project target would
   // describe a request the server will not accept.
-  const named = ['sessionId', 'project'].filter((key) => key in target);
+  const named = ['sessionId', 'project', 'newSession'].filter((key) => key in target);
   if (named.length !== 1) return null;
   if (named[0] === 'sessionId') {
     const sessionId = headlineText(target['sessionId']);
     return sessionId === null ? null : { target: `session ${sessionId}`, targetKind: 'session' };
+  }
+  if (named[0] === 'newSession') {
+    const value = target['newSession'];
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+    const nested = value as Record<string, unknown>;
+    if (!onlyKnownKeys(nested, ['project']) || !('project' in nested)) return null;
+    const project = headlineText(nested['project']);
+    return project === null
+      ? null
+      : { target: `a new session in project ${project}`, targetKind: 'new-session' };
   }
   const project = headlineText(target['project']);
   return project === null ? null : { target: `project ${project}`, targetKind: 'project' };
@@ -201,8 +211,58 @@ export function sessionHandoffCaveats(summary: SessionHandoffSummary | null): st
       ? ` If that target is a project rather than a session, both halves of it are resolved after you allow this: ${resolvedAfterwards}.`
       : summary.targetKind === 'project'
         ? ` Both halves of that target are resolved after you allow this: ${resolvedAfterwards}.`
-        : ''
+        : summary.targetKind === 'new-session'
+          ? ' Allowing creates that session and delivers the briefing as its first turn.'
+          : ''
   } If that session is already working, the briefing does not wait for it to finish: it is queued behind that work, or folded into the turn already running. The session then acts on it with the authority it already had, including any grant already standing there, which does not ask again. No standing grant covers the next handoff.`;
+}
+
+export type SessionProgressSummary = { sessionId: string };
+export function sessionProgressSummary(input: unknown): SessionProgressSummary | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
+  const value = input as Record<string, unknown>;
+  if (!onlyKnownKeys(value, ['sessionId'])) return null;
+  const sessionId = headlineText(value['sessionId']);
+  return sessionId === null ? null : { sessionId };
+}
+
+export type RecentSessionMessagesSummary = {
+  sessionId: string;
+  count: number;
+  sinceMinutes?: number;
+  beforeSeq?: number;
+  purpose: string;
+};
+export function recentSessionMessagesSummary(input: unknown): RecentSessionMessagesSummary | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
+  const value = input as Record<string, unknown>;
+  if (!onlyKnownKeys(value, ['sessionId', 'count', 'sinceMinutes', 'beforeSeq', 'purpose']))
+    return null;
+  const sessionId = headlineText(value['sessionId']);
+  const purpose = headlineText(value['purpose']);
+  const count = value['count'] === undefined ? 20 : value['count'];
+  const sinceMinutes = value['sinceMinutes'];
+  const beforeSeq = value['beforeSeq'];
+  if (
+    sessionId === null ||
+    purpose === null ||
+    !Number.isInteger(count) ||
+    (count as number) < 1 ||
+    (count as number) > 50 ||
+    (beforeSeq !== undefined && (!Number.isSafeInteger(beforeSeq) || (beforeSeq as number) < 1)) ||
+    (sinceMinutes !== undefined &&
+      (!Number.isInteger(sinceMinutes) ||
+        (sinceMinutes as number) < 1 ||
+        (sinceMinutes as number) > 10_080))
+  )
+    return null;
+  return {
+    sessionId,
+    purpose,
+    count: count as number,
+    ...(sinceMinutes === undefined ? {} : { sinceMinutes: sinceMinutes as number }),
+    ...(beforeSeq === undefined ? {} : { beforeSeq: beforeSeq as number }),
+  };
 }
 
 /**

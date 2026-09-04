@@ -56,8 +56,6 @@ export const secretWorkerLaunchConfigSchema = z
     redactorProfile: streamingRedactorProfileSchema,
   })
   .strict();
-export type SecretWorkerLaunchConfig = z.infer<typeof secretWorkerLaunchConfigSchema>;
-
 /** The secret-bearing job body: receives the opened secret map, returns its raw output + exit code. */
 export type SecretWorkerJobRunner = (
   secrets: ReadonlyMap<string, Uint8Array>,

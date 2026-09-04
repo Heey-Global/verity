@@ -6,6 +6,9 @@ on:
   pull_request:
     paths:
       - 'apps/mobile/**'
+      # OTA promotion only moves an already-published EAS branch. It neither
+      # changes nor rebuilds the native app.
+      - '!apps/mobile/ota-promotion.json'
       - 'packages/mobile/**'
       - 'packages/events/**'
       - 'package.json'

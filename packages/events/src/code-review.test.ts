@@ -18,6 +18,16 @@ describe('CODE_REVIEW_SYSTEM_PROMPT', () => {
     expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/verifies nothing/i);
   });
 
+  it('triages findings without turning cleanup into more scope', () => {
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/fix BLOCKER and HIGH findings/i);
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/MEDIUM.*in scope/i);
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/do not expand the task for LOW cleanup/i);
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/declined with a brief reason/i);
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(
+      /declined finding alone does not require another pass/i,
+    );
+  });
+
   it('rules out the two improvised alternatives', () => {
     expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/inline in this chat/i);
     expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('code_review');

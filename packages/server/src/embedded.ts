@@ -926,12 +926,12 @@ export interface EmbeddedServer {
  * app entirely: the key travels between two Verity processes over the Updater's
  * control socket, and never over a route a device could reach.
  */
-export interface EmbeddedSecretKeyHandoff {
+interface EmbeddedSecretKeyHandoff {
   /** Key material to seal for the successor, or undefined while sealed. */
   exportKeyMaterial(): string | undefined;
 }
 
-export interface EmbeddedSecretJobs {
+interface EmbeddedSecretJobs {
   broker: ReturnType<typeof createSecretGrantBroker>;
   executor: BrokeredSecretJobExecutor;
   frames: SecretJobFrameSpool;
@@ -1399,7 +1399,7 @@ export function runnerSandboxPath(
  * with {@link candidateRunnerProjectIds} so that a purge searching for those transcripts
  * and the factory that put them there cannot disagree about where they are.
  */
-export const CONTROL_PLANE_RUNNER_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
+const CONTROL_PLANE_RUNNER_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
 
 /** How long {@link EmbeddedServer.close} waits for the transcript sweep's two boot
  * queries before destroying the database under them. Generous for a query that has
@@ -2043,15 +2043,21 @@ export async function buildEmbeddedServer(
     // supervisor omit the tool completely rather than advertising a permanently failing call.
     servedTools:
       config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
-        ? ['verity_http_request', 'verity_secret_run']
-        : ['verity_http_request'],
+        ? ['verity_http_request', 'verity_secret_run', 'verity_publish_session_progress']
+        : ['verity_http_request', 'verity_publish_session_progress'],
     // Control-plane-only tools. `verity_create_delivery` is served from the executor below;
     // the two session tools are intercepted in `buildServer`, which owns the conductor they
     // dispatch through — advertising them is still decided here, with the rest of the served
     // set, so one place says what the control-plane gateway offers.
     extraToolsForProject: (projectId) =>
       projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
-        ? ['verity_create_delivery', 'verity_list_sessions', 'verity_session_handoff']
+        ? [
+            'verity_create_delivery',
+            'verity_list_sessions',
+            'verity_session_handoff',
+            'verity_session_progress',
+            'verity_recent_session_messages',
+          ]
         : [],
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
     // Both tools reuse the brokered execution implementations, including their at-most-once

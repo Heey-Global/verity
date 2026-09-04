@@ -12,33 +12,34 @@ export default function OnboardingWelcome() {
   return (
     <View style={styles.root}>
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingTop: insets.top + 32 }]}
+        contentContainerStyle={[styles.content, { paddingTop: insets.top + 24 }]}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.eyebrow}>Verity</Text>
         <Text style={styles.title} accessibilityRole="header">
-          Welcome to Verity
+          Secure development. Your choice of AI.
         </Text>
 
         <View style={styles.card}>
           <Text style={styles.lead}>
-            Verity lets you run AI coding agents on your own projects without handing every secret
-            to a sandbox. Your server keeps credentials encrypted, mints short-lived access only
-            when a project needs it, and stays under your control.
+            Run Claude Code, Codex, and open-source models through OpenCode in isolated project
+            sandboxes. Every session gets its own branch and worktree, while credentials stay
+            outside agent runtimes and your history stays on your server.
           </Text>
           <Text style={styles.lead}>
-            Connect to your Verity server first; then this app can tell whether to unlock an
-            existing install or start setup.
+            Switch AI providers without changing how you manage projects, review changes, or ship
+            your work.
           </Text>
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>What happens next</Text>
-          <Text style={styles.item}>1. Choose the Verity server this device should control.</Text>
-          <Text style={styles.item}>2. Unlock it or set the master password.</Text>
+          <Text style={styles.sectionTitle}>Get started</Text>
+          <Text style={styles.item}>1. Install Verity on your Linux server with Docker.</Text>
           <Text style={styles.item}>
-            3. If setup is still incomplete, Verity guides you through GitHub, signing, projects,
-            and optional services.
+            2. Scan the installer QR code to pair this device securely.
+          </Text>
+          <Text style={styles.item}>
+            3. Connect your preferred AI providers and add your first project.
           </Text>
         </View>
       </ScrollView>
@@ -66,7 +67,7 @@ const styles = StyleSheet.create((theme) => ({
   content: {
     flexGrow: 1,
     gap: theme.spacing.lg,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
   },

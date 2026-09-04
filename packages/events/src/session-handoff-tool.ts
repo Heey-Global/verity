@@ -79,6 +79,7 @@ export const sessionHandoffRequestSchema = z
     target: z.union([
       z.object({ sessionId: cardLine(128) }).strict(),
       z.object({ project: projectReferenceSchema }).strict(),
+      z.object({ newSession: z.object({ project: projectReferenceSchema }).strict() }).strict(),
     ]),
     /** A one-line label, rendered on the approval card next to the target it names. */
     title: cardLine(120),
@@ -130,6 +131,7 @@ export const LIST_SESSIONS_FIELDS = [
   { key: 'model', label: 'model' },
   { key: 'status', label: 'status' },
   { key: 'eventCount', label: 'event count' },
+  { key: 'lastActivityAt', label: 'last activity time' },
   { key: 'resumable', label: 'whether it can be resumed' },
   { key: 'handoffEligible', label: 'whether a handoff would be accepted' },
   { key: 'handoffBlockedBy', label: 'why not when it is not' },
@@ -149,8 +151,8 @@ export const LIST_SESSIONS_TOOL_DESCRIPTION =
   'The call requires user approval.';
 
 export const SESSION_HANDOFF_TOOL_DESCRIPTION =
-  'Hand a written briefing to an existing Verity project session, which receives it as a turn. ' +
+  'Hand a written briefing to a selected Verity project session, which receives it as a turn. ' +
   'Use it when work you prepared here has to continue in a session that has the repository checkout, the signing broker and the GitHub token — instead of asking the user to relay the context by hand. ' +
-  'Target a specific `sessionId` from `verity_list_sessions`, or a `project` when exactly one of its sessions is eligible. ' +
-  'The briefing is delivered marked as agent-to-agent material; it grants the target no additional authority and cannot start a new session. ' +
+  'Before delivery, list the project sessions and ask the user to choose one of those exact session ids or New session. Target the chosen existing session with `sessionId`, or use `newSession: { project }` to create the chosen new target. A bare `project` is accepted only when exactly one session is eligible; it can never choose among several. ' +
+  'The briefing is delivered marked as agent-to-agent material and grants the target no additional authority. ' +
   'Put everything the other session needs into `briefing` — it cannot see this conversation. The call requires user approval, who reads the full briefing on the card.';

@@ -116,6 +116,41 @@ valid_project_name() {
   [[ $1 =~ ^[a-z0-9][a-z0-9_-]*$ ]]
 }
 
+select_pairing_host() {
+  local configured="${VERITY_PAIRING_HOST:-}" ips choice default_choice=1 index=1 ip
+  [ -z "$configured" ] || { printf '%s' "$configured"; return; }
+  ips="$(hostname -I 2>/dev/null || true)"
+  # curl | bash consumes stdin, so an interactive install must talk to the terminal
+  # directly. Automation and hosts without a terminal retain automatic detection.
+  ( : </dev/tty && : >/dev/tty ) 2>/dev/null || return 0
+  printf '\nChoose the address this phone will use to reach Verity:\n' >/dev/tty
+  for ip in $ips; do
+    case "$ip" in *:*|*[!0-9.]*) continue ;; esac
+    printf '  %s) %s%s\n' "$index" "$ip" "$([ "$index" = 1 ] && printf ' (recommended)' || true)" >/dev/tty
+    index=$((index + 1))
+  done
+  [ "$index" -gt 1 ] || default_choice=c
+  printf '  c) Enter an IP address or DNS name\n' >/dev/tty
+  printf 'Selection [%s]: ' "$default_choice" >/dev/tty
+  IFS= read -r choice </dev/tty || choice=''
+  choice="${choice:-$default_choice}"
+  if [ "$choice" = c ] || [ "$choice" = C ]; then
+    printf 'IP address or DNS name: ' >/dev/tty
+    IFS= read -r configured </dev/tty || configured=''
+    [ -n "$configured" ] || die 'the pairing address cannot be empty'
+    printf '%s' "$configured"
+    return
+  fi
+  case "$choice" in *[!0-9]*|'') die "invalid address selection: $choice" ;; esac
+  index=1
+  for ip in $ips; do
+    case "$ip" in *:*|*[!0-9.]*) continue ;; esac
+    if [ "$index" = "$choice" ]; then printf '%s' "$ip"; return; fi
+    index=$((index + 1))
+  done
+  die "invalid address selection: $choice"
+}
+
 # ── preflight ──────────────────────────────────────────────────────────────
 [ "$(id -u)" = 0 ] || die 'must run as root (use sudo) — the control token is root-owned 0600 and is bind-mounted without becoming readable to your user'
 
@@ -687,8 +722,10 @@ printf '%s\n' "$postgres_password" | write_state "$POSTGRES_PASSWORD_PATH" 0600
 # Stable server identity and TLS keys live beside the installer state. Each run
 # rotates only the short-lived, one-time pairing capability shown below.
 note 'creating TLS identity and a 15-minute device pairing code'
+pairing_host="$(select_pairing_host)"
 pairing_uri="$(VERITY_STATE_DIR="$STATE_DIR" \
   VERITY_API_HOST_PORT="${VERITY_API_HOST_PORT:-8082}" \
+  VERITY_PAIRING_HOST="$pairing_host" \
   VERITY_SERVER_UID="${VERITY_SERVER_UID:-1000}" \
   VERITY_SERVER_GID="${VERITY_SERVER_GID:-1000}" \
   "$repo_root/deploy/bin/verity-pairing-material")"

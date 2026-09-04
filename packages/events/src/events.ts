@@ -94,7 +94,7 @@ export type RateLimitWindow = z.infer<typeof rateLimitWindowSchema>;
  * first `result` can fire while the task is still open and the backend re-invokes
  * with a later `result` once it finishes.
  */
-export const taskPhaseSchema = z.enum(['started', 'progress', 'ended']);
+const taskPhaseSchema = z.enum(['started', 'progress', 'ended']);
 export type TaskPhase = z.infer<typeof taskPhaseSchema>;
 
 /**
@@ -510,6 +510,13 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     t: z.literal('error'),
     kind: z.string(),
     message: z.string(),
+  }),
+  z.object({
+    t: z.literal('session_progress'),
+    summary: z.string().min(1).max(1_000),
+    outcomeDelivered: z.boolean(),
+    blocker: z.string().min(1).max(500).optional(),
+    requiredDecision: z.string().min(1).max(500).optional(),
   }),
   z.object({
     t: z.literal('raw'),

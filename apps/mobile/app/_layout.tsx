@@ -178,6 +178,7 @@ function HydratedRoot() {
             <Stack.Screen name="new" options={{ title: 'New agent' }} />
             <Stack.Screen name="new-project" options={{ title: 'New project' }} />
             <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+            <Stack.Screen name="devices" options={{ title: 'Devices' }} />
             <Stack.Screen name="workflows" options={{ title: 'Workflows' }} />
             <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
             <Stack.Screen name="unlock-device" options={{ headerShown: false }} />

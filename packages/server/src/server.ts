@@ -16,7 +16,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, sep, join } from 'node:path';
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import type { Server as HttpsServer, ServerOptions as HttpsServerOptions } from 'node:https';
@@ -45,7 +45,11 @@ import {
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   TERMINOLOGY_SYSTEM_PROMPT,
+  RECENT_SESSION_MESSAGES_DEFAULT,
+  recentSessionMessagesRequestSchema,
+  publishSessionProgressRequestSchema,
   aggregateUsage,
+  appendExternalPromptData,
   attachmentUploadSchema,
   type AgentEvent,
   type Attachment,
@@ -73,32 +77,32 @@ import {
   normalizeSessionRelativePath,
   sessionFilePath,
   toSessionFileEntry,
-  type SessionFileEntry,
 } from './session-files.js';
-import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
+import type { DevicePairingManager } from './device-pairing.js';
+import { repairSessionWorktreePermissions } from './session-worktree-recovery.js';
+import {
+  currentPublishedProgress,
+  olderEventsMayMatchWindow,
+  redactSessionObservationText,
+  safeRecentMessages,
+  safeSessionProgressErrorKind,
+} from './session-observation.js';
 import type {
   VeritySettingsPatch,
   VeritySettingsRecord,
   EventStore,
   SealableSecretCipher,
   SequencedEvent,
+  SessionProjectionFacts,
   SessionRecord,
   WorkflowStore,
-  WorkflowView,
 } from '@verity/store';
 import {
-  createKeyVerifier,
-  deriveKeyFromPassword,
-  generateSalt,
-  keyMatchesVerifier,
-  PROJECT_MEMORY_MAX_CHARS,
   DeletedProjectError,
   DevServerPortRangeExhaustedError,
-  ProjectMemoryTooLargeError,
   SealedError,
   WorkflowAuthorizationError,
   WorkflowConflictError,
-  WorkflowNotFoundError,
 } from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import Fastify, {
@@ -110,7 +114,7 @@ import Fastify, {
   type FastifyHttpsOptions,
 } from 'fastify';
 import { z, ZodError } from 'zod';
-import { deriveSessionStatus, type SessionStatus } from './status.js';
+import { deriveSessionStatusFromProjection, type SessionStatus } from './status.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -120,7 +124,7 @@ import {
 } from './attention.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { bearerToken, wsOriginAllowed, type AuthTokenRegistry } from './auth.js';
-import { createUnlockThrottle } from './unlock-throttle.js';
+import { declaredNonOperatorKeys, missingLockoutKeys, routeScopeKey } from './route-scopes.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import {
   createPushFirePoints,
@@ -133,6 +137,7 @@ import type { PushSender } from './push-sender.js';
 import {
   createGitWorktreeProvisioner,
   createScratchProvisioner,
+  RepositoryHasNoCommitsError,
   type WorktreeProvisioner,
 } from './worktree.js';
 import {
@@ -147,26 +152,17 @@ import {
   NothingToMergeError,
   type GitBranchService,
   type GitOutput,
-  isValidBranchName,
 } from './branches.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } from './github.js';
-import type { GitHubTaskService, TaskBoard, TaskItem } from './github-tasks.js';
-import { buildRefinePrompt, parseRefinedTask, type RefinedTask } from './task-refine.js';
-import {
-  GoogleDriveError,
-  createCachedGoogleAccessToken,
-  downloadDriveFile,
-  exchangeGoogleAuthCode,
-  exportDriveFile,
-  getDriveAccountEmail,
-  getDriveFile,
-  listDriveFiles,
-  planDriveImport,
-  referenceDocFileName,
-  type DriveFileList,
-} from './google-drive.js';
-import { writeReferenceDocFile } from './reference-docs.js';
+import type { GitHubTaskService } from './github-tasks.js';
+import { registerTaskRoutes } from './task-routes.js';
+import { registerGoogleDriveRoutes } from './google-drive-routes.js';
+import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
+import { registerPairingRoutes } from './pairing-routes.js';
+import { registerPushTokenRoute } from './push-token-route.js';
+import { registerSecretLifecycleRoutes } from './secret-lifecycle-routes.js';
+import { registerGitHubAppRoutes } from './github-app-routes.js';
 import type {
   GitHubAppCreds,
   GitHubAppIdentityResult,
@@ -177,36 +173,50 @@ import type {
   DopplerProjectSummary,
   DopplerConfigSummary,
 } from './doppler-token.js';
-import {
-  buildManifest,
-  createManifestStateStore,
-  escapeHtml,
-  type ManifestConvert,
-  type ManifestStateStore,
-} from './github-manifest.js';
-import { generateSigningKey, type SshKeygenSpawner } from './signing-key.js';
-import {
-  createProcessAgentLoginService,
-  type AgentLoginPublic,
-  type AgentLoginService,
-} from './agent-login.js';
-import {
-  resolveSigningPrivateKey,
-  signGitPayload,
-  GitSignError,
-  type SshSignSpawner,
-} from './git-signer.js';
+import type { ManifestConvert } from './github-manifest.js';
+import { registerGitHubManifestRoutes } from './github-manifest-routes.js';
+import type { SshKeygenSpawner } from './signing-key.js';
+import { registerSigningKeyRoutes } from './signing-key-routes.js';
+import { createProcessAgentLoginService, type AgentLoginService } from './agent-login.js';
+import type { SshSignSpawner } from './git-signer.js';
+import { registerGitSignRoute } from './git-sign-route.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
-import { internalConnectionIdentity, requestArrivedInternally } from './internal-listener.js';
+import { registerGitHubTokenRoute } from './github-token-route.js';
+import { registerProjectMemoryRoute } from './project-memory-route.js';
+import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
+import { registerWorkflowRoutes } from './workflow-routes.js';
+import { registerProjectCollectionRoutes } from './project-collection-routes.js';
+import { registerProjectDetailRoutes } from './project-detail-routes.js';
+import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
+import { registerProjectDevServerSetupRoute } from './project-dev-server-setup-route.js';
+import {
+  parseRecreateContainerBody,
+  registerProjectConciergeRoutes,
+} from './project-concierge-routes.js';
+import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
+import { registerSessionReadRoutes } from './session-read-routes.js';
+import {
+  MAX_MEETING_AUDIO_BASE64_LEN,
+  registerMeetingTranscriptRoutes,
+} from './meeting-transcript-routes.js';
+import { registerSessionFileRoutes } from './session-file-routes.js';
+import { sessionParams } from './session-route-schemas.js';
+import { registerAttachmentRoute } from './attachment-route.js';
+import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
+import { registerSessionMetadataRoute } from './session-metadata-route.js';
+import { registerSessionSeenRoute } from './session-seen-route.js';
+import { registerSessionDeleteRoute } from './session-delete-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
-import type { UpdateOperation } from './self-update/update-operation.js';
-import { UpdaterRequestError } from './self-update/updater-status.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import { createMcpGateway, type McpGatewayDeps } from './mcp-gateway.js';
 import { collectSessionFacts } from './session-facts.js';
-import { createControlPlaneSessionTools } from './session-handoff-tool.js';
+import {
+  ControlPlaneSessionAuthorityError,
+  ControlPlaneSessionToolError,
+  createControlPlaneSessionTools,
+} from './session-handoff-tool.js';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 import {
   LOCAL_PROJECT_OWNER,
@@ -214,9 +224,8 @@ import {
   isLocalProject,
   type AgentLoopRecord,
   type ProjectRecord,
-  type ProjectUpsertInput,
 } from '@verity/store';
-import { containerNameFor, parseOwnerRepo, slugifyProjectName } from './canonical.js';
+import { parseOwnerRepo } from './canonical.js';
 import { startAgentLoopScheduler, type AgentLoopScheduler } from './agent-loop-scheduler.js';
 import { registerAgentLoopRoutes } from './agent-loop-routes.js';
 import {
@@ -249,7 +258,8 @@ import {
   type ToolkitDriftVerdict,
 } from './toolkit-drift.js';
 import { cachedTrustedToolkitIdentity } from './runner-boundary-attestation.js';
-import { SERVER_COMPAT } from './self-update/compat.js';
+import { registerServerUpdateRoutes, type ServerUpdateController } from './server-update-routes.js';
+export type { ServerUpdateController } from './server-update-routes.js';
 
 function isProjectSessionModel(model: string | undefined): boolean {
   return model === undefined || !model.includes('/') || isCodexModel(model);
@@ -280,6 +290,10 @@ const PROJECT_RELAY_MIGRATION_INTERVAL_MS = 60_000;
  * transferring instead of leaving broker access down for the normal minute. */
 const PROJECT_RELAY_HANDOFF_RETRY_MS = 2_000;
 const PROJECT_RELAY_HANDOFF_RETRY_WINDOW_MS = 30_000;
+
+/** Default lifetime of a cached session branch label — see the cache in
+ *  `buildServer` and {@link ServerDeps.branchCacheTtlMs}. */
+const BRANCH_TTL_MS = 10_000;
 
 /** Shared empty answer for a deployment whose provisioner does not classify
  *  sandboxes (tests, non-relay setups) — allocating one per session summary on a
@@ -531,12 +545,12 @@ interface PublicProjectRecord extends Omit<ProjectRecord, 'hiddenAt' | 'kind'> {
 /** The drift verdict as the app needs it: the judgement, plus the carrier that
  *  decides which remedy applies. The report's `name` is omitted — the client
  *  already knows which project it is holding. */
-export interface ProjectToolkitDrift {
+interface ProjectToolkitDrift {
   verdict: ToolkitDriftVerdict;
   carrier: ToolkitCarrier;
 }
 
-export interface MeetingTranscriptSegment {
+interface MeetingTranscriptSegment {
   speaker: string;
   text: string;
   start?: number | undefined;
@@ -667,12 +681,8 @@ function configured(value: string | null | undefined): boolean {
   return Boolean(value?.trim());
 }
 
-function githubAppConfiguredFromSettings(settings: VeritySettingsRecord | undefined): boolean {
-  return (
-    configured(settings?.githubAppId) &&
-    configured(settings?.githubAppInstallationId) &&
-    configured(settings?.githubAppPrivateKey)
-  );
+function transcriptionEnvironment(name: string): string | undefined {
+  return process.env[`VERITY_TRANSCRIBE_${name}`];
 }
 
 /**
@@ -683,11 +693,11 @@ function githubAppConfiguredFromSettings(settings: VeritySettingsRecord | undefi
  * alone answers "is transcription configured". Unset on both means it is not —
  * there is no bundled backend left to stand in. One function so the answer the
  * app renders (`GET /settings`, `GET /settings/transcription`) cannot drift from
- * the one the upload path enforces in `runLocalMeetingTranscriber`: a stored URL
+ * the one the upload path enforces in `runMeetingTranscriptionCommand`: a stored URL
  * takes the whole backend selection with it, and environment credentials are
  * only inherited by a stored URL that names the SAME endpoint.
  */
-export interface EffectiveExternalTranscription {
+interface EffectiveExternalTranscription {
   readonly baseUrl: string | null;
   readonly model: string | null;
   readonly apiKeyConfigured: boolean;
@@ -706,7 +716,7 @@ export interface EffectiveExternalTranscription {
  * so a custom-command deployment that had chosen `external` — the only choice
  * the app still offers — had every upload rejected.
  */
-export function customMeetingTranscribeCommandConfigured(): boolean {
+function customMeetingTranscribeCommandConfigured(): boolean {
   return (process.env.VERITY_MEETING_TRANSCRIBE_COMMAND?.trim() ?? '').length > 0;
 }
 
@@ -716,7 +726,7 @@ export function customMeetingTranscribeCommandConfigured(): boolean {
  * URL AND a model; the API key is optional). This is what the app renders as
  * "set up", so it must answer the same question the upload path enforces.
  */
-export function externalMeetingTranscriptionConfigured(
+function externalMeetingTranscriptionConfigured(
   settings:
     | Pick<VeritySettingsRecord, 'transcribeBaseUrl' | 'transcribeModel' | 'transcribeApiKey'>
     | null
@@ -727,27 +737,27 @@ export function externalMeetingTranscriptionConfigured(
   return effective.baseUrl !== null && effective.model !== null;
 }
 
-export function effectiveExternalTranscription(
+function effectiveExternalTranscription(
   settings:
     | Pick<VeritySettingsRecord, 'transcribeBaseUrl' | 'transcribeModel' | 'transcribeApiKey'>
     | null
     | undefined,
 ): EffectiveExternalTranscription {
-  const inheritedUrl = process.env.VERITY_PARAKEET_BASE_URL?.trim() || null;
+  const inheritedUrl = transcriptionEnvironment('BASE_URL')?.trim() || null;
   const storedUrl = settings?.transcribeBaseUrl?.trim() || null;
   const sameInheritedBackend = storedUrl !== null && storedUrl === inheritedUrl;
   return {
     baseUrl: storedUrl ?? inheritedUrl,
     model: storedUrl
       ? settings?.transcribeModel?.trim() ||
-        (sameInheritedBackend ? process.env.VERITY_PARAKEET_MODEL?.trim() || null : null)
+        (sameInheritedBackend ? transcriptionEnvironment('MODEL')?.trim() || null : null)
       : inheritedUrl !== null
-        ? process.env.VERITY_PARAKEET_MODEL?.trim() || null
+        ? transcriptionEnvironment('MODEL')?.trim() || null
         : null,
     apiKeyConfigured: storedUrl
       ? configured(settings?.transcribeApiKey) ||
-        (sameInheritedBackend && configured(process.env.VERITY_PARAKEET_API_KEY))
-      : inheritedUrl !== null && configured(process.env.VERITY_PARAKEET_API_KEY),
+        (sameInheritedBackend && configured(transcriptionEnvironment('API_KEY')))
+      : inheritedUrl !== null && configured(transcriptionEnvironment('API_KEY')),
   };
 }
 
@@ -893,19 +903,6 @@ function publicProjectSettings(
     updatedAt: settings.updatedAt,
   };
   return rest;
-}
-
-/**
- * Narrow view of the privileged Updater the Server is allowed to drive: read the
- * current operation, or request exactly one digest-pinned update. The Server
- * never learns Docker verbs, journal paths, or container identities.
- */
-export interface ServerUpdateController {
-  readOperation(): Promise<UpdateOperation | null>;
-  requestUpdate(input: {
-    readonly idempotencyKey: string;
-    readonly targetDigest: string;
-  }): Promise<UpdateOperation>;
 }
 
 export interface ServerDeps {
@@ -1056,6 +1053,12 @@ export interface ServerDeps {
    * (#91). Absent → the branch routes return 503 (no project repo configured).
    */
   branches?: GitBranchService;
+  /**
+   * How long the session header's branch label may be served from memory before
+   * the next activity poll re-reads git. Defaults to {@link BRANCH_TTL_MS}; `0`
+   * reads git on every poll, which is what tests asserting a live read want.
+   */
+  branchCacheTtlMs?: number;
   /**
    * Looks up the open PR number for a branch (#125) — used to add `currentPr` to the
    * branches response so the header can show `PR #N`. Absent → no PR chip (GitHub not
@@ -1380,7 +1383,7 @@ export function sortModelIds(ids: readonly string[]): string[] {
 }
 
 /** Response of `GET /models`: the currently usable model ids plus spawn default. */
-export interface ModelList {
+interface ModelList {
   /** Every currently usable model id. Claude and Codex appear only when the matching
    * subscription login exists in Verity settings; OpenCode provider-qualified ids
    * appear when the backend enumerates them. */
@@ -1404,7 +1407,6 @@ const streamQuery = z.object({ sinceSeq: z.coerce.number().int().nonnegative().o
 const DEFAULT_HISTORY_PAGE = 40;
 const MAX_ATTACHMENTS = 8;
 const MAX_ATTACHMENT_BASE64_LEN = 7_000_000;
-const MAX_MEETING_AUDIO_BASE64_LEN = 70_000_000;
 const DEFAULT_MEETING_AUDIO_STREAM_BYTES = 500_000_000;
 // The streamed upload route acknowledges first; transcription of a two-hour
 // recording is allowed to continue server-side without an HTTP request deadline.
@@ -1453,7 +1455,9 @@ So: repo work belongs in a project session. When a task needs to read a private 
 What this container does have:
 - The Verity HTTP API, reachable in-cluster, for inspecting projects, sessions and server state.
 - The \`verity_create_delivery\` tool. When the user asks for a service to be changed and delivered across projects, use this tool instead of sending them to project sessions. Reuse a known service id. On first use, propose the exact existing Source and GitOps projects plus image, manifest-directory and Argo-CD coordinates; the visible approval registers that relationship and starts the delivery. Never ask the user to invent or look up an internal service id.
-- The \`verity_list_sessions\` and \`verity_session_handoff\` tools. Listing answers which sessions exist, in which project, and which can receive a handoff — metadata only, never another session's transcript. The handoff writes one briefing into an existing project session as a turn, which is how findings from here reach the session that must act on them: state the conclusion, the exact coordinates, and what you want done, because the other session cannot see this conversation. It cannot open a session, and it grants the target no authority it did not already have.
+- The \`verity_list_sessions\` and \`verity_session_handoff\` tools. List first and let the user choose an exact existing session or New session; a new-session handoff creates the target and uses the briefing as its first turn. A bare project target is only a convenience when exactly one eligible session exists and never chooses among several.
+- The on-demand \`verity_session_progress\` tool returns structured lifecycle/cached branch-PR facts without transcript content. \`verity_recent_session_messages\` reads one explicitly selected session only after a separate approval that names the purpose and bounded window. Never poll either tool.
+- Project sessions can publish a bounded, explicit outcome summary with \`verity_publish_session_progress\`; the server binds it to the calling session. A completed turn is not proof that the requested outcome was delivered.
 - Outbound HTTPS, so public documentation and public repositories are readable.
 - Doppler-backed server credentials and other control-plane capabilities where a task genuinely requires them.
 - The host Docker daemon, at \`/var/run/docker.sock\`, with a working \`docker\` CLI. This is a deliberate grant (ADR 0006 Amendment 1) and it exists for ONE purpose: diagnosing the fleet.
@@ -1503,33 +1507,6 @@ const turnAttachment = attachmentUploadSchema.refine(
   (a) => a.data.length <= MAX_ATTACHMENT_BASE64_LEN,
   { message: 'attachment exceeds the size limit', path: ['data'] },
 );
-
-const meetingTranscriptBody = z.object({
-  fileName: z.string().min(1).max(200),
-  mediaType: z.string().min(1).max(100).default('audio/mpeg'),
-  data: z.string().min(1).max(MAX_MEETING_AUDIO_BASE64_LEN),
-  title: z.string().min(1).max(120).optional(),
-  announceRequest: z.boolean().optional(),
-  clientRequestId: z.string().min(1).max(100).optional(),
-});
-
-const streamedMeetingTranscriptQuery = z.object({
-  fileName: z.string().min(1).max(200),
-  mediaType: z.string().min(1).max(100).default('audio/mpeg'),
-  title: z.string().min(1).max(120).optional(),
-  announceRequest: z.enum(['true', 'false']).optional(),
-  clientRequestId: z.string().min(1).max(100).optional(),
-});
-
-const streamedMeetingTranscriptHeaders = z.object({
-  'x-verity-meeting-file-name': z.string().min(1),
-  'x-verity-meeting-media-type': z.string().min(1),
-  'x-verity-meeting-title': z.string().optional(),
-  'x-verity-meeting-announce': z.enum(['true', 'false']).optional(),
-  // encodeURIComponent can expand one Unicode code point to 12 ASCII bytes.
-  // The decoded query schema below remains the authoritative 100-char limit.
-  'x-verity-meeting-client-request-id': z.string().min(1).max(1200).optional(),
-});
 
 function isSupportedMeetingAudio(mediaType: string, fileName: string): boolean {
   const lowerName = fileName.toLowerCase();
@@ -1806,28 +1783,6 @@ async function ensureMeetingDirectory(worktree: string): Promise<string> {
   return meetingReal;
 }
 
-/** Ensure `docs/reference/` exists in the worktree for imported Drive docs
- *  (ADR 0009), with the same symlink/containment guards as the meeting dir. */
-async function ensureReferenceDirectory(worktree: string): Promise<string> {
-  const rootReal = await realpath(worktree);
-  const docsDir = join(worktree, 'docs');
-  await mkdir(docsDir, { recursive: true });
-  if ((await lstat(docsDir)).isSymbolicLink()) throw new Error('invalid reference directory');
-  const docsReal = await realpath(docsDir);
-  if (docsReal !== rootReal && !docsReal.startsWith(`${rootReal}${sep}`)) {
-    throw new Error('invalid reference directory');
-  }
-
-  const referenceDir = join(docsDir, 'reference');
-  await mkdir(referenceDir, { recursive: true });
-  if ((await lstat(referenceDir)).isSymbolicLink()) throw new Error('invalid reference directory');
-  const referenceReal = await realpath(referenceDir);
-  if (referenceReal !== rootReal && !referenceReal.startsWith(`${rootReal}${sep}`)) {
-    throw new Error('invalid reference directory');
-  }
-  return referenceReal;
-}
-
 async function existingMeetingTranscript(
   meetingDir: string,
   relPath: string,
@@ -1904,7 +1859,6 @@ export type MeetingTranscriptionSettings = Pick<
  * app that still offers the local option is told its choice no longer exists
  * instead of silently being switched to an off-host service.
  */
-export const SELECTABLE_TRANSCRIBE_BACKEND_MODES = ['external'] as const;
 
 export function meetingTranscriptionSettingsWhileSealed(
   settings: MeetingTranscriptionSettings | undefined,
@@ -1930,7 +1884,7 @@ function configuredMeetingTranscriber(
 ): MeetingTranscriber {
   const command =
     process.env.VERITY_MEETING_TRANSCRIBE_COMMAND?.trim() || DEFAULT_MEETING_TRANSCRIBE_COMMAND;
-  return new LocalCommandMeetingTranscriber(command, readSettings);
+  return new CommandMeetingTranscriber(command, readSettings);
 }
 
 function parseMeetingTranscriptSegments(value: unknown): MeetingTranscriptSegment[] {
@@ -1957,7 +1911,7 @@ function parseMeetingTranscriptSegments(value: unknown): MeetingTranscriptSegmen
 
 function parseMeetingTranscriptResult(value: unknown): MeetingTranscriptResult {
   if (typeof value !== 'object' || value === null) {
-    throw new MeetingTranscriptionFailedError('local transcriber returned invalid JSON');
+    throw new MeetingTranscriptionFailedError('transcription client returned invalid JSON');
   }
   const body = value as Record<string, unknown>;
   let segments = parseMeetingTranscriptSegments(body.segments ?? body.utterances);
@@ -1965,7 +1919,7 @@ function parseMeetingTranscriptResult(value: unknown): MeetingTranscriptResult {
     segments = [{ speaker: 'Speaker 1', text: body.text.trim() }];
   }
   if (segments.length === 0) {
-    throw new MeetingTranscriptionFailedError('local transcriber returned no text');
+    throw new MeetingTranscriptionFailedError('transcription client returned no text');
   }
   return {
     segments,
@@ -1974,7 +1928,7 @@ function parseMeetingTranscriptResult(value: unknown): MeetingTranscriptResult {
   };
 }
 
-export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
+export class CommandMeetingTranscriber implements MeetingTranscriber {
   constructor(
     private readonly command: string,
     private readonly readSettings: () => Promise<MeetingTranscriptionSettings | undefined>,
@@ -1990,7 +1944,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
     const settings = await this.readSettings();
     if (input.audioPath) {
       try {
-        const stdout = await runLocalMeetingTranscriber(
+        const stdout = await runMeetingTranscriptionCommand(
           this.command,
           input.audioPath,
           input.mediaType,
@@ -2007,7 +1961,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
           throw error;
         }
         if (error instanceof SyntaxError) {
-          throw new MeetingTranscriptionFailedError('local transcriber returned invalid JSON');
+          throw new MeetingTranscriptionFailedError('transcription client returned invalid JSON');
         }
         throw new MeetingTranscriptionFailedError();
       }
@@ -2017,7 +1971,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
     const audioPath = join(dir, `meeting${ext}`);
     try {
       await writeFile(audioPath, input.audio, { mode: 0o600 });
-      const stdout = await runLocalMeetingTranscriber(
+      const stdout = await runMeetingTranscriptionCommand(
         this.command,
         audioPath,
         input.mediaType,
@@ -2034,7 +1988,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
         throw error;
       }
       if (error instanceof SyntaxError) {
-        throw new MeetingTranscriptionFailedError('local transcriber returned invalid JSON');
+        throw new MeetingTranscriptionFailedError('transcription client returned invalid JSON');
       }
       throw new MeetingTranscriptionFailedError();
     } finally {
@@ -2043,7 +1997,7 @@ export class LocalCommandMeetingTranscriber implements MeetingTranscriber {
   }
 }
 
-async function runLocalMeetingTranscriber(
+async function runMeetingTranscriptionCommand(
   command: string,
   audioPath: string,
   mediaType: string,
@@ -2055,7 +2009,7 @@ async function runLocalMeetingTranscriber(
     return trimmed ? trimmed : undefined;
   };
   const settingsBaseUrl = settingEnv(settings?.transcribeBaseUrl);
-  const inheritedBaseUrl = settingEnv(process.env.VERITY_PARAKEET_BASE_URL);
+  const inheritedBaseUrl = settingEnv(transcriptionEnvironment('BASE_URL'));
   const sameBackend = settingsBaseUrl === inheritedBaseUrl;
   // Read once, up here, so every check below sees it. Both exemptions for a
   // deployment-supplied command have to agree, and when this was computed just
@@ -2072,12 +2026,12 @@ async function runLocalMeetingTranscriber(
   const externalBaseUrl = settingsBaseUrl ?? inheritedBaseUrl;
   const externalApiKey = settingsBaseUrl
     ? (settingEnv(settings?.transcribeApiKey) ??
-      (sameBackend ? settingEnv(process.env.VERITY_PARAKEET_API_KEY) : undefined))
-    : settingEnv(process.env.VERITY_PARAKEET_API_KEY);
+      (sameBackend ? settingEnv(transcriptionEnvironment('API_KEY')) : undefined))
+    : settingEnv(transcriptionEnvironment('API_KEY'));
   const externalModel = settingsBaseUrl
     ? (settingEnv(settings?.transcribeModel) ??
-      (sameBackend ? settingEnv(process.env.VERITY_PARAKEET_MODEL) : undefined))
-    : settingEnv(process.env.VERITY_PARAKEET_MODEL);
+      (sameBackend ? settingEnv(transcriptionEnvironment('MODEL')) : undefined))
+    : settingEnv(transcriptionEnvironment('MODEL'));
   // A deployment-supplied command IS the backend and brings its own
   // configuration, so choosing `external` — the only choice the app still offers
   // — must not demand an OpenAI URL and model the command never reads.
@@ -2093,22 +2047,22 @@ async function runLocalMeetingTranscriber(
   const settingsEnv =
     settings?.transcribeBackendMode === 'external'
       ? {
-          VERITY_PARAKEET_BASE_URL: externalBaseUrl ?? '',
-          VERITY_PARAKEET_API_KEY: externalApiKey ?? '',
-          VERITY_PARAKEET_MODEL: externalModel ?? '',
+          VERITY_TRANSCRIBE_BASE_URL: externalBaseUrl ?? '',
+          VERITY_TRANSCRIBE_API_KEY: externalApiKey ?? '',
+          VERITY_TRANSCRIBE_MODEL: externalModel ?? '',
         }
       : settingsBaseUrl
         ? {
-            VERITY_PARAKEET_BASE_URL: settingsBaseUrl,
-            VERITY_PARAKEET_API_KEY:
+            VERITY_TRANSCRIBE_BASE_URL: settingsBaseUrl,
+            VERITY_TRANSCRIBE_API_KEY:
               settingEnv(settings?.transcribeApiKey) ??
-              (sameBackend ? (process.env.VERITY_PARAKEET_API_KEY ?? '') : ''),
-            VERITY_PARAKEET_MODEL:
+              (sameBackend ? (transcriptionEnvironment('API_KEY') ?? '') : ''),
+            VERITY_TRANSCRIBE_MODEL:
               settingEnv(settings?.transcribeModel) ??
-              (sameBackend ? (process.env.VERITY_PARAKEET_MODEL ?? '') : ''),
+              (sameBackend ? (transcriptionEnvironment('MODEL') ?? '') : ''),
           }
         : {};
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     VERITY_AUDIO_FILE: audioPath,
     VERITY_AUDIO_MEDIA_TYPE: mediaType,
@@ -2212,7 +2166,7 @@ async function runLocalMeetingTranscriber(
     throw new MeetingTranscriptionFailedError(
       typeof stderr === 'string' && stderr.trim().length > 0
         ? stderr.trim()
-        : 'local transcriber failed',
+        : 'transcription client failed',
     );
   }
 }
@@ -2248,16 +2202,6 @@ const turnBody = z
     message: 'a turn needs a prompt or at least one attachment',
     path: ['prompt'],
   });
-
-const devicePushTokenBody = z.object({
-  expoToken: z
-    .string()
-    .max(256)
-    .regex(/^(?:ExpoPushToken|ExponentPushToken)\[[A-Za-z0-9_-]+\]$/),
-  // ADR 0008 is iOS/watchOS first. Reject Android until its actions and delivery
-  // behaviour are explicitly implemented instead of storing unusable rows.
-  platform: z.literal('ios'),
-});
 
 // Body for POST /sessions: create a visible Verity session/worktree immediately.
 // No backend turn starts here; the first LLM call happens when the operator sends
@@ -2311,56 +2255,6 @@ const spawnBody = z
   });
 
 type SpawnBody = z.infer<typeof spawnBody>;
-
-const workflowServiceBody = z.object({
-  id: z.string().min(1).max(100),
-  sourceProjectId: z.string().min(1),
-  sourceRepository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
-  imageRepository: z.string().min(1),
-  deployments: z.record(
-    z.string().min(1),
-    z.object({
-      projectId: z.string().min(1),
-      repository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
-      manifestPath: z
-        .string()
-        .min(1)
-        .refine((path) => !path.startsWith('/') && !path.split('/').includes('..')),
-      argoApplication: z.string().min(1),
-    }),
-  ),
-});
-
-const workflowCreateBody = z.object({
-  idempotencyKey: z.string().min(1).max(200),
-  controlProjectId: z.string().min(1),
-  rootSessionId: z.string().optional(),
-  objective: z.string().min(1).max(10_000),
-  environment: z.string().min(1).max(100),
-  serviceId: z.string().min(1).max(100),
-});
-
-const workflowVersionBody = z.object({ version: z.number().int().positive() });
-const workflowDecisionBody = z.object({
-  version: z.number().int().positive(),
-  stepId: z.string().min(1),
-  approved: z.literal(true),
-});
-const workflowImageBody = z.object({
-  digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  version: z.number().int().positive(),
-  idempotencyKey: z.string().min(1).max(200),
-});
-const workflowResultBody = z.object({
-  handoffId: z.string().min(1).max(200),
-  sessionId: z.string().min(1).max(200),
-  capability: z.string().min(32).max(512),
-  status: z.enum(['completed', 'blocked', 'failed', 'cancelled']),
-  summary: z.string().min(1).max(4_000),
-  outputs: z.record(z.string(), z.unknown()),
-  evidence: z.array(z.unknown()).max(100),
-  blocker: z.unknown().optional(),
-});
 
 /** How long `DELETE /projects/:id` waits for a spawn that was admitted just
  *  before it, so the spawn's worktree creation does not overlap the purge. It
@@ -2439,16 +2333,18 @@ const mergePullRequestBody = z.object({
   number: z.number().int().positive(),
 });
 
-function buildLocalMergeDisplayPrompt(branch: string, base: string): string {
-  return `Merged ${branch} into ${base}`;
+function buildLocalMergeDisplayPrompt(): string {
+  // This durable transcript text may later be replayed as a model prompt. Keep
+  // Git-controlled ref names out of the operator-authored prompt channel.
+  return 'Merged local branch into its base';
 }
 
 function buildLocalMergedPrompt(branch: string, base: string, note: string): string {
-  return `${buildLocalMergeDisplayPrompt(branch, base)}
-
-${note}
-
-Please continue from this post-merge state.`;
+  return appendExternalPromptData(
+    'A local merge completed. Please continue from this post-merge state.',
+    'local Git metadata and merge result',
+    { branch, base, note },
+  );
 }
 
 function buildPullRequestMergeRejectedDisplayPrompt(number: number): string {
@@ -2470,9 +2366,11 @@ function buildPullRequestCiFailurePrompt(pr: PullRequestStatus): string {
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} checks are failing` : 'CI is failing';
-  return `${buildPullRequestCiFailureDisplayPrompt(pr.number)}
-
-${checks} on pull request #${String(pr.number)} (${pr.title}). Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`;
+  return appendExternalPromptData(
+    `${buildPullRequestCiFailureDisplayPrompt(pr.number)}\n\n${checks} on pull request #${String(pr.number)}. Please inspect the failing checks, fix the root cause, run the relevant verification, update the PR branch, and report the result.`,
+    `GitHub pull request #${String(pr.number)}`,
+    { title: pr.title },
+  );
 }
 
 function pullRequestCiFailureKey(sessionId: string, pr: PullRequestStatus): string {
@@ -2497,11 +2395,15 @@ function buildPostMergeActionsFailurePrompt(pr: PullRequestStatus): string {
   const total = pr.checks.total;
   const checks =
     total > 0 ? `${String(failed)}/${String(total)} Actions failed` : 'GitHub Actions failed';
-  return `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
+  return appendExternalPromptData(
+    `${buildPostMergeActionsFailureDisplayPrompt(pr.number)}
 
-${checks} after pull request #${String(pr.number)} (${pr.title}) was merged. Inspect the concrete failed GitHub Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
+${checks} after pull request #${String(pr.number)} was merged. Inspect the concrete failed GitHub Actions runs and their logs with one-time REST reads; do not poll PR or CI status. Determine the likely root cause and the smallest safe next step. Do not modify the repository or external systems in this diagnostic turn.
 
-Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`;
+Keep the user-facing answer extremely short: at most three short sentences or bullets covering what failed, the likely cause, and the recommended next step. Do not paste logs, run IDs, command output, or investigation details unless one is essential to the decision. End with two or three concise Verity Quick Actions for the viable next steps so the user can authorize the follow-up without being flooded with text.`,
+    `GitHub pull request #${String(pr.number)}`,
+    { title: pr.title },
+  );
 }
 
 function postMergeActionsFailureKey(sessionId: string, pr: PullRequestStatus): string {
@@ -2526,9 +2428,11 @@ function buildPullRequestConflictDisplayPrompt(number: number): string {
  * run, because there is none. */
 function buildPullRequestConflictPrompt(pr: PullRequestStatus): string {
   const base = pr.baseRef ?? 'the base branch';
-  return `${buildPullRequestConflictDisplayPrompt(pr.number)}
-
-Pull request #${String(pr.number)} (${pr.title}) conflicts with ${base}, so GitHub cannot merge it and does not run the pull-request checks for it. Please fetch the latest ${base}, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`;
+  return appendExternalPromptData(
+    `${buildPullRequestConflictDisplayPrompt(pr.number)}\n\nPull request #${String(pr.number)} has a merge conflict, so GitHub cannot merge it and does not run the pull-request checks for it. Inspect the pull request, fetch its latest base, merge it into the PR branch, resolve every conflict properly (understand both sides — never discard changes wholesale), run the relevant build/test/lint verification, push the branch, and report the result.`,
+    `GitHub pull request #${String(pr.number)}`,
+    { title: pr.title, baseRef: base },
+  );
 }
 
 function pullRequestConflictKey(sessionId: string, pr: PullRequestStatus): string {
@@ -2553,35 +2457,6 @@ function pullRequestConflictKey(sessionId: string, pr: PullRequestStatus): strin
 //  • `model`: switch the engine/model the session uses from its NEXT turn onward
 //    (the engine-switch feature). The model string is the backend-routing
 //    contract (ADR 0001); a turn already in flight is unaffected.
-const patchSessionBody = z.object({
-  name: z
-    .string()
-    .transform((s) => s.trim())
-    .refine((s) => s.length >= 1 && s.length <= 80, 'name must be 1–80 characters')
-    .nullable()
-    .optional(),
-  model: z.string().min(1).optional(),
-});
-
-const sessionFileQuery = z.object({
-  path: z.string().optional().default(''),
-});
-const sessionFileUploadQuery = z.object({
-  path: z.string().default(''),
-  fileName: z
-    .string()
-    .min(1)
-    .max(255)
-    .refine(
-      (name) =>
-        name !== '.' &&
-        name !== '..' &&
-        !/[\0\\/]/.test(name) &&
-        Buffer.byteLength(name, 'utf8') <= 255,
-      'invalid file name',
-    ),
-});
-
 // Body for POST /sessions/:id/permissions/:toolUseId: the operator's mid-turn
 // allow/deny answer for a parked `can_use_tool` prompt (#27). `allow` may carry an
 // edited `updatedInput` (the tool runs with it); `deny` carries a `message` shown
@@ -2663,7 +2538,7 @@ function agentLoopSetupPrompt(project: ProjectRecord, loop: AgentLoopRecord): st
 /** Compact PR status for a session's current branch, carried on the list so the
  * overview can mark merge-ready / merge-blocked / CI-failed sessions (#387). A projection of the
  * richer {@link PullRequestStatus} (drops title/url/checks the list doesn't need). */
-export interface SessionPrSummary {
+interface SessionPrSummary {
   phase: PullRequestStatus['phase'];
   pipeline: PullRequestStatus['pipeline'];
   mergeable: PullRequestStatus['mergeable'];
@@ -2697,6 +2572,8 @@ export interface SessionSummary extends SessionRecord {
    * the overview compares against a per-device "last seen" mark to show an unread
    * dot. Carried on the summary so the list needn't open each session to know it. */
   eventCount: number;
+  /** Timestamp of the newest canonical event, for metadata-only recency displays. */
+  lastActivityAt: number | null;
   /**
    * Conditions about THIS session worth interrupting the operator for — currently
    * only `sandbox_disconnected` (see `attention.ts`). Absent when there is
@@ -2720,7 +2597,7 @@ export interface SessionSummary extends SessionRecord {
  * absent when the Server is healthy — see `attention.ts` for why it rides this
  * response instead of a channel of its own.
  */
-export interface SessionListEnvelope {
+interface SessionListEnvelope {
   sessions: SessionSummary[];
   attention?: AttentionSignal[];
 }
@@ -2737,42 +2614,6 @@ export interface SessionDetail extends SessionSummary {
   queued: { id: string; text: string; attachments?: Attachment[] }[];
 }
 
-export interface MeetingTranscriptCreated {
-  path: string;
-  title: string;
-  segments: number;
-}
-
-export interface ProjectDetail {
-  project: PublicProjectRecord;
-  settings: PublicProjectSettingsRecord | null;
-  sessions: SessionSummary[];
-}
-
-const sessionParams = z.object({
-  id: z
-    .string()
-    .min(1)
-    .regex(/^[A-Za-z0-9_-]+$/),
-});
-const scrollDiagnosticBody = z.object({
-  event: z.string().min(1).max(80),
-  seq: z.number().int().nonnegative(),
-  at: z.number().finite(),
-  data: z
-    .record(
-      z.string().min(1).max(40),
-      z.union([z.boolean(), z.number().finite(), z.string().max(80)]),
-    )
-    .superRefine((data, ctx) => {
-      if (Object.keys(data).length > 32) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'too many diagnostic fields',
-        });
-      }
-    }),
-});
 // The allowlists below mirror exactly what apps/mobile/app/session/[id].tsx emits in
 // the newest-first transcript coordinate system. Anything else is redacted, so a name
 // that is not listed here silently degrades to `unknown` in the diagnostics.
@@ -2980,6 +2821,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // (MAX_ATTACHMENTS × MAX_ATTACHMENT_BASE64_LEN). Without this, a real screenshot
   // (>1 MiB of base64) is rejected with a 413 BEFORE the schema runs — the turn
   // silently never dispatches. Headroom added for the prompt + JSON envelope.
+  // The same reasoning binds MAX_MEETING_AUDIO_BASE64_LEN, which lives in
+  // meeting-transcript-routes.ts next to the schema that enforces it: this limit
+  // has to stay above it, so lowering one without the other is what turns a field
+  // error into a bare 413.
   const bodyLimit =
     Math.max(MAX_ATTACHMENTS * MAX_ATTACHMENT_BASE64_LEN, MAX_MEETING_AUDIO_BASE64_LEN) + 1_000_000;
   const loggerOption: NonNullable<FastifyServerOptions['logger']> = deps.logger
@@ -3011,6 +2856,33 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           bodyLimit,
           https: deps.https,
         } satisfies FastifyHttpsOptions<HttpsServer>);
+  // Derives the auth gate's pre-auth exception set from the routes this instance
+  // actually registers; the gate that consumes it is far below, next to the rest
+  // of the auth logic. It is attached HERE, in the same statement group as the
+  // instance itself, because `onRoute` is not retroactive — unlike `onRequest` it
+  // sees only routes registered after it. Adjacent to the constructor there is no
+  // "before" to get wrong: no route can exist yet. Anywhere else and a future
+  // route hoisted above it would silently lose its exemption and 401.
+  // `preAuthKeys` holds `"METHOD /pathname"`, so a sibling method on an exempt
+  // pathname is not exempt. See route-scopes.ts.
+  const preAuthKeys = new Set<string>();
+  app.addHook('onRoute', (route) => {
+    for (const key of declaredNonOperatorKeys(route)) preAuthKeys.add(key);
+  });
+  // Defence in depth for the routes whose loss locks the operator out entirely
+  // rather than breaking a feature: refuse to come up instead of 401-ing the
+  // on-ramp that mints the operator bearer. See LOCKOUT_CRITICAL_KEYS.
+  app.addHook('onReady', (done) => {
+    const missing = missingLockoutKeys(preAuthKeys);
+    done(
+      missing.length === 0
+        ? undefined
+        : new Error(
+            `verity: pre-auth exemption missing for ${missing.join(', ')} — the onRoute hook that derives them must precede every route registration`,
+          ),
+    );
+  });
+
   const githubWebhookDigests = new WeakMap<FastifyRequest, Promise<string>>();
   if (deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined) {
     app.addHook('preParsing', (request, _reply, payload, done) => {
@@ -3811,6 +3683,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(503);
       return { error: 'secret store is sealed', status: 'sealed' as const };
     }
+    if (error instanceof RepositoryHasNoCommitsError) {
+      request.log.warn(error, 'verity: session base repository is empty');
+      reply.code(409);
+      return { error: error.message };
+    }
     // Fastify's own client errors carry a 4xx statusCode (415 unsupported media
     // type, 413 payload too large, malformed-JSON 400, …). Surface the code —
     // it's a client mistake they can fix — but with a generic message so no
@@ -3840,70 +3717,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   // ── Global auth gate (audit finding C1) ───────────────────────────────────
-  // Every route requires a valid per-device bearer token EXCEPT a narrow
-  // pre-auth allowlist: the health probe, the master-password lifecycle (the
-  // on-ramp that mints the token), the onboarding status probe, and the three
-  // GitHub manifest URLs GitHub's browser must reach (those carry their own
-  // single-use CSRF `state`). Registering the check as a global `onRequest`
-  // hook — rather than per route — means a newly added route is protected by
-  // default; you must consciously add it to the allowlist to expose it.
+  // Every route requires a valid per-device bearer token EXCEPT the routes
+  // declared in `NON_OPERATOR_ROUTES` — the health probe, the master-password
+  // lifecycle (the on-ramp that mints the token), the onboarding status probe,
+  // the GitHub manifest URLs GitHub's browser must reach, the webhook, and the
+  // sandbox-facing `/internal/*` brokers. Registering the check as a global
+  // `onRequest` hook — rather than per route — means a newly added route is
+  // protected by default; you must consciously declare it to expose it.
   //
   // The gate only enforces once a master password is configured (registry
   // enabled). Env-key/headless deployments have no interactive credential and
   // keep the previous open behaviour, relying on network isolation.
-  const preAuthPaths: ReadonlySet<string> = new Set([
-    '/healthz',
-    '/secret/status',
-    // `/secret/init` is pre-auth: it is the on-ramp that sets the first master
-    // password (onboarding). Until it runs the store is uninitialized and the gate
-    // is open, so the deployment must sit behind a trusted network/firewall on
-    // first run (documented first-run trust-on-first-use residual).
-    '/secret/init',
-    '/secret/unlock',
-    '/onboarding/status',
-    ...(deps.devicePairing !== undefined ? (['/pair/identity', '/pair/redeem'] as const) : []),
-    '/github/app/manifest/start',
-    '/github/app/manifest/callback',
-    '/github/app/manifest/installed',
-    ...(deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined
-      ? (['/providers/github/webhook'] as const)
-      : []),
-    // Called by the sandbox commit-signing wrapper, not the operator — it
-    // authenticates itself with the broker token (SHA-256 of the signing key), so
-    // it must bypass the operator bearer gate. Only present when broker mode is on
-    // (the route itself is only registered then), so a non-broker deployment
-    // exposes no signing route. See POST /internal/git/sign.
-    ...(deps.signingCapabilities !== undefined ? (['/internal/git/sign'] as const) : []),
-    // Called by the sandbox git credential helper / gh wrapper, not the operator —
-    // it authenticates with a per-container capability, so it bypasses the operator
-    // bearer gate. Only present when the token broker is wired. See
-    // POST /internal/github/token.
-    ...(deps.ghTokenCapabilities !== undefined && deps.ghTokenMint !== undefined
-      ? (['/internal/github/token'] as const)
-      : []),
-    // Called by the sandbox `verity-memory` wrapper, not the operator — it
-    // authenticates with the same per-container capability as the gh-token broker
-    // and bypasses the operator bearer gate. Gated ONLY on capability resolution
-    // (ADR 0008): unlike the gh-token route it needs no token-mint, so a deployment
-    // with capabilities but no mint still gets memory. See POST /internal/project/memory.
-    ...(deps.ghTokenCapabilities !== undefined ? (['/internal/project/memory'] as const) : []),
-    // Called by an ACP agent's MCP client, not the operator — it authenticates with the
-    // per-turn gateway bearer the Server minted for that turn, so it bypasses the operator
-    // bearer gate. Only present when the gateway is wired. See POST /internal/mcp.
-    // The control-plane variant is the same gateway for the one caller that arrives on the
-    // shared internal listener rather than a project socket — see POST
-    // /internal/control-plane/mcp for why stating that project is not a hole.
-    ...(deps.mcpGateway !== undefined
-      ? (['/internal/mcp', '/internal/control-plane/mcp'] as const)
-      : []),
-    ...(deps.workflowStore !== undefined && deps.ghTokenCapabilities !== undefined
-      ? (['/internal/workflow/result'] as const)
-      : []),
-  ]);
+  //
+  // The exception set used to be written out here as a second, conditional list
+  // that had to stay in step with the equally conditional route registrations.
+  // It is now `preAuthKeys`, derived from the routes this instance actually
+  // registers by the `onRoute` hook attached next to the Fastify constructor
+  // above — see there for why it cannot live at this point in the file.
   app.addHook('onRequest', async (request, reply) => {
-    // Match on the concrete pathname (query stripped); none of the pre-auth
-    // routes carry path params, so an exact-set lookup is sufficient and avoids
-    // depending on Fastify's route-pattern internals.
+    // Match on the concrete pathname (query stripped) plus the request method; no
+    // pre-auth route carries a path param, so an exact-set lookup is sufficient
+    // and avoids depending on Fastify's route-pattern internals. That is no longer
+    // an assumption a reader has to hold: the `onRoute` hook above refuses to
+    // register a declared exception whose url has a param or wildcard.
     const pathname = request.url.split('?', 1)[0] ?? request.url;
     // Network-origin gate for `/internal/*` (audit H1 follow-up), enforced BEFORE
     // and independent of the auth gate: when an internal listener is wired, these
@@ -3921,7 +3757,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     const registry = deps.authRegistry;
     if (registry === undefined || !registry.isEnabled()) return; // gate off
-    if (preAuthPaths.has(pathname)) return;
+    if (preAuthKeys.has(routeScopeKey(request.method, pathname))) return;
     const websocketStream =
       (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
       WS_STREAM_PATH.test(pathname);
@@ -3974,98 +3810,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
   });
 
-  // Read-only compatibility surface this build advertises (ADR 0008 slice 1).
-  // Authenticated by default — it is NOT in `preAuthPaths`, so the global bearer
-  // gate protects it like any other route. Returns the baked `SERVER_COMPAT`
-  // constant only; no DB access, no mutation. A later slice's Updater/preflight
-  // reads this to gate a blue-green cutover.
-  app.get('/server/compat', () => SERVER_COMPAT);
+  registerServerUpdateRoutes(app, deps);
 
-  // Mirrors the Updater's own request contract so a malformed body is refused
-  // here instead of costing a round trip over the privileged control socket.
-  const serverUpdateRequestBody = z.object({
-    idempotencyKey: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/),
-    targetDigest: z
-      .string()
-      .regex(/^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a-f0-9]{64}$/),
-  });
-
-  // Update availability plus the live operation (ADR 0008 D4). Like
-  // `/server/compat`, this stays behind the global device bearer gate. The
-  // resolver only accepts signed, official, digest-pinned channel metadata; the
-  // operation is the Updater's own journal projection, never local guesswork.
-  app.get('/server/updates', async (_request, reply) => {
-    const availability = (await deps.serverUpdateResolver?.resolve()) ?? {
-      state: 'unsupported' as const,
-      reason: 'deployment is not managed',
-      operation: null,
-    };
-    if (deps.serverUpdateController === undefined) return availability;
-    try {
-      return { ...availability, operation: await deps.serverUpdateController.readOperation() };
-    } catch {
-      // A managed deployment whose Updater cannot be reached must not report a
-      // reassuring "no operation" — the client is told the state is unknown.
-      return reply.code(503).send({ error: 'update status is unavailable' });
-    }
-  });
-
-  // The single mutating update action. Authorization is deliberately stricter
-  // than the ambient bearer gate: an unpaired deployment (no master password,
-  // so the gate is off) must never be able to replace its own control plane
-  // from the LAN. The target digest is not caller-chosen either — it has to be
-  // exactly the digest the signed release channel currently offers.
-  app.post('/server/updates', async (request, reply) => {
-    const controller = deps.serverUpdateController;
-    if (controller === undefined || deps.serverUpdateResolver === undefined) {
-      return reply.code(503).send({ error: 'deployment is not managed' });
-    }
-    const registry = deps.authRegistry;
-    if (registry === undefined || !registry.isEnabled()) {
-      return reply.code(403).send({ error: 'updates require a paired device' });
-    }
-    const body = serverUpdateRequestBody.parse(request.body);
-    const availability = await deps.serverUpdateResolver.resolve();
-    if (availability.state !== 'available') {
-      return reply.code(409).send({ error: `no update is available (${availability.state})` });
-    }
-    if (availability.release.serverImage !== body.targetDigest) {
-      return reply.code(409).send({ error: 'target digest is not the available release' });
-    }
-    try {
-      const operation = await controller.requestUpdate({
-        idempotencyKey: body.idempotencyKey,
-        targetDigest: body.targetDigest,
-      });
-      return reply.code(202).send({ operation });
-    } catch (error) {
-      if (error instanceof UpdaterRequestError) {
-        // Relay the Updater's closed outcome code; it carries no internal detail.
-        return reply
-          .code(error.status === 401 ? 503 : error.status)
-          .send({ error: error.status === 401 ? 'updater is unavailable' : error.code });
-      }
-      return reply.code(503).send({ error: 'updater is unavailable' });
-    }
-  });
-
-  app.post('/devices/:id/push-token', async (request, reply) => {
-    if (deps.pushEnabled !== true) {
-      return reply.code(503).send({ error: 'Push notifications are not configured' });
-    }
-    const registry = deps.authRegistry;
-    const rawToken = bearerToken(request.headers.authorization);
-    const authTokenId = registry?.resolveId(rawToken);
-    if (registry === undefined || !registry.isEnabled() || authTokenId === undefined) {
-      return reply.code(401).send({ error: 'unauthorized' });
-    }
-    const { id } = request.params as { id: string };
-    if (id !== authTokenId) {
-      return reply.code(403).send({ error: 'device id does not match authenticated device' });
-    }
-    const body = devicePushTokenBody.parse(request.body);
-    await deps.eventStore.upsertDevicePushToken({ authTokenId, ...body });
-    return { registered: true as const };
+  registerPushTokenRoute(app, {
+    store: deps.eventStore,
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
+    ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
   });
 
   // A session's live status badge. The event log lags the conductor: between a
@@ -4080,8 +3830,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // over the overlay; only the non-live derivations (idle/completed/crashed) are
   // upgraded to `running` when the conductor still has a turn in flight.
   const AWAITING: ReadonlySet<SessionStatus> = new Set(['awaiting_input', 'awaiting_dependency']);
-  const liveStatus = (sessionId: string, events: readonly AgentEvent[]): SessionStatus => {
-    const derived = deriveSessionStatus(events);
+  const liveStatus = (sessionId: string, events: readonly AgentEvent[]): SessionStatus =>
+    liveStatusFromProjection(sessionId, events, events.length);
+  /** {@link liveStatus} over a projection-narrowed log — see
+   *  {@link deriveSessionStatusFromProjection} for why the count travels separately. */
+  const liveStatusFromProjection = (
+    sessionId: string,
+    events: readonly AgentEvent[],
+    totalEventCount: number,
+  ): SessionStatus => {
+    const derived = deriveSessionStatusFromProjection(events, totalEventCount);
     if (!AWAITING.has(derived) && conductor.isBusy(sessionId)) return 'running';
     return derived;
   };
@@ -4123,6 +3881,117 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return deps.branches;
   };
+  /**
+   * The session header's branch label, cached stale-while-revalidate.
+   *
+   * `branches.current()` is a git invocation, and inside a project sandbox that
+   * means a `docker exec` — tens of milliseconds at best, and it was running on
+   * the activity poll, i.e. every 1.5 s per open session per device, to render a
+   * label that changes when the operator switches branches. A cold entry still
+   * awaits the call so the first poll after opening a session shows the branch;
+   * after that the poll answers from memory and refreshes in the background.
+   *
+   * Bounded staleness is the point: a branch can also change from INSIDE the
+   * sandbox (the agent checking out its own work), which no invalidation hook
+   * here would see, so the TTL — not {@link invalidateBranchCache} — is what
+   * guarantees the label converges.
+   *
+   * Keyed by worktree alone, and that is sufficient rather than sloppy:
+   * {@link branchesForSession} resolves to the single `deps.branches` service or
+   * to nothing, so there is no project-scoped service that could read the same
+   * path differently.
+   *
+   * Cold reads and refreshes go through the same single-flight entry, like the
+   * sandbox-update target cache in `sandbox-updates.ts`. Sharing one read per
+   * worktree matters less for the duplicated `docker exec` than for the write
+   * back: a read that is not in the map cannot be disowned, and a cold read is
+   * exactly the case where there is no cache entry for an invalidation to delete
+   * either — so a first poll racing a branch switch would land the pre-switch
+   * label on the empty slot and pin it for a whole TTL.
+   */
+  const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
+  const branchCache = new Map<string, { branch: string; at: number }>();
+  /** The git read currently running for a worktree, if any — both the
+   *  single-flight guard and the handle an invalidation uses to disown it. A read
+   *  in flight started BEFORE the switch it raced, so writing its answer back
+   *  afterwards would restore the label the operator just left, freshly stamped,
+   *  for a whole TTL: the cache would defeat the very invalidation written to
+   *  correct it. Marking the token beats comparing map presence, because another
+   *  read may have repopulated the entry in the meantime and a `delete` leaves no
+   *  trace. */
+  const branchInFlight = new Map<string, { disowned: boolean; read: Promise<string> }>();
+  const disownBranchRefresh = (worktree: string): void => {
+    const running = branchInFlight.get(worktree);
+    if (running !== undefined) running.disowned = true;
+  };
+  const invalidateBranchCache = (worktree: string): void => {
+    branchCache.delete(worktree);
+    disownBranchRefresh(worktree);
+  };
+  /** Read git for this worktree, or join the read already running for it, and
+   *  write the answer back unless it was disowned meanwhile. */
+  const readBranch = (branches: GitBranchService, worktree: string): Promise<string> => {
+    const running = branchInFlight.get(worktree);
+    // An invalidation disowns the pre-switch read immediately, but the promise
+    // can remain unsettled for arbitrarily long. A poll arriving in that window
+    // must start a post-switch read rather than joining the known-stale one.
+    if (running !== undefined && !running.disowned) return running.read;
+    const token = { disowned: false, read: branches.current(worktree) };
+    branchInFlight.set(worktree, token);
+    token.read
+      .then((branch) => {
+        if (token.disowned) return;
+        branchCache.set(worktree, { branch, at: Date.now() });
+      })
+      .catch(() => {
+        // A FAILED read has to advance the clock too. Leaving the entry stale
+        // means every later poll kicks another git call against the same broken
+        // worktree — the per-poll cost this cache exists to remove, reinstated
+        // exactly when the sandbox is least able to absorb it. Only re-stamp an
+        // entry that is still there: an invalidation in the meantime must not be
+        // undone by a read that failed, and a cold read has nothing to stamp.
+        if (token.disowned) return;
+        const current = branchCache.get(worktree);
+        if (current !== undefined) branchCache.set(worktree, { ...current, at: Date.now() });
+      })
+      .finally(() => {
+        if (branchInFlight.get(worktree) === token) branchInFlight.delete(worktree);
+      });
+    return token.read;
+  };
+  const currentBranchCached = async (
+    branches: GitBranchService,
+    worktree: string,
+  ): Promise<string | undefined> => {
+    if (branchTtlMs <= 0) return branches.current(worktree);
+    const cached = branchCache.get(worktree);
+    // A cold read is awaited so the first poll after opening a session shows a
+    // branch at all; a stale one is answered from memory while git runs behind
+    // it. The rejection is handled inside {@link readBranch}, and the caller of a
+    // cold read gets it — whoever asked first is who should hear that git failed.
+    if (cached === undefined) return readBranch(branches, worktree);
+    if (Date.now() - cached.at >= branchTtlMs) void readBranch(branches, worktree);
+    return cached.branch;
+  };
+  /** Evict labels for worktrees that no longer exist, so a long-lived server does
+   *  not keep one entry per session ever created — and a recreated worktree can
+   *  never be answered from the deleted one's label. Same lifecycle and same call
+   *  site as {@link prunePrSummaryCache}: the full-list route is where every live
+   *  worktree is visible at once. A client that never listed sessions would never
+   *  prune, but it also could not have opened one, so the map stays bounded by the
+   *  worktrees this process actually served. */
+  const pruneBranchCache = (liveWorktrees: ReadonlySet<string>): void => {
+    for (const worktree of branchCache.keys()) {
+      if (!liveWorktrees.has(worktree)) invalidateBranchCache(worktree);
+    }
+    // A refresh can outlive the entry it was started for, so eviction has to reach
+    // the in-flight ones too — otherwise the dead worktree's label is written back
+    // after the prune and the map grows by exactly the entries this is here to drop.
+    for (const worktree of branchInFlight.keys()) {
+      if (!liveWorktrees.has(worktree)) disownBranchRefresh(worktree);
+    }
+  };
+
   /** The managed base checkout a session can merge into WITHOUT GitHub. Only
    *  `local` projects have one: a GitHub-backed project merges through its pull
    *  request, which stays the single canonical path for anything with a remote.
@@ -4284,13 +4153,58 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     events: readonly SequencedEvent[],
   ): RateLimitState | undefined => latestRateLimitsFromSequenced(events)[0];
 
+  /** A fresh zeroed fact set for a session the store returned nothing for. A
+   *  shared constant would hand every caller the same mutable `events` array —
+   *  the field is a plain array by contract, and the store's own path pushes into
+   *  it. */
+  const emptyProjectionFacts = (): SessionProjectionFacts => ({
+    eventCount: 0,
+    lastActivityAt: null,
+    events: [],
+  });
+
+  /**
+   * Summarize several sessions with ONE pass over the event table.
+   *
+   * The overview reads four things out of a log — badge, token totals, rate-limit
+   * states and the event count — and every one of them is decided by a handful of
+   * event kinds (`SESSION_PROJECTION_EVENT_TYPES`). Summarizing per session used
+   * to hydrate each FULL log to get them, so this route's cost grew with total
+   * history rather than with session count, on a path polled every ~2 s per
+   * device. `listSessionProjectionFacts` answers all of it over the narrow slice
+   * instead, in two batched queries per 500 sessions.
+   */
+  const summarizeSessions = async (
+    sessions: readonly SessionRecord[],
+  ): Promise<SessionSummary[]> => {
+    const facts = await deps.eventStore.listSessionProjectionFacts(
+      sessions.map((session) => session.sessionId),
+    );
+    return Promise.all(
+      sessions.map((session) =>
+        summarizeSessionWithFacts(session, facts.get(session.sessionId) ?? emptyProjectionFacts()),
+      ),
+    );
+  };
+
   const summarizeSession = async (session: SessionRecord): Promise<SessionSummary> => {
-    const sequencedEvents = await deps.eventStore.getEventsAfter(session.sessionId, 0);
+    const facts = await deps.eventStore.listSessionProjectionFacts([session.sessionId]);
+    return summarizeSessionWithFacts(
+      session,
+      facts.get(session.sessionId) ?? emptyProjectionFacts(),
+    );
+  };
+
+  const summarizeSessionWithFacts = async (
+    session: SessionRecord,
+    facts: SessionProjectionFacts,
+  ): Promise<SessionSummary> => {
+    const sequencedEvents = facts.events;
     const events = sequencedEvents.map((event) => event.event);
     const pr = prSummaryFor(session);
     const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
     const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
-    const status = liveStatus(session.sessionId, events);
+    const status = liveStatusFromProjection(session.sessionId, events, facts.eventCount);
     const pendingPermissions = conductor.pendingPermissions(session.sessionId);
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
@@ -4307,10 +4221,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ? { permissionAwaitingInput: true as const }
         : {}),
       usage: aggregateUsage(events),
+      lastActivityAt: facts.lastActivityAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable: await worktreeExists(session.worktree),
-      eventCount: events.length,
+      eventCount: facts.eventCount,
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
@@ -4361,12 +4276,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   // Project list / status badges + token totals — a read-time projection over
-  // each session's event log.
-  // NOTE (follow-up): this hydrates each session's FULL event log to derive a
-  // one-word badge AND sum usage (N+1, O(total events)/request). The status and
-  // usage projections share that one load, so usage is essentially free here.
-  // Fine for single-operator Tailscale v1; add store-side latest-status +
-  // usage-SUM queries before this scales.
+  // each session's event log, served through `summarizeSessions` so the whole
+  // list costs a fixed number of queries over the narrow projection slice rather
+  // than one full-log hydration per session.
   /**
    * The at-rest-encryption state, as `GET /secret/status` reports it. Shared
    * with the attention probe below so the two can never disagree about what
@@ -4480,8 +4392,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    */
   app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
     const sessions = await deps.eventStore.listSessions();
-    prunePrSummaryCache(new Set(sessions.map((s) => s.worktree)));
-    const summaries = await Promise.all(sessions.map(summarizeSession));
+    const liveWorktrees = new Set(sessions.map((s) => s.worktree));
+    prunePrSummaryCache(liveWorktrees);
+    pruneBranchCache(liveWorktrees);
+    const summaries = await summarizeSessions(sessions);
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
     const attention = await collectAttention();
     // Absent when healthy, so the envelope stays quiet in the steady state.
@@ -4548,203 +4462,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return [...claude, ...codex];
   });
 
-  // The repo's open GitHub issues for the overview backlog (#137): the operator
-  // taps one and spawns a session straight from it. 503 when GitHub isn't configured
-  // (no `listIssues` provider) so the app simply hides the section; otherwise the
-  // best-effort, cached list (the provider returns [] rather than throwing).
-  app.get('/issues', async (_request, reply): Promise<IssueSummary[] | { error: string }> => {
-    if (!deps.listIssues) {
-      reply.code(503);
-      return { error: 'GitHub issues are not configured' };
-    }
-    return deps.listIssues();
+  registerTaskRoutes(app, {
+    ...(deps.taskService !== undefined ? { taskService: deps.taskService } : {}),
+    ...(deps.listIssues !== undefined ? { listIssues: deps.listIssues } : {}),
+    ...(deps.refineCwd !== undefined ? { refineCwd: deps.refineCwd } : {}),
+    query: (opts) => conductor.query(opts),
   });
 
-  // ── Task management over a Projects v2 board (ADR 0007) ────────────────────
-  // GraphQL-backed, user-initiated + on-demand only (never polled — AGENTS.md).
-  // Every route 503s when no task service is configured (no board number / token),
-  // so the mobile Plan tab simply hides. The board READ degrades to `{ board: null }`
-  // on a GitHub outage (best-effort); WRITES that the service can't confirm return
-  // 502 so the client can surface the failure and retry.
-  const notConfigured = { error: 'Task management is not configured' } as const;
-  const draftBody = z.object({ title: z.string().min(1), body: z.string().optional() });
-  const issueBody = z.object({
-    title: z.string().min(1),
-    body: z.string().optional(),
-    // Target repo (repo picker): a friendly `owner/repo`, or an explicit node id via
-    // `repositoryId`. Both optional → defaults to the origin repo, resolved server-side.
-    repo: z.string().min(1).optional(),
-    repositoryId: z.string().min(1).optional(),
-  });
-  const convertBody = z.object({
-    repo: z.string().min(1).optional(),
-    repositoryId: z.string().min(1).optional(),
-  });
-  const updateIssueBody = z.object({
-    title: z.string().optional(),
-    body: z.string().optional(),
-    state: z.enum(['OPEN', 'CLOSED']).optional(),
-  });
-  const reorderBody = z.object({
-    itemId: z.string().min(1),
-    afterId: z.string().min(1).nullable().optional(),
-  });
-  const taskItemParams = z.object({ itemId: z.string().min(1) });
-  const taskIssueParams = z.object({ issueId: z.string().min(1) });
-
-  // Resolve the target repo node id for create/convert (the repo picker): an explicit
-  // `repositoryId` (node id) wins for identity, but an accompanying friendly
-  // `owner/repo` is still validated and passed through as the token-mint target; else
-  // the friendly repo is resolved; else the origin repo is used. A malformed
-  // `owner/repo` is a client error (400); a well-formed repo the installation can't
-  // resolve — or an origin that won't resolve — is an upstream failure (502). The
-  // discriminated result lets each route map the two apart.
-  type ResolvedRepo =
-    | { ok: true; repositoryId: string; repo?: { owner: string; repo: string } | undefined }
-    | { ok: false; status: 400 | 502; error: string };
-  const unresolvable: ResolvedRepo = {
-    ok: false,
-    status: 502,
-    error: 'Could not resolve the repository',
-  };
-  const resolveTaskRepoId = async (
-    svc: GitHubTaskService,
-    repositoryId?: string,
-    repo?: string,
-  ): Promise<ResolvedRepo> => {
-    if (repo !== undefined) {
-      const parsed = parseOwnerRepo(repo);
-      if (!parsed) {
-        return { ok: false, status: 400, error: 'Invalid repository (expected "owner/repo")' };
-      }
-      if (repositoryId !== undefined) {
-        return { ok: true, repositoryId, repo: { owner: parsed.owner, repo: parsed.repo } };
-      }
-      const id = await svc.repositoryIdFor({ owner: parsed.owner, repo: parsed.repo });
-      return id === null
-        ? unresolvable
-        : { ok: true, repositoryId: id, repo: { owner: parsed.owner, repo: parsed.repo } };
-    }
-    if (repositoryId !== undefined) return { ok: true, repositoryId };
-    const id = await svc.repositoryId();
-    return id === null ? unresolvable : { ok: true, repositoryId: id };
-  };
-
-  app.get(
-    '/tasks',
-    async (_request, reply): Promise<{ board: TaskBoard | null } | { error: string }> => {
-      if (!deps.taskService) {
-        reply.code(503);
-        return notConfigured;
-      }
-      return { board: await deps.taskService.getBoard() };
-    },
-  );
-
-  app.post(
-    '/tasks/drafts',
-    async (request, reply): Promise<{ item: TaskItem } | { error: string }> => {
-      if (!deps.taskService) {
-        reply.code(503);
-        return notConfigured;
-      }
-      const { title, body } = draftBody.parse(request.body);
-      const item = await deps.taskService.createDraft({
-        title,
-        ...(body !== undefined ? { body } : {}),
-      });
-      if (item === null) {
-        reply.code(502);
-        return { error: 'Failed to create draft' };
-      }
-      reply.code(201);
-      return { item };
-    },
-  );
-
-  app.post(
-    '/tasks/issues',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { issue: { issueId: string; itemId: string | null; number: number | null; url: string } }
-      | { error: string }
-    > => {
-      if (!deps.taskService) {
-        reply.code(503);
-        return notConfigured;
-      }
-      const { title, body, repo, repositoryId } = issueBody.parse(request.body);
-      const resolved = await resolveTaskRepoId(deps.taskService, repositoryId, repo);
-      if (!resolved.ok) {
-        reply.code(resolved.status);
-        return { error: resolved.error };
-      }
-      const issue = await deps.taskService.createIssue({
-        repositoryId: resolved.repositoryId,
-        ...(resolved.repo !== undefined ? { repo: resolved.repo } : {}),
-        title,
-        ...(body !== undefined ? { body } : {}),
-      });
-      if (issue === null) {
-        reply.code(502);
-        return { error: 'Failed to create issue' };
-      }
-      reply.code(201);
-      return { issue };
-    },
-  );
-
-  app.post(
-    '/tasks/:itemId/convert',
-    async (
-      request,
-      reply,
-    ): Promise<
-      { result: { itemId: string; number: number | null; url: string } } | { error: string }
-    > => {
-      if (!deps.taskService) {
-        reply.code(503);
-        return notConfigured;
-      }
-      const { itemId } = taskItemParams.parse(request.params);
-      const { repo, repositoryId } = convertBody.parse(request.body ?? {});
-      const resolved = await resolveTaskRepoId(deps.taskService, repositoryId, repo);
-      if (!resolved.ok) {
-        reply.code(resolved.status);
-        return { error: resolved.error };
-      }
-      const result = await deps.taskService.convertDraftToIssue({
-        itemId,
-        repositoryId: resolved.repositoryId,
-        ...(resolved.repo !== undefined ? { repo: resolved.repo } : {}),
-      });
-      if (result === null) {
-        reply.code(502);
-        return { error: 'Failed to convert draft' };
-      }
-      return { result };
-    },
-  );
-
-  app.patch(
-    '/tasks/issues/:issueId',
-    async (request, reply): Promise<{ ok: true } | { error: string }> => {
-      if (!deps.taskService) {
-        reply.code(503);
-        return notConfigured;
-      }
-      const { issueId } = taskIssueParams.parse(request.params);
-      const patch = updateIssueBody.parse(request.body ?? {});
-      const ok = await deps.taskService.updateIssue({ issueId, ...patch });
-      if (!ok) {
-        reply.code(502);
-        return { error: 'Failed to update issue' };
-      }
-      return { ok: true };
-    },
-  );
   const legacyDopplerRemediationBody = z.object({
     evidence: z.literal('external-credential-rotated'),
   });
@@ -4771,393 +4495,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return undefined;
   });
 
-  app.post('/tasks/reorder', async (request, reply): Promise<{ ok: true } | { error: string }> => {
-    if (!deps.taskService) {
-      reply.code(503);
-      return notConfigured;
-    }
-    const { itemId, afterId } = reorderBody.parse(request.body);
-    const ok = await deps.taskService.reorder({ itemId, afterId: afterId ?? null });
-    if (!ok) {
-      reply.code(502);
-      return { error: 'Failed to reorder' };
-    }
-    return { ok: true };
-  });
-
-  // Remove an item from the Projects v2 board without deleting/closing the issue or
-  // draft content. Useful for smoke-test cleanup and operator triage.
-  app.delete(
-    '/tasks/:itemId',
-    async (request, reply): Promise<{ ok: true } | { error: string }> => {
-      if (!deps.taskService) {
-        reply.code(503);
-        return notConfigured;
-      }
-      const { itemId } = taskItemParams.parse(request.params);
-      const ok = await deps.taskService.removeItem({ itemId });
-      if (!ok) {
-        reply.code(502);
-        return { error: 'Failed to remove task item' };
-      }
-      return { ok: true };
-    },
-  );
-
-  // Set a single-select field (Priority/Status) on a board item by field + option name.
-  // 502 when the field/option isn't found or the write fails; the board's available
-  // fields + options come back on `GET /tasks` (board.fields) so callers use valid names.
-  const setFieldBody = z.object({ field: z.string().min(1), value: z.string().min(1) });
-  app.post(
-    '/tasks/:itemId/field',
-    async (request, reply): Promise<{ ok: true } | { error: string }> => {
-      if (!deps.taskService) {
-        reply.code(503);
-        return notConfigured;
-      }
-      const { itemId } = taskItemParams.parse(request.params);
-      const { field, value } = setFieldBody.parse(request.body);
-      const ok = await deps.taskService.setField({ itemId, field, option: value });
-      if (!ok) {
-        reply.code(502);
-        return { error: 'Failed to set field (unknown field/option or write failed)' };
-      }
-      return { ok: true };
-    },
-  );
-
-  // Voice → Refiner (ADR 0007): turn a raw transcript into a structured task blueprint
-  // via ONE stateless model query (no session/worktree/store). 503 when no refine cwd
-  // is configured; 502 when the model reply can't be parsed into a usable blueprint.
-  // The transcript is length-bounded so a single request can't drive an unbounded
-  // (billable) prompt, and the query carries a wall-clock timeout so ANY backend
-  // (incl. a codex model, which has no default timeout of its own) can't hang the
-  // request — mirroring the 45s bound the auto-title caller sets.
-  const REFINE_TIMEOUT_MS = 45_000;
-  const refineBody = z.object({
-    transcript: z.string().min(1).max(8000),
-    model: z.string().min(1).optional(),
-  });
-  app.post(
-    '/tasks/refine',
-    async (request, reply): Promise<{ refined: RefinedTask } | { error: string }> => {
-      if (deps.refineCwd === undefined) {
-        reply.code(503);
-        return { error: 'Task refinement is not configured' };
-      }
-      const { transcript, model } = refineBody.parse(request.body);
-      const raw = await conductor.query({
-        prompt: buildRefinePrompt(transcript),
-        cwd: deps.refineCwd,
-        signal: AbortSignal.timeout(REFINE_TIMEOUT_MS),
-        ...(model !== undefined ? { model } : {}),
-      });
-      const refined = parseRefinedTask(raw);
-      if (refined === null) {
-        reply.code(502);
-        return { error: 'Refinement failed' };
-      }
-      return { refined };
-    },
-  );
-
   // Multi-repo fleet-registry projects (concept §19, #174) for `GET /projects` —
   // the source of the new-session picker's project list. When a GitHub provider is
   // configured it may sync installation repos into the cache before returning;
   // otherwise the route still returns the local cache so manually-added projects
   // work without GitHub App setup.
-  app.get('/settings', async (): Promise<{ settings: PublicVeritySettingsRecord | null }> => {
-    // Raw read (no decrypt): the public record only strips/`configured`-checks
-    // secrets, so this works while the store is sealed.
-    const settings = (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw()) ?? null;
-    return { settings: settings ? publicVeritySettings(settings, deps.googleDriveClientId) : null };
+  registerSettingsRoutes(app, {
+    store: () => veritySettingsStore(deps.eventStore),
+    agentLogin,
+    parseSettingsPatch: (body) => veritySettingsBody.parse(body),
+    storeAgentCredentials,
+    publicSettings: (settings) => publicVeritySettings(settings, deps.googleDriveClientId),
+    effectiveTranscription: effectiveExternalTranscription,
+    transcriptionConfigured: externalMeetingTranscriptionConfigured,
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.onUplinkCredentialsChanged !== undefined
+      ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
   });
 
-  app.get('/settings/transcription', async () => {
-    const settings = (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw()) ?? null;
-    const effective = effectiveExternalTranscription(settings);
-    return {
-      transcribeBackendMode: settings?.transcribeBackendMode ?? null,
-      transcribeBaseUrl: effective.baseUrl,
-      transcribeModel: effective.model,
-      transcribeApiKeyConfigured: effective.apiKeyConfigured,
-      transcribeLocalAvailable: false,
-      // Same answer the Settings pill uses, so the upload flow and the settings
-      // screen cannot disagree about whether this deployment is set up — a
-      // deployment-supplied transcriber command has no URL or model to report
-      // here, yet it transcribes perfectly well.
-      transcribeExternalConfigured: externalMeetingTranscriptionConfigured(settings),
-    };
+  registerGoogleDriveRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.googleDriveClientId !== undefined
+      ? { googleDriveClientId: deps.googleDriveClientId }
+      : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
   });
-
-  app.patch('/settings/transcription/backend', async (request) => {
-    const { mode } = z
-      .object({ mode: z.enum(SELECTABLE_TRANSCRIBE_BACKEND_MODES) })
-      .parse(request.body);
-    await veritySettingsStore(deps.eventStore).updateTranscribeBackendMode(mode);
-    return { mode };
-  });
-
-  app.patch('/settings', async (request): Promise<{ settings: PublicVeritySettingsRecord }> => {
-    // Block while sealed BEFORE writing: a non-secret patch would otherwise
-    // commit, then the decrypt-on-return would 503 — a confusing partial success.
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    const patch = veritySettingsBody.parse(request.body);
-    if (patch.transcribeBaseUrl !== undefined && patch.transcribeApiKey === undefined) {
-      const current = await veritySettingsStore(deps.eventStore).getVeritySettings();
-      const currentBaseUrl = current?.transcribeBaseUrl?.trim() || null;
-      const nextBaseUrl = patch.transcribeBaseUrl?.trim() || null;
-      if (currentBaseUrl !== nextBaseUrl) patch.transcribeApiKey = null;
-    }
-    const containsAgentCredentials =
-      patch.claudeCodeOauthCredentialsJson !== undefined || patch.codexAuthJson !== undefined;
-    let settings: VeritySettingsRecord | undefined;
-    if (containsAgentCredentials) {
-      await storeAgentCredentials(patch);
-      settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-    } else {
-      settings = await veritySettingsStore(deps.eventStore).updateVeritySettings(patch);
-    }
-    if (settings === undefined) throw new Error('Verity settings disappeared after update');
-    if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
-    return { settings: publicVeritySettings(settings, deps.googleDriveClientId) };
-  });
-
-  const agentLoginProviderParam = z.object({ provider: z.enum(['claude', 'codex']) });
-  const agentLoginSessionParam = z.object({ sessionId: z.string().uuid() });
-  const agentLoginCodeBody = z.object({ code: z.string().trim().min(1).max(20_000) });
-
-  app.post(
-    '/settings/agent-logins/:provider/start',
-    async (request): Promise<{ login: AgentLoginPublic }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { provider } = agentLoginProviderParam.parse(request.params);
-      return { login: await agentLogin.start(provider) };
-    },
-  );
-
-  app.delete(
-    '/settings/agent-logins/:provider',
-    async (request): Promise<{ settings: PublicVeritySettingsRecord }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { provider } = agentLoginProviderParam.parse(request.params);
-      const patch: VeritySettingsPatch =
-        provider === 'claude' ? { claudeCodeOauthCredentialsJson: null } : { codexAuthJson: null };
-      await storeAgentCredentials(patch);
-      const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-      if (settings === undefined) throw new Error('Verity settings disappeared after agent logout');
-      return { settings: publicVeritySettings(settings, deps.googleDriveClientId) };
-    },
-  );
-
-  app.get(
-    '/settings/agent-logins/:sessionId',
-    async (request): Promise<{ login: AgentLoginPublic }> => {
-      const { sessionId } = agentLoginSessionParam.parse(request.params);
-      return { login: await agentLogin.get(sessionId) };
-    },
-  );
-
-  app.post(
-    '/settings/agent-logins/:sessionId/submit-code',
-    async (request): Promise<{ login: AgentLoginPublic }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { sessionId } = agentLoginSessionParam.parse(request.params);
-      const { code } = agentLoginCodeBody.parse(request.body);
-      return { login: await agentLogin.submitCode(sessionId, code) };
-    },
-  );
-
-  // ── Google Drive: connect + browse + import reference docs (ADR 0009) ──────
-  // Native-app OAuth (PKCE): the app forwards { code, codeVerifier, redirectUri }
-  // and the server exchanges them for tokens OUTBOUND, keeping the refresh token
-  // server-side (SecretCipher-encrypted). The Verity server is never publicly
-  // reachable, so there is no browser-facing callback route here (unlike the
-  // GitHub App manifest flow). Access tokens are refreshed + cached on demand.
-  const resolveGoogleDriveCreds = async (): Promise<
-    { clientId: string; refreshToken: string } | undefined
-  > => {
-    if (deps.secretCipher?.isSealed() === true) return undefined;
-    let settings: VeritySettingsRecord | undefined;
-    try {
-      settings = await deps.eventStore.getVeritySettings();
-    } catch (err) {
-      if (err instanceof SealedError) return undefined;
-      throw err;
-    }
-    const clientId = settings?.googleDriveClientId ?? '';
-    const refreshToken = settings?.googleDriveRefreshToken ?? '';
-    if (clientId.length === 0 || refreshToken.length === 0) return undefined;
-    return { clientId, refreshToken };
-  };
-  const googleDriveAccessToken = createCachedGoogleAccessToken(resolveGoogleDriveCreds);
-
-  const googleDriveConnectBody = z.object({
-    code: z.string().trim().min(1).max(4096),
-    codeVerifier: z.string().trim().min(1).max(256),
-    redirectUri: z.string().trim().min(1).max(2048),
-  });
-
-  // Exchange the app's one-time PKCE code for tokens and persist the refresh
-  // token. The iOS client id comes from the server env (`GOOGLE_AUTH_ID`);
-  // release images may bake it in, and local/self-built deployments can pass it
-  // at runtime. It is mirrored into settings so the refresh path can read it back
-  // without re-reading the env.
-  app.post(
-    '/google-drive/connect',
-    async (
-      request,
-      reply,
-    ): Promise<{ connected: true; accountEmail: string | null } | { error: string }> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const body = googleDriveConnectBody.parse(request.body);
-      const clientId = deps.googleDriveClientId ?? '';
-      if (clientId.length === 0) {
-        reply.code(400);
-        return { error: 'Google Drive is not configured on this server' };
-      }
-      let tokens;
-      try {
-        tokens = await exchangeGoogleAuthCode({
-          clientId,
-          code: body.code,
-          codeVerifier: body.codeVerifier,
-          redirectUri: body.redirectUri,
-        });
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'exchange_failed';
-        request.log.error({ reason }, 'verity: google drive code exchange failed');
-        reply.code(502);
-        return { error: `Google sign-in failed (${reason})` };
-      }
-      if (tokens.refreshToken === undefined) {
-        // No refresh token means Google did not grant offline access (often a
-        // re-consent without `prompt=consent`). The app should retry forcing it.
-        reply.code(400);
-        return {
-          error: 'Google did not return a refresh token — reconnect and allow offline access',
-        };
-      }
-      let accountEmail: string | undefined;
-      try {
-        accountEmail = await getDriveAccountEmail(tokens.accessToken);
-      } catch {
-        accountEmail = undefined; // best-effort display only; not fatal
-      }
-      await veritySettingsStore(deps.eventStore).updateVeritySettings({
-        googleDriveClientId: clientId,
-        googleDriveRefreshToken: tokens.refreshToken,
-        googleDriveAccountEmail: accountEmail ?? null,
-      });
-      return { connected: true, accountEmail: accountEmail ?? null };
-    },
-  );
-
-  app.post('/google-drive/disconnect', async (): Promise<{ connected: false }> => {
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    await veritySettingsStore(deps.eventStore).updateVeritySettings({
-      googleDriveClientId: null,
-      googleDriveRefreshToken: null,
-      googleDriveAccountEmail: null,
-    });
-    return { connected: false };
-  });
-
-  const googleDriveFilesQuery = z.object({
-    parentId: z.string().trim().min(1).max(512).optional(),
-    query: z.string().trim().min(1).max(200).optional(),
-    sharedWithMe: z.enum(['true']).optional(),
-    pageToken: z.string().trim().min(1).max(4096).optional(),
-  });
-
-  // Browse a Drive folder for the in-app picker (defaults to My Drive root).
-  app.get(
-    '/google-drive/files',
-    async (request, reply): Promise<DriveFileList | { error: string }> => {
-      const query = googleDriveFilesQuery.parse(request.query);
-      const accessToken = await googleDriveAccessToken();
-      if (accessToken === undefined) {
-        reply.code(409);
-        return { error: 'Google Drive is not connected' };
-      }
-      try {
-        return await listDriveFiles({
-          accessToken,
-          parentId: query.parentId,
-          query: query.query,
-          sharedWithMe: query.sharedWithMe === 'true',
-          pageToken: query.pageToken,
-        });
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'browse_failed';
-        request.log.error({ reason }, 'verity: google drive browse failed');
-        reply.code(502);
-        return { error: `Could not list Google Drive files (${reason})` };
-      }
-    },
-  );
-
-  const googleDriveImportBody = z.object({ fileId: z.string().trim().min(1).max(512) });
-
-  // Import a Drive file into the session worktree under docs/reference/ (ADR
-  // 0009). Native Google files export to a text-first format; regular files
-  // download raw. Overwrites by the stable target name so a re-import refreshes
-  // the doc. Like the meeting-transcript flow, the file is written into the
-  // working tree but NOT committed — that stays part of the normal session flow.
-  app.post(
-    '/sessions/:id/google-drive/import',
-    async (request, reply): Promise<{ path: string; name: string } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const body = googleDriveImportBody.parse(request.body);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      const accessToken = await googleDriveAccessToken();
-      if (accessToken === undefined) {
-        reply.code(409);
-        return { error: 'Google Drive is not connected' };
-      }
-      let file;
-      try {
-        file = await getDriveFile(accessToken, body.fileId);
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'metadata_failed';
-        reply.code(502);
-        return { error: `Could not read the Google Drive file (${reason})` };
-      }
-      let plan;
-      try {
-        plan = planDriveImport(file.mimeType, file.name);
-      } catch (err) {
-        if (err instanceof GoogleDriveError && err.reason === 'not_importable') {
-          reply.code(415);
-          return { error: err.message };
-        }
-        throw err;
-      }
-      let bytes: Uint8Array;
-      try {
-        bytes =
-          plan.kind === 'export' && plan.exportMimeType !== undefined
-            ? await exportDriveFile(accessToken, body.fileId, plan.exportMimeType)
-            : await downloadDriveFile(accessToken, body.fileId);
-      } catch (err) {
-        const reason = err instanceof GoogleDriveError ? err.reason : 'download_failed';
-        reply.code(502);
-        return { error: `Could not download the Google Drive file (${reason})` };
-      }
-      const fileName = referenceDocFileName(file.name, plan.extension, body.fileId);
-      const referenceDir = await ensureReferenceDirectory(session.worktree);
-      const relPath = `docs/reference/${fileName}`;
-      sessionFilePath(session.worktree, relPath); // defence-in-depth traversal guard
-      // Symlink-safe overwrite (temp file + atomic rename): a pre-planted symlink
-      // at the deterministic target name is replaced, not followed. See module doc.
-      await writeReferenceDocFile(referenceDir, fileName, bytes);
-      return { path: relPath, name: file.name };
-    },
-  );
 
   // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────
   // The cipher holds the at-rest key in memory only. `status` reports the
@@ -5165,265 +4528,28 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // and verifies it after a restart (scrypt over the stored salt, checked
   // against the stored verifier before the key is trusted). A deployment
   // without a managed cipher reports 'unmanaged' and rejects init/unlock.
-  // `deviceLabel` names the device in the token registry (for a later
-  // device-management view); optional and purely cosmetic. Max bounds the scrypt
-  // input (DoS defence).
-  //
-  // Two schemas on purpose: UNLOCK keeps the historical 8-char floor so a
-  // password set before this change still opens the store; INIT (setting a NEW
-  // password) requires a stronger 12-char minimum. Raising the floor on unlock
-  // would lock out an existing shorter password — so the strength gate lives
-  // only where a password is chosen. (A full zxcvbn gate is a follow-up.)
-  const deviceLabelField = z.string().trim().min(1).max(100).optional();
-  const secretUnlockBody = z.object({
-    password: z.string().min(8).max(1024),
-    deviceLabel: deviceLabelField,
-  });
-  const secretInitBody = z.object({
-    password: z
-      .string()
-      .min(12)
-      .max(1024)
-      // Reject degenerate inputs (e.g. a single repeated character) that clear
-      // the length bar but carry almost no entropy.
-      .refine((p) => new Set(p).size >= 5, {
-        message: 'password is too weak (use a longer, more varied passphrase)',
-      }),
-    deviceLabel: deviceLabelField,
-  });
-  const pairingRedeemBody = z.object({ code: z.string().min(32).max(128) }).strict();
-  const pairingIdentityQuery = z.object({ challenge: z.string().min(32).max(128) }).strict();
-
-  app.get('/pair/identity', (request, reply) => {
-    if (deps.devicePairing === undefined) {
-      reply.code(404);
-      return { error: 'not found' };
-    }
-    try {
-      const { challenge } = pairingIdentityQuery.parse(request.query);
-      return { ...deps.devicePairing.identity(), ...deps.devicePairing.signChallenge(challenge) };
-    } catch (error) {
-      if (error instanceof DevicePairingRejectedError) {
-        reply.code(400);
-        return { error: error.message };
-      }
-      throw error;
-    }
+  registerPairingRoutes(app, {
+    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
   });
 
-  app.post('/pair/redeem', { bodyLimit: 1_024 }, (request, reply) => {
-    if (deps.devicePairing === undefined) {
-      reply.code(404);
-      return { error: 'not found' };
-    }
-    try {
-      return deps.devicePairing.redeem(pairingRedeemBody.parse(request.body).code);
-    } catch (error) {
-      if (error instanceof DevicePairingRejectedError) {
-        reply.code(401);
-        return { error: error.message };
-      }
-      throw error;
-    }
+  registerSecretLifecycleRoutes(app, {
+    store: deps.eventStore,
+    readStatus: readSecretStatus,
+    recoverQueuedTurns,
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
+    ...(deps.unlockClientIdentity !== undefined
+      ? { unlockClientIdentity: deps.unlockClientIdentity }
+      : {}),
+    ...(deps.onSecretUnlocked !== undefined ? { onSecretUnlocked: deps.onSecretUnlocked } : {}),
   });
 
-  // Brute-force throttle for /secret/unlock (audit C2): per-IP lockout with
-  // exponential backoff + a coarse global cap. In-memory (online-attack defence).
-  const unlockThrottle = createUnlockThrottle();
-
-  // On a successful init/unlock, mint a per-device bearer token (audit C1) and
-  // arm the gate. Independent of the derived AES key — the raw token, not the
-  // key, is what travels to the client. When no registry is wired (tests /
-  // unmanaged deployments) this is a no-op and no token is returned.
-  const mintDeviceToken = async (
-    label: string | undefined,
-  ): Promise<{ token: string; tokenId: string } | undefined> => {
-    const registry = deps.authRegistry;
-    if (registry === undefined) return undefined;
-    registry.enable();
-    const minted = await registry.mint(label ?? null);
-    return { token: minted.token, tokenId: minted.id };
-  };
-
-  app.get('/secret/status', async (): Promise<{ status: SecretStatus }> => ({
-    status: await readSecretStatus(),
-  }));
-
-  app.post(
-    '/secret/init',
-    // Small body limit on this pre-auth route (audit M7): the global limit is ~71 MiB
-    // to fit media turns, but an unauthenticated `{password, deviceLabel}` payload
-    // must not let a caller force the server to buffer tens of MB before the handler
-    // (and its throttle) runs.
-    { bodyLimit: 4_096 },
-    async (
-      request,
-      reply,
-    ): Promise<{ status: 'unlocked'; token?: string; tokenId?: string } | { error: string }> => {
-      const cipher = deps.secretCipher;
-      if (cipher === undefined) {
-        reply.code(409);
-        return { error: 'secret store is not managed by this deployment' };
-      }
-      const { password, deviceLabel } = secretInitBody.parse(request.body);
-      if (deps.devicePairing !== undefined) {
-        const bootstrap = request.headers['x-verity-pairing'];
-        if (typeof bootstrap !== 'string' || !deps.devicePairing.consumeBootstrap(bootstrap)) {
-          reply.code(401);
-          return { error: 'valid device pairing is required' };
-        }
-      }
-      // Refuse if already unlocked (a password was already set + entered this run)
-      // — re-initializing would derive a DIFFERENT key than the one secrets were
-      // encrypted under (re-key is a follow-up).
-      if (!cipher.isSealed()) {
-        reply.code(409);
-        return { error: 'secret store is already unlocked' };
-      }
-      const salt = generateSalt();
-      const key = deriveKeyFromPassword(password, salt);
-      // Atomic insert-if-absent closes the first-run race: a concurrent init
-      // that lost the insert must NOT unlock under its (divergent) key.
-      const won = await deps.eventStore.insertSecretKeyMetaIfAbsent({
-        salt,
-        verifier: createKeyVerifier(key),
-      });
-      if (!won) {
-        reply.code(409);
-        return { error: 'a master password is already set — use /secret/unlock' };
-      }
-      cipher.unlock(key);
-      // Arm authentication before deferred broker activation. If activation
-      // fails, no device token is minted, but the now-unsealed control plane is
-      // still inaccessible through protected routes.
-      deps.authRegistry?.enable();
-      try {
-        await deps.onSecretUnlocked?.();
-      } catch (error: unknown) {
-        request.log.error({ err: error }, 'Post-unlock activation failed');
-        // Initialization created the password verifier but issued no device
-        // token. Re-seal so the public /secret/unlock route remains the sole,
-        // retryable recovery path instead of leaving an inaccessible open store.
-        cipher.seal();
-        reply.code(503);
-        return { error: 'secret store unlocked, but broker activation is still pending' };
-      }
-      // First password set → mint this device's token only after every deferred
-      // authority is active, so a failed activation cannot orphan a valid token.
-      const auth = await mintDeviceToken(deviceLabel);
-      recoverQueuedTurns('secret-init');
-      return { status: 'unlocked', ...auth };
-    },
-  );
-
-  app.post(
-    '/secret/unlock',
-    // Small body limit on this pre-auth route (audit M7) — same rationale as
-    // /secret/init: bound an unauthenticated payload well below the global limit.
-    { bodyLimit: 4_096 },
-    async (
-      request,
-      reply,
-    ): Promise<{ status: 'unlocked'; token?: string; tokenId?: string } | { error: string }> => {
-      const cipher = deps.secretCipher;
-      if (cipher === undefined) {
-        reply.code(409);
-        return { error: 'secret store is not managed by this deployment' };
-      }
-      if (deps.devicePairing !== undefined) {
-        const existingDeviceToken = bearerToken(request.headers.authorization);
-        const existingDevice = deps.authRegistry?.verify(existingDeviceToken) === true;
-        const bootstrap = request.headers['x-verity-pairing'];
-        if (!existingDevice && typeof bootstrap !== 'string') {
-          reply.code(401);
-          return { error: 'valid device pairing is required' };
-        }
-      }
-      // Brute-force gate (C2): reject before deriving if this IP is locked out
-      // or the global failure floor is tripped. Cheap and runs before scrypt.
-      const throttleIdentity = deps.unlockClientIdentity?.(request) ?? request.ip;
-      const gate = unlockThrottle.check(throttleIdentity);
-      if (!gate.allowed) {
-        reply.code(429);
-        if (gate.retryAfterMs !== undefined) {
-          reply.header('retry-after', String(Math.ceil(gate.retryAfterMs / 1000)));
-        }
-        return { error: 'too many attempts — try again later' };
-      }
-      const { password, deviceLabel } = secretUnlockBody.parse(request.body);
-      const meta = await deps.eventStore.getSecretKeyMeta();
-      if (meta === undefined) {
-        reply.code(409);
-        return { error: 'no master password set — use /secret/init' };
-      }
-      const key = deriveKeyFromPassword(password, meta.salt);
-      if (!keyMatchesVerifier(key, meta.verifier)) {
-        unlockThrottle.recordFailure(throttleIdentity);
-        reply.code(401);
-        return { error: 'incorrect master password' };
-      }
-      if (deps.devicePairing !== undefined) {
-        const existingDeviceToken = bearerToken(request.headers.authorization);
-        const existingDevice = deps.authRegistry?.verify(existingDeviceToken) === true;
-        const bootstrap = request.headers['x-verity-pairing'];
-        if (!existingDevice && !deps.devicePairing.consumeBootstrap(bootstrap as string)) {
-          reply.code(401);
-          return { error: 'valid device pairing is required' };
-        }
-      }
-      unlockThrottle.recordSuccess(throttleIdentity);
-      cipher.unlock(key);
-      try {
-        await deps.onSecretUnlocked?.();
-      } catch (error: unknown) {
-        request.log.error({ err: error }, 'Post-unlock activation failed');
-        cipher.seal();
-        reply.code(503);
-        return { error: 'secret store unlocked, but broker activation is still pending' };
-      }
-      // Correct password → enroll this device only after broker activation.
-      const auth = await mintDeviceToken(deviceLabel);
-      recoverQueuedTurns('secret-unlock');
-      return { status: 'unlocked', ...auth };
-    },
-  );
-
-  // ── GitHub-App live validation (#320, onboarding) ─────────────────────────
-  // `POST /github/app/validate` — a "do these App creds actually work" check the
-  // onboarding wizard gates its GitHub step on. Requires the cipher UNSEALED (the
-  // PEM must decrypt to sign the JWT). It NEVER returns/logs the token or PEM: on
-  // success it optionally echoes the installation's account login (a public
-  // handle); on failure it returns a fixed, redacted message. Always resolves —
-  // sealed/not-configured are `{ ok: false, error }`, not thrown errors.
-  app.post('/github/app/validate', async (): Promise<GitHubAppValidateResult> => {
-    // Sealed → the PEM can't decrypt. Report locked WITHOUT throwing (the wizard
-    // shows "unlock first", not a 5xx).
-    if (deps.secretCipher?.isSealed() === true) return { ok: false, error: 'locked' };
-    if (deps.githubAppValidate === undefined) return { ok: false, error: 'not configured' };
-
-    // Decrypting read (safe: unsealed). Missing any of the three creds → not
-    // configured; a SealedError here (racing seal) degrades to `locked`.
-    let settings;
-    try {
-      settings = await deps.eventStore.getVeritySettings();
-    } catch (err) {
-      if (err instanceof SealedError) return { ok: false, error: 'locked' };
-      throw err;
-    }
-    if (
-      !settings?.githubAppId ||
-      !settings.githubAppInstallationId ||
-      !settings.githubAppPrivateKey
-    ) {
-      return { ok: false, error: 'not configured' };
-    }
-    // The validator itself is contractually redaction-safe (see
-    // `validateGitHubAppCreds`); we pass creds in and return its result verbatim.
-    return deps.githubAppValidate({
-      appId: settings.githubAppId,
-      installationId: settings.githubAppInstallationId,
-      privateKey: settings.githubAppPrivateKey,
-    });
+  registerGitHubAppRoutes(app, {
+    store: () => veritySettingsStore(deps.eventStore),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.githubAppValidate !== undefined ? { validate: deps.githubAppValidate } : {}),
   });
 
   // `POST /doppler/validate` — a "does this Doppler Service Account token actually
@@ -5515,694 +4641,37 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   );
 
-  // ── GitHub-App manifest one-click onboarding (#320) ───────────────────────
-  // Three browser-facing endpoints implement GitHub's "create App from manifest"
-  // flow, which needs TWO round-trips: create (→ app id + PEM) then install
-  // (→ installation id). The mobile app opens `start` in a browser and later
-  // polls `GET /settings` for `githubAppConfigured`; those app-side pieces are a
-  // separate PR. Security invariants held across all three routes:
-  //   • the PEM / app id NEVER appear in any HTML body or log — the success path
-  //     after conversion is a 302 redirect, carrying nothing secret;
-  //   • the `state` token is single-use + TTL-bounded (CSRF defence on callback);
-  //   • every interpolated value is HTML-escaped (no injection into the pages).
-  const manifestState: ManifestStateStore = createManifestStateStore(
-    deps.manifestStateNow ? { now: deps.manifestStateNow } : {},
-  );
-  // Separate single-use tokens that authenticate `GET /github/app/manifest/start`
-  // (audit C1 follow-up). `start` is opened in a browser (no Authorization
-  // header), so the authenticated app first calls `POST /github/app/manifest/prepare`
-  // (bearer-gated) to mint one and hangs it on the start URL. This closes the
-  // first-run credential-injection window: without a valid token an attacker can't
-  // even START the manifest flow to inject their own App. Shorter TTL than the CSRF
-  // state — the app opens the browser immediately after preparing.
-  const manifestStartTokens: ManifestStateStore = createManifestStateStore({
-    ...(deps.manifestStateNow ? { now: deps.manifestStateNow } : {}),
-    ttlMs: 10 * 60 * 1000,
-  });
-  const manifestStartBases = new Map<string, string>();
-
-  // Browser-facing GitHub onboarding pages. Text is caller-supplied but always a
-  // fixed, non-secret string chosen at the call site (never GitHub body / PEM).
-  const manifestPage = ({
-    title,
-    eyebrow = 'Verity GitHub setup',
-    message,
-    detail,
-    body = '',
-  }: {
-    title: string;
-    eyebrow?: string;
-    message: string;
-    detail?: string | undefined;
-    body?: string | undefined;
-  }): string =>
-    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-    `<meta name="viewport" content="width=device-width, initial-scale=1">` +
-    `<title>${escapeHtml(title)}</title>` +
-    `<style>` +
-    `:root{color-scheme:dark;--bg:#050509;--panel:#111121;--panel2:#17162b;--border:#342a68;--text:#f4f2ff;--muted:#b9b3d9;--faint:#817aa7;--accent:#ff35ce;--blue:#31aef4;}` +
-    `*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 20% 0%,#20143e 0,#050509 36rem);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:grid;place-items:center;padding:32px 18px;}` +
-    `.shell{width:min(640px,100%);}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px;color:var(--muted);font-weight:800;letter-spacing:.02em}.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--blue));box-shadow:0 0 28px rgba(255,53,206,.24)}` +
-    `.card{border:1px solid var(--border);background:linear-gradient(180deg,var(--panel2),var(--panel));border-radius:24px;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.42)}.eyebrow{margin:0 0 10px;color:var(--faint);font-size:13px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}h1{margin:0 0 14px;font-size:clamp(32px,7vw,52px);line-height:1.04;letter-spacing:0}p{margin:0;color:var(--muted);font-size:18px;line-height:1.5}.detail{margin-top:14px;color:var(--faint);font-size:15px}.actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}.button{appearance:none;border:0;border-radius:999px;background:var(--accent);color:#08060d;display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:0 22px;font-size:16px;font-weight:900;text-decoration:none;cursor:pointer}.button.secondary{border:1px solid var(--border);background:transparent;color:var(--text)}form{margin:0}.spinner{width:18px;height:18px;border:2px solid rgba(8,6,13,.25);border-top-color:#08060d;border-radius:50%;animation:spin 1s linear infinite;margin-right:10px}@keyframes spin{to{transform:rotate(360deg)}}` +
-    `</style></head><body><main class="shell"><div class="brand"><div class="logo"></div><span>Verity</span></div><section class="card">` +
-    `<p class="eyebrow">${escapeHtml(eyebrow)}</p><h1>${escapeHtml(title)}</h1>` +
-    `<p>${escapeHtml(message)}</p>` +
-    (detail !== undefined ? `<p class="detail">${escapeHtml(detail)}</p>` : '') +
-    body +
-    `</section></main></body></html>`;
-
-  const isHttpUrl = (value: string): boolean => {
-    let parsed;
-    try {
-      parsed = new URL(value);
-    } catch {
-      return false;
-    }
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  };
-
-  // `POST /github/app/manifest/prepare` — authenticated (NOT in the pre-auth
-  // allowlist): mint a single-use token the app hangs on the `start` URL it opens
-  // in the browser. This is how `start` gets authenticated despite being a
-  // browser navigation that carries no Authorization header.
-  app.post('/github/app/manifest/prepare', (request, reply): { startToken: string } | void => {
-    const body = request.body as { baseUrl?: unknown } | undefined;
-    const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl : '';
-    if (!isHttpUrl(baseUrl)) {
-      reply.code(400).send({ error: 'a valid http(s) baseUrl is required' });
-      return;
-    }
-    const startToken = manifestStartTokens.issueState();
-    manifestStartBases.set(startToken, baseUrl);
-    return { startToken };
+  registerGitHubManifestRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.manifestConvert !== undefined ? { manifestConvert: deps.manifestConvert } : {}),
+    ...(deps.manifestStateNow !== undefined ? { manifestStateNow: deps.manifestStateNow } : {}),
   });
 
-  // `GET /github/app/manifest/start` — issue a CSRF state and render an auto-
-  // submitting form that POSTs the manifest to GitHub's App-creation page.
-  // `base` is REQUIRED (must be a http(s) URL — it's the public origin GitHub
-  // redirects back to); `owner` (optional org login) targets an org App instead
-  // of a personal one. Every interpolated value is escaped.
-  app.get('/github/app/manifest/start', async (request, reply): Promise<string> => {
-    const query = request.query as { base?: unknown; owner?: unknown; ott?: unknown };
-    // Auth for the browser-opened start (audit C1 follow-up): once the API gate is
-    // armed, require a valid single-use token minted by the authenticated
-    // `/prepare` — so only the operator's app can begin the manifest flow. When
-    // the gate is off (env-key/headless), preserve the previous open behaviour.
-    let base: string;
-    if (deps.authRegistry?.isEnabled() === true) {
-      const ott = typeof query.ott === 'string' ? query.ott : '';
-      const validStartToken = ott.length > 0 && manifestStartTokens.consumeState(ott);
-      const preparedBase = ott.length > 0 ? manifestStartBases.get(ott) : undefined;
-      if (ott.length > 0) manifestStartBases.delete(ott);
-      if (!validStartToken) {
-        reply.code(403).type('text/html; charset=utf-8');
-        return manifestPage({
-          title: 'Onboarding link expired',
-          message:
-            'This GitHub App onboarding link is invalid or has expired. Return to Verity and start again.',
-          detail:
-            'Open the Verity app, choose Create GitHub App again, and a fresh link will be generated.',
-        });
-      }
-      if (preparedBase === undefined) {
-        reply.code(403).type('text/html; charset=utf-8');
-        return manifestPage({
-          title: 'Onboarding link expired',
-          message:
-            'This GitHub App onboarding link is invalid or has expired. Return to Verity and start again.',
-        });
-      }
-      base = preparedBase;
-    } else {
-      // In headless/gate-off deployments no authenticated prepare step exists.
-      // Derive the callback authority from the request rather than accepting a
-      // caller-selected redirect target.
-      const requestedBase = typeof query.base === 'string' ? query.base : '';
-      if (!isHttpUrl(requestedBase)) {
-        reply.code(400).type('text/html; charset=utf-8');
-        return manifestPage({
-          title: 'Invalid request',
-          message: 'A valid http(s) "base" URL is required to start GitHub App onboarding.',
-          detail: 'Return to Verity and check the server address before trying again.',
-        });
-      }
-      base = `${request.protocol}://${request.hostname}`;
-    }
-    const owner = typeof query.owner === 'string' && query.owner.length > 0 ? query.owner : null;
-
-    const state = manifestState.issueState();
-    const action =
-      owner !== null
-        ? `https://github.com/organizations/${encodeURIComponent(
-            owner,
-          )}/settings/apps/new?state=${encodeURIComponent(state)}`
-        : `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`;
-    // The manifest is embedded as a single-quoted attribute value; escapeHtml
-    // escapes the quote/angle brackets so the JSON can't break out.
-    const manifestJson = JSON.stringify(buildManifest(base));
-
-    reply.type('text/html; charset=utf-8');
-    return manifestPage({
-      title: 'Opening GitHub',
-      message:
-        'Verity is sending GitHub the App manifest with the permissions it needs for your repositories.',
-      detail: 'If the redirect does not continue automatically, use the button below.',
-      body:
-        `<div class="actions">` +
-        `<form action="${escapeHtml(action)}" method="post">` +
-        `<input type="hidden" name="manifest" value='${escapeHtml(manifestJson)}'>` +
-        `<button class="button" type="submit"><span class="spinner" aria-hidden="true"></span>Continue to GitHub</button>` +
-        `</form></div>` +
-        `<script>document.forms[0].submit()</script>`,
-    });
+  registerSigningKeyRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.resolveGitHubAppIdentity !== undefined
+      ? { resolveGitHubAppIdentity: deps.resolveGitHubAppIdentity }
+      : {}),
+    ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
   });
-
-  // `GET /github/app/manifest/callback` — GitHub redirects here with `?code=&state=`
-  // after the user confirms the App. Validate+consume the state (CSRF), require
-  // the cipher UNSEALED (the PEM must encrypt to store), exchange the code via the
-  // injected `manifestConvert`, persist app id + PEM, then 302 the browser to the
-  // App's install page (the SECOND round-trip). The PEM / app id never appear in
-  // the response or logs — success is a redirect to the public install URL.
-  app.get('/github/app/manifest/callback', async (request, reply): Promise<string | undefined> => {
-    const query = request.query as { code?: unknown; state?: unknown };
-    const code = typeof query.code === 'string' ? query.code : '';
-    const state = typeof query.state === 'string' ? query.state : '';
-
-    const consumed = state.length > 0 && manifestState.consumeState(state);
-    if (!consumed || code.length === 0) {
-      // Invalid / expired / reused state (or no code) → no side effect at all.
-      reply.code(400).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'Onboarding link expired',
-        message:
-          'This GitHub App onboarding link is invalid or has expired. Return to Verity and start again.',
-        detail: 'No GitHub credentials were stored.',
-      });
-    }
-
-    // Refuse-overwrite lock (audit C1 follow-up): if a GitHub App is already fully
-    // connected, a fresh manifest flow must NOT silently replace it with someone
-    // else's App (onboarding credential-injection). Re-connecting requires an
-    // explicit, authenticated disconnect first. Raw (non-decrypting) read → works
-    // while sealed too. Legacy env-configured Apps also count as connected.
-    if (
-      githubAppConfiguredFromSettings(
-        await veritySettingsStore(deps.eventStore).getVeritySettingsRaw(),
-      )
-    ) {
-      reply.code(409).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'GitHub connected',
-        message:
-          'A GitHub App is connected to this Verity. Return to Verity to continue, or disconnect it in Settings before connecting a different one.',
-      });
-    }
-
-    if (deps.secretCipher?.isSealed() === true) {
-      reply.code(503).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'Verity is locked',
-        message:
-          'Unlock Verity with your master password first, then start GitHub App onboarding again.',
-      });
-    }
-    if (deps.manifestConvert === undefined) {
-      reply.code(500).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'Not configured',
-        message: 'GitHub App manifest onboarding is not configured on this Verity deployment.',
-      });
-    }
-
-    let converted;
-    try {
-      converted = await deps.manifestConvert(code);
-    } catch {
-      // The convert seam throws only fixed, redaction-safe messages; we do not
-      // surface even those to the browser — a generic page avoids leaking which
-      // failure mode occurred.
-      reply.code(502).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'GitHub App creation failed',
-        message:
-          'GitHub could not create the App from the manifest. Return to Verity and try again.',
-      });
-    }
-
-    try {
-      await veritySettingsStore(deps.eventStore).updateVeritySettings({
-        githubAppId: converted.appId,
-        githubAppPrivateKey: converted.privateKey,
-      });
-    } catch (err) {
-      // A racing seal between the sealed-check and the write surfaces as
-      // SealedError — degrade to the locked page rather than a 5xx.
-      if (err instanceof SealedError) {
-        reply.code(503).type('text/html; charset=utf-8');
-        return manifestPage({
-          title: 'Verity is locked',
-          message:
-            'Unlock Verity with your master password first, then start GitHub App onboarding again.',
-        });
-      }
-      throw err;
-    }
-
-    // Second round-trip: send the browser to install the freshly-created App.
-    // Issue a FRESH single-use state and pass it to the install URL — GitHub
-    // echoes `state` on the post-install redirect to our `setup_url`, so the
-    // `installed` callback is CSRF-gated too and a forged `installed` can't set an
-    // arbitrary installation id. Only the public slug travels — no secret.
-    const installState = manifestState.issueState();
-    reply.redirect(
-      `https://github.com/apps/${encodeURIComponent(converted.slug)}/installations/new` +
-        `?state=${encodeURIComponent(installState)}`,
-      302,
-    );
-    return undefined;
+  registerGitSignRoute(app, {
+    eventStore: deps.eventStore,
+    ...(deps.signingCapabilities !== undefined
+      ? { signingCapabilities: deps.signingCapabilities }
+      : {}),
+    ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
   });
-
-  // `GET /github/app/manifest/installed` — GitHub's post-install redirect
-  // (`setup_url`) lands here with `?installation_id=&setup_action=`. Persist the
-  // installation id (the THIRD and final cred) → `githubAppConfigured` flips true.
-  // Renders a minimal "return to Verity" page (with a deep-link nicety).
-  app.get('/github/app/manifest/installed', async (request, reply): Promise<string> => {
-    const query = request.query as { installation_id?: unknown; state?: unknown };
-    const state = typeof query.state === 'string' ? query.state : '';
-    const installationId =
-      typeof query.installation_id === 'string' && query.installation_id.length > 0
-        ? query.installation_id
-        : null;
-
-    // Sealed → can't encrypt the installation id to store it. Checked first (it's
-    // side-effect-free and sealed-state isn't secret — /secret/status exposes it);
-    // the write below is still gated by BOTH this and the CSRF state.
-    if (deps.secretCipher?.isSealed() === true) {
-      reply.code(503).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'Verity is locked',
-        message:
-          'Unlock Verity with your master password first, then finish GitHub App onboarding.',
-      });
-    }
-
-    // CSRF gate: the `state` was minted at the end of `callback` and echoed by
-    // GitHub on the post-install redirect. An unauthenticated caller can't set an
-    // arbitrary installation id without a valid, single-use state.
-    if (state.length === 0 || !manifestState.consumeState(state)) {
-      reply.code(400).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'Onboarding link expired',
-        message:
-          'This GitHub App install link is invalid or has expired. Return to Verity and start again.',
-        detail: 'No installation id was stored.',
-      });
-    }
-
-    if (installationId === null) {
-      reply.code(400).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'Installation incomplete',
-        message: 'GitHub did not report an installation id. Return to Verity and start again.',
-      });
-    }
-
-    // Refuse-overwrite lock (audit C1 follow-up), matching `callback`: never
-    // replace an already-fully-connected App's installation id. A legitimate
-    // first install reaches here with app id + PEM set but no installation id yet
-    // (so not-yet-configured), and proceeds; a re-onboarding attempt is refused.
-    if (
-      githubAppConfiguredFromSettings(
-        await veritySettingsStore(deps.eventStore).getVeritySettingsRaw(),
-      )
-    ) {
-      reply.code(409).type('text/html; charset=utf-8');
-      return manifestPage({
-        title: 'GitHub connected',
-        message:
-          'A GitHub App is connected to this Verity. Return to Verity to continue, or disconnect it in Settings before connecting a different one.',
-      });
-    }
-
-    try {
-      await veritySettingsStore(deps.eventStore).updateVeritySettings({
-        githubAppInstallationId: installationId,
-      });
-    } catch (err) {
-      if (err instanceof SealedError) {
-        reply.code(503).type('text/html; charset=utf-8');
-        return manifestPage({
-          title: 'Verity is locked',
-          message:
-            'Unlock Verity with your master password first, then finish GitHub App onboarding.',
-        });
-      }
-      throw err;
-    }
-
-    reply.type('text/html; charset=utf-8');
-    return manifestPage({
-      title: 'GitHub App installed',
-      eyebrow: 'GitHub connected',
-      message: 'GitHub is now connected to Verity. Return to the app to continue setup.',
-      detail: 'The Verity app will detect this automatically when you tap Check now.',
-      body:
-        `<div class="actions">` +
-        `<a class="button" href="verity://onboarding/github">Return to Verity</a>` +
-        `<a class="button secondary" href="https://github.com/settings/installations">View GitHub installation</a>` +
-        `</div>`,
-    });
+  registerGitHubTokenRoute(app, {
+    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
+    ...(deps.ghTokenMint !== undefined ? { mint: deps.ghTokenMint } : {}),
   });
-
-  // `POST /settings/github/disconnect` — authenticated (behind the API gate, NOT
-  // in the pre-auth allowlist): clear the stored GitHub App creds (app id +
-  // installation id + PEM), reopening the refuse-overwrite lock so the operator
-  // can connect a different App / rotate keys. This is the ONLY sanctioned way to
-  // replace a connected App — an unauthenticated re-onboarding is refused. Env-
-  // configured legacy Apps are managed out-of-band and untouched by this.
-  app.post('/settings/github/disconnect', async (): Promise<{ disconnected: true }> => {
-    // updateVeritySettings reads the row back decrypted, so it needs the cipher
-    // unsealed even though we only write nulls — surface a clean 503 when sealed.
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    await veritySettingsStore(deps.eventStore).updateVeritySettings({
-      githubAppId: null,
-      githubAppInstallationId: null,
-      githubAppPrivateKey: null,
-    });
-    return { disconnected: true };
+  registerProjectMemoryRoute(app, {
+    store: deps.eventStore,
+    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
-
-  // `GET /settings/signing-key` — the CURRENT signing PUBLIC key, so Settings can
-  // re-display it long after onboarding (a common need: registering it on GitHub
-  // as a Signing Key). Public material only, read from the non-decrypting raw
-  // settings, so it works even while the secret store is SEALED. `configured`
-  // reflects whether a signing private key (DB contents or a file path) is set.
-  app.get(
-    '/settings/signing-key',
-    async (): Promise<{ configured: boolean; publicKey: string | null }> => {
-      const raw = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
-      const nonEmpty = (value: unknown): value is string =>
-        typeof value === 'string' && value.trim().length > 0;
-      const publicKey = nonEmpty(raw?.gitSshPublicKey) ? raw.gitSshPublicKey.trim() : null;
-      const configured =
-        nonEmpty(raw?.gitSshPrivateKey) ||
-        nonEmpty(raw?.gitSshPrivateKeyPath) ||
-        publicKey !== null;
-      return { configured, publicKey };
-    },
-  );
-
-  // ── SSH signing-key generation (#320, onboarding) ─────────────────────────
-  // `POST /settings/signing-key/generate` — generate an ed25519 OpenSSH-format
-  // signing keypair server-side, store the PRIVATE key encrypted at rest, and
-  // return ONLY the public material (pubkey + derived allowed_signers line). The
-  // operator's sole manual step afterward is adding the pubkey to GitHub as a
-  // Signing Key. Requires the cipher UNSEALED (it must encrypt the private key to
-  // store it) — sealed → `{ ok: false, error: 'locked' }` WITHOUT throwing. The
-  // PRIVATE key NEVER appears in the response or the logs.
-  // Optional caller-supplied git identity. The onboarding wizard sends these so the
-  // operator can enter a PERSONAL name/email — required when the GitHub App is an
-  // ORGANIZATION installation, which cannot yield a signing identity (see
-  // resolveGitHubAppIdentity / github-app-token.ts). When an email is supplied it
-  // takes precedence and the App-identity derivation is skipped entirely.
-  const signingKeyGenerateBody = z.object({
-    gitUserName: z.string().trim().min(1).max(200).optional(),
-    gitUserEmail: z.string().trim().min(3).max(320).optional(),
-  });
-
-  app.post(
-    '/settings/signing-key/generate',
-    async (
-      request,
-    ): Promise<{
-      ok: boolean;
-      publicKey?: string;
-      allowedSigners?: string;
-      error?: string;
-    }> => {
-      // Sealed → can't encrypt the private key to store it. Report locked without
-      // throwing (the wizard shows "unlock first", not a 5xx).
-      if (deps.secretCipher?.isSealed() === true) return { ok: false, error: 'locked' };
-
-      const body = signingKeyGenerateBody.parse(request.body ?? {});
-      const bodyName =
-        body.gitUserName !== undefined && body.gitUserName.length > 0 ? body.gitUserName : null;
-      const bodyEmail =
-        body.gitUserEmail !== undefined && body.gitUserEmail.length > 0 ? body.gitUserEmail : null;
-
-      const store = veritySettingsStore(deps.eventStore);
-      // The (plaintext) git email is the key comment + allowed_signers principal.
-      // Caller-supplied identity wins over stored, and stored wins over App-derived.
-      const raw = await store.getVeritySettingsRaw();
-      let name = bodyName ?? raw?.gitUserName ?? null;
-      let email = bodyEmail ?? raw?.gitUserEmail ?? null;
-
-      // Derive the committer identity from the GitHub App installation when it is
-      // not already set — so it matches an account that can hold the signing key
-      // (a user account's no-reply email), which is what makes GitHub mark the
-      // signed commits "Verified". An organization installation cannot yield a
-      // signing identity; surface that as an error instead of a broken key.
-      if ((email === null || email.length === 0) && deps.resolveGitHubAppIdentity !== undefined) {
-        const identity = await deps.resolveGitHubAppIdentity();
-        if (identity !== undefined && !identity.ok) {
-          return { ok: false, error: identity.error ?? 'could not derive git identity' };
-        }
-        if (identity?.ok === true) {
-          // Only fill fields that are actually empty — never overwrite a name the
-          // operator set just because the email was blank.
-          if (name === null || name.length === 0) name = identity.name ?? null;
-          email = identity.email ?? null;
-        }
-      }
-
-      // Generate the keypair in a private temp dir (0700), cleaned up even on
-      // failure. Only the PUBLIC material leaves this scope on the wire.
-      const generated = await generateSigningKey(email, deps.sshKeygen);
-
-      // Persist the keys + the derived allowed_signers (and the derived identity) —
-      // the private key encrypted at rest via updateVeritySettings. allowed_signers
-      // is what the provisioner mounts to `.ssh/allowed_signers` for local
-      // signature verification; storing it here (not just returning it on the wire)
-      // is what makes that mount work.
-      try {
-        await store.updateVeritySettings({
-          ...(name !== null && name.length > 0 ? { gitUserName: name } : {}),
-          ...(email !== null && email.length > 0 ? { gitUserEmail: email } : {}),
-          gitSshPrivateKey: generated.privateKey,
-          gitSshPublicKey: generated.publicKey,
-          gitAllowedSigners: generated.allowedSigners,
-        });
-      } catch (err) {
-        // A racing seal between the read and the write surfaces as SealedError —
-        // degrade to `locked` rather than a 5xx, matching the validate route.
-        if (err instanceof SealedError) return { ok: false, error: 'locked' };
-        throw err;
-      }
-
-      // Return ONLY the public material. The private key is deliberately absent
-      // from this object so it can never be serialized onto the wire.
-      return {
-        ok: true,
-        publicKey: generated.publicKey,
-        allowedSigners: generated.allowedSigners,
-      };
-    },
-  );
-
-  // ── Commit-signing broker (audit finding H1) ──────────────────────────────
-  // `POST /internal/git/sign` — called by the sandbox's `gpg.ssh.program`
-  // wrapper, NOT the operator, so it's in the pre-auth allowlist and authenticates
-  // itself with the broker token (the SHA-256 of the fleet signing key, which the
-  // provisioner injects into the container and this route re-derives). The private
-  // key stays server-side in the sealed store — it never enters a sandbox — so a
-  // compromised package can no longer exfiltrate it and forge verified commits
-  // fleet-wide; the residual is a signing oracle usable only while the container
-  // runs. Requires the cipher unsealed (to read the key) → a sealed store surfaces
-  // as a clean 503 via the error boundary.
-  const gitSignBody = z.object({
-    // git uses `git` for both commit and tag signatures; signGitPayload refuses
-    // anything else so the broker can't be turned into a generic signing oracle.
-    namespace: z.string().min(1).max(64),
-    // The commit/tag payload git handed the signing program, base64-encoded.
-    payload: z.string().min(1).max(1_000_000),
-  });
-  if (deps.signingCapabilities !== undefined)
-    app.post(
-      '/internal/git/sign',
-      async (request, reply): Promise<{ signature: string } | { error: string }> => {
-        // Reject a token-less probe up front, BEFORE reading settings, so an
-        // unauthenticated caller can't distinguish the server's state (sealed 503 /
-        // no-key 409 / bad-token 401) by drive-by requests — all it ever sees is 401.
-        const presented = bearerToken(request.headers.authorization) ?? '';
-        if (presented === '') {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const socketIdentity = internalConnectionIdentity(request);
-        const capabilityBinding =
-          socketIdentity === undefined
-            ? undefined
-            : await deps.signingCapabilities?.resolve(presented);
-        const capabilityAuthorized =
-          socketIdentity !== undefined &&
-          capabilityBinding?.projectId === socketIdentity.projectId &&
-          capabilityBinding.containerGeneration === socketIdentity.containerGeneration;
-
-        // A project socket accepts only its own generation-bound capability. Reject
-        // before decrypting settings so an invalid UDS caller cannot distinguish a
-        // sealed store from a missing signing key.
-        if (socketIdentity !== undefined && !capabilityAuthorized) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        if (socketIdentity === undefined) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-
-        // Decrypting read — throws SealedError (→ 503) while the store is sealed.
-        const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-        // DB contents OR the file at gitSshPrivateKeyPath — the SAME resolution the
-        // provisioner uses to derive the sandbox token, so the two agree on the key.
-        const privateKey = resolveSigningPrivateKey(settings);
-        if (privateKey === null || privateKey.trim().length === 0) {
-          reply.code(409);
-          return { error: 'no signing key configured' };
-        }
-        if (!capabilityAuthorized) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const { namespace, payload } = gitSignBody.parse(request.body);
-        const buffer = Buffer.from(payload, 'base64');
-        try {
-          const signature = await signGitPayload(privateKey, buffer, namespace, deps.sshSign);
-          // Audit trail (the cheap 80% win): what was signed, when — not the payload.
-          request.log.info(
-            {
-              namespace,
-              bytes: buffer.length,
-              ...(socketIdentity !== undefined
-                ? {
-                    projectId: socketIdentity.projectId,
-                    containerGeneration: socketIdentity.containerGeneration,
-                  }
-                : {}),
-            },
-            'verity: brokered a git commit signature',
-          );
-          return { signature };
-        } catch (err) {
-          if (err instanceof GitSignError) {
-            reply.code(400);
-            return { error: 'signing refused' };
-          }
-          throw err;
-        }
-      },
-    );
-
-  // ── GitHub-token broker (security review) ─────────────────────────────────
-  // `POST /internal/github/token` — called by the sandbox's git credential helper
-  // / gh wrapper, NOT the operator, so it's in the pre-auth allowlist and
-  // authenticates with a per-container CAPABILITY (not a GitHub credential). The
-  // server resolves the capability to its server-side project binding and mints a
-  // repo-scoped token FROM that binding — the sandbox never names the repo or the
-  // scope, so a compromised container can only obtain tokens for its own project,
-  // and only from inside the internal network the origin guard enforces. The token
-  // is minted fresh per request and never persisted (no gh-token file at rest).
-  if (deps.ghTokenCapabilities !== undefined && deps.ghTokenMint !== undefined) {
-    const ghTokenCapabilities = deps.ghTokenCapabilities;
-    const ghTokenMint = deps.ghTokenMint;
-    app.post(
-      '/internal/github/token',
-      async (request, reply): Promise<{ token: string } | { error: string }> => {
-        // A capability-less probe learns nothing about server state: always 401.
-        const presented = bearerToken(request.headers.authorization) ?? '';
-        const binding = presented === '' ? undefined : await ghTokenCapabilities.resolve(presented);
-        const socketIdentity = internalConnectionIdentity(request);
-        if (
-          binding === undefined ||
-          socketIdentity === undefined ||
-          socketIdentity.projectId !== binding.projectId ||
-          socketIdentity.containerGeneration !== binding.containerGeneration
-        ) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        // Scope is the SERVER-SIDE binding, never a request field. The sandbox
-        // cannot broaden it or point at another repo.
-        const token = await ghTokenMint({ owner: binding.owner, repo: binding.repo });
-        if (token === undefined || token.length === 0) {
-          reply.code(502);
-          return { error: 'could not mint a token' };
-        }
-        // Audit trail: which project asked, when — never the token itself.
-        request.log.info(
-          { projectId: binding.projectId, repo: `${binding.owner}/${binding.repo}` },
-          'verity: brokered a GitHub token',
-        );
-        return { token };
-      },
-    );
-  }
-
-  // `POST /internal/project/memory` — called by the sandbox's `verity-memory`
-  // wrapper, NOT the operator (ADR 0008). Like the gh-token broker it is pre-auth
-  // allowlisted and authenticates with the per-container CAPABILITY, and the server
-  // resolves that capability to its server-side project binding — the sandbox never
-  // names the project, so a container can only append to ITS OWN project's memory,
-  // and only from inside the internal network the origin guard enforces. Gated on
-  // capability resolution alone (no token-mint needed), so it works in any
-  // capability-provisioned deployment.
-  if (deps.ghTokenCapabilities !== undefined) {
-    const ghTokenCapabilities = deps.ghTokenCapabilities;
-    app.post(
-      '/internal/project/memory',
-      async (request, reply): Promise<{ ok: true; length: number } | { error: string }> => {
-        const presented = bearerToken(request.headers.authorization) ?? '';
-        const binding = presented === '' ? undefined : await ghTokenCapabilities.resolve(presented);
-        const socketIdentity = internalConnectionIdentity(request);
-        if (
-          binding === undefined ||
-          socketIdentity === undefined ||
-          socketIdentity.projectId !== binding.projectId ||
-          socketIdentity.containerGeneration !== binding.containerGeneration
-        ) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const body = request.body as { text?: unknown } | null | undefined;
-        const text = typeof body?.text === 'string' ? body.text : undefined;
-        if (text === undefined) {
-          reply.code(400);
-          return { error: 'expected a JSON body with a string "text" field' };
-        }
-        try {
-          const settings = await deps.eventStore.appendProjectMemory(binding.projectId, text);
-          if (settings === undefined) {
-            // Capability resolved but the project row is gone (deprovisioned mid-flight).
-            reply.code(404);
-            return { error: 'project not found' };
-          }
-          request.log.info(
-            { projectId: binding.projectId, length: settings.memory?.length ?? 0 },
-            'verity: appended project memory',
-          );
-          return { ok: true, length: settings.memory?.length ?? 0 };
-        } catch (error) {
-          if (error instanceof ProjectMemoryTooLargeError) {
-            reply.code(413);
-            return {
-              error: `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters; edit or prune it in Project Settings`,
-            };
-          }
-          throw error;
-        }
-      },
-    );
-  }
-
   // `POST /internal/mcp` — the loopback MCP gateway (ADR 0014 D1), called by an ACP
   // session's own MCP client, NOT the operator. Like the other project-socket brokers it is
   // pre-auth allowlisted and rides the internal listener only; the PROJECT comes from the
@@ -6214,6 +4683,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // reaches the same durable permission card, decide route and standing-grant check as a
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
+  const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
   if (deps.mcpGateway !== undefined) {
     const gatewayDeps = deps.mcpGateway;
     // The two control-plane session tools are bound on the same seam as `requestApproval`,
@@ -6261,6 +4731,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             status: session.status,
             resumable: session.resumable,
             eventCount: session.eventCount,
+            lastActivityAt: session.lastActivityAt,
           })),
           omitted,
         };
@@ -6297,6 +4768,210 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           {},
           { displayPrompt, clientReplyId: idempotencyKey },
         ),
+      createSession: async ({ projectId, name, idempotencyKey }) => {
+        const existing = controlHandoffSessionCreates.get(idempotencyKey);
+        if (existing !== undefined) return existing;
+        const creating = (async (): Promise<{ sessionId: string }> => {
+          const digest = createHash('sha256').update(idempotencyKey).digest();
+          digest[6] = (digest[6]! & 0x0f) | 0x40;
+          digest[8] = (digest[8]! & 0x3f) | 0x80;
+          const hex = digest.subarray(0, 16).toString('hex');
+          const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+          const prior = await deps.eventStore.getSession(sessionId);
+          if (prior !== undefined) {
+            if (prior.projectId !== projectId) {
+              throw new ControlPlaneSessionToolError('new-session handoff key collision');
+            }
+            return { sessionId };
+          }
+          const project = await deps.eventStore.getProject(projectId);
+          if (
+            project === undefined ||
+            project.hiddenAt !== null ||
+            project.state !== 'active' ||
+            isControlPlaneProject(project)
+          ) {
+            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+          }
+          if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
+            throw new ControlPlaneSessionToolError('new-session handoff is not configured');
+          }
+          if (projectsBeingDeleted.has(project.id)) {
+            throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
+          }
+          const releaseSpawn = beginProjectSpawn(project.id);
+          try {
+            const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
+              project.id,
+            );
+            const model = settings?.defaultModel ?? (await availableModels()).default;
+            if (!isProjectSessionModel(model)) {
+              throw new ControlPlaneSessionToolError('project has no eligible default model');
+            }
+            const selectedModel = model as string;
+            const projectClone = projectClonePath(deps.projectCloneRoot, project);
+            const worktreeOpts = {
+              refreshBase: true,
+              ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
+            };
+            const provisioner =
+              deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
+              createGitWorktreeProvisioner({
+                repoDir: projectClone,
+                worktreeRoot: join(projectClone, '.verity-sessions'),
+                ...worktreeOpts,
+              });
+            await deps.refreshProjectToken?.(project);
+            const worktree = await provisioner.add(makeBranch(name));
+            try {
+              await deps.eventStore.createSession({
+                sessionId,
+                projectId: project.id,
+                worktree,
+                model: selectedModel,
+                name,
+              });
+            } catch (error) {
+              await provisioner.remove(worktree).catch(() => undefined);
+              throw error;
+            }
+            return { sessionId };
+          } finally {
+            releaseSpawn();
+          }
+        })();
+        controlHandoffSessionCreates.set(idempotencyKey, creating);
+        try {
+          return await creating;
+        } finally {
+          controlHandoffSessionCreates.delete(idempotencyKey);
+        }
+      },
+      readProgress: async (sessionId) => {
+        const session = await deps.eventStore.getSession(sessionId);
+        if (session === undefined)
+          throw new ControlPlaneSessionToolError('target session vanished');
+        // Progress is a tail projection. Lifecycle, the active prompt and the current-turn
+        // publication all resolve from recent canonical state; never load an unbounded log.
+        const progressPage = await deps.eventStore.getEventsBeforeSeq(sessionId, 2_000);
+        const events = progressPage.events;
+        const status = liveStatus(
+          sessionId,
+          events.map(({ event }) => event),
+        );
+        const lifecycle =
+          status === 'running'
+            ? 'running'
+            : status === 'awaiting_input'
+              ? 'waiting'
+              : conductor.queuedItems(sessionId).length > 0
+                ? 'queued'
+                : status === 'crashed'
+                  ? 'failed'
+                  : status === 'completed'
+                    ? 'completed'
+                    : 'waiting';
+        const lastActivityAt = events.at(-1)?.ts ?? null;
+        const activePrompt =
+          lifecycle === 'running'
+            ? events.findLast(({ event }) => event.t === 'prompt' && event.steered !== true)
+            : undefined;
+        const latestPromptForError = events.findLast(
+          ({ event }) => event.t === 'prompt' && event.steered !== true,
+        );
+        const latestTerminal = events.findLast(
+          ({ event }) => event.t === 'result' || event.t === 'interrupted',
+        );
+        const latestErrorCandidate = events.findLast(({ event }) => event.t === 'error');
+        const latestError =
+          latestErrorCandidate !== undefined &&
+          (latestPromptForError === undefined ||
+            latestErrorCandidate.seq > latestPromptForError.seq) &&
+          (latestTerminal === undefined || latestErrorCandidate.seq > latestTerminal.seq)
+            ? latestErrorCandidate
+            : undefined;
+        const published = currentPublishedProgress(events);
+        const branchService = await branchesForSession(session);
+        const branch = await branchService?.current(session.worktree).catch(() => undefined);
+        const issue = branch?.match(/^[a-z]+\/(\d+)-/u)?.[1];
+        const cachedPr = prSummaryCache.get(session.worktree)?.pr;
+        return {
+          lifecycle,
+          status,
+          projectionTruncated: progressPage.hasMore,
+          lastActivityAt,
+          ...(activePrompt === undefined
+            ? {}
+            : {
+                activeTurnStartedAt: activePrompt.ts,
+                activeTurnAgeMs: Date.now() - activePrompt.ts,
+              }),
+          turnCompleted: lifecycle === 'completed' || lifecycle === 'failed',
+          // Outcome delivery is an explicit claim, not inferred from a successful process exit.
+          outcomeDelivered:
+            published?.event.t === 'session_progress' ? published.event.outcomeDelivered : null,
+          ...(branch === undefined ? {} : { branch }),
+          ...(issue === undefined ? {} : { issueNumber: Number(issue) }),
+          ...(cachedPr === undefined ? {} : { cachedPullRequest: cachedPr }),
+          publishedSummary:
+            published?.event.t === 'session_progress'
+              ? {
+                  summary: redactSessionObservationText(published.event.summary),
+                  publishedAt: published.ts,
+                }
+              : null,
+          ...(published?.event.t === 'session_progress' && published.event.blocker !== undefined
+            ? {
+                blocker: {
+                  kind: 'published',
+                  summary: redactSessionObservationText(published.event.blocker),
+                },
+              }
+            : latestError?.event.t === 'error' &&
+                (published === undefined || latestError.seq > published.seq)
+              ? {
+                  blocker: {
+                    kind: 'error',
+                    errorKind: safeSessionProgressErrorKind(latestError.event.kind),
+                  },
+                }
+              : {}),
+          ...(published?.event.t === 'session_progress' &&
+          published.event.requiredDecision !== undefined
+            ? {
+                requiredDecision: redactSessionObservationText(published.event.requiredDecision),
+              }
+            : {}),
+        };
+      },
+      readRecentMessages: async ({ sessionId, count, sinceMinutes, beforeSeq }) => {
+        // Bound database work independently of the requested message count: one assistant
+        // message may consist of thousands of streaming deltas, and an approval-gated context
+        // read must not become a full-transcript memory load for a long-running session.
+        const page = await deps.eventStore.getEventsBeforeSeq(sessionId, 1_000, beforeSeq);
+        const sinceMs = sinceMinutes === undefined ? undefined : Date.now() - sinceMinutes * 60_000;
+        const result = safeRecentMessages(page.events, count, sinceMs, {
+          olderEventsExist: page.hasMore,
+          newerEventsExist:
+            beforeSeq !== undefined &&
+            ((await deps.eventStore.getEventsBeforeSeq(sessionId, 1)).events.at(-1)?.seq ?? 0) >=
+              beforeSeq,
+        });
+        const olderEventsCanMatchWindow = olderEventsMayMatchWindow(
+          page.hasMore,
+          page.events[0]?.ts,
+          sinceMs,
+        );
+        return {
+          messages: result.messages,
+          hasMore: result.hasMore || olderEventsCanMatchWindow,
+          ...(result.nextBeforeSeq !== undefined
+            ? { nextBeforeSeq: result.nextBeforeSeq }
+            : olderEventsCanMatchWindow && page.events[0] !== undefined
+              ? { nextBeforeSeq: page.events[0].seq }
+              : {}),
+        };
+      },
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
@@ -6304,14 +4979,61 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // an operator being asked to read a briefing their answer could not have delivered. The
       // tools re-check it themselves on the way in; this only decides when it is caught.
       authorizeCall: async ({ projectId, sessionId, toolName }) => {
-        if (toolName !== 'verity_list_sessions' && toolName !== 'verity_session_handoff') return;
+        if (toolName === 'verity_publish_session_progress') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const project = await deps.eventStore.getProject(projectId);
+          if (
+            session === undefined ||
+            session.projectId !== projectId ||
+            project === undefined ||
+            isControlPlaneProject(project)
+          ) {
+            throw new ControlPlaneSessionAuthorityError(
+              'progress publishing is restricted to the calling project session',
+            );
+          }
+          return;
+        }
+        if (
+          toolName !== 'verity_list_sessions' &&
+          toolName !== 'verity_session_handoff' &&
+          toolName !== 'verity_session_progress' &&
+          toolName !== 'verity_recent_session_messages'
+        )
+          return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      invokeTool: (input) => {
+      invokeTool: async (input) => {
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
         if (input.toolName === 'verity_session_handoff')
           return controlPlaneSessionTools.handoff(input);
+        if (input.toolName === 'verity_session_progress')
+          return controlPlaneSessionTools.progress(input);
+        if (input.toolName === 'verity_recent_session_messages') {
+          const parsed = recentSessionMessagesRequestSchema.parse(input.request);
+          app.log.info(
+            {
+              actorSessionId: input.sessionId,
+              approvedBy: 'operator',
+              targetSessionId: parsed.sessionId,
+              count: parsed.count ?? RECENT_SESSION_MESSAGES_DEFAULT,
+              sinceMinutes: parsed.sinceMinutes,
+              beforeSeq: parsed.beforeSeq,
+              purpose: redactSessionObservationText(parsed.purpose),
+            },
+            'verity: approved Control Plane recent-message read',
+          );
+          return controlPlaneSessionTools.recentMessages(input);
+        }
+        if (input.toolName === 'verity_publish_session_progress') {
+          const progress = publishSessionProgressRequestSchema.parse(input.request);
+          await deps.eventStore.appendEvent(input.sessionId, {
+            t: 'session_progress',
+            ...progress,
+          });
+          return { sessionId: input.sessionId, published: true };
+        }
         return gatewayDeps.invokeTool(input);
       },
       requestApproval: ({ sessionId, callId, toolName, input, signal }) =>
@@ -6341,48 +5063,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           signal,
         }),
     });
-    app.post(
-      '/internal/mcp',
-      // The server-wide limit is ~71 MiB so a turn can carry image attachments. A gateway
-      // call is a JSON-RPC envelope around tool arguments — an HTTP request the operator is
-      // expected to read on a card — so it needs a small fraction of that, and the tool's
-      // `body` is otherwise unbounded JSON that a parked card persists as a permission
-      // event. 256 KiB fits any request worth approving by hand and keeps a caller holding
-      // a valid bearer from making the Server buffer and store tens of MB per call.
-      { bodyLimit: 256 * 1024 },
-      async (request, reply): Promise<unknown> => {
-        const socketIdentity = internalConnectionIdentity(request);
-        if (socketIdentity === undefined) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const presented = bearerToken(request.headers.authorization);
-        const response = await gateway.handle({
-          projectId: socketIdentity.projectId,
-          token: presented,
-          body: request.body,
-        });
-        reply.code(response.status);
-        // MCP acknowledges a notification with an empty 202. Returning undefined from an
-        // async handler leaves the reply unsent and returning null writes the four bytes
-        // `null`, so send the empty payload explicitly and hand Fastify the reply itself.
-        return response.body === undefined ? reply.send() : response.body;
-      },
-    );
-    // `GET /internal/mcp` — the Streamable HTTP stream for server-initiated messages, which
-    // this gateway does not offer: every answer it has is the response to a call. The
-    // transport opens the stream anyway once the handshake completes, and the spec's way of
-    // saying "there is none" is 405; anything else — a 404 from an unregistered route or
-    // from the relay's allowlist — it reports as a connection error, once per ACP turn.
-    app.get('/internal/mcp', async (request, reply): Promise<unknown> => {
-      if (internalConnectionIdentity(request) === undefined) {
-        reply.code(401);
-        return { error: 'unauthorized' };
-      }
-      reply.code(405).header('allow', 'POST');
-      return { error: 'method_not_allowed' };
-    });
-
     // `POST /internal/control-plane/mcp` — the same gateway for the ONE caller that has no
     // project socket to arrive on: the dedicated control-plane runner.
     //
@@ -6416,35 +5096,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // which a composition may leave unwired: this route grants an identity instead of merely
     // failing to find one, so it must fail closed on its own. `/internal/mcp` can lean on the
     // guard because a connection with no project identity gets nothing there anyway.
-    const controlPlaneConnection = (request: FastifyRequest): boolean =>
-      requestArrivedInternally(request) && internalConnectionIdentity(request) === undefined;
-    app.post(
-      '/internal/control-plane/mcp',
-      { bodyLimit: 256 * 1024 },
-      async (request, reply): Promise<unknown> => {
-        if (!controlPlaneConnection(request)) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const presented = bearerToken(request.headers.authorization);
-        const response = await gateway.handle({
-          projectId: VERITY_CONTROL_PROJECT_ID,
-          token: presented,
-          body: request.body,
-        });
-        reply.code(response.status);
-        return response.body === undefined ? reply.send() : response.body;
-      },
-    );
-    // Same 405-not-404 contract as `GET /internal/mcp`: the MCP transport opens the
-    // server-message stream after the handshake and treats a 404 as a connection error.
-    app.get('/internal/control-plane/mcp', async (request, reply): Promise<unknown> => {
-      if (!controlPlaneConnection(request)) {
-        reply.code(401);
-        return { error: 'unauthorized' };
-      }
-      reply.code(405).header('allow', 'POST');
-      return { error: 'method_not_allowed' };
+    registerMcpGatewayRoutes(app, {
+      gateway,
+      controlProjectId: VERITY_CONTROL_PROJECT_ID,
     });
   }
 
@@ -6766,696 +5420,114 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const appearsInProjectOverview = (project: ProjectRecord): boolean =>
     project.state !== 'absent' || project.overviewVisible === true;
 
-  const workflowActor = (request: FastifyRequest): { id: string; authorizationHash: string } => {
-    const token = bearerToken(request.headers.authorization);
-    const id = deps.authRegistry?.resolveId(token) ?? 'local-control-plane';
-    return {
-      id,
-      authorizationHash: createHash('sha256')
-        .update(`workflow-actor:${id}:${token ?? 'headless'}`)
-        .digest('hex'),
-    };
-  };
-
-  const requireWorkflowAuthority = async (
-    request: FastifyRequest,
-    action: Parameters<NonNullable<ServerDeps['authorizeWorkflowAction']>>[1],
-    scope: Record<string, unknown>,
-  ): Promise<{ id: string; authorizationHash: string }> => {
-    const actor = workflowActor(request);
-    if ((await deps.authorizeWorkflowAction?.(actor.id, action, scope)) !== true) {
-      if (deps.workflowStore !== undefined && typeof scope.workflowId === 'string')
-        await deps.workflowStore.recordPolicyDenial(
-          scope.workflowId,
-          action,
-          actor,
-          `not authorized to perform ${action}`,
-        );
-      throw new WorkflowAuthorizationError(`not authorized to perform ${action}`);
-    }
-    return actor;
-  };
-
-  const workflowError = (error: unknown, reply: FastifyReply): { error: string } | undefined => {
-    if (error instanceof WorkflowNotFoundError) {
-      reply.code(404);
-      return { error: error.message };
-    }
-    if (error instanceof WorkflowConflictError) {
-      reply.code(409);
-      return { error: error.message };
-    }
-    if (error instanceof WorkflowAuthorizationError) {
-      reply.code(403);
-      return { error: error.message };
-    }
-    return undefined;
-  };
   const dispatchWorkflowSessionRef: {
     current?: (request: FastifyRequest, reply: FastifyReply) => Promise<string | undefined>;
   } = {};
-
-  app.post(
-    '/providers/github/webhook',
-    async (request, reply): Promise<{ accepted: boolean } | { error: string }> => {
-      if (deps.workflowStore === undefined || deps.workflowGithubWebhookSecret === undefined) {
-        reply.code(404);
-        return { error: 'not found' };
-      }
-      const supplied = request.headers['x-hub-signature-256'];
-      const delivery = request.headers['x-github-delivery'];
-      const eventType = request.headers['x-github-event'];
-      const expected = await githubWebhookDigests.get(request);
-      if (
-        typeof supplied !== 'string' ||
-        !/^sha256=[0-9a-f]{64}$/u.test(supplied) ||
-        typeof expected !== 'string' ||
-        supplied.length !== expected.length ||
-        !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))
-      ) {
-        reply.code(401);
-        return { error: 'invalid webhook signature' };
-      }
-      if (typeof delivery !== 'string' || delivery.length === 0 || delivery.length > 200) {
-        reply.code(400);
-        return { error: 'invalid delivery id' };
-      }
-      if (typeof eventType !== 'string' || eventType.length === 0 || eventType.length > 100) {
-        reply.code(400);
-        return { error: 'invalid event type' };
-      }
-      const supported = new Set(['pull_request', 'check_run', 'status', 'workflow_run', 'package']);
-      if (!supported.has(eventType)) return { accepted: false };
-      const accepted = await deps.workflowStore.ingestProviderEvent(
-        'github',
-        delivery,
-        eventType,
-        request.body,
-      );
-      reply.code(accepted ? 202 : 200);
-      return { accepted };
-    },
-  );
-
-  app.post(
-    '/workflow-services',
-    async (request, reply): Promise<{ ok: true } | { error: string }> => {
-      if (deps.workflowStore === undefined) {
-        reply.code(503);
-        return { error: 'cross-project workflows are not configured' };
-      }
-      const body = workflowServiceBody.parse(request.body);
-      try {
-        await requireWorkflowAuthority(request, 'service:write', {
-          serviceId: body.id,
-          sourceProjectId: body.sourceProjectId,
-          deploymentProjectIds: Object.values(body.deployments).map(({ projectId }) => projectId),
-        });
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-      const source = await deps.eventStore.getProject(body.sourceProjectId);
-      if (source === undefined) {
-        reply.code(404);
-        return { error: `source project ${body.sourceProjectId} not found` };
-      }
-      if (`${source.owner}/${source.repo}`.toLowerCase() !== body.sourceRepository.toLowerCase()) {
-        reply.code(400);
-        return { error: 'source repository does not match the registered project' };
-      }
-      for (const deployment of Object.values(body.deployments)) {
-        const project = await deps.eventStore.getProject(deployment.projectId);
-        if (project === undefined) {
-          reply.code(404);
-          return { error: `deployment project ${deployment.projectId} not found` };
-        }
-        if (
-          `${project.owner}/${project.repo}`.toLowerCase() !== deployment.repository.toLowerCase()
-        ) {
-          reply.code(400);
-          return { error: 'deployment repository does not match the registered project' };
-        }
-      }
-      await deps.workflowStore.registerService(body);
-      return { ok: true };
-    },
-  );
-
-  app.get('/workflows', async (request, reply): Promise<WorkflowView[] | { error: string }> => {
-    if (deps.workflowStore === undefined) {
-      reply.code(503);
-      return { error: 'cross-project workflows are not configured' };
-    }
-    try {
-      await requireWorkflowAuthority(request, 'workflow:read', {});
-      return deps.workflowStore.listWorkflows();
-    } catch (error) {
-      const known = workflowError(error, reply);
-      if (known !== undefined) return known;
-      throw error;
-    }
+  registerWorkflowRoutes(app, {
+    ...(deps.workflowStore !== undefined ? { store: deps.workflowStore } : {}),
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
+    ...(deps.authorizeWorkflowAction !== undefined
+      ? { authorizeAction: deps.authorizeWorkflowAction }
+      : {}),
+    getProject: (projectId) => deps.eventStore.getProject(projectId),
+    getSession: (sessionId) => deps.eventStore.getSession(sessionId),
+    stopSession: (sessionId) => conductor.stopSession(sessionId),
+    dispatchSession: async (request, reply) => dispatchWorkflowSessionRef.current?.(request, reply),
+    sessionPrStatus,
+    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
+    mergeConfigured: deps.mergePr !== undefined,
+    githubWebhookConfigured:
+      deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined,
+    githubWebhookDigest: (request) => githubWebhookDigests.get(request),
   });
-
-  app.post('/workflows', async (request, reply): Promise<WorkflowView | { error: string }> => {
-    if (deps.workflowStore === undefined) {
-      reply.code(503);
-      return { error: 'cross-project workflows are not configured' };
-    }
-    const body = workflowCreateBody.parse(request.body);
-    try {
-      const actor = await requireWorkflowAuthority(request, 'workflow:create', {
-        controlProjectId: body.controlProjectId,
-        serviceId: body.serviceId,
-        environment: body.environment,
-      });
-      const workflow = await deps.workflowStore.createWorkflow({
-        idempotencyKey: body.idempotencyKey,
-        controlProjectId: body.controlProjectId,
-        ...(body.rootSessionId !== undefined ? { rootSessionId: body.rootSessionId } : {}),
-        objective: body.objective,
-        environment: body.environment,
-        serviceId: body.serviceId,
-        actorId: actor.id,
-      });
-      reply.code(201);
-      return workflow;
-    } catch (error) {
-      const known = workflowError(error, reply);
-      if (known !== undefined) return known;
-      throw error;
-    }
-  });
-
-  app.get('/workflows/:id', async (request, reply): Promise<WorkflowView | { error: string }> => {
-    if (deps.workflowStore === undefined) {
-      reply.code(503);
-      return { error: 'cross-project workflows are not configured' };
-    }
-    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-    try {
-      await requireWorkflowAuthority(request, 'workflow:read', { workflowId: id });
-      return await deps.workflowStore.getWorkflow(id);
-    } catch (error) {
-      const known = workflowError(error, reply);
-      if (known !== undefined) return known;
-      throw error;
-    }
-  });
-
-  app.post(
-    '/workflows/:id/authorize',
-    async (request, reply): Promise<WorkflowView | { error: string }> => {
-      if (deps.workflowStore === undefined) {
-        reply.code(503);
-        return { error: 'cross-project workflows are not configured' };
-      }
-      const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-      const { version } = workflowVersionBody.parse(request.body);
-      try {
-        const actor = await requireWorkflowAuthority(request, 'workflow:authorize', {
-          workflowId: id,
-        });
-        return await deps.workflowStore.authorizeWorkflow(id, version, actor);
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-    },
-  );
-
-  app.post(
-    '/workflows/:id/steps/:stepId/dispatch',
-    async (request, reply): Promise<{ queued: true; sessionId?: string } | { error: string }> => {
-      if (deps.workflowStore === undefined) {
-        reply.code(503);
-        return { error: 'cross-project workflows are not configured' };
-      }
-      const { id, stepId } = z
-        .object({ id: z.string().min(1), stepId: z.string().min(1) })
-        .parse(request.params);
-      const { version } = workflowVersionBody.parse(request.body);
-      try {
-        const actor = await requireWorkflowAuthority(request, 'step:dispatch', {
-          workflowId: id,
-          stepId,
-        });
-        await deps.workflowStore.queueDispatch(id, stepId, version, actor);
-        const sessionId = await dispatchWorkflowSessionRef.current?.(request, reply);
-        reply.code(202);
-        return { queued: true, ...(sessionId !== undefined ? { sessionId } : {}) };
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-    },
-  );
-
-  app.post(
-    '/workflows/:id/cancel',
-    async (request, reply): Promise<WorkflowView | { error: string }> => {
-      if (deps.workflowStore === undefined) {
-        reply.code(503);
-        return { error: 'cross-project workflows are not configured' };
-      }
-      const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-      try {
-        const actor = await requireWorkflowAuthority(request, 'workflow:cancel', {
-          workflowId: id,
-        });
-        const activeSessionIds = await deps.workflowStore.listActiveWorkflowSessionIds(id);
-        const cancelled = await deps.workflowStore.cancelWorkflow(id, actor.id);
-        await Promise.allSettled(
-          activeSessionIds.map((sessionId) => conductor.stopSession(sessionId)),
-        );
-        return cancelled;
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-    },
-  );
-
-  app.post(
-    '/workflows/:id/resume',
-    async (request, reply): Promise<WorkflowView | { error: string }> => {
-      if (deps.workflowStore === undefined) {
-        reply.code(503);
-        return { error: 'cross-project workflows are not configured' };
-      }
-      const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-      const { version } = workflowVersionBody.parse(request.body);
-      try {
-        const actor = await requireWorkflowAuthority(request, 'workflow:resume', {
-          workflowId: id,
-        });
-        return await deps.workflowStore.resumeBlockedWorkflow(id, version, actor);
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-    },
-  );
-
-  app.post(
-    '/workflows/:id/decisions',
-    async (request, reply): Promise<WorkflowView | { error: string }> => {
-      if (deps.workflowStore === undefined) {
-        reply.code(503);
-        return { error: 'cross-project workflows are not configured' };
-      }
-      const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-      const body = workflowDecisionBody.parse(request.body);
-      try {
-        const actor = await requireWorkflowAuthority(request, 'decision:approve', {
-          workflowId: id,
-          stepId: body.stepId,
-        });
-        const gate = await deps.workflowStore.getGateCandidate(id, body.stepId, body.version);
-        if (gate === undefined || gate.completionGate !== 'user.decision')
-          throw new WorkflowConflictError('decision step is not ready');
-        if (deps.mergePr === undefined) {
-          reply.code(503);
-          return { error: 'pull request merging is not configured' };
-        }
-        return await deps.workflowStore.completeGate(
-          gate,
-          { ...(gate.expectedEvidence as object), approved: true },
-          actor,
-        );
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-    },
-  );
-
-  app.post(
-    '/internal/workflow/result',
-    async (request, reply): Promise<WorkflowView | { error: string }> => {
-      if (deps.workflowStore === undefined || deps.ghTokenCapabilities === undefined) {
-        reply.code(404);
-        return { error: 'not found' };
-      }
-      const body = workflowResultBody.parse(request.body);
-      try {
-        const presented = bearerToken(request.headers.authorization) ?? '';
-        const binding =
-          presented === '' ? undefined : await deps.ghTokenCapabilities.resolve(presented);
-        const socketIdentity = internalConnectionIdentity(request);
-        if (
-          binding === undefined ||
-          socketIdentity === undefined ||
-          socketIdentity.projectId !== binding.projectId ||
-          socketIdentity.containerGeneration !== binding.containerGeneration
-        ) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const session = await deps.eventStore.getSession(body.sessionId);
-        if (session === undefined || session.projectId !== binding.projectId) {
-          reply.code(401);
-          return { error: 'unauthorized' };
-        }
-        const pullRequest = body.status === 'completed' ? await sessionPrStatus(session) : null;
-        if (body.status === 'completed') {
-          if (
-            pullRequest === null ||
-            pullRequest.phase !== 'open' ||
-            pullRequest.headSha === undefined ||
-            pullRequest.number !== body.outputs.pullRequest ||
-            pullRequest.headSha.toLowerCase() !== String(body.outputs.commit).toLowerCase()
-          )
-            throw new WorkflowAuthorizationError(
-              'result pull request is not the handoff session branch',
-            );
-        }
-        return await deps.workflowStore.submitResult(
-          {
-            capability: body.capability,
-            handoffId: body.handoffId,
-            projectId: binding.projectId,
-            sessionId: body.sessionId,
-            pullRequest:
-              pullRequest?.number ??
-              (Number.isInteger(body.outputs.pullRequest)
-                ? (body.outputs.pullRequest as number)
-                : 0),
-            commit:
-              pullRequest?.headSha ??
-              (typeof body.outputs.commit === 'string' ? body.outputs.commit : ''),
-          },
-          body,
-        );
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-    },
-  );
-
-  app.post(
-    '/workflows/:id/image-candidate',
-    async (request, reply): Promise<WorkflowView | { error: string }> => {
-      if (deps.workflowStore === undefined) {
-        reply.code(503);
-        return { error: 'cross-project workflows are not configured' };
-      }
-      const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-      const { digest, version, idempotencyKey } = workflowImageBody.parse(request.body);
-      try {
-        const actor = await requireWorkflowAuthority(request, 'artifact:propose', {
-          workflowId: id,
-        });
-        return await deps.workflowStore.recordImageCandidate(
-          id,
-          digest,
-          actor.id,
-          version,
-          idempotencyKey,
-        );
-      } catch (error) {
-        const known = workflowError(error, reply);
-        if (known !== undefined) return known;
-        throw error;
-      }
-    },
-  );
-
-  app.get('/projects', async (): Promise<PublicProjectRecord[]> => {
-    const projects = deps.listProjects
-      ? await deps.listProjects()
-      : await deps.eventStore.listProjects();
-    return publicProjects(await projectsForOverview(projects.filter(appearsInProjectOverview)));
-  });
-
-  const projectOrderBody = z.object({
-    ids: z.array(z.string().min(1)),
-  });
-  app.patch(
-    '/projects/order',
-    async (request, reply): Promise<PublicProjectRecord[] | { error: string }> => {
-      const body = projectOrderBody.parse(request.body);
-      if (new Set(body.ids).size !== body.ids.length) {
-        reply.code(400);
-        return { error: 'duplicate project id' };
-      }
-      let projects: ProjectRecord[];
-      try {
-        projects = await deps.eventStore.reorderProjects(body.ids);
-      } catch (err) {
-        if (err instanceof Error && /project order/i.test(err.message)) {
-          reply.code(400);
-          return { error: err.message };
-        }
-        throw err;
-      }
+  registerProjectCollectionRoutes(app, {
+    store: deps.eventStore,
+    listOverview: async () => {
+      const projects = deps.listProjects
+        ? await deps.listProjects()
+        : await deps.eventStore.listProjects();
       return publicProjects(await projectsForOverview(projects.filter(appearsInProjectOverview)));
     },
-  );
-
-  app.get('/github/repositories', async (): Promise<PublicProjectRecord[]> => {
-    const projects = deps.listAvailableRepositories
-      ? await deps.listAvailableRepositories()
-      : deps.listProjects
-        ? await deps.listProjects()
-        : await deps.eventStore.listProjects({ includeHidden: true });
-    // Only offer repos not yet registered as a project. Paused projects are also
-    // `absent`, but carry `overviewVisible=true` and live in the overview's
-    // Paused section instead of showing up as addable duplicates. Soft-deleted
-    // projects are hidden from the overview and must remain addable so POST
-    // /projects can restore the existing row.
-    return publicProjects(
-      projects.filter(
-        (project) =>
-          project.state === 'absent' &&
-          // A local project has no repository to offer, and a soft-deleted one
-          // would otherwise surface here as an addable "repo" that POST /projects
-          // cannot resolve on GitHub.
-          !isLocalProject(project) &&
-          (project.hiddenAt !== null || project.overviewVisible !== true),
+    reorder: async (ids) =>
+      publicProjects(
+        await projectsForOverview(
+          (await deps.eventStore.reorderProjects(ids)).filter(appearsInProjectOverview),
+        ),
       ),
-    );
+    listAvailableRepositories: async () =>
+      deps.listAvailableRepositories
+        ? deps.listAvailableRepositories()
+        : deps.listProjects
+          ? deps.listProjects()
+          : deps.eventStore.listProjects({ includeHidden: true }),
+    presentRepositories: publicProjects,
+    localIdentityReservations: localIdentityLinkReservations,
+    githubTargetReservations: githubTargetLinkReservations,
+    isUniqueViolation,
   });
-
-  /** Two mutually exclusive shapes: `{ repo }` adds an existing GitHub repository
-   *  (the historical form), `{ kind: 'local', name }` creates a project with NO
-   *  GitHub repository behind it, which can be linked to one later via
-   *  `POST /projects/:id/link-github`. */
-  const createProjectBody = z.union([
-    z.object({
-      repo: z.string().min(1),
-      kind: z.literal('github').optional(),
-      imageRef: z.string().min(1).nullable().optional(),
-    }),
-    z.object({
-      kind: z.literal('local'),
-      name: z.string().min(1).max(100),
-      imageRef: z.string().min(1).nullable().optional(),
-    }),
-  ]);
-  app.post(
-    '/projects',
-    async (request, reply): Promise<{ project: ProjectRecord } | { error: string }> => {
-      const body = createProjectBody.parse(request.body);
-      const local = body.kind === 'local';
-      // A local project's identity is the reserved internal owner plus a slug of
-      // the operator's name; a GitHub project's is its canonical `owner/repo`.
-      const parsed = local
-        ? ((slug) => (slug === undefined ? undefined : { owner: LOCAL_PROJECT_OWNER, repo: slug }))(
-            slugifyProjectName(body.name),
-          )
-        : parseOwnerRepo(body.repo);
-      if (parsed === undefined) {
-        reply.code(400);
-        return { error: local ? 'invalid project name' : 'invalid project' };
-      }
-      const parsedKey = `${parsed.owner}/${parsed.repo}`;
-      if (
-        localIdentityLinkReservations.has(parsedKey) ||
-        githubTargetLinkReservations.has(parsedKey)
-      ) {
-        reply.code(409);
-        return {
-          error: local
-            ? 'a project with that name already exists'
-            : `${parsedKey} is currently being linked`,
-        };
-      }
-      const input: ProjectUpsertInput = {
-        id: randomUUID(),
-        owner: parsed.owner,
-        repo: parsed.repo,
-        containerName: containerNameFor(parsed),
-        ...(local
-          ? {
-              kind: 'local' as const,
-              // Pin the host clone directory at creation. Linking to GitHub later
-              // rewrites `(owner, repo)`, and sessions persist ABSOLUTE worktree
-              // paths under this directory — deriving it would move the clone out
-              // from under every session the project already has.
-              cloneDir: `${parsed.owner}-${parsed.repo}`,
-            }
-          : {}),
-        ...(body.imageRef !== undefined ? { imageRef: body.imageRef } : {}),
-        state: 'absent',
-        // Manual add doubles as "restore": if this repo was previously
-        // soft-deleted, un-hide it so it reappears in the picker.
-        restore: true,
-        overviewVisible: true,
+  registerProjectDetailRoutes(app, {
+    getDetail: async (id) => {
+      const cached = await deps.eventStore.getProject(id);
+      if (cached === undefined) return undefined;
+      const project = deps.reconcileProjectState
+        ? await deps.reconcileProjectState(cached).catch(() => cached)
+        : cached;
+      const settings =
+        (await projectSettingsStore(deps.eventStore).getProjectSettingsRaw(id)) ?? null;
+      const sessions = (await deps.eventStore.listSessions()).filter(
+        (session) => session.projectId === id,
+      );
+      const resolved = await resolveProjectRelease(project);
+      const sandboxUpdate = withSelfRepair(
+        resolved.project,
+        (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
+        unrepairedSandboxes(),
+      );
+      return {
+        project: publicProject(
+          resolved.project,
+          resolved.release,
+          sandboxUpdate,
+          projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
+        ),
+        settings: publicProjectSettings(settings),
+        sessions: await summarizeSessions(sessions),
       };
-      let project: ProjectRecord;
-      try {
-        // A local add must be INSERT-only: two concurrent requests for the same
-        // typed name may not both adopt the first request's clone. GitHub adds
-        // retain the historical upsert/restore behavior.
-        project = local
-          ? await deps.eventStore.createProject(input)
-          : await deps.eventStore.upsertProject(input);
-      } catch (error) {
-        if (local && isUniqueViolation(error)) {
-          reply.code(409);
-          return { error: 'a project with that name already exists' };
-        }
-        throw error;
-      }
-      await deps.eventStore.setProjectSetupStatus(project.id, 'pending');
-      reply.code(201);
-      return { project: (await deps.eventStore.getProject(project.id))! };
     },
-  );
-
-  // Project detail (concept §19.6, #174): the cached container lifecycle row plus
-  // sessions bound to that project. This reads from the local store; it does not
-  // hit the GitHub installation provider, so detail stays available even if the
-  // live repo-list sync is temporarily unavailable.
-  const projectParams = z.object({ id: z.string().min(1) });
-  app.get('/projects/:id', async (request, reply): Promise<ProjectDetail | { error: string }> => {
-    const { id } = projectParams.parse(request.params);
-    const cached = await deps.eventStore.getProject(id);
-    if (cached === undefined) {
-      reply.code(404);
-      return { error: `project ${id} not found` };
-    }
-    // Detail is the screen that offers Repair, so its state has to be the live
-    // container truth, not whatever the last overview poll happened to persist.
-    const project = deps.reconcileProjectState
-      ? await deps.reconcileProjectState(cached).catch(() => cached)
-      : cached;
-    const projectStore = projectSettingsStore(deps.eventStore);
-    const settings = (await projectStore.getProjectSettingsRaw(id)) ?? null;
-    const sessions = (await deps.eventStore.listSessions()).filter((s) => s.projectId === id);
-    const resolved = await resolveProjectRelease(project, { awaitRefresh: true });
-    const sandboxUpdate = withSelfRepair(
-      resolved.project,
-      (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-      unrepairedSandboxes(),
-    );
-    return {
-      project: publicProject(
+    projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
+    ...(deps.listBrokeredGrants !== undefined ? { listGrants: deps.listBrokeredGrants } : {}),
+    ...(deps.revokeBrokeredGrant !== undefined ? { revokeGrant: deps.revokeBrokeredGrant } : {}),
+    setSetupStatus: async (id, status) => {
+      const updated = await deps.eventStore.setProjectSetupStatus(id, status);
+      if (updated === undefined) return undefined;
+      const resolved = await resolveProjectRelease(updated, { awaitRefresh: false });
+      const sandboxUpdate = withSelfRepair(
+        resolved.project,
+        (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
+        unrepairedSandboxes(),
+      );
+      return publicProject(
         resolved.project,
         resolved.release,
         sandboxUpdate,
         projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-      ),
-      settings: publicProjectSettings(settings),
-      sessions: await Promise.all(sessions.map(summarizeSession)),
-    };
-  });
-
-  // Persist the operator's overview fold state for a project. Global (no per-
-  // device scoping), so every device reading GET /projects sees it — this is
-  // what syncs the sidebar collapse across devices.
-  const projectCollapsedBody = z.object({ collapsed: z.boolean() });
-  const projectSetupStatusBody = z.object({
-    status: z.enum(['pending', 'secrets_skipped', 'complete']),
-  });
-  // ADR 0011 D2: review and end standing brokered-secret grants. A `forever` grant has no
-  // expiry, so without these two routes an approval given once in a prompt could never be
-  // taken back through any operator-reachable surface.
-  const grantParams = z.object({ id: z.string().min(1), grantId: z.string().min(1) });
-  app.get(
-    '/projects/:id/secret-grants',
-    async (
-      request,
-      reply,
-    ): Promise<{ grants: BrokeredGrantRecord[] } | { error: string; grants: [] }> => {
-      const { id } = projectParams.parse(request.params);
-      if (deps.listBrokeredGrants === undefined) {
-        reply.code(501);
-        return { error: 'brokered secret grants are not configured', grants: [] };
-      }
-      if ((await deps.eventStore.getProject(id)) === undefined) {
-        reply.code(404);
-        return { error: 'project not found', grants: [] };
-      }
-      return { grants: await deps.listBrokeredGrants(id) };
+      );
     },
-  );
-  app.delete('/projects/:id/secret-grants/:grantId', async (request, reply) => {
-    const { id, grantId } = grantParams.parse(request.params);
-    if (deps.revokeBrokeredGrant === undefined) {
-      reply.code(501);
-      return { error: 'brokered secret grants are not configured' };
-    }
-    // Scoped by project inside the store, so a grant id belonging to another project
-    // reads as "not found" here rather than being revoked through this project's route.
-    if (!(await deps.revokeBrokeredGrant(id, grantId))) {
-      reply.code(404);
-      return { error: 'grant not found' };
-    }
-    reply.code(204);
-    return null;
-  });
-  app.patch('/projects/:id/setup-status', async (request, reply) => {
-    const { id } = projectParams.parse(request.params);
-    const { status } = projectSetupStatusBody.parse(request.body);
-    const updated = await deps.eventStore.setProjectSetupStatus(id, status);
-    if (!updated) {
-      reply.code(404);
-      return { error: 'project not found' };
-    }
-    const resolved = await resolveProjectRelease(updated, { awaitRefresh: false });
-    const sandboxUpdate = withSelfRepair(
-      resolved.project,
-      (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-      unrepairedSandboxes(),
-    );
-    return publicProject(
-      resolved.project,
-      resolved.release,
-      sandboxUpdate,
-      projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-    );
-  });
-  app.patch(
-    '/projects/:id/collapsed',
-    async (request, reply): Promise<PublicProjectRecord | { error: string }> => {
-      const { id } = projectParams.parse(request.params);
-      const body = projectCollapsedBody.parse(request.body);
-      const updated = await deps.eventStore.setProjectCollapsed(id, body.collapsed);
-      if (!updated) {
-        reply.code(404);
-        return { error: 'project not found' };
-      }
+    setCollapsed: async (id, collapsed) => {
+      if ((await deps.eventStore.setProjectCollapsed(id, collapsed)) === undefined)
+        return undefined;
       const projects = deps.listProjects
         ? await deps.listProjects()
         : await deps.eventStore.listProjects();
       const project = projects.find((candidate) => candidate.id === id);
-      if (!project) {
-        reply.code(404);
-        return { error: 'project not found' };
-      }
-      return (await publicProjects([project]))[0]!;
+      return project === undefined ? undefined : (await publicProjects([project]))[0];
     },
-  );
+    isSealed: () => deps.secretCipher?.isSealed() === true,
+    updateSettings: async (id, patch) => {
+      const settings = await projectSettingsStore(deps.eventStore).updateProjectSettings(id, patch);
+      return settings === undefined ? undefined : publicProjectSettings(settings)!;
+    },
+  });
 
   const veritySettingsBody = z.object({
     advancedModeEnabled: z.boolean().optional(),
@@ -7482,92 +5554,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
   });
 
-  const projectSettingsBody = z
-    .object({
-      // Operator-authorized Doppler binding (#320): server-set project settings,
-      // NOT repo content (a repo can't point Verity at another project's secrets).
-      dopplerProject: z.string().nullable().optional(),
-      dopplerConfig: z.string().nullable().optional(),
-      defaultBranch: z
-        .string()
-        .trim()
-        .refine((branch) => branch.length === 0 || isValidBranchName(branch), 'invalid branch name')
-        .nullable()
-        .optional(),
-      defaultModel: z.string().nullable().optional(),
-      // Operator-curated agent memory (ADR 0008). Capped at the same limit the store
-      // enforces, so an oversized paste is rejected here with a clean 400 rather than
-      // surfacing the store's ProjectMemoryTooLargeError as a 500.
-      memory: z
-        .string()
-        .max(
-          PROJECT_MEMORY_MAX_CHARS,
-          `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters`,
-        )
-        .nullable()
-        .optional(),
-    })
-    .strict();
-  app.patch(
-    '/projects/:id/settings',
-    async (
-      request,
-      reply,
-    ): Promise<{ settings: PublicProjectSettingsRecord } | { error: string }> => {
-      // Block while sealed BEFORE writing, so a non-secret patch can't commit
-      // and then 503 on the decrypt-on-return (confusing partial success).
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const { id } = projectParams.parse(request.params);
-      const parsedPatch = projectSettingsBody.parse(request.body);
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      const patch: ProjectSettingsPatch = { ...parsedPatch };
-      const projectStore = projectSettingsStore(deps.eventStore);
-      let settings;
-      try {
-        settings = await projectStore.updateProjectSettings(id, patch);
-      } catch (error) {
-        if (error instanceof DevServerPortRangeExhaustedError) {
-          reply.code(409);
-          return { error: error.message };
-        }
-        throw error;
-      }
-      if (settings === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      return { settings: publicProjectSettings(settings)! };
-    },
-  );
-
-  app.delete(
-    '/projects/:id',
-    async (request, reply): Promise<{ projectId: string } | { error: string }> => {
-      const { id } = projectParams.parse(request.params);
-      const joined = projectDeletesInFlight.get(id);
-      if (joined !== undefined) {
-        const outcome = await joined;
-        reply.code(outcome.code);
-        return outcome.body;
-      }
-      const teardown = runProjectDelete(request, id);
-      // Registered synchronously — the call above ran only up to its first
-      // `await`, so no second request can have slipped past the join check.
-      projectDeletesInFlight.set(id, teardown);
-      try {
-        const outcome = await teardown;
-        reply.code(outcome.code);
-        return outcome.body;
-      } finally {
-        projectDeletesInFlight.delete(id);
-      }
-    },
-  );
-
+  const projectParams = z.object({ id: z.string().min(1) });
   async function runProjectDelete(
     request: FastifyRequest,
     id: string,
@@ -7768,89 +5755,58 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
   }
 
-  // Deprovision a project (concept §19.8, #174): stop + remove the container,
-  // transition the store row back to `state='absent'`. The optional `?purge=true`
-  // query param ALSO removes the bind-mount clone path (irreversible — the
-  // operator explicitly chose this; keep is the default). 503 when the
-  // deprovisioner isn't configured; 404 for an unknown project id.
-  const deprovisionQuery = z.object({
-    purge: z
-      .enum(['true', 'false'])
-      .optional()
-      .transform((value) => value === 'true'),
-  });
-  app.post(
-    '/projects/:id/deprovision',
-    async (request, reply): Promise<{ project: ProjectRecord } | { error: string }> => {
+  registerProjectLifecycleRoutes(app, {
+    deleteProject: async (request, id) => {
+      const joined = projectDeletesInFlight.get(id);
+      if (joined !== undefined) return joined;
+      const teardown = runProjectDelete(request, id);
+      projectDeletesInFlight.set(id, teardown);
+      try {
+        return await teardown;
+      } finally {
+        projectDeletesInFlight.delete(id);
+      }
+    },
+    deprovision: async (request, id, purge) => {
       if (!deps.deprovisioner) {
-        reply.code(503);
-        return { error: 'multi-repo provisioning is not configured' };
+        return { code: 503, error: 'multi-repo provisioning is not configured' };
       }
-      const { id } = projectParams.parse(request.params);
-      const { purge } = deprovisionQuery.parse(request.query);
       const project = await deps.eventStore.getProject(id);
-      if (project === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
+      if (project === undefined) return { code: 404, error: `project ${id} not found` };
       const busySession = (await deps.eventStore.listSessions()).find(
         (session) =>
           session.projectId === id &&
           (conductor.isBusy(session.sessionId) || hasMeetingJob(session.sessionId)),
       );
       if (busySession !== undefined) {
-        reply.code(409);
-        return { error: `project session ${busySession.sessionId} is busy` };
+        return { code: 409, error: `project session ${busySession.sessionId} is busy` };
       }
       try {
-        const updated = await deps.deprovisioner.deprovision(id, { purge: purge ?? false });
-        return { project: updated };
+        return {
+          code: 200,
+          project: await deps.deprovisioner.deprovision(id, { purge }),
+        };
       } catch (error) {
         request.log.error({ err: error, projectId: id }, 'verity: deprovision failed');
-        throw error; // unexpected → error boundary → sanitized 500
+        throw error;
       }
     },
-  );
-
-  app.post(
-    '/projects/:id/repair',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { project: ProjectRecord }
-      | { error: string; status?: 'sealed' }
-      | { requiresConfirmation: true; warnings: string[] }
-    > => {
+    repair: async (request, id, confirmWarnings) => {
       if (!deps.provisioner) {
-        reply.code(503);
-        return { error: 'multi-repo provisioning is not configured' };
+        return { code: 503, error: 'multi-repo provisioning is not configured' };
       }
-      const { id } = projectParams.parse(request.params);
       const project = await deps.eventStore.getProject(id);
-      // A soft-deleted (hidden) project must not be repairable: repair flips the
-      // row to `cloning` and provisions it, which resurrects a project the
-      // operator deleted (and left a ghost container behind). Treat it as absent
-      // — the operator re-adds via POST /projects, which un-hides deliberately.
       if (project === undefined || project.hiddenAt !== null) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
+        return { code: 404, error: `project ${id} not found` };
       }
-      if (project.state === 'active') {
-        return { project };
-      }
+      if (project.state === 'active') return { code: 200, project };
       if (deps.secretCipher?.isSealed() === true) {
-        reply.code(503);
-        return { error: 'secret store is sealed', status: 'sealed' as const };
+        return { code: 503, error: 'secret store is sealed', status: 'sealed' as const };
       }
-
-      const confirmWarnings =
-        (request.body as { confirmWarnings?: boolean } | undefined)?.confirmWarnings === true;
       if (!confirmWarnings && deps.provisioner.provisionWarnings !== undefined) {
         const warnings = await deps.provisioner.provisionWarnings(project.id);
         if (warnings.length > 0) {
-          reply.code(409);
-          return { requiresConfirmation: true, warnings };
+          return { code: 409, requiresConfirmation: true as const, warnings };
         }
       }
       const queued =
@@ -7863,50 +5819,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (error) =>
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
-      reply.code(202);
-      return { project: queued };
+      return { code: 202, project: queued };
     },
-  );
-
-  const setupDetectedDevServersBody = z.object({
-    fingerprint: z.string().min(1),
-    confirmWarnings: z.boolean().optional().default(false),
-    devServers: z
-      .array(
-        z.object({
-          sourceKey: z.string().min(1),
-          name: z.string().min(1),
-          command: z.string().min(1),
-          workdir: z.string().nullable(),
-          containerPort: z.string().min(1).nullable(),
-        }),
-      )
-      .min(1),
   });
-  const projectSetupLocks = new Map<string, Promise<void>>();
-  const acquireProjectSetupLock = async (projectId: string): Promise<() => void> => {
-    const previous = projectSetupLocks.get(projectId) ?? Promise.resolve();
-    let releaseGate!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      releaseGate = resolve;
-    });
-    const tail = previous.then(() => gate);
-    projectSetupLocks.set(projectId, tail);
-    await previous;
-    return () => {
-      releaseGate();
-      if (projectSetupLocks.get(projectId) === tail) projectSetupLocks.delete(projectId);
-    };
-  };
-  app.post('/projects/:id/setup-dev-servers', async (request, reply) => {
-    if (!deps.provisioner || !deps.deprovisioner) {
-      reply.code(503);
-      return { error: 'project setup is not configured' };
-    }
-    const { id } = projectParams.parse(request.params);
-    const body = setupDetectedDevServersBody.parse(request.body ?? {});
-    const releaseLock = await acquireProjectSetupLock(id);
-    try {
+
+  registerProjectDevServerSetupRoute(app, {
+    isAvailable: () => deps.provisioner !== undefined && deps.deprovisioner !== undefined,
+    setup: async (request, reply, id, body) => {
+      const provisioner = deps.provisioner!;
+      const deprovisioner = deps.deprovisioner!;
       let project = await deps.eventStore.getProject(id);
       if (!project || project.hiddenAt !== null) {
         reply.code(404);
@@ -7916,8 +5837,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(503);
         return { error: 'secret store is sealed', status: 'sealed' as const };
       }
-      if (!body.confirmWarnings && deps.provisioner.provisionWarnings !== undefined) {
-        const warnings = await deps.provisioner.provisionWarnings(id);
+      if (!body.confirmWarnings && provisioner.provisionWarnings !== undefined) {
+        const warnings = await provisioner.provisionWarnings(id);
         if (warnings.length > 0) {
           reply.code(409);
           return { requiresConfirmation: true, warnings };
@@ -7979,7 +5900,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       try {
         if (project.state !== 'absent' && !canApplyLive) {
-          project = await deps.deprovisioner.deprovision(id, { purge: false });
+          project = await deprovisioner.deprovision(id, { purge: false });
         }
         const existing = await deps.eventStore.listDevServers(id);
         for (const config of body.devServers) {
@@ -8017,7 +5938,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const queued = (await deps.eventStore.updateProjectState(id, 'cloning')) ?? project;
         settleBackgroundProvision(
           id,
-          deps.provisioner.provision(id, { confirmWarnings: body.confirmWarnings }),
+          provisioner.provision(id, { confirmWarnings: body.confirmWarnings }),
           (error) =>
             request.log.error({ err: error, projectId: id }, 'verity: Dev Server setup failed'),
         );
@@ -8033,57 +5954,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         throw error;
       }
-    } finally {
-      releaseLock();
-    }
+    },
   });
 
-  app.post(
-    '/concierge/projects/:id/refresh-token',
-    async (
-      request,
-      reply,
-    ): Promise<{ projectId: string; refreshedAt: string } | { error: string }> => {
-      if (!deps.refreshProjectToken) {
-        reply.code(503);
-        return { error: 'project token refresh is not configured' };
-      }
-      const { id } = projectParams.parse(request.params);
+  registerProjectConciergeRoutes(app, {
+    canRefreshToken: () => deps.refreshProjectToken !== undefined,
+    refreshToken: async (_request, reply, id) => {
       const project = await deps.eventStore.getProject(id);
       if (project === undefined) {
         reply.code(404);
         return { error: `project ${id} not found` };
       }
-      await deps.refreshProjectToken(project);
+      await deps.refreshProjectToken!(project);
       return { projectId: project.id, refreshedAt: new Date().toISOString() };
     },
-  );
-
-  const recreateContainerBody = z
-    .object({
-      confirmWarnings: z.boolean().optional(),
-      // "Rebuild image": recreate AND rebuild the project's derived devcontainer
-      // image instead of reusing the content-hash-cached tag. Separate from
-      // `confirmWarnings` because it changes what is built, not what is
-      // acknowledged — the ordinary update path must keep its cache.
-      forceRebuild: z.boolean().optional(),
-    })
-    .optional();
-  app.post(
-    '/concierge/projects/:id/recreate-container',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { project: ProjectRecord }
-      | { error: string }
-      | { requiresConfirmation: true; warnings: string[] }
-    > => {
-      if (!deps.provisioner?.recreateContainer) {
-        reply.code(503);
-        return { error: 'project container recreate is not configured' };
-      }
-      const { id } = projectParams.parse(request.params);
+    canRecreateContainer: () => deps.provisioner?.recreateContainer !== undefined,
+    recreateContainer: async (request, reply, id) => {
+      const provisioner = deps.provisioner!;
+      const recreateContainer = provisioner.recreateContainer!.bind(provisioner);
       const project = await deps.eventStore.getProject(id);
       // Hidden = soft-deleted: recreate must not resurrect it (mirrors /repair).
       if (project === undefined || project.hiddenAt !== null) {
@@ -8105,10 +5993,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: `project ${id} has a turn in flight — cancel it or wait, then recreate` };
       }
-      const body = recreateContainerBody.parse(request.body);
+      const body = parseRecreateContainerBody(request.body);
       let updated: ProjectRecord;
       try {
-        updated = await deps.provisioner.recreateContainer(project.id, {
+        updated = await recreateContainer(project.id, {
           confirmWarnings: body?.confirmWarnings === true,
           forceRebuild: body?.forceRebuild === true,
         });
@@ -8126,27 +6014,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       return { project: updated };
     },
-  );
+  });
 
   /** The "connect later" bridge for a project created without GitHub. The target
    *  must be an EXISTING repository the App installation can reach — Verity does
    *  not create repositories. The provisioner merges an existing default branch
    *  before its plain (non-forced) push. */
-  const linkGitHubBody = z.object({ repo: z.string().min(1) });
   /** The linked project, plus how its history reached GitHub — an empty target takes
    *  it directly, a target with history gets a branch and the pull request that
    *  carries it in, which the operator still has to merge. */
   type LinkGitHubResponse = { project: ProjectRecord } & LinkCloneToGitHubResult;
-  app.post(
-    '/projects/:id/link-github',
-    async (request, reply): Promise<LinkGitHubResponse | { error: string }> => {
-      if (!deps.provisioner?.linkCloneToGitHub) {
-        reply.code(503);
-        return { error: 'linking a project to GitHub is not configured' };
-      }
-      const provisioner = deps.provisioner;
-      const { id } = projectParams.parse(request.params);
-      const body = linkGitHubBody.parse(request.body);
+  registerProjectGitHubLinkRoute(app, {
+    isAvailable: () => deps.provisioner?.linkCloneToGitHub !== undefined,
+    link: async (request, reply, id, repository) => {
+      const provisioner = deps.provisioner!;
       const project = await deps.eventStore.getProject(id);
       if (project === undefined || project.hiddenAt !== null) {
         reply.code(404);
@@ -8156,7 +6037,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(409);
         return { error: 'this project is already backed by a GitHub repository' };
       }
-      const target = parseOwnerRepo(body.repo);
+      const target = parseOwnerRepo(repository);
       if (target === undefined || target.owner === LOCAL_PROJECT_OWNER) {
         reply.code(400);
         return { error: 'invalid repository' };
@@ -8308,7 +6189,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
       }
     },
-  );
+  });
 
   app.post(
     '/concierge/session',
@@ -8407,45 +6288,44 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     };
   };
 
-  app.get('/models', async (): Promise<ModelList> => {
-    return availableModels();
+  registerSessionReadRoutes(app, {
+    listModels: availableModels,
+    getSession: async (id): Promise<SessionDetail | undefined> => {
+      const session = await deps.eventStore.getSession(id);
+      if (!session) return undefined;
+      // Opening a session hits this route first, and the transcript arrives over a
+      // separate paged read — so hydrating the whole log here bought nothing but
+      // latency in front of the first paint. The header's status, usage,
+      // rate-limit and count fields all come out of the projection slice.
+      const facts =
+        (await deps.eventStore.listSessionProjectionFacts([id])).get(id) ?? emptyProjectionFacts();
+      const sequencedEvents = facts.events;
+      const events = sequencedEvents.map((event) => event.event);
+      const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
+      const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
+      const status = liveStatusFromProjection(id, events, facts.eventCount);
+      const pendingPermissions = conductor.pendingPermissions(id);
+      return {
+        ...session,
+        status,
+        pendingPermissions,
+        ...(status === 'awaiting_input' && pendingPermissions.length > 0
+          ? { permissionAwaitingInput: true as const }
+          : {}),
+        usage: aggregateUsage(events),
+        ...(rateLimit ? { rateLimit } : {}),
+        ...(rateLimits.length > 0 ? { rateLimits } : {}),
+        resumable: await worktreeExists(session.worktree),
+        eventCount: facts.eventCount,
+        lastActivityAt: facts.lastActivityAt,
+        busy: conductor.isBusy(id) || hasMeetingJob(id),
+        queued: conductor.queuedItems(id),
+      };
+    },
   });
 
-  app.get('/sessions/:id', async (request, reply): Promise<SessionDetail | { error: string }> => {
-    const { id } = sessionParams.parse(request.params);
-    const session = await deps.eventStore.getSession(id);
-    if (!session) {
-      reply.code(404);
-      return { error: `session ${id} not found` };
-    }
-    const sequencedEvents = await deps.eventStore.getEventsAfter(id, 0);
-    const events = sequencedEvents.map((event) => event.event);
-    const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
-    const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
-    const status = liveStatus(id, events);
-    const pendingPermissions = conductor.pendingPermissions(id);
-    return {
-      ...session,
-      status,
-      pendingPermissions,
-      ...(status === 'awaiting_input' && pendingPermissions.length > 0
-        ? { permissionAwaitingInput: true as const }
-        : {}),
-      usage: aggregateUsage(events),
-      ...(rateLimit ? { rateLimit } : {}),
-      ...(rateLimits.length > 0 ? { rateLimits } : {}),
-      resumable: await worktreeExists(session.worktree),
-      eventCount: events.length,
-      busy: conductor.isBusy(id) || hasMeetingJob(id),
-      queued: conductor.queuedItems(id),
-    };
-  });
-
-  app.post(
-    '/sessions/:id/meetings/transcripts',
-    async (request, reply): Promise<MeetingTranscriptCreated | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const body = meetingTranscriptBody.parse(request.body);
+  registerMeetingTranscriptRoutes(app, {
+    save: async (request, reply, id, body) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -8559,8 +6439,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return { error: 'meeting transcription is not configured' };
         }
         request.log.error({ err: error }, 'verity: meeting transcription failed');
-        // Surface the transcriber's own message (e.g. "Could not reach the Parakeet
-        // server … (ECONNREFUSED)") so the operator can act, instead of a generic
+        // Surface the transcriber's own message (e.g. "Could not reach the transcription
+        // API … (ECONNREFUSED)") so the user can act, instead of a generic
         // line that hides which environmental step failed. The default placeholder
         // message carries no signal, so fall back to the generic notice for it.
         const detail =
@@ -8575,8 +6455,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           sessionId: id,
           fileName: body.fileName,
           reason: detail
-            ? `The local transcriber failed:\n\n${detail}`
-            : 'The local transcriber failed before producing a transcript.',
+            ? `The transcription client failed:\n\n${detail}`
+            : 'The transcription client failed before producing a transcript.',
         });
         reply.code(502);
         return { error: 'meeting transcription failed' };
@@ -8656,39 +6536,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         releaseMeetingJob(id, controller);
       }
     },
-  );
-
-  // Large recordings are streamed to disk and acknowledged as soon as upload
-  // finishes. Transcription then continues independently of the mobile request.
-  app.post(
-    '/sessions/:id/meetings/transcripts/stream',
-    async (request, reply): Promise<{ accepted: true } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const metadata = streamedMeetingTranscriptHeaders.parse(request.headers);
-      let query: z.infer<typeof streamedMeetingTranscriptQuery>;
-      try {
-        query = streamedMeetingTranscriptQuery.parse({
-          fileName: decodeURIComponent(metadata['x-verity-meeting-file-name']),
-          mediaType: decodeURIComponent(metadata['x-verity-meeting-media-type']),
-          ...(metadata['x-verity-meeting-title']
-            ? { title: decodeURIComponent(metadata['x-verity-meeting-title']) }
-            : {}),
-          ...(metadata['x-verity-meeting-announce']
-            ? { announceRequest: metadata['x-verity-meeting-announce'] }
-            : {}),
-          ...(metadata['x-verity-meeting-client-request-id']
-            ? {
-                clientRequestId: decodeURIComponent(metadata['x-verity-meeting-client-request-id']),
-              }
-            : {}),
-        });
-      } catch (error) {
-        if (error instanceof URIError) {
-          reply.code(400);
-          return { error: 'invalid meeting metadata encoding' };
-        }
-        throw error;
-      }
+    stream: async (request, reply, id, query) => {
       const configuredMaxBytes = Number(
         process.env.VERITY_MEETING_MAX_UPLOAD_BYTES ?? DEFAULT_MEETING_AUDIO_STREAM_BYTES,
       );
@@ -8914,27 +6762,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(202);
       return { accepted: true };
     },
-  );
+  });
 
-  app.get(
-    '/sessions/:id/files',
-    async (
-      request,
-      reply,
-    ): Promise<
-      { path: string; entries: SessionFileEntry[]; truncated: boolean } | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
-      const { path } = sessionFileQuery.parse(request.query);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
+  registerSessionFileRoutes(app, {
+    getWorktree: async (id) => (await deps.eventStore.getSession(id))?.worktree,
+    list: async (reply, worktree, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(session.worktree, path);
+        target = sessionFilePath(worktree, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -8946,7 +6781,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
         );
         await assertSessionRealPath(
-          session.worktree,
+          worktree,
           await realpath(`/proc/self/fd/${String(directoryHandle.fd)}`),
         );
       } catch (error) {
@@ -8986,13 +6821,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await directoryHandle.close();
       }
     },
-  );
-
-  app.post(
-    '/sessions/:id/files',
-    async (request, reply): Promise<{ path: string; size: number } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const query = sessionFileUploadQuery.parse(request.query);
+    upload: async (request, reply, id, query) => {
       const declaredSize = Number(request.headers['content-length']);
       if (!Number.isSafeInteger(declaredSize) || declaredSize < 0) {
         reply.code(411);
@@ -9007,16 +6836,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-
+      const { worktree } = session;
       let directory: { abs: string; rel: string };
       let target: { abs: string; rel: string };
       try {
-        directory = sessionFilePath(session.worktree, query.path);
+        directory = sessionFilePath(worktree, query.path);
         target = sessionFilePath(
-          session.worktree,
+          worktree,
           [directory.rel, query.fileName].filter(Boolean).join('/'),
         );
-        await assertSessionRealPath(session.worktree, directory.abs);
+        await assertSessionRealPath(worktree, directory.abs);
         const directoryStats = await lstat(directory.abs);
         if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
           reply.code(400);
@@ -9040,7 +6869,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const destinationPath = `${descriptorPath}/${query.fileName}`;
       try {
         const openedDirectoryReal = await realpath(descriptorPath);
-        await assertSessionRealPath(session.worktree, openedDirectoryReal);
+        await assertSessionRealPath(worktree, openedDirectoryReal);
         const filesystem = await statfs(descriptorPath);
         const availableBytes = Number(filesystem.bavail) * Number(filesystem.bsize);
         const reserveBytes = Math.min(256_000_000, Math.floor(availableBytes * 0.1));
@@ -9092,25 +6921,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await directoryHandle.close();
       }
     },
-  );
-
-  app.get(
-    '/sessions/:id/files/content',
-    async (
-      request,
-      reply,
-    ): Promise<{ path: string; content: string; size: number } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { path } = sessionFileQuery.parse(request.query);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
+    content: async (reply, worktree, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(session.worktree, path);
+        target = sessionFilePath(worktree, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -9119,7 +6933,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
-          session.worktree,
+          worktree,
           await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
         );
       } catch (error) {
@@ -9151,22 +6965,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await fileHandle.close();
       }
     },
-  );
-
-  app.get(
-    '/sessions/:id/files/download',
-    async (request, reply): Promise<Buffer | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { path } = sessionFileQuery.parse(request.query);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
+    download: async (reply, worktree, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(session.worktree, path);
+        target = sessionFilePath(worktree, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -9175,7 +6977,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
-          session.worktree,
+          worktree,
           await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
         );
       } catch (error) {
@@ -9210,7 +7012,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await fileHandle.close();
       }
     },
-  );
+  });
+
+  // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
+  // event references images by this id; the client fetches them lazily (only the
+  // visible ones), so opening a session never transfers the whole image backlog.
+  // Content-addressed → the bytes for a given id never change, so it's cached
+  // forever (immutable). 404 for an unknown hash.
+  registerAttachmentRoute(app, { getAttachment: (hash) => deps.eventStore.getAttachment(hash) });
 
   // Lightweight live activity for a session, polled by the app for the "working"
   // indicator + persistent "waiting" messages. `busy` = the conductor is in-flight
@@ -9223,24 +7032,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // worktree's live branch (#110) so the header label auto-updates on an
   // external/agent `git checkout`; both reads are best-effort — on any failure the
   // poll falls back to raw `isBusy` and omits name/branch, never a 500.
-  app.get(
-    '/sessions/:id/activity',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | {
-          busy: boolean;
-          queued: { id: string; text: string }[];
-          pendingPermissions: string[];
-          modelSwitchPending: boolean;
-          terminationUnconfirmed: boolean;
-          branch?: string;
-          name?: string | null;
-        }
-      | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
+  registerSessionHistoryRoutes(app, {
+    activity: async (reply, id) => {
       const base = {
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),
@@ -9265,14 +7058,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // the display name so the header reflects an auto-generated (or externally
         // renamed) title within a poll, without a remount. `branch` is still gated on
         // the branch-switching dep (a git read).
-        const events = base.busy ? [] : await deps.eventStore.getEvents(id);
+        // The read is narrowed to the projection slice: `task` and every kind the
+        // status derivation reads are in it, and nothing else here looks at the
+        // log — so an idle session with a long transcript stops re-hydrating it
+        // once per poll. The SLICE ONLY, deliberately: this response carries
+        // neither `eventCount` nor `lastActivityAt`, and counting a whole log is
+        // the one part of the projection read that is still linear in its length.
+        const events = base.busy
+          ? []
+          : ((await deps.eventStore.listSessionProjectionEvents([id])).get(id) ?? []).map(
+              (event) => event.event,
+            );
         // Log hydration exists specifically for a background task that outlived
         // conductor tracking. Neutral notices (including meeting progress) are
         // not turns and must not make an otherwise-finished session busy forever.
         const hasTaskLifecycle = events.some((event) => event.t === 'task');
-        const busy = base.busy || (hasTaskLifecycle && deriveSessionStatus(events) === 'running');
+        // `events.length` stands in for the total count, and only ever behind
+        // `hasTaskLifecycle`: the count exists solely to tell an empty log (idle)
+        // from one holding nothing the projection reads (running), and a slice
+        // containing a `task` event is not empty either way.
+        const busy =
+          base.busy ||
+          (hasTaskLifecycle &&
+            deriveSessionStatusFromProjection(events, events.length) === 'running');
         const branches = await branchesForSession(session);
-        const branch = branches ? await branches.current(session.worktree) : undefined;
+        const branch = branches ? await currentBranchCached(branches, session.worktree) : undefined;
         return {
           ...base,
           busy,
@@ -9283,19 +7093,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive
       }
     },
-  );
-
-  app.post(
-    '/sessions/:id/debug/scroll',
-    { bodyLimit: 4_096 },
-    async (request, reply): Promise<{ ok: true } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
+    recordScrollDiagnostic: async (reply, id, body) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-      const diagnostic = scrollDiagnosticBody.parse(request.body);
+      const diagnostic = parseScrollDiagnostic(body);
       app.log.info(
         {
           sessionId: id,
@@ -9311,45 +7115,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       );
       return { ok: true };
     },
-  );
-
-  // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
-  // event references images by this id; the client fetches them lazily (only the
-  // visible ones), so opening a session never transfers the whole image backlog.
-  // Content-addressed → the bytes for a given id never change, so it's cached
-  // forever (immutable). 404 for an unknown hash.
-  const attachmentParams = z.object({
-    hash: z.string().regex(/^[a-f0-9]{64}$/, 'invalid attachment id'),
-  });
-  app.get('/attachments/:hash', async (request, reply): Promise<Buffer | { error: string }> => {
-    const { hash } = attachmentParams.parse(request.params);
-    const blob = await deps.eventStore.getAttachment(hash);
-    if (!blob) {
-      reply.code(404);
-      return { error: 'attachment not found' };
-    }
-    reply
-      .header('Content-Type', blob.mediaType)
-      .header('Cache-Control', 'private, max-age=31536000, immutable');
-    return blob.bytes;
-  });
-
-  // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
-  // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
-  // a long session with only its tail and fetch older turns on scroll-up, instead
-  // of replaying the whole event log. Live updates still arrive over the WS stream.
-  const historyQuery = z.object({
-    beforeSeq: z.coerce.number().int().positive().optional(),
-    limit: z.coerce.number().int().positive().max(200).optional(),
-  });
-  app.get(
-    '/sessions/:id/events',
-    async (
-      request,
-      reply,
-    ): Promise<{ events: SequencedEvent[]; hasMore: boolean } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { beforeSeq, limit } = historyQuery.parse(request.query);
+    // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
+    // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
+    // a long session with only its tail and fetch older turns on scroll-up, instead
+    // of replaying the whole event log. Live updates still arrive over the WS stream.
+    history: async (reply, id, limit, beforeSeq) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -9357,7 +7127,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       return deps.eventStore.getEventsBeforeSeq(id, limit ?? DEFAULT_HISTORY_PAGE, beforeSeq);
     },
-  );
+  });
 
   // Edit a session's registry metadata: rename it (set/clear its display name)
   // and/or switch the engine/model it uses. Pure metadata — never touches the
@@ -9382,145 +7152,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // A PATCH naming the model the session already runs is a no-op and skips the
   // handoff entirely: since the handoff cancels the live turn, treating it as a real
   // switch would let a redundant write kill running work.
-  app.patch(
-    '/sessions/:id',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { sessionId: string; name?: string | null; model?: string; deferred?: boolean }
-      | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
-      const { name, model } = patchSessionBody.parse(request.body);
-
-      // Read once for both the project-model check and the no-op check below.
-      const current = model !== undefined ? await deps.eventStore.getSession(id) : undefined;
-
-      // An unknown session has no backend to hand off, and the barrier is not free:
-      // it fences submissions and cancels the in-flight turn of whatever id it is
-      // handed. Answer the 404 the handoff callback would reach anyway, before
-      // spending a cancel on a typo.
-      if (model !== undefined && !current) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-
-      if (model !== undefined && !isProjectSessionModel(model)) {
-        if (current !== undefined && current.projectId !== null) {
-          reply.code(400);
-          return { error: PROJECT_MODEL_ERROR };
-        }
-      }
-
-      // A PATCH carrying the model the session ALREADY has is not a handoff, so it
-      // must not take the barrier: the barrier cancels the in-flight turn, and a
-      // client that re-sends the current model on an unrelated settings save would
-      // then destroy running work. It was harmless before this change (the switch was
-      // deferred and the live turn untouched), so keep it harmless.
-      //
-      // This also stops dropping the session's resume handles, which the old
-      // unconditional write did on every model PATCH including a same-model one. That
-      // is the point: "no change requested" should not silently reset the thread's
-      // context. The barrier callback repeats the check under the fence, because this
-      // read is outside it.
-      const modelUnchanged = model !== undefined && current?.model === model;
-
-      // Ordered BEFORE the handoff: a rename is independent registry metadata, and
-      // doing it first means the 503 path below cannot silently swallow it.
-      if (name !== undefined) {
-        const renamed = await deps.eventStore.renameSession(id, name);
-        if (!renamed) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-      }
-
-      if (model !== undefined && !modelUnchanged) {
-        let switched: boolean;
-        try {
-          switched = await conductor.runBackendHandoff(id, async () => {
-            // Re-read UNDER the fence. The check above ran outside it, and concurrent
-            // patches serialize on the barrier — so by the time this callback runs, an
-            // earlier one may already have applied this very model. Rewriting then
-            // would drop resume handles for a switch that already happened.
-            const live = await deps.eventStore.getSession(id);
-            if (live === undefined) return false;
-            if (live.model === model) return true;
-            const previousBackendStates = await deps.eventStore.getSessionBackendStates(id);
-            const updated = await deps.eventStore.setSessionModel(id, model);
-            if (!updated) return false;
-            try {
-              await deps.eventStore.deleteSessionBackendStates(id);
-            } catch (error) {
-              // Keep model + resume handles all-or-nothing. The delete is one store
-              // statement, so a failure leaves the handles intact; compensate the
-              // preceding model write so a retry cannot mistake this torn switch for
-              // an already-completed one and skip cleanup.
-              try {
-                await deps.eventStore.setSessionModel(id, live.model);
-              } catch (rollbackError) {
-                throw new AggregateError(
-                  [error, rollbackError],
-                  'failed to clear backend state and roll back the session model',
-                  { cause: rollbackError },
-                );
-              }
-              throw error;
-            }
-            conductor.closeSession?.(id);
-            for (const state of previousBackendStates) {
-              conductor.closeSession?.(state.backendSessionId);
-            }
-            return true;
-          });
-        } catch (error) {
-          if (error instanceof BackendTerminationUnconfirmedError) {
-            // The old backend may still be alive, so the switch was NOT applied:
-            // the session keeps its previous model and backend state. Retriable —
-            // and say so in the header too, since both bodies below tell the caller
-            // to retry. A few seconds is the honest hint: the background reaper is
-            // re-issuing the kill on roughly that cadence.
-            reply.code(503);
-            reply.header('retry-after', '5');
-            return {
-              error:
-                `session ${id} still has an unterminated backend — retry the model switch` +
-                (name !== undefined ? ' (the rename in this request was applied)' : ''),
-            };
-          }
-          if (error instanceof SessionBusyError) {
-            // The barrier could not take the session at all — a maintenance action
-            // (bind, purge, local merge) holds it, or it was claimed as the fence
-            // dropped. Nothing ran, nothing changed; it is contention, so 409 like
-            // every other route that loses this race, not a 500.
-            reply.code(409);
-            reply.header('retry-after', '5');
-            return {
-              error:
-                `session ${id} is busy with another operation — retry the model switch` +
-                (name !== undefined ? ' (the rename in this request was applied)' : ''),
-            };
-          }
-          throw error;
-        }
-        if (!switched) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-      }
-
-      return {
-        sessionId: id,
-        ...(name !== undefined ? { name } : {}),
-        // `deferred` is kept on the wire for client compatibility but is now always
-        // false: the handoff completed before this response, so there is no
-        // "applies at the next turn boundary" state left to announce.
-        ...(model !== undefined ? { model, deferred: false } : {}),
-      };
-    },
-  );
-
+  registerSessionMetadataRoute(app, {
+    store: deps.eventStore,
+    runBackendHandoff: (id, handoff) => conductor.runBackendHandoff(id, handoff),
+    closeSession: (id) => conductor.closeSession?.(id),
+    isModelAllowed: isProjectSessionModel,
+    projectModelError: PROJECT_MODEL_ERROR,
+  });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the
   // session; the store advances the mark monotonically (a stale post can't move it
@@ -9529,25 +7167,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // Returns a lightweight ack (the resolved mark) rather than the full summary: the
   // caller discards the body, and building a summary would reload the whole event log
   // just to compute a status/usage nobody here reads. 404 for an unknown session id.
-  const sessionSeenBody = z.object({ eventCount: z.number().int().nonnegative() });
-  app.patch(
-    '/sessions/:id/seen',
-    async (
-      request,
-      reply,
-    ): Promise<{ sessionId: string; lastSeenEventCount: number | null } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { eventCount } = sessionSeenBody.parse(request.body);
-      const marked = await deps.eventStore.setSessionSeen(id, eventCount);
-      if (!marked) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      // Cheap single-row read (no event-log load) to echo the monotonic result.
-      const session = await deps.eventStore.getSession(id);
-      return { sessionId: id, lastSeenEventCount: session?.lastSeenEventCount ?? eventCount };
-    },
-  );
+  registerSessionSeenRoute(app, { store: deps.eventStore });
 
   // Permanently delete a session: drop its durable log (events + transcript
   // lines + the session row, transactionally) and remove its isolated worktree
@@ -9562,21 +7182,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // an unknown id. Worktree removal is best-effort: a session whose worktree was
   // already cleaned up (resumable=false) still deletes cleanly, and the repo-root
   // checkout (`workspaceDir`, e.g. `/work`) is NEVER removed (safety guard #105).
-  const deleteSessionQuery = z.object({
-    force: z
-      .enum(['true', 'false'])
-      .optional()
-      .transform((value) => value === 'true'),
-  });
-  app.delete(
-    '/sessions/:id',
-    async (request, reply): Promise<{ sessionId: string } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { force } = deleteSessionQuery.parse(request.query);
+  registerSessionDeleteRoute(app, {
+    remove: async (request, reply, id, force) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
         return { error: `session ${id} not found` };
+      }
+      // Meeting jobs can enter a non-cancellable delivery phase. Never tear
+      // their session or worktree down through force-delete; the dedicated
+      // cancel route is the only operation that knows whether the job can still
+      // be stopped safely.
+      if (hasMeetingJob(id)) {
+        reply.code(409);
+        return { error: `session ${id} has an active meeting job — stop it before deleting` };
       }
       const deleteClaimed = async (): Promise<{ sessionId: string } | { error: string }> => {
         // The ownership barrier has either settled the live turn (forced delete) or
@@ -9678,7 +7297,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       return claimed.value;
     },
-  );
+  });
 
   // Create a NEW session (concept §7 "Parallel-Agent-Spawn", §8): provision a
   // worktree and persist the Verity session row immediately so the client can
@@ -10133,6 +7752,61 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // So `queued: false` means "running now" (a fresh idle turn OR a steered one);
   // `queued: true` means "waiting behind the current turn". An unknown session →
   // 404; a full queue → 429.
+  app.post(
+    '/sessions/:id/recover-worktree',
+    async (
+      request,
+      reply,
+    ): Promise<
+      | {
+          sessionId: string;
+          repaired: Array<'project-root' | 'sessions-root' | 'worktree'>;
+        }
+      | { error: string }
+    > => {
+      const { id } = sessionParams.parse(request.params);
+      const session = await deps.eventStore.getSession(id);
+      if (session === undefined) {
+        reply.code(404);
+        return { error: `session ${id} not found` };
+      }
+      if (session.projectId === null) {
+        reply.code(409);
+        return { error: 'worktree recovery is available only for project sessions' };
+      }
+      if (deps.projectCloneRoot === undefined) {
+        reply.code(409);
+        return { error: 'worktree recovery is not configured for project sessions' };
+      }
+      if (conductor.isBusy(id) || hasMeetingJob(id)) {
+        reply.code(409);
+        return { error: `session ${id} is busy — retry worktree recovery when its turn ends` };
+      }
+      try {
+        const result = await repairSessionWorktreePermissions(
+          session.worktree,
+          process.getuid?.(),
+          deps.projectCloneRoot,
+        );
+        request.log.info(
+          { sessionId: id, projectId: session.projectId, repaired: result.repaired },
+          'verity: session worktree permission recovery completed',
+        );
+        return { sessionId: id, repaired: result.repaired };
+      } catch (error) {
+        request.log.warn(
+          { err: error, sessionId: id, projectId: session.projectId },
+          'verity: session worktree permission recovery refused',
+        );
+        reply.code(409);
+        return {
+          error:
+            'session worktree permissions could not be repaired safely — ownership or path shape requires project reprovisioning',
+        };
+      }
+    },
+  );
+
   app.post(
     '/sessions/:id/turns',
     async (
@@ -10813,7 +8487,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // moment the reset releases it — never before the worktree is settled.
           await conductor
             .dispatchTurn(id, buildLocalMergedPrompt(branch, base, note), undefined, {
-              displayPrompt: buildLocalMergeDisplayPrompt(branch, base),
+              displayPrompt: buildLocalMergeDisplayPrompt(),
             })
             .catch(() => undefined);
         })
@@ -10858,6 +8532,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(409);
           return { error: `session ${id} is busy — finish the turn before switching branches` };
         }
+        // The operator's own switch is the one branch change we can see, so drop
+        // the cached label rather than making them wait out its TTL.
+        invalidateBranchCache(session.worktree);
         return { branch: attempt.value };
       } catch (error) {
         if (error instanceof DirtyWorktreeError) {

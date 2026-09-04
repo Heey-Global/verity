@@ -2670,6 +2670,38 @@ const migrations: Record<string, Migration> = {
       }
     },
   },
+
+  '0086_events_session_id_type_id_idx': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The session overview projects status, usage and rate limits from a small
+      // subset of event kinds (`SESSION_PROJECTION_EVENT_TYPES`). Without `type`
+      // in an index that read has to visit every event row of every listed
+      // session just to discard the `text`/`tool_result` bulk — which is most of
+      // a real log, and the part carrying the large payloads. Leading with
+      // `session_id` keeps the per-session scan, and trailing `id` keeps each
+      // `(session_id, type)` group in sequence order — a `type in (…)` over eight
+      // values still needs the groups merged to answer `order by session_id, id`,
+      // but the read is index entries for the matching kinds rather than a heap
+      // fetch and a jsonb parse for every event the session ever emitted.
+      //
+      // The two costs, named rather than left to be discovered: this is a second
+      // index on the hottest append path, so every event insert now maintains it;
+      // and the build takes a SHARE lock on `events` for its duration, which on a
+      // large log blocks appends from any Server still serving through the
+      // restart. `CONCURRENTLY` cannot lift that here — Kysely runs each
+      // migration inside a transaction, under the advisory lock in
+      // {@link migrateToLatest}, and Postgres refuses a concurrent build there.
+      // Same contract as every other index migration in this file.
+      await db.schema
+        .createIndex('events_session_id_type_id_idx')
+        .on('events')
+        .columns(['session_id', 'type', 'id'])
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropIndex('events_session_id_type_id_idx').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

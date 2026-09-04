@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { type AgentEvent, type Attachment, type AttachmentUpload } from '@verity/events';
+import {
+  appendExternalPromptData,
+  type AgentEvent,
+  type Attachment,
+  type AttachmentUpload,
+} from '@verity/events';
 import { isLocalProject } from '@verity/store';
 import type {
   EventStore,
@@ -191,10 +196,7 @@ function isExternalInterruptionExitCode(exitCode: number): boolean {
 }
 
 export {
-  EXTERNAL_PERMISSION_ABORT_MESSAGE,
   formatBrokeredSecretAliases,
-  turnSystemPrompt,
-  withBackendSystemPrompt,
   type ExternalPermissionAnswer,
   type PermissionDecisionSource,
 } from './turn-system-prompt.js';
@@ -1392,13 +1394,15 @@ export class Conductor {
   ): Promise<RunResult> {
     const backendKey = this.backendKey(opts.model ?? session.model);
     // Fold any server-authored pending notes (e.g. the post-merge worktree reset)
-    // into THIS turn's model prompt and consume them. They ride the model input
+    // into THIS turn's model prompt as provenance-labelled data and consume them. They ride the model input
     // only — the visible `prompt` event was already emitted by the caller with the
     // operator's own text, so the chat transcript stays clean while the agent still
     // learns what the server did out-of-band.
     const pendingNotes = await this.deps.store.consumePendingNotes(sessionId);
     if (pendingNotes.length > 0) {
-      prompt = [...pendingNotes, prompt].join('\n\n');
+      prompt = appendExternalPromptData(prompt, 'Verity pending session notices', {
+        notices: pendingNotes,
+      });
     }
     prompt = await withMeetingContext(session.worktree, prompt);
     const backendState = await this.deps.store.getSessionBackendState(sessionId, backendKey);

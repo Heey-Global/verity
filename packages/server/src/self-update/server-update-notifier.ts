@@ -42,7 +42,7 @@ export const SERVER_UPDATE_PUSH_CATEGORY = 'SERVER_UPDATE_AVAILABLE';
  * Slow enough to be invisible, fast enough that an operator who publishes a
  * release hears about it within the quarter hour.
  */
-export const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 15 * 60_000;
+const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 15 * 60_000;
 
 /**
  * What delivery reports back. `PushSendResult` satisfies this structurally, so
@@ -55,7 +55,7 @@ export const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 15 * 60_000;
  * and never mention that release again, which is precisely the silence this
  * whole file exists to remove.
  */
-export interface PushDelivery {
+interface PushDelivery {
   /** Notifications Expo accepted for delivery. Zero means nobody was told. */
   readonly ticketsAccepted: number;
 }
@@ -90,7 +90,7 @@ export interface ServerUpdateNotifierOptions {
   readonly log?: (message: string, error?: unknown) => void;
 }
 
-export type ServerUpdateNotice =
+type ServerUpdateNotice =
   'announced' | 'already-announced' | 'nothing-to-announce' | 'undelivered' | 'update-in-progress';
 
 export interface ServerUpdateNotifier {

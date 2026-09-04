@@ -25,7 +25,7 @@ const SCOPES = ['https://www.googleapis.com/auth/drive.readonly'];
  * URL scheme. Google requires exactly this shape for iOS clients — e.g. client
  * `123-abc.apps.googleusercontent.com` → `com.googleusercontent.apps.123-abc:/oauthredirect`.
  */
-export function googleDriveRedirectUri(clientId: string): string {
+function googleDriveRedirectUri(clientId: string): string {
   const suffix = clientId.replace(/\.apps\.googleusercontent\.com$/, '');
   return `com.googleusercontent.apps.${suffix}:/oauthredirect`;
 }

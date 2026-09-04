@@ -11,8 +11,8 @@ import type { ReleaseArchitecture } from './release-channel.js';
  * images.
  */
 export const RELEASE_CHANNEL_ARTIFACT_TYPE = 'application/vnd.verity.release-channel.v1+json';
-export const RELEASE_CHANNEL_REGISTRY = 'ghcr.io';
-export const RELEASE_CHANNEL_REPOSITORY = 'heey-global/verity/verity-server';
+const RELEASE_CHANNEL_REGISTRY = 'ghcr.io';
+const RELEASE_CHANNEL_REPOSITORY = 'heey-global/verity/verity-server';
 
 export const releaseChannelTag = (architecture: ReleaseArchitecture): string =>
   `channel-stable-${architecture}`;

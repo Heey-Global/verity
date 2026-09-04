@@ -4,6 +4,9 @@ import {
   listSessionsRequestSchema,
   LIST_SESSIONS_MAX_ENTRIES,
   sessionHandoffRequestSchema,
+  sessionProgressRequestSchema,
+  recentSessionMessagesRequestSchema,
+  RECENT_SESSION_MESSAGES_DEFAULT,
 } from '@verity/events';
 import type { ProjectRecord } from '@verity/store';
 
@@ -122,7 +125,7 @@ export class ControlPlaneSessionAuthorityError extends ControlPlaneSessionToolEr
 }
 
 /** One gateway call, in the identity the gateway already proved for it. */
-export interface ControlPlaneSessionCall {
+interface ControlPlaneSessionCall {
   projectId: string;
   sessionId: string;
   turnId: string;
@@ -156,6 +159,7 @@ export interface ControlPlaneSessionFacts {
   status: SessionStatus;
   resumable: boolean;
   eventCount: number;
+  lastActivityAt: number | null;
 }
 
 /**
@@ -169,7 +173,7 @@ export interface ControlPlaneSessionFacts {
  */
 export interface ControlPlaneSessionEntry extends Pick<
   ControlPlaneSessionFacts,
-  'sessionId' | 'model' | 'status' | 'resumable' | 'eventCount'
+  'sessionId' | 'model' | 'status' | 'resumable' | 'eventCount' | 'lastActivityAt'
 > {
   /** The project this session belongs to. Narrower than the facts' nullable `projectId`:
    *  a session without one is never addressable and never reaches this type. */
@@ -235,6 +239,28 @@ export interface ControlPlaneSessionToolDeps {
     displayPrompt: string;
     idempotencyKey: string;
   }): Promise<{ queued: boolean }>;
+  /** Create one session in the already-resolved active project. The returned id is the exact
+   * target that receives the first turn; no second resolution by name is permitted. */
+  createSession?(input: {
+    projectId: string;
+    name: string;
+    idempotencyKey: string;
+  }): Promise<{ sessionId: string }>;
+  readProgress?(sessionId: string): Promise<Record<string, unknown>>;
+  readRecentMessages?(input: {
+    sessionId: string;
+    count: number;
+    sinceMinutes?: number;
+    beforeSeq?: number;
+  }): Promise<{
+    messages: readonly {
+      role: 'user' | 'assistant' | 'system-error';
+      text: string;
+      timestamp: number;
+    }[];
+    hasMore: boolean;
+    nextBeforeSeq?: number;
+  }>;
 }
 
 export interface ControlPlaneSessionTools {
@@ -263,6 +289,8 @@ export interface ControlPlaneSessionTools {
   handoff(
     input: ControlPlaneSessionCall,
   ): Promise<{ sessionId: string; project: string; queued: boolean; briefingSha256: string }>;
+  progress(input: ControlPlaneSessionCall): Promise<Record<string, unknown>>;
+  recentMessages(input: ControlPlaneSessionCall): Promise<Record<string, unknown>>;
   /**
    * Prove the caller may use these tools at all, without running one.
    *
@@ -321,6 +349,26 @@ export function createControlPlaneSessionTools(
         'originating session is not a Verity Control session',
       );
     }
+  };
+
+  const requireObservableTarget = async (
+    sessionId: string,
+  ): Promise<{ facts: ControlPlaneSessionFacts; project: ProjectRecord }> => {
+    const projects = await deps.listProjects();
+    const addressable = await addressableSessions(
+      projects,
+      (candidate) => candidate.sessionId === sessionId,
+    );
+    const found = addressable.sessions.find((entry) => entry.facts.sessionId === sessionId);
+    if (found === undefined) {
+      throw new ControlPlaneSessionToolError(
+        `target session ${sessionId} does not exist or is not a Verity project session`,
+      );
+    }
+    if (isControlPlaneTarget(found.project, deps.controlProjectId)) {
+      throw new ControlPlaneSessionToolError('a Control session cannot be inspected');
+    }
+    return found;
   };
 
   /**
@@ -455,6 +503,7 @@ export function createControlPlaneSessionTools(
       status: facts.status,
       resumable: facts.resumable,
       eventCount: facts.eventCount,
+      lastActivityAt: facts.lastActivityAt,
       handoffEligible: blocker === undefined,
       ...(blocker === undefined ? {} : { handoffBlockedBy: blocker }),
     };
@@ -543,6 +592,34 @@ export function createControlPlaneSessionTools(
         const blocker = handoffBlocker(found.facts, found.project);
         if (blocker !== undefined) throw new ControlPlaneSessionToolError(blocker);
         target = found;
+      } else if ('newSession' in request.target) {
+        const project = resolveProject(projects, request.target.newSession.project);
+        if (isControlPlaneTarget(project, deps.controlProjectId))
+          throw new ControlPlaneSessionToolError(
+            'a handoff cannot target a Verity Control session',
+          );
+        const blockedProject = projectHandoffBlocker(project);
+        if (blockedProject !== undefined) throw new ControlPlaneSessionToolError(blockedProject);
+        if (deps.createSession === undefined) {
+          throw new ControlPlaneSessionToolError('new-session handoff is not configured');
+        }
+        const created = await deps.createSession({
+          projectId: project.id,
+          name: request.title,
+          idempotencyKey: `handoff-session:${input.turnId}:${input.invocationId}`,
+        });
+        target = {
+          project,
+          facts: {
+            sessionId: created.sessionId,
+            projectId: project.id,
+            model: '',
+            status: 'idle',
+            resumable: true,
+            eventCount: 0,
+            lastActivityAt: null,
+          },
+        };
       } else {
         // Targeting by project resolves to that project's single handoff-eligible session,
         // and refuses rather than guesses when there is more or less than one. The card the
@@ -635,6 +712,47 @@ export function createControlPlaneSessionTools(
         // trims by the same rule. The question this answers is "which text is now in that
         // session", not "which bytes did the caller send".
         briefingSha256: createHash('sha256').update(request.briefing).digest('hex'),
+      };
+    },
+    async progress(input) {
+      await requireControlPlaneCaller(input);
+      const request = sessionProgressRequestSchema.parse(input.request);
+      const target = await requireObservableTarget(request.sessionId);
+      if (deps.readProgress === undefined) {
+        throw new ControlPlaneSessionToolError('session progress is not configured');
+      }
+      return {
+        sessionId: target.facts.sessionId,
+        projectId: target.project.id,
+        project: `${target.project.owner}/${target.project.repo}`,
+        ...(await deps.readProgress(target.facts.sessionId)),
+      };
+    },
+    async recentMessages(input) {
+      await requireControlPlaneCaller(input);
+      const request = recentSessionMessagesRequestSchema.parse(input.request);
+      const target = await requireObservableTarget(request.sessionId);
+      if (deps.readRecentMessages === undefined) {
+        throw new ControlPlaneSessionToolError('recent session messages are not configured');
+      }
+      const count = request.count ?? RECENT_SESSION_MESSAGES_DEFAULT;
+      const result = await deps.readRecentMessages({
+        sessionId: target.facts.sessionId,
+        count,
+        ...(request.sinceMinutes === undefined ? {} : { sinceMinutes: request.sinceMinutes }),
+        ...(request.beforeSeq === undefined ? {} : { beforeSeq: request.beforeSeq }),
+      });
+      return {
+        sessionId: target.facts.sessionId,
+        projectId: target.project.id,
+        project: `${target.project.owner}/${target.project.repo}`,
+        purpose: request.purpose,
+        count,
+        ...(request.sinceMinutes === undefined ? {} : { sinceMinutes: request.sinceMinutes }),
+        ...(request.beforeSeq === undefined ? {} : { beforeSeq: request.beforeSeq }),
+        messages: result.messages,
+        hasMore: result.hasMore,
+        ...(result.nextBeforeSeq === undefined ? {} : { nextBeforeSeq: result.nextBeforeSeq }),
       };
     },
   };

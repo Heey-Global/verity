@@ -133,7 +133,7 @@ type ClaudeCredentialsJsonUpdater = (credentialsJson: string) => Promise<void> |
  * get a silent no-op, preserving the "never throws, never noisy" contract while
  * making an empty Claude meter diagnosable when a logger IS wired.
  */
-export interface ClaudeUsageLogger {
+interface ClaudeUsageLogger {
   debug(data: Record<string, unknown>, msg: string): void;
   warn(data: Record<string, unknown>, msg: string): void;
 }

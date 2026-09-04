@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -109,10 +109,10 @@ describe('self-update workflow image', () => {
     expect(
       invocation.slice(0, /^ {6}- (?:name|uses):/m.exec(invocation.slice(1))?.index ?? undefined),
     ).toContain(
-      'deploy/bin/verity-self-update-live-smoke\n' +
-        '          "$VERITY_SMOKE_IMAGE"\n' +
-        '          "$VERITY_SMOKE_PREVIOUS_IMAGE"\n' +
-        '          "$VERITY_SMOKE_PREVIOUS_TAG"',
+      'deploy/bin/verity-self-update-live-smoke \\\n' +
+        '            "$VERITY_SMOKE_IMAGE" \\\n' +
+        '            "$VERITY_SMOKE_PREVIOUS_IMAGE" \\\n' +
+        '            "$VERITY_SMOKE_PREVIOUS_TAG"',
     );
   });
 
@@ -124,9 +124,31 @@ describe('self-update workflow image', () => {
     expect(version).toMatch(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
     expect(workflow).toContain('--build-arg "VERITY_SERVER_VERSION=$VERITY_SMOKE_SERVER_VERSION"');
     expect(smoke).toContain(
-      'expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" \\\n' +
+      'createAgentSeedProvenanceClient(\n' +
+        '       process.env.VERITY_SMOKE_SERVER_VERSION,\n' +
+        '       process.env.VERITY_SMOKE_SERVER_IMAGE,',
+    );
+    expect(smoke).toContain(
+      'expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" "$target_digest" \\\n' +
         '  "matched $VERITY_SMOKE_SERVER_VERSION $target_digest"',
     );
+  });
+
+  it('supplies the complete production bootstrap inputs during restart re-adoption', async () => {
+    const smoke = await readFile(
+      resolve(root, 'packages/server/src/self-update-live-smoke.ts'),
+      'utf8',
+    );
+    const start = smoke.indexOf('  const bootstrapEnvironment = {');
+    const end = smoke.indexOf('\n  };', start);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const environment = smoke.slice(start, end);
+    expect(environment).toContain("required('VERITY_SMOKE_DATABASE_URL')");
+    expect(environment).toContain('VERITY_MANAGED_ROOT: managedRoot');
+    expect(environment).toContain("required('VERITY_SMOKE_DOCKER_SOCKET')");
+    expect(environment).toContain("VERITY_PAIRING_STATE_HOST_PATH: '/etc/verity'");
   });
 
   // The newest tag is not the newest published image, and this step needs the
@@ -188,6 +210,8 @@ describe('self-update workflow image', () => {
         tokenBody?: string;
         tokenFails?: boolean;
         catalogueFails?: boolean;
+        catalogueMissing?: boolean;
+        bootstrapVersion?: string;
         pullFails?: { tag: string; error: string };
       } = {},
     ): Promise<{
@@ -286,8 +310,14 @@ describe('self-update workflow image', () => {
             `  exit 0\n` +
             `fi\n` +
             `if [[ -n "\${STUB_CATALOGUE_FAILS:-}" ]]; then\n` +
-            `  echo 'curl: (22) The requested URL returned error: 401' >&2\n` +
-            `  exit 22\n` +
+            `  printf 'HTTP/2 401\\r\\n\\r\\n' >"$headers"\n` +
+            `  printf '{"errors":[{"code":"UNAUTHORIZED"}]}' >"$output"\n` +
+            `  exit 0\n` +
+            `fi\n` +
+            `if [[ -n "\${STUB_CATALOGUE_MISSING:-}" ]]; then\n` +
+            `  printf 'HTTP/2 404\\r\\n\\r\\n' >"$headers"\n` +
+            `  printf '{"errors":[{"code":"NAME_UNKNOWN"}]}' >"$output"\n` +
+            `  exit 0\n` +
             `fi\n` +
             pages
               .map((_tags, index) => {
@@ -315,6 +345,8 @@ describe('self-update workflow image', () => {
           ...(parentVersion === null ? {} : { STUB_PARENT_VERSION: parentVersion }),
           ...(options.tokenFails === true ? { STUB_TOKEN_FAILS: '1' } : {}),
           ...(options.catalogueFails === true ? { STUB_CATALOGUE_FAILS: '1' } : {}),
+          ...(options.catalogueMissing === true ? { STUB_CATALOGUE_MISSING: '1' } : {}),
+          VERITY_BOOTSTRAP_VERSION: options.bootstrapVersion ?? '',
           ...(options.pullFails === undefined
             ? {}
             : { STUB_PULL_FAILS: options.pullFails.tag, STUB_PULL_ERROR: options.pullFails.error }),
@@ -412,7 +444,11 @@ describe('self-update workflow image', () => {
       });
 
       expect(code).not.toBe(0);
-      expect(out).toContain('The requested URL returned error: 401');
+      expect(out).toContain(
+        'tokenFails' in failure && failure.tokenFails === true
+          ? 'The requested URL returned error: 401'
+          : 'tag catalogue returned HTTP 401',
+      );
       // And it has to fail AS a refusal. "Nothing is published" is the reading an
       // unchecked HTTP call degrades into — an empty body parses to an empty
       // catalogue perfectly happily — and it is a lie about the registry that
@@ -420,6 +456,36 @@ describe('self-update workflow image', () => {
       // credential. Non-zero is not enough here; the reason has to survive.
       expect(out).not.toContain('publishes no Server image');
       expect(out).not.toContain('Testing candidate against');
+    });
+
+    it('bootstraps only when the authenticated registry says the package does not exist', async () => {
+      const { code, out, docker, exported } = await runStep([], {
+        underTest: '16.4.0',
+        parentVersion: '16.3.1',
+        catalogueMissing: true,
+        bootstrapVersion: '16.4.0',
+      });
+
+      expect(code, out).toBe(0);
+      expect(out).toContain('testing v16.4.0 as the first-release bootstrap');
+      expect(exported).toContain('VERITY_SMOKE_BOOTSTRAP=true');
+      expect(exported).toContain('VERITY_SMOKE_PREVIOUS_TAG=v16.4.0');
+      expect(docker).toEqual([]);
+    });
+
+    it('rejects a missing package without exact one-time bootstrap authorization', async () => {
+      for (const bootstrapVersion of ['', '16.3.1', '16.4.1']) {
+        const { code, out, exported } = await runStep([], {
+          underTest: '16.4.0',
+          parentVersion: '16.3.1',
+          catalogueMissing: true,
+          bootstrapVersion,
+        });
+
+        expect(code).toBe(1);
+        expect(out).toContain('has no explicit bootstrap authorization');
+        expect(exported).not.toContain('VERITY_SMOKE_BOOTSTRAP=true');
+      }
     });
 
     // Same reasoning one level in: a 200 that carries no token is not a token.
@@ -808,6 +874,9 @@ describe('self-update workflow image', () => {
     expect(workflow).toContain(
       '--cache-to type=gha,mode=max,scope=verity-server,ignore-error=true',
     );
+    expect(workflow).toContain('for attempt in 1 2 3; do');
+    expect(workflow).toContain('failed to fetch oauth token: unexpected status from');
+    expect(workflow).toContain('deterministic Dockerfile/build failures still fail immediately');
 
     // Two steps, not one step with two background jobs — and the harness first, so a
     // compile error fails before the expensive build rather than beside it.
@@ -824,5 +893,55 @@ describe('self-update workflow image', () => {
     // again is a one-line change that looks like a pure speed win from the diff.
     expect(workflow).not.toContain('image_pid');
     expect(workflow).not.toContain('harness_pid');
+  });
+
+  it('retries only transient registry authorization failures', async () => {
+    const script = await step('Build the Server image into the isolated daemon');
+    const dir = await mkdtemp(join(tmpdir(), 'verity-build-retry-'));
+    const docker = join(dir, 'docker');
+    const sleep = join(dir, 'sleep');
+    await writeFile(
+      docker,
+      `#!/usr/bin/env bash
+count_file="$RUNNER_TEMP/docker-count"
+count=0
+[[ ! -f "$count_file" ]] || count="$(<"$count_file")"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+case "$BUILD_CASE" in
+  transient-then-success)
+    [[ "$count" -ge 3 ]] || { echo 'ERROR: failed to fetch oauth token: unexpected status from POST request to https://auth.docker.io/token: 500 Internal Server Error' >&2; exit 1; } ;;
+  transient-exhausted)
+    echo 'ERROR: failed to fetch oauth token: unexpected status from POST request to https://auth.docker.io/token: 429 Too Many Requests' >&2; exit 1 ;;
+  deterministic)
+    echo 'ERROR: compiler reported unexpected EOF while building application' >&2; exit 1 ;;
+esac
+`,
+    );
+    await writeFile(sleep, '#!/usr/bin/env bash\nexit 0\n');
+    await chmod(docker, 0o755);
+    await chmod(sleep, 0o755);
+
+    try {
+      const env = {
+        VERITY_SMOKE_SERVER_VERSION: '16.4.1',
+        VERITY_SMOKE_IMAGE: 'verity-server:candidate',
+      };
+      const recovered = await runIn(dir, script, { ...env, BUILD_CASE: 'transient-then-success' });
+      expect(recovered.code).toBe(0);
+      expect(await readFile(join(dir, 'docker-count'), 'utf8')).toBe('3');
+
+      await rm(join(dir, 'docker-count'));
+      const exhausted = await runIn(dir, script, { ...env, BUILD_CASE: 'transient-exhausted' });
+      expect(exhausted.code).not.toBe(0);
+      expect(await readFile(join(dir, 'docker-count'), 'utf8')).toBe('3');
+
+      await rm(join(dir, 'docker-count'));
+      const deterministic = await runIn(dir, script, { ...env, BUILD_CASE: 'deterministic' });
+      expect(deterministic.code).not.toBe(0);
+      expect(await readFile(join(dir, 'docker-count'), 'utf8')).toBe('1');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

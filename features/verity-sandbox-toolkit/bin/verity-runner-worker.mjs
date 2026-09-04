@@ -14826,6 +14826,13 @@ var agentEventSchema = external_exports.discriminatedUnion("t", [
     message: external_exports.string()
   }),
   external_exports.object({
+    t: external_exports.literal("session_progress"),
+    summary: external_exports.string().min(1).max(1e3),
+    outcomeDelivered: external_exports.boolean(),
+    blocker: external_exports.string().min(1).max(500).optional(),
+    requiredDecision: external_exports.string().min(1).max(500).optional()
+  }),
+  external_exports.object({
     t: external_exports.literal("raw"),
     backend: external_exports.string().min(1),
     payload: external_exports.unknown()
@@ -15651,7 +15658,8 @@ var listSessionsRequestSchema = external_exports.object({
 var sessionHandoffRequestSchema = external_exports.object({
   target: external_exports.union([
     external_exports.object({ sessionId: cardLine(128) }).strict(),
-    external_exports.object({ project: projectReferenceSchema2 }).strict()
+    external_exports.object({ project: projectReferenceSchema2 }).strict(),
+    external_exports.object({ newSession: external_exports.object({ project: projectReferenceSchema2 }).strict() }).strict()
   ]),
   /** A one-line label, rendered on the approval card next to the target it names. */
   title: cardLine(120),
@@ -15665,12 +15673,48 @@ var LIST_SESSIONS_FIELDS = [
   { key: "model", label: "model" },
   { key: "status", label: "status" },
   { key: "eventCount", label: "event count" },
+  { key: "lastActivityAt", label: "last activity time" },
   { key: "resumable", label: "whether it can be resumed" },
   { key: "handoffEligible", label: "whether a handoff would be accepted" },
   { key: "handoffBlockedBy", label: "why not when it is not" }
 ];
 var LIST_SESSIONS_FIELD_SENTENCE = LIST_SESSIONS_FIELDS.map((field) => field.label).map((label, index, all) => index === all.length - 1 ? `and ${label}` : label).join(", ");
 var LIST_SESSIONS_TOOL_DESCRIPTION = `List the Verity sessions of the fleet so a handoff can be addressed. Returns metadata only \u2014 ${LIST_SESSIONS_FIELD_SENTENCE}. It never returns transcript content, messages, session names or files; use it to pick a target, not to read another session's work. Verity Control sessions are not listed. Pass \`project\` to narrow to one project, and \`activeOnly: false\` to also see sessions that cannot currently take a turn. At most ${String(LIST_SESSIONS_MAX_ENTRIES)} sessions come back \u2014 the newest ones, when there are more. \`omitted\` says how many the cap left out; a session can also drop out after it, so \`omitted\` is a floor and a listing never proves a session does not exist \u2014 narrow with \`project\` instead of concluding it. The call requires user approval.`;
+
+// node_modules/@verity/events/dist/session-observation-tool.js
+var safeLine = (max) => external_exports.string().trim().min(1).max(max).refine((value) => !/[\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]/u.test(value));
+var sessionProgressRequestSchema = external_exports.object({ sessionId: safeLine(128) }).strict();
+var RECENT_SESSION_MESSAGES_DEFAULT = 20;
+var RECENT_SESSION_MESSAGES_MAX = 50;
+var recentSessionMessagesRequestSchema = external_exports.object({
+  sessionId: safeLine(128),
+  count: external_exports.number().int().min(1).max(RECENT_SESSION_MESSAGES_MAX).optional(),
+  sinceMinutes: external_exports.number().int().min(1).max(10080).optional(),
+  beforeSeq: external_exports.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  purpose: safeLine(240)
+}).strict();
+var publishSessionProgressRequestSchema = external_exports.object({
+  summary: external_exports.string().trim().min(1).max(1e3),
+  outcomeDelivered: external_exports.boolean(),
+  blocker: external_exports.string().trim().min(1).max(500).optional(),
+  requiredDecision: external_exports.string().trim().min(1).max(500).optional()
+}).strict();
+var RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION = `Read a small recent window from one exact project session after user approval. The request must state sessionId, purpose and optional count/time window; count defaults to ${String(RECENT_SESSION_MESSAGES_DEFAULT)} and is capped at ${String(RECENT_SESSION_MESSAGES_MAX)}. Returns only user/assistant/error text with recognized credential patterns redacted, without attachments, tools, hidden prompts or capabilities. Freely written text can contain unrecognizable sensitive material, so the approval must be treated as authorizing the displayed content scope. If hasMore is true, pass nextBeforeSeq as beforeSeq in a fresh approved request for the next older page; never poll it.`;
+
+// node_modules/@verity/events/dist/projection.js
+var SESSION_PROJECTION_EVENT_TYPES = [
+  // Read by `deriveSessionStatus` (the backward scan and the open-task pass).
+  "prompt",
+  "task",
+  "status",
+  "result",
+  "interrupted",
+  "error",
+  "permission",
+  // Read by `aggregateUsage` (`result`, already listed) and `latestRateLimits`.
+  "rate_limit"
+];
+var PROJECTION_TYPES = new Set(SESSION_PROJECTION_EVENT_TYPES);
 
 // node_modules/@verity/events/dist/usage.js
 var WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;

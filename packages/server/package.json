@@ -17,6 +17,7 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@fastify/rate-limit": "11.2.0",
     "@fastify/websocket": "11.2.0",
     "@verity/events": "*",
     "@verity/secret-contracts": "*",

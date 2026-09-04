@@ -14,9 +14,15 @@ import {
   CREATE_DELIVERY_TOOL_DESCRIPTION,
   LIST_SESSIONS_TOOL_DESCRIPTION,
   SESSION_HANDOFF_TOOL_DESCRIPTION,
+  SESSION_PROGRESS_TOOL_DESCRIPTION,
+  RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
+  PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
   createDeliveryRequestSchema,
   listSessionsRequestSchema,
   sessionHandoffRequestSchema,
+  sessionProgressRequestSchema,
+  recentSessionMessagesRequestSchema,
+  publishSessionProgressRequestSchema,
 } from '@verity/events';
 import {
   TrustedCliDispatchError,
@@ -91,7 +97,7 @@ function dopplerResolutionMessage(error: DopplerSecretResolutionError): string |
 /** MCP revisions this gateway speaks, newest first. */
 export const MCP_GATEWAY_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const;
 
-export const MCP_GATEWAY_SERVER_NAME = 'verity-secret-gateway';
+const MCP_GATEWAY_SERVER_NAME = 'verity-secret-gateway';
 
 /** How long an unanswered card may hold one call open before the caller is denied. Long
  *  enough that an operator who stepped away can still answer, short enough that an
@@ -126,7 +132,7 @@ const toolCallParamsSchema = z
   })
   .loose();
 
-export interface McpGatewayResponse {
+interface McpGatewayResponse {
   status: number;
   /** Absent for a notification, which is acknowledged with an empty 202. */
   body?: unknown;
@@ -233,6 +239,9 @@ const TOOL_SCHEMAS = {
   verity_create_delivery: createDeliveryRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
+  verity_session_progress: sessionProgressRequestSchema,
+  verity_recent_session_messages: recentSessionMessagesRequestSchema,
+  verity_publish_session_progress: publishSessionProgressRequestSchema,
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
@@ -241,6 +250,9 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_create_delivery: CREATE_DELIVERY_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
+  verity_session_progress: SESSION_PROGRESS_TOOL_DESCRIPTION,
+  verity_recent_session_messages: RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
+  verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
 };
 
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {

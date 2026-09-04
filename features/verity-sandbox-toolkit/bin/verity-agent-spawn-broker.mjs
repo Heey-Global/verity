@@ -48,7 +48,7 @@ export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
  * root-owned, which is correct: nothing writes into the parent itself, and the
  * agent's three subdirectories are created under a leaf it owns.
  */
-export const OPENCODE_STATE_DIR = '/run/verity/opencode';
+const OPENCODE_STATE_DIR = '/run/verity/opencode';
 export const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
 export const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
 export const DEFAULT_WORKTREE_ROOT = '/work';
@@ -1281,9 +1281,9 @@ export async function validateTrustedCliArguments(
   }
 }
 
-export const TRUSTED_CLI_SECRET_DIR = '/run/verity-runner/secrets';
+const TRUSTED_CLI_SECRET_DIR = '/run/verity-runner/secrets';
 
-export function trustedCliSecretPath(name, options) {
+function trustedCliSecretPath(name, options) {
   if (!isSafeTrustedCliEnvName(name)) throw new Error('unsafe trusted CLI environment variable');
   return `${options?.secretDir ?? TRUSTED_CLI_SECRET_DIR}/${name}`;
 }

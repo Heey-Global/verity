@@ -8,8 +8,10 @@ import type { HttpFetch } from './github.js';
  *  context). */
 export interface DopplerValidateResult {
   ok: boolean;
-  /** SAFE confirmation on success: how many projects the token can list. Absent
-   *  when Doppler omits a countable list. Never the token. */
+  /** SAFE confirmation on success: how many projects the token can list, summed
+   *  across every page Doppler returns. Absent when Doppler omits a countable list
+   *  or the walk past the first page could not be completed — a missing count is
+   *  never a validation failure. Never the token. */
   projectCount?: number;
   /** Redacted, human-readable failure reason on `ok === false`. Fixed messages
    *  only — never a raw Doppler body. */
@@ -31,8 +33,13 @@ export interface DopplerValidateOptions {
 /**
  * Live "does this Doppler Service Account token actually work" check: list the
  * account's projects (`GET /v3/projects`) with the token as a Bearer credential.
- * A `200` proves the token is valid and account-scoped; the response's project
- * list length is lifted out as a SAFE confirmation count.
+ * A `200` on the FIRST page proves the token is valid and account-scoped; the
+ * project list length is lifted out as a SAFE confirmation count.
+ *
+ * The endpoint is paginated (see {@link DOPPLER_PAGE_SIZE}), so a full first page
+ * means there is more to count and the walk continues. That continuation is
+ * best-effort: validity is already established, so a later page that fails drops
+ * the count rather than reporting a working token as broken.
  *
  * Security contract (load-bearing — the whole point of running this server-side):
  * this function NEVER returns, throws, or logs the token, and NEVER reads/echoes
@@ -49,17 +56,18 @@ export async function validateDopplerToken(
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const apiBaseUrl = opts.apiBaseUrl ?? 'https://api.doppler.com';
   const url = `${apiBaseUrl.replace(/\/+$/, '')}/v3/projects`;
+  const deadline = Date.now() + timeoutMs;
 
   let res;
   try {
-    res = await doFetch(url, {
+    res = await doFetch(withDopplerPage(url, 1), {
       method: 'GET',
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${token}`,
         'User-Agent': 'verity',
       },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
     });
   } catch {
     // Network / timeout / abort — never includes the token.
@@ -86,6 +94,12 @@ export async function validateDopplerToken(
     if (Array.isArray(body.projects)) projectCount = body.projects.length;
   } catch {
     projectCount = undefined;
+  }
+  // A full first page means Doppler has more to hand out, and the count would
+  // otherwise stick at the page size — "connected (100 projects)" for an account
+  // with 400. Sum the rest.
+  if (projectCount === DOPPLER_PAGE_SIZE) {
+    projectCount = await countRemainingDopplerProjects(token, opts, url, projectCount, deadline);
   }
   return { ok: true, ...(projectCount !== undefined ? { projectCount } : {}) };
 }
@@ -171,10 +185,157 @@ function throwRedactedDopplerError(status: number): never {
   );
 }
 
+/** Doppler paginates its list endpoints and defaults to 20 items per page, so a
+ *  single un-paged request silently truncates every account with more projects
+ *  (or configs) than that — the entries never appear in the picker no matter what
+ *  the token is allowed to see. Ask for a larger page and walk until a page comes
+ *  back short. `DOPPLER_MAX_PAGES` is the explicit supported safety ceiling: a
+ *  probe after 100 full pages confirms exact-boundary exhaustion, while any
+ *  additional entry fails closed instead of returning a silently truncated list. */
+const DOPPLER_PAGE_SIZE = 100;
+const DOPPLER_MAX_PAGES = 100;
+
+/** Append Doppler's pagination query to a list URL that may already carry one. */
+function withDopplerPage(url: string, page: number): string {
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}page=${String(page)}&per_page=${String(DOPPLER_PAGE_SIZE)}`;
+}
+
+/**
+ * Walk a paginated Doppler list endpoint and concatenate the mapped entries.
+ * Shared by the two list helpers below so their transport, redaction, and stop
+ * condition stay identical.
+ *
+ * The stop condition counts the RAW entries Doppler returned, not the mapped
+ * ones: `mapDopplerProjects`/`mapDopplerConfigs` deliberately skip malformed
+ * rows, so a full page containing one bad row would otherwise look short and
+ * truncate the walk.
+ *
+ * Same security contract as its callers: NEVER returns, throws, or logs the
+ * token, and NEVER echoes a Doppler response body — a non-2xx on ANY page throws
+ * the fixed, status-keyed message. Each page is bounded by the remaining share
+ * of one overall pagination timeout, preventing a slow upstream from multiplying
+ * the request budget by the page limit.
+ */
+async function listDopplerPaged<T>(
+  token: string,
+  opts: DopplerValidateOptions,
+  buildUrl: (apiBaseUrl: string) => string,
+  readPage: (body: unknown) => { valid: boolean; rawCount: number; items: T[] },
+): Promise<T[]> {
+  const doFetch = opts.fetch ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const apiBaseUrl = (opts.apiBaseUrl ?? 'https://api.doppler.com').replace(/\/+$/, '');
+  const baseUrl = buildUrl(apiBaseUrl);
+  const deadline = Date.now() + timeoutMs;
+
+  const items: T[] = [];
+  for (let page = 1; page <= DOPPLER_MAX_PAGES + 1; page += 1) {
+    let res;
+    try {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new Error('pagination deadline exceeded');
+      res = await doFetch(withDopplerPage(baseUrl, page), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'User-Agent': 'verity',
+        },
+        signal: AbortSignal.timeout(remainingMs),
+      });
+    } catch {
+      // Network / timeout / abort — never includes the token.
+      throw new Error('could not reach Doppler');
+    }
+
+    if (!res.ok) throwRedactedDopplerError(res.status);
+
+    let pageResult: { valid: boolean; rawCount: number; items: T[] };
+    try {
+      pageResult = readPage(await res.json());
+    } catch {
+      throw new Error('Doppler returned an invalid response');
+    }
+    const { valid, rawCount, items: pageItems } = pageResult;
+    if (!valid) throw new Error('Doppler returned an invalid response');
+    if (page > DOPPLER_MAX_PAGES) {
+      if (rawCount === 0) return items;
+      throw new Error('Doppler returned too many pages');
+    }
+    items.push(...pageItems);
+    if (rawCount < DOPPLER_PAGE_SIZE) return items;
+  }
+  throw new Error('Doppler returned too many pages');
+}
+
+/**
+ * Continue {@link validateDopplerToken}'s project count past its first page.
+ * Called only when page 1 came back full, i.e. when the count would otherwise
+ * report the page size instead of the account's real total.
+ *
+ * Deliberately best-effort, and this is why it does not reuse {@link
+ * listDopplerPaged}: page 1 has already proven the token valid, so ANY problem
+ * here — non-2xx, transport failure, unparseable body, or still-full pages at the
+ * guard — returns `undefined`. The UI then echoes a plain "connected" instead of
+ * a wrong number, and a working token is never reported as rejected because a
+ * later page hiccuped. A partial sum is NOT returned: a number that is silently
+ * too low reads as fact, `undefined` reads as "not counted".
+ *
+ * Same redaction contract as the rest of this file: never returns, throws, or
+ * logs the token, and never reads a failure body.
+ */
+async function countRemainingDopplerProjects(
+  token: string,
+  opts: DopplerValidateOptions,
+  url: string,
+  firstPageCount: number,
+  deadline: number,
+): Promise<number | undefined> {
+  const doFetch = opts.fetch ?? fetch;
+
+  let total = firstPageCount;
+  for (let page = 2; page <= DOPPLER_MAX_PAGES + 1; page += 1) {
+    let res;
+    try {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return undefined;
+      res = await doFetch(withDopplerPage(url, page), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'User-Agent': 'verity',
+        },
+        signal: AbortSignal.timeout(remainingMs),
+      });
+    } catch {
+      return undefined;
+    }
+    if (!res.ok) return undefined;
+
+    let pageCount: number;
+    try {
+      const body = (await res.json()) as DopplerProjectsResponse;
+      if (!Array.isArray(body.projects)) return undefined;
+      pageCount = body.projects.length;
+    } catch {
+      return undefined;
+    }
+
+    if (page > DOPPLER_MAX_PAGES) return pageCount === 0 ? total : undefined;
+    total += pageCount;
+    if (pageCount < DOPPLER_PAGE_SIZE) return total;
+  }
+  // Still full pages at the guard — the total is unknown, not `total`.
+  return undefined;
+}
+
 /**
  * List the account's Doppler projects for the binding picker (#320): `GET
- * /v3/projects` with the account token as a Bearer credential. Returns only the
- * NON-secret `{ slug, name }` summaries.
+ * /v3/projects` with the account token as a Bearer credential, paged until
+ * Doppler returns a short page. Returns only the NON-secret `{ slug, name }`
+ * summaries.
  *
  * Security contract (load-bearing — the whole point of running this server-side,
  * closing the confused-deputy: the list comes from the TRUSTED account token, not
@@ -186,37 +347,26 @@ export async function listDopplerProjects(
   token: string,
   opts: DopplerValidateOptions = {},
 ): Promise<DopplerProjectSummary[]> {
-  const doFetch = opts.fetch ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 15_000;
-  const apiBaseUrl = opts.apiBaseUrl ?? 'https://api.doppler.com';
-  const url = `${apiBaseUrl.replace(/\/+$/, '')}/v3/projects`;
-
-  let res;
-  try {
-    res = await doFetch(url, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-        'User-Agent': 'verity',
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    // Network / timeout / abort — never includes the token.
-    throw new Error('could not reach Doppler');
-  }
-
-  if (!res.ok) throwRedactedDopplerError(res.status);
-
-  const body = (await res.json()) as DopplerProjectsResponse;
-  return mapDopplerProjects(body);
+  return listDopplerPaged(
+    token,
+    opts,
+    (apiBaseUrl) => `${apiBaseUrl}/v3/projects`,
+    (body) => {
+      const page = body as DopplerProjectsResponse;
+      return {
+        valid: Array.isArray(page.projects),
+        rawCount: Array.isArray(page.projects) ? page.projects.length : 0,
+        items: mapDopplerProjects(page),
+      };
+    },
+  );
 }
 
 /**
  * List a Doppler project's configs for the binding picker (#320): `GET
- * /v3/configs?project=<project>` with the account token as a Bearer credential.
- * Returns only the NON-secret `{ name, environment?, root? }` summaries.
+ * /v3/configs?project=<project>` with the account token as a Bearer credential,
+ * paged the same way as {@link listDopplerProjects}. Returns only the NON-secret
+ * `{ name, environment?, root? }` summaries.
  *
  * Same security contract as {@link listDopplerProjects}: never returns/throws/logs
  * the token, never echoes the Doppler body on failure (redacted status-keyed
@@ -227,28 +377,17 @@ export async function listDopplerConfigs(
   project: string,
   opts: DopplerValidateOptions = {},
 ): Promise<DopplerConfigSummary[]> {
-  const doFetch = opts.fetch ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 15_000;
-  const apiBaseUrl = opts.apiBaseUrl ?? 'https://api.doppler.com';
-  const url = `${apiBaseUrl.replace(/\/+$/, '')}/v3/configs?project=${encodeURIComponent(project)}`;
-
-  let res;
-  try {
-    res = await doFetch(url, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-        'User-Agent': 'verity',
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    throw new Error('could not reach Doppler');
-  }
-
-  if (!res.ok) throwRedactedDopplerError(res.status);
-
-  const body = (await res.json()) as DopplerConfigsResponse;
-  return mapDopplerConfigs(body);
+  return listDopplerPaged(
+    token,
+    opts,
+    (apiBaseUrl) => `${apiBaseUrl}/v3/configs?project=${encodeURIComponent(project)}`,
+    (body) => {
+      const page = body as DopplerConfigsResponse;
+      return {
+        valid: Array.isArray(page.configs),
+        rawCount: Array.isArray(page.configs) ? page.configs.length : 0,
+        items: mapDopplerConfigs(page),
+      };
+    },
+  );
 }

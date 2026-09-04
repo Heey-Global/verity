@@ -17,7 +17,7 @@ import { dirname } from 'node:path';
  * reflecting them back.
  */
 
-export const DEFAULT_CONTROL_FRAME_BYTES = 1024 * 1024;
+const DEFAULT_CONTROL_FRAME_BYTES = 1024 * 1024;
 export const DEFAULT_CONTROL_TIMEOUT_MS = 5_000;
 
 export class ControlProtocolError extends Error {}

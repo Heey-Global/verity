@@ -770,11 +770,12 @@ describe('Conductor.sendTurn', () => {
 
     await conductor.sendTurn('s1', 'what changed?');
 
-    // The note rides the model prompt, prepended before the operator's own text.
+    // The operator's instruction leads; the note rides as provenance-labelled JSON.
     const modelPrompt = fake.last().prompt ?? '';
     expect(modelPrompt).toContain('PR #7 was merged');
     expect(modelPrompt).toContain('what changed?');
-    expect(modelPrompt.indexOf('PR #7')).toBeLessThan(modelPrompt.indexOf('what changed?'));
+    expect(modelPrompt.indexOf('what changed?')).toBeLessThan(modelPrompt.indexOf('PR #7'));
+    expect(modelPrompt).toContain('"Verity pending session notices"');
 
     // But the VISIBLE prompt event is only the operator's text — no chat bubble
     // for the server's note.

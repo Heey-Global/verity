@@ -3533,15 +3533,25 @@ describe('verity-runner supervisor runtime', () => {
       });
       expect(workerStarts).toBe(1);
 
-      await expect(supervisorRequest(supervisor.socketPath, start)).resolves.toMatchObject({
+      const retry = await supervisorRequest(supervisor.socketPath, start);
+      expect(retry).toMatchObject({
         ok: true,
-        outcome: 'already-running',
         state: {
           runnerInstanceId: supervisor.instanceId,
           startCommandId: start.startCommandId,
           status: 'running',
           workerPid: stateAfterLostAck?.workerPid,
         },
+      });
+      // The durable worker artifact is written just before the original start
+      // promise settles. A retry in that narrow window joins that promise and
+      // truthfully receives its `created` result; after it settles, replay reads
+      // the durable claim and reports `already-running`.
+      expect(['created', 'already-running']).toContain(retry.outcome);
+      await expect(supervisorRequest(supervisor.socketPath, start)).resolves.toMatchObject({
+        ok: true,
+        outcome: 'already-running',
+        state: { workerPid: stateAfterLostAck?.workerPid },
       });
       expect(workerStarts).toBe(1);
       expect((await readFile(startedPath, 'utf8')).trim().split('\n')).toHaveLength(1);
@@ -4537,6 +4547,121 @@ describe('verity-runner supervisor runtime', () => {
       expect(state?.workerError).not.toContain(secret);
     } finally {
       await supervisor.close();
+    }
+  });
+
+  it('preflights a bare worker executable through its effective PATH', async () => {
+    const workerName = 'path-worker';
+    await symlink(process.execPath, join(runtimeDir, workerName));
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      workerCommand: workerName,
+      workerArgs: ['-e', 'process.exit(0)'],
+      workerEnv: { PATH: runtimeDir },
+    });
+    try {
+      await expect(
+        supervisorRequest(supervisor.socketPath, {
+          protocolVersion: 1,
+          kind: 'start-turn',
+          turnId: 'turn-path-worker',
+          startCommandId: 'start-path-worker',
+          sessionId: 'session-path-worker',
+          backend: 'claude-acp',
+          worktree: runtimeDir,
+          cwd: runtimeDir,
+          prompt: 'resolve safely',
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      await vi.waitFor(async () => {
+        expect(await readTurnState(runtimeDir, 'turn-path-worker')).toMatchObject({
+          status: 'settled',
+          workerExitCode: 0,
+        });
+      });
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  it('resolves a relative worker PATH entry from the requested cwd', async () => {
+    const workerName = 'relative-path-worker';
+    const requestedCwd = join(runtimeDir, 'session-worktree');
+    await mkdir(requestedCwd);
+    await symlink(process.execPath, join(runtimeDir, workerName));
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      workerCommand: workerName,
+      workerArgs: ['-e', 'process.exit(0)'],
+      workerEnv: { PATH: '..' },
+    });
+    try {
+      await expect(
+        supervisorRequest(supervisor.socketPath, {
+          protocolVersion: 1,
+          kind: 'start-turn',
+          turnId: 'turn-relative-path-worker',
+          startCommandId: 'start-relative-path-worker',
+          sessionId: 'session-relative-path-worker',
+          backend: 'claude-acp',
+          worktree: requestedCwd,
+          cwd: requestedCwd,
+          prompt: 'resolve relative PATH safely',
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      await vi.waitFor(async () => {
+        expect(await readTurnState(runtimeDir, 'turn-relative-path-worker')).toMatchObject({
+          status: 'settled',
+          workerExitCode: 0,
+        });
+      });
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  it('classifies an EACCES cwd failure without persisting arbitrary exception text', async () => {
+    const blockedCwd = join(runtimeDir, 'blocked-cwd');
+    await mkdir(blockedCwd);
+    await chmod(blockedCwd, 0o600);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      workerCommand: process.execPath,
+      workerArgs: ['-e', 'process.exit(0)'],
+    });
+    try {
+      await expect(
+        supervisorRequest(supervisor.socketPath, {
+          protocolVersion: 1,
+          kind: 'start-turn',
+          turnId: 'turn-cwd-eacces',
+          startCommandId: 'start-cwd-eacces',
+          sessionId: 'session-cwd-eacces',
+          backend: 'claude-acp',
+          worktree: runtimeDir,
+          cwd: blockedCwd,
+          prompt: 'fail safely',
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: 'runner worker spawn failed with error code EACCES',
+      });
+      await expect(readTurnState(runtimeDir, 'turn-cwd-eacces')).resolves.toMatchObject({
+        workerSpawnFailure: {
+          stage: 'cwd-traverse',
+          target: 'cwd',
+          path: blockedCwd,
+          code: 'EACCES',
+        },
+      });
+      expect(stderr).toHaveBeenCalledWith(
+        expect.stringContaining('"stage":"cwd-traverse","target":"cwd"'),
+      );
+    } finally {
+      await chmod(blockedCwd, 0o700);
+      await supervisor.close();
+      stderr.mockRestore();
     }
   });
 

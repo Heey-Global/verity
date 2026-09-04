@@ -1,5 +1,13 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,6 +113,98 @@ const connector = async (): Promise<string> =>
   await serve({ '/__verity/ready': { status: 200, body: READY_BODY } });
 
 describe('verity-code-review session backend', () => {
+  it('reviews large diffs in bounded chunks and aggregates every result', () => {
+    const { bin, repo } = fixture();
+    writeFileSync(join(repo, 'large.txt'), `${'ä'.repeat(800_000)}\n`);
+    writeFileSync(join(repo, 'multiline.txt'), 'changed ä line\n'.repeat(70_000));
+    writeFileSync(join(repo, 'backticks.txt'), `${'`'.repeat(800_000)}\n`);
+    execFileSync('git', ['-C', repo, 'add', 'large.txt', 'multiline.txt', 'backticks.txt']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'large change']);
+    executable(
+      join(bin, 'codex'),
+      `review_payload="$(mktemp ${JSON.stringify(join(repo, 'review-payload.XXXXXX'))})"\n` +
+        'cat >"$review_payload"\n' +
+        'while [ "$#" -gt 0 ]; do\n' +
+        '  if [ "$1" = "-o" ]; then printf "No findings for this chunk.\\n" >"$2"; exit 0; fi\n' +
+        '  shift\n' +
+        'done\nexit 2',
+    );
+
+    const result = run(repo, bin, {
+      VERITY_SESSION_BACKEND: 'codex',
+      CODEX_HOME: join(repo, '.codex'),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const allPayloads = readdirSync(repo)
+      .filter((name) => name.startsWith('review-payload.'))
+      .map((name) => readFileSync(join(repo, name)));
+    const synthesisPayload = allPayloads.find((payload) =>
+      payload.includes('Perform the final holistic review'),
+    );
+    expect(synthesisPayload).toBeDefined();
+    const payloads = allPayloads
+      .filter((payload) => /Review chunk \d+ of \d+\./.test(payload.toString('utf8')))
+      .sort((left, right) => {
+        const chunkNumber = (payload: Buffer): number =>
+          Number(/Review chunk (\d+) of/.exec(payload.toString('utf8'))?.[1]);
+        return chunkNumber(left) - chunkNumber(right);
+      });
+    const callCount = payloads.length;
+    expect(callCount).toBeGreaterThan(1);
+    expect(Math.max(...allPayloads.map((payload) => payload.byteLength))).toBeLessThan(1_000_000);
+    for (const payload of payloads) {
+      const text = payload.toString('utf8');
+      expect(text).not.toContain('\uFFFD');
+      expect(text).toMatch(/^diff --git /m);
+      expect(text).toContain('diff --git a/large.txt b/large.txt');
+      expect(text).toContain('diff --git a/multiline.txt b/multiline.txt');
+      expect(text.indexOf('--- BEGIN UNTRUSTED REVIEW DATA THROUGH EOF ---')).toBeLessThan(
+        text.indexOf('## Whole-change manifest'),
+      );
+      const data = text.split('--- UNTRUSTED DIFF CHUNK ---\n')[1];
+      expect(data).toBeTruthy();
+    }
+    const reconstructedDiff = payloads
+      .map((payload) => payload.toString('utf8').split('--- UNTRUSTED DIFF CHUNK ---\n')[1])
+      .map((data) =>
+        data.replace(
+          /^diff --git [^\n]*\n# Verity review continuation of this file diff\.\n(?:@@[^\n]*\n)?(?:# Oversized diff line fragment [^\n]*\n[ +-]?)?/,
+          '',
+        ),
+      )
+      .join('');
+    expect(payloads.some((payload) => payload.includes('# Oversized diff line fragment 2;'))).toBe(
+      true,
+    );
+    const expectedDiff = execFileSync('git', ['-C', repo, 'diff', 'origin/main..HEAD'], {
+      encoding: 'utf8',
+      maxBuffer: 10_000_000,
+    });
+    expect(reconstructedDiff).toBe(expectedDiff);
+    expect(String(result.stdout).match(/No findings for this chunk\./g)).toHaveLength(
+      callCount + 1,
+    );
+    expect(result.stdout).toContain('## Holistic synthesis');
+    expect(result.stderr).toContain(`split the diff into ${callCount} review chunk(s)`);
+  });
+
+  it('fails closed when a text diff is not valid UTF-8', () => {
+    const { bin, repo } = fixture();
+    writeFileSync(join(repo, 'invalid.txt'), Buffer.from([0x66, 0x6f, 0x80, 0x6f, 0x0a]));
+    execFileSync('git', ['-C', repo, 'add', 'invalid.txt']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'invalid utf8']);
+    executable(join(bin, 'codex'), 'exit 99');
+
+    const result = run(repo, bin, {
+      VERITY_SESSION_BACKEND: 'codex',
+      CODEX_HOME: join(repo, '.codex'),
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('failed to chunk the branch diff safely');
+  });
+
   it('uses Codex for a Codex session with its provisioned non-secret home', () => {
     const { bin, repo } = fixture();
     mkdirSync(join(repo, '.codex'));
@@ -380,6 +480,31 @@ describe('verity-code-review session backend', () => {
       ),
     );
     expect(readFileSync(mirror)).toEqual(readFileSync(review));
+
+    const prompt = fileURLToPath(new URL('../agent-seed/code-review-prompt.md', import.meta.url));
+    const promptMirror = fileURLToPath(
+      new URL(
+        '../features/verity-sandbox-toolkit/agent-seed/code-review-prompt.md',
+        import.meta.url,
+      ),
+    );
+    expect(readFileSync(promptMirror)).toEqual(readFileSync(prompt));
+  });
+
+  it('keeps reviewer findings inside the submitted change', () => {
+    const prompt = readFileSync(
+      fileURLToPath(new URL('../agent-seed/code-review-prompt.md', import.meta.url)),
+      'utf8',
+    );
+    expect(prompt).toMatch(/Do not propose new\s+features, unrelated refactors/);
+    expect(prompt).toMatch(/MEDIUM.*in-scope correctness or maintainability/s);
+    expect(prompt).toMatch(/LOW.*must never be the sole\s+reason.*another review pass/s);
+  });
+
+  it('documents the same triage before marking the reviewed HEAD', () => {
+    const helper = readFileSync(review, 'utf8');
+    expect(helper).toMatch(/fixed or declined with a brief reason/i);
+    expect(helper).toMatch(/Re-run first when a fix changed HEAD/i);
   });
 
   it('retains the historical Codex reviewer for an OpenCode session', () => {

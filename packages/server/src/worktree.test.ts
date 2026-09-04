@@ -140,6 +140,7 @@ describe('createGitWorktreeProvisioner', () => {
         fetches += 1;
         throw new Error('fatal: unable to connect to origin (VPN down)');
       }
+      if (args.includes('rev-parse')) return;
       if (args.includes('worktree') && args.includes('add')) worktreeAdded = true;
     };
     const root = tempRoot();
@@ -155,6 +156,28 @@ describe('createGitWorktreeProvisioner', () => {
     await expect(provisioner.add('agent/flaky')).rejects.toThrow(/refusing to branch off/);
     expect(fetches).toBe(2); // one retry before giving up
     expect(worktreeAdded).toBe(false); // never branched off stale base
+  });
+
+  it('reports an unborn repository instead of a stale-base warning', async () => {
+    let fetches = 0;
+    const git: GitRunner = async (args) => {
+      if (args.includes('remote')) return;
+      if (args.includes('fetch')) {
+        fetches += 1;
+        throw new Error('fatal: could not find remote ref HEAD');
+      }
+      if (args.includes('rev-parse')) throw new Error('fatal: Needed a single revision');
+    };
+    const provisioner = createGitWorktreeProvisioner({
+      repoDir: '/work',
+      worktreeRoot: tempRoot(),
+      baseBranch: 'HEAD',
+      refreshBase: true,
+      git,
+    });
+
+    await expect(provisioner.add('agent-empty')).rejects.toThrow(/repository has no commits yet/);
+    expect(fetches).toBe(2);
   });
 
   it('with fetchAuthHeader, injects `-c http.extraheader=<header>` before the fetch', async () => {

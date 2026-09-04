@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 const storageKey = (sessionId: string): string => `verity.bookmarks.v1:${sessionId}`;
 
-export interface BookmarkEntry {
+interface BookmarkEntry {
   /** The bookmarked message's stable id (e.g. `text-42`). */
   id: string;
   /** First line of the message, clipped — shown in the jump-list. */

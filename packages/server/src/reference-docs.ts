@@ -1,7 +1,30 @@
 import { constants } from 'node:fs';
-import { open, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { lstat, mkdir, open, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, join, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+
+/** Create and validate `docs/reference` without following worktree symlinks. */
+export async function ensureReferenceDirectory(worktree: string): Promise<string> {
+  const rootReal = await realpath(worktree);
+  const docsDir = join(worktree, 'docs');
+  await mkdir(docsDir, { recursive: true });
+  if ((await lstat(docsDir)).isSymbolicLink()) throw new Error('invalid reference directory');
+  const docsReal = await realpath(docsDir);
+  if (docsReal !== rootReal && !docsReal.startsWith(`${rootReal}${sep}`)) {
+    throw new Error('invalid reference directory');
+  }
+
+  const referenceDir = join(docsDir, 'reference');
+  await mkdir(referenceDir, { recursive: true });
+  if ((await lstat(referenceDir)).isSymbolicLink()) {
+    throw new Error('invalid reference directory');
+  }
+  const referenceReal = await realpath(referenceDir);
+  if (referenceReal !== rootReal && !referenceReal.startsWith(`${rootReal}${sep}`)) {
+    throw new Error('invalid reference directory');
+  }
+  return referenceReal;
+}
 
 /**
  * Write imported Google Drive document bytes to `<referenceDir>/<fileName>` (ADR

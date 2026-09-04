@@ -32,24 +32,24 @@ const cleanup: (() => Promise<void> | void)[] = [];
 const ENV_KEYS = [
   'PATH',
   'VERITY_MEETING_TRANSCRIBE_COMMAND',
-  'VERITY_PARAKEET_BASE_URL',
-  'VERITY_PARAKEET_RETRIES',
+  'VERITY_TRANSCRIBE_BASE_URL',
+  'VERITY_TRANSCRIBE_RETRIES',
   'VERITY_MEETING_CHUNK_SECONDS',
 ] as const;
 let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
-function useBundledTranscriber(parakeetBaseUrl: string): void {
+function useBundledTranscriber(transcriptionBaseUrl: string): void {
   savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
   // No VERITY_MEETING_TRANSCRIBE_COMMAND: take the route's default path, which
   // execs the bare `verity-transcribe-meeting` name off PATH.
   delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
   process.env.PATH = `${DEPLOY_BIN}${delimiter}${savedEnv.PATH ?? ''}`;
-  process.env.VERITY_PARAKEET_BASE_URL = parakeetBaseUrl;
-  process.env.VERITY_PARAKEET_RETRIES = '0';
+  process.env.VERITY_TRANSCRIBE_BASE_URL = transcriptionBaseUrl;
+  process.env.VERITY_TRANSCRIBE_RETRIES = '0';
   process.env.VERITY_MEETING_CHUNK_SECONDS = '0';
 }
 
-function listenParakeet(handler: (req: IncomingMessage, res: ServerResponse) => void) {
+function listenTranscriptionApi(handler: (req: IncomingMessage, res: ServerResponse) => void) {
   const server = createServer(handler);
   return new Promise<string>((resolve) => {
     server.listen(0, '127.0.0.1', () => {
@@ -111,10 +111,10 @@ async function notices(): Promise<string[]> {
 }
 
 describe('meeting audio via the bundled transcriber', () => {
-  it('carries diarized Parakeet output into a committed markdown transcript', async () => {
+  it('carries diarized transcription API output into a committed markdown transcript', async () => {
     let uploadedContentType = '';
     let uploadedBody = '';
-    const baseUrl = await listenParakeet((req, res) => {
+    const baseUrl = await listenTranscriptionApi((req, res) => {
       uploadedContentType = req.headers['content-type'] ?? '';
       const chunks: Buffer[] = [];
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -174,8 +174,8 @@ describe('meeting audio via the bundled transcriber', () => {
     ]);
   });
 
-  it('normalizes a plain-text Parakeet answer into one speaker segment', async () => {
-    const baseUrl = await listenParakeet((req, res) => {
+  it('normalizes a plain-text transcription API answer into one speaker segment', async () => {
+    const baseUrl = await listenTranscriptionApi((req, res) => {
       req.resume();
       req.on('end', () => {
         res.setHeader('content-type', 'application/json');
@@ -205,12 +205,12 @@ describe('meeting audio via the bundled transcriber', () => {
     expect(res.json<{ error: string }>().error).toBe('meeting transcription failed');
     const failure = (await notices()).at(-1) ?? '';
     expect(failure).toContain('Could not transcribe meeting audio\nweekly-sync.m4a');
-    expect(failure).toContain('Could not reach the Parakeet server at');
+    expect(failure).toContain('Could not reach the transcription API at');
     expect(failure).toContain('http://127.0.0.1:1/v1/audio/transcriptions');
   });
 
-  it('reports an unusable Parakeet response rather than writing an empty transcript', async () => {
-    const baseUrl = await listenParakeet((req, res) => {
+  it('reports an unusable transcription API response rather than writing an empty transcript', async () => {
+    const baseUrl = await listenTranscriptionApi((req, res) => {
       req.resume();
       req.on('end', () => {
         res.statusCode = 500;
@@ -223,7 +223,7 @@ describe('meeting audio via the bundled transcriber', () => {
 
     expect(res.statusCode).toBe(502);
     const failure = (await notices()).at(-1) ?? '';
-    expect(failure).toContain('Parakeet transcription failed with HTTP 500');
+    expect(failure).toContain('Transcription API request failed with HTTP 500');
     expect(failure).toContain('model failed to load');
   });
 });

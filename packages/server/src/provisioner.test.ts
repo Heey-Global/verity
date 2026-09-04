@@ -202,6 +202,11 @@ function fakeGit(canned: Array<{ match: RegExp; stdout?: string; reject?: boolea
         return { stdout: c.stdout ?? '', stderr: '' };
       }
     }
+    // Most provisioner fixtures model an established repository. Individual
+    // empty-repository tests override this with an explicit empty response.
+    if (joined.includes('ls-remote --heads')) {
+      return { stdout: `${'a'.repeat(40)}\trefs/heads/main\n`, stderr: '' };
+    }
     throw new Error(`fake git: no canned response for ${joined}`);
   };
   return { runner, calls };
@@ -4641,6 +4646,110 @@ describe('ProvisionerImpl (#174)', () => {
     ).toBe(true);
   });
 
+  it('bootstraps a fresh empty GitHub repository on its configured default branch', async () => {
+    const id = await seedProject('absent');
+    await ctx.store.updateProjectSettings(id, { defaultBranch: 'develop' });
+    const { runner: git, calls } = fakeGit([
+      { match: /ls-remote --heads/, stdout: '' },
+      { match: /\bclone\b/ },
+      { match: /remote set-url/ },
+      { match: /symbolic-ref HEAD refs\/heads\/develop/ },
+      { match: /rev-parse --verify HEAD/, reject: true },
+      { match: /commit --allow-empty -m chore: initialize project/ },
+      { match: /push -u origin develop/ },
+    ]);
+    const { client: docker } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      token: 'tok',
+      defaultImageRef: 'default',
+      ghTokenFilePath: '/etc/gh-token',
+      hostCloneRoot: '/srv/verity-dev/',
+      git,
+      isDirectory: () => false,
+    });
+
+    await expect(provisioner.provision(id)).resolves.toMatchObject({ state: 'active' });
+
+    expect(calls.find(({ args }) => args.includes('clone'))?.args).not.toContain('--branch');
+    expect(calls.find(({ args }) => args.includes('commit'))?.args).toEqual(
+      expect.arrayContaining([
+        'user.name=Verity',
+        'user.email=verity@localhost',
+        'commit.gpgsign=false',
+        '--allow-empty',
+      ]),
+    );
+    const push = calls.find(({ args }) => args.includes('push'));
+    expect(push?.args.join(' ')).toContain('http.extraheader=Authorization: Basic ');
+    expect(push?.args).toEqual(expect.arrayContaining(['push', '-u', 'origin', 'develop']));
+  });
+
+  it('re-provisions a still-empty remote without resetting an unknown origin branch', async () => {
+    const id = await seedProject('absent');
+    const { runner: git, calls } = fakeGit([
+      { match: /ls-remote --heads/, stdout: '' },
+      { match: /rev-parse --verify HEAD/, stdout: `${'b'.repeat(40)}\n` },
+      { match: /update-ref refs\/heads\/main b{40}/ },
+      { match: /symbolic-ref HEAD refs\/heads\/main/ },
+      { match: /push -u origin main/ },
+    ]);
+    const { client: docker } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      token: 'tok',
+      defaultImageRef: 'default',
+      ghTokenFilePath: '/etc/gh-token',
+      hostCloneRoot: '/srv/verity-dev/',
+      git,
+      isDirectory: () => true,
+    });
+    (provisioner as unknown as { isRepoDir: () => boolean }).isRepoDir = () => true;
+
+    await expect(provisioner.provision(id)).resolves.toMatchObject({ state: 'active' });
+    expect(calls.some(({ args }) => args.includes('fetch'))).toBe(false);
+    expect(calls.some(({ args }) => args.includes('reset'))).toBe(false);
+    expect(calls.some(({ args }) => args.includes('commit'))).toBe(false);
+    expect(calls.some(({ args }) => args.includes('update-ref'))).toBe(true);
+    expect(calls.some(({ args }) => args.includes('push'))).toBe(true);
+  });
+
+  it('fails provisioning clearly when the empty-repository bootstrap push is rejected', async () => {
+    const id = await seedProject('absent');
+    const { runner: git } = fakeGit([
+      { match: /ls-remote --heads/, stdout: '' },
+      { match: /\bclone\b/ },
+      { match: /remote set-url/ },
+      { match: /symbolic-ref HEAD refs\/heads\/main/ },
+      { match: /rev-parse --verify HEAD/, reject: true },
+      { match: /commit --allow-empty -m chore: initialize project/ },
+      { match: /push -u origin main/, reject: true },
+    ]);
+    const { client: docker } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      token: 'tok',
+      defaultImageRef: 'default',
+      ghTokenFilePath: '/etc/gh-token',
+      hostCloneRoot: '/srv/verity-dev/',
+      git,
+      isDirectory: () => false,
+    });
+
+    await expect(provisioner.provision(id)).rejects.toThrow(/push to 'main' was rejected/);
+    const row = await ctx.store.getProject(id);
+    expect(row?.state).toBe('failed');
+    expect(row?.provisionError).toMatch(/empty GitHub repository.*rejected/);
+    expect(row?.provisionError).not.toContain('tok');
+    expect(row?.provisionError).not.toContain(Buffer.from('x-access-token:tok').toString('base64'));
+  });
+
   it('serializes every managed-checkout synchronization for the same project', async () => {
     const id = await seedProject('active');
     await ctx.store.updateProjectSettings(id, { defaultBranch: 'main' });
@@ -4656,6 +4765,9 @@ describe('ProvisionerImpl (#174)', () => {
     let activeFetches = 0;
     let maxActiveFetches = 0;
     const git: GitRunner = async (args) => {
+      if (args.includes('ls-remote')) {
+        return { stdout: `${'a'.repeat(40)}\trefs/heads/main\n`, stderr: '' };
+      }
       if (args.includes('fetch')) {
         fetches += 1;
         activeFetches += 1;
@@ -4711,6 +4823,9 @@ describe('ProvisionerImpl (#174)', () => {
     let activeFetches = 0;
     let maxActiveFetches = 0;
     const git: GitRunner = async (args) => {
+      if (args.includes('ls-remote')) {
+        return { stdout: `${'a'.repeat(40)}\trefs/heads/main\n`, stderr: '' };
+      }
       if (args.includes('fetch')) {
         fetches += 1;
         activeFetches += 1;

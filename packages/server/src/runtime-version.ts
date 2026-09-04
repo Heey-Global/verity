@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-export const DEV_VERSION_SENTINEL = '0.0.0-dev';
+const DEV_VERSION_SENTINEL = '0.0.0-dev';
 export const SERVER_VERSION_STAMP = '/app/.verity-server-version';
 
 const RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;

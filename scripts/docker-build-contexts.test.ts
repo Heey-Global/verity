@@ -19,6 +19,16 @@ describe('selective Docker build contexts', () => {
   });
 
   it('preserves the preview package ESM contract in both runtime images', () => {
+    const previewPackage = JSON.parse(
+      readFileSync('packages/preview-tunnel/package.json', 'utf8'),
+    ) as { dependencies: { ws: string } };
+    const lockfile = JSON.parse(readFileSync('package-lock.json', 'utf8')) as {
+      packages: Record<string, { version?: string }>;
+    };
+
+    expect(lockfile.packages['node_modules/ws']?.version).toBe(previewPackage.dependencies.ws);
+    expect(lockfile.packages['packages/preview-tunnel/node_modules/ws']).toBeUndefined();
+
     for (const dockerfilePath of [
       'deploy/preview-edge.Dockerfile',
       'deploy/preview-connector.Dockerfile',

@@ -446,7 +446,7 @@ export async function reconcileControlPlanePostgres(
  * which has nothing about to change and no candidate container to read a
  * resolved `DATABASE_URL` from.
  */
-export const CONTROL_PLANE_POSTGRES_SERVICE = 'postgres';
+const CONTROL_PLANE_POSTGRES_SERVICE = 'postgres';
 
 export interface ControlPlanePostgresState {
   /** The digest-pinned image the deployment's PostgreSQL is running. */

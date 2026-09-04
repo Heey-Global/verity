@@ -16,7 +16,7 @@ import type { StandbyLifecycle } from './standby-lifecycle.js';
  * still there to serve again if the new generation does not work out.
  */
 
-export type StandbyFollowerStep =
+type StandbyFollowerStep =
   /** No operation is under way, or the directive is not about this Server. */
   | 'idle'
   /** The directive matches what this Server already is. */

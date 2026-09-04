@@ -24,7 +24,7 @@ const GRANT_CAPABILITY_BYTES = 32;
  */
 export type SecretGrantIssueRecorder = (txn: SecretAuditTxn | undefined) => Promise<void>;
 
-export type GrantCapabilityRecord = {
+type GrantCapabilityRecord = {
   capabilityHash: string;
   claims: RunGrantClaims;
   consumedAt?: string;
@@ -39,7 +39,7 @@ export interface SecretGrantStore {
 
 export type SecretGrantIssue = { capability: string; claims: RunGrantClaims };
 
-export type ResolvedSecrets = ReadonlyMap<string, Uint8Array> & {
+type ResolvedSecrets = ReadonlyMap<string, Uint8Array> & {
   /**
    * Releases resolver-owned plaintext after sealing. Resolvers that return cached/shared buffers
    * must omit this hook; the broker never mutates an ordinary map supplied by a collaborator.

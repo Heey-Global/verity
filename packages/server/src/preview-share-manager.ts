@@ -21,8 +21,8 @@ const CREATING_LEASE_MS = 2 * 60_000;
 const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
-export const MIN_PREVIEW_TTL_SECONDS = 15 * 60;
-export const MAX_PREVIEW_TTL_SECONDS = 8 * 60 * 60;
+const MIN_PREVIEW_TTL_SECONDS = 15 * 60;
+const MAX_PREVIEW_TTL_SECONDS = 8 * 60 * 60;
 
 export interface PreviewEdgeCreate {
   pinHash: string;

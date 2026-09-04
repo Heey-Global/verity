@@ -33,7 +33,7 @@ const mergeStateSchema = z
   .optional()
   .catch(undefined);
 
-export const sessionPrSchema = z.object({
+const sessionPrSchema = z.object({
   phase: z.enum(['open', 'merged', 'closed']),
   pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
   // Tri-state: true = mergeable, false = blocked/conflict, null = unknown (checks
@@ -157,7 +157,7 @@ export const sessionListEnvelopeSchema = z.union([
 ]);
 export type SessionListEnvelope = z.infer<typeof sessionListEnvelopeSchema>;
 
-export const messageSearchResultSchema = z.object({
+const messageSearchResultSchema = z.object({
   id: z.number().int().positive(),
   sessionId: z.string().min(1),
   sessionName: z.string().nullable(),
@@ -175,7 +175,7 @@ export type MessageSearchResult = z.infer<typeof messageSearchResultSchema>;
  * the client uses to retract it (#80). Accepts a bare string from an OLDER server
  * (pre-#80, `queued: string[]`) and normalizes it to an id-less item — it then
  * renders as a waiting bubble but isn't retractable (no handle), the safe degrade. */
-export const queuedItemSchema = z.union([
+const queuedItemSchema = z.union([
   z.string().transform((text) => ({ id: '', text })),
   z.object({
     id: z.string(),
@@ -412,7 +412,7 @@ export type ProjectRecord = z.infer<typeof projectRecordSchema>;
 /** The result of linking a local project to GitHub. `pullRequest` is present when the
  *  target repository already had history: the project's history rides in on
  *  `importBranch` and is NOT on the default branch until that pull request merges. */
-export const linkedProjectSchema = z.object({
+const linkedProjectSchema = z.object({
   project: projectRecordSchema,
   importBranch: z.string().optional(),
   pullRequest: z.object({ number: z.number(), url: z.string() }).optional(),
@@ -526,7 +526,7 @@ const agentLoopResponseSchema = z.object({ loop: agentLoopSchema });
 const agentLoopsResponseSchema = z.object({ loops: z.array(agentLoopSchema) });
 
 // Dev servers — one-or-more named preview processes per project.
-export const devServerSchema = z.object({
+const devServerSchema = z.object({
   id: z.string(),
   projectId: z.string(),
   sourceKey: z.string().nullable().default(null),
@@ -559,7 +559,7 @@ export interface DevServerCreateRequest {
 }
 export type DevServerPatchRequest = Omit<DevServerCreateRequest, 'sourceKey'>;
 
-export const publicPreviewShareSchema = z.object({
+const publicPreviewShareSchema = z.object({
   id: z.string(),
   projectId: z.string(),
   devServerId: z.string().nullable(),
@@ -595,7 +595,7 @@ export interface DetectedDevServerSetupRequest {
   }>;
 }
 
-export const devServerSuggestionSchema = z.object({
+const devServerSuggestionSchema = z.object({
   key: z.string(),
   name: z.string(),
   command: z.string(),
@@ -758,7 +758,7 @@ const serverUpdateEnvelopeSchema = z.object({
 });
 const serverUpdateAcceptedSchema = z.object({ operation: serverUpdateOperationSchema });
 
-export const meetingTranscriptionBackendStatusSchema = z.object({
+const meetingTranscriptionBackendStatusSchema = z.object({
   transcribeBackendMode: z.enum(['local', 'external']).nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -797,7 +797,7 @@ export const driveFileListSchema = z.object({
 });
 export type DriveFileList = z.infer<typeof driveFileListSchema>;
 
-export const googleDriveConnectResultSchema = z.object({
+const googleDriveConnectResultSchema = z.object({
   connected: z.literal(true),
   accountEmail: z.string().nullable(),
 });
@@ -918,7 +918,7 @@ export type GithubAppValidateResult = z.infer<typeof githubAppValidateSchema>;
 
 /** Response of `POST /github/app/manifest/prepare`: the single-use token that
  *  authenticates the browser-opened manifest `start` flow (audit C1 follow-up). */
-export const manifestPrepareSchema = z.object({ startToken: z.string().min(1) });
+const manifestPrepareSchema = z.object({ startToken: z.string().min(1) });
 
 /** Result of `POST /doppler/validate` (#320, onboarding — OPTIONAL step): a live
  *  check that the stored Doppler Service Account token actually lists projects.
@@ -989,7 +989,7 @@ export type SigningKeyGenerateResult = z.infer<typeof signingKeyGenerateSchema>;
  *  material, so it is returned even while the store is sealed) for re-display in
  *  Settings — e.g. to register it on GitHub as a Signing Key. `configured` is
  *  whether a signing private key (DB contents or a file path) is set. */
-export const signingKeySchema = z.object({
+const signingKeySchema = z.object({
   configured: z.boolean(),
   publicKey: z.string().nullable(),
 });
@@ -1286,7 +1286,7 @@ export const sessionFileContentSchema = z.object({
 });
 export type SessionFileContent = z.infer<typeof sessionFileContentSchema>;
 
-export const sessionFileUploadedSchema = z.object({
+const sessionFileUploadedSchema = z.object({
   path: z.string(),
   size: z.number().int().nonnegative(),
 });
@@ -1361,7 +1361,7 @@ export interface SpawnRequest {
   issue?: number;
 }
 
-export const workflowStepSchema = z.object({
+const workflowStepSchema = z.object({
   id: z.string(),
   ordinal: z.number().int().nonnegative(),
   kind: z.string(),
@@ -1383,7 +1383,7 @@ export const workflowStepSchema = z.object({
   completionGate: z.string(),
 });
 
-export const workflowSchema = z.object({
+const workflowSchema = z.object({
   id: z.string(),
   version: z.number().int().positive(),
   state: z.enum([
@@ -1578,18 +1578,37 @@ export const secretUnlockedSchema = z.object({
 });
 export type SecretUnlocked = z.infer<typeof secretUnlockedSchema>;
 
-export const pairingIdentitySchema = z.object({
+const pairingIdentitySchema = z.object({
   serverId: z.string().min(16).max(128),
   identityKey: z.string().min(40).max(128),
   signature: z.string().min(40).max(128),
 });
 export type PairingIdentity = z.infer<typeof pairingIdentitySchema>;
 
-export const pairingRedeemedSchema = z.object({
+const pairingRedeemedSchema = z.object({
   bootstrapToken: z.string().min(32).max(128),
   expiresAt: z.string().datetime(),
 });
 export type PairingRedeemed = z.infer<typeof pairingRedeemedSchema>;
+
+const pairingInvitationSchema = z.object({
+  code: z.string().min(32).max(128),
+  expiresAt: z.string().datetime(),
+});
+export type PairingInvitation = z.infer<typeof pairingInvitationSchema>;
+
+const pairedDeviceSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().nullable(),
+  createdAt: z.number(),
+  isCurrent: z.boolean(),
+});
+export type PairedDevice = z.infer<typeof pairedDeviceSchema>;
+
+const deviceEnrolledSchema = z.object({
+  token: z.string().min(1),
+  tokenId: z.string().min(1),
+});
 
 const streamTicketSchema = z.object({
   ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
@@ -2024,6 +2043,33 @@ export class VerityClient {
       body: JSON.stringify({ code }),
     });
     return pairingRedeemedSchema.parse(await res.json());
+  }
+
+  async enrollPairingInvitation(
+    code: string,
+    enrollmentId: string,
+    deviceLabel?: string,
+  ): Promise<{ token: string; tokenId: string }> {
+    const res = await this.request('/pair/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, enrollmentId, ...(deviceLabel ? { deviceLabel } : {}) }),
+    });
+    return deviceEnrolledSchema.parse(await res.json());
+  }
+
+  async createPairingInvitation(): Promise<PairingInvitation> {
+    const res = await this.request('/devices/pairing-invitations', { method: 'POST' });
+    return pairingInvitationSchema.parse(await res.json());
+  }
+
+  async listPairedDevices(): Promise<PairedDevice[]> {
+    const res = await this.request('/devices', { method: 'GET' });
+    return z.object({ devices: z.array(pairedDeviceSchema) }).parse(await res.json()).devices;
+  }
+
+  async revokePairedDevice(id: string): Promise<void> {
+    await this.request(`/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
   /** First-run: set the master password (derives + stores the key, unlocks) and

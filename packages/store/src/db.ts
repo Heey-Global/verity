@@ -143,7 +143,7 @@ export const CONTROL_PLANE_RECONNECT_INTERVAL_MS = 1_000;
  * finish a handshake, and short enough that the budget still affords about a
  * dozen attempts.
  */
-export const CONTROL_PLANE_CONNECT_TIMEOUT_MS = 10_000;
+const CONTROL_PLANE_CONNECT_TIMEOUT_MS = 10_000;
 
 /**
  * PostgreSQL error codes and socket errno values that mean "not reachable /

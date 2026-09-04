@@ -46,6 +46,7 @@ import {
 } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { clearPairingBootstrap, getPairingBootstrap } from '../../lib/pairingSession';
+import { deviceLabel } from '../../lib/deviceLabel';
 import { getServerProfile } from '../../lib/serverProfile';
 import { safeReturnTo } from '../../lib/safeReturnTo';
 
@@ -175,7 +176,7 @@ function MasterPasswordStep({
       ? (getPairingBootstrap(profile.serverId) ?? undefined)
       : undefined;
     void client
-      .initSecretPassword(password, undefined, pairingBootstrap)
+      .initSecretPassword(password, deviceLabel(), pairingBootstrap)
       .then((res) => {
         if (profile && pairingBootstrap) clearPairingBootstrap(profile.serverId, pairingBootstrap);
         // Store this device's minted bearer token (audit C1) when the gate is
@@ -209,7 +210,7 @@ function MasterPasswordStep({
       ? (getPairingBootstrap(profile.serverId) ?? undefined)
       : undefined;
     void client
-      .unlockSecret(password, undefined, pairingBootstrap)
+      .unlockSecret(password, deviceLabel(), pairingBootstrap)
       .then((res) => {
         if (profile && pairingBootstrap) clearPairingBootstrap(profile.serverId, pairingBootstrap);
         if (res?.token) void setAuthToken(getVerityBaseUrl(), res.token, res.tokenId);

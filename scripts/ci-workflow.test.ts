@@ -346,6 +346,19 @@ describe('mobile native patch CI', () => {
 });
 
 describe('native iOS compile gate', () => {
+  it('dispatches the pinned organization Gitleaks policy for generated release PRs', () => {
+    const workflow = parse(readFileSync('.github/workflows/gitleaks-dispatch.yml', 'utf8')) as {
+      on?: { workflow_dispatch?: unknown };
+      permissions?: { contents?: string };
+      jobs: Record<string, { uses?: string }>;
+    };
+    expect(workflow.on?.workflow_dispatch).toBeDefined();
+    expect(workflow.permissions?.contents).toBe('read');
+    expect(workflow.jobs.gitleaks?.uses).toMatch(
+      /^Heey-Global\/\.github\/\.github\/workflows\/gitleaks\.yml@[0-9a-f]{40}$/,
+    );
+  });
+
   it('compiles a non-publishing simulator build on a GitHub macOS runner', () => {
     const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
       on?: { pull_request?: unknown };
@@ -363,30 +376,50 @@ describe('native iOS compile gate', () => {
     expect(commands).not.toMatch(/testflight|submit/iu);
   });
 
-  it('builds and uploads TestFlight releases on GitHub instead of EAS Build', () => {
+  it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { 'runs-on': string; steps: WorkflowStep[] }>;
     };
     const job = release.jobs['publish-mobile-native'];
     expect(job?.['runs-on']).toBe('macos-26');
     const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
-    expect(commands).toContain('expo prebuild --platform ios');
-    expect(commands).toContain('xcodebuild');
-    expect(commands).toContain('archive');
+    expect(commands).toContain('eas-cli@20.3.0 build');
+    expect(commands).toContain('--platform ios');
+    expect(commands).toContain('--profile testflight');
+    expect(commands).toContain('--local');
+    expect(commands).toContain('--non-interactive');
+    expect(commands).toContain('--output "$ipa"');
     expect(commands).toContain('altool --upload-app');
-    expect(commands).not.toContain('eas-cli');
-    expect(commands.indexOf('patch:native')).toBeLessThan(commands.indexOf('expo prebuild'));
-    expect(commands).toContain('scheme=Verity');
+    expect(commands).not.toContain('xcodebuild');
+    expect(commands.indexOf('patch:native')).toBeLessThan(commands.indexOf('eas-cli@20.3.0 build'));
     expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/builds');
-    expect(commands).toContain('CURRENT_PROJECT_VERSION="$next_build"');
+    expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/apps/$ASC_APP_ID');
+    expect(commands).toContain('actual_bundle_id" != "$expected_bundle_id');
+    expect(commands).toContain('latest_build + 1');
+    expect(commands).toContain('export VERITY_IOS_BUILD_NUMBER="$next_build"');
+    expect(commands).toContain('config.fetch("cli")["appVersionSource"] = "local"');
+    expect(commands).toContain('["autoIncrement"] = false');
+    expect(commands).toContain('Print :CFBundleVersion');
+    expect(commands).toContain('filter[version]=$next_build');
+    expect(commands).toContain('processingState');
+    expect(commands).toContain('--retry 3 --retry-all-errors --max-time 30');
+    expect(commands).toContain('App Store Connect check failed transiently');
+    expect(commands.indexOf('altool --upload-app')).toBeLessThan(
+      commands.indexOf('filter[version]=$next_build'),
+    );
     const releaseSource = readFileSync('.github/workflows/release.yml', 'utf8');
-    expect(releaseSource).toContain("grep -q '^apps/mobile/'");
+    expect(releaseSource).toContain(
+      '^apps/mobile/(CHANGELOG\\.md|app\\.config\\.ts|version\\.txt)$',
+    );
     expect(releaseSource).toContain('gh workflow run mobile-native-verify.yml');
+    expect(releaseSource).toContain('gh workflow run gitleaks-dispatch.yml');
 
     const appConfig = readFileSync('apps/mobile/app.config.ts', 'utf8');
     expect(appConfig).toContain("'expo-channel-name': expoUpdateChannel");
-    const prebuild = job?.steps.find((step) => step.name === 'Generate the iOS project');
-    expect(prebuild?.env?.EXPO_UPDATE_CHANNEL).toBe('testflight');
+    const easConfig = JSON.parse(readFileSync('apps/mobile/eas.json', 'utf8')) as {
+      submit: { testflight: { ios: { ascAppId: string } } };
+    };
+    expect(easConfig.submit.testflight.ios.ascAppId).toBe('6807746931');
   });
 });
 
@@ -395,8 +428,20 @@ describe('mobile OTA promotion', () => {
     const source = readFileSync('.github/workflows/mobile-ota.yml', 'utf8');
     expect(source).toContain('--branch "${{ steps.version.outputs.branch }}"');
     expect(source).toContain('channel:edit staging');
+    const create = source.match(/channel:create staging[^\n]*/)?.[0];
+    expect(create).toBeDefined();
+    // EAS channel:create only creates the named channel; branch assignment is a
+    // separate channel:edit operation, so passing --branch aborts the OTA job.
+    expect(create).not.toContain('--branch');
     expect(source).toContain('automation/promote-${OTA_TAG}');
     expect(source).toContain('--state open');
+    expect(source).toContain('git/ref/heads/${promotion_branch}');
+    expect(source).toContain('--method PATCH');
+    expect(source).toContain('-F force=true');
+    expect(source).toContain('^automation/promote-mobile-v');
+    expect(source).toContain('createCommitOnBranch');
+    expect(source).toContain('signature.isValid');
+    expect(source).not.toContain('git commit -m "chore(mobile): promote OTA');
     expect(source).toContain('gh workflow run ci.yml --ref "$promotion_branch"');
     expect(source).toContain('git push origin "refs/tags/${OTA_TAG}"');
     expect(source).not.toContain('--channel testflight');
@@ -405,6 +450,10 @@ describe('mobile OTA promotion', () => {
 
   it('moves TestFlight to the approved EAS branch without rebuilding', () => {
     const source = readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8');
+    const workflow = parse(source) as { jobs: { promote: WorkflowJob } };
+    const steps = workflow.jobs.promote.steps;
+    const install = steps.findIndex((step) => step.run === 'npm ci');
+    const promote = steps.findIndex((step) => step.run?.includes('channel:edit testflight'));
     expect(source).toContain("github.ref == 'refs/heads/main'");
     expect(source).toContain('paths: [apps/mobile/ota-promotion.json]');
     expect(source).toContain('channel:edit testflight');
@@ -417,6 +466,15 @@ describe('mobile OTA promotion', () => {
     expect(source).toContain('gh release create');
     expect(source).toContain('gh release edit');
     expect(source).not.toContain('eas-cli@21.0.1 update');
+    // EAS loads app.config.ts for channel edits; without installed config
+    // plugins, promotion fails before it can move the channel.
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(promote);
+  });
+
+  it('does not compile the native app for an OTA promotion manifest', () => {
+    const source = readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8');
+    expect(source).toContain("'!apps/mobile/ota-promotion.json'");
   });
 });
 
@@ -603,6 +661,12 @@ describe('self-update release gate', () => {
       required: true,
       type: 'string',
     });
+    expect(workflow.on.workflow_call?.inputs?.['bootstrap-version']).toEqual({
+      description: 'Explicit one-time version allowed to create the first Server package',
+      required: false,
+      default: '',
+      type: 'string',
+    });
     expect(workflow.on.workflow_dispatch).toBeDefined();
   });
 
@@ -636,6 +700,91 @@ describe('self-update release gate', () => {
     // the text of this step would agree with a broken version of it.
   });
 
+  it('prepares a candidate-backed predecessor only for the first package bootstrap', () => {
+    const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = parsed.jobs['live-smoke']?.steps ?? [];
+    const load = steps.find(
+      (step) => step.name === 'Load the previous release into the isolated daemon',
+    );
+    const build = steps.find(
+      (step) => step.name === 'Build the Server image into the isolated daemon',
+    );
+    const bootstrap = steps.find(
+      (step) => step.name === 'Prepare the first-release bootstrap predecessor',
+    );
+    const smoke = steps.find((step) => step.name === 'Run the live self-update smoke');
+
+    expect(load?.if).toBe("env.VERITY_SMOKE_BOOTSTRAP != 'true'");
+    expect(bootstrap?.if).toBe("env.VERITY_SMOKE_BOOTSTRAP == 'true'");
+    expect(bootstrap?.run).toContain(
+      'docker tag "$VERITY_SMOKE_IMAGE" "$VERITY_SMOKE_PREVIOUS_IMAGE"',
+    );
+    expect(steps.indexOf(build as WorkflowStep)).toBeLessThan(
+      steps.indexOf(bootstrap as WorkflowStep),
+    );
+    expect(steps.indexOf(bootstrap as WorkflowStep)).toBeLessThan(
+      steps.indexOf(smoke as WorkflowStep),
+    );
+  });
+
+  it('stages the workflow smoke harness before replacing the checkout with the candidate', () => {
+    const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = parsed.jobs['live-smoke']?.steps ?? [];
+    const stageIndex = steps.findIndex(
+      (step) => step.name === 'Stage the workflow-owned live smoke harness',
+    );
+    const candidateCheckoutIndex = steps.findIndex(
+      (step) => step.uses?.startsWith('actions/checkout@') && step.with?.ref !== undefined,
+    );
+    const restoreIndex = steps.findIndex(
+      (step) => step.name === 'Restore the workflow-owned live smoke harness',
+    );
+    const smoke = steps.find((step) => step.name === 'Run the live self-update smoke');
+    const smokeIndex = steps.indexOf(smoke as WorkflowStep);
+
+    expect(stageIndex).toBeGreaterThanOrEqual(0);
+    expect(candidateCheckoutIndex).toBeGreaterThan(stageIndex);
+    expect(restoreIndex).toBeGreaterThan(candidateCheckoutIndex);
+    expect(smokeIndex).toBeGreaterThan(restoreIndex);
+    expect(steps[stageIndex]?.run).toContain(
+      'install -m 0755 deploy/bin/verity-self-update-live-smoke',
+    );
+    expect(steps[stageIndex]?.run).toContain(
+      'install -m 0644 packages/server/src/self-update-live-smoke.ts',
+    );
+    expect(steps[restoreIndex]?.run).toContain(
+      'install -m 0755 "$RUNNER_TEMP/verity-self-update-harness/verity-self-update-live-smoke"',
+    );
+    expect(steps[restoreIndex]?.run).toContain('deploy/bin/verity-self-update-live-smoke');
+    expect(steps[restoreIndex]?.run).toContain('packages/server/src/self-update-live-smoke.ts');
+    expect(smoke?.run).toContain('deploy/bin/verity-self-update-live-smoke');
+  });
+
+  it('provides the live smoke with a fresh masked database password', () => {
+    const parsed = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const smoke = parsed.jobs['live-smoke']?.steps?.find(
+      (step) => step.name === 'Run the live self-update smoke',
+    );
+    const run = smoke?.run ?? '';
+
+    const generate = run.indexOf('postgres_password="$(openssl rand -hex 32)"');
+    const mask = run.indexOf('echo "::add-mask::$postgres_password"');
+    const exportPassword = run.indexOf('export VERITY_POSTGRES_PASSWORD="$postgres_password"');
+    const invoke = run.indexOf('deploy/bin/verity-self-update-live-smoke');
+
+    expect(generate).toBeGreaterThanOrEqual(0);
+    expect(mask).toBeGreaterThan(generate);
+    expect(exportPassword).toBeGreaterThan(mask);
+    expect(invoke).toBeGreaterThan(exportPassword);
+    expect(run).not.toMatch(/VERITY_POSTGRES_PASSWORD=['"][0-9a-f]{64}['"]/);
+  });
+
   it('blocks every backend publish on the cutover verdict', () => {
     // The trigger above only produces a verdict; this is what makes it a gate.
     // Split across two files, so each half looks removable on its own: the gate
@@ -656,6 +805,7 @@ describe('self-update release gate', () => {
     expect(gate?.if).toBe("needs.release-please.outputs.backend-release-created == 'true'");
     expect(gate?.uses).toBe('./.github/workflows/self-update.yml');
     expect(gate?.with?.['candidate-sha']).toBe('${{ needs.release-please.outputs.backend-sha }}');
+    expect(gate?.with?.['bootstrap-version']).toBe('16.4.0');
 
     // Every job that pushes an artifact a managed deployment resolves at the
     // released version. The mobile train is deliberately absent: it carries no
@@ -683,6 +833,13 @@ describe('self-update release gate', () => {
 
   it('keeps maintenance bridge promises immutable and release-controlled', () => {
     const source = readFileSync('.github/workflows/release.yml', 'utf8');
+    const parsed = parse(source) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const validation = parsed.jobs['release-please']?.steps?.find(
+      (step) => step.name === 'Validate maintenance backend release',
+    );
+    expect(validation?.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(source).toContain('backend-schema-forward-max:');
     expect(source).toContain('VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}');
     expect(source).toContain('finalize-maintenance-backend:');
@@ -1052,6 +1209,26 @@ describe('GitHub-hosted runner boundary', () => {
     );
     expect(gate?.run).toContain(
       'require_success public-snapshot "${{ needs.public-snapshot.result }}"',
+    );
+  });
+
+  it('runs Knip with its optional parser binding and makes it part of CI-Checks', () => {
+    const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs: Record<string, { if?: string; needs?: string | string[]; steps?: WorkflowStep[] }>;
+    };
+    const knip = ci.jobs.knip;
+    const commands = (knip?.steps ?? []).flatMap((step) => (step.run ? [step.run] : []));
+    expect(knip?.if).toBe("needs.changes.outputs.lint == 'true'");
+    expect(commands).toContain('npm ci --ignore-scripts');
+    expect(commands).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('--omit=optional')]),
+    );
+    expect(commands).toContain('npm run knip');
+
+    const gate = ci.jobs['ci-checks'];
+    expect(gate?.needs).toContain('knip');
+    expect((gate?.steps ?? []).map((step) => step.run ?? '').join('\n')).toContain(
+      'require_when_changed knip "${{ needs.knip.result }}" "${{ needs.changes.outputs.lint }}"',
     );
   });
 

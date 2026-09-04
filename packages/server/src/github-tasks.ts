@@ -26,7 +26,7 @@ import {
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql';
 
 /** A single field-level GraphQL error (GitHub returns these alongside partial `data`). */
-export interface GraphQLError {
+interface GraphQLError {
   message: string;
 }
 
@@ -90,17 +90,17 @@ export async function githubGraphQL<T>(
 
 /** The three content kinds a Projects v2 item can hold. A draft has no repo/number
  *  until it's converted into a real issue. */
-export type TaskContentType = 'ISSUE' | 'PULL_REQUEST' | 'DRAFT_ISSUE';
+type TaskContentType = 'ISSUE' | 'PULL_REQUEST' | 'DRAFT_ISSUE';
 
 /** One resolved custom-field value on a board item (e.g. `{ field: 'Priority', value: 'P1' }`).
  *  Single-select → the option name, number → its string form, text → the text, date → the date. */
-export interface TaskFieldValue {
+interface TaskFieldValue {
   field: string;
   value: string;
 }
 
 /** A single-select option (id + display name) available on a board field. */
-export interface TaskFieldOption {
+interface TaskFieldOption {
   id: string;
   name: string;
 }
@@ -109,7 +109,7 @@ export interface TaskFieldOption {
  *  single-select field like Priority/Status — the selectable options. `options` is
  *  empty for non-single-select fields (text/number/date/iteration); those aren't
  *  settable via {@link GitHubTaskService.setField} yet. */
-export interface TaskField {
+interface TaskField {
   id: string;
   name: string;
   options: TaskFieldOption[];
@@ -143,7 +143,7 @@ export interface TaskBoard {
   fields: TaskField[];
 }
 
-export interface TaskRepositoryRef {
+interface TaskRepositoryRef {
   owner: string;
   repo: string;
 }

@@ -407,7 +407,8 @@ if [ "$REVIEW_BOUNDARY_MISSING" = "1" ]; then
 
     git fetch --no-tags $FETCH_CANDIDATE +refs/heads/${SHORT_BASE#*/}:refs/remotes/$SHORT_BASE
     verity-code-review run     # isolated reviewer, concise findings
-    verity-code-review mark    # after every finding is addressed"
+    # Fix findings or decline them with a reason; re-run after a fix changes HEAD.
+    verity-code-review mark"
   else
     # Unindented continuation: the banner body sits at column 0 and only the
     # command lines are indented, so a wrapped sentence has to match the body.
@@ -433,7 +434,8 @@ that does exist and name it explicitly — a bare 'run' would resolve
 this same base:
 
     verity-code-review run <other-base-ref>
-    verity-code-review mark    # after every finding is addressed
+    # Fix findings or decline them with a reason; re-run after a fix changes HEAD.
+    verity-code-review mark
 
 Do not reach for 'mark' on its own — it records the marker without
 reviewing anything.
@@ -472,7 +474,8 @@ without improvising a backend-specific sub-agent (no backend registers a
 
     verity-code-review run
 
-Then, once every finding is addressed, record the reviewed HEAD:
+Then, once findings are fixed or declined with a brief reason, record the
+reviewed HEAD. Re-run the review first if a fix changed HEAD:
 
     verity-code-review mark
 

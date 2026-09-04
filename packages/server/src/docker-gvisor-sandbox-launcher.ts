@@ -30,13 +30,6 @@ export interface SecretJobChannelBinding {
   sealEnvelope: (redemption: RunGrantRedemption) => Promise<SecretEnvelope>;
 }
 
-/** Host-owned runtime check. It must prove that the configured Docker runtime is the approved,
- * pinned runsc installation. A missing or mismatched runtime rejects; the launcher never retries
- * with runc or the daemon default. */
-export interface GvisorRuntimeVerifier {
-  verify(runtimeName: string): Promise<void>;
-}
-
 export interface DockerGvisorSandboxLauncherOptions {
   docker: DockerClient;
   channel: GvisorSandboxChannel;

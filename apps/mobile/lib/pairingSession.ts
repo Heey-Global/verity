@@ -1,8 +1,11 @@
 import { VerityClient, type OnboardingStatus } from '@verity/mobile';
 import { getRandomBytes } from 'expo-crypto';
+import * as SecureStore from 'expo-secure-store';
 
 import { setVerityBaseUrl } from './client';
+import { deviceLabel } from './deviceLabel';
 import { copyAuthTokenToEndpoint } from './authToken';
+import { setAuthToken } from './authToken';
 import type { VerityPairingPayload } from './pairing';
 import { createPinnedFetch, verifyPairedIdentity } from './pinnedTransport';
 import {
@@ -14,12 +17,47 @@ import {
 } from './serverProfile';
 
 let bootstrap: { serverId: string; token: string; expiresAt: number } | null = null;
+let enrollment: { serverId: string; pairingCode: string; token: string; tokenId: string } | null =
+  null;
+let enrollmentAttempt: { serverId: string; pairingCode: string; enrollmentId: string } | null =
+  null;
+const ENROLLMENT_ATTEMPT_KEY = 'verity.pairingEnrollmentAttempt.v1';
 
 function challenge(): string {
   const bytes = getRandomBytes(32);
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function getEnrollmentAttempt(
+  serverId: string,
+  pairingCode: string,
+): Promise<NonNullable<typeof enrollmentAttempt>> {
+  if (enrollmentAttempt?.serverId === serverId && enrollmentAttempt.pairingCode === pairingCode) {
+    return enrollmentAttempt;
+  }
+  try {
+    const encoded = await SecureStore.getItemAsync(ENROLLMENT_ATTEMPT_KEY);
+    if (encoded !== null) {
+      const stored = JSON.parse(encoded) as Partial<NonNullable<typeof enrollmentAttempt>>;
+      if (
+        stored.serverId === serverId &&
+        stored.pairingCode === pairingCode &&
+        typeof stored.enrollmentId === 'string'
+      ) {
+        enrollmentAttempt = stored as NonNullable<typeof enrollmentAttempt>;
+        return enrollmentAttempt;
+      }
+    }
+  } catch {
+    // A corrupt or inaccessible retry record is replaced below.
+  }
+  enrollmentAttempt = { serverId, pairingCode, enrollmentId: challenge() };
+  await SecureStore.setItemAsync(ENROLLMENT_ATTEMPT_KEY, JSON.stringify(enrollmentAttempt), {
+    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+  });
+  return enrollmentAttempt;
 }
 
 /** Complete TLS pinning + signed identity verification before persisting anything. */
@@ -47,8 +85,51 @@ export async function establishPairing(
     signature: identity.signature,
   });
   const retained =
-    bootstrap?.serverId === payload.serverId && bootstrap.expiresAt > Date.now() ? bootstrap : null;
+    payload.kind === 'installer' &&
+    bootstrap?.serverId === payload.serverId &&
+    bootstrap.expiresAt > Date.now()
+      ? bootstrap
+      : null;
   if (retained === null) {
+    if (payload.kind === 'device') {
+      const retained =
+        enrollment?.serverId === payload.serverId && enrollment.pairingCode === payload.pairingCode
+          ? enrollment
+          : null;
+      const attempt = await getEnrollmentAttempt(payload.serverId, payload.pairingCode);
+      const enrolled =
+        retained ??
+        (await client.enrollPairingInvitation(
+          payload.pairingCode,
+          attempt.enrollmentId,
+          deviceLabel(),
+        ));
+      enrollment = { serverId: payload.serverId, pairingCode: payload.pairingCode, ...enrolled };
+      // Enrollment consumes the invitation. Persist its token and the already
+      // verified identity before the best-effort status read, but never mutate
+      // local routing for a rejected/expired invitation.
+      const tokenPersisted = await setAuthToken(
+        profile.activeUrl,
+        enrolled.token,
+        enrolled.tokenId,
+      );
+      if (!tokenPersisted) {
+        throw new Error('Could not save the device credential. Try pairing again.');
+      }
+      await saveServerProfile(profile);
+      await setVerityBaseUrl(profile.activeUrl);
+      const authenticatedClient = new VerityClient({
+        baseUrl: profile.activeUrl,
+        fetch: pinnedFetch,
+        uploadFetch: pinnedFetch,
+        getToken: () => enrolled.token,
+      });
+      const status = await authenticatedClient.fetchOnboardingStatus();
+      enrollment = null;
+      enrollmentAttempt = null;
+      await SecureStore.deleteItemAsync(ENROLLMENT_ATTEMPT_KEY);
+      return status;
+    }
     const redeemed = await client.redeemPairingCode(payload.pairingCode);
     const expiry = Date.parse(redeemed.expiresAt);
     if (!Number.isFinite(expiry) || expiry <= Date.now())

@@ -3,9 +3,9 @@ import { DockerError, type DockerClient, type ContainerInspect } from './docker.
 import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
 import { CONTAINER_GENERATION_LABEL } from './project-relay-migration.js';
 
-export type SandboxUpdateKind = 'normal' | 'security';
-export type SandboxUpdateCategory = 'software' | 'security' | 'configuration';
-export type SandboxUpdateState = 'current' | 'available' | 'unknown';
+type SandboxUpdateKind = 'normal' | 'security';
+type SandboxUpdateCategory = 'software' | 'security' | 'configuration';
+type SandboxUpdateState = 'current' | 'available' | 'unknown';
 
 /**
  * Whether Verity's own automatic recreate is still expected to close the gap this
@@ -27,7 +27,7 @@ export type SandboxUpdateState = 'current' | 'available' | 'unknown';
  *
  * Clients decide what to surface from this, not from `state` alone.
  */
-export type SandboxSelfRepairState = 'converging' | 'stalled';
+type SandboxSelfRepairState = 'converging' | 'stalled';
 
 export interface SandboxUpdateStatus {
   state: SandboxUpdateState;
@@ -57,7 +57,7 @@ export interface SandboxUpdateStatus {
  * `statusAll` resolves this once and each project then only needs its own
  * container inspect.
  */
-export interface SandboxUpdateTarget {
+interface SandboxUpdateTarget {
   defaultProjectImage: string;
   targetVersion?: string | undefined;
   toolkitFeatureRef?: string | undefined;
@@ -95,14 +95,36 @@ const CURRENT: SandboxUpdateStatus = {
   selfRepair: 'converging',
 };
 
+/**
+ * How long one resolved {@link SandboxUpdateTarget} is reused.
+ *
+ * The target is the same answer for every project and every client, and it costs
+ * a docker image inspect plus — when the image cannot answer — a registry
+ * manifest walk. `statusAll` already shares it within ONE request; without this
+ * every poll from every device still repaid it, several times a minute forever,
+ * to learn that the image did not change. A new image becomes visible one TTL
+ * later, which is far below the time a rollout takes to reach a sandbox anyway.
+ *
+ * NO INVALIDATION HOOK, unlike the branch label: everything the target is built
+ * from — the configured image ref, its labels, the toolkit feature ref, the
+ * signing-broker token hash — is answered by a source this module only reads, so
+ * there is no single edit for a hook to hang off. The TTL is therefore the whole
+ * freshness contract, and it bounds every one of those inputs: a settings change
+ * (or a broker token rotation) shows up in the update status within 30 s, and a
+ * status that is at most one window behind is what the badge already means.
+ */
+const TARGET_TTL_MS = 30_000;
+
 export function createSandboxUpdateChecker(args: {
   docker: DockerClient;
   defaultProjectImage: SandboxRefSource;
   defaultProjectImageVersion?: SandboxVersionSource | undefined;
   toolkitFeatureRef?: SandboxRefSource | undefined;
   signingBrokerTokenHash?: (() => Promise<string | null | undefined>) | undefined;
+  /** Override {@link TARGET_TTL_MS} (tests). `0` disables the cache. */
+  targetTtlMs?: number | undefined;
 }): SandboxUpdateChecker {
-  const resolveTarget = async (): Promise<SandboxUpdateTarget | undefined> => {
+  const resolveTargetUncached = async (): Promise<SandboxUpdateTarget | undefined> => {
     const defaultProjectImage = await resolveSandboxRefSource(args.defaultProjectImage);
     if (defaultProjectImage === undefined) return undefined;
     const [targetLabels, toolkitFeatureRef, signingBrokerTokenHash] = await Promise.all([
@@ -124,6 +146,43 @@ export function createSandboxUpdateChecker(args: {
       toolkitFeatureRef,
       signingBrokerTokenHash,
     };
+  };
+
+  // Stale-while-revalidate around that resolution, plus single-flight so a burst
+  // of polls against a cold cache produces ONE registry walk rather than one per
+  // request. Both failure shapes are paced by the TTL like any other answer — a
+  // resolution that returns `undefined` because it could not tell, and one that
+  // throws (see the catch below): retrying a broken registry on every poll is
+  // what the cache exists to stop.
+  const ttl = args.targetTtlMs ?? TARGET_TTL_MS;
+  let cachedTarget: { target: SandboxUpdateTarget | undefined; at: number } | undefined;
+  let inFlight: Promise<SandboxUpdateTarget | undefined> | undefined;
+  const refreshTarget = (): Promise<SandboxUpdateTarget | undefined> => {
+    inFlight ??= resolveTargetUncached()
+      .then((target) => {
+        cachedTarget = { target, at: Date.now() };
+        return target;
+      })
+      .catch((error: unknown) => {
+        // A REJECTED resolution paces like a resolved one: without this the
+        // entry stays stale, so a registry that is down is retried on every poll
+        // by every client — the load the cache exists to prevent, arriving
+        // precisely when the far end is already failing. Nothing to stamp on a
+        // cold cache: there is no answer to serve, so the next call must retry.
+        if (cachedTarget !== undefined) cachedTarget = { ...cachedTarget, at: Date.now() };
+        throw error;
+      })
+      .finally(() => {
+        inFlight = undefined;
+      });
+    return inFlight;
+  };
+  const resolveTarget = async (): Promise<SandboxUpdateTarget | undefined> => {
+    if (ttl <= 0) return resolveTargetUncached();
+    const cached = cachedTarget;
+    if (cached === undefined) return refreshTarget();
+    if (Date.now() - cached.at >= ttl) void refreshTarget().catch(() => undefined);
+    return cached.target;
   };
 
   const inspectProject = async (project: ProjectRecord): Promise<Inspection> => {

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": [
+    "features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs",
+    "features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs"
+  ],
+  "workspaces": {
+    "packages/server": {
+      "entry": ["src/main.ts", "src/*-main.ts", "src/*-bin.ts", "src/*-smoke.ts"]
+    }
+  }
+}

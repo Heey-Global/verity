@@ -137,6 +137,16 @@ const IMAGE_PROVIDED_ENVIRONMENT = ['VERITY_BUNDLED_PROJECT_RELAY_IMAGE'];
  * half against the Compose file.
  */
 export const RETIRED_MANAGED_SERVER_ENVIRONMENT: readonly string[] = [
+  // The OpenAI-compatible transcription client originally exposed its internal
+  // Parakeet implementation name. Current Servers receive only the provider-neutral
+  // VERITY_TRANSCRIBE_* keys; these entries keep older sealed specs resolvable.
+  'VERITY_PARAKEET_BASE_URL',
+  'VERITY_PARAKEET_API_KEY',
+  'VERITY_PARAKEET_MODEL',
+  'VERITY_PARAKEET_MAX_UPLOAD_BYTES',
+  'VERITY_PARAKEET_RETRIES',
+  'VERITY_PARAKEET_HTTP_RETRIES',
+  'VERITY_PARAKEET_RETRY_DELAY_MS',
   // #1553 removed the bundled local transcription sidecar and its three variables
   // from the Compose server environment, leaving every deployment sealed before it
   // naming sources nothing supplies.
@@ -502,7 +512,7 @@ export async function specImageEnvironment(
  * resolved; refusing to exist does not get that value back, it only removes the
  * channel through which the value could be restored.
  */
-export class ManagedServerEnvironmentSourceError extends Error {
+class ManagedServerEnvironmentSourceError extends Error {
   /** The sealed entry whose source failed — reported as the drifting name, since
    *  the running Server is serving on whatever that source used to yield. */
   readonly variable: string;

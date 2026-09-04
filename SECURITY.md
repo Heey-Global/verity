@@ -46,8 +46,12 @@ The detailed architecture and decisions live in
 ## Known limitations
 
 - Verity does not yet classify or block prompt injection in external content.
-  Execution isolation limits impact, but it does not make model instructions
-  derived from untrusted content safe.
+  Automated prompt paths provenance-label known external content, serialize it
+  as JSON after trusted instructions, and preserve those labels when multiple
+  external sources are composed. JSON escaping prevents content from forging the
+  surrounding prompt structure. This structural separation reduces ambiguity;
+  it does not make model instructions derived from untrusted content safe.
+  Execution isolation and permission boundaries still limit impact.
 - There is not yet a supported automated backup and restore facility. Do not
   treat a deployment as production-ready until you have independently backed
   up PostgreSQL and validated restoration. A tested project-level recovery

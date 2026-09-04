@@ -67,6 +67,8 @@ import {
   sessionHandoffCaveats,
   sessionHandoffSummary,
   sessionHandoffTitle,
+  sessionProgressSummary,
+  recentSessionMessagesSummary,
   spellOutBidiControls,
   trustedCliInjectionSummary,
   trustedCliSecretLabel,
@@ -2347,7 +2349,7 @@ export function SessionChat({
         if (readiness.state === 'local-unavailable') {
           Alert.alert(
             'Local transcription unavailable',
-            'This Verity deployment has no local transcription service. Choose an external service in Settings.',
+            'This saved backend is no longer available. Configure the OpenAI-compatible API in Settings.',
             [
               { text: 'Cancel', style: 'cancel' },
               { text: 'Open settings', onPress: () => router.push('/settings') },
@@ -2551,7 +2553,7 @@ export function SessionChat({
             ? 'Local transcription unavailable'
             : 'Finish transcription setup',
           readiness.state === 'local-unavailable'
-            ? 'This deployment has no local transcription service. Choose another backend in Settings.'
+            ? 'This saved backend is no longer available. Configure the transcription API in Settings.'
             : 'Add the external API URL and model before the pending recording can be uploaded.',
           [
             { text: 'Not now', style: 'cancel' },
@@ -5979,10 +5981,16 @@ function PermissionPrompt({
   const isTrustedCli = pending.tool === 'verity_secret_run';
   const isSessionHandoff = pending.tool === 'verity_session_handoff';
   const isListSessions = pending.tool === 'verity_list_sessions';
+  const isSessionProgress = pending.tool === 'verity_session_progress';
+  const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
   const listingSummary = isListSessions ? listSessionsSummary(pending.input) : null;
+  const progressSummary = isSessionProgress ? sessionProgressSummary(pending.input) : null;
+  const recentSummary = isRecentSessionMessages
+    ? recentSessionMessagesSummary(pending.input)
+    : null;
   const cliSecretLabel = cliSummary === null ? null : trustedCliSecretLabel(cliSummary);
   const grantInput =
     typeof pending.input === 'object' && pending.input !== null && !Array.isArray(pending.input)
@@ -6001,7 +6009,9 @@ function PermissionPrompt({
     (isBrokeredHttp && httpSummary === null) ||
     (isTrustedCli && cliSummary === null) ||
     (isSessionHandoff && handoffSummary === null) ||
-    (isListSessions && listingSummary === null)
+    (isListSessions && listingSummary === null) ||
+    (isSessionProgress && progressSummary === null) ||
+    (isRecentSessionMessages && recentSummary === null)
       ? permissionInputText(pending.input)
       : null;
   // The fallback path only — `brokeredRequestDetails` is non-null exactly when no summariser
@@ -6031,6 +6041,10 @@ function PermissionPrompt({
       cliSecretLabel === null ? null : `Run trusted command with ${cliSecretLabel}?`,
       handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
       listingSummary === null ? null : listSessionsTitle(listingSummary),
+      progressSummary === null ? null : `Read progress for session ${progressSummary.sessionId}?`,
+      recentSummary === null
+        ? null
+        : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
     // so this is consistency rather than exposure — but it is the headline, and the one field
@@ -6134,6 +6148,31 @@ function PermissionPrompt({
         // already in the headline and this sentence.
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta}>{listSessionsSentence(listingSummary)}</Text>
+        </View>
+      ) : progressSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionHttpMeta}>
+            One on-demand metadata read for session {progressSummary.sessionId}. No transcript
+            content is returned. Do not poll this tool.
+          </Text>
+        </View>
+      ) : recentSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            Session {recentSummary.sessionId}
+          </Text>
+          <Text style={styles.permissionHttpMeta} selectable>
+            Purpose: {recentSummary.purpose}. Scope: up to {recentSummary.count} redacted messages
+            {recentSummary.sinceMinutes === undefined
+              ? ''
+              : ` from the last ${String(recentSummary.sinceMinutes)} minutes`}
+            {recentSummary.beforeSeq === undefined
+              ? ''
+              : ` before event ${String(recentSummary.beforeSeq)}`}
+            . Attachments and tool payloads are excluded; recognized credential patterns are
+            redacted, but free text may still contain sensitive material. Another page requires a
+            new approval.
+          </Text>
         </View>
       ) : brokeredRequestDetails !== null ? (
         <View style={styles.permissionHttpSummary}>

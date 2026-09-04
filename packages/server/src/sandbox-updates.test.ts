@@ -936,6 +936,121 @@ describe('createSandboxUpdateChecker.statusAll', () => {
         defaultProjectImageVersion: createCachedImageVersionResolver(),
       });
 
+    it('resolves the shared target once per TTL window, not once per poll', async () => {
+      // The target is the same answer for every project and every client; the
+      // image inspect behind it used to run on each request, so a fleet polling
+      // the overview paid a docker round trip per poll to learn nothing changed.
+      const inspectImageLabels = vi.fn(async () => ({
+        'org.opencontainers.image.version': 'v1.18.0',
+      }));
+      const checker = createSandboxUpdateChecker({
+        docker: docker(
+          vi.fn(async () => inspect({ image: DEFAULT_IMAGE })),
+          { inspectImageLabels },
+        ),
+        defaultProjectImage: DEFAULT_IMAGE,
+      });
+
+      for (let poll = 0; poll < 3; poll += 1) await checker.statusAll(projects(4));
+      await checker.status(project());
+
+      expect(inspectImageLabels).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-resolves every call when the cache is disabled', async () => {
+      // The opt-out exists for callers that must see a target change immediately —
+      // a test walking a mutating registry, or a deployment that would rather pay
+      // the inspect than show a stale version for a TTL window.
+      const inspectImageLabels = vi.fn(async () => undefined);
+      const checker = createSandboxUpdateChecker({
+        docker: docker(
+          vi.fn(async () => inspect({ image: DEFAULT_IMAGE })),
+          { inspectImageLabels },
+        ),
+        defaultProjectImage: DEFAULT_IMAGE,
+        targetTtlMs: 0,
+      });
+
+      await checker.status(project());
+      await checker.status(project());
+
+      expect(inspectImageLabels).toHaveBeenCalledTimes(2);
+    });
+
+    it('picks up a new target once the window has passed', async () => {
+      // The direction that actually matters: a cache that never revalidates would
+      // pass every test above while pinning the fleet to the version that was
+      // current when the server booted. A released sandbox image has to reach the
+      // update badge, and the TTL is the only thing that gets it there.
+      let version = 'v1.18.0';
+      const inspectImageLabels = vi.fn(async () => ({
+        'org.opencontainers.image.version': version,
+      }));
+      const checker = createSandboxUpdateChecker({
+        docker: docker(
+          vi.fn(async () => inspect({ image: DEFAULT_IMAGE })),
+          { inspectImageLabels },
+        ),
+        defaultProjectImage: DEFAULT_IMAGE,
+        targetTtlMs: 1,
+      });
+
+      await checker.status(project());
+      version = 'v1.19.0';
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // Stale-while-revalidate: this poll still answers from the old entry and
+      // kicks the refresh behind it.
+      await checker.status(project());
+      await vi.waitFor(() => expect(inspectImageLabels).toHaveBeenCalledTimes(2));
+
+      const settled = await checker.status(project());
+      expect(settled.targetVersion).toBe('v1.19.0');
+    });
+
+    it('paces a failing resolution like a successful one', async () => {
+      // The failure path is where a cache silently stops being a cache: a refresh
+      // that throws leaves the entry as stale as it was, so every later poll from
+      // every client starts another attempt — the exact per-poll registry load
+      // the TTL exists to remove, arriving while the far end is already broken.
+      let fail = false;
+      // The image ref is resolved through a caller-supplied source — settings, a
+      // database row — so this is the part of the resolution that can genuinely
+      // reject rather than degrade to "unknown".
+      const defaultProjectImage = vi.fn(async () => {
+        if (fail) throw new Error('image source unavailable');
+        return DEFAULT_IMAGE;
+      });
+      const checker = createSandboxUpdateChecker({
+        docker: docker(
+          vi.fn(async () => inspect({ image: DEFAULT_IMAGE })),
+          {
+            inspectImageLabels: vi.fn(async () => ({
+              'org.opencontainers.image.version': 'v1.18.0',
+            })),
+          },
+        ),
+        defaultProjectImage,
+        // The window has to outlast everything between the failed refresh settling
+        // and the third poll below — `vi.waitFor` polling included — on a loaded
+        // machine running the whole suite in parallel. A tight window here does
+        // not test the pacing harder, it just makes the guard flaky.
+        targetTtlMs: 1_000,
+      });
+
+      await checker.status(project());
+      fail = true;
+      await new Promise((resolve) => setTimeout(resolve, 1_050));
+      await checker.status(project());
+      await vi.waitFor(() => expect(defaultProjectImage).toHaveBeenCalledTimes(2));
+
+      // Well inside the window the failed attempt just started: it has to hold
+      // the poll off exactly as a successful one would, and keep serving the last
+      // known good target meanwhile.
+      const during = await checker.status(project());
+      expect(defaultProjectImage).toHaveBeenCalledTimes(2);
+      expect(during.targetVersion).toBe('v1.18.0');
+    });
+
     it('touches the registry not at all while the local image can answer', async () => {
       const requests = ghcr();
       const checker = pollChecker({ 'org.opencontainers.image.version': 'v1.18.0' });

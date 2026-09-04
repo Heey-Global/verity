@@ -88,7 +88,7 @@ export function OnboardingStepScaffold({
 }
 
 /** Lightweight note body for any future explanatory-only onboarding step. */
-export function OnboardingPlaceholderNote({ children }: { children: ReactNode }) {
+function OnboardingPlaceholderNote({ children }: { children: ReactNode }) {
   return (
     <View style={styles.note}>
       <Text style={styles.noteText}>{children}</Text>

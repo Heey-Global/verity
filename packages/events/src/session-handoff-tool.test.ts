@@ -29,6 +29,12 @@ describe('sessionHandoffRequestSchema', () => {
     expect(
       sessionHandoffRequestSchema.parse({ ...valid, target: { project: 'acme/website' } }),
     ).toBeTruthy();
+    expect(
+      sessionHandoffRequestSchema.parse({
+        ...valid,
+        target: { newSession: { project: 'acme/website' } },
+      }).target,
+    ).toEqual({ newSession: { project: 'acme/website' } });
     expect(() =>
       sessionHandoffRequestSchema.parse({
         ...valid,

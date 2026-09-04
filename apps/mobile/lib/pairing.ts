@@ -1,5 +1,6 @@
 export interface VerityPairingPayload {
   version: 1;
+  kind?: 'installer' | 'device';
   serverId: string;
   identityKey: string;
   tlsPin: string;
@@ -44,6 +45,7 @@ export function parsePairingUri(raw: string, now: Date = new Date()): VerityPair
   const pairingCode = typeof fields.code === 'string' ? fields.code : '';
   const suggestedUrlRaw = typeof fields.url === 'string' ? fields.url : '';
   const expiresAt = typeof fields.expiresAt === 'string' ? fields.expiresAt : '';
+  const kind = fields.kind === 'device' ? 'device' : 'installer';
   if (!TOKEN.test(serverId) || serverId.length < 16 || serverId.length > 128) {
     throw new Error('Invalid server identity.');
   }
@@ -70,6 +72,7 @@ export function parsePairingUri(raw: string, now: Date = new Date()): VerityPair
   }
   return {
     version: 1,
+    kind,
     serverId,
     identityKey,
     tlsPin,
@@ -77,4 +80,22 @@ export function parsePairingUri(raw: string, now: Date = new Date()): VerityPair
     suggestedUrl: suggestedUrl.origin,
     expiresAt: new Date(expiry).toISOString(),
   };
+}
+
+export function createPairingUri(payload: VerityPairingPayload): string {
+  const json = JSON.stringify({
+    v: payload.version,
+    kind: payload.kind ?? 'installer',
+    serverId: payload.serverId,
+    identityKey: payload.identityKey,
+    tlsPin: payload.tlsPin,
+    code: payload.pairingCode,
+    url: payload.suggestedUrl,
+    expiresAt: payload.expiresAt,
+  });
+  const bytes = new TextEncoder().encode(json);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `verity://pair?payload=${encoded}`;
 }

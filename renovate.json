@@ -1,16 +1,20 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended",
+    "local>Heey-Global/.github",
     ":dependencyDashboard",
     ":semanticCommits",
     "docker:pinDigests",
     "helpers:pinGitHubActionDigests",
     ":timezone(Europe/Berlin)"
   ],
-  "assignees": ["h-teske"],
   "rangeStrategy": "pin",
-  "description": "Schedules are evaluated in Europe/Berlin (`:timezone`). Without that preset Renovate uses UTC, so the previous `before 6am on monday` actually fired until 08:00 local — inside working hours. The nightly 01:00-06:00 window applies to branch creation AND rebases: since ci.yml moved onto the self-hosted runners (2026-07-12) every Renovate push competes with interactive work for the same four runners, so keeping those pushes out of the day is what protects CI latency. `rebaseWhen: conflicted` replaces the `auto` default, which rebased every open PR on each push to main and re-ran the full matrix per rebase.",
+  "description": [
+    "Extends the org preset `local>Heey-Global/.github`, which supplies `config:recommended`, the `h-teske` assignment, the 3-day `minimumReleaseAge` and the 0-day fast-track for vulnerability alerts. Those four are therefore NOT repeated here; before 2026-09 this repository extended `config:recommended` directly and set `assignees` locally, which meant it silently ran with NO stability window at all while rules below already described the org policy as applying. The `.npmrc` at the repository root carries the same 3-day floor for manual `npm install`, so both update paths share one number. The empty `npmrc` here keeps that floor out of Renovate's own lockfile updates. Renovate knows that key specifically: finding `min-release-age` in a repository `.npmrc` it skips passing its own `--before` and defers to the file, so the floor would not sit alongside the org policy but REPLACE it — including replacing `vulnerabilityAlerts.minimumReleaseAge: 0 days`, leaving same-day security bumps waiting three days. Empty rather than `ignoreNpmrcFile: true`, which Renovate removed in v25 and now only accepts through a deprecation shim that rewrites it to exactly this; and empty rather than absent, because the override is `isString(config.npmrc) && !config.npmrcMerge` — a defined `npmrc`, empty string included, is what makes Renovate write over the repository file instead of reading it. Nothing else lives in that `.npmrc` — registry auth comes from Renovate's host rules — so overriding it costs nothing.",
+    "Digest cooldown gap, deliberate: the org preset exempts `digest`/`pinDigest` updates from `minimumReleaseAge` because digests carry no datasource timestamp, and re-imposes the soak through the org `digest-age` required workflow. That workflow rule is NOT among the org rules applied to this repository's `main` (only `gitleaks.yml` is), so digest updates here land without a soak — unchanged from before this repository extended the preset, but no longer covered by the preset's own coupling argument. Closing it means adding `digest-age-check.yml` to the org ruleset for this repository, not editing this file: re-imposing `minimumReleaseAge` on digests locally would park every digest PR on `renovate/stability-days` forever, which is the failure the exemption exists to avoid.",
+    "Schedules are evaluated in Europe/Berlin (`:timezone`). Without that preset Renovate uses UTC, so the previous `before 6am on monday` actually fired until 08:00 local — inside working hours. The nightly 01:00-06:00 window applies to branch creation AND rebases: since ci.yml moved onto the self-hosted runners (2026-07-12) every Renovate push competes with interactive work for the same four runners, so keeping those pushes out of the day is what protects CI latency. `rebaseWhen: conflicted` replaces the `auto` default, which rebased every open PR on each push to main and re-ran the full matrix per rebase."
+  ],
+  "npmrc": "",
   "schedule": ["* 1-5 * * *"],
   "automergeSchedule": ["* 1-5 * * *"],
   "rebaseWhen": "conflicted",
@@ -50,7 +54,7 @@
       "semanticCommitType": "fix"
     },
     {
-      "description": "The agent CLIs (claude-code, codex, opencode, pi) and their ACP transport adapters ship ~daily. Group patch/minor bumps into ONE PR instead of a PR per release. Merge is MANUAL and stability days apply via the org-wide Renovate policy — this rule deliberately sets no `automerge`. It previously carried `schedule: [\"at any time\"]` to escape the repo-wide WEEKLY Monday schedule and keep these ~daily releases on their own cadence (ADR 0004 D1). The repo-wide schedule is now nightly-daily, so that intent is satisfied without an override: the daily cadence is preserved, the PR just appears overnight instead of mid-workday. The explicit window is kept here so the ADR-0004-D1 intent stays visible at the rule. Runtime self-update is disabled in the Feature (updates arrive via image rebuild / Feature republish), so these pins are the single version channel. For each tool the install.sh shell-default pin and the Feature-manifest default share the depName, so both bump in lock-step within the one branch. Majors fall through to a normal, visible PR for manual review.",
+      "description": "The agent CLIs (claude-code, codex, opencode, pi) and their ACP transport adapters ship ~daily. Group patch/minor bumps into ONE PR instead of a PR per release. Merge is MANUAL and the org preset's 3-day `minimumReleaseAge` applies (since 2026-09 it actually does — see the top-level description) — this rule deliberately sets no `automerge`. It previously carried `schedule: [\"at any time\"]` to escape the repo-wide WEEKLY Monday schedule and keep these ~daily releases on their own cadence (ADR 0004 D1). The repo-wide schedule is now nightly-daily, so that intent is satisfied without an override: the daily cadence is preserved, the PR just appears overnight instead of mid-workday. The explicit window is kept here so the ADR-0004-D1 intent stays visible at the rule. Runtime self-update is disabled in the Feature (updates arrive via image rebuild / Feature republish), so these pins are the single version channel. For each tool the install.sh shell-default pin and the Feature-manifest default share the depName, so both bump in lock-step within the one branch. Majors fall through to a normal, visible PR for manual review.",
       "matchPackageNames": [
         "@anthropic-ai/claude-code",
         "@agentclientprotocol/claude-agent-acp",

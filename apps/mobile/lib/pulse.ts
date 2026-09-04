@@ -6,7 +6,7 @@ import { Animated } from 'react-native';
 // exact same rhythm. One native-driver loop, started on first use and left running
 // for the app's lifetime (cheap, off the JS thread); every consumer binds its
 // `opacity` to the same value, so they can never drift out of phase.
-export const syncedPulse = new Animated.Value(1);
+const syncedPulse = new Animated.Value(1);
 
 let started = false;
 

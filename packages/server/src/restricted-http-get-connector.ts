@@ -5,7 +5,6 @@ import { z } from 'zod';
 import {
   createNodeRestrictedHttpJsonTransport,
   createRestrictedHttpJsonConnector,
-  RestrictedHttpJsonRejectedError,
   type RestrictedHttpJsonTransport,
 } from './restricted-http-json-connector.js';
 
@@ -216,5 +215,3 @@ export function createNodeRestrictedHttpTransport(options?: {
     }
   };
 }
-
-export { RestrictedHttpJsonRejectedError };

@@ -217,7 +217,7 @@ describe('validateDopplerToken (production check, faked transport)', () => {
       apiBaseUrl: 'https://api.doppler.test',
     });
     expect(result).toEqual({ ok: true, projectCount: 0 });
-    expect(seenUrl).toBe('https://api.doppler.test/v3/projects');
+    expect(seenUrl).toBe('https://api.doppler.test/v3/projects?page=1&per_page=100');
     expect(seenAuth).toBe(`Bearer ${TOKEN_FIXTURE}`);
   });
 
@@ -268,6 +268,130 @@ describe('validateDopplerToken (production check, faked transport)', () => {
       } as HttpResponse);
     const result = await validateDopplerToken(TOKEN_FIXTURE, { fetch });
     expect(result).toEqual({ ok: true });
+  });
+
+  it('sums the count across pages when the first page comes back full', async () => {
+    const seenUrls: string[] = [];
+    const fetch: HttpFetch = (url) => {
+      seenUrls.push(url);
+      const page = seenUrls.length;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(page === 1 ? projectPage(1, 100) : projectPage(101, 7)),
+      } as HttpResponse);
+    };
+    const result = await validateDopplerToken(TOKEN_FIXTURE, {
+      fetch,
+      apiBaseUrl: 'https://api.doppler.test',
+    });
+    expect(result).toEqual({ ok: true, projectCount: 107 });
+    expect(seenUrls).toEqual([
+      'https://api.doppler.test/v3/projects?page=1&per_page=100',
+      'https://api.doppler.test/v3/projects?page=2&per_page=100',
+    ]);
+  });
+
+  it('does not fetch a second page when the first one is short', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(1, 99)),
+      } as HttpResponse);
+    };
+    expect(await validateDopplerToken(TOKEN_FIXTURE, { fetch })).toEqual({
+      ok: true,
+      projectCount: 99,
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('uses one timeout budget for validation and all count pages', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(calls * 100, 100)),
+      };
+    };
+    expect(await validateDopplerToken(TOKEN_FIXTURE, { fetch, timeoutMs: 1 })).toEqual({
+      ok: true,
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('stays ok without a count when a later page is rejected', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return calls === 1
+        ? Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(projectPage(1, 100)),
+          } as HttpResponse)
+        : Promise.resolve({
+            ok: false,
+            status: 403,
+            json: () => Promise.resolve({ messages: ['echo LEAK context'] }),
+          } as HttpResponse);
+    };
+    const result = await validateDopplerToken(TOKEN_FIXTURE, { fetch });
+    expect(result).toEqual({ ok: true });
+    expect(JSON.stringify(result)).not.toContain('LEAK');
+    expect(JSON.stringify(result)).not.toContain(TOKEN_FIXTURE);
+  });
+
+  it('stays ok without a count when a later page fails in transport', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return calls === 1
+        ? Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(projectPage(1, 100)),
+          } as HttpResponse)
+        : Promise.reject(new Error('boom'));
+    };
+    expect(await validateDopplerToken(TOKEN_FIXTURE, { fetch })).toEqual({ ok: true });
+  });
+
+  it('stays ok without a count when the pages never run short', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(calls * 100, 100)),
+      } as HttpResponse);
+    };
+    expect(await validateDopplerToken(TOKEN_FIXTURE, { fetch })).toEqual({ ok: true });
+    expect(calls).toBe(101);
+  });
+
+  it('counts exactly 100 full pages when the guard probe is empty', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(calls * 100, calls <= 100 ? 100 : 0)),
+      } as HttpResponse);
+    };
+    expect(await validateDopplerToken(TOKEN_FIXTURE, { fetch })).toEqual({
+      ok: true,
+      projectCount: 10_000,
+    });
+    expect(calls).toBe(101);
   });
 });
 
@@ -439,6 +563,23 @@ describe('GET /doppler/configs route', () => {
   });
 });
 
+interface ProjectPageEntry {
+  slug: string;
+  name: string;
+}
+
+/** A Doppler `GET /v3/projects` page of `count` well-formed entries, numbered from
+ *  `start` so pages don't collide. `per_page=100` is what the helper asks for, so a
+ *  page of exactly 100 is what makes it fetch another one. */
+function projectPage(start: number, count: number): { projects: ProjectPageEntry[] } {
+  return {
+    projects: Array.from({ length: count }, (_, i) => ({
+      slug: `p${String(start + i)}`,
+      name: `Project ${String(start + i)}`,
+    })),
+  };
+}
+
 describe('listDopplerProjects (production check, faked transport)', () => {
   it('maps the Doppler project shape to slug/name summaries — never the token', async () => {
     let seenUrl: string | undefined;
@@ -466,9 +607,166 @@ describe('listDopplerProjects (production check, faked transport)', () => {
       { slug: 'acme-app', name: 'Acme App' },
       { slug: 'billing', name: 'Billing' },
     ]);
-    expect(seenUrl).toBe('https://api.doppler.test/v3/projects');
+    expect(seenUrl).toBe('https://api.doppler.test/v3/projects?page=1&per_page=100');
     expect(seenAuth).toBe(`Bearer ${TOKEN_FIXTURE}`);
     expect(JSON.stringify(result)).not.toContain(TOKEN_FIXTURE);
+  });
+
+  it('walks pages until one comes back short and concatenates them', async () => {
+    const seenUrls: string[] = [];
+    const fetch: HttpFetch = (url) => {
+      seenUrls.push(url);
+      const page = seenUrls.length;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(page === 1 ? projectPage(1, 100) : projectPage(101, 3)),
+      } as HttpResponse);
+    };
+    const result = await listDopplerProjects(TOKEN_FIXTURE, {
+      fetch,
+      apiBaseUrl: 'https://api.doppler.test',
+    });
+    expect(result).toHaveLength(103);
+    expect(result[0]).toEqual({ slug: 'p1', name: 'Project 1' });
+    expect(result[102]).toEqual({ slug: 'p103', name: 'Project 103' });
+    expect(seenUrls).toEqual([
+      'https://api.doppler.test/v3/projects?page=1&per_page=100',
+      'https://api.doppler.test/v3/projects?page=2&per_page=100',
+    ]);
+  });
+
+  it('stops after a single request when the first page is short', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(1, 2)),
+      } as HttpResponse);
+    };
+    expect(await listDopplerProjects(TOKEN_FIXTURE, { fetch })).toHaveLength(2);
+    expect(calls).toBe(1);
+  });
+
+  it('applies one overall timeout budget across the page walk', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(calls * 100, 100)),
+      };
+    };
+    await expect(listDopplerProjects(TOKEN_FIXTURE, { fetch, timeoutMs: 1 })).rejects.toThrow(
+      'could not reach Doppler',
+    );
+    expect(calls).toBe(1);
+  });
+
+  it('keeps paging when a full page contains a malformed entry', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      const body =
+        calls === 1 ? { projects: [null, ...projectPage(1, 99).projects] } : projectPage(100, 1);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+      } as HttpResponse);
+    };
+    const result = await listDopplerProjects(TOKEN_FIXTURE, { fetch });
+    expect(calls).toBe(2);
+    expect(result).toHaveLength(100);
+  });
+
+  it('maps a failure on a later page to a redacted throw (no partial-list leak)', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return calls === 1
+        ? Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(projectPage(1, 100)),
+          } as HttpResponse)
+        : Promise.resolve({
+            ok: false,
+            status: 403,
+            json: () => Promise.resolve({ messages: ['echo LEAK context'] }),
+          } as HttpResponse);
+    };
+    await expect(listDopplerProjects(TOKEN_FIXTURE, { fetch })).rejects.toThrow(
+      'Doppler rejected the token',
+    );
+  });
+
+  it('rejects a missing project list on a later page instead of returning a partial list', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(calls === 1 ? projectPage(1, 100) : { unexpected: true }),
+      } as HttpResponse);
+    };
+    await expect(listDopplerProjects(TOKEN_FIXTURE, { fetch })).rejects.toThrow(
+      'Doppler returned an invalid response',
+    );
+  });
+
+  it('maps malformed JSON on a later page to a fixed redacted error', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          calls === 1
+            ? Promise.resolve(projectPage(1, 100))
+            : Promise.reject(new Error('LEAK response body')),
+      } as HttpResponse);
+    };
+    await expect(listDopplerProjects(TOKEN_FIXTURE, { fetch })).rejects.toThrow(
+      'Doppler returned an invalid response',
+    );
+  });
+
+  it('gives up at the page guard instead of looping forever', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(calls * 100, 100)),
+      } as HttpResponse);
+    };
+    await expect(listDopplerProjects(TOKEN_FIXTURE, { fetch })).rejects.toThrow(
+      'Doppler returned too many pages',
+    );
+    expect(calls).toBe(101);
+  });
+
+  it('returns exactly 100 full pages when the guard probe is empty', async () => {
+    let calls = 0;
+    const fetch: HttpFetch = () => {
+      calls += 1;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(projectPage(calls * 100, calls <= 100 ? 100 : 0)),
+      } as HttpResponse);
+    };
+    const result = await listDopplerProjects(TOKEN_FIXTURE, { fetch });
+    expect(result).toHaveLength(10_000);
+    expect(calls).toBe(101);
   });
 
   it('skips malformed project entries', async () => {
@@ -544,9 +842,38 @@ describe('listDopplerConfigs (production check, faked transport)', () => {
       { name: 'dev', environment: 'dev', root: true },
       { name: 'dev_feature', environment: 'dev', root: false },
     ]);
-    expect(seenUrl).toBe('https://api.doppler.test/v3/configs?project=acme%20app');
+    expect(seenUrl).toBe(
+      'https://api.doppler.test/v3/configs?project=acme%20app&page=1&per_page=100',
+    );
     expect(seenAuth).toBe(`Bearer ${TOKEN_FIXTURE}`);
     expect(JSON.stringify(result)).not.toContain(TOKEN_FIXTURE);
+  });
+
+  it('walks pages for a project with more configs than one page holds', async () => {
+    const seenUrls: string[] = [];
+    const fetch: HttpFetch = (url) => {
+      seenUrls.push(url);
+      const page = seenUrls.length;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            configs: Array.from({ length: page === 1 ? 100 : 2 }, (_, i) => ({
+              name: `cfg-${String(page)}-${String(i)}`,
+            })),
+          }),
+      } as HttpResponse);
+    };
+    const result = await listDopplerConfigs(TOKEN_FIXTURE, 'acme-app', {
+      fetch,
+      apiBaseUrl: 'https://api.doppler.test',
+    });
+    expect(result).toHaveLength(102);
+    expect(seenUrls).toEqual([
+      'https://api.doppler.test/v3/configs?project=acme-app&page=1&per_page=100',
+      'https://api.doppler.test/v3/configs?project=acme-app&page=2&per_page=100',
+    ]);
   });
 
   it('maps 401 to a redacted throw (no body echoed)', async () => {

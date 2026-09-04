@@ -217,13 +217,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if npx eas-cli@21.0.1 channel:view staging --json --non-interactive >/dev/null 2>&1; then
-            npx eas-cli@21.0.1 channel:edit staging \
-              --branch "${{ steps.version.outputs.branch }}" --non-interactive
-          else
-            npx eas-cli@21.0.1 channel:create staging \
-              --branch "${{ steps.version.outputs.branch }}" --non-interactive
+          if ! npx eas-cli@21.0.1 channel:view staging --json --non-interactive >/dev/null 2>&1; then
+            npx eas-cli@21.0.1 channel:create staging --non-interactive
           fi
+          npx eas-cli@21.0.1 channel:edit staging \
+            --branch "${{ steps.version.outputs.branch }}" --non-interactive
 
       - name: Create immutable OTA promotion PR
         if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
@@ -255,22 +253,51 @@ jobs:
                 throw new Error("open promotion PR belongs to a different candidate");
             '
           else
-            git switch --force-create "$promotion_branch" "$GITHUB_SHA"
-            node -e '
-              const fs = require("node:fs");
+            candidate_contents="$(node -e '
               const candidate = {
                 branch: process.env.OTA_BRANCH,
                 commit: process.env.CANDIDATE_SHA,
                 tag: process.env.OTA_TAG,
                 version: process.env.OTA_VERSION,
               };
-              fs.writeFileSync("apps/mobile/ota-promotion.json", `${JSON.stringify(candidate, null, 2)}\n`);
-            '
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add apps/mobile/ota-promotion.json
-            git commit -m "chore(mobile): promote OTA $OTA_VERSION"
-            git push origin "HEAD:refs/heads/${promotion_branch}"
+              process.stdout.write(Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`).toString("base64"));
+            ')"
+            if [[ ! "$promotion_branch" =~ ^automation/promote-mobile-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Refusing to manage unexpected promotion branch: $promotion_branch" >&2
+              exit 1
+            fi
+            existing_head="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${promotion_branch}" \
+              --jq '.object.sha' 2>/dev/null || true)"
+            if [[ -n "$existing_head" ]]; then
+              # A previous attempt may have created the workflow-owned branch
+              # before failing to create its commit or PR. Restore the known
+              # candidate head so createCommitOnBranch remains retry-safe.
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${promotion_branch}" \
+                -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            else
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f ref="refs/heads/${promotion_branch}" \
+                -f sha="$GITHUB_SHA" >/dev/null
+            fi
+            commit_result="$(gh api graphql \
+              -f query='mutation($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) {
+                createCommitOnBranch(input: {
+                  branch: { repositoryNameWithOwner: $repository, branchName: $branch },
+                  expectedHeadOid: $expectedHeadOid,
+                  message: { headline: $message },
+                  fileChanges: { additions: [{ path: $path, contents: $contents }] }
+                }) { commit { oid signature { isValid } } }
+              }' \
+              -f repository="$GITHUB_REPOSITORY" \
+              -f branch="$promotion_branch" \
+              -f expectedHeadOid="$GITHUB_SHA" \
+              -f message="chore(mobile): promote OTA $OTA_VERSION" \
+              -f path='apps/mobile/ota-promotion.json' \
+              -f contents="$candidate_contents")"
+            if [[ "$(jq -r '.data.createCommitOnBranch.commit.signature.isValid' <<<"$commit_result")" != true ]]; then
+              echo '::error::GitHub did not create a verified promotion commit.' >&2
+              exit 1
+            fi
             gh pr create --base main --head "$promotion_branch" --title "$title" --body "$body"
           fi
           # GITHUB_TOKEN-created commits intentionally emit no new push/PR event.

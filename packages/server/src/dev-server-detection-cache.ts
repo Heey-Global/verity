@@ -1,7 +1,7 @@
 import type { ProjectRecord } from '@verity/store';
 import type { DevServerSuggestion } from './dev-server-detection.js';
 
-export const DEV_SERVER_DETECTION_CACHE_TTL_MS = 60_000;
+const DEV_SERVER_DETECTION_CACHE_TTL_MS = 60_000;
 
 type Detect = (project: ProjectRecord) => Promise<DevServerSuggestion[]>;
 
