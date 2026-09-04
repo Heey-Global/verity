@@ -26,7 +26,6 @@ import {
   BackendTerminationUnconfirmedError,
   CODEX_DEFAULT_MODEL,
   PROCESS_TREE_KILL_GRACE_MS,
-  PermissionDecisionInProgressError,
   type Backend,
   QueueFullError,
   SessionBusyError,
@@ -53,7 +52,6 @@ import {
   attachmentUploadSchema,
   type AgentEvent,
   type Attachment,
-  type AttachmentUpload,
   type RateLimitState,
   type UsageTotals,
 } from '@verity/events';
@@ -207,6 +205,7 @@ import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-h
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
 import { registerSessionDeleteRoute } from './session-delete-route.js';
+import { registerSessionControlRoutes } from './session-control-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -2463,21 +2462,6 @@ function pullRequestConflictKey(sessionId: string, pr: PullRequestStatus): strin
 // to the model as the rejection reason (defaulted so a bare deny is still valid).
 // This is a per-tool RUNTIME decision, NOT a permission bypass — the §5b
 // `--permission-mode`/`assertSafeArgs` invariants are untouched.
-const permissionDecisionBody = z.discriminatedUnion('behavior', [
-  z.object({
-    behavior: z.literal('allow'),
-    updatedInput: z.record(z.string(), z.unknown()).optional(),
-    // ADR 0011 D2 (brokered secret tools only): persist this allow as a scoped grant so
-    // a matching (alias, tool, target) request auto-approves next time. Absent = 'once'.
-    // 'forever' is 'project' reach without an expiry — it ends only when revoked.
-    scope: z.enum(['once', 'session', 'project', 'forever']).optional(),
-  }),
-  z.object({
-    behavior: z.literal('deny'),
-    message: z.string().min(1).optional(),
-  }),
-]);
-
 /** A fresh, unique branch for a spawned agent. Without an issue: `agent/<slug?>-
  * <shortid>`. WITH an issue (#137 spawn-from-issue): `feat/<issue>-<slug?>-<shortid>`
  * — the leading `<type>/<digits>-` shape the client's `parseBranchIssue` reads, so
@@ -7931,144 +7915,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // rather than its own endpoint — the operator's intent is the same ("give me this
   // session back"), only the evidence differs. Safe on a session that is not fenced:
   // `forceReleased` then comes back false and nothing else changes.
-  const cancelBody = z.object({ force: z.boolean().optional() }).optional();
-  app.post(
-    '/sessions/:id/cancel',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | {
-          sessionId: string;
-          cancelled: boolean;
-          forceReleased: boolean;
-          droppedQueued: {
-            id: string;
-            prompt: string;
-            attachments?: AttachmentUpload[];
-          }[];
-        }
-      | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
-      const body = cancelBody.parse(request.body ?? {});
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      const meetingCancelled = cancelMeetingJobs(id);
-      const { droppedQueued, cancelled } = await conductor.stopSession(id);
-      // AFTER the ordinary stop, never instead of it: the stop is what drops the
-      // backlog and gives the graceful path its chance, so an override only ever
-      // faces a fence that survived a real attempt.
-      const forceReleased =
-        body?.force === true ? await conductor.releaseUnconfirmedTermination(id) : false;
-      return {
-        sessionId: id,
-        cancelled: cancelled || meetingCancelled,
-        forceReleased,
-        droppedQueued,
-      };
-    },
-  );
-
-  // Answer a mid-turn permission prompt (#27): allow (optionally with edited
-  // input) or deny the tool `toolUseId` that the in-flight turn paused on. 200 with
-  // `decided: true` when a matching parked prompt was resolved; 404 (`decided:
-  // false`) when none is pending under that id — the turn already ended (the runner
-  // fail-safe-denied it), the operator already answered, or the id is unknown — so
-  // the app drops the stale approve/deny prompt. The allow/deny here is a per-tool
-  // runtime decision, never a bypass of the §5b permission invariants.
-  const permissionParams = sessionParams.extend({ toolUseId: z.string().min(1) });
-  app.post(
-    '/sessions/:id/permissions/:toolUseId',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | { sessionId: string; toolUseId: string; decided: boolean; scopeSaved?: boolean }
-      | {
-          error: string;
-        }
-    > => {
-      const { id, toolUseId } = permissionParams.parse(request.params);
-      const body = permissionDecisionBody.parse(request.body);
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      const decision =
-        body.behavior === 'allow'
-          ? {
-              behavior: 'allow' as const,
-              ...(body.updatedInput !== undefined ? { updatedInput: body.updatedInput } : {}),
-            }
-          : { behavior: 'deny' as const, message: body.message ?? 'Denied by the operator.' };
-      let scopeSaved: boolean | undefined;
-      let decided: boolean;
-      try {
-        decided =
-          body.behavior === 'allow' && body.scope !== undefined
-            ? await conductor.decidePermission(id, toolUseId, decision, {
-                scope: body.scope,
-                onScopeSaved: (saved) => {
-                  scopeSaved = saved;
-                },
-              })
-            : await conductor.decidePermission(id, toolUseId, decision);
-      } catch (error) {
-        if (error instanceof PermissionDecisionInProgressError) {
-          reply.code(409);
-          return { error: error.message };
-        }
-        throw error;
-      }
-      if (!decided) {
-        reply.code(404);
-        return { error: `no pending permission ${toolUseId} for session ${id}` };
-      }
-      pushFirePoints?.permissionResolved(id, toolUseId);
-      return {
-        sessionId: id,
-        toolUseId,
-        decided: true,
-        ...(scopeSaved === undefined ? {} : { scopeSaved }),
-      };
-    },
-  );
-
-  // Retract a turn the operator queued behind the in-flight one before it runs
-  // (issue #80): drop it from the backlog (live queue + durable store) and return
-  // its prompt so the app can put the text back in the input to edit/resend. 200
-  // with the prompt when the item was still queued; 404 when it's gone (already
-  // drained or retracted) — the app then just drops the stale "waiting" bubble.
-  const queuedItemParams = sessionParams.extend({ itemId: z.string().min(1) });
-  app.post(
-    '/sessions/:id/queue/:itemId/cancel',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | {
-          sessionId: string;
-          itemId: string;
-          prompt: string;
-          attachments?: AttachmentUpload[];
-        }
-      | { error: string }
-    > => {
-      const { id, itemId } = queuedItemParams.parse(request.params);
-      const removed = await conductor.dequeue(id, itemId);
-      if (!removed) {
-        reply.code(404);
-        return { error: `queued turn ${itemId} not found for session ${id}` };
-      }
-      return { sessionId: id, itemId, ...removed };
-    },
-  );
-
+  registerSessionControlRoutes(app, {
+    store: deps.eventStore,
+    conductor,
+    cancelMeetingJobs,
+    permissionResolved: (id, toolUseId) => pushFirePoints?.permissionResolved(id, toolUseId),
+  });
   // The current + switchable + previewable branches of a session's worktree.
   // `switchable` = local branches not checked out elsewhere (#91); `previewable` =
   // pushed `origin/*` branches the cockpit can preview live, INCLUDING ones a
