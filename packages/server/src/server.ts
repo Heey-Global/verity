@@ -205,6 +205,7 @@ import { sessionParams } from './session-route-schemas.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
+import { registerSessionSeenRoute } from './session-seen-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -7165,25 +7166,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // Returns a lightweight ack (the resolved mark) rather than the full summary: the
   // caller discards the body, and building a summary would reload the whole event log
   // just to compute a status/usage nobody here reads. 404 for an unknown session id.
-  const sessionSeenBody = z.object({ eventCount: z.number().int().nonnegative() });
-  app.patch(
-    '/sessions/:id/seen',
-    async (
-      request,
-      reply,
-    ): Promise<{ sessionId: string; lastSeenEventCount: number | null } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { eventCount } = sessionSeenBody.parse(request.body);
-      const marked = await deps.eventStore.setSessionSeen(id, eventCount);
-      if (!marked) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      // Cheap single-row read (no event-log load) to echo the monotonic result.
-      const session = await deps.eventStore.getSession(id);
-      return { sessionId: id, lastSeenEventCount: session?.lastSeenEventCount ?? eventCount };
-    },
-  );
+  registerSessionSeenRoute(app, { store: deps.eventStore });
 
   // Permanently delete a session: drop its durable log (events + transcript
   // lines + the session row, transactionally) and remove its isolated worktree
