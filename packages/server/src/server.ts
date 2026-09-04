@@ -77,7 +77,6 @@ import {
   toSessionFileEntry,
 } from './session-files.js';
 import type { DevicePairingManager } from './device-pairing.js';
-import { repairSessionWorktreePermissions } from './session-worktree-recovery.js';
 import {
   currentPublishedProgress,
   olderEventsMayMatchWindow,
@@ -206,6 +205,7 @@ import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
 import { registerSessionDeleteRoute } from './session-delete-route.js';
 import { registerSessionControlRoutes } from './session-control-routes.js';
+import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -7736,61 +7736,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // So `queued: false` means "running now" (a fresh idle turn OR a steered one);
   // `queued: true` means "waiting behind the current turn". An unknown session →
   // 404; a full queue → 429.
-  app.post(
-    '/sessions/:id/recover-worktree',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | {
-          sessionId: string;
-          repaired: Array<'project-root' | 'sessions-root' | 'worktree'>;
-        }
-      | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
-      const session = await deps.eventStore.getSession(id);
-      if (session === undefined) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      if (session.projectId === null) {
-        reply.code(409);
-        return { error: 'worktree recovery is available only for project sessions' };
-      }
-      if (deps.projectCloneRoot === undefined) {
-        reply.code(409);
-        return { error: 'worktree recovery is not configured for project sessions' };
-      }
-      if (conductor.isBusy(id) || hasMeetingJob(id)) {
-        reply.code(409);
-        return { error: `session ${id} is busy — retry worktree recovery when its turn ends` };
-      }
-      try {
-        const result = await repairSessionWorktreePermissions(
-          session.worktree,
-          process.getuid?.(),
-          deps.projectCloneRoot,
-        );
-        request.log.info(
-          { sessionId: id, projectId: session.projectId, repaired: result.repaired },
-          'verity: session worktree permission recovery completed',
-        );
-        return { sessionId: id, repaired: result.repaired };
-      } catch (error) {
-        request.log.warn(
-          { err: error, sessionId: id, projectId: session.projectId },
-          'verity: session worktree permission recovery refused',
-        );
-        reply.code(409);
-        return {
-          error:
-            'session worktree permissions could not be repaired safely — ownership or path shape requires project reprovisioning',
-        };
-      }
-    },
-  );
-
+  registerSessionRecoveryRoute(app, {
+    store: deps.eventStore,
+    ...(deps.projectCloneRoot !== undefined ? { projectCloneRoot: deps.projectCloneRoot } : {}),
+    isBusy: (id) => conductor.isBusy(id),
+    hasMeetingJob,
+  });
   app.post(
     '/sessions/:id/turns',
     async (
