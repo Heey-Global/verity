@@ -202,6 +202,7 @@ import {
 } from './meeting-transcript-routes.js';
 import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
+import { registerAttachmentRoute } from './attachment-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -7160,21 +7161,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // visible ones), so opening a session never transfers the whole image backlog.
   // Content-addressed → the bytes for a given id never change, so it's cached
   // forever (immutable). 404 for an unknown hash.
-  const attachmentParams = z.object({
-    hash: z.string().regex(/^[a-f0-9]{64}$/, 'invalid attachment id'),
-  });
-  app.get('/attachments/:hash', async (request, reply): Promise<Buffer | { error: string }> => {
-    const { hash } = attachmentParams.parse(request.params);
-    const blob = await deps.eventStore.getAttachment(hash);
-    if (!blob) {
-      reply.code(404);
-      return { error: 'attachment not found' };
-    }
-    reply
-      .header('Content-Type', blob.mediaType)
-      .header('Cache-Control', 'private, max-age=31536000, immutable');
-    return blob.bytes;
-  });
+  registerAttachmentRoute(app, { getAttachment: (hash) => deps.eventStore.getAttachment(hash) });
 
   // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
   // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
