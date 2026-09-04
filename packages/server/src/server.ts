@@ -203,6 +203,7 @@ import {
 import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerAttachmentRoute } from './attachment-route.js';
+import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -2620,24 +2621,6 @@ export interface SessionDetail extends SessionSummary {
   queued: { id: string; text: string; attachments?: Attachment[] }[];
 }
 
-const scrollDiagnosticBody = z.object({
-  event: z.string().min(1).max(80),
-  seq: z.number().int().nonnegative(),
-  at: z.number().finite(),
-  data: z
-    .record(
-      z.string().min(1).max(40),
-      z.union([z.boolean(), z.number().finite(), z.string().max(80)]),
-    )
-    .superRefine((data, ctx) => {
-      if (Object.keys(data).length > 32) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'too many diagnostic fields',
-        });
-      }
-    }),
-});
 // The allowlists below mirror exactly what apps/mobile/app/session/[id].tsx emits in
 // the newest-first transcript coordinate system. Anything else is redacted, so a name
 // that is not listed here silently degrades to `unknown` in the diagnostics.
@@ -7038,6 +7021,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
+  // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
+  // event references images by this id; the client fetches them lazily (only the
+  // visible ones), so opening a session never transfers the whole image backlog.
+  // Content-addressed → the bytes for a given id never change, so it's cached
+  // forever (immutable). 404 for an unknown hash.
+  registerAttachmentRoute(app, { getAttachment: (hash) => deps.eventStore.getAttachment(hash) });
+
   // Lightweight live activity for a session, polled by the app for the "working"
   // indicator + persistent "waiting" messages. `busy` = the conductor is in-flight
   // OR the event log still derives `running` (an open background task — sub-agent /
@@ -7049,24 +7039,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // worktree's live branch (#110) so the header label auto-updates on an
   // external/agent `git checkout`; both reads are best-effort — on any failure the
   // poll falls back to raw `isBusy` and omits name/branch, never a 500.
-  app.get(
-    '/sessions/:id/activity',
-    async (
-      request,
-      reply,
-    ): Promise<
-      | {
-          busy: boolean;
-          queued: { id: string; text: string }[];
-          pendingPermissions: string[];
-          modelSwitchPending: boolean;
-          terminationUnconfirmed: boolean;
-          branch?: string;
-          name?: string | null;
-        }
-      | { error: string }
-    > => {
-      const { id } = sessionParams.parse(request.params);
+  registerSessionHistoryRoutes(app, {
+    activity: async (reply, id) => {
       const base = {
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),
@@ -7126,19 +7100,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive
       }
     },
-  );
-
-  app.post(
-    '/sessions/:id/debug/scroll',
-    { bodyLimit: 4_096 },
-    async (request, reply): Promise<{ ok: true } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
+    recordScrollDiagnostic: async (reply, id, body) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-      const diagnostic = scrollDiagnosticBody.parse(request.body);
+      const diagnostic = parseScrollDiagnostic(body);
       app.log.info(
         {
           sessionId: id,
@@ -7154,31 +7122,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       );
       return { ok: true };
     },
-  );
-
-  // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
-  // event references images by this id; the client fetches them lazily (only the
-  // visible ones), so opening a session never transfers the whole image backlog.
-  // Content-addressed → the bytes for a given id never change, so it's cached
-  // forever (immutable). 404 for an unknown hash.
-  registerAttachmentRoute(app, { getAttachment: (hash) => deps.eventStore.getAttachment(hash) });
-
-  // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
-  // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
-  // a long session with only its tail and fetch older turns on scroll-up, instead
-  // of replaying the whole event log. Live updates still arrive over the WS stream.
-  const historyQuery = z.object({
-    beforeSeq: z.coerce.number().int().positive().optional(),
-    limit: z.coerce.number().int().positive().max(200).optional(),
-  });
-  app.get(
-    '/sessions/:id/events',
-    async (
-      request,
-      reply,
-    ): Promise<{ events: SequencedEvent[]; hasMore: boolean } | { error: string }> => {
-      const { id } = sessionParams.parse(request.params);
-      const { beforeSeq, limit } = historyQuery.parse(request.query);
+    // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
+    // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
+    // a long session with only its tail and fetch older turns on scroll-up, instead
+    // of replaying the whole event log. Live updates still arrive over the WS stream.
+    history: async (reply, id, limit, beforeSeq) => {
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -7186,7 +7134,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       return deps.eventStore.getEventsBeforeSeq(id, limit ?? DEFAULT_HISTORY_PAGE, beforeSeq);
     },
-  );
+  });
 
   // Edit a session's registry metadata: rename it (set/clear its display name)
   // and/or switch the engine/model it uses. Pure metadata — never touches the
