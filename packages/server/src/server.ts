@@ -206,6 +206,7 @@ import { registerSessionSeenRoute } from './session-seen-route.js';
 import { registerSessionDeleteRoute } from './session-delete-route.js';
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
+import { registerSessionTurnRoute } from './session-turn-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -7742,12 +7743,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isBusy: (id) => conductor.isBusy(id),
     hasMeetingJob,
   });
-  app.post(
-    '/sessions/:id/turns',
-    async (
-      request,
-      reply,
-    ): Promise<{ sessionId: string; accepted: true; queued: boolean } | { error: string }> => {
+  registerSessionTurnRoute(app, {
+    dispatch: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
       const body = turnBody.parse(request.body);
       const prompt = stripRepeatedOperatorInstructions(body.prompt);
@@ -7839,7 +7836,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reply.code(202);
       return { sessionId: id, accepted: true as const, queued };
     },
-  );
+  });
 
   // Stop the in-flight turn of a session (issue #79). 404 if the session is
   // unknown; otherwise 200 with `cancelled` — true if a turn was actually running
