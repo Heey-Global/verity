@@ -1,5 +1,49 @@
 # Changelog
 
+## [17.0.0](https://github.com/Heey-Global/verity/compare/v16.5.0...v17.0.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** The Doppler legacy remediation endpoint and upgrade-time credential cutover are removed. New installations use only the central Doppler broker identity.
+
+### Features
+
+* **github:** grant sandbox management permissions ([e39198e](https://github.com/Heey-Global/verity/commit/e39198e35aae39d180182f91a74cf14dc7bcbd81))
+* **mobile:** allow pasting installer pairing code ([6661cae](https://github.com/Heey-Global/verity/commit/6661cae8bf36f284debddd6f1c2a572672c37068))
+* **mobile:** allow pasting installer pairing code ([51a1296](https://github.com/Heey-Global/verity/commit/51a1296864c51b37ab3621b386840e8eb267d2d8))
+* **pairing:** add secure device onboarding ([6c89bb0](https://github.com/Heey-Global/verity/commit/6c89bb0b32c4c05db79704135191cccbbb7df98f))
+* **pairing:** add secure device onboarding ([86efbf4](https://github.com/Heey-Global/verity/commit/86efbf46d674e04a0f8476b7c0378b1be29f3738))
+
+
+### Bug Fixes
+
+* **agent:** keep review findings within task scope ([1fbf0ff](https://github.com/Heey-Global/verity/commit/1fbf0ff4cd4264a48abce817a4579767525da9e8))
+* **agent:** keep review findings within task scope ([97d2617](https://github.com/Heey-Global/verity/commit/97d26176fde9a5be356e26f022e01388212b23fe))
+* **auth:** parse bearer headers linearly ([9cdd6db](https://github.com/Heey-Global/verity/commit/9cdd6dbbff3fefdd6ad78c8c15b5b954954ee83a))
+* **ci:** keep paired device type internal ([dcf9fd7](https://github.com/Heey-Global/verity/commit/dcf9fd7b05c30013a5f4d5a102d08db06a24d1eb))
+* **installer:** validate pairing DNS labels ([7b06222](https://github.com/Heey-Global/verity/commit/7b06222d86582240d1777c9c570bc296d9b09587))
+* **mobile:** create signed OTA promotion commits ([1fd028b](https://github.com/Heey-Global/verity/commit/1fd028bb2a5a0b2ffd3c907d6fed5fbac361230b))
+* **mobile:** create staging channel before assignment ([adcc9ed](https://github.com/Heey-Global/verity/commit/adcc9edde4a7ff827d37dbe1e88d05652ab461d4))
+* **mobile:** create staging channel before assignment ([2faa96a](https://github.com/Heey-Global/verity/commit/2faa96ac592514e72172220b5eba7448762dd832))
+* **mobile:** install dependencies before OTA promotion ([a620a51](https://github.com/Heey-Global/verity/commit/a620a51dc83947e62e2afb53a5a538b8ed53a8ae))
+* **pairing:** bind enrollment retries to clients ([0dd1ffd](https://github.com/Heey-Global/verity/commit/0dd1ffd1e6a7ce9020d76dc2f7f5b5dc8b8faa7e))
+* **pairing:** make enrollment retries idempotent ([2299f34](https://github.com/Heey-Global/verity/commit/2299f34a293c5489c791297c947afc2abeceea88))
+* **pairing:** preserve recoverable enrollment state ([bbb3e81](https://github.com/Heey-Global/verity/commit/bbb3e816dc14cdb5d5767b4e1e01485191bde1f0))
+* **pairing:** recover enrollment across restarts ([57014e5](https://github.com/Heey-Global/verity/commit/57014e55ff76cd0c3a2cf7de65fc063422538f1a))
+* **pairing:** require durable device credentials ([9a1fe1a](https://github.com/Heey-Global/verity/commit/9a1fe1a144129ee315f3f3df333ae0bc8d8cf2cd))
+
+
+### Performance Improvements
+
+* **server:** project session overviews without hydrating full logs ([7555a7a](https://github.com/Heey-Global/verity/commit/7555a7adb690a0847627d7d30d31d09fe56af7bc))
+* **server:** project session overviews without hydrating full logs ([af1636e](https://github.com/Heey-Global/verity/commit/af1636e9efe9e461d7bb187726fe51e8991c53ec))
+
+
+### Code Refactoring
+
+* **server:** remove legacy Doppler cutover ([516cd34](https://github.com/Heey-Global/verity/commit/516cd343bb07a2678b52a50013ef1140afeffc19))
+
 ## [16.5.0](https://github.com/Heey-Global/verity/compare/v16.4.1...v16.5.0) (2026-09-02)
 
 
