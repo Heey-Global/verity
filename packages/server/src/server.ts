@@ -212,6 +212,7 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerHealthRoute } from './health-route.js';
+import { registerDopplerRemediationRoute } from './doppler-remediation-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -4366,30 +4367,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     query: (opts) => conductor.query(opts),
   });
 
-  const legacyDopplerRemediationBody = z.object({
-    evidence: z.literal('external-credential-rotated'),
-  });
-  app.post('/projects/:id/doppler-legacy-remediation', async (request, reply) => {
-    const registry = deps.authRegistry;
-    const actorId = registry?.resolveId(bearerToken(request.headers.authorization));
-    if (registry === undefined || !registry.isEnabled() || actorId === undefined) {
-      reply.code(401);
-      return { error: 'authenticated device identity is required' };
-    }
-    const { id } = projectParams.parse(request.params);
-    const { evidence } = legacyDopplerRemediationBody.parse(request.body);
-    const confirmed = await deps.eventStore.confirmLegacyDopplerCredentialRemediation({
-      projectId: id,
-      actorId,
-      evidence,
-      requestId: request.id,
-    });
-    if (!confirmed) {
-      reply.code(404);
-      return { error: 'no unresolved legacy Doppler credential exists for this project' };
-    }
-    reply.code(204);
-    return undefined;
+  registerDopplerRemediationRoute(app, {
+    eventStore: deps.eventStore,
+    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
   });
 
   // Multi-repo fleet-registry projects (concept §19, #174) for `GET /projects` —
@@ -5451,7 +5431,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
   });
 
-  const projectParams = z.object({ id: z.string().min(1) });
   async function runProjectDelete(
     request: FastifyRequest,
     id: string,
