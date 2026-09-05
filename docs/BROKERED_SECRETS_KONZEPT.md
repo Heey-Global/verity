@@ -9,7 +9,6 @@ Credential-Vermittlung
 **Umsetzungsplanung:** Phase-0-Plan
 (`docs/BROKERED_SECRETS_PHASE_0_PLAN.md`, nicht im öffentlichen Snapshot)
 **Sicherheitsmodell:** [Threat Model](BROKERED_SECRETS_THREAT_MODEL.md)
-**Doppler-Migration:** [Ist-Aufnahme und Migrationsplan](BROKERED_SECRETS_DOPPLER_MIGRATION.md)
 **W3/W4-Verträge:** Daten- und Protokollentwurf
 (`docs/BROKERED_SECRETS_W3_W4_CONTRACTS.md`, nicht im öffentlichen Snapshot)
 **W8-Redaction:** Redacted Events und Persistenz

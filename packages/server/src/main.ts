@@ -104,12 +104,12 @@ import {
   createStandbyDirectiveClient,
   type AgentSeedProvenanceClient,
 } from './self-update/server-update-controller.js';
-import { legacyDopplerCredentialEnvironmentKeys } from './legacy-doppler-configuration.js';
 import { createStandbyExchange } from './self-update/standby-directive.js';
 import { startStandbyFollower, type StandbyFollowerLoop } from './self-update/standby-follower.js';
 import { createStandbyLifecycle, type ServingStack } from './self-update/standby-lifecycle.js';
 import { startUpdaterStatusServer } from './self-update/updater-status.js';
 import { readControlPlanePostgresState } from './self-update/postgres-image.js';
+import { forbiddenDopplerCredentialEnvironmentKeys } from './doppler-credential-environment.js';
 import {
   readManagedDeployment,
   type ManagedDeploymentState,
@@ -663,10 +663,10 @@ async function main(): Promise<void> {
     process.exit(report.ok ? 0 : 1);
   }
 
-  const legacyDopplerCredentialKeys = legacyDopplerCredentialEnvironmentKeys(process.env);
-  if (legacyDopplerCredentialKeys.length > 0) {
+  const forbiddenDopplerCredentialKeys = forbiddenDopplerCredentialEnvironmentKeys(process.env);
+  if (forbiddenDopplerCredentialKeys.length > 0) {
     console.error(
-      `FATAL: legacy Doppler credential environment is forbidden; remove ${legacyDopplerCredentialKeys.sort().join(', ')} and configure the central Verity broker identity`,
+      `FATAL: project-scoped Doppler credentials are forbidden; remove ${forbiddenDopplerCredentialKeys.join(', ')} and configure the central Verity broker identity`,
     );
     process.exit(1);
   }

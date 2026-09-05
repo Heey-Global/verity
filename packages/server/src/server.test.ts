@@ -65,7 +65,6 @@ import type { UpdateOperation } from './self-update/update-operation.js';
 import { UpdaterRequestError } from './self-update/updater-status.js';
 import type { PullRequestStatus, ReleaseSummary } from './github.js';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
-import { sql } from 'kysely';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   VERITY_CONTROL_SYSTEM_PROMPT,
@@ -5767,73 +5766,6 @@ describe('PATCH /projects/:id/settings', () => {
     expect(res.json()).toMatchObject({
       settings: { defaultBranch: null },
     });
-  });
-});
-
-describe('POST /projects/:id/doppler-legacy-remediation', () => {
-  it('records fixed evidence with the authenticated device and request identity', async () => {
-    await ctx.store.upsertProject({
-      id: 'legacy-remediation',
-      owner: 'heey-global',
-      repo: 'legacy-remediation',
-      containerName: 'legacy-remediation',
-      state: 'active',
-    });
-    await sql`
-      insert into doppler_legacy_cutovers (
-        project_id, container_name, manual_credential, runtime_cutover_at
-      ) values ('legacy-remediation', 'legacy-remediation', true, now())
-    `.execute(ctx.db);
-    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
-    const identity = await registry.mint('remediation-device');
-    const server = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      authRegistry: registry,
-    });
-    try {
-      const response = await server.inject({
-        method: 'POST',
-        url: '/projects/legacy-remediation/doppler-legacy-remediation',
-        headers: { authorization: `Bearer ${identity.token}` },
-        payload: { evidence: 'external-credential-rotated' },
-      });
-      expect(response.statusCode).toBe(204);
-      await expect(
-        sql<{
-          actor_id: string;
-          evidence: string;
-          request_id: string;
-          remediated: boolean;
-        }>`
-          select remediation_actor_id as actor_id, remediation_evidence as evidence,
-                 remediation_request_id as request_id,
-                 credential_remediated_at is not null as remediated
-          from doppler_legacy_cutovers where project_id = 'legacy-remediation'
-        `.execute(ctx.db),
-      ).resolves.toMatchObject({
-        rows: [
-          {
-            actor_id: identity.id,
-            evidence: 'external-credential-rotated',
-            request_id: expect.any(String),
-            remediated: true,
-          },
-        ],
-      });
-    } finally {
-      await server.close();
-    }
-  });
-
-  it('refuses remediation without an authenticated device identity', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/projects/legacy-remediation/doppler-legacy-remediation',
-      payload: { evidence: 'external-credential-rotated' },
-    });
-    expect(response.statusCode).toBe(401);
   });
 });
 

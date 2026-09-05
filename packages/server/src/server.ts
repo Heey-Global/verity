@@ -212,7 +212,6 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerHealthRoute } from './health-route.js';
-import { registerDopplerRemediationRoute } from './doppler-remediation-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -4365,11 +4364,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.listIssues !== undefined ? { listIssues: deps.listIssues } : {}),
     ...(deps.refineCwd !== undefined ? { refineCwd: deps.refineCwd } : {}),
     query: (opts) => conductor.query(opts),
-  });
-
-  registerDopplerRemediationRoute(app, {
-    eventStore: deps.eventStore,
-    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
   });
 
   // Multi-repo fleet-registry projects (concept §19, #174) for `GET /projects` —

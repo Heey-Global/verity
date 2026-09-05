@@ -256,7 +256,6 @@ latency, cleanup, and security test criteria.
 
 - [Brokered Secrets concept](../BROKERED_SECRETS_KONZEPT.md)
 - [Brokered Secrets threat model](../BROKERED_SECRETS_THREAT_MODEL.md)
-- [Current Doppler flow and migration](../BROKERED_SECRETS_DOPPLER_MIGRATION.md)
 - Brokered Secrets Phase 0 Plan (`docs/BROKERED_SECRETS_PHASE_0_PLAN.md`, not in the public snapshot)
 - [ADR 0002 — Credential and Isolation Architecture](0002-credential-and-isolation-architecture.md)
 - [ADR 0005 — Naming and Layering](0005-naming-and-layering.md)

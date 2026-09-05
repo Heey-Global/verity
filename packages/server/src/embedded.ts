@@ -178,12 +178,6 @@ import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
 import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from './doppler-token.js';
 import {
-  completeLegacyDopplerCutover,
-  hasPendingLegacyDopplerCutover,
-  quarantineLegacyDopplerContainers,
-} from './doppler-legacy-cutover.js';
-import { revokeLegacyDopplerToken } from './doppler-token-revoke.js';
-import {
   ProvisionerImpl,
   DeprovisionerImpl,
   projectClonePath,
@@ -1971,18 +1965,8 @@ export async function buildEmbeddedServer(
   // 503 until unlock.
   const secretCipher = createSealableSecretCipher();
   const eventStore = new EventStore(db, secretCipher);
-  let finishLegacyDopplerCutover = (): Promise<number> => Promise.resolve(0);
-  const readStoredBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
+  const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
-  const readBrokerDopplerCredential = async (): Promise<Buffer | undefined> => {
-    if (await hasPendingLegacyDopplerCutover(db)) {
-      if (!secretCipher.isSealed()) await finishLegacyDopplerCutover();
-      if (await hasPendingLegacyDopplerCutover(db)) {
-        throw new Error('legacy Doppler credential cutover is still pending');
-      }
-    }
-    return readStoredBrokerDopplerCredential();
-  };
   const workflowStore = new WorkflowStore(db);
   const createDeliveryFromControlPlane = createControlPlaneDeliveryTool({
     controlProjectId: CONTROL_PLANE_RUNNER_PROJECT_ID,
@@ -3428,26 +3412,6 @@ export async function buildEmbeddedServer(
     );
   }
 
-  // Migration 0084 records every project whose running container may still
-  // carry a legacy credential. Remove those containers before any listener is
-  // exposed; after unlock, the central broker revokes scoped tokens and only
-  // then recreates clean broker-only containers.
-  await quarantineLegacyDopplerContainers(db, docker);
-  finishLegacyDopplerCutover = (): Promise<number> =>
-    completeLegacyDopplerCutover({
-      db,
-      provisioner,
-      readCredential: readStoredBrokerDopplerCredential,
-      revoke: revokeLegacyDopplerToken,
-      validateBinding: async ({ project, config: dopplerConfig, credential }) => {
-        const token = credential.toString('utf8').trim();
-        const configs = await listDopplerConfigs(token, project);
-        if (!configs.some((candidate) => candidate.name === dopplerConfig)) {
-          throw new Error('central Doppler broker identity cannot access a legacy project mapping');
-        }
-      },
-    });
-
   // Hoisted so the runner-transport factory (ADR 0006 Stage 2.2-prep) can close
   // over the SAME bus instance the control plane's WS subscribers/Conductor use —
   // events the FileTailRunnerClient republishes off the tailed event file must
@@ -3854,7 +3818,6 @@ export async function buildEmbeddedServer(
     // gateway the probe stays inert and the meter keeps its per-session signal.
     ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
     onSecretUnlocked: async () => {
-      await finishLegacyDopplerCutover();
       await projectAgentGatewayIdentity();
       // Publishes what the sealed boot had to skip. Ordered after the gateway
       // projection because both mint from the same CA and the gateway is what a
@@ -4707,7 +4670,6 @@ export async function buildEmbeddedServer(
       cipher: secretCipher,
       material: handedOffKeyMaterial,
       activate: async () => {
-        await finishLegacyDopplerCutover();
         await projectAgentGatewayIdentity();
         // The candidate constructed every component against a sealed store, so the
         // Runner identity publish was deferred exactly as on an interactive boot.
