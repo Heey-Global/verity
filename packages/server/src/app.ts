@@ -9,7 +9,6 @@ import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify
 import {
   VERITY_CONTROL_PROJECT_ID,
   VERITY_CONTROL_SESSION_NAME,
-  LEGACY_VERITY_CONTROL_SESSION_NAME,
   VERITY_CONTROL_SYSTEM_PROMPT,
   buildServer,
   type MeetingTranscriber,
@@ -429,9 +428,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
               sessionSystemPrompt: (session) =>
                 session.projectId === VERITY_CONTROL_PROJECT_ID ||
                 (session.projectId === null &&
-                  (session.name === VERITY_CONTROL_SESSION_NAME ||
-                    session.name === LEGACY_VERITY_CONTROL_SESSION_NAME ||
-                    session.name === 'Concierge'))
+                  (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
                   ? VERITY_CONTROL_SYSTEM_PROMPT
                   : '',
             }

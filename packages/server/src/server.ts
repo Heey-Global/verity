@@ -1423,7 +1423,6 @@ const MAX_SESSION_TEXT_FILE_BYTES = 1_000_000;
 const MAX_SESSION_DOWNLOAD_BYTES = 50_000_000;
 const MAX_SESSION_UPLOAD_BYTES = 50_000_000;
 export const VERITY_CONTROL_SESSION_NAME = 'Verity Control';
-export const LEGACY_VERITY_CONTROL_SESSION_NAME = 'Verity Control';
 export const VERITY_CONTROL_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
 const VERITY_CONTROL_PROJECT_OWNER = 'verity';
 const VERITY_CONTROL_PROJECT_REPO = 'control';
@@ -4192,9 +4191,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const newestFirst = [...sessions].reverse();
     for (const session of newestFirst) {
       if (
-        (session.name !== VERITY_CONTROL_SESSION_NAME &&
-          session.name !== LEGACY_VERITY_CONTROL_SESSION_NAME &&
-          session.name !== 'Concierge') ||
+        (session.name !== VERITY_CONTROL_SESSION_NAME && session.name !== 'Concierge') ||
         session.projectId !== null
       )
         continue;
