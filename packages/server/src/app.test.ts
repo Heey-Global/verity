@@ -91,7 +91,7 @@ describe('buildControlPlane', () => {
     }
   });
 
-  it('injects durable Verity Control capabilities for project and legacy control sessions', async () => {
+  it('injects durable Verity Control capabilities for project and Concierge sessions', async () => {
     const projectWorktree = mkdtempSync(join(tmpdir(), 'verity-project-control-'));
     const legacyWorktree = mkdtempSync(join(tmpdir(), 'verity-legacy-control-'));
     await ctx.store.upsertProject({

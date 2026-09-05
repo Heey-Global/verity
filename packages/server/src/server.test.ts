@@ -13363,7 +13363,7 @@ describe('POST /concierge/session', () => {
     });
   });
 
-  it('reuses and renames a legacy Verity Control session', async () => {
+  it('reuses an existing Verity Control session', async () => {
     const worktree = mkdtempSync(join(worktreeRoot, 'verity-control-existing-'));
     await ctx.store.createSession({
       sessionId: 'verity-control-existing',
