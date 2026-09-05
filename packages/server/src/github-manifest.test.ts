@@ -71,13 +71,12 @@ describe('buildManifest', () => {
     expect(m.default_permissions).toEqual({
       contents: 'write',
       pull_requests: 'write',
-      // Read-only CI visibility for the sandbox token: check-run status + Actions
-      // workflow runs/jobs/logs (`gh run view/watch`). Scoped down per-token in embedded.ts.
+      // CI visibility plus run administration (`gh run view/watch/rerun/cancel`).
       checks: 'read',
-      actions: 'read',
+      actions: 'write',
       // Push .github/workflows/* files (GitHub blocks bot workflow-file pushes otherwise).
       workflows: 'write',
-      // Create issues from task-board drafts / inbox items.
+      // Create and manage repository issues and comments.
       issues: 'write',
       metadata: 'read',
       // Pull digest-pinned private runner/toolkit images during provisioning.

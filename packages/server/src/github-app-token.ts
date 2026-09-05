@@ -80,10 +80,11 @@ export type GitHubInstallationTokenMint = () => Promise<string | undefined>;
 export const PROJECT_GITHUB_TOKEN_PERMISSIONS = {
   contents: 'write',
   pull_requests: 'write',
+  // Manage the repository's issues from `gh`, including comments and metadata.
+  issues: 'write',
   checks: 'read',
-  // Monitor Actions workflow runs/jobs/logs (`gh run view/watch`) — read-only;
-  // re-running/cancelling would need `actions: write`, intentionally NOT granted.
-  actions: 'read',
+  // Monitor and administer Actions workflow runs (`gh run view/watch/rerun/cancel`).
+  actions: 'write',
   // Push changes to `.github/workflows/*` files. GitHub refuses any bot push that
   // creates or updates a workflow file unless the token carries `workflows: write`,
   // so agents editing CI need this grant. Requires the App installation to have
@@ -94,7 +95,6 @@ export const PROJECT_GITHUB_TOKEN_PERMISSIONS = {
 export const REQUIRED_GITHUB_APP_PERMISSIONS = {
   ...PROJECT_GITHUB_TOKEN_PERMISSIONS,
   organization_projects: 'write',
-  issues: 'write',
 } as const satisfies Record<string, 'read' | 'write' | 'admin'>;
 
 /** Least-privilege permission set for the registry (ghcr.io) token the provisioner
@@ -406,7 +406,7 @@ export async function validateGitHubAppCreds(
         : res.status === 404
           ? 'installation not found (check the Installation ID)'
           : res.status === 422
-            ? 'GitHub App is missing required permissions (approve Contents, Pull requests, Checks, Workflows, Issues, and Organization projects)'
+            ? 'GitHub App is missing required permissions (approve Contents, Pull requests, Checks, Actions, Workflows, Issues, and Organization projects)'
             : `GitHub returned an unexpected status (${String(res.status)})`;
     return { ok: false, error };
   }
