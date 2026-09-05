@@ -135,7 +135,7 @@ describe('createGitHubAppProjectTokenMint', () => {
     }
   });
 
-  it('requests checks read for project/container tokens', async () => {
+  it('requests repository management permissions for project/container tokens', async () => {
     const { dir, privateKeyPath } = writePrivateKey();
     try {
       const bodies: Array<string | undefined> = [];
@@ -159,8 +159,9 @@ describe('createGitHubAppProjectTokenMint', () => {
         permissions: {
           contents: 'write',
           pull_requests: 'write',
+          issues: 'write',
           checks: 'read',
-          actions: 'read',
+          actions: 'write',
           workflows: 'write',
         },
       });

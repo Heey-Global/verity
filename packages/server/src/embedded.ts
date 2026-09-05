@@ -2315,11 +2315,13 @@ export async function buildEmbeddedServer(
   };
   // The per-project sandbox token — scoped to a LEAST-PRIVILEGE subset (audit M2)
   // instead of inheriting the full installation grant. The subset lives in
-  // PROJECT_GITHUB_TOKEN_PERMISSIONS (push branches incl. `.github/workflows/*` +
-  // open PRs, read own CI status and Actions runs/logs for `gh run view/watch`);
+  // PROJECT_GITHUB_TOKEN_PERMISSIONS (push branches incl. `.github/workflows/*`,
+  // open PRs, manage issues, and inspect/administer Actions runs);
   // board writes go through the
   // dedicated task mints below, so a compromised sandbox cannot tamper with the
   // org's Projects v2 board. Repo scope is still `[project.repo]`.
+  // Minting fails closed until the installation has approved this complete set;
+  // silently dropping a denied permission would give the sandbox a misleading token.
   const projectTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,

@@ -24,20 +24,20 @@ import { REQUIRED_GITHUB_APP_PERMISSIONS } from './github-app-token.js';
  *  because Verity is pull-based (it mints installation tokens on demand, it does
  *  not receive events). Permissions are least-privilege for what Verity does:
  *  - `checks: read` — read CI/check-run status for PR bars and merge readiness.
- *  - `actions: read` — monitor GitHub Actions workflow runs, jobs, and logs
- *    (`gh run view/watch`); `checks` alone only exposes the roll-up status. The
- *    per-project sandbox token keeps these read-only subsets plus `workflows: write`
- *    (see embedded.ts / PROJECT_GITHUB_TOKEN_PERMISSIONS).
+ *  - `actions: write` — monitor and administer GitHub Actions workflow runs
+ *    (`gh run view/watch/rerun/cancel`); `checks` alone only exposes the roll-up status.
  *  - `workflows: write` — push changes to `.github/workflows/*` files; GitHub
  *    rejects any bot push that creates or updates a workflow file without it.
- *  - `issues: write` — create issues from task-board drafts / inbox items.
+ *  - `issues: write` — create and manage repository issues and comments.
  *  - `metadata: read` — mandatory baseline.
  *  - `organization_projects: write` — task management (ADR 0007) creates and manages
  *    the org-owned "Verity" Projects v2 board (create board, drafts, items, reorder).
  *    Without it every `createProjectV2`/board write is FORBIDDEN, which is exactly the
  *    onboarding gap this closes: a freshly-created App can provision its board and run
- *    the `/tasks` writes out of the box. (Existing Apps must add the permission
- *    manually + get org approval — a manifest change only affects new Apps.) */
+ *    the `/tasks` writes out of the box. Permission changes intentionally have no
+ *    compatibility fallback: installations must approve every permission in this
+ *    manifest before token minting succeeds. A fresh App installation does that as
+ *    part of onboarding. */
 function randomManifestNameSuffix(): string {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
   return Array.from(randomBytes(8), (byte) => alphabet[byte % alphabet.length]).join('');
