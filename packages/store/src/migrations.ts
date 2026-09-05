@@ -2278,72 +2278,13 @@ const migrations: Record<string, Migration> = {
   },
   '0085_broker_only_doppler_credentials': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Project-scoped credentials are deliberately not migrated. The central
-      // broker identity already lives encrypted in verity_settings; retaining or
-      // copying any legacy token would preserve the split trust path this
-      // migration removes. The non-secret minted-token slug is retained as a
-      // durable revocation tombstone: deleting that identifier here would make an
-      // already-issued Doppler credential impossible to revoke after upgrade.
-      await sql`
-        create table doppler_legacy_cutovers (
-          project_id text primary key,
-          container_name text not null,
-          doppler_project text,
-          doppler_config text,
-          token_slug text,
-          token_ref text,
-          manual_credential boolean not null,
-          catalog_credential boolean not null default false,
-          created_at timestamptz not null default now(),
-          runtime_cutover_at timestamptz,
-          credential_remediated_at timestamptz,
-          remediation_actor_id text,
-          remediation_evidence text,
-          remediation_request_id text
-        )
-      `.execute(db);
-      await sql`
-        insert into doppler_legacy_cutovers (
-          project_id, container_name, doppler_project, doppler_config, token_ref,
-          manual_credential, catalog_credential
-        )
-        select distinct on (bindings.project_id)
-               bindings.project_id, projects.container_name, bindings.doppler_project,
-               bindings.doppler_config, bindings.credential_ref, false, true
-        from secret_provider_bindings bindings
-        join projects on projects.id = bindings.project_id
-        where bindings.provider = 'doppler'
-        order by bindings.project_id, bindings.version desc
-        on conflict (project_id) do update
-        set catalog_credential = true,
-            manual_credential = true,
-            token_ref = coalesce(doppler_legacy_cutovers.token_ref, excluded.token_ref)
-      `.execute(db);
-      await sql`
-        insert into doppler_legacy_cutovers (
-          project_id, container_name, doppler_project, doppler_config, token_slug, token_ref,
-          manual_credential
-        )
-        select ps.project_id, p.container_name, ps.doppler_project, ps.doppler_config,
-               ps.doppler_minted_token_slug, ps.doppler_token_ref,
-               (ps.doppler_token is not null
-                or ps.doppler_token_ref is not null
-                or (ps.doppler_minted_token is not null
-                    and ps.doppler_minted_token_slug is null))
-        from project_settings ps
-        join projects p on p.id = ps.project_id
-        where ps.doppler_token is not null
-           or ps.doppler_token_ref is not null
-           or ps.doppler_minted_token is not null
-           or ps.doppler_minted_token_slug is not null
-        on conflict (project_id) do update
-        set doppler_project = coalesce(excluded.doppler_project, doppler_legacy_cutovers.doppler_project),
-            doppler_config = coalesce(excluded.doppler_config, doppler_legacy_cutovers.doppler_config),
-            token_slug = coalesce(excluded.token_slug, doppler_legacy_cutovers.token_slug),
-            token_ref = coalesce(excluded.token_ref, doppler_legacy_cutovers.token_ref),
-            manual_credential = doppler_legacy_cutovers.manual_credential
-                                or excluded.manual_credential
-      `.execute(db);
+      // Verity currently supports fresh installations only. This migration was
+      // deliberately rewritten instead of preserving an upgrade cutover for a
+      // deployment that will be discarded; no supported database may depend on
+      // the former 0085 body.
+      // Doppler bindings use the central broker sentinel and therefore do not
+      // reference a row in secret_provider_credentials. Other providers retain
+      // the database-enforced credential relationship.
       await sql`
         alter table secret_provider_bindings
         drop constraint if exists secret_provider_bindings_credential_ref_fkey
@@ -2391,27 +2332,15 @@ const migrations: Record<string, Migration> = {
         before delete or update of credential_ref on secret_provider_credentials
         for each row execute function protect_non_doppler_binding_credential()
       `.execute(db);
-      // Doppler catalog credentials stay encrypted and referenced until the
-      // unlocked Server proves the central broker can access every mapped
-      // project/config. The cutover worker then atomically removes exclusively
-      // Doppler credentials and switches these bindings to the broker sentinel.
     },
     async down(db: Kysely<unknown>): Promise<void> {
-      // Fail closed whenever rollback would delete a recovery identifier. Empty
-      // databases may rewind for schema tests and pre-cutover deployments.
-      const pending = await sql<{ count: string }>`
-        select count(*)::text as count from doppler_legacy_cutovers
-      `.execute(db);
-      if (pending.rows[0]?.count !== '0') {
-        throw new Error('0085 broker-only Doppler cutover is irreversible while audit rows exist');
-      }
       const brokerBindings = await sql<{ count: string }>`
         select count(*)::text as count
         from secret_provider_bindings
         where provider = 'doppler' and credential_ref = 'secretref:broker/doppler'
       `.execute(db);
       if (brokerBindings.rows[0]?.count !== '0') {
-        throw new Error('0085 broker-only Doppler cutover cannot reconstruct deleted credentials');
+        throw new Error('0085 cannot restore credential foreign keys for broker bindings');
       }
       await sql`
         drop trigger secret_provider_credentials_binding_integrity
@@ -2428,7 +2357,6 @@ const migrations: Record<string, Migration> = {
         add constraint secret_provider_bindings_credential_ref_fkey
         foreign key (credential_ref) references secret_provider_credentials (credential_ref)
       `.execute(db);
-      await sql`drop table doppler_legacy_cutovers`.execute(db);
     },
   },
 
@@ -2700,6 +2628,43 @@ const migrations: Record<string, Migration> = {
     },
     async down(db: Kysely<unknown>): Promise<void> {
       await db.schema.dropIndex('events_session_id_type_id_idx').execute();
+    },
+  },
+  '0087_remove_legacy_doppler_cutover': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      const legacyCredentials = await sql<{ count: string }>`
+        select count(*)::text as count
+        from project_settings
+        where doppler_token is not null
+           or doppler_token_ref is not null
+           or doppler_minted_token is not null
+           or doppler_minted_token_slug is not null
+      `.execute(db);
+      const credentialBindings = await sql<{ count: string }>`
+        select count(*)::text as count
+        from secret_provider_bindings
+        where provider = 'doppler'
+          and credential_ref <> 'secretref:broker/doppler'
+      `.execute(db);
+      const cutoverTable = await sql<{ table_name: string | null }>`
+        select to_regclass('doppler_legacy_cutovers')::text as table_name
+      `.execute(db);
+      const tableName = cutoverTable.rows[0]?.table_name;
+      if (tableName !== null && tableName !== undefined) {
+        const pending = await sql<{ count: string }>`
+          select count(*)::text as count from doppler_legacy_cutovers
+        `.execute(db);
+        if (pending.rows[0]?.count !== '0') {
+          throw new Error('unsupported database contains pending Doppler credential cutovers');
+        }
+      }
+      if (legacyCredentials.rows[0]?.count !== '0' || credentialBindings.rows[0]?.count !== '0') {
+        throw new Error('unsupported database contains project-scoped Doppler credentials');
+      }
+      await sql`drop table if exists doppler_legacy_cutovers`.execute(db);
+    },
+    async down(): Promise<void> {
+      // The removed audit table has no current-format state to reconstruct.
     },
   },
 };

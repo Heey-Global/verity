@@ -1135,27 +1135,6 @@ export class EventStore implements EventSink {
     return stored === null || stored === undefined ? undefined : this.cipher.decryptBytes(stored);
   }
 
-  /** Record an authenticated external rotation without restoring the credential. */
-  async confirmLegacyDopplerCredentialRemediation(input: {
-    projectId: string;
-    actorId: string;
-    evidence: 'external-credential-rotated';
-    requestId: string;
-  }): Promise<boolean> {
-    const result = await sql`
-      update doppler_legacy_cutovers
-      set credential_remediated_at = now(),
-          remediation_actor_id = ${input.actorId},
-          remediation_evidence = ${input.evidence},
-          remediation_request_id = ${input.requestId}
-      where project_id = ${input.projectId}
-        and manual_credential = true
-        and runtime_cutover_at is not null
-        and credential_remediated_at is null
-    `.execute(this.db);
-    return Number(result.numAffectedRows ?? 0) > 0;
-  }
-
   /**
    * Register a session. The `worktree` UNIQUE constraint enforces the strict
    * 1:1 session ↔ worktree invariant (§5a) — a duplicate session id or worktree

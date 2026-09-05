@@ -457,7 +457,7 @@ describe('migrateToLatest', () => {
     }
   });
 
-  it('0085 quarantines Doppler credentials until broker access is validated', async () => {
+  it('0085 permits broker-managed Doppler bindings without weakening other providers', async () => {
     const ctx = await createIsolatedTestDb();
     try {
       const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
@@ -565,34 +565,16 @@ describe('migrateToLatest', () => {
         `.execute(ctx.db),
       ).rejects.toThrow(/credential is still referenced by a non-Doppler binding/);
       await expect(
-        sql<{
-          project_id: string;
-          container_name: string;
-          doppler_project: string | null;
-          doppler_config: string | null;
-          token_slug: string | null;
-          token_ref: string | null;
-          manual_credential: boolean;
-          catalog_credential: boolean;
-        }>`
-          select project_id, container_name, doppler_project, doppler_config, token_slug, token_ref,
-                 manual_credential, catalog_credential
-          from doppler_legacy_cutovers
+        sql`
+          insert into secret_provider_bindings (
+            id, project_id, version, provider, credential_ref,
+            doppler_project, doppler_config, state
+          ) values (
+            'broker', 'legacy-doppler', 1, 'doppler', 'secretref:broker/doppler',
+            'cluster', 'production', 'active'
+          )
         `.execute(ctx.db),
-      ).resolves.toMatchObject({
-        rows: [
-          {
-            project_id: 'legacy-doppler',
-            container_name: 'legacy-doppler',
-            doppler_project: 'cluster',
-            doppler_config: 'production',
-            token_slug: 'legacy-slug',
-            token_ref: 'env:LEGACY_TOKEN',
-            manual_credential: true,
-            catalog_credential: true,
-          },
-        ],
-      });
+      ).resolves.toBeDefined();
       await expect(
         ctx.db
           .selectFrom('project_settings')
@@ -621,19 +603,12 @@ describe('migrateToLatest', () => {
         where project_id = 'other-provider-project' and id = 'shared-other'
       `.execute(ctx.db);
       await sql`delete from projects where id = 'legacy-doppler'`.execute(ctx.db);
-      await expect(
-        sql<{ project_id: string; token_slug: string | null }>`
-          select project_id, token_slug from doppler_legacy_cutovers
-        `.execute(ctx.db),
-      ).resolves.toMatchObject({
-        rows: [{ project_id: 'legacy-doppler', token_slug: 'legacy-slug' }],
-      });
     } finally {
       await ctx.close();
     }
   });
 
-  it('0085 classifies a catalog-only Doppler credential as broker-managed', async () => {
+  it('0085 leaves current Doppler catalog credentials intact', async () => {
     const ctx = await createIsolatedTestDb();
     try {
       const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
@@ -665,16 +640,49 @@ describe('migrateToLatest', () => {
         (await migrator.migrateTo('0085_broker_only_doppler_credentials')).error,
       ).toBeUndefined();
       await expect(
-        sql<{ manual_credential: boolean; catalog_credential: boolean }>`
-          select manual_credential, catalog_credential
-          from doppler_legacy_cutovers where project_id = 'catalog-only'
-        `.execute(ctx.db),
-      ).resolves.toMatchObject({
-        rows: [{ manual_credential: false, catalog_credential: true }],
-      });
-      await expect(
         ctx.db.selectFrom('secret_provider_credentials').select('credential_ref').execute(),
       ).resolves.toEqual([{ credential_ref: 'secretref:catalog-only' }]);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('0087 removes the empty cutover table from a fresh schema', async () => {
+    const ctx = await createIsolatedTestDb();
+    try {
+      await expect(
+        sql<{ table_name: string | null }>`
+          select to_regclass('doppler_legacy_cutovers')::text as table_name
+        `.execute(ctx.db),
+      ).resolves.toMatchObject({ rows: [{ table_name: null }] });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  it('0087 rejects a database that still contains project-scoped Doppler credentials', async () => {
+    const ctx = await createIsolatedTestDb();
+    try {
+      const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
+      expect(
+        (await migrator.migrateTo('0086_events_session_id_type_id_idx')).error,
+      ).toBeUndefined();
+      await seedProject(ctx.db, {
+        id: 'unsupported-doppler',
+        owner: 'heey-global',
+        repo: 'unsupported-doppler',
+        containerName: 'unsupported-doppler',
+        state: 'absent',
+      });
+      await sql`
+        insert into project_settings (project_id, doppler_token)
+        values ('unsupported-doppler', 'encrypted-project-token')
+      `.execute(ctx.db);
+
+      const result = await migrator.migrateTo('0087_remove_legacy_doppler_cutover');
+      expect(result.error).toEqual(
+        new Error('unsupported database contains project-scoped Doppler credentials'),
+      );
     } finally {
       await ctx.close();
     }
