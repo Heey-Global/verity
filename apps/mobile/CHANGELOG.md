@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.16.0](https://github.com/Heey-Global/verity/compare/mobile-v1.15.0...mobile-v1.16.0) (2026-09-05)
+
+
+### Features
+
+* **mobile:** allow pasting installer pairing code ([6661cae](https://github.com/Heey-Global/verity/commit/6661cae8bf36f284debddd6f1c2a572672c37068))
+* **mobile:** allow pasting installer pairing code ([51a1296](https://github.com/Heey-Global/verity/commit/51a1296864c51b37ab3621b386840e8eb267d2d8))
+
+
+### Bug Fixes
+
+* **onboarding:** align and separate pairing steps ([e2eedf7](https://github.com/Heey-Global/verity/commit/e2eedf74b2c34d8a5278810102889392aa29a6f6))
+* **onboarding:** align and separate pairing steps ([9b0a82a](https://github.com/Heey-Global/verity/commit/9b0a82a605b639216f0da229ec05990be9fd2ba0))
+
 ## [1.15.0](https://github.com/Heey-Global/verity/compare/mobile-v1.14.0...mobile-v1.15.0) (2026-09-02)
 
 
