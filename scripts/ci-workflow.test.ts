@@ -795,17 +795,22 @@ describe('self-update release gate', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<
         string,
-        { needs?: string | string[]; if?: string; uses?: string; with?: Record<string, string> }
+        {
+          needs?: string | string[];
+          if?: string;
+          uses?: string;
+          with?: Record<string, string>;
+        }
       >;
     };
     const gate = release.jobs['self-update-gate'];
     expect(gate).toBeDefined();
-    // Same condition as the publishes it guards, so a push that releases nothing
-    // skips the wait rather than idling on a runner for an hour.
     expect(gate?.if).toBe("needs.release-please.outputs.backend-release-created == 'true'");
     expect(gate?.uses).toBe('./.github/workflows/self-update.yml');
     expect(gate?.with?.['candidate-sha']).toBe('${{ needs.release-please.outputs.backend-sha }}');
     expect(gate?.with?.['bootstrap-version']).toBe('16.4.0');
+    expect(gate?.with?.['allow-no-rollback']).toContain("inputs['backend-republish']");
+    expect(gate?.with?.['allow-no-rollback']).toContain("inputs['backend-accept-no-rollback']");
 
     // Every job that pushes an artifact a managed deployment resolves at the
     // released version. The mobile train is deliberately absent: it carries no
@@ -820,6 +825,29 @@ describe('self-update release gate', () => {
       const needs = release.jobs[job]?.needs;
       expect(Array.isArray(needs) ? needs : [needs]).toContain('self-update-gate');
     }
+  });
+
+  it('keeps the irreversible-schema override on the forward smoke path', () => {
+    const workflow = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      on: { workflow_call?: { inputs?: Record<string, { type?: string; default?: unknown }> } };
+      jobs: Record<string, { env?: Record<string, string> }>;
+    };
+    const input = workflow.on.workflow_call?.inputs?.['allow-no-rollback'];
+    expect(input).toMatchObject({ type: 'boolean', default: false });
+    expect(workflow.jobs['live-smoke']?.env?.VERITY_SMOKE_ALLOW_NO_ROLLBACK).toContain(
+      'inputs.allow-no-rollback',
+    );
+
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const override = smoke.slice(smoke.indexOf('if [[ "${VERITY_SMOKE_ALLOW_NO_ROLLBACK'));
+    const exit = override.indexOf('exit 0');
+    const forward = override.slice(0, exit);
+    expect(forward).toContain('self-update-live-smoke.js cutover');
+    expect(forward).toContain('expect_gateway_serving');
+    expect(forward).toContain('expect_secret_status "$server" unlocked');
+    expect(forward).toContain('self-update-live-smoke.js companion-handoff');
+    expect(forward).toContain('self-update-live-smoke.js updater-restarts');
+    expect(override.indexOf('self-update-live-smoke.js cutover-rolls-back')).toBeGreaterThan(exit);
   });
 
   it('publishes previews only after the stable Server channel', () => {
