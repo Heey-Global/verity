@@ -9,7 +9,7 @@ THIRD_PARTY_NOTICES.md
 # skip silently drops. Asserted in scripts/ci-workflow.test.ts.
 CHANGELOG.md
 **/CHANGELOG.md
-.release-please-manifest.json
+.release-please-manifest.*.json
 version.txt
 # Reproducible esbuild output; format its typed sources instead.
 features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs

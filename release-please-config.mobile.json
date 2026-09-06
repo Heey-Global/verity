@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    "apps/mobile": {
+      "release-type": "simple",
+      "package-name": "mobile",
+      "initial-version": "1.0.0",
+      "versioning": "always-bump-minor",
+      "include-component-in-tag": true,
+      "tag-separator": "-",
+      "draft": true,
+      "force-tag-creation": true,
+      "extra-files": [{ "type": "generic", "path": "app.config.ts" }]
+    }
+  }
+}

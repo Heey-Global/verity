@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const ledgerPath = 'features/verity-sandbox-toolkit/published-hashes.json';
-const manifestPath = '.release-please-manifest.json';
+const manifestPath = '.release-please-manifest.backend.json';
 const boundaryFiles = {
   '/usr/local/bin/verity-runner-supervisor':
     'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',

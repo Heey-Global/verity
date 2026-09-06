@@ -40,15 +40,11 @@ backend rather than the website. That is the right way round — a stricter smok
 is not a new site — but it means the image a `website-vX.Y.Z` publishes can have
 been smoked by a script that never appeared in its changelog.
 
-The first release bootstraps: `docs/website` deliberately has no entry in
-`.release-please-manifest.json`, so release-please proposes `initial-version`
-(1.0.0) and writes the entry itself. Adding the entry by hand would make the
-first release 1.0.1, and the `v1.0.0` that `docs/website/version.txt` names would
-never be published — a pin to it could not resolve. The committed `version.txt`
-does not change that: `apps/mobile` bootstrapped from exactly this shape — a
-`version.txt` at 1.0.0, no manifest entry, `initial-version: 1.0.0` (`97f2fcd0b`)
-— and its first release was `mobile-v1.0.0` (`f86ea5eca`), which added the
-manifest entry.
+Backend, mobile, and website each have their own release-please config and
+manifest. Their release PRs therefore update disjoint files: merging one train
+cannot make either of the other two conflict merely because its version moved.
+The three action invocations still run in one serialized release job so tag and
+artifact publication retain the existing ordering and permissions.
 
 Two edges of the train are worth knowing. `concept.md` and `landing-copy.md` are
 excluded from the package and the root excludes all of `docs/website`, so a
