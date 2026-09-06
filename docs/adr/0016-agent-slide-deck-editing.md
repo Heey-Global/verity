@@ -93,11 +93,13 @@ already offers a way out:
 - **Guarded — the request overwrites state read during planning.** Moving an existing element with
   `updatePageElementTransform` is guarded so it cannot silently replace a collaborator's
   intervening move. A transform attached to a newly created element in the same batch needs no
-  guard because no prior state exists.
+  guard because no prior state exists. `createSlide` is guarded when its `insertionIndex` was
+  chosen from the observed slide order; it is unguarded only when placement does not depend on
+  that order, such as an explicit append-to-end intent.
 - **Unguarded — the request carries a stable target or adds new content.** `createShape`,
-  `createImage`, `createSlide` and `updatePageProperties` add rather than reinterpret;
-  `deleteObject` names an `objectId` that either still exists or fails loudly; and text or
-  paragraph styling over `ALL` does not depend on character offsets.
+  `createImage` and `updatePageProperties` add rather than reinterpret; `deleteObject` names an
+  `objectId` that either still exists or fails loudly; and text or paragraph styling over `ALL`
+  does not depend on character offsets.
 
 `replaceAllText` is presentation-wide by default, and identical headings or labels are common, so
 content alone is not an object address. The planner constrains it with `pageObjectIds`, verifies
