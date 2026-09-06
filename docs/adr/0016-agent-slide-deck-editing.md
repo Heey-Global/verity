@@ -38,10 +38,12 @@ of Google error bodies.
 
 ## Decision
 
-**Verity edits the live Google Slides deck in place via `presentations.batchUpdate`, guarded by
-the deck's revision id. Google is the source of truth for deck content; nothing about the deck
-is mirrored into Git. Edits address existing objects by id, and new slides inherit the deck's
-own layouts, so the deck's design carries the visual quality rather than the agent.**
+**Verity edits the live Google Slides deck in place via `presentations.batchUpdate`. Google is the
+source of truth for deck content; nothing about the deck is mirrored into Git. Edits address
+existing objects by id, and the deck's own design carries the visual quality rather than the
+agent — inherited from its layouts where that relationship is intact, and copied from neighbouring
+elements where a PowerPoint round-trip has flattened it. Only native Slides files qualify. Writes
+that depend on character offsets are guarded by the deck's revision id.**
 
 ### D1 — Google is the source of truth; Verity makes incremental edits
 
@@ -56,28 +58,57 @@ periodically flushed back is a lost-update machine, whatever we call it.
 The audit trail is therefore Google's own revision history plus the session transcript, not a
 git log. That is a real loss and is accepted knowingly.
 
-### D2 — Every write is revision-guarded, and a lost race is never forced
+### D2 — Offset-based writes are revision-guarded; a lost race is never forced
 
-Each edit follows read → plan → write:
+Google Slides supports concurrent editing, and this feature does not take that away. Two people
+in the editor merge as they always have, and an agent edit merges alongside them the same way.
+The guard below is not concurrency control and is not there to serialise anybody.
 
-1. `presentations.get` returns the current structure **and** its `revisionId`.
-2. The agent plans a `batchUpdate` against the object ids it just read.
-3. The batch carries `writeControl.requiredRevisionId` set to that revision.
+It exists for one failure that is the agent's alone. A person editing looks at the slide while
+they type. The agent reads, plans, and writes seconds or minutes later, in terms of object ids and
+**character offsets** — *delete characters 40–60 of this box*. If someone inserted a sentence into
+that box in the gap, offsets 40–60 are no longer the text the agent read, and Google will carry
+out the instruction faithfully. The result is not a conflict anyone notices; it is a
+correct-looking edit in the wrong place.
 
-If someone edited the deck in between, Google rejects the batch. Verity then **re-reads and
-re-plans**; it does not retry without the guard and never force-writes. An edit that cannot be
-re-planned safely surfaces to the operator instead of resolving itself.
+Every edit therefore follows read → plan → write. Where the plan depends on offsets, the batch
+also carries `writeControl.requiredRevisionId` set to the revision it was made against: if the deck
+moved, Google rejects it, Verity **re-reads and re-plans**, and never retries such a batch
+unguarded. An edit that cannot be re-planned safely surfaces to the operator instead of resolving
+itself.
 
-Without the guard, the agent's plan refers to object ids and text offsets that may no longer
-mean what they meant when it read them — the failure mode is not a merge conflict but a
-correct-looking edit applied to the wrong place.
+**The guard is applied per request kind, not to every write.** `requiredRevisionId` matches the
+revision of the *whole presentation* — the spike saw a batch refused because an unrelated slide
+had been added — so guarding everything would mean an agent on a deck with two or three live
+editors is rejected constantly, for edits that were never in danger. That trades a rare silent
+corruption for a constant visible obstruction, which is not a good trade when the vocabulary
+already offers a way out:
+
+- **Guarded — the plan depends on positions that can move.** `deleteText` and `insertText` at an
+  offset. These are the only requests that can quietly hit the wrong text.
+- **Unguarded — the request carries its own target.** `replaceAllText` matches on content rather
+  than position, so a concurrent edit makes it match or not match, never match the wrong thing.
+  `createShape`, `createImage`, `createSlide` and `updatePageProperties` add rather than reinterpret,
+  and `deleteObject` and `updateTextStyle` name an `objectId` that either still exists or fails
+  loudly.
+
+The practical consequence for the edit planner: **prefer the content-addressed form.** Rewriting a
+heading as `replaceAllText` needs no guard and cannot land wrong; expressing the same edit as
+offsets needs a guard and can be rejected. Offsets are the fallback for when nothing else
+expresses the intent, not the default.
 
 ### D3 — Read-plan-write against object ids; layouts, not coordinates
 
 The agent addresses **existing** elements by `objectId` from the preceding `get`. New slides are
 created with `createSlide` referencing a layout **already in the deck**, so position, fonts and
-colours come from the deck's own master. This is why the operator does not have to touch the
-template, and it is what makes the output look consistent.
+colours come from the deck's own master where that relationship survives. This is why the operator
+does not have to touch the template.
+
+Layouts are chosen from what the deck actually has, never from Google's predefined names: a
+branded deck carries its own set (`DARK`, `BASE`, `DEFAULT` on the deck probed here), so
+`TITLE_AND_BODY` is not a value Verity may assume exists. Both `layoutProperties.name` and
+`displayName` are free-form on such a deck and neither is a stable key across decks — the agent
+enumerates the layouts it finds and picks among those.
 
 The supported edit vocabulary for Phase 1:
 
@@ -90,6 +121,49 @@ The supported edit vocabulary for Phase 1:
 | Slide background     | `updatePageProperties` (`pageBackgroundFill.stretchedPictureFill`) |
 | New slide            | `createSlide` with an existing layout                            |
 | Remove / move        | `deleteObject`, `updatePageElementTransform`                     |
+
+Every request in that table was exercised end to end in the spike, against a slide created from
+one of the deck's own layouts rather than a blank one, and the resulting slide was re-rendered
+each time — a batch can return `200` and still leave something broken.
+
+Text inserted into an inherited placeholder carries **no explicit style of its own**: the run
+comes back from `presentations.get` with an empty `textStyle`, and font, size and colour resolve
+from the layout at render time. Where that holds, Verity never has to name a font to match the
+deck, and never gets the chance to pin one and drift the design.
+
+**It does not hold on real decks, and the design must not assume it.** Probing a 23-slide branded
+deck found **no placeholders worth addressing — at most one per slide — and all 889 text runs
+pinning their own `fontFamily`/`fontSize`.** Its layouts were named `DARK`, `BASE`, `DEFAULT`, not
+Google's predefined set. That is the signature of a deck imported from PowerPoint: conversion
+flattens the master relationship, and what is left is absolutely positioned shapes with inline
+styling. A deck that has ever been round-tripped through Office looks like this, which is to say
+most decks an operator already owns.
+
+So the vocabulary splits by risk, and this is the part that governs implementation:
+
+- **Editing existing text is the safe half.** `insertText` into an existing run, `deleteText` and
+  `replaceAllText` inherit from the run they land in, whether that run's style is inherited or
+  inline. These need no style reasoning at all and work identically on both kinds of deck.
+- **Creating new elements is the unsafe half.** `createShape` and `createSlide` only inherit
+  design where a live master relationship still exists. On a flattened deck a new text box arrives
+  as unstyled black Arial on a dark-branded slide. Verity therefore **derives style from a sibling
+  element on the same slide** — read a comparable run's `textStyle` and apply it explicitly with
+  `updateTextStyle` — rather than trusting inheritance. Inheritance is the preferred path when the
+  placeholders are really there; copying a sibling is the fallback that makes the feature work on
+  the decks people actually have.
+
+  This was tested on the flattened deck itself, not just reasoned about: a new box picked up
+  `bold`, `italic`, `fontSize`, `foregroundColor` and `weightedFontFamily` from a neighbouring run
+  and all five landed. Note the last one — `weightedFontFamily` carries the font *and* its weight,
+  and where it is present it overrides `fontFamily`, so copying both is noise at best. Copy the
+  weighted form when the source has it.
+
+Detecting which kind of deck is in hand is one read: a slide with no placeholders and fully
+inline-styled runs is flattened. That check belongs in the plan step, not in a per-request guess.
+
+One practical consequence of the same probe: those slides carry 30–77 page elements each. Reading
+a whole presentation to plan one edit is the wrong shape — the agent reads **one page at a time**
+through `presentations.pages.get` with a field mask, which is what the spike does.
 
 Free-floating elements need an explicit transform. Those come from a small set of named
 placements derived from the slide dimensions (full bleed, left/right half, lower third, centred
@@ -137,10 +211,26 @@ under `drive.file` — and the resulting Drive URL is referenced from the reques
 apply: PNG/JPEG/GIF, at most 50 MB and 25 megapixels, and the URL must be reachable at request
 time.
 
-**This is the least certain part of the design.** Whether Google's fetch resolves a Drive-hosted
-URL under the connected account's permissions needs to be proven before anything is built on it.
-If it does not, the fallbacks are a temporary link-share on the uploaded image or an
-operator-provided public bucket — both worse, and both changing what "insert an image" costs.
+**Google's fetch is anonymous, not authorised as the connected account.** The spike
+(`scripts/slides-api-spike.ts`) tried four Drive URL shapes — `lh3.googleusercontent.com/d/<id>`,
+`drive.google.com/uc?export=view`, `drive.google.com/uc`, and the file's own `webContentLink` —
+against a freshly uploaded, private image. All four were refused (`Access to the provided image
+was forbidden`, `The provided image should be publicly accessible`). After granting
+`anyoneWithLink` on that same file, all four succeeded. A private Drive URL is not an option;
+inserting an image requires a public one.
+
+**Slides copies the bytes at insert time, so the public window is momentary.** The same spike then
+read the inserted element's own `image.contentUrl` (a `lh7-rt.googleusercontent.com` URL owned by
+the presentation), revoked the link-share, and deleted the Drive source outright — after which the
+image still rendered in `getThumbnail` and its bytes were still served. `createImage` is a copy,
+not a live reference.
+
+The insert therefore runs as a bounded transaction: upload → grant `anyoneWithLink` → `createImage`
+→ revoke the share → delete the uploaded file. The asset is world-readable-by-link for the seconds
+between grant and revoke, to anyone who already holds the unguessable id. That is the real cost of
+an image insert, and it is acceptable; a permanent public asset store would not have been. The
+revoke and delete must be failure-tolerant on their own — a batch that succeeded and a share that
+was not cleaned up is a leak, so cleanup retries independently of the edit's outcome.
 
 ### D6 — Previews on request only
 
@@ -163,6 +253,8 @@ ADR 0009 arrives as PDF, which nothing can edit. Changing the `presentation` ent
 `NATIVE_EXPORT` (`google-drive.ts:456`) to the PowerPoint MIME type yields an artifact that is
 actually workable offline, and keeps the operator's existing habit available alongside the API
 path. Files already stored as `.pptx` in Drive download correctly today via `extensionFromName`.
+The spike confirmed `files.export` accepts the PowerPoint MIME type and returns an actual zip
+container, so this is the one-line change it looks like.
 
 ### D8 — The whole UI is one picker and one chip
 
@@ -190,19 +282,47 @@ access, not the work — and the confirmation has to say so, or "end editing" re
 
 Two states need a home in this UI, and both are easy to leave out:
 
-- **Drift.** When the D2 guard fires, an `Alert` is wrong: the Drive screen uses those for import
-  failures, but this is the outcome of an agent turn and belongs in the transcript as a card —
-  *the deck changed in Google* with re-read-and-retry alongside open-in-Slides.
+- **Drift.** When the D2 guard fires — rarely, since it now covers only offset-based edits — an
+  `Alert` is wrong: the Drive screen uses those for import failures, but this is the outcome of an
+  agent turn and belongs in the transcript as a card — *the deck changed in Google* with
+  re-read-and-retry alongside open-in-Slides.
 - **A connection without write access.** Everyone connected under ADR 0009 holds a
   `drive.readonly` grant. The Drive screen's "Not connected" empty state needs a third variant —
   connected, cannot edit, reconnect — or the first edit fails as a 403 nobody can interpret.
 
+### D9 — Only native Google Slides decks can be assigned; `.pptx` in Drive is refused up front
+
+A `.pptx` file stored in Drive is **not** a Google Slides presentation, and the Slides API will
+not touch it: `presentations.get` on one returns `400 — This operation is not supported for this
+document. The document must not be an Office file.` No request in D3's vocabulary is reachable for
+such a file. This is not a limit Verity can work around; the API has no editing surface for Office
+files at all.
+
+The distinction is invisible in the Drive UI — an Office deck opens in the Slides editor and looks
+like any other deck — and it is exactly what the operator's current habit produces. Downloading a
+deck, editing it in PowerPoint and uploading it back leaves a `.pptx` behind (Drive marks these
+with `rtpof=true` in the share URL), so the decks most likely to be picked first are the ones this
+feature cannot edit.
+
+Two consequences follow, and the first one is the load-bearing one:
+
+- **The picker filters on `mimeType = application/vnd.google-apps.presentation` and shows Office
+  decks as visible-but-unpickable, with the reason and the one-time fix** — *File → Save as Google
+  Slides* in Drive. Hiding them would be worse: the operator knows the deck is there, and a deck
+  that silently does not appear reads as a broken picker. The check is a field Drive already
+  returns, so the refusal costs nothing and happens before any edit is attempted.
+- **Verity does not convert the file itself.** Conversion produces a *new* file with a new id and
+  a new link, and the whole premise of this ADR (D1) is that the deck stays where the operator's
+  colleagues already edit it. Silently forking that deck is the one failure mode worse than
+  refusing the edit. The conversion is the operator's decision, made once, outside Verity.
+
 ## Scope
 
 **In (Phase 1):** `presentations` added to the connect flow; session deck assignment (picker row,
-composer chip, server-side enforcement); the read-plan-write edit route with the D2 revision
-guard; the D3 edit vocabulary and named placements; image upload via Drive; on-request slide
-previews; the drift and no-write-access UI states; the D7 pptx export target.
+composer chip, server-side enforcement); the read-plan-write edit route with D2's offset guard;
+the D3 edit vocabulary, its sibling-style fallback and named placements; image upload via Drive
+with its revoke-and-delete cleanup; on-request slide previews; the drift and no-write-access UI
+states; the D9 native-only filter; the D7 pptx export target.
 
 **Out (later):** editing masters, layouts or themes; animations and transitions; comments and
 suggestions; generating a deck from nothing (no design to inherit — needs a Verity theme, which
@@ -235,9 +355,33 @@ created — which is the case that matters here.
   last revision id Verity observed for it, and a recently-used list for the picker.
 - Session-scoped assignment means a deck used across weeks is re-picked each session. That is the
   accepted cost of having no registry to curate; the recently-used ordering keeps it to one tap.
-- **One load-bearing unverified assumption, to be settled first in a spike:** that Google's image
-  fetch resolves a Drive-hosted URL under the connected account (D5). If it does not, inserting
-  an image forces either a link-share side effect on every uploaded asset or an operator-provided
-  public bucket, and "insert an image" stops being a cheap operation. `getThumbnail` (D6) is
-  tested alongside it, but since previews are on request only, its failure costs a convenience
-  rather than a feature.
+- **The assumptions were settled in a spike before this ADR was accepted**
+  (`scripts/slides-api-spike.ts`), first against a deck it creates and deletes, then against two
+  real ones. It falsified D5 as first written — a private Drive URL is refused, a link-share is
+  mandatory — and then established the mitigation that keeps the cost bounded: Slides copies the
+  bytes, so the share can be revoked and the source deleted immediately after the insert. D2's
+  revision guard was confirmed to actually reject a stale `requiredRevisionId` rather than apply
+  the batch anyway, which is the failure the guard exists for and the one that would otherwise be
+  invisible — and, by refusing a batch over an edit to an unrelated slide, showed why that guard
+  has to be narrowed rather than applied to everything. D3's full edit vocabulary ran green on a
+  layout-backed slide. D6's `getThumbnail` and D7's `.pptx` export both worked.
+- **D4 holds end to end on a real deck.** Under a token carrying only `drive.file` and
+  `presentations`, two decks the app did not create were reached through the Slides API while
+  Drive's own `files.get` returned 404 for the same ids. One was refused as an Office file (D9);
+  against the other — 23 slides, branded, in active use — the full cycle ran with the operator's
+  consent: read the head revision, create a styled element, verify it, watch the stale-revision
+  guard refuse a second write, delete it again, confirm the deck was back to its previous shape.
+  Authorization, reading, rendering, writing and the revision guard all behave on somebody else's
+  deck exactly as they do on a scratch one.
+- **The design assumption that broke was D3's, not D5's.** Style inheritance held on a deck
+  authored natively and failed completely on a real one: it is absent on exactly the decks this
+  feature targets, which is why the spike passing on a scratch deck proved less than it appeared to. The sibling-style fallback in D3 is therefore not an edge case to add later;
+  it is the main path for any deck with PowerPoint in its history, and Phase 1 is not usable
+  without it.
+- **The first decks an operator reaches for may be the ones this cannot edit** (D9). The habit that
+  motivated this ADR — download, edit in PowerPoint, upload — is precisely the habit that leaves
+  `.pptx` files in Drive. Expect the native-only filter to be the feature's first visible edge, and
+  budget the picker's explanation accordingly; it is doing more work than a filter usually does.
+- **Image inserts have a cleanup obligation.** Every insert grants and then revokes a link-share
+  on a temporary Drive file (D5). A crash between those two steps leaves a world-readable-by-link
+  asset behind, so the cleanup cannot ride on the edit's success path.
