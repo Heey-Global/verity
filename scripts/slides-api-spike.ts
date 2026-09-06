@@ -937,7 +937,7 @@ async function writeTestOnExistingDeck(deckId: string): Promise<void> {
   );
 
   // Off-canvas: a 16:9 deck is 720x405 pt, so 900 pt is past the right edge.
-  const boxId = 'verity_spike_probe_box';
+  const boxId = `verity_spike_${Date.now().toString(36)}`;
   const requests: unknown[] = [
     {
       createShape: {
@@ -963,16 +963,17 @@ async function writeTestOnExistingDeck(deckId: string): Promise<void> {
     });
   }
 
-  const written = await batchUpdate(deckId, requests, revision);
-  record(
-    'D4',
-    'write test: batchUpdate against a foreign deck',
-    written.ok,
-    written.ok ? '' : errorText(written.status, written.body),
-  );
-  if (!written.ok) return;
-
   try {
+    // Cleanup wraps the write itself: a response can be lost after Google applied the batch.
+    const written = await batchUpdate(deckId, requests, revision);
+    record(
+      'D4',
+      'write test: batchUpdate against a foreign deck',
+      written.ok,
+      written.ok ? '' : errorText(written.status, written.body),
+    );
+    if (!written.ok) return;
+
     // Did the copied style actually land? This is the D3 fallback's whole premise.
     const applied = await readFirstRunStyle(deckId, slideId, boxId);
     const wanted = Object.keys(sibling ?? {});
@@ -998,24 +999,38 @@ async function writeTestOnExistingDeck(deckId: string): Promise<void> {
       staleError,
     );
   } finally {
-    // Once the box exists, cleanup must not depend on any verification step succeeding.
+    // A run-unique id makes an unconditional delete safe even when the create response was lost.
     const removed = await batchUpdate(deckId, [{ deleteObject: { objectId: boxId } }]);
+    const removeError = errorText(removed.status, removed.body);
+    const alreadyAbsent = removed.status === 400 && removeError.includes('could not be found');
     record(
       'D4',
       'write test: box removed again',
-      removed.ok,
-      removed.ok ? '' : errorText(removed.status, removed.body),
+      removed.ok || alreadyAbsent,
+      removed.ok ? '' : removeError,
     );
 
     const after = await readPlaceholders(deckId, slideId);
-    const stillThere = await readFirstRunStyle(deckId, slideId, boxId);
+    const stillThere = await pageHasObject(deckId, slideId, boxId);
     record(
       'D4',
       'write test: deck is back to its previous shape',
-      Object.keys(stillThere).length === 0,
+      !stillThere,
       `${String(after.size)} placeholders unchanged`,
     );
   }
+}
+
+async function pageHasObject(
+  presentationId: string,
+  slideId: string,
+  objectId: string,
+): Promise<boolean> {
+  const page = await call(
+    `${SLIDES}/presentations/${presentationId}/pages/${slideId}?fields=pageElements.objectId`,
+  );
+  const elements = (page.body as { pageElements?: { objectId?: string }[] }).pageElements ?? [];
+  return elements.some((element) => element.objectId === objectId);
 }
 
 /** Pick a run on the slide whose style can be copied onto a new element. */
