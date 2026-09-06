@@ -45,18 +45,34 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
   COLOR_ACTIVE=$'\033[38;2;25;200;255m'
   COLOR_ACCENT=$'\033[1;38;2;255;53;218m'
   COLOR_MUTED=$'\033[38;2;154;158;201m'
+  COLOR_BOLD=$'\033[1m'
   COLOR_RESET=$'\033[0m'
 else
   COLOR_ACTIVE=''
   COLOR_ACCENT=''
   COLOR_MUTED=''
+  COLOR_BOLD=''
   COLOR_RESET=''
 fi
 
 die() { printf 'verity-install: %s\n' "$*" >&2; exit 1; }
-note() { printf '%sverity-install:%s %s\n' "$COLOR_ACTIVE" "$COLOR_RESET" "$*"; }
-heading() { printf '%s  %s%s\n' "$COLOR_ACCENT" "$*" "$COLOR_RESET"; }
-hint() { printf '%s  %s%s\n' "$COLOR_MUTED" "$*" "$COLOR_RESET"; }
+note() { printf '%s  •%s %s\n' "$COLOR_ACTIVE" "$COLOR_RESET" "$*"; }
+heading() { printf '\n%s━━ %s ━━%s\n' "$COLOR_ACCENT" "$*" "$COLOR_RESET"; }
+hint() { printf '%s    %s%s\n' "$COLOR_MUTED" "$*" "$COLOR_RESET"; }
+field() {
+  printf '  %s%-18s%s %s%s%s\n' "$COLOR_MUTED" "$1" "$COLOR_RESET" "$COLOR_BOLD" "$2" "$COLOR_RESET"
+}
+banner() {
+  [ -t 1 ] || return 0
+  printf '%s%s' "$COLOR_ACTIVE" "$COLOR_BOLD"
+  printf '%s\n' '██╗   ██╗███████╗██████╗ ██╗████████╗██╗   ██╗'
+  printf '%s\n' '██║   ██║██╔════╝██╔══██╗██║╚══██╔══╝╚██╗ ██╔╝'
+  printf '%s\n' '██║   ██║█████╗  ██████╔╝██║   ██║    ╚████╔╝ '
+  printf '%s\n' '╚██╗ ██╔╝██╔══╝  ██╔══██╗██║   ██║     ╚██╔╝  '
+  printf '%s\n' ' ╚████╔╝ ███████╗██║  ██║██║   ██║      ██║   '
+  printf '%s\n' '  ╚═══╝  ╚══════╝╚═╝  ╚═╝╚═╝   ╚═╝      ╚═╝   '
+  printf '%s%s  Private infrastructure for AI coding agents%s\n' "$COLOR_MUTED" "$COLOR_BOLD" "$COLOR_RESET"
+}
 
 usage() {
   cat <<'EOF'
@@ -111,6 +127,8 @@ while [ "$#" -gt 0 ]; do
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+
+banner
 
 # ── validators ─────────────────────────────────────────────────────────────
 # Deliberately the same shapes verity-compose enforces. Failing here costs a
@@ -661,24 +679,25 @@ else
 fi
 
 # ── report ─────────────────────────────────────────────────────────────────
-printf '\n'
-printf '  server image      %s\n' "${server_image:-<resolved at install time>}"
-printf '  image source      %s\n' "$image_source"
-if [ -n "$persisted_id" ]; then
-  printf '  deployment id     %s (persisted)\n' "$deployment_id"
-elif [ "$opt_check" = 1 ] && [ -z "$opt_deployment_id" ]; then
-  # Showing the value generated for this dry run would be a lie: nothing persists
-  # it, so the real install generates a different one.
-  printf '  deployment id     <generated and persisted at install time>\n'
-else
-  printf '  deployment id     %s (new)\n' "$deployment_id"
+heading 'Installation plan'
+field 'Mode' "$([ "$first_install" = 1 ] && printf 'first install' || printf 'host-side upgrade')"
+field 'Server image' "${server_image:-<resolved at install time>}"
+if [ "$opt_check" = 1 ]; then
+  field 'Image source' "$image_source"
+  if [ -n "$persisted_id" ]; then
+    field 'Deployment ID' "$deployment_id (persisted)"
+  elif [ -z "$opt_deployment_id" ]; then
+    # Showing the value generated for this dry run would be a lie: nothing persists
+    # it, so the real install generates a different one.
+    field 'Deployment ID' '<generated and persisted at install time>'
+  else
+    field 'Deployment ID' "$deployment_id (new)"
+  fi
+  field 'Compose project' "$compose_project"
+  field 'Runner supervisor' "$runner_supervisor"
+  field 'gVisor required' "$gvisor_required"
+  field 'Control token' "$TOKEN_PATH"
 fi
-printf '  compose project   %s\n' "$compose_project"
-printf '  runner supervisor %s\n' "$runner_supervisor"
-printf '  gvisor required   %s\n' "$gvisor_required"
-printf '  control token     %s\n' "$TOKEN_PATH"
-printf '  mode              %s\n' "$([ "$first_install" = 1 ] && printf 'first install' || printf 'host-side upgrade')"
-printf '\n'
 
 if [ "$first_install" = 1 ] && [ "$runner_supervisor" = 1 ]; then
   note 'the Runner supervisor capability is sealed on this first install and cannot be added later'
@@ -710,7 +729,6 @@ write_state() {
 }
 
 if [ ! -e "$TOKEN_PATH" ] && [ ! -L "$TOKEN_PATH" ]; then
-  note "generating a control token at $TOKEN_PATH"
   # Exactly 32 random bytes as lowercase hex and NOT one byte more: the file must be
   # 64 bytes, so a trailing newline (which `echo` would add) fails validation.
   dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' \
@@ -741,7 +759,8 @@ printf '%s\n' "$postgres_password" | write_state "$POSTGRES_PASSWORD_PATH" 0600
 
 # Stable server identity and TLS keys live beside the installer state. Each run
 # rotates only the short-lived, one-time pairing capability shown below.
-note 'creating TLS identity and a 15-minute device pairing code'
+heading 'Device pairing'
+note 'Creating TLS identity and a pairing code valid for 15 minutes'
 pairing_host="$(select_pairing_host)"
 pairing_uri="$(VERITY_STATE_DIR="$STATE_DIR" \
   VERITY_API_HOST_PORT="${VERITY_API_HOST_PORT:-8082}" \
@@ -751,7 +770,8 @@ pairing_uri="$(VERITY_STATE_DIR="$STATE_DIR" \
   "$repo_root/deploy/bin/verity-pairing-material")"
 
 # ── hand over to the guarded migration ─────────────────────────────────────
-note 'running the guarded migration (verity-compose managed-up)'
+heading 'Starting Verity'
+note 'Running the guarded migration'
 cd "$repo_root"
 VERITY_SERVER_IMAGE="$server_image" \
 VERITY_MANAGED_DEPLOYMENT_ID="$deployment_id" \
@@ -787,20 +807,21 @@ docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
   psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U verity -d verity -c 'SELECT 1' >/dev/null \
   || die 'PostgreSQL rejected the generated credential over TCP after the SCRAM migration; run this installer again after correcting PostgreSQL'
 
-printf '\n'
+heading "$([ "$first_install" = 1 ] && printf 'Pair your device' || printf 'Optional: pair another device')"
 if [ "$first_install" = 1 ]; then
-  heading 'Installation complete'
-  printf '%s\n' '  Open the Verity app and tap "Scan QR code".'
-  hint 'This one-time code is valid for up to 15 minutes from when setup began.'
+  printf '%s\n' '  1. Open the Verity app.'
+  printf '%s\n' '  2. Tap "Scan QR code".'
+  hint 'The code expires 15 minutes after setup began.'
 else
-  heading 'Update complete'
-  printf '%s\n' '  Scan this code only if you want to pair another device.'
+  printf '%s\n' '  Scan the QR code below only if you want to connect another device.'
 fi
 printf '\n'
 printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_image" \
   packages/server/dist/pairing-qr.js \
   || die 'the Server image could not render the pairing QR code'
-printf '\n'
-hint 'Cannot scan it? In the app, tap "Paste pairing code", then copy this entire line:'
+heading 'Cannot scan the QR code?'
+hint 'In the app, tap "Paste pairing code", then copy the entire line below.'
 printf '  %s\n\n' "$pairing_uri"
-note 'the Server is ready. Run this installer again only to repair this host or pair another device.'
+heading "$([ "$first_install" = 1 ] && printf '✓ Installation complete' || printf '✓ Update complete')"
+printf '%s\n' '  Verity is ready.'
+hint 'Run this installer again only to repair this host or pair another device.'

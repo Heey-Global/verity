@@ -250,7 +250,9 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const host = makeHost();
     const result = run(host, ['--check']);
     assert.equal(result.status, 0);
-    assert.match(result.output, /mode +first install/);
+    assert.match(result.output, /Mode +first install/);
+    assert.match(result.output, /Deployment ID +<generated and persisted at install time>/);
+    assert.match(result.output, /Control token/);
     assert.match(result.output, /nothing was changed/);
     assert.throws(() => stateFile(host, 'deployment-id'));
     assert.throws(() => readFileSync(host.handover));
@@ -263,9 +265,14 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const result = run(host, [], { VERITY_RUNNER_SUPERVISOR: '1' });
     assert.equal(result.status, 0, result.output);
     assert.match(result.output, /Installation complete/);
-    assert.match(result.output, /Open the Verity app and tap "Scan QR code"/);
-    assert.match(result.output, /valid for up to 15 minutes from when setup began/);
-    assert.match(result.output, /Cannot scan it\?/);
+    assert.match(result.output, /1\. Open the Verity app\.[\s\S]*2\. Tap "Scan QR code"/);
+    assert.match(result.output, /code expires 15 minutes after setup began/);
+    assert.match(result.output, /━━ Installation plan ━━/);
+    assert.match(result.output, /━━ Device pairing ━━/);
+    assert.match(result.output, /━━ Starting Verity ━━/);
+    assert.match(result.output, /━━ Pair your device ━━/);
+    assert.match(result.output, /━━ Cannot scan the QR code\? ━━/);
+    assert.doesNotMatch(result.output, /Control token|Compose project|Deployment ID/);
     assert.match(result.output, /verity:\/\/pair\?payload=test/);
     assert.match(
       result.output,
@@ -349,7 +356,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, []);
     assert.equal(result.status, 0, result.output);
-    assert.match(result.output, /mode +host-side upgrade/);
+    assert.match(result.output, /Mode +host-side upgrade/);
 
     const env = handoverEnv(host);
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_B);
@@ -454,7 +461,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, []);
     assert.equal(result.status, 0, result.output);
-    assert.match(result.output, /image source +stopped verity-managed-server-g2/);
+    assert.match(result.output, new RegExp(`Server image +${DIGEST_B}`));
     const env = handoverEnv(host);
     assert.equal(env.VERITY_MANAGED_DEPLOYMENT_ID, 'sealed-id');
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_B);
@@ -510,7 +517,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, []);
     assert.equal(result.status, 0, result.output);
-    assert.match(result.output, /mode +first install/);
+    assert.match(result.output, /Mode +first install/);
     assert.notEqual(handoverEnv(host).VERITY_MANAGED_DEPLOYMENT_ID, 'not-ours');
   });
 
@@ -700,7 +707,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, []);
     assert.equal(result.status, 0, result.output);
-    assert.match(result.output, /mode +first install/);
+    assert.match(result.output, /Mode +first install/);
     assert.equal(handoverEnv(host).VERITY_MANAGED_DEPLOYMENT_ID, 'half-installed');
     assert.equal(handoverEnv(host).VERITY_SERVER_IMAGE, DIGEST_A);
   });

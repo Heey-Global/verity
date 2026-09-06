@@ -25,8 +25,13 @@ describe('public Verity installer', () => {
     expect(installer).toContain('ghcr.io/heey-global/verity/verity-server');
     expect(installer).toContain("grep -Eq '^[a-f0-9]{64}$'");
     expect(installer).toContain('run_docker create "$image_digest"');
-    expect(installer).toContain('progress 3 "downloading $source_image"');
-    expect(installer).toContain('run_docker pull --quiet "$source_image" >/dev/null');
+    expect(installer).toContain('download_image "$source_image"');
+    expect(installer).toContain("local frames=('⠋' '⠙' '⠹'");
+    expect(installer).toContain('sub(/:$/, "", id)');
+    expect(installer).toContain('length(id) == 12 && id !~ /[^a-f0-9]/');
+    expect(installer).toContain('if ($0 ~ /Pull complete|Already exists/) complete[id] = 1');
+    expect(installer).toContain("printf ' · %d/%d layers'");
+    expect(installer).toContain('download complete  %ds');
     expect(installer).toContain("run_docker ps -a --filter 'name=^/verity-managed-server'");
     expect(installer).toContain("source_image=$(run_docker inspect --format '{{.Config.Image}}'");
     expect(installer).toContain('source_image="$source_image_override"');
@@ -117,7 +122,13 @@ exec env SUDO_MOCK=1 "$@"
 printf '%s\\n' "$*" >> "$MOCK_DOCKER_LOG"
 case "$1" in
   version|rm) exit 0 ;;
-  pull) ;;
+  pull)
+    if [ -n "\${MOCK_PULL_DELAY:-}" ]; then
+      printf '0342b017ba94 Pulling fs layer\n92a02cc06feb Already exists\n'
+      sleep "$MOCK_PULL_DELAY"
+      printf '0342b017ba94 Pull complete 0B\n'
+    fi
+    [ "\${MOCK_PULL_FAIL:-0}" = 0 ] || { printf 'registry unavailable\n' >&2; exit 44; } ;;
   ps)
     [ "\${MOCK_PS_FAIL:-0}" = 0 ] || exit 42
     [ -z "\${MOCK_MANAGED_IMAGE:-}" ] || printf '%s\\n' "\${MOCK_MANAGED_NAME:-verity-managed-server}" ;;
@@ -156,6 +167,44 @@ esac
       expect(await readFile(marker, 'utf8')).toContain(
         `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check`,
       );
+
+      const terminal = await execFileAsync(
+        'script',
+        ['-qec', `bash ${installerPath} --check`, '/dev/null'],
+        {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            TERM: 'xterm-256color',
+            NO_COLOR: '',
+            MOCK_MARKER: marker,
+            MOCK_PRIVILEGED: privileged,
+            MOCK_DOCKER: join(bin, 'docker'),
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_PAYLOAD: payload,
+            MOCK_PAYLOAD_ROOT: payloadRoot,
+            MOCK_PULL_DELAY: '1',
+          },
+        },
+      );
+      expect(terminal.stdout).toContain('1/2 layers');
+      expect(terminal.stdout).toContain('download complete');
+
+      await expect(
+        execFileAsync('script', ['-qec', `bash ${installerPath} --check`, '/dev/null'], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            TERM: 'xterm-256color',
+            NO_COLOR: '',
+            MOCK_DOCKER: join(bin, 'docker'),
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_PULL_FAIL: '1',
+          },
+        }),
+      ).rejects.toMatchObject({
+        stdout: expect.stringContaining('registry unavailable'),
+      });
 
       await writeFile(dockerLog, '');
       const managedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`;
