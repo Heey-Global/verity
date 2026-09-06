@@ -82,6 +82,7 @@ test('successful preflight exits before pulling an image', () => {
   const result = run(host(), '--preflight');
 
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /\[1\/4\] checking host prerequisites/);
   assert.match(result.stdout, /preflight passed/);
 });
 

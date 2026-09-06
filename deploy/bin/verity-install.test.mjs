@@ -262,7 +262,16 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, [], { VERITY_RUNNER_SUPERVISOR: '1' });
     assert.equal(result.status, 0, result.output);
-    assert.match(result.output, /Pairing code \(copy all\): verity:\/\/pair\?payload=test/);
+    assert.match(result.output, /Installation complete/);
+    assert.match(result.output, /Open the Verity app and tap "Scan QR code"/);
+    assert.match(result.output, /valid for up to 15 minutes from when setup began/);
+    assert.match(result.output, /Cannot scan it\?/);
+    assert.match(result.output, /verity:\/\/pair\?payload=test/);
+    assert.match(
+      result.output,
+      /Run this installer again only to repair this host or pair another device/,
+    );
+    assert.equal(result.output.includes(String.fromCharCode(27)), false);
     assert.match(stateFile(host, 'updater-token'), /^[a-f0-9]{64}$/);
     assert.equal(readFileSync(join(host.stateDir, 'updater-token'), 'utf8').length, 64);
     assert.equal(stateFile(host, 'compose-project'), 'verity');
