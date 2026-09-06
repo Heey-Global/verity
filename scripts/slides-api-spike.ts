@@ -644,6 +644,14 @@ async function checkEditVocabulary(presentationId: string): Promise<void> {
   ]);
   await runRequest(presentationId, 'deleteObject', [{ deleteObject: { objectId: boxId } }]);
 
+  const duplicateId = 'verity_spike_duplicate_box';
+  await runRequest(presentationId, 'duplicateObject from a comparable shape', [
+    { duplicateObject: { objectId: bodyId, objectIds: { [bodyId]: duplicateId } } },
+  ]);
+  await runRequest(presentationId, 'delete duplicated object', [
+    { deleteObject: { objectId: duplicateId } },
+  ]);
+
   // Render it: every request above can succeed and still leave a broken slide.
   await checkThumbnail(presentationId, slideId, 'D3');
 }
@@ -1080,7 +1088,8 @@ async function readFirstCopyableStyle(
   for (const element of elements) {
     for (const textElement of element.shape?.text?.textElements ?? []) {
       const style = textElement.textRun?.style;
-      if (style === undefined || !('fontFamily' in style)) continue;
+      if (style === undefined || (!('fontFamily' in style) && !('weightedFontFamily' in style)))
+        continue;
       const copied: Record<string, unknown> = {};
       for (const key of COPYABLE) if (key in style) copied[key] = style[key];
       // weightedFontFamily wins over fontFamily; sending both is noise.

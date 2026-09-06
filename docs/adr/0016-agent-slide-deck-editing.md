@@ -127,7 +127,7 @@ The supported edit vocabulary for Phase 1:
 | -------------------- | --------------------------------------------------------------- |
 | Change text          | `insertText`, `deleteText`, `replaceAllText`                     |
 | Format text          | `updateTextStyle`, `updateParagraphStyle`                        |
-| New text box         | `createShape` (`TEXT_BOX`) + `insertText`                        |
+| New text box         | `duplicateObject` from a comparable shape, or `createShape` + `insertText` for a neutral box |
 | Insert image         | `createImage`                                                    |
 | Slide background     | `updatePageProperties` (`pageBackgroundFill.stretchedPictureFill`) |
 | New slide            | `createSlide` with an existing layout                            |
@@ -157,19 +157,21 @@ So the vocabulary splits by risk, and this is the part that governs implementati
 - **Editing existing text is the safe half.** `insertText` into an existing run, `deleteText` and
   `replaceAllText` inherit from the run they land in, whether that run's style is inherited or
   inline. These need no style reasoning at all and work identically on both kinds of deck.
-- **Creating new elements is the unsafe half.** `createShape` and `createSlide` only inherit
-  design where a live master relationship still exists. On a flattened deck a new text box arrives
-  as unstyled black Arial on a dark-branded slide. Verity therefore **copies style from an
-  explicitly selected comparable element** — one with the same semantic role on the same slide,
-  or on a neighbouring slide using the same visual pattern — and applies its `textStyle` with
-  `updateTextStyle`. It never treats the first styled run or a placeholder count as proof that two
-  elements are comparable. If the plan cannot identify an unambiguous source, it does not create
-  the element autonomously.
+- **Creating new elements is the unsafe half.** `createShape` and `createSlide` only inherit design
+  where a live master relationship still exists. On a flattened deck a new text box arrives as
+  unstyled black Arial on a dark-branded slide. For a design-matched free-floating box, Verity
+  therefore uses `duplicateObject` on an explicitly selected comparable shape — one with the same
+  semantic role on the same slide, or on a neighbouring slide using the same visual pattern — then
+  replaces its content and moves the duplicate. Duplication preserves paragraph styling, autofit,
+  fill, border and other shape properties that copying `textStyle` alone would lose. `createShape`
+  remains available only when a neutral box is intended. The planner never treats the first styled
+  run or a placeholder count as proof that two elements are comparable; if it cannot identify an
+  unambiguous source, it does not create the element autonomously.
 
-  The spike tested only the transport mechanism, not semantic comparability: it sampled a styled
-  run, applied `bold`, `italic`, `fontSize`, `foregroundColor` and `weightedFontFamily` to a new box,
-  and verified that all five fields landed. `weightedFontFamily` carries the font *and* its weight;
-  where present it overrides `fontFamily`, so the planner copies the weighted form rather than both.
+  The spike's real-deck write tested only text-style field transport, not semantic comparability or
+  complete shape design: it sampled a styled run, applied `bold`, `italic`, `fontSize`,
+  `foregroundColor` and `weightedFontFamily` to a disposable box, and verified that all five fields
+  landed. This establishes the API mechanics but is not the Phase 1 design-matching algorithm.
 
 One practical consequence of the same probe: those slides carry 30–77 page elements each. Reading
 a whole presentation to plan one edit is the wrong shape — the agent reads **one page at a time**
