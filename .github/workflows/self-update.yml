@@ -15,6 +15,11 @@ on:
         required: false
         default: ''
         type: string
+      allow-no-rollback:
+        description: Exercise forward update guarantees without requiring N-1 rollback
+        required: false
+        default: false
+        type: boolean
   # Recovery and deliberate ad-hoc validation remain possible. A manual run
   # checks the ref selected in GitHub's workflow-dispatch UI.
   workflow_dispatch: {}
@@ -55,6 +60,7 @@ jobs:
       # image stamp; the value is synthetic because this image never leaves the
       # isolated daemon and the cutover assertions are digest-based.
       VERITY_SMOKE_SERVER_VERSION: 1.0.0
+      VERITY_SMOKE_ALLOW_NO_ROLLBACK: ${{ inputs.allow-no-rollback || false }}
     steps:
       # Load repository-owned setup from the workflow revision first. A candidate
       # may predate this action and must still be testable by a current workflow.

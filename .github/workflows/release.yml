@@ -42,6 +42,11 @@ on:
         description: Reviewed migration key promised readable by a maintenance bridge
         required: false
         type: string
+      backend-accept-no-rollback:
+        description: Republish despite a failed N-1 rollback (irreversible emergency override)
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release-${{ github.ref }}
@@ -225,6 +230,7 @@ jobs:
     uses: ./.github/workflows/self-update.yml
     with:
       candidate-sha: ${{ needs.release-please.outputs.backend-sha }}
+      allow-no-rollback: ${{ github.event_name == 'workflow_dispatch' && inputs['backend-accept-no-rollback'] && inputs['backend-republish'] }}
       # One-time, version-bounded authorization for the first public Server
       # package. A later missing/renamed package must fail closed rather than
       # silently treating an established release train as a bootstrap.

@@ -990,6 +990,45 @@ expect_secret_status "$server" unlocked
 echo '--- stage: prepare a candidate through pull, verify, preflight and standby'
 node packages/server/dist/self-update-live-smoke.js prepare
 
+if [[ "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" == 'true' ]]; then
+  echo '--- irreversible-schema override: exercising the complete forward update path'
+  echo '::warning::N-1 rollback scenarios are intentionally omitted for this maintenance republish.'
+
+  echo '--- stage: serve the Updater control socket for the forward handoff'
+  seals="$(seal_count)"
+  node packages/server/dist/self-update-live-smoke.js handoff-relay
+
+  echo '--- waiting for the outgoing Server to seal its key for the candidate'
+  wait_for_new_seal "$seals"
+
+  echo '--- stage: cut over in place and commit'
+  node packages/server/dist/self-update-live-smoke.js cutover
+  server='verity-managed-server-g1'
+
+  echo '--- waiting for the committed generation to serve /healthz'
+  wait_for_healthy "$server" 'committed generation never became healthy'
+  expect_gateway_serving 'the Gateway never followed the commit onto the new generation'
+  expect_secret_status "$server" unlocked
+
+  if [[ "$(docker inspect --format '{{.Image}}' "$server")" != \
+    "$(docker inspect --format '{{.Id}}' "$target_digest")" ]]; then
+    echo 'the forward-only commit did not promote the target Server image' >&2
+    exit 1
+  fi
+
+  echo '--- stage: reconcile every managed companion after the commit'
+  node packages/server/dist/self-update-live-smoke.js companion-handoff
+  expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" "$target_digest" \
+    "matched $VERITY_SMOKE_SERVER_VERSION $target_digest"
+
+  echo '--- stage: restart the managed deployment on the selected digest'
+  node packages/server/dist/self-update-live-smoke.js updater-restarts
+  wait_for_healthy "$server" 'the forward-only restart did not restore a healthy Server'
+  expect_gateway_serving 'the Gateway did not keep serving after the forward-only restart'
+  echo 'forward update, handoff, routing, companion reconciliation and restart passed'
+  exit 0
+fi
+
 # The failing direction runs first, and against the generation that is actually
 # serving. A rollback proven on a throwaway deployment would prove nothing about
 # the case that matters: the live Server is already gone by the time the new one
