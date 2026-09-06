@@ -84,9 +84,10 @@ editors is rejected constantly, for edits that were never in danger. That trades
 corruption for a constant visible obstruction, which is not a good trade when the vocabulary
 already offers a way out:
 
-- **Guarded — the plan depends on positions that can move.** `deleteText`, `insertText`,
-  `updateTextStyle` and `updateParagraphStyle` are guarded whenever they use a `FIXED_RANGE`.
-  Concurrent text can shift any of those ranges onto the wrong characters.
+- **Guarded — the plan depends on positions that can move.** `insertText` is guarded whenever it
+  supplies an `insertionIndex`; `deleteText`, `updateTextStyle` and `updateParagraphStyle` are
+  guarded whenever they use a `FIXED_RANGE`. Concurrent text can shift any of those indices or
+  ranges onto the wrong characters.
 - **Unguarded — the request carries a stable target or adds new content.** `createShape`,
   `createImage`, `createSlide` and `updatePageProperties` add rather than reinterpret;
   `deleteObject` names an `objectId` that either still exists or fails loudly; and text or
@@ -193,7 +194,9 @@ ambiguity in a tool that writes to shared documents is not a papercut.
 
 Consent burden is unchanged in practice: `drive.readonly` from ADR 0009 is already *restricted*,
 a stricter tier than *sensitive*, and the app already runs in Testing mode with its seven-day
-refresh-token expiry. Adding `presentations` costs nothing there.
+refresh-token expiry. Phase 1 adds both `presentations` for existing decks and `drive.file` for
+the temporary image files D5 creates. The latter is non-sensitive; adding `presentations` costs
+nothing while the stricter `drive.readonly` grant already determines the verification burden.
 
 **Path for a public rollout:** `drive.file` also covers files the user explicitly grants through
 the Google Picker. One Picker gesture per deck would keep the scope non-sensitive and make the
@@ -262,10 +265,11 @@ container, so this is the one-line change it looks like.
 Assignment reuses what exists. `attachMenuRows` (`apps/mobile/lib/attachMenu.ts`) already splits
 the composer's "+" menu into transient per-turn attachments above a divider and durable
 repo-touching actions below; **Google Slides** is a row in the lower group, next to Google Drive.
-It opens the existing Drive browser (`app/google-drive/[sessionId].tsx`) filtered to
-`application/vnd.google-apps.presentation` — the list route already takes a query. Tapping a deck
-**assigns** it rather than importing it, and recently used decks sort first, because
-session-scoped assignment means picking the same deck again next week.
+It opens the existing Drive browser (`app/google-drive/[sessionId].tsx`) filtered to native Slides
+and PowerPoint MIME types — the list route already takes a query. Tapping an enabled native deck
+**assigns** it rather than importing it; PowerPoint results explain why they cannot be assigned
+(D9). Recently used decks sort first, because session-scoped assignment means picking the same
+deck again next week.
 
 The assigned deck then shows as a single chip above the composer — `Q3 Review ↗ ×`:
 
@@ -307,11 +311,12 @@ feature cannot edit.
 
 Two consequences follow, and the first one is the load-bearing one:
 
-- **The picker filters on `mimeType = application/vnd.google-apps.presentation` and shows Office
-  decks as visible-but-unpickable, with the reason and the one-time fix** — *File → Save as Google
-  Slides* in Drive. Hiding them would be worse: the operator knows the deck is there, and a deck
-  that silently does not appear reads as a broken picker. The check is a field Drive already
-  returns, so the refusal costs nothing and happens before any edit is attempted.
+- **The picker queries both native Slides and PowerPoint MIME types, then enables only
+  `application/vnd.google-apps.presentation`.** Office decks stay visible-but-unpickable, with the
+  reason and the one-time fix — *File → Save as Google Slides* in Drive. Hiding them would be
+  worse: the operator knows the deck is there, and a deck that silently does not appear reads as
+  a broken picker. The check is a field Drive already returns, so the refusal costs nothing and
+  happens before any edit is attempted.
 - **Verity does not convert the file itself.** Conversion produces a *new* file with a new id and
   a new link, and the whole premise of this ADR (D1) is that the deck stays where the operator's
   colleagues already edit it. Silently forking that deck is the one failure mode worse than
@@ -319,11 +324,12 @@ Two consequences follow, and the first one is the load-bearing one:
 
 ## Scope
 
-**In (Phase 1):** `presentations` added to the connect flow; session deck assignment (picker row,
-composer chip, server-side enforcement); the read-plan-write edit route with D2's offset guard;
-the D3 edit vocabulary, its sibling-style fallback and named placements; image upload via Drive
-with its revoke-and-delete cleanup; on-request slide previews; the drift and no-write-access UI
-states; the D9 native-only filter; the D7 pptx export target.
+**In (Phase 1):** `presentations` and `drive.file` added to the connect flow; session deck
+assignment (picker row, composer chip, server-side enforcement); the read-plan-write edit route
+with D2's offset guard; the D3 edit vocabulary, its sibling-style fallback and named placements;
+image upload via Drive with its revoke-and-delete cleanup; on-request slide previews; the drift
+and no-write-access UI states; D9's two-format picker with native-only assignment; the D7 pptx
+export target.
 
 **Out (later):** editing masters, layouts or themes; animations and transitions; comments and
 suggestions; generating a deck from nothing (no design to inherit — needs a Verity theme, which
