@@ -260,6 +260,8 @@ describe('Verity website publication smoke', () => {
     ) as typeof config;
     expect(path, 'the website has no package in the release config').toBeDefined();
     expect(backendConfig.packages['.']?.['exclude-paths'] ?? []).toContain(path);
+    expect(backendConfig.packages['.']?.['package-name']).toBe('server');
+    expect(backendConfig.packages['.']?.['include-component-in-tag']).toBe(false);
     expect(website?.['include-component-in-tag']).toBe(true);
     expect(website?.['tag-separator']).toBe('-');
     // The first release has no manifest entry to read a version from, so this
