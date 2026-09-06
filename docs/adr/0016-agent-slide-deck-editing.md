@@ -388,9 +388,10 @@ created — which is the case that matters here.
   invisible — and, by refusing a batch over an edit to an unrelated slide, showed why that guard
   has to be narrowed rather than applied to everything. D3's full edit vocabulary ran green on a
   layout-backed slide. D6's `getThumbnail` and D7's `.pptx` export both worked.
-- **D4 holds end to end on a real deck.** Under a token carrying only `drive.file` and
-  `presentations`, two decks the app did not create were reached through the Slides API while
-  Drive's own `files.get` returned 404 for the same ids. One was refused as an Office file (D9);
+- **D4 holds end to end on a real deck.** In two `DECK_ID` runs under a token carrying only
+  `drive.file` and `presentations`, two decks the app did not create were reached through the
+  Slides API while the spike's Drive `files.get` probe returned 404 for the same ids. One was
+  refused as an Office file (D9);
   against the other — 23 slides, branded, in active use — the full cycle ran with the operator's
   consent: read the head revision, create a styled element, verify it, watch the stale-revision
   guard refuse a second write, delete it again, confirm the deck was back to its previous shape.

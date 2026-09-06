@@ -844,6 +844,14 @@ async function probeExistingDeck(deckId: string): Promise<void> {
     `${String(deck.slides?.length ?? 0)} slides, ${String(layouts.length)} layouts`,
   );
 
+  const driveRead = await call(`${DRIVE}/files/${deckId}?fields=id`);
+  record(
+    'D4',
+    'drive.file cannot read the foreign deck directly',
+    driveRead.status === 404,
+    driveRead.status === 404 ? 'expected HTTP 404' : errorText(driveRead.status, driveRead.body),
+  );
+
   // A branded deck does NOT carry Google's predefined layout names. Report both
   // fields side by side, because D3's "reference a layout already in the deck" is
   // only implementable if something stable can be matched on.
@@ -858,30 +866,35 @@ async function probeExistingDeck(deckId: string): Promise<void> {
     `${named.join(', ')}${predefined === 0 ? ' — no predefined names' : ''}`,
   );
 
-  const firstSlide = deck.slides?.[0]?.objectId;
-  if (firstSlide === undefined) return;
+  const slideIds = (deck.slides ?? []).map((slide) => slide.objectId);
+  if (slideIds.length === 0) return;
 
-  // The read half of read-plan-write, against a deck Verity did not author: can the
-  // agent find addressable text, and does that text inherit its style?
-  const placeholders = await readPlaceholders(deckId, firstSlide);
+  let placeholderCount = 0;
+  let elementCount = 0;
+  let runCount = 0;
+  let styledCount = 0;
+  for (const slideId of slideIds) {
+    placeholderCount += (await readPlaceholders(deckId, slideId)).size;
+    const inventory = await readSlideText(deckId, slideId);
+    elementCount += inventory.elements;
+    runCount += inventory.runs;
+    styledCount += inventory.styled;
+  }
   record(
     'D4',
-    'placeholder inventory on slide 1',
+    'placeholder inventory across the existing deck',
     true,
-    placeholders.size > 0
-      ? [...placeholders.keys()].join(', ')
-      : 'none — free-floating shapes only',
+    `${String(placeholderCount)} across ${String(slideIds.length)} slides`,
   );
-  const inventory = await readSlideText(deckId, firstSlide);
   record(
     'D4',
-    'text and explicit-style inventory on slide 1',
-    inventory.runs > 0,
-    `${String(inventory.elements)} elements, ${String(inventory.runs)} text runs, ` +
-      `${String(inventory.styled)} carrying an explicit font`,
+    'text and explicit-style inventory across the existing deck',
+    runCount > 0,
+    `${String(elementCount)} elements, ${String(runCount)} text runs, ` +
+      `${String(styledCount)} carrying an explicit font`,
   );
 
-  await checkThumbnail(deckId, firstSlide, 'D4');
+  await checkThumbnail(deckId, slideIds[0], 'D4');
 
   if (process.env.WRITE_TEST === '1') await writeTestOnExistingDeck(deckId);
   else console.log('  skip  D4 write test (set WRITE_TEST=1 — it edits the real deck)');
