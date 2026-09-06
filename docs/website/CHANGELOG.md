@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/Heey-Global/verity/compare/website-v1.1.0...website-v1.2.0) (2026-09-06)
+
+
+### Features
+
+* **installer:** show installation progress ([7f2cef1](https://github.com/Heey-Global/verity/commit/7f2cef19c79d00688061f4ae4a75c0ba7b46f96c))
+* **installer:** show installation progress ([d805252](https://github.com/Heey-Global/verity/commit/d80525295f477dad74ae218ba7d25be4db18002c))
+
 ## [1.1.0](https://github.com/Heey-Global/verity/compare/website-v1.0.0...website-v1.1.0) (2026-08-31)
 
 
