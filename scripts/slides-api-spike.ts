@@ -856,8 +856,8 @@ async function probeExistingDeck(deckId: string): Promise<void> {
   const placeholders = await readPlaceholders(deckId, firstSlide);
   record(
     'D4',
-    'slide 1 exposes addressable placeholders',
-    placeholders.size > 0,
+    'placeholder inventory on slide 1',
+    true,
     placeholders.size > 0
       ? [...placeholders.keys()].join(', ')
       : 'none — free-floating shapes only',
@@ -865,7 +865,7 @@ async function probeExistingDeck(deckId: string): Promise<void> {
   const inventory = await readSlideText(deckId, firstSlide);
   record(
     'D4',
-    'slide 1 text is readable and style-free',
+    'text and explicit-style inventory on slide 1',
     inventory.runs > 0,
     `${String(inventory.elements)} elements, ${String(inventory.runs)} text runs, ` +
       `${String(inventory.styled)} carrying an explicit font`,
@@ -916,15 +916,27 @@ async function readSlideText(
  * the same run. What cannot be reversed is Google's revision history — two entries
  * stay behind, which is why this needs the operator's word rather than a flag alone.
  *
- * It doubles as the proof for D3's sibling-style fallback: on a flattened deck there
- * is nothing to inherit from, so the box is styled by COPYING a neighbouring run.
+ * It also proves that explicitly selected text-style fields can be transported to a
+ * new box. Choosing a semantically comparable source is planner work, not this probe.
  */
 async function writeTestOnExistingDeck(deckId: string): Promise<void> {
-  const head = await call(`${SLIDES}/presentations/${deckId}?fields=revisionId,slides.objectId`);
-  const deck = head.body as { revisionId?: string; slides?: { objectId: string }[] };
+  const head = await call(
+    `${SLIDES}/presentations/${deckId}?fields=revisionId,pageSize,slides.objectId`,
+  );
+  const deck = head.body as {
+    revisionId?: string;
+    pageSize?: { width?: { magnitude?: number; unit?: string } };
+    slides?: { objectId: string }[];
+  };
   const slideId = deck.slides?.at(-1)?.objectId;
   const revision = deck.revisionId;
-  if (slideId === undefined || revision === undefined) {
+  const pageWidth = deck.pageSize?.width;
+  if (
+    slideId === undefined ||
+    revision === undefined ||
+    pageWidth?.magnitude === undefined ||
+    pageWidth.unit === undefined
+  ) {
     record('D4', 'write test: read head revision', false, errorText(head.status, head.body));
     return;
   }
@@ -937,7 +949,8 @@ async function writeTestOnExistingDeck(deckId: string): Promise<void> {
     sibling === undefined ? 'no styled run on the slide' : Object.keys(sibling).join(', '),
   );
 
-  // Off-canvas: a 16:9 deck is 720x405 pt, so 900 pt is past the right edge.
+  const oneInch = pageWidth.unit === 'EMU' ? 914_400 : 72;
+  const offCanvasX = pageWidth.magnitude + oneInch;
   const boxId = `verity_spike_${Date.now().toString(36)}`;
   const requests: unknown[] = [
     {
@@ -947,7 +960,13 @@ async function writeTestOnExistingDeck(deckId: string): Promise<void> {
         elementProperties: {
           pageObjectId: slideId,
           size: { width: { magnitude: 120, unit: 'PT' }, height: { magnitude: 30, unit: 'PT' } },
-          transform: { scaleX: 1, scaleY: 1, translateX: 900, translateY: 20, unit: 'PT' },
+          transform: {
+            scaleX: 1,
+            scaleY: 1,
+            translateX: offCanvasX,
+            translateY: 0,
+            unit: pageWidth.unit,
+          },
         },
       },
     },
