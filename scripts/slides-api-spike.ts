@@ -290,8 +290,8 @@ async function probeImageUrls(
   return working;
 }
 
-async function shareAnyoneWithLink(fileId: string): Promise<boolean> {
-  const res = await call(`${DRIVE}/files/${fileId}/permissions`, {
+async function shareAnyoneWithLink(fileId: string): Promise<string | undefined> {
+  const res = await call(`${DRIVE}/files/${fileId}/permissions?fields=id`, {
     method: 'POST',
     contentType: 'application/json',
     body: json({ role: 'reader', type: 'anyone' }),
@@ -302,7 +302,8 @@ async function shareAnyoneWithLink(fileId: string): Promise<boolean> {
     res.ok,
     res.ok ? '' : errorText(res.status, res.body),
   );
-  return res.ok;
+  const permissionId = (res.body as { id?: unknown }).id;
+  return res.ok && typeof permissionId === 'string' ? permissionId : undefined;
 }
 
 /**
@@ -319,6 +320,7 @@ async function checkImageSurvivesSourceRemoval(
   presentationId: string,
   slideId: string,
   fileId: string,
+  permissionId: string,
   url: string,
 ): Promise<boolean> {
   const imageId = 'verity_spike_image';
@@ -361,7 +363,7 @@ async function checkImageSurvivesSourceRemoval(
     typeof contentUrl === 'string' ? new URL(contentUrl).host : 'no contentUrl on the element',
   );
 
-  const revoked = await call(`${DRIVE}/files/${fileId}/permissions/anyoneWithLink`, {
+  const revoked = await call(`${DRIVE}/files/${fileId}/permissions/${permissionId}`, {
     method: 'DELETE',
   });
   const deleted = await call(`${DRIVE}/files/${fileId}`, { method: 'DELETE' });
@@ -1134,23 +1136,28 @@ try {
 
   // If the private file was refused, find out whether link-sharing is what it takes.
   // That distinction decides whether D5 is cheap or forces a sharing side effect.
-  if (workingUrl === undefined && (await shareAnyoneWithLink(image.id))) {
-    workingUrl = await probeImageUrls(
-      deck.id,
-      deck.slideId,
-      image.id,
-      image.webContentLink,
-      'link-shared',
-      true,
-    );
+  let permissionId: string | undefined;
+  if (workingUrl === undefined) {
+    permissionId = await shareAnyoneWithLink(image.id);
+    if (permissionId !== undefined) {
+      workingUrl = await probeImageUrls(
+        deck.id,
+        deck.slideId,
+        image.id,
+        image.webContentLink,
+        'link-shared',
+        true,
+      );
+    }
   }
 
-  if (workingUrl !== undefined) {
+  if (workingUrl !== undefined && permissionId !== undefined) {
     await checkBackgroundFill(deck.id, deck.slideId, workingUrl);
     const sourceGone = await checkImageSurvivesSourceRemoval(
       deck.id,
       deck.slideId,
       image.id,
+      permissionId,
       workingUrl,
     );
     if (sourceGone) await checkBackgroundSurvivesSourceRemoval(deck.id, deck.slideId);

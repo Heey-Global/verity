@@ -239,12 +239,18 @@ the presentation), revoked the link-share, and deleted the Drive source outright
 image still rendered in `getThumbnail` and its bytes were still served. `createImage` is a copy,
 not a live reference.
 
-The insert therefore runs as a bounded transaction: upload → grant `anyoneWithLink` → `createImage`
-→ revoke the share → delete the uploaded file. The asset is world-readable-by-link for the seconds
-between grant and revoke, to anyone who already holds the unguessable id. That is the real cost of
-an image insert, and it is acceptable; a permanent public asset store would not have been. The
-revoke and delete must be failure-tolerant on their own — a batch that succeeded and a share that
-was not cleaned up is a leak, so cleanup retries independently of the edit's outcome.
+The insert therefore runs as a bounded transaction: upload → persist a cleanup record → grant
+`anyoneWithLink` and retain the returned permission id → `createImage` → revoke that permission →
+delete the uploaded file → clear the cleanup record. The asset is world-readable-by-link for the
+seconds between grant and revoke, to anyone who already holds the unguessable id. That is the real
+cost of an image insert, and it is acceptable; a permanent public asset store would not have been.
+
+The cleanup record is durable and exists **before** the public permission does. It contains the
+Drive file id, session id and creation time; the permission id is added when Google returns it. A
+startup recovery pass and periodic janitor retry deletion of every outstanding file until Drive
+confirms it is gone, then remove the record. Deleting the file also removes every permission, so
+recovery remains possible if the process loses the permission-create response. Immediate revoke
+and delete are the fast path, never the only cleanup path.
 
 ### D6 — Previews on request only
 
@@ -337,9 +343,9 @@ Two consequences follow, and the first one is the load-bearing one:
 **In (Phase 1):** `presentations` and `drive.file` added to the connect flow; session deck
 assignment (picker row, composer chip, server-side enforcement); the read-plan-write edit route
 with D2's offset guard; the D3 edit vocabulary, its sibling-style fallback and named placements;
-image upload via Drive with its revoke-and-delete cleanup; on-request slide previews; the drift
-and no-write-access UI states; D9's two-format picker with native-only assignment; the D7 pptx
-export target.
+image upload via Drive with its durable cleanup record, startup recovery and janitor; on-request
+slide previews; the drift and no-write-access UI states; D9's two-format picker with native-only
+assignment; the D7 pptx export target.
 
 **Out (later):** editing masters, layouts or themes; animations and transitions; comments and
 suggestions; generating a deck from nothing (no design to inherit — needs a Verity theme, which
@@ -401,4 +407,5 @@ created — which is the case that matters here.
   budget the picker's explanation accordingly; it is doing more work than a filter usually does.
 - **Image inserts have a cleanup obligation.** Every insert grants and then revokes a link-share
   on a temporary Drive file (D5). A crash between those two steps leaves a world-readable-by-link
-  asset behind, so the cleanup cannot ride on the edit's success path.
+  asset behind, so Phase 1 includes the durable pre-share cleanup record and recovery janitor; an
+  in-process `finally` alone is insufficient.
