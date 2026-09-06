@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    "docs/website": {
+      "release-type": "simple",
+      "package-name": "website",
+      "initial-version": "1.0.0",
+      "exclude-paths": ["docs/website/concept.md", "docs/website/landing-copy.md"],
+      "include-component-in-tag": true,
+      "tag-separator": "-"
+    }
+  }
+}

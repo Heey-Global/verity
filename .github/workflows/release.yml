@@ -59,19 +59,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release.outputs.release_created }}
-      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release.outputs.major, steps.release.outputs.minor, steps.release.outputs.patch) }}
-      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release.outputs.sha }}
-      mobile-release-created: ${{ steps.release.outputs['apps/mobile--release_created'] }}
-      mobile-version: ${{ steps.release.outputs['apps/mobile--major'] }}.${{ steps.release.outputs['apps/mobile--minor'] }}.${{ steps.release.outputs['apps/mobile--patch'] }}
-      mobile-sha: ${{ steps.release.outputs['apps/mobile--sha'] }}
-      mobile-tag: ${{ steps.release.outputs['apps/mobile--tag_name'] }}
+      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs.release_created }}
+      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs.major, steps.release-backend.outputs.minor, steps.release-backend.outputs.patch) }}
+      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs.sha }}
+      mobile-release-created: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
+      mobile-version: ${{ steps.release-mobile.outputs['apps/mobile--major'] }}.${{ steps.release-mobile.outputs['apps/mobile--minor'] }}.${{ steps.release-mobile.outputs['apps/mobile--patch'] }}
+      mobile-sha: ${{ steps.release-mobile.outputs['apps/mobile--sha'] }}
+      mobile-tag: ${{ steps.release-mobile.outputs['apps/mobile--tag_name'] }}
       # The website is its own release train (`website-vX.Y.Z`), so it has no
       # maintenance arm to fall back to: `steps.maintenance` recovers a backend
       # version and says nothing about this package.
-      website-release-created: ${{ steps.release.outputs['docs/website--release_created'] }}
-      website-version: ${{ steps.release.outputs['docs/website--major'] }}.${{ steps.release.outputs['docs/website--minor'] }}.${{ steps.release.outputs['docs/website--patch'] }}
-      website-sha: ${{ steps.release.outputs['docs/website--sha'] }}
+      website-release-created: ${{ steps.release-website.outputs['docs/website--release_created'] }}
+      website-version: ${{ steps.release-website.outputs['docs/website--major'] }}.${{ steps.release-website.outputs['docs/website--minor'] }}.${{ steps.release-website.outputs['docs/website--patch'] }}
+      website-sha: ${{ steps.release-website.outputs['docs/website--sha'] }}
     steps:
       - name: Repair workspace ownership
         working-directory: /
@@ -94,13 +94,35 @@ jobs:
             fi
           fi
 
-      - name: Open release PRs or create releases
-        id: release
+      - name: Open backend release PR or create release
+        id: release-backend
         if: github.event_name == 'push'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.backend.json
+          manifest-file: .release-please-manifest.backend.json
+
+      - name: Open mobile release PR or create release
+        id: release-mobile
+        if: github.event_name == 'push'
+        # renovate: datasource=github-actions depName=googleapis/release-please-action
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.mobile.json
+          manifest-file: .release-please-manifest.mobile.json
+
+      - name: Open website release PR or create release
+        id: release-website
+        if: github.event_name == 'push'
+        # renovate: datasource=github-actions depName=googleapis/release-please-action
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.website.json
+          manifest-file: .release-please-manifest.website.json
 
       - name: Validate maintenance backend release
         id: maintenance
@@ -161,25 +183,37 @@ jobs:
 
       # Pull requests created with GITHUB_TOKEN intentionally do not emit another
       # pull_request workflow event. Dispatch CI explicitly for every release PR
-      # branch instead of introducing a long-lived PAT. Manifest mode can create
-      # both backend and mobile PRs in one run, hence the plural `prs` output.
+      # branch instead of introducing a long-lived PAT. Each isolated train can
+      # create a PR in the same run, so collect all three `prs` outputs.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - if: steps.release.outputs.prs_created == 'true'
+      - if: >-
+          steps.release-backend.outputs.prs_created == 'true' ||
+          steps.release-mobile.outputs.prs_created == 'true' ||
+          steps.release-website.outputs.prs_created == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24.19.0'
 
       - name: Run checks for release PRs
-        if: steps.release.outputs.prs_created == 'true'
+        if: >-
+          steps.release-backend.outputs.prs_created == 'true' ||
+          steps.release-mobile.outputs.prs_created == 'true' ||
+          steps.release-website.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          PRS_JSON: ${{ steps.release.outputs.prs }}
+          BACKEND_PRS_JSON: ${{ steps.release-backend.outputs.prs }}
+          MOBILE_PRS_JSON: ${{ steps.release-mobile.outputs.prs }}
+          WEBSITE_PRS_JSON: ${{ steps.release-website.outputs.prs }}
         shell: bash
         run: |
           set -euo pipefail
           node -e '
-            const prs = JSON.parse(process.env.PRS_JSON || "[]");
+            const prs = ["BACKEND_PRS_JSON", "MOBILE_PRS_JSON", "WEBSITE_PRS_JSON"]
+              .flatMap((name) => {
+                const value = JSON.parse(process.env[name] || "[]");
+                return Array.isArray(value) ? value : [value];
+              });
             for (const pr of Array.isArray(prs) ? prs : [prs]) {
               const branch = pr.headBranchName || pr.headRefName || pr.branchName;
               if (!branch) throw new Error("release-please PR has no head branch");

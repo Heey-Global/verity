@@ -143,7 +143,7 @@ jobs:
                   # is the same argument for both.
                   # apps/mobile is deliberately absent: its release commit also
                   # rewrites app.config.ts, which is source the mobile jobs cover.
-                  CHANGELOG.md|version.txt|.release-please-manifest.json|docs/website/CHANGELOG.md|docs/website/version.txt) ;;
+                  CHANGELOG.md|version.txt|.release-please-manifest.backend.json|.release-please-manifest.mobile.json|.release-please-manifest.website.json|docs/website/CHANGELOG.md|docs/website/version.txt) ;;
                   *)
                     release_only=false
                     break

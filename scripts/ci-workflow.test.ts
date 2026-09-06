@@ -32,6 +32,40 @@ type WorkflowJob = {
   steps: WorkflowStep[];
 };
 
+describe('release-please train isolation', () => {
+  const trains = ['backend', 'mobile', 'website'] as const;
+
+  it('keeps every release PR on a disjoint manifest', () => {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = release.jobs['release-please']?.steps ?? [];
+    const packagePaths = new Set<string>();
+
+    for (const train of trains) {
+      const configFile = `release-please-config.${train}.json`;
+      const manifestFile = `.release-please-manifest.${train}.json`;
+      const config = JSON.parse(readFileSync(configFile, 'utf8')) as {
+        packages: Record<string, unknown>;
+      };
+      const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Record<string, string>;
+      const paths = Object.keys(config.packages);
+
+      expect(paths).toHaveLength(1);
+      expect(Object.keys(manifest)).toEqual(paths);
+      expect(packagePaths.has(paths[0] as string), `${paths[0]} belongs to two trains`).toBe(false);
+      packagePaths.add(paths[0] as string);
+
+      const action = steps.find((step) => step.id === `release-${train}`);
+      expect(action?.with?.['config-file']).toBe(configFile);
+      expect(action?.with?.['manifest-file']).toBe(manifestFile);
+    }
+
+    expect(existsSync('release-please-config.json')).toBe(false);
+    expect(existsSync('.release-please-manifest.json')).toBe(false);
+  });
+});
+
 describe('Verity website publication smoke', () => {
   // Two publishes reach this image: `sha-<commit>` on every main commit
   // (verity-website.yml) and `v<version>` on the website release train
@@ -207,7 +241,7 @@ describe('Verity website publication smoke', () => {
     // Drop the root exclusion and a website change ships on the backend train,
     // moving a version the cluster does not track; drop the component from the
     // tag and release-please claims plain `vX.Y.Z`, which is the backend's.
-    const config = JSON.parse(readFileSync('release-please-config.json', 'utf8')) as {
+    const config = JSON.parse(readFileSync('release-please-config.website.json', 'utf8')) as {
       packages: Record<
         string,
         {
@@ -221,8 +255,11 @@ describe('Verity website publication smoke', () => {
     };
     const [path, website] =
       Object.entries(config.packages).find(([, pkg]) => pkg['package-name'] === 'website') ?? [];
+    const backendConfig = JSON.parse(
+      readFileSync('release-please-config.backend.json', 'utf8'),
+    ) as typeof config;
     expect(path, 'the website has no package in the release config').toBeDefined();
-    expect(config.packages['.']?.['exclude-paths'] ?? []).toContain(path);
+    expect(backendConfig.packages['.']?.['exclude-paths'] ?? []).toContain(path);
     expect(website?.['include-component-in-tag']).toBe(true);
     expect(website?.['tag-separator']).toBe('-');
     // The first release has no manifest entry to read a version from, so this
@@ -244,7 +281,9 @@ describe('Verity website publication smoke', () => {
     // The package directory is read from the release config rather than
     // written here: its version file is release-managed, and a suite that
     // names one is a check the release-only CI skip would silently drop.
-    const releaseConfig = JSON.parse(readFileSync('release-please-config.json', 'utf8')) as {
+    const releaseConfig = JSON.parse(
+      readFileSync('release-please-config.website.json', 'utf8'),
+    ) as {
       packages: Record<string, { 'package-name'?: string }>;
     };
     const websitePath = Object.entries(releaseConfig.packages).find(
@@ -2847,8 +2886,8 @@ describe('changed-area detector', () => {
   /**
    * The lint job ends in `npm run format`, which is `prettier --check .` — it takes
    * a directory, so no file names it and the scan above cannot see the read. It did
-   * check `.release-please-manifest.json` until this landed, which is a release
-   * commit's own output: a formatter disagreeing with release-please would have
+   * check the release-please manifests until this landed, which are release
+   * commits' own output: a formatter disagreeing with release-please would have
    * failed a job the skip drops, and the break would surface on the next unrelated
    * pull request instead.
    */
