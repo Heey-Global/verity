@@ -575,6 +575,7 @@ services:
       VERITY_PROJECT_RELAY_GID: ${VERITY_PROJECT_RELAY_GID:-65532}
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
       VERITY_PAIRING_STATE_HOST_PATH: ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}
+      VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: ${VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM:-}
     volumes:
       - verity-managed-deployment:/var/lib/verity/updater/managed-deployment
       - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro

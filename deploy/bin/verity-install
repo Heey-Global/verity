@@ -38,6 +38,7 @@ opt_deployment_id=''
 opt_tag='latest'
 opt_project=''
 opt_check=0
+opt_advance_unpaired_from=''
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
   # Match the AMOLED Verity UI palette in true-colour terminals.
@@ -105,6 +106,7 @@ while [ "$#" -gt 0 ]; do
     --project) [ "$#" -ge 2 ] || die 'option --project needs a value'; opt_project="$2"; shift 2 ;;
     --project=*) opt_project="${1#--project=}"; shift ;;
     --check) opt_check=1; shift ;;
+    --advance-unpaired-from) [ "$#" -ge 2 ] || die 'option --advance-unpaired-from needs a value'; opt_advance_unpaired_from="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
@@ -117,6 +119,9 @@ valid_server_image() {
   [[ $1 == "$SERVER_REPO@sha256:"* ]] || return 1
   [[ ${1#"$SERVER_REPO@sha256:"} =~ ^[a-f0-9]{64}$ ]]
 }
+
+[ -z "$opt_advance_unpaired_from" ] || valid_server_image "$opt_advance_unpaired_from" \
+  || die 'option --advance-unpaired-from requires an official digest-pinned Server image'
 
 valid_deployment_id() {
   [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] && [ "${#1}" -le 128 ]
@@ -755,6 +760,7 @@ VERITY_RUNNER_SUPERVISOR="$runner_supervisor" \
 VERITY_GVISOR_REQUIRED="$gvisor_required" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \
+VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM="$opt_advance_unpaired_from" \
 COMPOSE_PROJECT_NAME="$compose_project" \
   ./deploy/bin/verity-compose managed-up
 

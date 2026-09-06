@@ -109,7 +109,7 @@ function makeHost({ docker = [], state = {} } = {}) {
     join(binDir, 'verity-compose'),
     `#!/usr/bin/env bash\n{\n` +
       `  printf 'argv=%s\\n' "$*"\n` +
-      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD COMPOSE_PROJECT_NAME; do\n` +
+      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
       `    printf '%s=%s\\n' "$v" "\${!v-}"\n` +
       `  done\n} > ${JSON.stringify(handover)}\n`,
     { mode: 0o755 },
@@ -361,6 +361,22 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     // brokered-secret runtime requirement, and the migration never objects.
     assert.equal(env.VERITY_GVISOR_REQUIRED, '1');
     assert.equal(stateFile(host, 'updater-token'), 'f'.repeat(64));
+  });
+
+  test('hands an explicitly verified unpaired image advance to managed bootstrap', () => {
+    const host = makeHost({
+      docker: runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+      state: {
+        'deployment-id': 'host-abc\n',
+        'compose-project': 'verity\n',
+        'updater-token': 'f'.repeat(64),
+      },
+    });
+    const result = run(host, ['--image', DIGEST_B, '--advance-unpaired-from', DIGEST_A]);
+    assert.equal(result.status, 0, result.output);
+    const env = handoverEnv(host);
+    assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_B);
+    assert.equal(env.VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM, DIGEST_A);
   });
 
   test('reuses the persisted PostgreSQL credential and rejects malformed state', () => {

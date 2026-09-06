@@ -583,6 +583,24 @@ export function createPostgresDb(
   return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
 }
 
+/** Hold pairing creation out while a host-only unpaired setup repair commits. */
+export async function withUnpairedDeviceFence<T>(
+  db: Kysely<Database>,
+  action: () => Promise<T>,
+): Promise<T> {
+  return db.transaction().execute(async (trx) => {
+    // Pairing inserts take ROW EXCLUSIVE; SHARE blocks them until the filesystem
+    // mutation below commits or aborts, closing the check-then-act race.
+    await sql`lock table auth_tokens in share mode`.execute(trx);
+    const paired = await trx
+      .selectFrom('auth_tokens')
+      .select(({ fn }) => fn.countAll<number>().as('count'))
+      .executeTakeFirstOrThrow();
+    if (Number(paired.count) !== 0) throw new Error('the managed deployment is already paired');
+    return action();
+  });
+}
+
 /** Kysely's default bookkeeping table, read directly by {@link executedLedger}. */
 const MIGRATION_TABLE = 'kysely_migration';
 
