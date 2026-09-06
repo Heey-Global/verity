@@ -86,18 +86,20 @@ already offers a way out:
 
 - **Guarded — the plan depends on positions that can move.** `insertText` is guarded whenever it
   supplies an `insertionIndex`; `deleteText`, `updateTextStyle` and `updateParagraphStyle` are
-  guarded whenever they use a `FIXED_RANGE`. Concurrent text can shift any of those indices or
-  ranges onto the wrong characters.
+  guarded whenever they use a `FIXED_RANGE`. `replaceAllText` is guarded too: even when
+  `pageObjectIds` narrows its scope and the preceding read finds exactly the intended occurrences,
+  a concurrent editor can add another match before the write. Concurrent text can therefore
+  shift a range or change the target set of every operation in this group.
 - **Unguarded — the request carries a stable target or adds new content.** `createShape`,
   `createImage`, `createSlide` and `updatePageProperties` add rather than reinterpret;
   `deleteObject` names an `objectId` that either still exists or fails loudly; and text or
   paragraph styling over `ALL` does not depend on character offsets.
 
-`replaceAllText` is safe without a guard only when `pageObjectIds` narrows it to the intended
-slides and the preceding read proves the search text has exactly the intended occurrences there.
-It is presentation-wide by default, and identical headings or labels are common, so content alone
-is not an object address. Otherwise the planner uses guarded range operations. This favours the
-least restrictive request that still identifies exactly what the operator asked to change.
+`replaceAllText` is presentation-wide by default, and identical headings or labels are common, so
+content alone is not an object address. The planner constrains it with `pageObjectIds`, verifies
+the intended occurrences during the read, and still carries that read's revision guard. This
+favours the least restrictive request that identifies exactly what the operator asked to change
+without treating content matching as concurrency-safe.
 
 ### D3 — Read-plan-write against object ids; layouts, not coordinates
 
@@ -124,9 +126,11 @@ The supported edit vocabulary for Phase 1:
 | New slide            | `createSlide` with an existing layout                            |
 | Remove / move        | `deleteObject`, `updatePageElementTransform`                     |
 
-Every request in that table was exercised end to end in the spike, against a slide created from
-one of the deck's own layouts rather than a blank one, and the resulting slide was re-rendered
-each time — a batch can return `200` and still leave something broken.
+Every request kind in that table was exercised end to end in the spike. Layout-sensitive text and
+formatting requests ran against a slide created from one of the deck's own layouts; image creation
+and background fill ran against the initial blank scratch slide. The spike rendered at checkpoints
+after those request groups — a batch can return `200` and still leave something broken — rather
+than claiming that each individual request received its own render.
 
 Text inserted into an inherited placeholder carries **no explicit style of its own**: the run
 comes back from `presentations.get` with an empty `textStyle`, and font, size and colour resolve
