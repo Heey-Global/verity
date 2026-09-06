@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "verity",
+      "package-name": "server",
       "include-component-in-tag": false,
       "exclude-paths": ["apps/mobile", "docs/website"]
     }
