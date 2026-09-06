@@ -1,5 +1,15 @@
 # Changelog
 
+## [17.0.1](https://github.com/Heey-Global/verity/compare/v17.0.0...v17.0.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **installer:** honor explicit bootstrap image ([9a93173](https://github.com/Heey-Global/verity/commit/9a93173b3b2b7d27acf8e4f002ebe07efed7bb5a))
+* **installer:** resume unpaired setup on latest release ([83ef246](https://github.com/Heey-Global/verity/commit/83ef2464d9d49894db6a11522f64cdf992359bcc))
+* **release:** allow explicit no-rollback republish ([d2729c9](https://github.com/Heey-Global/verity/commit/d2729c9f0a5814c5ca3c6b5b30f9107d459e400f))
+* **release:** allow explicit no-rollback republish ([1f8dd66](https://github.com/Heey-Global/verity/commit/1f8dd66862ec2b169f8882ee9855c3e6c41a166e))
+
 ## [17.0.0](https://github.com/Heey-Global/verity/compare/v16.5.0...v17.0.0) (2026-09-06)
 
 
