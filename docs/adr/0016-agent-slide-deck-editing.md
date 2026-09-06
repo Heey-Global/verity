@@ -84,18 +84,19 @@ editors is rejected constantly, for edits that were never in danger. That trades
 corruption for a constant visible obstruction, which is not a good trade when the vocabulary
 already offers a way out:
 
-- **Guarded — the plan depends on positions that can move.** `deleteText` and `insertText` at an
-  offset. These are the only requests that can quietly hit the wrong text.
-- **Unguarded — the request carries its own target.** `replaceAllText` matches on content rather
-  than position, so a concurrent edit makes it match or not match, never match the wrong thing.
-  `createShape`, `createImage`, `createSlide` and `updatePageProperties` add rather than reinterpret,
-  and `deleteObject` and `updateTextStyle` name an `objectId` that either still exists or fails
-  loudly.
+- **Guarded — the plan depends on positions that can move.** `deleteText`, `insertText`,
+  `updateTextStyle` and `updateParagraphStyle` are guarded whenever they use a `FIXED_RANGE`.
+  Concurrent text can shift any of those ranges onto the wrong characters.
+- **Unguarded — the request carries a stable target or adds new content.** `createShape`,
+  `createImage`, `createSlide` and `updatePageProperties` add rather than reinterpret;
+  `deleteObject` names an `objectId` that either still exists or fails loudly; and text or
+  paragraph styling over `ALL` does not depend on character offsets.
 
-The practical consequence for the edit planner: **prefer the content-addressed form.** Rewriting a
-heading as `replaceAllText` needs no guard and cannot land wrong; expressing the same edit as
-offsets needs a guard and can be rejected. Offsets are the fallback for when nothing else
-expresses the intent, not the default.
+`replaceAllText` is safe without a guard only when `pageObjectIds` narrows it to the intended
+slides and the preceding read proves the search text has exactly the intended occurrences there.
+It is presentation-wide by default, and identical headings or labels are common, so content alone
+is not an object address. Otherwise the planner uses guarded range operations. This favours the
+least restrictive request that still identifies exactly what the operator asked to change.
 
 ### D3 — Read-plan-write against object ids; layouts, not coordinates
 

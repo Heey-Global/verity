@@ -730,7 +730,7 @@ async function checkThumbnail(presentationId: string, slideId: string, id: strin
 }
 
 /** D2: the guard only earns its place if a stale revision is actually refused. */
-async function checkRevisionGuard(presentationId: string, slideId: string): Promise<void> {
+async function checkRevisionGuard(presentationId: string, textObjectId: string): Promise<void> {
   const before = await call(`${SLIDES}/presentations/${presentationId}?fields=revisionId`);
   const staleRevision = (before.body as { revisionId?: string }).revisionId;
   if (typeof staleRevision !== 'string') {
@@ -749,16 +749,17 @@ async function checkRevisionGuard(presentationId: string, slideId: string): Prom
   // Same revision id again — it is now stale, because the edit above moved the deck on.
   const second = await batchUpdate(
     presentationId,
-    [{ insertText: { objectId: slideId, text: 'x' } }],
+    [{ insertText: { objectId: textObjectId, text: 'x' } }],
     staleRevision,
   );
+  const secondError = errorText(second.status, second.body);
+  const rejectedForStaleRevision =
+    second.status === 400 && secondError.includes('does not match the latest revision');
   record(
     'D2',
     'batchUpdate with STALE revisionId is rejected',
-    !second.ok,
-    second.ok
-      ? 'ACCEPTED — the guard does not fire, D2 is wrong'
-      : errorText(second.status, second.body),
+    rejectedForStaleRevision,
+    second.ok ? 'ACCEPTED — the guard does not fire, D2 is wrong' : secondError,
   );
 }
 
@@ -1069,7 +1070,7 @@ try {
   await checkThumbnail(deck.id, deck.slideId, 'D6');
   await checkEditVocabulary(deck.id);
   await checkPptxExport(deck.id);
-  await checkRevisionGuard(deck.id, deck.slideId);
+  await checkRevisionGuard(deck.id, 'verity_spike_box');
 
   const existing = process.env.DECK_ID;
   if (existing !== undefined && existing.length > 0) await probeExistingDeck(existing);
