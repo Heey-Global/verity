@@ -1,5 +1,20 @@
 # Changelog
 
+## [17.1.0](https://github.com/Heey-Global/verity/compare/v17.0.1...v17.1.0) (2026-09-06)
+
+
+### Features
+
+* **installer:** clarify terminal output hierarchy ([78bb646](https://github.com/Heey-Global/verity/commit/78bb64600e47ab6f5466782b51f23ab5429e9e75))
+* **installer:** improve download progress and output hierarchy ([1ef36f3](https://github.com/Heey-Global/verity/commit/1ef36f3ef377251276faa1c803b0bfe27c4c2d6c))
+* **installer:** show inline download progress ([150530a](https://github.com/Heey-Global/verity/commit/150530ad466dd9525bbf7ef31b26075a58ea848e))
+
+
+### Bug Fixes
+
+* **slides:** guard background drift and probe safely ([f7f44c4](https://github.com/Heey-Global/verity/commit/f7f44c40b3bbc5ff99eb86f6477824287188a668))
+* **slides:** make image cleanup crash-recoverable ([5458b66](https://github.com/Heey-Global/verity/commit/5458b6645d9d3decc2463c72aa2e914a11788a09))
+
 ## [17.0.1](https://github.com/Heey-Global/verity/compare/v17.0.0...v17.0.1) (2026-09-06)
 
 
