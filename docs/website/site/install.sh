@@ -187,6 +187,61 @@ run_docker() {
   as_root docker "$@"
 }
 
+download_image() {
+  local image=$1 output pid frame=0 started=$SECONDS elapsed status completed total
+  if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = dumb ] || ! command -v setsid >/dev/null 2>&1; then
+    progress 3 "downloading $image"
+    run_docker pull --quiet "$image" >/dev/null
+    return
+  fi
+
+  output=$(mktemp)
+  if [ "$(id -u)" -eq 0 ]; then
+    setsid docker pull "$image" >"$output" 2>&1 &
+  else
+    setsid sudo docker pull "$image" >"$output" 2>&1 &
+  fi
+  pid=$!
+  trap 'kill -TERM -- "-$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$output"; exit 129' HUP
+  trap 'kill -TERM -- "-$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$output"; exit 130' INT
+  trap 'kill -TERM -- "-$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true; rm -f "$output"; exit 143' TERM
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    elapsed=$((SECONDS - started))
+    read -r completed total <<<"$(awk '
+      {
+        id = $1
+        sub(/:$/, "", id)
+      }
+      length(id) == 12 && id !~ /[^a-f0-9]/ {
+        seen[id] = 1
+        if ($0 ~ /Pull complete|Already exists/) complete[id] = 1
+      }
+      END {
+        for (layer in seen) layers++
+        for (layer in complete) done++
+        printf "%d %d", done, layers
+      }
+    ' "$output")"
+    printf '\r\033[2K\033[38;2;25;200;255mverity-install: [3/4]\033[0m downloading %s  %s %ds' \
+      "$image" "${frames[frame]}" "$elapsed"
+    if [ "$total" -gt 0 ]; then printf ' · %d/%d layers' "$completed" "$total"; fi
+    frame=$(((frame + 1) % ${#frames[@]}))
+    sleep 0.2
+  done
+  if wait "$pid"; then status=0; else status=$?; fi
+  trap - HUP INT TERM
+  elapsed=$((SECONDS - started))
+  if [ "$status" -ne 0 ]; then
+    printf '\r\033[2K\033[38;2;255;53;218mverity-install: [3/4]\033[0m download failed  %ds\n' "$elapsed" >&2
+    sed 's/^/  /' "$output" >&2
+    rm -f "$output"
+    die "could not download $image"
+  fi
+  printf '\r\033[2K\033[38;2;25;200;255mverity-install: [3/4]\033[0m download complete  %ds\n' "$elapsed"
+  rm -f "$output"
+}
+
 managed_server_is_unpaired() {
   local name=$1 status
   # Before the first device is paired, Verity's global bearer gate is disabled
@@ -253,11 +308,10 @@ elif [ "${#managed_names[@]}" -eq 1 ]; then
 else
   source_image="$IMAGE_REPOSITORY:$IMAGE_TAG"
 fi
-progress 3 "downloading $source_image"
 # Docker redraws every layer independently, which becomes hundreds of repeated
 # "Extracting 1B" lines in terminals that do not implement cursor movement.
-# The numbered phase above is the stable progress indicator.
-run_docker pull --quiet "$source_image" >/dev/null
+# Keep one stable line instead and animate it only when stdout is a terminal.
+download_image "$source_image"
 
 image_digest=$(run_docker image inspect "$source_image" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
   awk -v repository="$IMAGE_REPOSITORY" 'index($0, repository "@sha256:") == 1 { print; exit }')
