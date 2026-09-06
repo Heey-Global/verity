@@ -14,6 +14,14 @@ die() {
   exit 1
 }
 
+progress() {
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+    printf '\033[38;2;25;200;255mverity-install: [%s/4]\033[0m %s\n' "$1" "$2"
+  else
+    printf 'verity-install: [%s/4] %s\n' "$1" "$2"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage: install.sh [bootstrap options] [verity-install options]
@@ -131,6 +139,7 @@ install_system_tools() {
   fi
 }
 
+progress 1 'checking host prerequisites'
 run_preflight
 if [ "$INSTALL_MISSING" -eq 1 ] && [ "${#missing_system_tools[@]}" -gt 0 ]; then
   if [ "$(id -u)" -eq 0 ] || command -v sudo >/dev/null 2>&1; then
@@ -155,6 +164,7 @@ run_docker() {
   as_root docker "$@"
 }
 
+progress 2 'resolving the release to install'
 managed_names=()
 if ! managed_output=$(run_docker ps -a --filter 'name=^/verity-managed-server' --format '{{.Names}}'); then
   die 'could not inspect existing managed Server containers'
@@ -178,9 +188,11 @@ if [ "${#managed_names[@]}" -eq 1 ]; then
   printf 'verity-install: recovering release from %s\n' "${managed_names[0]}"
 else
   source_image="$IMAGE_REPOSITORY:$IMAGE_TAG"
-  printf 'verity-install: pulling %s\n' "$source_image"
 fi
-run_docker pull "$source_image" >/dev/null
+progress 3 "downloading $source_image"
+# Keep Docker's layer progress visible. Pulling the Server image is normally the
+# longest phase, and hiding it makes a healthy installation look stuck.
+run_docker pull "$source_image"
 
 image_digest=$(run_docker image inspect "$source_image" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
   awk -v repository="$IMAGE_REPOSITORY" 'index($0, repository "@sha256:") == 1 { print; exit }')
@@ -241,6 +253,7 @@ as_root test -x "$privileged_root/deploy/bin/verity-install" || die 'release ins
 as_root test -f "$privileged_root/deploy/bin/verity-compose" || die 'release image has no Compose wrapper'
 as_root test ! -L "$privileged_root/deploy/bin/verity-compose" || die 'release Compose wrapper must not be a symlink'
 
+progress 4 'running the release installer'
 if [ "$(id -u)" -eq 0 ]; then
   "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "${installer_args[@]}"
 else

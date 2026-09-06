@@ -25,6 +25,9 @@ describe('public Verity installer', () => {
     expect(installer).toContain('ghcr.io/heey-global/verity/verity-server');
     expect(installer).toContain("grep -Eq '^[a-f0-9]{64}$'");
     expect(installer).toContain('run_docker create "$image_digest"');
+    expect(installer).toContain('progress 3 "downloading $source_image"');
+    expect(installer).toContain('run_docker pull "$source_image"');
+    expect(installer).not.toContain('run_docker pull "$source_image" >/dev/null');
     expect(installer).toContain("run_docker ps -a --filter 'name=^/verity-managed-server'");
     expect(installer).toContain("source_image=$(run_docker inspect --format '{{.Config.Image}}'");
     expect(installer).toContain('[ "$generation" -le 2147483647 ]');
@@ -113,7 +116,8 @@ exec env SUDO_MOCK=1 "$@"
 [ "\${SUDO_MOCK:-}" = 1 ] || exit 1
 printf '%s\\n' "$*" >> "$MOCK_DOCKER_LOG"
 case "$1" in
-  version|pull|rm) exit 0 ;;
+  version|rm) exit 0 ;;
+  pull) printf 'Downloading layer 1/2\nDownloading layer 2/2\n' ;;
   ps)
     [ "\${MOCK_PS_FAIL:-0}" = 0 ] || exit 42
     [ -z "\${MOCK_MANAGED_IMAGE:-}" ] || printf '%s\\n' "\${MOCK_MANAGED_NAME:-verity-managed-server}" ;;
@@ -131,7 +135,7 @@ esac
         { mode: 0o755 },
       );
 
-      await execFileAsync('bash', [installerPath, '--check'], {
+      const result = await execFileAsync('bash', [installerPath, '--check'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -143,6 +147,10 @@ esac
           MOCK_PAYLOAD_ROOT: payloadRoot,
         },
       });
+      expect(result.stdout).toContain('[1/4] checking host prerequisites');
+      expect(result.stdout).toContain('[3/4] downloading');
+      expect(result.stdout).toContain('Downloading layer 1/2');
+      expect(result.stdout).toContain('[4/4] running the release installer');
       expect(await readFile(marker, 'utf8')).toContain(
         `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check`,
       );

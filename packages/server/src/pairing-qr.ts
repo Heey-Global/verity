@@ -12,5 +12,14 @@ if (!uri?.startsWith('verity://pair?payload=')) {
   console.error('usage: pairing-qr <verity pairing URI>');
   process.exitCode = 64;
 } else {
-  process.stdout.write(await QRCode.toString(uri, { type: 'terminal', small: true }));
+  // A terminal cannot draw fractional QR cells. Low error correction reduces
+  // the matrix while the standard four-cell quiet zone preserves scanability.
+  process.stdout.write(
+    await QRCode.toString(uri, {
+      type: 'terminal',
+      small: true,
+      margin: 4,
+      errorCorrectionLevel: 'L',
+    }),
+  );
 }

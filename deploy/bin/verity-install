@@ -39,8 +39,23 @@ opt_tag='latest'
 opt_project=''
 opt_check=0
 
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+  # Match the AMOLED Verity UI palette in true-colour terminals.
+  COLOR_ACTIVE=$'\033[38;2;25;200;255m'
+  COLOR_ACCENT=$'\033[1;38;2;255;53;218m'
+  COLOR_MUTED=$'\033[38;2;154;158;201m'
+  COLOR_RESET=$'\033[0m'
+else
+  COLOR_ACTIVE=''
+  COLOR_ACCENT=''
+  COLOR_MUTED=''
+  COLOR_RESET=''
+fi
+
 die() { printf 'verity-install: %s\n' "$*" >&2; exit 1; }
-note() { printf 'verity-install: %s\n' "$*"; }
+note() { printf '%sverity-install:%s %s\n' "$COLOR_ACTIVE" "$COLOR_RESET" "$*"; }
+heading() { printf '%s  %s%s\n' "$COLOR_ACCENT" "$*" "$COLOR_RESET"; }
+hint() { printf '%s  %s%s\n' "$COLOR_MUTED" "$*" "$COLOR_RESET"; }
 
 usage() {
   cat <<'EOF'
@@ -768,12 +783,18 @@ docker exec -e "PGPASSWORD=$postgres_password" "$postgres_container" \
 
 printf '\n'
 if [ "$first_install" = 1 ]; then
-  note 'installed. Scan the QR code or paste the pairing code in the app, then create the master password.'
+  heading 'Installation complete'
+  printf '%s\n' '  Open the Verity app and tap "Scan QR code".'
+  hint 'This one-time code is valid for up to 15 minutes from when setup began.'
 else
-  note 'host side is now on the same release as the Server. Scan or paste to pair another device.'
+  heading 'Update complete'
+  printf '%s\n' '  Scan this code only if you want to pair another device.'
 fi
+printf '\n'
 printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_image" \
   packages/server/dist/pairing-qr.js \
   || die 'the Server image could not render the pairing QR code'
-printf '  Pairing code (copy all): %s\n' "$pairing_uri"
-note 'normal app-initiated updates carry managed companions forward automatically; re-run this command only for recovery.'
+printf '\n'
+hint 'Cannot scan it? In the app, tap "Paste pairing code", then copy this entire line:'
+printf '  %s\n\n' "$pairing_uri"
+note 'the Server is ready. Run this installer again only to repair this host or pair another device.'
