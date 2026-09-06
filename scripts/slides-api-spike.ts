@@ -273,14 +273,17 @@ async function probeImageUrls(
         },
       },
     ]);
-    const expectedOutcome = shouldSucceed ? res.ok : !res.ok;
+    const error = errorText(res.status, res.body);
+    const expectedPrivateRejection =
+      res.status === 400 &&
+      (error.includes('Access to the provided image was forbidden') ||
+        error.includes('provided image should be publicly accessible'));
+    const expectedOutcome = shouldSucceed ? res.ok : expectedPrivateRejection;
     record(
       'D5',
       `createImage via ${candidate.name} (${label})`,
       expectedOutcome,
-      res.ok
-        ? ''
-        : `${shouldSucceed ? '' : 'expected rejection: '}${errorText(res.status, res.body)}`,
+      res.ok ? '' : `${shouldSucceed ? '' : 'expected rejection: '}${error}`,
     );
     if (res.ok && working === undefined) working = candidate.url;
   }
@@ -406,6 +409,35 @@ async function checkBackgroundFill(
     res.ok,
     res.ok ? '' : errorText(res.status, res.body),
   );
+}
+
+/** Background fills must copy their bytes just as createImage does. */
+async function checkBackgroundSurvivesSourceRemoval(
+  presentationId: string,
+  slideId: string,
+): Promise<void> {
+  const page = await call(
+    `${SLIDES}/presentations/${presentationId}/pages/${slideId}?fields=pageProperties.pageBackgroundFill.stretchedPictureFill.contentUrl`,
+  );
+  const contentUrl = (
+    page.body as {
+      pageProperties?: { pageBackgroundFill?: { stretchedPictureFill?: { contentUrl?: string } } };
+    }
+  ).pageProperties?.pageBackgroundFill?.stretchedPictureFill?.contentUrl;
+  if (typeof contentUrl !== 'string') {
+    record('D5', 'background has its own contentUrl after source removal', false, 'no contentUrl');
+    return;
+  }
+
+  const fetched = await fetch(contentUrl);
+  const bytes = fetched.ok ? (await fetched.arrayBuffer()).byteLength : 0;
+  record(
+    'D5',
+    'background bytes still served after the source is gone',
+    fetched.ok && bytes > 0,
+    fetched.ok ? `${String(bytes)} bytes` : `HTTP ${String(fetched.status)}`,
+  );
+  await checkThumbnail(presentationId, slideId, 'D5 background');
 }
 
 async function checkTextBox(presentationId: string, slideId: string): Promise<void> {
@@ -1070,6 +1102,7 @@ try {
       image.id,
       workingUrl,
     );
+    if (sourceGone) await checkBackgroundSurvivesSourceRemoval(deck.id, deck.slideId);
     // That step deletes the source itself; do not let cleanup chase a 404.
     if (sourceGone) created.splice(created.indexOf(image.id), 1);
   } else {
