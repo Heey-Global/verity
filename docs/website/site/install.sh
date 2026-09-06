@@ -14,6 +14,12 @@ die() {
   exit 1
 }
 
+valid_image_override() {
+  local digest=${1#"$IMAGE_REPOSITORY"@sha256:}
+  [ "$1" = "$IMAGE_REPOSITORY@sha256:$digest" ] &&
+    [[ "$digest" =~ ^[a-f0-9]{64}$ ]]
+}
+
 progress() {
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
     printf '\033[38;2;25;200;255mverity-install: [%s/4]\033[0m %s\n' "$1" "$2"
@@ -37,10 +43,27 @@ EOF
 }
 
 installer_args=()
+source_image_override=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --preflight) PREFLIGHT_ONLY=1; shift ;;
     --install-missing) INSTALL_MISSING=1; shift ;;
+    --image)
+      [ "$#" -ge 2 ] || die 'option --image needs a value'
+      [[ "$2" != --* ]] || die 'option --image needs a value'
+      source_image_override="$2"
+      [ -n "$source_image_override" ] || die 'option --image needs a value'
+      valid_image_override "$source_image_override" ||
+        die "--image must be $IMAGE_REPOSITORY@sha256:<64 hex>"
+      shift 2
+      ;;
+    --image=*)
+      source_image_override="${1#--image=}"
+      [ -n "$source_image_override" ] || die 'option --image needs a value'
+      valid_image_override "$source_image_override" ||
+        die "--image must be $IMAGE_REPOSITORY@sha256:<64 hex>"
+      shift
+      ;;
     -h|--help) usage; exit 0 ;;
     *) installer_args+=("$1"); shift ;;
   esac
@@ -164,6 +187,25 @@ run_docker() {
   as_root docker "$@"
 }
 
+managed_server_is_unpaired() {
+  local name=$1 status
+  # Before the first device is paired, Verity's global bearer gate is disabled
+  # and this ordinary protected route answers 200. Once pairing completes it
+  # answers 401 without a token. Probe the plain-HTTP backend from inside the
+  # Server container so custom host ports and gateway TLS cannot make the result
+  # ambiguous. Any other result fails closed into release recovery below.
+  status=$(run_docker exec "$name" node -e '
+    const http = require("node:http");
+    const request = http.get(
+      "http://127.0.0.1:8082/server/compat",
+      (response) => { response.resume(); process.stdout.write(String(response.statusCode)); },
+    );
+    request.setTimeout(5000, () => request.destroy());
+    request.on("error", () => process.exit(1));
+  ' 2>/dev/null) || return 1
+  [ "$status" = 200 ]
+}
+
 progress 2 'resolving the release to install'
 managed_names=()
 if ! managed_output=$(run_docker ps -a --filter 'name=^/verity-managed-server' --format '{{.Names}}'); then
@@ -183,16 +225,39 @@ done <<<"$managed_output"
 if [ "${#managed_names[@]}" -gt 1 ]; then
   die 'more than one managed Server exists; wait for the in-flight update to finish'
 fi
-if [ "${#managed_names[@]}" -eq 1 ]; then
-  source_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
-  printf 'verity-install: recovering release from %s\n' "${managed_names[0]}"
+if [ -n "$source_image_override" ]; then
+  source_image="$source_image_override"
+  if [ "${#managed_names[@]}" -eq 1 ]; then
+    previous_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
+    valid_image_override "$previous_image" ||
+      die 'the managed Server does not use an official digest-pinned image'
+    if managed_server_is_unpaired "${managed_names[0]}"; then
+      installer_args+=(--advance-unpaired-from "$previous_image")
+    elif [ "$source_image" != "$previous_image" ]; then
+      die 'a paired installation can only recover its current release; install updates from the Verity app'
+    fi
+  fi
+  printf 'verity-install: using explicitly requested release\n'
+elif [ "${#managed_names[@]}" -eq 1 ]; then
+  if managed_server_is_unpaired "${managed_names[0]}"; then
+    previous_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
+    valid_image_override "$previous_image" ||
+      die 'the unpaired managed Server does not use an official digest-pinned image'
+    source_image="$IMAGE_REPOSITORY:$IMAGE_TAG"
+    installer_args+=(--advance-unpaired-from "$previous_image")
+    printf 'verity-install: setup is not paired yet; using the latest release\n'
+  else
+    source_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
+    printf 'verity-install: recovering the paired installation from %s\n' "${managed_names[0]}"
+  fi
 else
   source_image="$IMAGE_REPOSITORY:$IMAGE_TAG"
 fi
 progress 3 "downloading $source_image"
-# Keep Docker's layer progress visible. Pulling the Server image is normally the
-# longest phase, and hiding it makes a healthy installation look stuck.
-run_docker pull "$source_image"
+# Docker redraws every layer independently, which becomes hundreds of repeated
+# "Extracting 1B" lines in terminals that do not implement cursor movement.
+# The numbered phase above is the stable progress indicator.
+run_docker pull --quiet "$source_image" >/dev/null
 
 image_digest=$(run_docker image inspect "$source_image" --format '{{range .RepoDigests}}{{println .}}{{end}}' |
   awk -v repository="$IMAGE_REPOSITORY" 'index($0, repository "@sha256:") == 1 { print; exit }')

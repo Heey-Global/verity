@@ -1,11 +1,16 @@
 import { userInfo } from 'node:os';
 import { basename, isAbsolute, normalize } from 'node:path';
+import { createPostgresDb, withUnpairedDeviceFence } from '@verity/store';
 import { ACTIVATION_GATE_DIRECTORY } from './activation-gate.js';
+import {
+  advanceManagedDeploymentImage,
+  initializeManagedDeployment,
+  readManagedDeployment,
+} from './managed-deployment.js';
 import {
   MANAGED_SERVER_DEFAULT_RESOURCES,
   type ServerDeploymentSpecBody,
 } from './deployment-spec.js';
-import { initializeManagedDeployment } from './managed-deployment.js';
 
 const OFFICIAL_IMAGE = /^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a-f0-9]{64}$/;
 const MAX_LINUX_ID = 0xfffffffe;
@@ -33,6 +38,7 @@ export interface ManagedBootstrapEnvironment {
   readonly VERITY_RUNNER_RUNTIME_GID?: string;
   readonly VERITY_HOST_ARCHITECTURE?: string;
   readonly VERITY_PAIRING_STATE_HOST_PATH?: string;
+  readonly VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM?: string;
 }
 
 function uint(name: string, value: string | undefined, fallback: number): number {
@@ -44,10 +50,26 @@ function uint(name: string, value: string | undefined, fallback: number): number
   return parsed;
 }
 
+async function withManagedDeploymentUnpairedFence<T>(
+  databaseUrl: string | undefined,
+  action: () => Promise<T>,
+): Promise<T> {
+  if (databaseUrl === undefined || databaseUrl.trim() === '')
+    throw new Error('DATABASE_URL is required');
+  const db = createPostgresDb(databaseUrl);
+  try {
+    return await withUnpairedDeviceFence(db, action);
+  } finally {
+    await db.destroy();
+  }
+}
+
 export async function runManagedBootstrap(
   env: ManagedBootstrapEnvironment,
   hostArchitecture: string = env.VERITY_HOST_ARCHITECTURE ?? '',
   expectedRoot: string = MANAGED_DEPLOYMENT_ROOT,
+  withUnpairedFence: <T>(action: () => Promise<T>) => Promise<T> = (action) =>
+    withManagedDeploymentUnpairedFence(env.DATABASE_URL, action),
 ): Promise<void> {
   const root = env.VERITY_MANAGED_ROOT;
   if (
@@ -130,6 +152,7 @@ export async function runManagedBootstrap(
             'VERITY_DOCKER_SOCKET_GID',
             'VERITY_HOST_ARCHITECTURE',
             'VERITY_PAIRING_STATE_HOST_PATH',
+            'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM',
           ].includes(name)),
     )
     .sort()
@@ -198,6 +221,23 @@ export async function runManagedBootstrap(
     // already resolves to these same values.
     resources: MANAGED_SERVER_DEFAULT_RESOURCES,
   };
+  const advanceFrom = env.VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM;
+  if (advanceFrom !== undefined && advanceFrom !== '') {
+    if (!OFFICIAL_IMAGE.test(advanceFrom))
+      throw new Error(
+        'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM must be an official digest-pinned image',
+      );
+    const existing = await readManagedDeployment(root);
+    if (!existing.managed) throw new Error(existing.reason);
+    await withUnpairedFence(() =>
+      advanceManagedDeploymentImage({
+        root,
+        deploymentId: env.VERITY_MANAGED_DEPLOYMENT_ID!,
+        fromImage: advanceFrom,
+        toImage: image,
+      }),
+    );
+  }
   const state = await initializeManagedDeployment({
     root,
     spec,

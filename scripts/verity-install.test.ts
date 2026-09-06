@@ -26,10 +26,10 @@ describe('public Verity installer', () => {
     expect(installer).toContain("grep -Eq '^[a-f0-9]{64}$'");
     expect(installer).toContain('run_docker create "$image_digest"');
     expect(installer).toContain('progress 3 "downloading $source_image"');
-    expect(installer).toContain('run_docker pull "$source_image"');
-    expect(installer).not.toContain('run_docker pull "$source_image" >/dev/null');
+    expect(installer).toContain('run_docker pull --quiet "$source_image" >/dev/null');
     expect(installer).toContain("run_docker ps -a --filter 'name=^/verity-managed-server'");
     expect(installer).toContain("source_image=$(run_docker inspect --format '{{.Config.Image}}'");
+    expect(installer).toContain('source_image="$source_image_override"');
     expect(installer).toContain('[ "$generation" -le 2147483647 ]');
     expect(installer).toContain('payload_root=/opt/verity-install');
     expect(installer).toContain('payload_root=/opt/varity-install');
@@ -117,13 +117,16 @@ exec env SUDO_MOCK=1 "$@"
 printf '%s\\n' "$*" >> "$MOCK_DOCKER_LOG"
 case "$1" in
   version|rm) exit 0 ;;
-  pull) printf 'Downloading layer 1/2\nDownloading layer 2/2\n' ;;
+  pull) ;;
   ps)
     [ "\${MOCK_PS_FAIL:-0}" = 0 ] || exit 42
     [ -z "\${MOCK_MANAGED_IMAGE:-}" ] || printf '%s\\n' "\${MOCK_MANAGED_NAME:-verity-managed-server}" ;;
   compose) [ "$2" = version ] ;;
   image) [ "$2" = inspect ] || exit 1; printf '%s@sha256:%s\\n' 'ghcr.io/heey-global/verity/verity-server' '${digest}' ;;
   inspect) [ -n "\${MOCK_MANAGED_IMAGE:-}" ] || exit 1; printf '%s\\n' "$MOCK_MANAGED_IMAGE" ;;
+  exec)
+    [ -n "\${MOCK_MANAGED_IMAGE:-}" ] || exit 1
+    printf '%s' "\${MOCK_PAIRING_STATUS:-401}" ;;
   create) [ "$2" = 'ghcr.io/heey-global/verity/verity-server@sha256:${digest}' ] || exit 1; printf 'container-id\\n' ;;
   cp)
     [ "$2" = "container-id:\${MOCK_PAYLOAD_ROOT:-/opt/verity-install}/." ] || exit 1
@@ -149,7 +152,6 @@ esac
       });
       expect(result.stdout).toContain('[1/4] checking host prerequisites');
       expect(result.stdout).toContain('[3/4] downloading');
-      expect(result.stdout).toContain('Downloading layer 1/2');
       expect(result.stdout).toContain('[4/4] running the release installer');
       expect(await readFile(marker, 'utf8')).toContain(
         `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check`,
@@ -169,7 +171,142 @@ esac
           MOCK_PRIVILEGED: privileged,
         },
       });
-      expect(await readFile(dockerLog, 'utf8')).toContain(`pull ${managedImage}`);
+      expect(await readFile(dockerLog, 'utf8')).toContain(`pull --quiet ${managedImage}`);
+
+      await writeFile(dockerLog, '');
+      await execFileAsync('bash', [installerPath, '--check'], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          MOCK_DOCKER: join(bin, 'docker'),
+          MOCK_DOCKER_LOG: dockerLog,
+          MOCK_MANAGED_IMAGE: managedImage,
+          MOCK_PAIRING_STATUS: '200',
+          MOCK_MARKER: marker,
+          MOCK_PAYLOAD: payload,
+          MOCK_PRIVILEGED: privileged,
+        },
+      });
+      const unpairedLog = await readFile(dockerLog, 'utf8');
+      expect(unpairedLog).toContain('exec verity-managed-server node -e');
+      expect(unpairedLog).toContain('pull --quiet ghcr.io/heey-global/verity/verity-server:latest');
+      expect(unpairedLog).not.toContain(`pull ${managedImage}`);
+      expect(await readFile(marker, 'utf8')).toContain(`--advance-unpaired-from ${managedImage}`);
+
+      await writeFile(dockerLog, '');
+      const oldManagedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+      await execFileAsync(
+        'bash',
+        [
+          installerPath,
+          '--image',
+          `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
+          '--check',
+        ],
+        {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            MOCK_DOCKER: join(bin, 'docker'),
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_MANAGED_IMAGE: oldManagedImage,
+            MOCK_PAIRING_STATUS: '200',
+            MOCK_MARKER: marker,
+            MOCK_PAYLOAD: payload,
+            MOCK_PRIVILEGED: privileged,
+          },
+        },
+      );
+      const overrideLog = await readFile(dockerLog, 'utf8');
+      expect(overrideLog).toContain(
+        `pull --quiet ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
+      );
+      expect(overrideLog).not.toContain(`pull ${oldManagedImage}`);
+      const forwarded = await readFile(marker, 'utf8');
+      expect(forwarded).toBe(
+        `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check --advance-unpaired-from ${oldManagedImage}\n`,
+      );
+
+      await writeFile(dockerLog, '');
+      await execFileAsync(
+        'bash',
+        [
+          installerPath,
+          `--image=ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
+          '--check',
+        ],
+        {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            MOCK_DOCKER: join(bin, 'docker'),
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_MANAGED_IMAGE: oldManagedImage,
+            MOCK_PAIRING_STATUS: '200',
+            MOCK_MARKER: marker,
+            MOCK_PAYLOAD: payload,
+            MOCK_PRIVILEGED: privileged,
+          },
+        },
+      );
+      expect(await readFile(dockerLog, 'utf8')).toContain(
+        `pull --quiet ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
+      );
+
+      await expect(
+        execFileAsync(
+          'bash',
+          [installerPath, '--image', `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`],
+          {
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH ?? ''}`,
+              MOCK_DOCKER: join(bin, 'docker'),
+              MOCK_DOCKER_LOG: dockerLog,
+              MOCK_MANAGED_IMAGE: oldManagedImage,
+            },
+          },
+        ),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          'a paired installation can only recover its current release',
+        ),
+      });
+
+      await expect(
+        execFileAsync('bash', [installerPath, '--image=', '--check'], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            MOCK_DOCKER: join(bin, 'docker'),
+          },
+        }),
+      ).rejects.toMatchObject({ stderr: expect.stringContaining('option --image needs a value') });
+
+      for (const invalid of [
+        'ghcr.io/heey-global/verity/verity-server:latest',
+        `ghcr.io/other/verity-server@sha256:${digest}`,
+        'ghcr.io/heey-global/verity/verity-server@sha256:abcd',
+      ]) {
+        await expect(
+          execFileAsync('bash', [installerPath, '--image', invalid, '--check'], {
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH ?? ''}`,
+              MOCK_DOCKER: join(bin, 'docker'),
+            },
+          }),
+        ).rejects.toMatchObject({ stderr: expect.stringContaining('--image must be') });
+      }
+      await expect(
+        execFileAsync('bash', [installerPath, '--image', '--check'], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            MOCK_DOCKER: join(bin, 'docker'),
+          },
+        }),
+      ).rejects.toMatchObject({ stderr: expect.stringContaining('option --image needs a value') });
 
       await writeFile(dockerLog, '');
       await execFileAsync('bash', [installerPath, '--check'], {
@@ -186,7 +323,7 @@ esac
         },
       });
       expect(await readFile(dockerLog, 'utf8')).toContain(
-        'pull ghcr.io/heey-global/verity/verity-server:latest',
+        'pull --quiet ghcr.io/heey-global/verity/verity-server:latest',
       );
 
       await writeFile(dockerLog, '');

@@ -144,6 +144,49 @@ describe('runManagedBootstrap', () => {
     ).rejects.toThrow(/does not match the sealed managed deployment image/);
   });
 
+  it('advances only the explicitly named sealed image for an unpaired reinstall', async () => {
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const next = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+
+    await runManagedBootstrap(
+      {
+        ...env,
+        VERITY_SERVER_IMAGE: next,
+        VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: digest,
+      },
+      'x64',
+      env.VERITY_MANAGED_ROOT,
+      async (action) => action(),
+    );
+
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    expect(state.managed && state.spec.image).toBe(next);
+  });
+
+  it('refuses an image advance when pairing completed after bootstrap began', async () => {
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+
+    await expect(
+      runManagedBootstrap(
+        {
+          ...env,
+          VERITY_SERVER_IMAGE: `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`,
+          VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: digest,
+        },
+        'x64',
+        env.VERITY_MANAGED_ROOT,
+        async () => {
+          throw new Error('the managed deployment is already paired');
+        },
+      ),
+    ).rejects.toThrow(/already paired/);
+
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    expect(state.managed && state.spec.image).toBe(digest);
+  });
+
   it.each([
     ['mutable image', { VERITY_SERVER_IMAGE: 'ghcr.io/heey-global/verity/verity-server:latest' }],
     ['custom image', { VERITY_SERVER_IMAGE: `example.com/server@sha256:${'a'.repeat(64)}` }],

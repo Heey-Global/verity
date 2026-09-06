@@ -1,5 +1,6 @@
 export {
   createPostgresDb,
+  withUnpairedDeviceFence,
   migrateToLatest,
   holdPostgresControlPlaneLock,
   isPostgresConnectionClassError,
