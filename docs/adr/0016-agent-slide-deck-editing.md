@@ -90,6 +90,10 @@ already offers a way out:
   `pageObjectIds` narrows its scope and the preceding read finds exactly the intended occurrences,
   a concurrent editor can add another match before the write. Concurrent text can therefore
   shift a range or change the target set of every operation in this group.
+- **Guarded — the request overwrites state read during planning.** Moving an existing element with
+  `updatePageElementTransform` is guarded so it cannot silently replace a collaborator's
+  intervening move. A transform attached to a newly created element in the same batch needs no
+  guard because no prior state exists.
 - **Unguarded — the request carries a stable target or adds new content.** `createShape`,
   `createImage`, `createSlide` and `updatePageProperties` add rather than reinterpret;
   `deleteObject` names an `objectId` that either still exists or fails loudly; and text or

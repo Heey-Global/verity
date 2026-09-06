@@ -373,20 +373,22 @@ async function checkImageSurvivesSourceRemoval(
   );
   if (!deleted.ok) return false;
 
+  let bytesSurvive = false;
   if (typeof contentUrl === 'string') {
     const fetched = await fetch(contentUrl);
     const bytes = fetched.ok ? (await fetched.arrayBuffer()).byteLength : 0;
+    bytesSurvive = fetched.ok && bytes > 0;
     record(
       'D5',
       'image bytes still served after the source is gone',
-      fetched.ok && bytes > 0,
+      bytesSurvive,
       fetched.ok ? `${String(bytes)} bytes` : `HTTP ${String(fetched.status)}`,
     );
   }
 
   // The render is the real proof: a thumbnail is produced fresh, server-side.
-  await checkThumbnail(presentationId, slideId, 'D5');
-  return true;
+  const thumbnailOk = await checkThumbnail(presentationId, slideId, 'D5');
+  return typeof contentUrl === 'string' && bytesSurvive && thumbnailOk;
 }
 
 async function checkBackgroundFill(
@@ -730,20 +732,24 @@ async function checkPptxExport(presentationId: string): Promise<void> {
 }
 
 /** D6: a thumbnail url is worthless if it cannot actually be fetched, so fetch it. */
-async function checkThumbnail(presentationId: string, slideId: string, id: string): Promise<void> {
+async function checkThumbnail(
+  presentationId: string,
+  slideId: string,
+  id: string,
+): Promise<boolean> {
   const res = await call(
     `${SLIDES}/presentations/${presentationId}/pages/${slideId}/thumbnail` +
       '?thumbnailProperties.mimeType=PNG&thumbnailProperties.thumbnailSize=MEDIUM',
   );
   if (!res.ok) {
     record(id, 'getThumbnail', false, errorText(res.status, res.body));
-    return;
+    return false;
   }
   const thumb = res.body as { contentUrl?: string; width?: number; height?: number };
   const url = thumb.contentUrl;
   if (typeof url !== 'string') {
     record(id, 'getThumbnail', false, 'no contentUrl in response');
-    return;
+    return false;
   }
   record(id, 'getThumbnail', true, `${String(thumb.width)}x${String(thumb.height)}`);
 
@@ -763,6 +769,7 @@ async function checkThumbnail(presentationId: string, slideId: string, id: strin
   // default — a spike that litters the working tree gets run less often.
   const out = process.env.THUMB_OUT;
   if (out !== undefined && out.length > 0 && isPng) writeFileSync(out, png);
+  return image.ok && isPng;
 }
 
 /** D2: the guard only earns its place if a stale revision is actually refused. */
