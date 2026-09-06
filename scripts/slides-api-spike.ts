@@ -757,7 +757,8 @@ async function checkThumbnail(
   // bearer token, which is how the chat would consume it.
   const image = await fetch(url);
   const png = image.ok ? Buffer.from(await image.arrayBuffer()) : Buffer.alloc(0);
-  const isPng = png.length > 8;
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const isPng = png.length >= pngSignature.length && png.subarray(0, 8).equals(pngSignature);
   record(
     id,
     'thumbnail contentUrl is fetchable',
@@ -928,10 +929,10 @@ async function writeTestOnExistingDeck(deckId: string): Promise<void> {
     return;
   }
 
-  const sibling = await readSiblingStyle(deckId, slideId);
+  const sibling = await readFirstCopyableStyle(deckId, slideId);
   record(
     'D4',
-    'write test: found a sibling run to copy style from',
+    'write test: found a sample run for style transport',
     sibling !== undefined,
     sibling === undefined ? 'no styled run on the slide' : Object.keys(sibling).join(', '),
   );
@@ -1033,8 +1034,8 @@ async function pageHasObject(
   return elements.some((element) => element.objectId === objectId);
 }
 
-/** Pick a run on the slide whose style can be copied onto a new element. */
-async function readSiblingStyle(
+/** Sample a run to prove field transport; this does not choose a semantically comparable style. */
+async function readFirstCopyableStyle(
   presentationId: string,
   slideId: string,
 ): Promise<Record<string, unknown> | undefined> {

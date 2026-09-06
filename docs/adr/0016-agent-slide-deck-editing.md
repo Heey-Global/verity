@@ -143,13 +143,13 @@ comes back from `presentations.get` with an empty `textStyle`, and font, size an
 from the layout at render time. Where that holds, Verity never has to name a font to match the
 deck, and never gets the chance to pin one and drift the design.
 
-**It does not hold on real decks, and the design must not assume it.** Probing a 23-slide branded
+**It does not hold on every real deck, and the design must not assume it.** Probing a 23-slide branded
 deck found **no placeholders worth addressing — at most one per slide — and all 889 text runs
 pinning their own `fontFamily`/`fontSize`.** Its layouts were named `DARK`, `BASE`, `DEFAULT`, not
-Google's predefined set. That is the signature of a deck imported from PowerPoint: conversion
-flattens the master relationship, and what is left is absolutely positioned shapes with inline
-styling. A deck that has ever been round-tripped through Office looks like this, which is to say
-most decks an operator already owns.
+Google's predefined set. That is consistent with a deck imported from PowerPoint, where conversion
+can flatten master relationships into absolutely positioned shapes with inline styling. It is an
+observed property of this deck, not a reliable classifier: native slides can also use free-floating
+styled shapes, and imported slides can retain placeholders.
 
 So the vocabulary splits by risk, and this is the part that governs implementation:
 
@@ -158,20 +158,17 @@ So the vocabulary splits by risk, and this is the part that governs implementati
   inline. These need no style reasoning at all and work identically on both kinds of deck.
 - **Creating new elements is the unsafe half.** `createShape` and `createSlide` only inherit
   design where a live master relationship still exists. On a flattened deck a new text box arrives
-  as unstyled black Arial on a dark-branded slide. Verity therefore **derives style from a sibling
-  element on the same slide** — read a comparable run's `textStyle` and apply it explicitly with
-  `updateTextStyle` — rather than trusting inheritance. Inheritance is the preferred path when the
-  placeholders are really there; copying a sibling is the fallback that makes the feature work on
-  the decks people actually have.
+  as unstyled black Arial on a dark-branded slide. Verity therefore **copies style from an
+  explicitly selected comparable element** — one with the same semantic role on the same slide,
+  or on a neighbouring slide using the same visual pattern — and applies its `textStyle` with
+  `updateTextStyle`. It never treats the first styled run or a placeholder count as proof that two
+  elements are comparable. If the plan cannot identify an unambiguous source, it does not create
+  the element autonomously.
 
-  This was tested on the flattened deck itself, not just reasoned about: a new box picked up
-  `bold`, `italic`, `fontSize`, `foregroundColor` and `weightedFontFamily` from a neighbouring run
-  and all five landed. Note the last one — `weightedFontFamily` carries the font *and* its weight,
-  and where it is present it overrides `fontFamily`, so copying both is noise at best. Copy the
-  weighted form when the source has it.
-
-Detecting which kind of deck is in hand is one read: a slide with no placeholders and fully
-inline-styled runs is flattened. That check belongs in the plan step, not in a per-request guess.
+  The spike tested only the transport mechanism, not semantic comparability: it sampled a styled
+  run, applied `bold`, `italic`, `fontSize`, `foregroundColor` and `weightedFontFamily` to a new box,
+  and verified that all five fields landed. `weightedFontFamily` carries the font *and* its weight;
+  where present it overrides `fontFamily`, so the planner copies the weighted form rather than both.
 
 One practical consequence of the same probe: those slides carry 30–77 page elements each. Reading
 a whole presentation to plan one edit is the wrong shape — the agent reads **one page at a time**
