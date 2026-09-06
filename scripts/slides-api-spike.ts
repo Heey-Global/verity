@@ -219,7 +219,7 @@ async function uploadImage(png: Buffer): Promise<{ id: string; webContentLink?: 
   );
   if (!res.ok) {
     record('D5', 'upload test image to Drive', false, errorText(res.status, res.body));
-    process.exit(1);
+    throw new Error('test image upload failed');
   }
   const file = res.body as { id: string; webContentLink?: string };
   record('D5', 'upload test image to Drive', true, `${String(png.length)} bytes, id ${file.id}`);
@@ -248,6 +248,7 @@ async function probeImageUrls(
   fileId: string,
   webContentLink: string | undefined,
   label: string,
+  shouldSucceed: boolean,
 ): Promise<string | undefined> {
   const candidates: { name: string; url: string }[] = [
     { name: 'lh3 /d/<id>', url: `https://lh3.googleusercontent.com/d/${fileId}` },
@@ -272,11 +273,14 @@ async function probeImageUrls(
         },
       },
     ]);
+    const expectedOutcome = shouldSucceed ? res.ok : !res.ok;
     record(
       'D5',
       `createImage via ${candidate.name} (${label})`,
-      res.ok,
-      res.ok ? '' : errorText(res.status, res.body),
+      expectedOutcome,
+      res.ok
+        ? ''
+        : `${shouldSucceed ? '' : 'expected rejection: '}${errorText(res.status, res.body)}`,
     );
     if (res.ok && working === undefined) working = candidate.url;
   }
@@ -929,46 +933,50 @@ async function writeTestOnExistingDeck(deckId: string): Promise<void> {
   );
   if (!written.ok) return;
 
-  // Did the copied style actually land? This is the D3 fallback's whole premise.
-  const applied = await readFirstRunStyle(deckId, slideId, boxId);
-  const wanted = Object.keys(sibling ?? {});
-  const landed = wanted.filter((k) => k in applied);
-  record(
-    'D4',
-    'write test: sibling style landed on the new box',
-    wanted.length > 0 && landed.length === wanted.length,
-    `${String(landed.length)}/${String(wanted.length)} fields`,
-  );
+  try {
+    // Did the copied style actually land? This is the D3 fallback's whole premise.
+    const applied = await readFirstRunStyle(deckId, slideId, boxId);
+    const wanted = Object.keys(sibling ?? {});
+    const landed = wanted.filter((k) => k in applied);
+    record(
+      'D4',
+      'write test: sibling style landed on the new box',
+      wanted.length > 0 && landed.length === wanted.length,
+      `${String(landed.length)}/${String(wanted.length)} fields`,
+    );
 
-  // The revision guard, on a deck with real concurrent editors rather than a scratch one.
-  const stale = await batchUpdate(
-    deckId,
-    [{ insertText: { objectId: boxId, text: '!' } }],
-    revision,
-  );
-  record(
-    'D4',
-    'write test: stale revisionId is refused',
-    !stale.ok,
-    errorText(stale.status, stale.body),
-  );
+    // The revision guard, on a deck with real concurrent editors rather than a scratch one.
+    const stale = await batchUpdate(
+      deckId,
+      [{ insertText: { objectId: boxId, text: '!' } }],
+      revision,
+    );
+    const staleError = errorText(stale.status, stale.body);
+    record(
+      'D4',
+      'write test: stale revisionId is refused',
+      stale.status === 400 && staleError.includes('does not match the latest revision'),
+      staleError,
+    );
+  } finally {
+    // Once the box exists, cleanup must not depend on any verification step succeeding.
+    const removed = await batchUpdate(deckId, [{ deleteObject: { objectId: boxId } }]);
+    record(
+      'D4',
+      'write test: box removed again',
+      removed.ok,
+      removed.ok ? '' : errorText(removed.status, removed.body),
+    );
 
-  const removed = await batchUpdate(deckId, [{ deleteObject: { objectId: boxId } }]);
-  record(
-    'D4',
-    'write test: box removed again',
-    removed.ok,
-    removed.ok ? '' : errorText(removed.status, removed.body),
-  );
-
-  const after = await readPlaceholders(deckId, slideId);
-  const stillThere = await readFirstRunStyle(deckId, slideId, boxId);
-  record(
-    'D4',
-    'write test: deck is back to its previous shape',
-    Object.keys(stillThere).length === 0,
-    `${String(after.size)} placeholders unchanged`,
-  );
+    const after = await readPlaceholders(deckId, slideId);
+    const stillThere = await readFirstRunStyle(deckId, slideId, boxId);
+    record(
+      'D4',
+      'write test: deck is back to its previous shape',
+      Object.keys(stillThere).length === 0,
+      `${String(after.size)} placeholders unchanged`,
+    );
+  }
 }
 
 /** Pick a run on the slide whose style can be copied onto a new element. */
@@ -1038,6 +1046,7 @@ try {
     image.id,
     image.webContentLink,
     'private',
+    false,
   );
 
   // If the private file was refused, find out whether link-sharing is what it takes.
@@ -1049,6 +1058,7 @@ try {
       image.id,
       image.webContentLink,
       'link-shared',
+      true,
     );
   }
 
