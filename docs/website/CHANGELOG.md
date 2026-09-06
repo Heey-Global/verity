@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/Heey-Global/verity/compare/website-v1.2.0...website-v1.2.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **installer:** honor explicit bootstrap image ([9a93173](https://github.com/Heey-Global/verity/commit/9a93173b3b2b7d27acf8e4f002ebe07efed7bb5a))
+* **installer:** resume unpaired setup on latest release ([83ef246](https://github.com/Heey-Global/verity/commit/83ef2464d9d49894db6a11522f64cdf992359bcc))
+
 ## [1.2.0](https://github.com/Heey-Global/verity/compare/website-v1.1.0...website-v1.2.0) (2026-09-06)
 
 
