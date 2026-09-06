@@ -89,3 +89,18 @@ RUN set -eux; \
     install -d -o dev -g dev -m 0700 /var/lib/verity-test-postgres
 
 USER dev
+
+# Breeze provisions this repo by injecting its own sandbox toolkit Feature on
+# top of this image. That Feature reserves UID/GID 1101 for the supervisor
+# identity and refuses to install when 1101 is held under a different name —
+# which it is here, because the base image already created it as
+# verity-runner/verity-runtime. Rename in place: the numeric IDs, the primary
+# group and every file ownership stay exactly as they were, so the ADR 0006 D1
+# guarantee (the agent user never holds these IDs) is untouched.
+USER root
+RUN set -eu; \
+    g="$(getent group 1101 | cut -d: -f1)"; \
+    if [ -n "$g" ] && [ "$g" != breeze-runtime ]; then groupmod -n breeze-runtime "$g"; fi; \
+    u="$(getent passwd 1101 | cut -d: -f1)"; \
+    if [ -n "$u" ] && [ "$u" != breeze-runner ]; then usermod -l breeze-runner "$u"; fi
+USER dev
