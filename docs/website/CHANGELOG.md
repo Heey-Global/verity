@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/Heey-Global/verity/compare/website-v1.2.1...website-v1.3.0) (2026-09-06)
+
+
+### Features
+
+* **installer:** improve download progress and output hierarchy ([1ef36f3](https://github.com/Heey-Global/verity/commit/1ef36f3ef377251276faa1c803b0bfe27c4c2d6c))
+* **installer:** show inline download progress ([150530a](https://github.com/Heey-Global/verity/commit/150530ad466dd9525bbf7ef31b26075a58ea848e))
+
 ## [1.2.1](https://github.com/Heey-Global/verity/compare/website-v1.2.0...website-v1.2.1) (2026-09-06)
 
 
