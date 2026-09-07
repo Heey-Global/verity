@@ -12,6 +12,23 @@ export interface VerityPairingPayload {
 const TOKEN = /^[A-Za-z0-9_-]+$/;
 const SHA256_PIN = /^sha256-[A-Za-z0-9_-]{43}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const PAIRING_URI_IN_TEXT = /verity:\/\/pair\?payload=[A-Za-z0-9_-]+/gi;
+
+function pairingUriFromText(raw: string): string {
+  const value = raw.trim();
+  // Preserve an exact pairing-shaped value even when its payload is malformed,
+  // so the parser can distinguish a damaged code from unrelated clipboard text.
+  if (/^verity:\/\/pair\?payload=\S+$/i.test(value)) return value;
+  const matches = value.match(PAIRING_URI_IN_TEXT) ?? [];
+  if (matches.length !== 1) {
+    throw new Error(
+      matches.length === 0
+        ? 'This is not a Verity pairing code. Copy the complete verity:// link shown by the installer.'
+        : 'More than one Verity pairing code was found. Copy and paste only one code.',
+    );
+  }
+  return matches[0];
+}
 
 function decodePayload(encoded: string): unknown {
   if (!BASE64URL.test(encoded)) throw new Error('Invalid pairing-code payload.');
@@ -29,8 +46,16 @@ function decodePayload(encoded: string): unknown {
 /** Parse the deliberately small URI shown by `verity-install`. No field is trusted
  * until the pinned TLS handshake and signed identity challenge both succeed. */
 export function parsePairingUri(raw: string, now: Date = new Date()): VerityPairingPayload {
-  const uri = new URL(raw.trim());
-  if (uri.protocol !== 'verity:' || uri.hostname !== 'pair' || uri.pathname !== '') {
+  const extracted = pairingUriFromText(raw);
+  let uri: URL;
+  try {
+    uri = new URL(extracted);
+  } catch {
+    throw new Error(
+      'This is not a Verity pairing code. Copy the complete verity:// link shown by the installer.',
+    );
+  }
+  if (uri.protocol !== 'verity:' || uri.hostname.toLowerCase() !== 'pair' || uri.pathname !== '') {
     throw new Error('This is not a Verity pairing code.');
   }
   const payload = decodePayload(uri.searchParams.get('payload') ?? '');
@@ -56,7 +81,12 @@ export function parsePairingUri(raw: string, now: Date = new Date()): VerityPair
   if (!TOKEN.test(pairingCode) || pairingCode.length < 32 || pairingCode.length > 128) {
     throw new Error('Invalid pairing secret.');
   }
-  const suggestedUrl = new URL(suggestedUrlRaw);
+  let suggestedUrl: URL;
+  try {
+    suggestedUrl = new URL(suggestedUrlRaw);
+  } catch {
+    throw new Error('The pairing code contains an invalid server address.');
+  }
   if (suggestedUrl.protocol !== 'https:' || suggestedUrl.username || suggestedUrl.password) {
     throw new Error('Pairing requires an HTTPS server address.');
   }

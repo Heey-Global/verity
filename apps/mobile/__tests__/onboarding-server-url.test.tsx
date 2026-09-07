@@ -131,6 +131,27 @@ describe('onboarding connection entry', () => {
     expect(mockReplace).toHaveBeenCalledWith('/onboarding/master-password');
   });
 
+  it.each([
+    [
+      'UnexpectedException: The request timed out. (at ExpoModulesCore/ConcurrentFunctionDefinition.swift:90)',
+      /Could not reach the server address in this pairing code/,
+    ],
+    [
+      'UnexpectedException: A TLS error caused the secure connection to fail. (at ExpoModulesCore/ConcurrentFunctionDefinition.swift:90)',
+      /Could not establish a secure connection to this server/i,
+    ],
+  ])('turns a native pairing failure into actionable guidance', async (failure, guidance) => {
+    mockEstablishPairing.mockRejectedValue(new Error(failure));
+    render(<OnboardingServerUrl />);
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => scan?.({ data: 'verity-pair://payload' }));
+
+    expect(await screen.findByText(guidance)).toBeOnTheScreen();
+    expect(screen.queryByText(/ExpoModulesCore/)).toBeNull();
+    expect(screen.getByLabelText('Scan QR code')).toBeEnabled();
+  });
+
   it('pairs immediately from a pasted installer pairing code', async () => {
     mockPaste.mockResolvedValue('verity://pair?payload=installer');
     mockEstablishPairing.mockResolvedValue(status());
