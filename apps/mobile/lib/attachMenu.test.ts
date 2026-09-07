@@ -7,6 +7,7 @@ const handlers = {
   onPickFiles: jest.fn(),
   onPickMeetingAudio: jest.fn(),
   onPickGoogleDrive: jest.fn(),
+  onPickGoogleSlides: jest.fn(),
 };
 
 function labels(rows: AttachMenuRow[]): string[] {
@@ -22,6 +23,7 @@ describe('attachMenuRows', () => {
       '—',
       'Meeting audio',
       'Google Drive',
+      'Google Slides',
     ]);
   });
 
@@ -32,6 +34,7 @@ describe('attachMenuRows', () => {
       'Choose file',
       '—',
       'Google Drive',
+      'Google Slides',
     ]);
   });
 

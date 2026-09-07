@@ -103,6 +103,7 @@ export const gatewayToolNameSchema = z.enum([
   'verity_session_progress',
   'verity_recent_session_messages',
   'verity_publish_session_progress',
+  'verity_google_slides',
 ]);
 export type GatewayToolName = z.infer<typeof gatewayToolNameSchema>;
 

@@ -783,6 +783,7 @@ export const driveFileSchema = z.object({
   modifiedTime: z.string().optional(),
   size: z.string().optional(),
   iconLink: z.string().optional(),
+  canEdit: z.boolean().optional(),
 });
 export type DriveFile = z.infer<typeof driveFileSchema>;
 
@@ -807,6 +808,16 @@ export const googleDriveImportResultSchema = z.object({
   name: z.string(),
 });
 export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSchema>;
+
+const sessionSlideDeckSchema = z.object({
+  sessionId: z.string(),
+  fileId: z.string(),
+  name: z.string(),
+  webViewLink: z.string().url(),
+  revisionId: z.string().nullable(),
+  assignedAt: z.coerce.date(),
+});
+export type SessionSlideDeck = z.infer<typeof sessionSlideDeckSchema>;
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
@@ -1947,12 +1958,14 @@ export class VerityClient {
     query?: string;
     sharedWithMe?: boolean;
     pageToken?: string;
+    purpose?: 'import' | 'slides';
   }): Promise<DriveFileList> {
     const search = new URLSearchParams();
     if (params?.parentId) search.set('parentId', params.parentId);
     if (params?.query) search.set('query', params.query);
     if (params?.sharedWithMe) search.set('sharedWithMe', 'true');
     if (params?.pageToken) search.set('pageToken', params.pageToken);
+    if (params?.purpose) search.set('purpose', params.purpose);
     const qs = search.toString();
     const res = await this.request(`/google-drive/files${qs.length > 0 ? `?${qs}` : ''}`, {
       method: 'GET',
@@ -1991,6 +2004,33 @@ export class VerityClient {
       },
     );
     return googleDriveImportResultSchema.parse(await res.json());
+  }
+
+  async getSessionSlideDeck(sessionId: string): Promise<SessionSlideDeck | null> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/google-slides/deck`,
+      { method: 'GET' },
+    );
+    const parsed = z.object({ deck: sessionSlideDeckSchema.nullable() }).parse(await res.json());
+    return parsed.deck;
+  }
+
+  async assignSessionSlideDeck(sessionId: string, fileId: string): Promise<SessionSlideDeck> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/google-slides/deck`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fileId }),
+      },
+    );
+    return z.object({ deck: sessionSlideDeckSchema }).parse(await res.json()).deck;
+  }
+
+  async clearSessionSlideDeck(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/google-slides/deck`, {
+      method: 'DELETE',
+    });
   }
 
   async submitAgentLoginCode(sessionId: string, code: string): Promise<AgentLogin> {

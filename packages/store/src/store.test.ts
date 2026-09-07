@@ -40,6 +40,118 @@ const sampleEvents: AgentEvent[] = [
   { t: 'raw', backend: 'claude-code', payload: { nested: { a: 1 }, list: [1, 2] } },
 ];
 
+describe('EventStore — session Google Slides assignment', () => {
+  it('keeps exactly one deck per session and clears it without deleting the session', async () => {
+    await ctx.store.createSession(session);
+    const firstAssignment = await ctx.store.setSessionSlideDeck({
+      sessionId: 's1',
+      fileId: 'deck-1',
+      name: 'First deck',
+      webViewLink: 'https://docs.google.com/presentation/d/deck-1/edit',
+      revisionId: 'rev-1',
+    });
+    await ctx.store.setSessionSlideDeck({
+      sessionId: 's1',
+      fileId: 'deck-2',
+      name: 'Second deck',
+      webViewLink: 'https://docs.google.com/presentation/d/deck-2/edit',
+      revisionId: 'rev-2',
+    });
+
+    const assigned = await ctx.store.getSessionSlideDeck('s1');
+    expect(assigned).toMatchObject({
+      sessionId: 's1',
+      fileId: 'deck-2',
+      name: 'Second deck',
+      revisionId: 'rev-2',
+    });
+    await expect(
+      ctx.store.updateSessionSlideDeckRevision('s1', firstAssignment.assignmentId, 'stale'),
+    ).resolves.toBe(false);
+    await expect(
+      ctx.store.updateSessionSlideDeckRevision('s1', assigned!.assignmentId, 'rev-3'),
+    ).resolves.toBe(true);
+    expect(await ctx.store.getSessionSlideDeck('s1')).toMatchObject({
+      fileId: 'deck-2',
+      revisionId: 'rev-3',
+      assignedAt: assigned?.assignedAt,
+    });
+    await ctx.store.clearSessionSlideDeck('s1');
+    expect(await ctx.store.getSessionSlideDeck('s1')).toBeUndefined();
+    expect(await ctx.store.getSession('s1')).toBeDefined();
+    expect(await ctx.store.listRecentGoogleSlideDeckFileIds()).toContain('deck-2');
+  });
+
+  it('keeps image cleanup durable until Drive deletion succeeds', async () => {
+    await ctx.store.createGoogleSlideImageCleanup({
+      id: 'cleanup-1',
+      sessionId: 's1',
+      fileId: 'drive-image-1',
+    });
+    await ctx.store.setGoogleSlideImageCleanupPermission('cleanup-1', 'permission-1');
+    await ctx.store.failGoogleSlideImageCleanup('cleanup-1', 'temporary failure');
+    // A fresh row belongs to an active insertion and is invisible to recovery.
+    expect(await ctx.store.listGoogleSlideImageCleanups()).toEqual([]);
+    await ctx.store.markGoogleSlideImageCleanupReady('cleanup-1');
+    expect(await ctx.store.listGoogleSlideImageCleanups()).toMatchObject([
+      {
+        id: 'cleanup-1',
+        fileId: 'drive-image-1',
+        permissionId: 'permission-1',
+        attempts: 1,
+        lastError: 'temporary failure',
+      },
+    ]);
+    await ctx.store.completeGoogleSlideImageCleanup('cleanup-1');
+    expect(await ctx.store.listGoogleSlideImageCleanups()).toEqual([]);
+  });
+
+  it('fences and replays a Slides mutation by turn-bound invocation id', async () => {
+    await ctx.store.createSession(session);
+    const input = { invocationId: 'slides-call-1', sessionId: 's1', turnId: 'turn-1' };
+    await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
+      status: 'claimed',
+    });
+    await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
+      status: 'pending',
+    });
+    await ctx.store.completeGoogleSlideInvocation(input.invocationId, { revisionId: 'rev-2' });
+    await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
+      status: 'completed',
+      result: { revisionId: 'rev-2' },
+    });
+    await ctx.db
+      .insertInto('running_turns')
+      .values({ session_id: 's1', prompt_seq: 1, turn_id: 'turn-1' })
+      .execute();
+    await ctx.store.pruneGoogleSlideInvocations(new Date(Date.now() + 1_000));
+    await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toMatchObject({
+      status: 'completed',
+    });
+    await ctx.db.deleteFrom('running_turns').where('session_id', '=', 's1').execute();
+    await expect(
+      ctx.store.claimGoogleSlideInvocation({ ...input, turnId: 'turn-2' }),
+    ).rejects.toThrow('reused across turns');
+    await ctx.store.pruneGoogleSlideInvocations(new Date(Date.now() + 1_000));
+    await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
+      status: 'claimed',
+    });
+    await ctx.db
+      .insertInto('running_turns')
+      .values({ session_id: 's1', prompt_seq: 2, turn_id: 'turn-1' })
+      .execute();
+    await ctx.store.pruneGoogleSlideInvocations(new Date(Date.now() + 1_000));
+    await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
+      status: 'pending',
+    });
+    await ctx.db.deleteFrom('running_turns').where('session_id', '=', 's1').execute();
+    await ctx.store.pruneGoogleSlideInvocations(new Date(Date.now() + 1_000));
+    await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
+      status: 'claimed',
+    });
+  });
+});
+
 describe('EventStore — attachments', () => {
   // base64 of "hello" → known sha256 of the decoded bytes.
   const helloB64 = Buffer.from('hello').toString('base64');
@@ -67,6 +179,20 @@ describe('EventStore — attachments', () => {
 
   it('returns undefined for an unknown hash', async () => {
     expect(await ctx.store.getAttachment('deadbeef')).toBeUndefined();
+  });
+
+  it('checks attachment ownership without loading the session event history', async () => {
+    await ctx.store.createSession(session);
+    const hash = await ctx.store.putAttachment('image/png', helloB64);
+    await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'attached',
+      attachments: [{ kind: 'image', mediaType: 'image/png', id: hash }],
+    });
+
+    expect(await ctx.store.sessionHasAttachment('s1', hash)).toBe(true);
+    expect(await ctx.store.sessionHasAttachment('another-session', hash)).toBe(false);
+    expect(await ctx.store.sessionHasAttachment('s1', 'f'.repeat(64))).toBe(false);
   });
 
   it('back-fills inline prompt attachments into refs (idempotently)', async () => {

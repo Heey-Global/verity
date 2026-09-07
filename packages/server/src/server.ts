@@ -4847,6 +4847,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // an operator being asked to read a briefing their answer could not have delivered. The
       // tools re-check it themselves on the way in; this only decides when it is caught.
       authorizeCall: async ({ projectId, sessionId, toolName }) => {
+        if (toolName === 'verity_google_slides') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const deck = await deps.eventStore.getSessionSlideDeck(sessionId);
+          if (session === undefined || session.projectId !== projectId || deck === undefined) {
+            throw new ControlPlaneSessionAuthorityError(
+              'Google Slides requires a deck assigned to the calling session',
+            );
+          }
+          return;
+        }
         if (toolName === 'verity_publish_session_progress') {
           const session = await deps.eventStore.getSession(sessionId);
           const project = await deps.eventStore.getProject(projectId);
@@ -4870,6 +4880,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         )
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
+      },
+      hasStandingAuthorization: async ({ projectId, sessionId, toolName }) => {
+        if (toolName !== 'verity_google_slides') return false;
+        const session = await deps.eventStore.getSession(sessionId);
+        if (session === undefined || session.projectId !== projectId) return false;
+        return (await deps.eventStore.getSessionSlideDeck(sessionId)) !== undefined;
       },
       invokeTool: async (input) => {
         if (input.toolName === 'verity_list_sessions')

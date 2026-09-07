@@ -1,4 +1,4 @@
-// Native Google Drive OAuth (PKCE) for the connect flow (ADR 0009). The Verity
+// Native Google Drive/Slides OAuth (PKCE) for the connect flow (ADRs 0009/0016). The Verity
 // server is never publicly reachable, so the redirect must return into THIS app,
 // not the server: we run the authorization request in the system browser against
 // the iOS OAuth client and hand the resulting one-time `code` + PKCE verifier to
@@ -18,7 +18,11 @@ const DISCOVERY: AuthSession.DiscoveryDocument = {
 // Read-only Drive access — enough to browse + export/download. `about.get` (used
 // server-side for the account email) also works under this scope, so no extra
 // openid/email scope is requested.
-const SCOPES = ['https://www.googleapis.com/auth/drive.readonly'];
+const SCOPES = [
+  'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/presentations',
+];
 
 /**
  * The redirect URI for a Google *iOS* OAuth client: the reversed client id as a

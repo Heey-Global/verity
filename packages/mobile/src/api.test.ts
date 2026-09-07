@@ -66,6 +66,29 @@ describe('VerityClient Google Drive browser', () => {
       'http://host/google-drive/files?query=project+plan&sharedWithMe=true&pageToken=page%2F2',
     );
   });
+
+  it('requests the two-format Slides picker and assigns its native selection', async () => {
+    const deck = {
+      sessionId: 's1',
+      fileId: 'deck-1',
+      name: 'Q3 review',
+      webViewLink: 'https://docs.google.com/presentation/d/deck-1/edit',
+      revisionId: 'rev-1',
+      assignedAt: '2026-09-07T00:00:00.000Z',
+    };
+    const { fetch, calls } = fakeFetchSequence(json({ files: [] }), json({ deck }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await client.listGoogleDriveFiles({ purpose: 'slides' });
+    await expect(client.assignSessionSlideDeck('s1', 'deck-1')).resolves.toMatchObject({
+      fileId: 'deck-1',
+      name: 'Q3 review',
+    });
+    expect(calls[0]?.url).toBe('http://host/google-drive/files?purpose=slides');
+    expect(calls[1]?.url).toBe('http://host/sessions/s1/google-slides/deck');
+    expect(calls[1]?.init?.method).toBe('PUT');
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({ fileId: 'deck-1' });
+  });
 });
 
 describe('VerityClient health capabilities', () => {

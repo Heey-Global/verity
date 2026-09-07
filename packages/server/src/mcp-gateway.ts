@@ -32,6 +32,7 @@ import {
 import { z } from 'zod';
 
 import type { McpGatewayCaller } from './mcp-gateway-tokens.js';
+import { isRichMcpToolResult } from './mcp-tool-result.js';
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import {
   ControlPlaneSessionAuthorityError,
@@ -79,9 +80,10 @@ function dopplerResolutionMessage(error: DopplerSecretResolutionError): string |
  * server the agent connects to over the internal network instead. That transport is the
  * whole reason this module is careful:
  *
- * - **Every call is approval-gated, and no configuration waives it** (D2). The gateway holds
- *   the request until the operator answers a card or a standing grant covers it. There is no
- *   allowlist, no trusted-caller mode, no bypass parameter.
+ * - **Every call needs explicit authority** (D2). Normally the gateway holds the request until
+ *   the user answers a card or a standing grant covers it. A tool may additionally bind authority
+ *   to durable product state (currently an assigned Slides deck); that check runs server-side and
+ *   is audited as a standing grant, never as a trusted-caller or request allowlist.
  * - **The gateway never claims the model made the call** (D4/D5). Anything in the workspace
  *   holding the endpoint and its token produces a byte-identical request, so the card states
  *   the server-side parameters and attributes nothing.
@@ -195,6 +197,12 @@ export interface McpGatewayDeps {
   authorizeCall?(
     input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName },
   ): Promise<void>;
+  /** Return true when durable, user-created product state already authorizes this tool call.
+   * The call remains authenticated, MAC-keyed, audited, and subject to `authorizeCall` plus the
+   * executor's own checks; only the per-call permission card is skipped. */
+  hasStandingAuthorization?(
+    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName },
+  ): Promise<boolean>;
   /** Execute the approved call. Resolves with the tool's result, or throws if the server
    *  could not serve it (sealed store, missing binding, transport failure). */
   invokeTool(
@@ -242,6 +250,23 @@ const TOOL_SCHEMAS = {
   verity_session_progress: sessionProgressRequestSchema,
   verity_recent_session_messages: recentSessionMessagesRequestSchema,
   verity_publish_session_progress: publishSessionProgressRequestSchema,
+  verity_google_slides: z
+    .object({
+      action: z.enum(['inspect_deck', 'read_slide', 'edit', 'thumbnail', 'insert_image']),
+      slideId: z.string().min(1).max(512).optional(),
+      requests: z.array(z.record(z.string(), z.unknown())).min(1).max(50).optional(),
+      revisionId: z.string().min(1).max(512).optional(),
+      attachmentId: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/u)
+        .optional(),
+      asBackground: z.boolean().optional(),
+      x: z.number().finite().min(0).optional(),
+      y: z.number().finite().min(0).optional(),
+      width: z.number().finite().positive().optional(),
+      height: z.number().finite().positive().optional(),
+    })
+    .strict(),
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
@@ -253,6 +278,8 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_session_progress: SESSION_PROGRESS_TOOL_DESCRIPTION,
   verity_recent_session_messages: RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
   verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
+  verity_google_slides:
+    'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit needs requests and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested.',
 };
 
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {
@@ -288,7 +315,17 @@ function toolError(id: string | number | null, message: string): McpGatewayRespo
 }
 
 function toolSuccess(id: string | number | null, result: unknown): McpGatewayResponse {
+  if (isRichMcpToolResult(result)) return jsonRpcResult(id, { content: result.content });
   return jsonRpcResult(id, { content: [{ type: 'text', text: JSON.stringify(result) }] });
+}
+
+export function mcpGatewayInvocationId(
+  id: string | number | null,
+  toolName: GatewayToolName,
+  turnId: string,
+  requestMac: string,
+): string {
+  return `${typeof id}:${String(id)}:${toolName}:${turnId}:${requestMac}`;
 }
 
 export interface McpGateway {
@@ -494,26 +531,50 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       }
     }
 
-    const timeout = AbortSignal.timeout(approvalTimeoutMs);
     let answer: ExternalPermissionAnswer;
-    try {
-      answer = await deps.requestApproval({
-        projectId,
-        sessionId,
-        callId,
-        toolName: toolName,
-        input: request.data,
-        signal: timeout,
-      });
-    } catch {
-      return reject(
-        projectId,
-        callId,
-        'unavailable',
-        keyed,
-        toolName,
-        toolError(id, 'Verity could not ask for approval. Try again in a moment.'),
-      );
+    let standingAuthorization = false;
+    if (deps.hasStandingAuthorization !== undefined) {
+      try {
+        standingAuthorization = await deps.hasStandingAuthorization({
+          projectId,
+          sessionId,
+          turnId,
+          toolName,
+        });
+      } catch {
+        return reject(
+          projectId,
+          callId,
+          'unavailable',
+          keyed,
+          toolName,
+          toolError(id, 'Verity could not verify permission for this call.'),
+        );
+      }
+    }
+    if (standingAuthorization) {
+      answer = { decision: { behavior: 'allow' }, decidedBy: 'grant' };
+    } else {
+      const timeout = AbortSignal.timeout(approvalTimeoutMs);
+      try {
+        answer = await deps.requestApproval({
+          projectId,
+          sessionId,
+          callId,
+          toolName: toolName,
+          input: request.data,
+          signal: timeout,
+        });
+      } catch {
+        return reject(
+          projectId,
+          callId,
+          'unavailable',
+          keyed,
+          toolName,
+          toolError(id, 'Verity could not ask for approval. Try again in a moment.'),
+        );
+      }
     }
     if (answer.decision.behavior !== 'allow') {
       return reject(
@@ -559,7 +620,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         sessionId,
         turnId,
         callId,
-        invocationId: `${typeof id}:${String(id)}:${toolName}:${keyed.requestMac}`,
+        invocationId: mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac),
         toolName: toolName,
         request: request.data,
       });

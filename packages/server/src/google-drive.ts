@@ -1,4 +1,5 @@
-// Google Drive connection + API wrapper for importing reference docs (ADR 0009).
+// Google Drive connection + API wrapper for reference imports and Slides assets
+// (ADRs 0009/0016).
 //
 // The connect flow is native-app OAuth (PKCE): the mobile app runs the
 // authorization request in the system browser against an *iOS* OAuth client (no
@@ -39,12 +40,12 @@ export type GoogleFetch = (
   init?: {
     method?: string;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | Buffer;
     signal?: AbortSignal;
   },
 ) => Promise<GoogleHttpResponse>;
 
-interface GoogleTransportOptions {
+export interface GoogleTransportOptions {
   fetch?: GoogleFetch | undefined;
   timeoutMs?: number | undefined;
   /** Hard cap for a downloaded or exported file. */
@@ -260,6 +261,7 @@ export interface DriveFile {
   modifiedTime?: string;
   size?: string;
   iconLink?: string;
+  canEdit?: boolean;
 }
 
 export interface DriveFileList {
@@ -267,7 +269,7 @@ export interface DriveFileList {
   nextPageToken?: string;
 }
 
-const DRIVE_FILE_FIELDS = 'id,name,mimeType,modifiedTime,size,iconLink';
+const DRIVE_FILE_FIELDS = 'id,name,mimeType,modifiedTime,size,iconLink,capabilities(canEdit)';
 
 function parseDriveFile(raw: unknown): DriveFile | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
@@ -282,6 +284,9 @@ function parseDriveFile(raw: unknown): DriveFile | undefined {
     ...(typeof r.modifiedTime === 'string' ? { modifiedTime: r.modifiedTime } : {}),
     ...(typeof r.size === 'string' ? { size: r.size } : {}),
     ...(typeof r.iconLink === 'string' ? { iconLink: r.iconLink } : {}),
+    ...(typeof (r.capabilities as { canEdit?: unknown } | undefined)?.canEdit === 'boolean'
+      ? { canEdit: (r.capabilities as { canEdit: boolean }).canEdit }
+      : {}),
   };
 }
 
@@ -298,6 +303,7 @@ export async function listDriveFiles(
     sharedWithMe?: boolean | undefined;
     pageToken?: string | undefined;
     pageSize?: number | undefined;
+    mimeTypes?: readonly string[] | undefined;
   },
   opts: GoogleTransportOptions = {},
 ): Promise<DriveFileList> {
@@ -307,12 +313,17 @@ export async function listDriveFiles(
   const parentId = params.parentId && params.parentId.length > 0 ? params.parentId : 'root';
   // A text query searches the connected account's whole Drive. Without one,
   // preserve folder browsing (defaulting to My Drive root).
-  const q =
+  const locationQuery =
     query && query.length > 0
       ? `name contains '${escapeQueryValue(query)}' and trashed = false`
       : params.sharedWithMe === true
         ? 'sharedWithMe = true and trashed = false'
         : `'${escapeQueryValue(parentId)}' in parents and trashed = false`;
+  const mimeQuery = params.mimeTypes?.map((mime) => `mimeType = '${escapeQueryValue(mime)}'`);
+  const q =
+    mimeQuery !== undefined && mimeQuery.length > 0
+      ? `(${locationQuery}) and (${mimeQuery.join(' or ')})`
+      : locationQuery;
   const search = new URLSearchParams({
     q,
     fields: `nextPageToken, files(${DRIVE_FILE_FIELDS})`,
@@ -357,6 +368,130 @@ export async function getDriveFile(
     throw new GoogleDriveError('Google Drive returned malformed file metadata', 'malformed');
   }
   return file;
+}
+
+async function driveMutation(
+  url: string,
+  accessToken: string,
+  init: { method: string; body?: string | Buffer; contentType?: string },
+  opts: GoogleTransportOptions,
+): Promise<GoogleHttpResponse> {
+  const { doFetch, timeoutMs } = resolveTransport(opts);
+  let response: GoogleHttpResponse;
+  try {
+    response = await doFetch(url, {
+      method: init.method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        ...(init.contentType === undefined ? {} : { 'Content-Type': init.contentType }),
+      },
+      ...(init.body === undefined ? {} : { body: init.body }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new GoogleDriveError('could not reach Google Drive', 'network');
+  }
+  if (!response.ok) {
+    const slug = await extractDriveErrorSlug(response);
+    throw new GoogleDriveError(
+      `Google Drive returned an unexpected status (${String(response.status)})`,
+      `http_${String(response.status)}${slug ? `_${slug}` : ''}`,
+    );
+  }
+  return response;
+}
+
+export async function uploadDriveImage(
+  accessToken: string,
+  input: { name: string; mimeType: 'image/png' | 'image/jpeg' | 'image/gif'; bytes: Buffer },
+  opts: GoogleTransportOptions = {},
+): Promise<{ id: string; webContentLink?: string }> {
+  const boundary = `verity-${createHash('sha256').update(input.bytes).digest('hex').slice(0, 16)}`;
+  const metadata = JSON.stringify({ name: input.name, mimeType: input.mimeType });
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
+        `--${boundary}\r\nContent-Type: ${input.mimeType}\r\n\r\n`,
+    ),
+    input.bytes,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  const response = await driveMutation(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webContentLink',
+    accessToken,
+    { method: 'POST', body, contentType: `multipart/related; boundary=${boundary}` },
+    opts,
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    id?: unknown;
+    webContentLink?: unknown;
+  };
+  if (typeof payload.id !== 'string') {
+    throw new GoogleDriveError('Google Drive returned malformed upload metadata', 'malformed');
+  }
+  return {
+    id: payload.id,
+    ...(typeof payload.webContentLink === 'string'
+      ? { webContentLink: payload.webContentLink }
+      : {}),
+  };
+}
+
+export async function shareDriveFileWithLink(
+  accessToken: string,
+  fileId: string,
+  opts: GoogleTransportOptions = {},
+): Promise<string> {
+  const response = await driveMutation(
+    `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}/permissions?fields=id`,
+    accessToken,
+    {
+      method: 'POST',
+      body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+      contentType: 'application/json',
+    },
+    opts,
+  );
+  const id = ((await response.json().catch(() => ({}))) as { id?: unknown }).id;
+  if (typeof id !== 'string') {
+    throw new GoogleDriveError('Google Drive returned malformed permission metadata', 'malformed');
+  }
+  return id;
+}
+
+export async function deleteDrivePermission(
+  accessToken: string,
+  fileId: string,
+  permissionId: string,
+  opts: GoogleTransportOptions = {},
+): Promise<void> {
+  await driveMutation(
+    `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`,
+    accessToken,
+    { method: 'DELETE' },
+    opts,
+  );
+}
+
+export async function deleteDriveFile(
+  accessToken: string,
+  fileId: string,
+  opts: GoogleTransportOptions = {},
+): Promise<void> {
+  try {
+    await driveMutation(
+      `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}`,
+      accessToken,
+      { method: 'DELETE' },
+      opts,
+    );
+  } catch (error) {
+    // Cleanup is idempotent: a prior attempt may have deleted the file before
+    // the process died while removing its durable cleanup row.
+    if (error instanceof GoogleDriveError && error.reason.startsWith('http_404')) return;
+    throw error;
+  }
 }
 
 async function driveGetBytes(
@@ -449,11 +584,14 @@ export interface DriveImportPlan {
 
 const GOOGLE_APPS_PREFIX = 'application/vnd.google-apps.';
 
-/** Text-first export targets for native Google editor types (ADR 0009). */
+/** Export targets for native Google editor types (ADRs 0009/0016). */
 const NATIVE_EXPORT: Record<string, { mimeType: string; extension: string }> = {
   document: { mimeType: 'text/markdown', extension: 'md' },
   spreadsheet: { mimeType: 'text/csv', extension: 'csv' },
-  presentation: { mimeType: 'application/pdf', extension: 'pdf' },
+  presentation: {
+    mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    extension: 'pptx',
+  },
   drawing: { mimeType: 'image/png', extension: 'png' },
 };
 

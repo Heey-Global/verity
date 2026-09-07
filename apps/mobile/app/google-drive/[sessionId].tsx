@@ -1,6 +1,6 @@
-// Google Drive picker (ADR 0009): browse the connected account's Drive, tap a
-// file to import it into the session worktree under docs/reference/. Reached from
-// the composer attach menu's "Google Drive" row. If no account is connected yet,
+// Google Drive picker (ADRs 0009/0016): browse the connected account to import a
+// reference file or assign one native Slides deck to the session. Reached from
+// the corresponding composer attach-menu row. If no account is connected yet,
 // this screen runs the native OAuth (PKCE) connect first.
 import {
   VerityApiError,
@@ -34,7 +34,10 @@ function iconForFile(file: DriveFile): IconName {
 
 export default function GoogleDrivePickerScreen() {
   const { theme } = useUnistyles();
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { sessionId, purpose } = useLocalSearchParams<{
+    sessionId: string;
+    purpose?: 'import' | 'slides';
+  }>();
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
     return (
@@ -48,10 +51,18 @@ export default function GoogleDrivePickerScreen() {
       </View>
     );
   }
-  return <GoogleDrivePicker client={client} sessionId={sessionId} />;
+  return <GoogleDrivePicker client={client} sessionId={sessionId} purpose={purpose ?? 'import'} />;
 }
 
-function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessionId: string }) {
+function GoogleDrivePicker({
+  client,
+  sessionId,
+  purpose,
+}: {
+  client: VerityClient;
+  sessionId: string;
+  purpose: 'import' | 'slides';
+}) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
 
@@ -111,9 +122,19 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
             ? { sharedWithMe: true }
             : {}),
           pageToken,
+          purpose,
         });
         if (sequence !== requestSequence.current) return;
-        setFiles((current) => (append ? [...current, ...page.files] : page.files));
+        setFiles((current) =>
+          append
+            ? [
+                ...current,
+                ...page.files.filter(
+                  (candidate) => !current.some((existing) => existing.id === candidate.id),
+                ),
+              ]
+            : page.files,
+        );
         setNextPageToken(page.nextPageToken);
       } catch (err) {
         if (sequence !== requestSequence.current) return;
@@ -125,7 +146,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
         if (sequence === requestSequence.current) setLoading(false);
       }
     },
-    [client],
+    [client, purpose],
   );
 
   // Reload when the folder changes or after the search input settles. Drive
@@ -222,15 +243,48 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     [client, importingId, sessionId],
   );
 
+  const assignDeck = useCallback(
+    (file: DriveFile) => {
+      if (importingId !== null) return;
+      if (file.mimeType !== 'application/vnd.google-apps.presentation') {
+        Alert.alert(
+          'Convert this PowerPoint file first',
+          'Open it in Google Slides and choose File → Save as Google Slides. The converted deck has a new link.',
+        );
+        return;
+      }
+      if (file.canEdit === false) {
+        Alert.alert('Edit access required', 'Ask the deck owner to give you edit access first.');
+        return;
+      }
+      setImportingId(file.id);
+      void (async () => {
+        try {
+          await client.assignSessionSlideDeck(sessionId, file.id);
+          router.back();
+        } catch (err) {
+          const message =
+            err instanceof VerityApiError ? err.message : 'Could not assign this presentation.';
+          Alert.alert('Could not assign deck', message);
+        } finally {
+          setImportingId(null);
+        }
+      })();
+    },
+    [client, importingId, sessionId],
+  );
+
   const onPressItem = useCallback(
     (file: DriveFile) => {
       if (isDriveFolder(file)) openFolder(file);
+      else if (purpose === 'slides') assignDeck(file);
       else importFile(file);
     },
-    [openFolder, importFile],
+    [assignDeck, importFile, openFolder, purpose],
   );
 
-  const title = path.length > 0 ? (path[path.length - 1]?.name ?? 'Google Drive') : 'Google Drive';
+  const rootTitle = purpose === 'slides' ? 'Choose Google Slides' : 'Google Drive';
+  const title = path.length > 0 ? (path[path.length - 1]?.name ?? rootTitle) : rootTitle;
 
   return (
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
@@ -263,8 +317,9 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
           <Icon name="cloud" size={40} color={theme.colors.textMuted} />
           <Text style={styles.emptyTitle}>Connect Google Drive</Text>
           <Text style={styles.emptyBody}>
-            Sign in once to browse your Drive and pull documents into this project. You can
-            reconnect any time if the connection expires.
+            Google grants Verity read and write access to every presentation in this account. Verity
+            only edits the native Google Slides deck you explicitly assign to a session. You can
+            disconnect at any time.
           </Text>
           <Pressable
             style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
@@ -366,7 +421,11 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
                   disabled={importingId !== null}
                   accessibilityRole="button"
                   accessibilityLabel={
-                    isDriveFolder(item) ? `Open folder ${item.name}` : `Import ${item.name}`
+                    isDriveFolder(item)
+                      ? `Open folder ${item.name}`
+                      : purpose === 'slides'
+                        ? `Assign ${item.name}`
+                        : `Import ${item.name}`
                   }
                 >
                   <Icon name={iconForFile(item)} size={22} color={theme.colors.textMuted} />
