@@ -240,7 +240,7 @@ esac
       expect(unpairedLog).toContain('exec verity-managed-server node -e');
       expect(unpairedLog).toContain('pull --quiet ghcr.io/heey-global/verity/verity-server:latest');
       expect(unpairedLog).not.toContain(`pull ${managedImage}`);
-      expect(await readFile(marker, 'utf8')).toContain(`--advance-unpaired-from ${managedImage}`);
+      expect(await readFile(marker, 'utf8')).toContain('--advance-unpaired-from current');
 
       await writeFile(dockerLog, '');
       const oldManagedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
@@ -273,7 +273,7 @@ esac
       expect(overrideLog).not.toContain(`pull ${oldManagedImage}`);
       const forwarded = await readFile(marker, 'utf8');
       expect(forwarded).toBe(
-        `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check --advance-unpaired-from ${oldManagedImage}\n`,
+        `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check --advance-unpaired-from current\n`,
       );
 
       await writeFile(dockerLog, '');

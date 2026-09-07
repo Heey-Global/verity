@@ -138,8 +138,9 @@ valid_server_image() {
   [[ ${1#"$SERVER_REPO@sha256:"} =~ ^[a-f0-9]{64}$ ]]
 }
 
-[ -z "$opt_advance_unpaired_from" ] || valid_server_image "$opt_advance_unpaired_from" \
-  || die 'option --advance-unpaired-from requires an official digest-pinned Server image'
+[ -z "$opt_advance_unpaired_from" ] || [ "$opt_advance_unpaired_from" = current ] \
+  || valid_server_image "$opt_advance_unpaired_from" \
+  || die 'option --advance-unpaired-from requires "current" or an official digest-pinned Server image'
 
 valid_deployment_id() {
   [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] && [ "${#1}" -le 128 ]
@@ -676,21 +677,6 @@ else
     || die "could not read a registry digest for $SERVER_REPO:$opt_tag — a locally built image cannot be adopted"
   valid_server_image "$server_image" || die "resolved an unexpected image reference: $server_image"
   image_source="$SERVER_REPO:$opt_tag"
-fi
-
-# A previous unpaired bootstrap may have advanced the sealed spec and then
-# stopped before replacing the old container. The container image the public
-# bootstrap observed is stale in that state, so fence the retry against the
-# updater-owned authority itself. advanceManagedDeploymentImage still validates
-# the sealed document and refuses any third image before writing it.
-if [ -n "$opt_advance_unpaired_from" ]; then
-  sealed_image="$(docker_query 'the sealed managed Server image' \
-    run --rm -v "$MANAGED_DEPLOYMENT_VOLUME:/verity-deployment:ro" \
-    --entrypoint node "$server_image" -e \
-    'const fs=require("node:fs"); const value=JSON.parse(fs.readFileSync("/verity-deployment/server-deployment.json","utf8")); if(typeof value.image!=="string") process.exit(65); process.stdout.write(value.image)')"
-  valid_server_image "$sealed_image" \
-    || die 'the sealed managed deployment does not contain an official digest-pinned Server image'
-  opt_advance_unpaired_from="$sealed_image"
 fi
 
 # ── report ─────────────────────────────────────────────────────────────────

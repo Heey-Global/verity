@@ -287,7 +287,7 @@ if [ -n "$source_image_override" ]; then
     valid_image_override "$previous_image" ||
       die 'the managed Server does not use an official digest-pinned image'
     if managed_server_is_unpaired "${managed_names[0]}"; then
-      installer_args+=(--advance-unpaired-from "$previous_image")
+      installer_args+=(--advance-unpaired-from current)
     elif [ "$source_image" != "$previous_image" ]; then
       die 'a paired installation can only recover its current release; install updates from the Verity app'
     fi
@@ -299,7 +299,7 @@ elif [ "${#managed_names[@]}" -eq 1 ]; then
     valid_image_override "$previous_image" ||
       die 'the unpaired managed Server does not use an official digest-pinned image'
     source_image="$IMAGE_REPOSITORY:$IMAGE_TAG"
-    installer_args+=(--advance-unpaired-from "$previous_image")
+    installer_args+=(--advance-unpaired-from current)
     printf 'verity-install: setup is not paired yet; using the latest release\n'
   else
     source_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")

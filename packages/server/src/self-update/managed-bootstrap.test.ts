@@ -164,6 +164,38 @@ describe('runManagedBootstrap', () => {
     expect(state.managed && state.spec.image).toBe(next);
   });
 
+  it('resumes an unpaired reinstall from the currently sealed image', async () => {
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const intermediate = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+    const latest = `ghcr.io/heey-global/verity/verity-server@sha256:${'c'.repeat(64)}`;
+    const unpaired = async <T>(action: () => Promise<T>): Promise<T> => action();
+
+    await runManagedBootstrap(
+      {
+        ...env,
+        VERITY_SERVER_IMAGE: intermediate,
+        VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: digest,
+      },
+      'x64',
+      env.VERITY_MANAGED_ROOT,
+      unpaired,
+    );
+    await runManagedBootstrap(
+      {
+        ...env,
+        VERITY_SERVER_IMAGE: latest,
+        VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: 'current',
+      },
+      'x64',
+      env.VERITY_MANAGED_ROOT,
+      unpaired,
+    );
+
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    expect(state.managed && state.spec.image).toBe(latest);
+  });
+
   it('refuses an image advance when pairing completed after bootstrap began', async () => {
     const env = await environment();
     await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
