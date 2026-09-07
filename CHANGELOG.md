@@ -1,5 +1,18 @@
 # Changelog
 
+## [17.2.0](https://github.com/Heey-Global/verity/compare/v17.1.0...v17.2.0) (2026-09-07)
+
+
+### Features
+
+* **slides:** edit assigned decks from sessions ([069d84c](https://github.com/Heey-Global/verity/commit/069d84c1af8b49b14d9b452a5d5f83aeaee9e6d9))
+* **slides:** edit assigned decks from sessions ([17e9db2](https://github.com/Heey-Global/verity/commit/17e9db2c36dcfc5cbb08ca548d1e0aec60481ae6))
+
+
+### Bug Fixes
+
+* **slides:** keep internal schemas private ([8fdf485](https://github.com/Heey-Global/verity/commit/8fdf485bba16ffce13f8a8de2221dab86187dee7))
+
 ## [17.1.0](https://github.com/Heey-Global/verity/compare/v17.0.1...v17.1.0) (2026-09-06)
 
 
