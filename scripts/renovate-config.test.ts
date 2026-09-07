@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 interface RenovateConfig {
   extends?: string[];
+  rangeStrategy?: string;
   semanticCommits?: string;
   ignorePaths?: string[];
   npmrc?: string;
@@ -28,6 +29,15 @@ interface RenovateConfig {
   }>;
   dockerfile?: { managerFilePatterns?: string[]; fileMatch?: string[] };
 }
+
+describe('Renovate version ranges', () => {
+  it('does not turn supported runtime ranges into exact release pins', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+
+    expect(config.extends ?? []).toContain(':preserveSemverRanges');
+    expect(config.rangeStrategy).not.toBe('pin');
+  });
+});
 
 describe('Renovate global CLI pins', () => {
   it('detects every CLI installed directly in the server image', () => {
