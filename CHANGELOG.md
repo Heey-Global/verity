@@ -1,5 +1,14 @@
 # Changelog
 
+## [17.2.1](https://github.com/Heey-Global/verity/compare/v17.2.0...v17.2.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **installer:** fence unpaired retries at bootstrap ([a4a52ea](https://github.com/Heey-Global/verity/commit/a4a52ea2ae7994678164c218bf8dccab5afbfdff))
+* **installer:** resume partially advanced setup ([6d70d69](https://github.com/Heey-Global/verity/commit/6d70d693739d990c0062daa158dad53c3a3355f9))
+* **installer:** retain explicit image fence ([d7135a6](https://github.com/Heey-Global/verity/commit/d7135a6ebb32dcc5b1a9017f829230183fd611f7))
+
 ## [17.2.0](https://github.com/Heey-Global/verity/compare/v17.1.0...v17.2.0) (2026-09-07)
 
 
