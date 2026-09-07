@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.1](https://github.com/Heey-Global/verity/compare/website-v1.3.0...website-v1.3.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **installer:** fence unpaired retries at bootstrap ([a4a52ea](https://github.com/Heey-Global/verity/commit/a4a52ea2ae7994678164c218bf8dccab5afbfdff))
+* **installer:** retain explicit image fence ([d7135a6](https://github.com/Heey-Global/verity/commit/d7135a6ebb32dcc5b1a9017f829230183fd611f7))
+
 ## [1.3.0](https://github.com/Heey-Global/verity/compare/website-v1.2.1...website-v1.3.0) (2026-09-06)
 
 
