@@ -181,6 +181,20 @@ describe('EventStore — attachments', () => {
     expect(await ctx.store.getAttachment('deadbeef')).toBeUndefined();
   });
 
+  it('checks attachment ownership without loading the session event history', async () => {
+    await ctx.store.createSession(session);
+    const hash = await ctx.store.putAttachment('image/png', helloB64);
+    await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'attached',
+      attachments: [{ kind: 'image', mediaType: 'image/png', id: hash }],
+    });
+
+    expect(await ctx.store.sessionHasAttachment('s1', hash)).toBe(true);
+    expect(await ctx.store.sessionHasAttachment('another-session', hash)).toBe(false);
+    expect(await ctx.store.sessionHasAttachment('s1', 'f'.repeat(64))).toBe(false);
+  });
+
   it('back-fills inline prompt attachments into refs (idempotently)', async () => {
     await ctx.store.createSession(session);
     await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/x' });

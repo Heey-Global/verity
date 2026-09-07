@@ -252,12 +252,9 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       if (request.attachmentId === undefined || request.slideId === undefined) {
         throw new Error('insert_image requires attachmentId and slideId');
       }
-      const attachmentBelongsToSession = (await deps.eventStore.getEvents(input.sessionId)).some(
-        (event) =>
-          event.t === 'prompt' &&
-          event.attachments?.some(
-            (attachment) => 'id' in attachment && attachment.id === request.attachmentId,
-          ) === true,
+      const attachmentBelongsToSession = await deps.eventStore.sessionHasAttachment(
+        input.sessionId,
+        request.attachmentId,
       );
       if (!attachmentBelongsToSession) {
         throw new Error('insert_image can use only an attachment from this session');
@@ -270,6 +267,16 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
         throw new Error('insert_image requires a PNG, JPEG, or GIF session attachment');
       }
       assertImageLimits(attachment.bytes, attachment.mediaType);
+      if (request.asBackground === true && request.revisionId === undefined) {
+        throw new Error('a background image requires revisionId');
+      }
+      await assertStillAssigned(input.sessionId, deck.assignmentId);
+      const claim = await deps.eventStore.claimGoogleSlideInvocation(input);
+      if (claim.status === 'completed') return claim.result;
+      if (claim.status === 'pending') {
+        throw new Error('This Google Slides edit may already have run; inspect the deck first');
+      }
+      await assertStillAssigned(input.sessionId, deck.assignmentId);
       const uploaded = await drive.upload(token, {
         name: `verity-slide-${request.attachmentId.slice(0, 12)}`,
         mimeType: attachment.mediaType as 'image/png' | 'image/jpeg' | 'image/gif',
@@ -277,6 +284,9 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       });
       const cleanupId = (deps.nowId ?? randomUUID)();
       try {
+        // Persist the file id before making it public. Deleting the file removes every
+        // permission, so recovery remains safe if the process dies after share() returns
+        // but before its generated permission id can be recorded.
         await deps.eventStore.createGoogleSlideImageCleanup({
           id: cleanupId,
           sessionId: input.sessionId,
@@ -321,16 +331,6 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
                   },
                 },
               };
-        if (request.asBackground === true && request.revisionId === undefined) {
-          throw new Error('a background image requires revisionId');
-        }
-        await assertStillAssigned(input.sessionId, deck.assignmentId);
-        const claim = await deps.eventStore.claimGoogleSlideInvocation(input);
-        if (claim.status === 'completed') return claim.result;
-        if (claim.status === 'pending') {
-          throw new Error('This Google Slides edit may already have run; inspect the deck first');
-        }
-        await assertStillAssigned(input.sessionId, deck.assignmentId);
         const result = await slides.update(
           token,
           deck.fileId,

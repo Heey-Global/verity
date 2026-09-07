@@ -50,7 +50,7 @@ export interface SessionsTable {
 }
 
 /** One native Google Slides deck explicitly assigned to a session (ADR 0016). */
-export interface SessionSlideDecksTable {
+interface SessionSlideDecksTable {
   session_id: string;
   assignment_id: string;
   file_id: string;
@@ -61,13 +61,13 @@ export interface SessionSlideDecksTable {
 }
 
 /** Deck ids ordered by their latest explicit assignment, independent of session lifetime. */
-export interface RecentGoogleSlideDecksTable {
+interface RecentGoogleSlideDecksTable {
   file_id: string;
   last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
 /** Durable cleanup outbox created before a temporary Drive image becomes public. */
-export interface GoogleSlideImageCleanupTable {
+interface GoogleSlideImageCleanupTable {
   id: string;
   session_id: string;
   file_id: string;
@@ -79,7 +79,7 @@ export interface GoogleSlideImageCleanupTable {
 }
 
 /** Durable at-most-once fence for non-idempotent Slides gateway invocations. */
-export interface GoogleSlideInvocationsTable {
+interface GoogleSlideInvocationsTable {
   invocation_id: string;
   session_id: string;
   turn_id: string;

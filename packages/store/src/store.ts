@@ -2727,6 +2727,18 @@ export class EventStore implements EventSink {
     return { mediaType: row.media_type, bytes: Buffer.from(row.bytes) };
   }
 
+  /** Whether a prompt in this session references the content-addressed attachment. */
+  async sessionHasAttachment(sessionId: string, hash: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('id')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'prompt')
+      .where(sql<boolean>`payload @> ${JSON.stringify({ attachments: [{ id: hash }] })}::jsonb`)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
     const sequenced = await this.getEventsAfter(sessionId, 0);

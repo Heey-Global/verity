@@ -22,11 +22,7 @@ function store(overrides: Record<string, unknown> = {}): EventStore {
       revisionId: 'rev-1',
       assignedAt: new Date(),
     }),
-    getEvents: vi
-      .fn()
-      .mockResolvedValue([
-        { t: 'prompt', text: '', attachments: [{ id: attachmentId, mediaType: 'image/png' }] },
-      ]),
+    sessionHasAttachment: vi.fn().mockResolvedValue(true),
     getAttachment: vi.fn().mockResolvedValue({ mediaType: 'image/png', bytes: png }),
     createGoogleSlideImageCleanup: vi.fn().mockResolvedValue(undefined),
     setGoogleSlideImageCleanupPermission: vi.fn().mockResolvedValue(undefined),
@@ -233,8 +229,34 @@ describe('Google Slides agent tool', () => {
     tool.close();
   });
 
+  it('recovers a shared image when the process died before recording its permission id', async () => {
+    const complete = vi.fn().mockResolvedValue(undefined);
+    const eventStore = store({
+      listGoogleSlideImageCleanups: vi.fn().mockResolvedValue([
+        {
+          id: 'cleanup-1',
+          sessionId: 'session-1',
+          fileId: 'image-1',
+          permissionId: null,
+          attempts: 0,
+          lastError: null,
+          createdAt: new Date(),
+        },
+      ]),
+      completeGoogleSlideImageCleanup: complete,
+    });
+    const { tool, drive } = dependencies(eventStore);
+
+    await tool.recover();
+
+    expect(drive.deletePermission).not.toHaveBeenCalled();
+    expect(drive.deleteFile).toHaveBeenCalledWith('token', 'image-1');
+    expect(complete).toHaveBeenCalledWith('cleanup-1');
+    tool.close();
+  });
+
   it('rejects attachments that do not belong to the calling session', async () => {
-    const eventStore = store({ getEvents: vi.fn().mockResolvedValue([]) });
+    const eventStore = store({ sessionHasAttachment: vi.fn().mockResolvedValue(false) });
     const { tool, drive } = dependencies(eventStore);
     await expect(
       tool.invoke({
@@ -318,10 +340,11 @@ describe('Google Slides agent tool', () => {
       }),
     ).rejects.toThrow('deck changed before the operation was sent');
 
-    expect(drive.share).toHaveBeenCalledOnce();
+    expect(drive.upload).not.toHaveBeenCalled();
+    expect(drive.share).not.toHaveBeenCalled();
     expect(slides.update).not.toHaveBeenCalled();
-    expect(drive.deletePermission).toHaveBeenCalledOnce();
-    expect(drive.deleteFile).toHaveBeenCalledOnce();
+    expect(drive.deletePermission).not.toHaveBeenCalled();
+    expect(drive.deleteFile).not.toHaveBeenCalled();
     tool.close();
   });
 
@@ -354,6 +377,32 @@ describe('Google Slides agent tool', () => {
     expect(replay).toEqual(first);
     expect(slides.update).toHaveBeenCalledOnce();
     expect(complete).toHaveBeenCalledOnce();
+    tool.close();
+  });
+
+  it('does not upload an image when its mutation invocation is replayed', async () => {
+    const stored = {
+      result: { replies: [], writeControl: { requiredRevisionId: 'rev-2' } },
+      revisionId: 'rev-2',
+    };
+    const eventStore = store({
+      claimGoogleSlideInvocation: vi
+        .fn()
+        .mockResolvedValue({ status: 'completed', result: stored }),
+    });
+    const { tool, drive, slides } = dependencies(eventStore);
+
+    await expect(
+      tool.invoke({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        request: { action: 'insert_image', slideId: 'slide-1', attachmentId },
+      }),
+    ).resolves.toEqual(stored);
+
+    expect(drive.upload).not.toHaveBeenCalled();
+    expect(drive.share).not.toHaveBeenCalled();
+    expect(slides.update).not.toHaveBeenCalled();
     tool.close();
   });
 

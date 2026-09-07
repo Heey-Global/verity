@@ -809,7 +809,7 @@ export const googleDriveImportResultSchema = z.object({
 });
 export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSchema>;
 
-export const sessionSlideDeckSchema = z.object({
+const sessionSlideDeckSchema = z.object({
   sessionId: z.string(),
   fileId: z.string(),
   name: z.string(),
