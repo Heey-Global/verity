@@ -42,6 +42,7 @@ import { after, describe, test } from 'node:test';
 const here = dirname(fileURLToPath(import.meta.url));
 const DIGEST_A = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 const DIGEST_B = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+const DIGEST_C = `ghcr.io/heey-global/verity/verity-server@sha256:${'c'.repeat(64)}`;
 
 const userNamespaces = spawnSync('unshare', ['-r', 'true']);
 const canFakeRoot = userNamespaces.status === 0;
@@ -372,7 +373,10 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
 
   test('hands an explicitly verified unpaired image advance to managed bootstrap', () => {
     const host = makeHost({
-      docker: runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+      docker: [
+        ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+        { match: 'run --rm -v verity-managed-deployment:/verity-deployment:ro', out: DIGEST_A },
+      ],
       state: {
         'deployment-id': 'host-abc\n',
         'compose-project': 'verity\n',
@@ -384,6 +388,27 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const env = handoverEnv(host);
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_B);
     assert.equal(env.VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM, DIGEST_A);
+  });
+
+  test('resumes from the sealed image when an earlier bootstrap advanced past the container', () => {
+    const host = makeHost({
+      docker: [
+        ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+        { match: 'run --rm -v verity-managed-deployment:/verity-deployment:ro', out: DIGEST_B },
+      ],
+      state: {
+        'deployment-id': 'host-abc\n',
+        'compose-project': 'verity\n',
+        'updater-token': 'f'.repeat(64),
+      },
+    });
+
+    const result = run(host, ['--image', DIGEST_C, '--advance-unpaired-from', DIGEST_A]);
+
+    assert.equal(result.status, 0, result.output);
+    const env = handoverEnv(host);
+    assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_C);
+    assert.equal(env.VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM, DIGEST_B);
   });
 
   test('reuses the persisted PostgreSQL credential and rejects malformed state', () => {
