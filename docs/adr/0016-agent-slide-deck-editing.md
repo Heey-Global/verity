@@ -301,6 +301,14 @@ selection, link and management had been separated in the first place.
 Removing the assignment is not an undo. The edits are in Google and stay there — the × ends
 access, not the work — and the confirmation has to say so, or "end editing" reads as "discard".
 
+The explicit assignment is also the session's standing authorization for this tool. Slides calls
+remain turn-authenticated, restricted to the assigned deck and recorded by the MCP gateway, but do
+not raise a permission card for every read or edit. Removing the assignment revokes that standing
+authorization for every call not yet dispatched. A Google request already on the wire cannot be
+cancelled, so the tool revalidates the assignment generation immediately before dispatch and never
+restores a cleared or replaced assignment from a late response. Treating the assignment as UI-only would make routine editing produce
+a stream of redundant cards and defeat the single-control interaction this decision establishes.
+
 Two states need a home in this UI, and both are easy to leave out:
 
 - **Drift.** When the D2 guard fires — rarely, since it now covers only offset-based edits — an
@@ -341,7 +349,7 @@ Two consequences follow, and the first one is the load-bearing one:
 ## Scope
 
 **In (Phase 1):** `presentations` and `drive.file` added to the connect flow; session deck
-assignment (picker row, composer chip, server-side enforcement); the read-plan-write edit route
+assignment (picker row, composer chip, server-side enforcement); the read-plan-write gateway tool
 with D2's offset guard; the D3 edit vocabulary, its sibling-style fallback and named placements;
 image upload via Drive with its durable cleanup record, startup recovery and janitor; on-request
 slide previews; the drift and no-write-access UI states; D9's two-format picker with native-only

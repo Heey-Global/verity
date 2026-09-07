@@ -14,6 +14,7 @@ export interface AttachMenuHandlers {
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
   onPickGoogleDrive: () => void;
+  onPickGoogleSlides: () => void;
 }
 
 /**
@@ -38,5 +39,6 @@ export function attachMenuRows(
       ? [{ icon: 'mic' as IconName, label: 'Meeting audio', onPress: handlers.onPickMeetingAudio }]
       : []),
     { icon: 'cloud', label: 'Google Drive', onPress: handlers.onPickGoogleDrive },
+    { icon: 'monitor', label: 'Google Slides', onPress: handlers.onPickGoogleSlides },
   ];
 }

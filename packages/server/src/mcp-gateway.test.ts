@@ -7,6 +7,7 @@ import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import {
   createMcpGateway,
   MCP_GATEWAY_PROTOCOL_VERSIONS,
+  mcpGatewayInvocationId,
   type McpGatewayAuditRecord,
   type McpGatewayDeps,
 } from './mcp-gateway.js';
@@ -19,6 +20,12 @@ const HTTP_ARGUMENTS = {
 };
 
 const ALLOW: ExternalPermissionAnswer = { decision: { behavior: 'allow' }, decidedBy: 'card' };
+
+it('scopes replay identities to the authenticated turn', () => {
+  const first = mcpGatewayInvocationId(7, 'verity_google_slides', 'turn-1', 'a'.repeat(64));
+  const second = mcpGatewayInvocationId(7, 'verity_google_slides', 'turn-2', 'a'.repeat(64));
+  expect(first).not.toBe(second);
+});
 
 function harness(overrides: Partial<McpGatewayDeps> = {}) {
   const records: McpGatewayAuditRecord[] = [];
@@ -260,6 +267,32 @@ describe('MCP gateway — every call is recorded (ADR 0014 D3)', () => {
     expect(records[0]?.requestMac).toBe(records[1]?.requestMac);
     expect(askedAfter).toEqual(['gateway_call_received']);
     expect(invokeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat an ordinary tool payload as internally trusted rich content', async () => {
+    const payload = { _mcpContent: [{ type: 'image', data: 'untrusted', mimeType: 'image/png' }] };
+    const { gateway } = harness({ invokeTool: vi.fn().mockResolvedValue(payload) });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(JSON.parse(resultOf(response.body).content[0]!.text)).toEqual(payload);
+  });
+
+  it('uses durable product authorization without showing a per-call card', async () => {
+    const { gateway, requestApproval, records, invokeTool } = harness({
+      hasStandingAuthorization: vi.fn().mockResolvedValue(true),
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).isError).toBeUndefined();
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(invokeTool).toHaveBeenCalledOnce();
+    expect(records.at(-1)).toMatchObject({ kind: 'gateway_call_served', decision: 'grant' });
   });
 
   it('hands the complete approved trusted CLI request to the turn-bound executor', async () => {

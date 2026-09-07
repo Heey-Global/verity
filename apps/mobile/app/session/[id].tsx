@@ -24,6 +24,7 @@ import {
   type PermissionDecision,
   type RateLimitNotice,
   type SessionFileEntry,
+  type SessionSlideDeck,
   type ToolCallMessage,
   type UserTextMessage,
   agentEventDescriptor,
@@ -2151,6 +2152,21 @@ export function SessionChat({
   // Pending image uploads for the NEXT turn (picked but not yet sent, raw base64).
   // Cleared on send. Kept in screen state (not the draft cache) — transient.
   const [attachments, setAttachments] = useState<AttachmentUpload[]>([]);
+  const [slideDeck, setSlideDeck] = useState<SessionSlideDeck | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void client
+        .getSessionSlideDeck(sessionId)
+        .then((deck) => {
+          if (active) setSlideDeck(deck);
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [client, sessionId]),
+  );
   // A dead session (worktree gone) can't take turns — disable sending proactively
   // (`resumable === false`); `undefined` (detail still loading) stays enabled.
   const dead = resumable === false;
@@ -2607,6 +2623,38 @@ export function SessionChat({
     // the iOS modal-dismiss deferral the meeting-audio path needs.
     router.push({ pathname: '/google-drive/[sessionId]', params: { sessionId } });
   }, [sessionId]);
+  const onPickGoogleSlides = useCallback(() => {
+    setAttachMenuOpen(false);
+    router.push({
+      pathname: '/google-drive/[sessionId]',
+      params: { sessionId, purpose: 'slides' },
+    });
+  }, [sessionId]);
+  const clearSlideDeck = useCallback(() => {
+    if (slideDeck === null) return;
+    Alert.alert(
+      'End deck editing?',
+      `Edits already made to ${slideDeck.name} stay in Google Slides.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'End editing',
+          style: 'destructive',
+          onPress: () => {
+            void client
+              .clearSessionSlideDeck(sessionId)
+              .then(() => setSlideDeck(null))
+              .catch((error: unknown) =>
+                Alert.alert(
+                  'Could not end editing',
+                  error instanceof Error ? error.message : String(error),
+                ),
+              );
+          },
+        },
+      ],
+    );
+  }, [client, sessionId, slideDeck]);
   const onAttach = useCallback((anchor: AttachAnchor) => {
     setAttachAnchor(anchor);
     setAttachMenuOpen(true);
@@ -3428,6 +3476,29 @@ export function SessionChat({
           onMerge={onMergeLocally}
         />
       ) : null}
+      {slideDeck !== null ? (
+        <View style={styles.slideDeckChip}>
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => void Linking.openURL(slideDeck.webViewLink).catch(() => undefined)}
+            accessibilityRole="link"
+            accessibilityLabel={`${slideDeck.name}. Open in Google Slides.`}
+          >
+            <Icon name="monitor" size={16} color={theme.colors.primary} />
+            <Text style={styles.slideDeckName} numberOfLines={1}>
+              {slideDeck.name} ↗
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={clearSlideDeck}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Stop editing ${slideDeck.name}`}
+          >
+            <Icon name="x" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
+      ) : null}
       <InputBar
         inputRef={inputRef}
         value={draft}
@@ -3476,6 +3547,7 @@ export function SessionChat({
         onPickFiles={onPickFiles}
         onPickMeetingAudio={onPickMeetingAudio}
         onPickGoogleDrive={onPickGoogleDrive}
+        onPickGoogleSlides={onPickGoogleSlides}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
@@ -6886,6 +6958,7 @@ function AttachMenu({
   onPickFiles,
   onPickMeetingAudio,
   onPickGoogleDrive,
+  onPickGoogleSlides,
   onClose,
   onDismiss,
 }: {
@@ -6896,6 +6969,7 @@ function AttachMenu({
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
   onPickGoogleDrive: () => void;
+  onPickGoogleSlides: () => void;
   onClose: () => void;
   onDismiss: () => void;
 }) {
@@ -6907,6 +6981,7 @@ function AttachMenu({
     onPickFiles,
     onPickMeetingAudio,
     onPickGoogleDrive,
+    onPickGoogleSlides,
   });
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).
@@ -8398,6 +8473,33 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
+  },
+  slideDeckChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+    marginHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  slideDeckLink: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  slideDeckName: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+    fontWeight: '600',
   },
   inputDropHint: {
     // Just a centered "Drop files to attach" label — no tinted bar or blue

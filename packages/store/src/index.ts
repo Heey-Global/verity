@@ -31,6 +31,8 @@ export {
   type SequencedEvent,
   type SessionProjectionFacts,
   type SessionRecord,
+  type SessionSlideDeckRecord,
+  type GoogleSlideImageCleanupRecord,
   type SessionInput,
   type RunningTurnRecord,
   type QueuedTurnRecord,

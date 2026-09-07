@@ -2667,6 +2667,87 @@ const migrations: Record<string, Migration> = {
       // The removed audit table has no current-format state to reconstruct.
     },
   },
+  '0088_session_slide_decks': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('session_slide_decks')
+        .addColumn('session_id', 'text', (c) =>
+          c.primaryKey().references('sessions.session_id').onDelete('cascade'),
+        )
+        .addColumn('file_id', 'text', (c) => c.notNull())
+        .addColumn('name', 'text', (c) => c.notNull())
+        .addColumn('web_view_link', 'text', (c) => c.notNull())
+        .addColumn('revision_id', 'text')
+        .addColumn('assigned_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('session_slide_decks').execute();
+    },
+  },
+  '0089_google_slide_image_cleanup': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('google_slide_image_cleanup')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('session_id', 'text', (c) => c.notNull())
+        .addColumn('file_id', 'text', (c) => c.notNull().unique())
+        .addColumn('permission_id', 'text')
+        .addColumn('ready_at', 'timestamptz')
+        .addColumn('attempts', 'integer', (c) => c.notNull().defaultTo(0))
+        .addColumn('last_error', 'text')
+        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('google_slide_image_cleanup').execute();
+    },
+  },
+  '0090_recent_google_slide_decks': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('recent_google_slide_decks')
+        .addColumn('file_id', 'text', (c) => c.primaryKey())
+        .addColumn('last_assigned_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('recent_google_slide_decks').execute();
+    },
+  },
+  '0091_google_slide_invocations': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('google_slide_invocations')
+        .addColumn('invocation_id', 'text', (c) => c.primaryKey())
+        .addColumn('session_id', 'text', (c) =>
+          c.notNull().references('sessions.session_id').onDelete('cascade'),
+        )
+        .addColumn('turn_id', 'text', (c) => c.notNull())
+        .addColumn('result_json', 'text')
+        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('google_slide_invocations').execute();
+    },
+  },
+  '0092_slide_assignment_generation': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('session_slide_decks')
+        .addColumn('assignment_id', 'text', (c) =>
+          c
+            .notNull()
+            .defaultTo(sql`gen_random_uuid()::text`)
+            .unique(),
+        )
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('session_slide_decks').dropColumn('assignment_id').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

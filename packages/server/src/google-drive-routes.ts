@@ -17,6 +17,7 @@ import {
   referenceDocFileName,
   type DriveFileList,
 } from './google-drive.js';
+import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { ensureReferenceDirectory, writeReferenceDocFile } from './reference-docs.js';
 import { sessionFilePath } from './session-files.js';
 
@@ -36,12 +37,26 @@ const filesQuery = z.object({
   query: z.string().trim().min(1).max(200).optional(),
   sharedWithMe: z.enum(['true']).optional(),
   pageToken: z.string().trim().min(1).max(4096).optional(),
+  purpose: z.enum(['import', 'slides']).optional(),
 });
 const importBody = z.object({ fileId: z.string().trim().min(1).max(512) });
+const SLIDES_PICKER_MIME_TYPES = [
+  'application/vnd.google-apps.folder',
+  'application/vnd.google-apps.presentation',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+] as const;
 
 type SettingsStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'>;
 interface GoogleDriveRouteDeps {
-  eventStore: SettingsStore & Pick<EventStore, 'getSession'>;
+  eventStore: SettingsStore &
+    Pick<
+      EventStore,
+      | 'getSession'
+      | 'getSessionSlideDeck'
+      | 'setSessionSlideDeck'
+      | 'clearSessionSlideDeck'
+      | 'listRecentGoogleSlideDeckFileIds'
+    >;
   googleDriveClientId?: string;
   secretCipher?: SealableSecretCipher;
 }
@@ -132,13 +147,44 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         return { error: 'Google Drive is not connected' };
       }
       try {
-        return await listDriveFiles({
+        const page = await listDriveFiles({
           accessToken: token,
           parentId: query.parentId,
           query: query.query,
           sharedWithMe: query.sharedWithMe === 'true',
           pageToken: query.pageToken,
+          ...(query.purpose === 'slides'
+            ? {
+                mimeTypes: SLIDES_PICKER_MIME_TYPES,
+              }
+            : {}),
         });
+        if (
+          query.purpose !== 'slides' ||
+          query.parentId !== undefined ||
+          query.query !== undefined ||
+          query.sharedWithMe !== undefined ||
+          query.pageToken !== undefined
+        ) {
+          return page;
+        }
+        const recentIds = await deps.eventStore.listRecentGoogleSlideDeckFileIds();
+        const recent = (
+          await Promise.all(
+            recentIds.map((fileId) => getDriveFile(token, fileId).catch(() => undefined)),
+          )
+        ).filter(
+          (file): file is NonNullable<typeof file> =>
+            file !== undefined &&
+            SLIDES_PICKER_MIME_TYPES.includes(
+              file.mimeType as (typeof SLIDES_PICKER_MIME_TYPES)[number],
+            ),
+        );
+        const recentSet = new Set(recent.map((file) => file.id));
+        return {
+          ...page,
+          files: [...recent, ...page.files.filter((file) => !recentSet.has(file.id))],
+        };
       } catch (error) {
         const reason = error instanceof GoogleDriveError ? error.reason : 'browse_failed';
         request.log.error({ reason }, 'verity: google drive browse failed');
@@ -147,6 +193,70 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       }
     },
   );
+
+  app.get('/sessions/:id/google-slides/deck', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    const session = await deps.eventStore.getSession(id);
+    if (session === undefined) {
+      reply.code(404);
+      return { error: `session ${id} not found` };
+    }
+    return { deck: (await deps.eventStore.getSessionSlideDeck(id)) ?? null };
+  });
+
+  app.put('/sessions/:id/google-slides/deck', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    const { fileId } = importBody.parse(request.body);
+    if ((await deps.eventStore.getSession(id)) === undefined) {
+      reply.code(404);
+      return { error: `session ${id} not found` };
+    }
+    const token = await accessToken();
+    if (token === undefined) {
+      reply.code(409);
+      return { error: 'Google Drive is not connected' };
+    }
+    try {
+      const file = await getDriveFile(token, fileId);
+      if (file.mimeType !== 'application/vnd.google-apps.presentation') {
+        reply.code(415);
+        return { error: 'Only native Google Slides presentations can be assigned' };
+      }
+      if (file.canEdit !== true) {
+        reply.code(403);
+        return { error: 'You need edit access to assign this Google Slides deck' };
+      }
+      const presentation = await getSlidesPresentation(token, fileId);
+      const deck = await deps.eventStore.setSessionSlideDeck({
+        sessionId: id,
+        fileId: presentation.presentationId,
+        name: presentation.title,
+        webViewLink: `https://docs.google.com/presentation/d/${encodeURIComponent(presentation.presentationId)}/edit`,
+        revisionId: presentation.revisionId,
+      });
+      return { deck };
+    } catch (error) {
+      const reason = error instanceof GoogleSlidesError ? error.reason : 'assignment_failed';
+      if (reason.startsWith('http_403')) {
+        reply.code(403);
+        return {
+          error: 'Reconnect Google Drive to grant presentation editing access',
+        };
+      }
+      reply.code(reason.startsWith('http_400') ? 415 : 502);
+      return { error: `Could not assign this Google Slides deck (${reason})` };
+    }
+  });
+
+  app.delete('/sessions/:id/google-slides/deck', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    if ((await deps.eventStore.getSession(id)) === undefined) {
+      reply.code(404);
+      return { error: `session ${id} not found` };
+    }
+    await deps.eventStore.clearSessionSlideDeck(id);
+    reply.code(204);
+  });
 
   app.post('/sessions/:id/google-drive/import', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);

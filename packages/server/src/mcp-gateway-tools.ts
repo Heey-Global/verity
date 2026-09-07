@@ -23,6 +23,15 @@ export function createMcpGatewayToolExecutor(options: {
         request: unknown;
       }) => Promise<unknown>)
     | undefined;
+  googleSlides?:
+    | ((input: {
+        projectId: string;
+        sessionId: string;
+        turnId: string;
+        invocationId: string;
+        request: unknown;
+      }) => Promise<unknown>)
+    | undefined;
 }): McpGatewayDeps['invokeTool'] {
   const runTrustedCli = options.runTrustedCli ?? runSupervisorTrustedCli;
   const runnerRoot = options.runnerRoot;
@@ -53,6 +62,10 @@ export function createMcpGatewayToolExecutor(options: {
         invocationId,
         request,
       });
+    }
+    if (toolName === 'verity_google_slides') {
+      if (options.googleSlides === undefined) throw new Error('Google Slides is unavailable');
+      return options.googleSlides({ projectId, sessionId, turnId, invocationId, request });
     }
     if (
       toolName === 'verity_list_sessions' ||

@@ -49,6 +49,44 @@ export interface SessionsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** One native Google Slides deck explicitly assigned to a session (ADR 0016). */
+export interface SessionSlideDecksTable {
+  session_id: string;
+  assignment_id: string;
+  file_id: string;
+  name: string;
+  web_view_link: string;
+  revision_id: string | null;
+  assigned_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+/** Deck ids ordered by their latest explicit assignment, independent of session lifetime. */
+export interface RecentGoogleSlideDecksTable {
+  file_id: string;
+  last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+/** Durable cleanup outbox created before a temporary Drive image becomes public. */
+export interface GoogleSlideImageCleanupTable {
+  id: string;
+  session_id: string;
+  file_id: string;
+  permission_id: string | null;
+  ready_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  attempts: ColumnType<number, number | undefined, number>;
+  last_error: string | null;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Durable at-most-once fence for non-idempotent Slides gateway invocations. */
+export interface GoogleSlideInvocationsTable {
+  invocation_id: string;
+  session_id: string;
+  turn_id: string;
+  result_json: string | null;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 /**
  * Multi-repo fleet registry (concept §19, #174). One row per GitHub repo the
  * App-installation lists + Verity has registered. **Cache** of the GitHub-
@@ -267,7 +305,7 @@ export interface VeritySettingsTable {
    *  `~/.codex/auth.json` from `codex login`). A secret, encrypted at rest;
    *  materialized into the codex config volume. */
   codex_auth_json: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Google Drive connection for importing reference docs (ADR 0009). The iOS
+  /** Google connection for Drive imports and assigned Slides editing (ADRs 0009/0016). The iOS
    *  OAuth client id is non-secret config (it ships in the app); the connected
    *  account email is non-secret display metadata; the refresh token is a
    *  secret, encrypted at rest via the store's SecretCipher. Singleton columns
@@ -1114,6 +1152,10 @@ export interface Database {
   workflow_policy_decisions: WorkflowPolicyDecisionsTable;
   control_plane_generation: ControlPlaneGenerationTable;
   sessions: SessionsTable;
+  session_slide_decks: SessionSlideDecksTable;
+  recent_google_slide_decks: RecentGoogleSlideDecksTable;
+  google_slide_image_cleanup: GoogleSlideImageCleanupTable;
+  google_slide_invocations: GoogleSlideInvocationsTable;
   events: EventsTable;
   messages: MessagesTable;
   message_projection_state: MessageProjectionStateTable;

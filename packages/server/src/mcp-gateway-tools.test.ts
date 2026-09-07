@@ -137,6 +137,36 @@ describe('MCP gateway Control delivery integration', () => {
   });
 });
 
+describe('MCP gateway Google Slides integration', () => {
+  it('passes the authenticated identity and replay key to the Slides executor', async () => {
+    const googleSlides = vi.fn(async () => ({ revisionId: 'rev-2' }));
+    const invoke = createMcpGatewayToolExecutor({
+      brokeredHttpTool: vi.fn(async () => ({ status: 200, body: null })),
+      trustedCliTool: vi.fn(),
+      googleSlides,
+    });
+    const request = { action: 'inspect_deck' };
+    await expect(
+      invoke({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        callId: 'call-1',
+        invocationId: 'invocation-1',
+        toolName: 'verity_google_slides',
+        request,
+      }),
+    ).resolves.toEqual({ revisionId: 'rev-2' });
+    expect(googleSlides).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      invocationId: 'invocation-1',
+      request,
+    });
+  });
+});
+
 describe('MCP gateway control-plane session tools', () => {
   it('refuses to serve them from this executor, which has no conductor to dispatch through', async () => {
     const invoke = createMcpGatewayToolExecutor({

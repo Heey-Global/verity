@@ -4,12 +4,17 @@ import {
   GoogleDriveError,
   createCachedGoogleAccessToken,
   downloadDriveFile,
+  deleteDriveFile,
+  deleteDrivePermission,
   exchangeGoogleAuthCode,
   exportDriveFile,
   getDriveAccountEmail,
+  getDriveFile,
   listDriveFiles,
   planDriveImport,
   referenceDocFileName,
+  shareDriveFileWithLink,
+  uploadDriveImage,
   refreshGoogleAccessToken,
   type GoogleFetch,
   type GoogleHttpResponse,
@@ -48,7 +53,7 @@ interface Call {
   url: string;
   method?: string | undefined;
   headers?: Record<string, string> | undefined;
-  body?: string | undefined;
+  body?: string | Buffer | undefined;
 }
 
 function recordingFetch(respond: (call: Call) => GoogleHttpResponse): {
@@ -78,8 +83,8 @@ describe('planDriveImport', () => {
     });
     expect(planDriveImport('application/vnd.google-apps.presentation', 'Deck')).toEqual({
       kind: 'export',
-      exportMimeType: 'application/pdf',
-      extension: 'pdf',
+      exportMimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      extension: 'pptx',
     });
   });
 
@@ -130,7 +135,9 @@ describe('exchangeGoogleAuthCode', () => {
     );
     expect(tokens).toEqual({ accessToken: 'at', refreshToken: 'rt', expiresInSeconds: 3599 });
     expect(calls[0]?.url).toBe('https://oauth2.googleapis.com/token');
-    const params = new URLSearchParams(calls[0]?.body);
+    const params = new URLSearchParams(
+      typeof calls[0]?.body === 'string' ? calls[0].body : undefined,
+    );
     expect(params.get('grant_type')).toBe('authorization_code');
     expect(params.get('client_id')).toBe('cid.apps.googleusercontent.com');
     expect(params.get('code')).toBe('the-code');
@@ -176,7 +183,9 @@ describe('refreshGoogleAccessToken', () => {
     );
     expect(tokens.accessToken).toBe('fresh');
     expect(tokens.refreshToken).toBeUndefined();
-    const params = new URLSearchParams(calls[0]?.body);
+    const params = new URLSearchParams(
+      typeof calls[0]?.body === 'string' ? calls[0].body : undefined,
+    );
     expect(params.get('grant_type')).toBe('refresh_token');
     expect(params.get('refresh_token')).toBe('rt');
   });
@@ -194,6 +203,24 @@ describe('getDriveAccountEmail', () => {
 });
 
 describe('listDriveFiles', () => {
+  it('reads the edit capability used by Slides assignment', async () => {
+    const { fetch, calls } = recordingFetch(() =>
+      jsonRes({
+        id: 'deck-1',
+        name: 'Deck',
+        mimeType: 'application/vnd.google-apps.presentation',
+        capabilities: { canEdit: false },
+      }),
+    );
+    await expect(getDriveFile('at', 'deck-1', { fetch })).resolves.toMatchObject({
+      id: 'deck-1',
+      canEdit: false,
+    });
+    expect(new URL(calls[0]?.url ?? '').searchParams.get('fields')).toContain(
+      'capabilities(canEdit)',
+    );
+  });
+
   it('queries a folder, parses files, and returns the page token', async () => {
     const { fetch, calls } = recordingFetch(() =>
       jsonRes({
@@ -249,6 +276,24 @@ describe('listDriveFiles', () => {
     expect(url.searchParams.get('q')).not.toContain('in parents');
     expect(url.searchParams.get('corpora')).toBe('user');
     expect(url.searchParams.get('includeItemsFromAllDrives')).toBe('true');
+  });
+
+  it('combines location and MIME filters for the Slides picker', async () => {
+    const { fetch, calls } = recordingFetch(() => jsonRes({ files: [] }));
+    await listDriveFiles(
+      {
+        accessToken: 'at',
+        mimeTypes: [
+          'application/vnd.google-apps.folder',
+          'application/vnd.google-apps.presentation',
+        ],
+      },
+      { fetch },
+    );
+    const query = new URL(calls[0]?.url ?? '').searchParams.get('q') ?? '';
+    expect(query).toContain("'root' in parents");
+    expect(query).toContain("mimeType = 'application/vnd.google-apps.folder'");
+    expect(query).toContain("mimeType = 'application/vnd.google-apps.presentation'");
   });
 
   it("lifts Google's 403 reason slug into the error (errors[0].reason)", async () => {
@@ -350,6 +395,37 @@ describe('downloadDriveFile / exportDriveFile', () => {
       exportDriveFile('at', 'large', 'text/plain', { fetch, maxDownloadBytes: 3 }),
     ).rejects.toMatchObject({ reason: 'too_large' });
     expect(read).toBe(false);
+  });
+});
+
+describe('temporary Drive images for Slides', () => {
+  it('retains the created permission id and deletes that exact permission', async () => {
+    const { fetch, calls } = recordingFetch((call) =>
+      call.method === 'POST' ? jsonRes({ id: 'permission-7' }) : jsonRes({}),
+    );
+    await expect(shareDriveFileWithLink('at', 'image-1', { fetch })).resolves.toBe('permission-7');
+    await deleteDrivePermission('at', 'image-1', 'permission-7', { fetch });
+    await deleteDriveFile('at', 'image-1', { fetch });
+    expect(calls.map((call) => [call.method, call.url])).toEqual([
+      ['POST', 'https://www.googleapis.com/drive/v3/files/image-1/permissions?fields=id'],
+      ['DELETE', 'https://www.googleapis.com/drive/v3/files/image-1/permissions/permission-7'],
+      ['DELETE', 'https://www.googleapis.com/drive/v3/files/image-1'],
+    ]);
+  });
+
+  it('uploads image bytes as multipart data', async () => {
+    const { fetch, calls } = recordingFetch(() =>
+      jsonRes({ id: 'image-1', webContentLink: 'https://drive.example/image-1' }),
+    );
+    await expect(
+      uploadDriveImage(
+        'at',
+        { name: 'slide.png', mimeType: 'image/png', bytes: Buffer.from('png-bytes') },
+        { fetch },
+      ),
+    ).resolves.toEqual({ id: 'image-1', webContentLink: 'https://drive.example/image-1' });
+    expect(calls[0]?.method).toBe('POST');
+    expect(Buffer.isBuffer(calls[0]?.body)).toBe(true);
   });
 });
 

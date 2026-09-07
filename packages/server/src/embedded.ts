@@ -81,6 +81,8 @@ import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
+import { createCachedGoogleAccessToken } from './google-drive.js';
+import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createControlPlaneDeliveryTool } from './workflow-control-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import {
@@ -1965,6 +1967,15 @@ export async function buildEmbeddedServer(
   // 503 until unlock.
   const secretCipher = createSealableSecretCipher();
   const eventStore = new EventStore(db, secretCipher);
+  const googleAccessToken = createCachedGoogleAccessToken(async () => {
+    if (secretCipher.isSealed()) return undefined;
+    const settings = await eventStore.getVeritySettings();
+    const clientId = settings?.googleDriveClientId ?? '';
+    const refreshToken = settings?.googleDriveRefreshToken ?? '';
+    return clientId.length > 0 && refreshToken.length > 0 ? { clientId, refreshToken } : undefined;
+  });
+  const googleSlidesTool = createGoogleSlidesTool({ eventStore, googleAccessToken });
+  const invokeGoogleSlides = googleSlidesTool.invoke;
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
   const workflowStore = new WorkflowStore(db);
@@ -2027,8 +2038,13 @@ export async function buildEmbeddedServer(
     // supervisor omit the tool completely rather than advertising a permanently failing call.
     servedTools:
       config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
-        ? ['verity_http_request', 'verity_secret_run', 'verity_publish_session_progress']
-        : ['verity_http_request', 'verity_publish_session_progress'],
+        ? [
+            'verity_http_request',
+            'verity_secret_run',
+            'verity_publish_session_progress',
+            'verity_google_slides',
+          ]
+        : ['verity_http_request', 'verity_publish_session_progress', 'verity_google_slides'],
     // Control-plane-only tools. `verity_create_delivery` is served from the executor below;
     // the two session tools are intercepted in `buildServer`, which owns the conductor they
     // dispatch through — advertising them is still decided here, with the rest of the served
@@ -2054,6 +2070,7 @@ export async function buildEmbeddedServer(
         ? { runnerRoot: join(config.dataVolumeRoot, 'runners') }
         : {}),
       createDelivery: createDeliveryFromControlPlane,
+      googleSlides: invokeGoogleSlides,
     }),
     recordCall: async ({ projectId, kind, ...gateway }) => {
       await secretAuditLog.append({
@@ -4847,6 +4864,7 @@ export async function buildEmbeddedServer(
         // Only standby quiescence is a handoff; SIGTERM and administrative stops
         // retain destructive relay/capability cleanup.
         preserveProjectRelaysOnClose = options.preserveProjectRelays === true;
+        googleSlidesTool.close();
         await stopAgentGatewayCredentialProjection();
         await stopRunnerSupervisorReconciler();
         await agentGatewaySynchronizer?.close();
