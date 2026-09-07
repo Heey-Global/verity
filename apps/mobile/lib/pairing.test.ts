@@ -58,4 +58,28 @@ describe('parsePairingUri', () => {
       'Invalid TLS certificate pin',
     );
   });
+
+  it('trims and extracts one pairing URL from pasted terminal text', () => {
+    expect(parsePairingUri(`\nPair this device:\n  ${uri()}  \n`, now)).toMatchObject({
+      serverId: 'srv_0123456789abcdef',
+    });
+  });
+
+  it('accepts case-insensitive URI scheme and host spelling in pasted text', () => {
+    expect(parsePairingUri(uri().replace('verity://pair', 'VERITY://PAIR'), now)).toMatchObject({
+      serverId: 'srv_0123456789abcdef',
+    });
+  });
+
+  it('explains when pasted text contains no pairing URL', () => {
+    expect(() => parsePairingUri("sudo python3 -c 'print(123)'", now)).toThrow(
+      'This is not a Verity pairing code',
+    );
+  });
+
+  it('rejects ambiguous pasted text containing multiple pairing URLs', () => {
+    expect(() => parsePairingUri(`${uri()}\n${uri()}`, now)).toThrow(
+      'More than one Verity pairing code',
+    );
+  });
 });

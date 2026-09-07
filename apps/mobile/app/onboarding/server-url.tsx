@@ -36,6 +36,17 @@ function unlockRoute(returnTo: string): string {
 type TestState =
   { kind: 'idle' } | { kind: 'testing' } | { kind: 'ok' } | { kind: 'error'; message: string };
 
+function pairingErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/TLS|SSL|certificate|secure connection/i.test(message)) {
+    return 'Could not establish a secure connection to this server. Create a new pairing code and try again.';
+  }
+  if (/timed?\s*out|timeout|network request failed|could not connect/i.test(message)) {
+    return 'Could not reach the server address in this pairing code. Make sure this phone can reach the selected IP address or DNS name, then create a new pairing code.';
+  }
+  return error instanceof Error ? error.message : 'Could not pair with this server.';
+}
+
 export default function OnboardingServerUrl() {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
@@ -124,7 +135,7 @@ export default function OnboardingServerUrl() {
         pairingInFlight.current = false;
         setTest({
           kind: 'error',
-          message: error instanceof Error ? error.message : 'Could not pair with this server.',
+          message: pairingErrorMessage(error),
         });
       });
   };

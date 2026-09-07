@@ -51,9 +51,8 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     completionHandler(request)
   }
 
-  func urlSession(
-    _ session: URLSession,
-    didReceive challenge: URLAuthenticationChallenge,
+  private func answer(
+    _ challenge: URLAuthenticationChallenge,
     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
     guard
@@ -74,6 +73,26 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     // The installer's stable P-256 TLS key is the authority. Certificates can be
     // renewed and IP endpoints changed without weakening the pin.
     completionHandler(.useCredential, URLCredential(trust: trust))
+  }
+
+  func urlSession(
+    _ session: URLSession,
+    didReceive challenge: URLAuthenticationChallenge,
+    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+  ) {
+    answer(challenge, completionHandler: completionHandler)
+  }
+
+  // Data and upload requests can receive their authentication challenge on the
+  // task delegate. Handle both dispatch paths so default trust evaluation never
+  // rejects Verity's self-signed certificate before its pinned key is checked.
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    didReceive challenge: URLAuthenticationChallenge,
+    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+  ) {
+    answer(challenge, completionHandler: completionHandler)
   }
 
   func urlSession(
