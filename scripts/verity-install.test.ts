@@ -273,7 +273,7 @@ esac
       expect(overrideLog).not.toContain(`pull ${oldManagedImage}`);
       const forwarded = await readFile(marker, 'utf8');
       expect(forwarded).toBe(
-        `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check --advance-unpaired-from current\n`,
+        `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check --advance-unpaired-from ${oldManagedImage}\n`,
       );
 
       await writeFile(dockerLog, '');

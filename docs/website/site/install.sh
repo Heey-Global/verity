@@ -287,7 +287,10 @@ if [ -n "$source_image_override" ]; then
     valid_image_override "$previous_image" ||
       die 'the managed Server does not use an official digest-pinned image'
     if managed_server_is_unpaired "${managed_names[0]}"; then
-      installer_args+=(--advance-unpaired-from current)
+      # An explicit image may be an intentional downgrade. Keep the observed
+      # digest fence so a queued/stale invocation cannot overwrite another
+      # install that moved the authority while this one was resolving.
+      installer_args+=(--advance-unpaired-from "$previous_image")
     elif [ "$source_image" != "$previous_image" ]; then
       die 'a paired installation can only recover its current release; install updates from the Verity app'
     fi
