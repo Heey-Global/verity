@@ -223,20 +223,20 @@ export async function runManagedBootstrap(
   };
   const advanceFrom = env.VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM;
   if (advanceFrom !== undefined && advanceFrom !== '') {
-    if (!OFFICIAL_IMAGE.test(advanceFrom))
+    if (advanceFrom !== 'current' && !OFFICIAL_IMAGE.test(advanceFrom))
       throw new Error(
-        'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM must be an official digest-pinned image',
+        'VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM must be "current" or an official digest-pinned image',
       );
-    const existing = await readManagedDeployment(root);
-    if (!existing.managed) throw new Error(existing.reason);
-    await withUnpairedFence(() =>
-      advanceManagedDeploymentImage({
+    await withUnpairedFence(async () => {
+      const existing = await readManagedDeployment(root);
+      if (!existing.managed) throw new Error(existing.reason);
+      await advanceManagedDeploymentImage({
         root,
         deploymentId: env.VERITY_MANAGED_DEPLOYMENT_ID!,
-        fromImage: advanceFrom,
+        fromImage: advanceFrom === 'current' ? existing.spec.image : advanceFrom,
         toImage: image,
-      }),
-    );
+      });
+    });
   }
   const state = await initializeManagedDeployment({
     root,

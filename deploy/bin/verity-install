@@ -138,8 +138,9 @@ valid_server_image() {
   [[ ${1#"$SERVER_REPO@sha256:"} =~ ^[a-f0-9]{64}$ ]]
 }
 
-[ -z "$opt_advance_unpaired_from" ] || valid_server_image "$opt_advance_unpaired_from" \
-  || die 'option --advance-unpaired-from requires an official digest-pinned Server image'
+[ -z "$opt_advance_unpaired_from" ] || [ "$opt_advance_unpaired_from" = current ] \
+  || valid_server_image "$opt_advance_unpaired_from" \
+  || die 'option --advance-unpaired-from requires "current" or an official digest-pinned Server image'
 
 valid_deployment_id() {
   [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] && [ "${#1}" -le 128 ]
