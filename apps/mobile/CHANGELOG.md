@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/Heey-Global/verity/compare/mobile-v1.17.0...mobile-v1.18.0) (2026-09-08)
+
+
+### Bug Fixes
+
+* **mobile:** normalize iOS certificate pin keys ([9dba864](https://github.com/Heey-Global/verity/commit/9dba86450a5fda28197d8ee29779c398e2651e5a))
+
 ## [1.17.0](https://github.com/Heey-Global/verity/compare/mobile-v1.16.0...mobile-v1.17.0) (2026-09-08)
 
 
