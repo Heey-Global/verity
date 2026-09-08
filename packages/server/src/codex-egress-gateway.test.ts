@@ -141,6 +141,32 @@ describe('Codex egress gateway handler', () => {
     expect(JSON.stringify(events)).not.toContain('server-only-token');
   });
 
+  it('records an allowlisted image route without collapsing its path', async () => {
+    const events: CodexEgressRequestEnd[] = [];
+    const port = await serve(
+      async () => ({ status: 200, headers: {}, body: Readable.from(['image']) }),
+      async () => ({ accessToken: 'server-only-token', accountId: 'account-1' }),
+      undefined,
+      (event) => events.push(event),
+    );
+
+    await call(port, {
+      path: '/codex/images/generations',
+      method: 'POST',
+      headers: {
+        host: AUTHORITY,
+        authorization: 'Bearer verity-codex-gateway-placeholder-v1',
+        'x-openai-actor-authorization': 'verity-codex-gateway-placeholder-v1',
+      },
+    });
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0]).toMatchObject({
+      outcome: 'completed',
+      method: 'POST',
+      path: '/codex/images/generations',
+    });
+  });
+
   it('records a consumer close after a successful partial response as neutral', async () => {
     const events: CodexEgressRequestEnd[] = [];
     const port = await serve(

@@ -101,7 +101,12 @@ const LOGGABLE_ERROR_CODES = new Set([
   'EPIPE',
   'ETIMEDOUT',
 ]);
-const LOGGABLE_PATHS = new Set(['/codex/models', '/codex/responses']);
+const LOGGABLE_PATHS = new Set([
+  '/codex/models',
+  '/codex/responses',
+  '/codex/images/generations',
+  '/codex/images/edits',
+]);
 const UNLOGGABLE = '<other>';
 
 export interface CodexEgressGatewayHandlerOptions {
