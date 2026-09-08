@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.17.0](https://github.com/Heey-Global/verity/compare/mobile-v1.16.0...mobile-v1.17.0) (2026-09-08)
+
+
+### Bug Fixes
+
+* **mobile:** trust the pinned self-signed certificate ([89bd742](https://github.com/Heey-Global/verity/commit/89bd742c7e873953e0080a47f56d9f48ee724bf3))
+* **mobile:** trust the pinned self-signed certificate ([f6bf01e](https://github.com/Heey-Global/verity/commit/f6bf01efcec0328b4dcea58e3d43ca0f4e4f82a5))
+
 ## [1.16.0](https://github.com/Heey-Global/verity/compare/mobile-v1.15.0...mobile-v1.16.0) (2026-09-07)
 
 
