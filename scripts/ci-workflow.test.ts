@@ -5,7 +5,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
 import { on, once } from 'node:events';
-import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -482,11 +482,96 @@ describe('mobile OTA promotion', () => {
     expect(source).toContain('^automation/promote-mobile-v');
     expect(source).toContain('createCommitOnBranch');
     expect(source).toContain('signature.isValid');
+    expect(source).toContain('for attempt in {1..6}');
+    expect(source).toContain("*'Reference does not exist'*");
+    expect(source).toContain('sleep "$attempt"');
     expect(source).not.toContain('git commit -m "chore(mobile): promote OTA');
     expect(source).toContain('gh workflow run ci.yml --ref "$promotion_branch"');
     expect(source).toContain('git push origin "refs/tags/${OTA_TAG}"');
     expect(source).not.toContain('--channel testflight');
     expect(source).not.toContain('gh release create');
+  });
+
+  it('recovers only from GitHub reference propagation failures', async () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
+      jobs: { update: WorkflowJob };
+    };
+    const script = workflow.jobs.update.steps.find(
+      (step) => step.name === 'Create immutable OTA promotion PR',
+    )?.run;
+    expect(script).toBeDefined();
+    const dir = await mkdtemp(join(tmpdir(), 'ota-promotion-'));
+    const gh = join(dir, 'gh');
+    await writeFile(
+      gh,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$GH_CALLS"
+if [[ "$*" == 'pr list '* ]]; then exit 0; fi
+if [[ "$*" == api\\ repos/*/git/ref/heads/* ]]; then
+  [[ "$GH_MODE" == transient-patch ]] && echo feedface
+  exit $([[ "$GH_MODE" == transient-patch ]] && echo 0 || echo 1)
+fi
+if [[ "$*" == 'api --method POST '* || "$*" == 'api --method PATCH '* ]]; then
+  operation="\${1:-} \${2:-} \${3:-}"
+  count="$(grep -c "^$operation" "$GH_CALLS" || true)"
+  if [[ "$GH_MODE" == transient-* && "$count" == 1 ]]; then
+    echo 'gh: Reference does not exist (HTTP 422)' >&2
+    exit 1
+  fi
+  if [[ "$GH_MODE" == permanent ]]; then
+    echo 'gh: permission denied (HTTP 403)' >&2
+    exit 1
+  fi
+  exit 0
+fi
+if [[ "$*" == 'api graphql '* ]]; then
+  count="$(grep -c '^api graphql ' "$GH_CALLS" || true)"
+  if [[ "$GH_MODE" == transient-graphql && "$count" == 1 ]]; then
+    echo 'gh: Reference does not exist (HTTP 422)' >&2
+    exit 1
+  fi
+  echo '{"data":{"createCommitOnBranch":{"commit":{"signature":{"isValid":true}}}}}'
+fi
+`,
+      { mode: 0o755 },
+    );
+    const sleep = join(dir, 'sleep');
+    await writeFile(sleep, '#!/usr/bin/env bash\nexit 0\n');
+    await chmod(sleep, 0o755);
+    const run = (mode: string) =>
+      spawnSync('bash', ['-c', script as string], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH ?? ''}`,
+          GH_CALLS: join(dir, `${mode}.calls`),
+          GH_MODE: mode,
+          GITHUB_REPOSITORY: 'example/verity',
+          GITHUB_SHA: '0123456789abcdef',
+          OTA_BRANCH: 'staging-mobile-v1.18.1',
+          OTA_TAG: 'mobile-v1.18.1',
+          OTA_VERSION: '1.18.1',
+          RUNNER_TEMP: dir,
+        },
+      });
+
+    try {
+      for (const mode of ['transient-post', 'transient-patch', 'transient-graphql']) {
+        const transient = run(mode);
+        expect(transient.status, `${mode}: ${transient.stderr}`).toBe(0);
+        expect(readFileSync(join(dir, `${mode}.calls`), 'utf8')).toContain('pr create');
+      }
+
+      const permanent = run('permanent');
+      expect(permanent.status).not.toBe(0);
+      expect(permanent.stderr).toContain('permission denied');
+      expect(
+        readFileSync(join(dir, 'permanent.calls'), 'utf8').match(/^api --method POST /gm),
+      ).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('moves TestFlight to the approved EAS branch without rebuilding', () => {
