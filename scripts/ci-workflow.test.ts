@@ -1325,6 +1325,11 @@ describe('GitHub-hosted runner boundary', () => {
     expect(suite?.run).toContain('$VERITY_INSTALLER_SANDBOX');
     expect(suite?.run).toContain('--user "$(id -u):$(id -g)"');
     expect(suite?.run).toContain('--env CI=true');
+    expect(
+      job?.steps?.some(
+        (step) => step.run === 'node --test deploy/bin/verity-pairing-material.test.mjs',
+      ),
+    ).toBe(true);
   });
 
   it('namespaces every host-daemon tag the cutover smoke creates', () => {
