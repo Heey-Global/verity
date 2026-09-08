@@ -96,6 +96,7 @@ if [ "${VERITY_CODEX_GATEWAY_CONFIG_WRITE:-0}" = '1' ]; then
     'name = "Verity Gateway"' \
     "base_url = \"http://127.0.0.1:${VERITY_CLAUDE_CONNECTOR_PORT}/codex\"" \
     'env_key = "VERITY_CODEX_PLACEHOLDER"' \
+    'http_headers = { "x-openai-actor-authorization" = "verity-codex-gateway-placeholder-v1" }' \
     'wire_api = "responses"' \
     'requires_openai_auth = false' | as_agent tee "$CODEX_CONFIG_TMP" >/dev/null
   as_agent chmod 0600 "$CODEX_CONFIG_TMP"

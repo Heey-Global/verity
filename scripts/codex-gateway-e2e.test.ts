@@ -46,21 +46,72 @@ describe('Codex gateway end-to-end cutover', () => {
     const realRefreshToken = 'gateway-only-refresh-token';
     const accountId = 'gateway-only-account';
     const forwarded: Array<{
+      path: string;
       authorization: string | null;
       accountId: string | null;
       body: string;
     }> = [];
+    let responseRequests = 0;
     let observeCliRequest: (() => void) | undefined;
     const cliRequest = new Promise<void>((resolve) => (observeCliRequest = resolve));
     const forward = async (request: CodexEgressForwardRequest) => {
       let body = '';
       for await (const chunk of request.body as AsyncIterable<Buffer>) body += chunk.toString();
       forwarded.push({
+        path: request.url.pathname,
         authorization: request.headers.get('authorization'),
         accountId: request.headers.get('chatgpt-account-id'),
         body,
       });
       observeCliRequest?.();
+      if (request.url.pathname === '/backend-api/codex/images/generations') {
+        return {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body: Readable.from([
+            '{"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mNk+M/wHwAF/gL+X8fZiQAAAABJRU5ErkJggg=="}]}',
+          ]),
+        };
+      }
+      if (request.url.pathname === '/backend-api/codex/responses') {
+        responseRequests += 1;
+        if (responseRequests <= 2) {
+          const events =
+            responseRequests === 1
+              ? [
+                  { type: 'response.created', response: { id: 'response-1' } },
+                  {
+                    type: 'response.output_item.done',
+                    item: {
+                      type: 'function_call',
+                      call_id: 'image-call-1',
+                      namespace: 'image_gen',
+                      name: 'imagegen',
+                      arguments: '{"prompt":"one blue pixel"}',
+                    },
+                  },
+                  completedResponse('response-1'),
+                ]
+              : [
+                  { type: 'response.created', response: { id: 'response-2' } },
+                  {
+                    type: 'response.output_item.done',
+                    item: {
+                      type: 'message',
+                      role: 'assistant',
+                      id: 'message-1',
+                      content: [{ type: 'output_text', text: 'Done' }],
+                    },
+                  },
+                  completedResponse('response-2'),
+                ];
+          return {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+            body: Readable.from([sse(events)]),
+          };
+        }
+      }
       return {
         status: 400,
         headers: {
@@ -216,10 +267,12 @@ describe('Codex gateway end-to-end cutover', () => {
       clearTimeout(timeout);
 
       expect(forwarded[0]).toMatchObject({
+        path: '/backend-api/codex/responses',
         authorization: `Bearer ${realAccessToken}`,
         accountId,
       });
       expect(forwarded[0]?.body).toContain('"model":"gpt-5.4"');
+      expect(forwarded.map(({ path }) => path)).toContain('/backend-api/codex/images/generations');
       expect(existsSync(join(codexHome, 'auth.json'))).toBe(false);
       const config = await readFile(join(codexHome, 'config.toml'), 'utf8');
       expect(config).not.toContain(realAccessToken);
@@ -285,4 +338,28 @@ function callConnector(port: number): Promise<{ status: number; quota?: string; 
 
 function sanitize(value: string): string {
   return value.replace(/[\r\n]+/gu, ' ').slice(0, 500);
+}
+
+function completedResponse(id: string): object {
+  return {
+    type: 'response.completed',
+    response: {
+      id,
+      usage: {
+        input_tokens: 0,
+        input_tokens_details: null,
+        output_tokens: 0,
+        output_tokens_details: null,
+        total_tokens: 0,
+      },
+    },
+  };
+}
+
+function sse(events: readonly object[]): string {
+  return events
+    .map(
+      (event) => `event: ${(event as { type: string }).type}\ndata: ${JSON.stringify(event)}\n\n`,
+    )
+    .join('');
 }

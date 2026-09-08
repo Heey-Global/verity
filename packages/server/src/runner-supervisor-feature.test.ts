@@ -223,6 +223,9 @@ describe('verity-runner supervisor runtime', () => {
       'utf8',
     );
     const projectConfig = codexGatewayConfig(47_821);
+    expect(projectConfig).toContain(
+      'http_headers = { "x-openai-actor-authorization" = "verity-codex-gateway-placeholder-v1" }',
+    );
     for (const line of projectConfig.split('\n').filter((value) => !value.startsWith('base_url'))) {
       expect(launcher).toContain(line);
     }

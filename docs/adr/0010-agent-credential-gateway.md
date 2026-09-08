@@ -103,8 +103,9 @@ certificate rotation also remains recreate-based, as the certificate-lifecycle
 section specifies.
 
 The Claude policy admits only the two Messages API endpoints described below.
-The Codex policy admits only `GET /codex/models` and `POST /codex/responses`,
-which the gateway maps to the fixed ChatGPT subscription upstream. Hermetic
+The Codex policy admits only `GET /codex/models`, `POST /codex/responses`, and
+the two `POST /codex/images/{generations,edits}` operations, which the gateway
+maps to the fixed ChatGPT subscription upstream. Hermetic
 end-to-end and deployment smokes cover placeholder replacement, cross-project
 peer refusal, restart/unseal recovery, policy-before-credential ordering, and
 the absence of real credentials from runtime homes.
@@ -130,9 +131,9 @@ Already true today (Claude and Codex paths, egress routing enabled):
   (allowlisted by exact name and value); every other query parameter, alternate
   method, fragment, and account/admin/usage/batch path is rejected before
   credential resolution.
-- Exact Codex allowlist: only `GET /codex/models` and `POST /codex/responses`,
-  with no query or fragment, mapped to fixed `chatgpt.com/backend-api/codex/*`
-  upstreams.
+- Exact Codex allowlist: only `GET /codex/models`, `POST /codex/responses`, and
+  `POST /codex/images/{generations,edits}`, with no query or fragment, mapped to
+  fixed `chatgpt.com/backend-api/codex/*` upstreams.
 - Error responses toward the Sandbox are credential-free.
 - Every proxied Claude and Codex request is observable without retaining request
   content. Gateway and Sandbox connector each report one record per request —
@@ -311,7 +312,8 @@ credential straight to the attacker. Instead:
 The original spike used disposable local connector and Codex-home fixtures.
 The production foundation now lives in the standalone gateway: a
 separate encrypted Codex spill, a serialized write-ahead refresh authority, and
-strict `/codex/models` + `/codex/responses` adapters with transparent responses.
+strict `/codex/models`, `/codex/responses`, and `/codex/images/{generations,edits}`
+adapters with transparent responses.
 A pinned-CLI probe verifies the custom-provider request contract. The Server now
 projects the stored login with a source revision, and the gateway reports a
 rotated bundle over its private control socket. Persistence is compare-and-swap:

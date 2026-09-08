@@ -2,10 +2,16 @@ import type { CodexGatewayCredential } from './codex-credential-authority.js';
 
 export const CODEX_EGRESS_ORIGIN = 'https://chatgpt.com';
 const CODEX_EGRESS_PLACEHOLDER = 'Bearer verity-codex-gateway-placeholder-v1';
+const CODEX_ACTOR_PLACEHOLDER = 'verity-codex-gateway-placeholder-v1';
 
 const ROUTES = new Map<string, { method: string; upstreamPath: string }>([
   ['/codex/models', { method: 'GET', upstreamPath: '/backend-api/codex/models' }],
   ['/codex/responses', { method: 'POST', upstreamPath: '/backend-api/codex/responses' }],
+  [
+    '/codex/images/generations',
+    { method: 'POST', upstreamPath: '/backend-api/codex/images/generations' },
+  ],
+  ['/codex/images/edits', { method: 'POST', upstreamPath: '/backend-api/codex/images/edits' }],
 ]);
 
 const FORBIDDEN_CREDENTIAL_HEADERS = new Set([
@@ -52,6 +58,15 @@ export function validateCodexEgress(input: {
         throw new CodexEgressPolicyError('Codex egress placeholder credential is invalid');
       }
       placeholderSeen = true;
+      continue;
+    }
+    // Codex uses this fixed marker to expose its subscription-backed image tool to a
+    // custom provider. It is capability metadata, not an upstream credential: the
+    // gateway authenticates with the server-held subscription below.
+    if (name === 'x-openai-actor-authorization') {
+      if (value !== CODEX_ACTOR_PLACEHOLDER) {
+        throw new CodexEgressPolicyError('Codex egress actor placeholder is invalid');
+      }
       continue;
     }
     if (FORBIDDEN_CREDENTIAL_HEADERS.has(name)) {

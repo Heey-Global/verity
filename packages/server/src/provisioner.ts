@@ -1405,6 +1405,7 @@ export function codexGatewayConfig(connectorPort: number): string {
     'name = "Verity Gateway"',
     `base_url = "http://127.0.0.1:${String(connectorPort)}/codex"`,
     'env_key = "VERITY_CODEX_PLACEHOLDER"',
+    'http_headers = { "x-openai-actor-authorization" = "verity-codex-gateway-placeholder-v1" }',
     'wire_api = "responses"',
     'requires_openai_auth = false',
   ].join('\n');
