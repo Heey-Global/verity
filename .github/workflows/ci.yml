@@ -1,7 +1,22 @@
 name: verity-ci
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release-train:
+        description: Scope checks to a generated Release Please PR
+        required: false
+        type: choice
+        default: full
+        options:
+          - full
+          - backend
+          - mobile
+          - website
+      release-pr:
+        description: Generated Release Please PR number (required with a release train)
+        required: false
+        type: string
   push:
     branches: [main]
   pull_request:
@@ -53,6 +68,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TRAIN: ${{ inputs['release-train'] || 'full' }}
+          RELEASE_PR: ${{ inputs['release-pr'] || '' }}
         run: |
           set -euo pipefail
 
@@ -64,6 +81,77 @@ jobs:
           mobile_app=false
           server_image=false
           agent_seed_drift=false
+
+          # Release Please PRs opened with GITHUB_TOKEN do not emit a pull_request
+          # event, so release.yml dispatches this workflow explicitly and names the
+          # isolated train. Keep a plain manual dispatch broad, but do not turn a
+          # mobile or website version bump into a complete backend test matrix.
+          release_scoped=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${RELEASE_TRAIN:-full}" != "full" ]; then
+              if [[ ! "${RELEASE_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
+                echo "::error::A valid Release Please PR number is required for scoped CI" >&2
+                exit 1
+              fi
+              pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR}" --jq \
+                '[.user.login, .base.ref, .head.ref, .head.sha] | join("|")')"
+              expected="github-actions[bot]|main|${GITHUB_REF_NAME}|${GITHUB_SHA}"
+              if [ "$pr" != "$expected" ]; then
+                echo "::error::PR ${RELEASE_PR} is not the Release Please PR for this ref" >&2
+                exit 1
+              fi
+
+              mapfile -t release_files < <(gh api --paginate \
+                "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR}/files" --jq '.[].filename')
+              if [ "${#release_files[@]}" -eq 0 ]; then
+                echo "::error::Release Please PR ${RELEASE_PR} has no changed files" >&2
+                exit 1
+              fi
+              for file in "${release_files[@]}"; do
+                case "${RELEASE_TRAIN}:${file}" in
+                  backend:CHANGELOG.md|backend:version.txt|backend:.release-please-manifest.backend.json)
+                    :
+                    ;;
+                  mobile:apps/mobile/CHANGELOG.md|mobile:apps/mobile/app.config.ts|mobile:apps/mobile/version.txt|mobile:.release-please-manifest.mobile.json)
+                    :
+                    ;;
+                  website:docs/website/CHANGELOG.md|website:docs/website/version.txt|website:.release-please-manifest.website.json)
+                    :
+                    ;;
+                  *)
+                    echo "::error::${file} does not belong to the ${RELEASE_TRAIN} release train" >&2
+                    exit 1
+                    ;;
+                esac
+              done
+            fi
+            case "${RELEASE_TRAIN:-full}" in
+              full)
+                ;;
+              backend)
+                lint=true
+                typecheck=true
+                test=true
+                installer=true
+                server_image=true
+                release_scoped=true
+                ;;
+              mobile)
+                # mobile-app builds @verity/mobile before checking the Expo app.
+                mobile_app=true
+                release_scoped=true
+                ;;
+              website)
+                # The website has no gated CI job. public-snapshot and ci-checks
+                # are unconditional, and release.yml owns its image build.
+                release_scoped=true
+                ;;
+              *)
+                echo "::error::Unknown release train '${RELEASE_TRAIN}'" >&2
+                exit 1
+                ;;
+            esac
+          fi
 
           # The `case` table below is a PRE-merge gate and stays one, even though it
           # no longer has the hole it was written around: an unnamed path used to
@@ -173,7 +261,9 @@ jobs:
             fi
           fi
 
-          if [ "$release_only" = "true" ]; then
+          if [ "$release_scoped" = "true" ]; then
+            echo "::notice::running checks scoped to the ${RELEASE_TRAIN} release train"
+          elif [ "$release_only" = "true" ]; then
             echo "::notice::release-please commit — no source file changed, every job skipped"
           elif [ "${{ github.event_name }}" != "pull_request" ]; then
             lint=true

@@ -64,6 +64,22 @@ describe('release-please train isolation', () => {
     expect(existsSync('release-please-config.json')).toBe(false);
     expect(existsSync('.release-please-manifest.json')).toBe(false);
   });
+
+  it('dispatches each generated PR with its owning train', () => {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const dispatch = release.jobs['release-please']?.steps?.find(
+      (step) => step.name === 'Run checks for release PRs',
+    );
+
+    expect(dispatch?.run).toContain(
+      'gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"',
+    );
+    for (const train of trains) {
+      expect(dispatch?.run).toContain(`["${train}", "${train.toUpperCase()}_PRS_JSON"]`);
+    }
+  });
 });
 
 describe('Verity website publication smoke', () => {
@@ -2549,6 +2565,11 @@ describe('manual server image smoke', () => {
  */
 describe('changed-area detector', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    on: {
+      workflow_dispatch?: {
+        inputs?: Record<string, { default?: string; options?: string[] }>;
+      };
+    };
     jobs: { changes: WorkflowJob };
   };
   const detect = workflow.jobs.changes.steps.find((step) => step.id === 'detect');
@@ -2563,10 +2584,24 @@ describe('changed-area detector', () => {
     'agent_seed_drift',
   ] as const;
 
+  it('offers the full manual run and every isolated release train', () => {
+    const input = workflow.on.workflow_dispatch?.inputs?.['release-train'];
+    expect(input?.default).toBe('full');
+    expect(input?.options).toEqual(['full', 'backend', 'mobile', 'website']);
+  });
+
   // The step's own list, not a copy of it: a test that restated these paths would
   // keep passing while the workflow drifted, and the assertions below are only
   // meaningful against whatever the shell actually treats as inert.
   const releaseManaged = (/\n +([^\n(]+)\) ;;\n/.exec(detect?.run ?? '')?.[1] ?? '').split('|');
+  const releaseScopedFiles = Object.fromEntries(
+    [...(detect?.run ?? '').matchAll(/\n +(backend|mobile|website):([^\n)]+)\)\n/g)].map(
+      ([, train, patterns]) => [
+        train,
+        (patterns ?? '').split('|').map((pattern) => pattern.replace(/^\w+:/, '')),
+      ],
+    ),
+  ) as Record<'backend' | 'mobile' | 'website', string[]>;
 
   const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
     .split('\n')
@@ -2600,7 +2635,14 @@ describe('changed-area detector', () => {
 
   /** Runs the real step with `git` answering `changed`, and reads its outputs. */
   const run = async (
-    event: { name: string; before?: string; baseRef?: string; baseSha?: string },
+    event: {
+      name: string;
+      before?: string;
+      baseRef?: string;
+      baseSha?: string;
+      releaseTrain?: 'backend' | 'mobile' | 'website';
+      releasePr?: string;
+    },
     changed: string[],
     options: {
       beforeReachable?: boolean;
@@ -2609,6 +2651,8 @@ describe('changed-area detector', () => {
       added?: string[];
       renamedFrom?: string[];
       baseVerdict?: string | null;
+      releaseAuthor?: string;
+      releaseFiles?: string[];
     } = {},
   ): Promise<Record<string, string>> => {
     const {
@@ -2628,15 +2672,25 @@ describe('changed-area detector', () => {
       // What the base commit's own CI run reports. `null` is an API that would
       // not answer at all, which is not a verdict and must not be read as one.
       baseVerdict = 'completed/success',
+      releaseAuthor = 'github-actions[bot]',
+      releaseFiles,
     } = options;
+    const generatedFiles = releaseFiles ?? releaseScopedFiles[event.releaseTrain ?? 'backend'];
     const kept = changed.filter((file) => !deleted.includes(file));
     const dir = await mkdtemp(join(tmpdir(), 'ci-detect-'));
     try {
       await writeFile(
         join(dir, 'gh'),
-        baseVerdict === null
-          ? '#!/usr/bin/env bash\necho "gh: api unreachable" >&2\nexit 1\n'
-          : `#!/usr/bin/env bash\nprintf '%s\\n' ${JSON.stringify(baseVerdict)}\n`,
+        '#!/usr/bin/env bash\n' +
+          `if [[ "$*" == *'/pulls/${event.releasePr ?? '119'}/files'* ]]; then\n` +
+          `  ${list(generatedFiles)}\n` +
+          `elif [[ "$*" == *'/pulls/${event.releasePr ?? '119'}'* ]]; then\n` +
+          `  printf '%s\\n' ${JSON.stringify(`${releaseAuthor}|main|release-branch|release-sha`)}\n` +
+          'else\n' +
+          (baseVerdict === null
+            ? '  echo "gh: api unreachable" >&2\n  exit 1\n'
+            : `  printf '%s\\n' ${JSON.stringify(baseVerdict)}\n`) +
+          'fi\n',
         { mode: 0o755 },
       );
       await writeFile(
@@ -2687,6 +2741,10 @@ describe('changed-area detector', () => {
           PATH: `${dir}:${process.env.PATH ?? ''}`,
           GITHUB_OUTPUT: output,
           GITHUB_REPOSITORY: 'heey-global/verity',
+          GITHUB_REF_NAME: 'release-branch',
+          GITHUB_SHA: 'release-sha',
+          RELEASE_TRAIN: event.releaseTrain ?? 'full',
+          RELEASE_PR: event.releasePr ?? '',
         },
         stdio: 'pipe',
       });
@@ -3189,6 +3247,40 @@ describe('changed-area detector', () => {
 
   it('runs everything on a manual dispatch, which has no base to diff against', async () => {
     expect(await run({ name: 'workflow_dispatch' }, [])).toEqual(all('true'));
+  });
+
+  it('scopes generated release PR dispatches to their train', async () => {
+    expect(
+      await run({ name: 'workflow_dispatch', releaseTrain: 'backend', releasePr: '119' }, []),
+    ).toEqual({
+      ...all('false'),
+      lint: 'true',
+      typecheck: 'true',
+      test: 'true',
+      installer: 'true',
+      server_image: 'true',
+    });
+    expect(
+      await run({ name: 'workflow_dispatch', releaseTrain: 'mobile', releasePr: '119' }, []),
+    ).toEqual({
+      ...all('false'),
+      mobile_app: 'true',
+    });
+    expect(
+      await run({ name: 'workflow_dispatch', releaseTrain: 'website', releasePr: '119' }, []),
+    ).toEqual(all('false'));
+  });
+
+  it('rejects scoped dispatches that are not the generated Release Please PR', async () => {
+    const event = {
+      name: 'workflow_dispatch',
+      releaseTrain: 'mobile' as const,
+      releasePr: '119',
+    };
+    await expect(run(event, [], { releaseAuthor: 'someone-else' })).rejects.toThrow();
+    await expect(
+      run(event, [], { releaseFiles: ['packages/server/src/app.ts'] }),
+    ).rejects.toThrow();
   });
 
   it('still gates a pull request on the changed paths', async () => {
