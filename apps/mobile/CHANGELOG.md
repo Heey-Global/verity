@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.20.0](https://github.com/Heey-Global/verity/compare/mobile-v1.19.0...mobile-v1.20.0) (2026-09-08)
+
+
+### Bug Fixes
+
+* **mobile:** preserve pinned transport errors ([88e25e6](https://github.com/Heey-Global/verity/commit/88e25e6b6a1bf6a062badcd535b7feaf7f1d92f2))
+* **mobile:** preserve pinned transport errors ([e2b4b82](https://github.com/Heey-Global/verity/commit/e2b4b82c1e71372973d34d32209c577007814698))
+
 ## [1.19.0](https://github.com/Heey-Global/verity/compare/mobile-v1.18.0...mobile-v1.19.0) (2026-09-08)
 
 
