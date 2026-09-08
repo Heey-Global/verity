@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.19.0](https://github.com/Heey-Global/verity/compare/mobile-v1.18.0...mobile-v1.19.0) (2026-09-08)
+
+
+### Bug Fixes
+
+* **mobile:** expose generic Apple TLS diagnostics ([ff9e636](https://github.com/Heey-Global/verity/commit/ff9e63637391b241d3b4f8b7606b56d48ee62214))
+* **mobile:** expose pinned TLS diagnostics ([cee8db5](https://github.com/Heey-Global/verity/commit/cee8db527c8cd42097fa633724186618ec4ae3c2))
+* **pairing:** use a local CA certificate chain ([3e6f746](https://github.com/Heey-Global/verity/commit/3e6f7468fe3eb463ff140f50a1389e8c65e4a190))
+
 ## [1.18.0](https://github.com/Heey-Global/verity/compare/mobile-v1.17.0...mobile-v1.18.0) (2026-09-08)
 
 
