@@ -214,26 +214,26 @@ jobs:
         run: |
           set -euo pipefail
           node -e '
-            const prs = ["BACKEND_PRS_JSON", "MOBILE_PRS_JSON", "WEBSITE_PRS_JSON"]
-              .flatMap((name) => {
+            const prs = [["backend", "BACKEND_PRS_JSON"], ["mobile", "MOBILE_PRS_JSON"], ["website", "WEBSITE_PRS_JSON"]]
+              .flatMap(([train, name]) => {
                 const value = JSON.parse(process.env[name] || "[]");
-                return Array.isArray(value) ? value : [value];
+                return (Array.isArray(value) ? value : [value]).map((pr) => ({ train, pr }));
               });
-            for (const pr of Array.isArray(prs) ? prs : [prs]) {
+            for (const { train, pr } of prs) {
               const branch = pr.headBranchName || pr.headRefName || pr.branchName;
               if (!branch) throw new Error("release-please PR has no head branch");
-              process.stdout.write(`${branch}\n`);
+              process.stdout.write(`${train}\t${branch}\n`);
             }
-          ' | while IFS= read -r branch; do
-            echo "Dispatching CI for $branch"
-            gh workflow run ci.yml --ref "$branch"
-            echo "Dispatching Gitleaks for $branch"
-            gh workflow run gitleaks-dispatch.yml --ref "$branch"
+          ' | while IFS=$'\t' read -r train branch; do
             pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
             if [[ -z "$pr_number" ]]; then
               echo "::error::Could not resolve the release PR for $branch." >&2
               exit 1
             fi
+            echo "Dispatching $train CI for $branch"
+            gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"
+            echo "Dispatching Gitleaks for $branch"
+            gh workflow run gitleaks-dispatch.yml --ref "$branch"
             # Release Please normally changes only these three mobile metadata
             # files. Native source changes were compiled on their originating
             # PRs, and the final signed device archive is built from the merged
