@@ -476,9 +476,10 @@ describe('mobile OTA promotion', () => {
     expect(create).not.toContain('--branch');
     expect(source).toContain('automation/promote-${OTA_TAG}');
     expect(source).toContain('--state open');
-    expect(source).toContain('git/ref/heads/${promotion_branch}');
-    expect(source).toContain('--method PATCH');
-    expect(source).toContain('-F force=true');
+    expect(source).toContain(
+      'git push --force origin "$GITHUB_SHA:refs/heads/${promotion_branch}"',
+    );
+    expect(source).not.toContain('git/ref/heads/${promotion_branch}');
     expect(source).toContain('^automation/promote-mobile-v');
     expect(source).toContain('createCommitOnBranch');
     expect(source).toContain('signature.isValid');
@@ -508,14 +509,9 @@ describe('mobile OTA promotion', () => {
 set -euo pipefail
 printf '%s\\n' "$*" >> "$GH_CALLS"
 if [[ "$*" == 'pr list '* ]]; then exit 0; fi
-if [[ "$*" == api\\ repos/*/git/ref/heads/* ]]; then
-  [[ "$GH_MODE" == transient-patch ]] && echo feedface
-  exit $([[ "$GH_MODE" == transient-patch ]] && echo 0 || echo 1)
-fi
-if [[ "$*" == 'api --method POST '* || "$*" == 'api --method PATCH '* ]]; then
-  operation="\${1:-} \${2:-} \${3:-}"
-  count="$(grep -c "^$operation" "$GH_CALLS" || true)"
-  if [[ "$GH_MODE" == transient-* && "$count" == 1 ]]; then
+if [[ "$*" == 'api graphql '* ]]; then
+  count="$(grep -c '^api graphql ' "$GH_CALLS" || true)"
+  if [[ "$GH_MODE" == transient-graphql && "$count" == 1 ]]; then
     echo 'gh: Reference does not exist (HTTP 422)' >&2
     exit 1
   fi
@@ -523,19 +519,14 @@ if [[ "$*" == 'api --method POST '* || "$*" == 'api --method PATCH '* ]]; then
     echo 'gh: permission denied (HTTP 403)' >&2
     exit 1
   fi
-  exit 0
-fi
-if [[ "$*" == 'api graphql '* ]]; then
-  count="$(grep -c '^api graphql ' "$GH_CALLS" || true)"
-  if [[ "$GH_MODE" == transient-graphql && "$count" == 1 ]]; then
-    echo 'gh: Reference does not exist (HTTP 422)' >&2
-    exit 1
-  fi
   echo '{"data":{"createCommitOnBranch":{"commit":{"signature":{"isValid":true}}}}}'
 fi
 `,
       { mode: 0o755 },
     );
+    const git = join(dir, 'git');
+    await writeFile(git, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$GIT_CALLS"\n');
+    await chmod(git, 0o755);
     const sleep = join(dir, 'sleep');
     await writeFile(sleep, '#!/usr/bin/env bash\nexit 0\n');
     await chmod(sleep, 0o755);
@@ -547,6 +538,7 @@ fi
           PATH: `${dir}:${process.env.PATH ?? ''}`,
           GH_CALLS: join(dir, `${mode}.calls`),
           GH_MODE: mode,
+          GIT_CALLS: join(dir, `${mode}.git-calls`),
           GITHUB_REPOSITORY: 'example/verity',
           GITHUB_SHA: '0123456789abcdef',
           OTA_BRANCH: 'staging-mobile-v1.18.1',
@@ -557,17 +549,18 @@ fi
       });
 
     try {
-      for (const mode of ['transient-post', 'transient-patch', 'transient-graphql']) {
-        const transient = run(mode);
-        expect(transient.status, `${mode}: ${transient.stderr}`).toBe(0);
-        expect(readFileSync(join(dir, `${mode}.calls`), 'utf8')).toContain('pr create');
-      }
+      const transient = run('transient-graphql');
+      expect(transient.status, transient.stderr).toBe(0);
+      expect(readFileSync(join(dir, 'transient-graphql.calls'), 'utf8')).toContain('pr create');
+      expect(readFileSync(join(dir, 'transient-graphql.git-calls'), 'utf8')).toContain(
+        'push --force origin 0123456789abcdef:refs/heads/automation/promote-mobile-v1.18.1',
+      );
 
       const permanent = run('permanent');
       expect(permanent.status).not.toBe(0);
       expect(permanent.stderr).toContain('permission denied');
       expect(
-        readFileSync(join(dir, 'permanent.calls'), 'utf8').match(/^api --method POST /gm),
+        readFileSync(join(dir, 'permanent.calls'), 'utf8').match(/^api graphql /gm),
       ).toHaveLength(1);
     } finally {
       await rm(dir, { recursive: true, force: true });
