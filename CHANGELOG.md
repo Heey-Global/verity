@@ -1,5 +1,20 @@
 # Changelog
 
+## [17.3.0](https://github.com/Heey-Global/verity/compare/v17.2.3...v17.3.0) (2026-09-08)
+
+
+### Features
+
+* **codex:** enable subscription-backed image generation ([fb585a1](https://github.com/Heey-Global/verity/commit/fb585a14d61d3f671c0136ebd25f5cf5d0420a7a))
+* **codex:** enable subscription-backed image generation ([56a09f3](https://github.com/Heey-Global/verity/commit/56a09f3d069e97a7cd13e6541ea13f9ed3bbc750))
+
+
+### Bug Fixes
+
+* **mobile:** create OTA promotion refs via Git ([955f8d8](https://github.com/Heey-Global/verity/commit/955f8d8ced210bfe43b9bf724c92b7f019cc426f))
+* **mobile:** retry OTA promotion ref creation ([3598130](https://github.com/Heey-Global/verity/commit/359813079c191d91c9066046d85250fd3756a3e8))
+* **pairing:** use a local CA certificate chain ([3e6f746](https://github.com/Heey-Global/verity/commit/3e6f7468fe3eb463ff140f50a1389e8c65e4a190))
+
 ## [17.2.3](https://github.com/Heey-Global/verity/compare/v17.2.2...v17.2.3) (2026-09-08)
 
 
