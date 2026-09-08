@@ -152,6 +152,24 @@ describe('onboarding connection entry', () => {
     expect(screen.getByLabelText('Scan QR code')).toBeEnabled();
   });
 
+  it('preserves the categorized native pinned TLS failure', async () => {
+    mockEstablishPairing.mockRejectedValue(
+      new Error(
+        'GenericException: Pinned TLS verification failed [TRUST_EVALUATION_FAILED:CSSMERR_TP_INVALID_CERTIFICATE].',
+      ),
+    );
+    render(<OnboardingServerUrl />);
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => scan?.({ data: 'verity-pair://payload' }));
+
+    expect(
+      await screen.findByText(
+        /TLS diagnostic: TRUST_EVALUATION_FAILED:CSSMERR_TP_INVALID_CERTIFICATE/,
+      ),
+    ).toBeOnTheScreen();
+  });
+
   it('pairs immediately from a pasted installer pairing code', async () => {
     mockPaste.mockResolvedValue('verity://pair?payload=installer');
     mockEstablishPairing.mockResolvedValue(status());
