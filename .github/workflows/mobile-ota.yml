@@ -266,20 +266,38 @@ jobs:
               echo "::error::Refusing to manage unexpected promotion branch: $promotion_branch" >&2
               exit 1
             fi
-            existing_head="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${promotion_branch}" \
-              --jq '.object.sha' 2>/dev/null || true)"
-            if [[ -n "$existing_head" ]]; then
-              # A previous attempt may have created the workflow-owned branch
-              # before failing to create its commit or PR. Restore the known
-              # candidate head so createCommitOnBranch remains retry-safe.
-              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${promotion_branch}" \
-                -f sha="$GITHUB_SHA" -F force=true >/dev/null
-            else
-              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-                -f ref="refs/heads/${promotion_branch}" \
-                -f sha="$GITHUB_SHA" >/dev/null
-            fi
-            commit_result="$(gh api graphql \
+            # GitHub's Git refs and GraphQL backends can briefly disagree just
+            # after a push or ref creation. Retry the complete, idempotent setup
+            # instead of orphaning an already-published EAS candidate.
+            commit_result=''
+            for attempt in {1..6}; do
+              existing_head="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${promotion_branch}" \
+                --jq '.object.sha' 2>/dev/null || true)"
+              ref_failed=false
+              if [[ -n "$existing_head" ]]; then
+                # A previous attempt may have created the workflow-owned branch
+                # before failing to create its commit or PR. Restore the known
+                # candidate head so createCommitOnBranch remains retry-safe.
+                if ! ref_error="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${promotion_branch}" \
+                  -f sha="$GITHUB_SHA" -F force=true 2>&1 >/dev/null)"; then
+                  ref_failed=true
+                fi
+              else
+                if ! ref_error="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                  -f ref="refs/heads/${promotion_branch}" \
+                  -f sha="$GITHUB_SHA" 2>&1 >/dev/null)"; then
+                  ref_failed=true
+                fi
+              fi
+              if [[ "$ref_failed" == true ]]; then
+                if [[ "$ref_error" != *'Reference does not exist'* || "$attempt" == 6 ]]; then
+                  echo "$ref_error" >&2
+                  exit 1
+                fi
+                sleep "$attempt"
+                continue
+              fi
+              if commit_result="$(gh api graphql \
               -f query='mutation($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) {
                 createCommitOnBranch(input: {
                   branch: { repositoryNameWithOwner: $repository, branchName: $branch },
@@ -293,7 +311,16 @@ jobs:
               -f expectedHeadOid="$GITHUB_SHA" \
               -f message="chore(mobile): promote OTA $OTA_VERSION" \
               -f path='apps/mobile/ota-promotion.json' \
-              -f contents="$candidate_contents")"
+              -f contents="$candidate_contents" 2>"$RUNNER_TEMP/create-promotion-commit.err")"; then
+                break
+              fi
+              commit_error="$(<"$RUNNER_TEMP/create-promotion-commit.err")"
+              if [[ "$commit_error" != *'Reference does not exist'* || "$attempt" == 6 ]]; then
+                echo "$commit_error" >&2
+                exit 1
+              fi
+              sleep "$attempt"
+            done
             if [[ "$(jq -r '.data.createCommitOnBranch.commit.signature.isValid' <<<"$commit_result")" != true ]]; then
               echo '::error::GitHub did not create a verified promotion commit.' >&2
               exit 1
