@@ -18,6 +18,9 @@ const boundaryFiles = {
 };
 const protectedPath = '/usr/local/bin/verity-script-sandbox';
 const architectures = ['amd64', 'arm64'];
+// Boundary sources are intentionally self-contained executables and can exceed
+// child_process's 1 MiB default as dependencies are bundled into them.
+const gitOutputLimit = 16 * 1024 * 1024;
 
 /** @param {unknown} value */
 function parseVersion(value) {
@@ -59,7 +62,7 @@ function hashesAt(ref, architecture) {
   const hashes = Object.fromEntries(
     Object.entries(boundaryFiles).map(([installedPath, sourcePath]) => [
       installedPath,
-      sha256(execFileSync('git', ['show', `${ref}:${sourcePath}`])),
+      sha256(execFileSync('git', ['show', `${ref}:${sourcePath}`], { maxBuffer: gitOutputLimit })),
     ]),
   );
   hashes[protectedPath] = protectedHash(
@@ -68,6 +71,7 @@ function hashesAt(ref, architecture) {
       ['show', `${ref}:features/verity-sandbox-toolkit/prebuilt/sha256sums.txt`],
       {
         encoding: 'utf8',
+        maxBuffer: gitOutputLimit,
       },
     ),
     architecture,
@@ -115,6 +119,7 @@ if (typeof minimumVersion !== 'string' || typeof currentVersion !== 'string') {
 const releases = new Map();
 const tags = execFileSync('git', ['tag', '--merged', 'HEAD', '--list', 'v*'], {
   encoding: 'utf8',
+  maxBuffer: gitOutputLimit,
 })
   .split('\n')
   .filter(Boolean);
