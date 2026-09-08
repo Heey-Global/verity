@@ -34,6 +34,7 @@ test('creates stable identity and TLS material with a fresh compact one-time cod
   assert.equal(first.status, 0, first.stderr);
   const firstIdentity = readFileSync(join(state, 'pairing-identity.pem'), 'utf8');
   const firstKey = readFileSync(join(state, 'tls-key.pem'), 'utf8');
+  const firstCa = readFileSync(join(state, 'tls-ca-cert.pem'), 'utf8');
   const firstCode = readFileSync(join(state, 'pairing-code'), 'utf8');
   const parsed = new URL(first.stdout.trim());
   const payload = JSON.parse(
@@ -52,6 +53,7 @@ test('creates stable identity and TLS material with a fresh compact one-time cod
   assert.equal(second.status, 0, second.stderr);
   assert.equal(readFileSync(join(state, 'pairing-identity.pem'), 'utf8'), firstIdentity);
   assert.equal(readFileSync(join(state, 'tls-key.pem'), 'utf8'), firstKey);
+  assert.equal(readFileSync(join(state, 'tls-ca-cert.pem'), 'utf8'), firstCa);
   assert.notEqual(readFileSync(join(state, 'pairing-code'), 'utf8'), firstCode);
   const secondPayload = JSON.parse(
     Buffer.from(new URL(second.stdout.trim()).searchParams.get('payload'), 'base64url').toString(),
@@ -67,7 +69,15 @@ test('creates stable identity and TLS material with a fresh compact one-time cod
   assert.match(certificate.stdout, /IP Address:192\.168\.1\.42/);
   const parsedCertificate = new X509Certificate(readFileSync(join(state, 'tls-cert.pem')));
   assert.equal(parsedCertificate.ca, false);
+  assert.match(parsedCertificate.issuer, /CN=Verity local pairing CA/);
   assert.ok(parsedCertificate.keyUsage?.includes('1.3.6.1.5.5.7.3.1'));
+  const parsedCa = new X509Certificate(readFileSync(join(state, 'tls-ca-cert.pem')));
+  assert.equal(parsedCa.ca, true);
+  assert.equal(parsedCertificate.verify(parsedCa.publicKey), true);
+  assert.equal(
+    readFileSync(join(state, 'tls-cert.pem'), 'utf8').match(/BEGIN CERTIFICATE/g)?.length,
+    2,
+  );
   const constraints = spawnSync(
     'openssl',
     ['x509', '-in', join(state, 'tls-cert.pem'), '-noout', '-ext', 'basicConstraints'],
@@ -126,6 +136,50 @@ test('uses a selected DNS name in both the QR URL and renewed certificate', () =
   assert.match(renewed.stdout, /DNS:verity-new\.home\.example/);
 });
 
+test('rotates the legacy self-signed leaf key instead of preserving its pin', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-legacy-'));
+  const generated = spawnSync('openssl', [
+    'ecparam',
+    '-name',
+    'prime256v1',
+    '-genkey',
+    '-noout',
+    '-out',
+    join(state, 'tls-key.pem'),
+  ]);
+  assert.equal(generated.status, 0, generated.stderr?.toString());
+  const legacyKey = readFileSync(join(state, 'tls-key.pem'), 'utf8');
+
+  const migrated = run(state);
+  assert.equal(migrated.status, 0, migrated.stderr);
+  assert.notEqual(readFileSync(join(state, 'tls-key.pem'), 'utf8'), legacyKey);
+  assert.equal(new X509Certificate(readFileSync(join(state, 'tls-ca-cert.pem'))).ca, true);
+});
+
+test('repairs mismatched persisted CA material atomically', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-ca-repair-'));
+  const initial = run(state);
+  assert.equal(initial.status, 0, initial.stderr);
+  const leafKey = readFileSync(join(state, 'tls-key.pem'), 'utf8');
+  const replacement = spawnSync('openssl', [
+    'ecparam',
+    '-name',
+    'prime256v1',
+    '-genkey',
+    '-noout',
+    '-out',
+    join(state, 'tls-ca-key.pem'),
+  ]);
+  assert.equal(replacement.status, 0, replacement.stderr?.toString());
+
+  const repaired = run(state);
+  assert.equal(repaired.status, 0, repaired.stderr);
+  assert.equal(readFileSync(join(state, 'tls-key.pem'), 'utf8'), leafKey);
+  const leaf = new X509Certificate(readFileSync(join(state, 'tls-cert.pem')));
+  const ca = new X509Certificate(readFileSync(join(state, 'tls-ca-cert.pem')));
+  assert.equal(leaf.verify(ca.publicKey), true);
+});
+
 test('rejects an invalid selected pairing address', () => {
   const state = mkdtempSync(join(tmpdir(), 'verity-pairing-host-'));
   const result = run(state, { VERITY_PAIRING_HOST: 'https://verity.example' });
@@ -147,7 +201,7 @@ test('rejects malformed DNS labels', () => {
   }
 });
 
-test('bounds retained certificate addresses across repeated host changes', () => {
+test('bounds CA-era certificate addresses across repeated host changes', () => {
   const state = mkdtempSync(join(tmpdir(), 'verity-pairing-bounded-sans-'));
   for (let index = 0; index < 20; index += 1) {
     const result = run(state, { VERITY_PAIRING_HOST: `verity-${index}.home.example` });
