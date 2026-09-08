@@ -38,6 +38,10 @@ type TestState =
 
 function pairingErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  const pinnedFailure = /Pinned TLS verification failed \[([^\]]+)\]/i.exec(message)?.[1];
+  if (pinnedFailure !== undefined) {
+    return `Could not establish a secure connection to this server. TLS diagnostic: ${pinnedFailure}`;
+  }
   if (/TLS|SSL|certificate|secure connection/i.test(message)) {
     return 'Could not establish a secure connection to this server. Create a new pairing code and try again.';
   }
