@@ -288,6 +288,8 @@ jobs:
       MOBILE_REF: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/main' || needs.release-please.outputs.mobile-sha }}
     permissions:
       contents: write
+      issues: write
+      pull-requests: read
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -514,7 +516,59 @@ jobs:
       - name: Publish verified native GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$MOBILE_TAG" --draft=false --latest=false
+        shell: bash
+        run: |
+          set -euo pipefail
+          # release-please normally replaces this label while creating the
+          # release. Recovery publishes an already-created draft without running
+          # that action. Move the label first, then roll it back if publication
+          # fails so either state remains retryable: pending+draft or tagged+public.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${MOBILE_TAG#mobile-v}"
+            pr_number="$(gh pr list --state merged \
+              --search "chore(main): release mobile ${version} in:title" \
+              --json number,title --jq \
+              'map(select(.title == "chore(main): release mobile '"$version"'"))[0].number // empty')"
+            if [ -z "$pr_number" ]; then
+              echo "::error::Could not resolve the release PR for $MOBILE_TAG." >&2
+              exit 1
+            fi
+            require_release_labels() {
+              expected_pending="$1"
+              expected_tagged="$2"
+              labels="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" --jq '.[].name')"
+              pending=false
+              tagged=false
+              grep -Fxq 'autorelease: pending' <<< "$labels" && pending=true
+              grep -Fxq 'autorelease: tagged' <<< "$labels" && tagged=true
+              if [ "$pending" != "$expected_pending" ] || [ "$tagged" != "$expected_tagged" ]; then
+                echo "::error::Release PR labels are pending=$pending tagged=$tagged; expected pending=$expected_pending tagged=$expected_tagged." >&2
+                return 1
+              fi
+            }
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+              -f 'labels[]=autorelease: tagged'
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels/autorelease%3A%20pending" || delete_status=$?
+            require_release_labels false true
+
+            publish_status=0
+            gh release edit "$MOBILE_TAG" --draft=false --latest=false || publish_status=$?
+            is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
+            if [ "$is_draft" = "true" ]; then
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+                -f 'labels[]=autorelease: pending'
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels/autorelease%3A%20tagged" || delete_status=$?
+              require_release_labels true false
+              [ "$publish_status" -ne 0 ] || publish_status=1
+              exit "${publish_status:-1}"
+            fi
+            require_release_labels false true
+          else
+            gh release edit "$MOBILE_TAG" --draft=false --latest=false
+          fi
 
   publish-toolkit:
     needs: [release-please, self-update-gate]

@@ -435,10 +435,19 @@ describe('native iOS compile gate', () => {
 
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-      jobs: Record<string, { 'runs-on': string; steps: WorkflowStep[] }>;
+      jobs: Record<
+        string,
+        {
+          'runs-on': string;
+          permissions?: Record<string, string>;
+          steps: WorkflowStep[];
+        }
+      >;
     };
     const job = release.jobs['publish-mobile-native'];
     expect(job?.['runs-on']).toBe('macos-26');
+    expect(job?.permissions?.issues).toBe('write');
+    expect(job?.permissions?.['pull-requests']).toBe('read');
     const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
     expect(commands).toContain('eas-cli@20.3.0 build');
     expect(commands).toContain('--platform ios');
@@ -461,6 +470,16 @@ describe('native iOS compile gate', () => {
     expect(commands).toContain('processingState');
     expect(commands).toContain('--retry 3 --retry-all-errors --max-time 30');
     expect(commands).toContain('App Store Connect check failed transiently');
+    expect(commands).toContain('labels/autorelease%3A%20pending');
+    expect(commands).toContain('labels[]=autorelease: tagged');
+    expect(commands.indexOf('labels[]=autorelease: tagged')).toBeLessThan(
+      commands.indexOf('labels/autorelease%3A%20pending'),
+    );
+    expect(commands.indexOf('labels/autorelease%3A%20pending')).toBeLessThan(
+      commands.indexOf('gh release edit'),
+    );
+    expect(commands).toContain('labels/autorelease%3A%20tagged');
+    expect(commands).toContain('labels[]=autorelease: pending');
     expect(commands.indexOf('altool --upload-app')).toBeLessThan(
       commands.indexOf('filter[version]=$next_build'),
     );
