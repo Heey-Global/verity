@@ -9,6 +9,15 @@ private enum PinnedTransportError: Error {
   case invalidIdentity
 }
 
+// GenericException stores its parameter but deliberately has no default reason.
+// Throwing it directly crosses the Expo bridge as "undefined reason", hiding the
+// URLSession code and the last TLS delegate phase needed to diagnose device-only
+// failures.
+private final class PinnedTransportException: GenericException<String>, @unchecked Sendable {
+  override var reason: String { param }
+  override var code: String { "ERR_PINNED_TRANSPORT" }
+}
+
 class VerityPinnedTransport: Module {
   private var webSockets: [String: (URLSession, URLSessionWebSocketTask, CertificatePinDelegate)] = [:]
   private let webSocketsLock = NSLock()
@@ -81,10 +90,10 @@ class VerityPinnedTransport: Module {
         result = try await session.data(for: request)
       } catch {
         if let failure = delegate.failure {
-          throw GenericException("Pinned TLS verification failed [\(failure)].")
+          throw PinnedTransportException("Pinned TLS verification failed [\(failure)].")
         }
         let native = error as NSError
-        throw GenericException(
+        throw PinnedTransportException(
           "Pinned TLS transport failed [\(native.domain):\(native.code):\(delegate.phase)].")
       }
       let (data, response) = result
