@@ -170,6 +170,48 @@ describe('onboarding connection entry', () => {
     ).toBeOnTheScreen();
   });
 
+  it('preserves a sanitized generic Apple TLS diagnostic', async () => {
+    const failure = new Error(
+      'A TLS error caused the secure connection to fail for https://verity.example/pair/identity?challenge=secret accessToken=topsecret raw pairing-code identity {"pairingCode":"pairing-secret\\\"suffix","clientSecret":"json-secret","refresh_token":"refresh-secret","Authorization":"Bearer auth-secret"}. (at ExpoModulesCore/ConcurrentFunctionDefinition.swift:90)',
+    ) as Error & { code: string };
+    failure.code = 'ERR_NETWORK_REQUEST_FAILED';
+    Object.assign(failure, {
+      nativeStackIOS: [
+        'request@/Users/alice/project/Transport.swift:90 Authorization: Bearer abc123',
+      ],
+    });
+    mockEstablishPairing.mockRejectedValue(failure);
+    render(<OnboardingServerUrl />);
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => scan?.({ data: 'verity-pair://payload' }));
+
+    expect(await screen.findByText(/Open technical details below/)).toBeOnTheScreen();
+    expect(screen.queryByText(/ERR_NETWORK_REQUEST_FAILED/)).toBeNull();
+    fireEvent.press(screen.getByLabelText('Toggle technical pairing details'));
+    expect(screen.getByText(/ERR_NETWORK_REQUEST_FAILED/)).toBeOnTheScreen();
+    expect(screen.getByText(/https:\/\/verity\.example\/\[path redacted\]/)).toBeOnTheScreen();
+    expect(screen.getByText(/Authorization: \[redacted\]/)).toBeOnTheScreen();
+    expect(screen.getByText(/\/\[path redacted\]/)).toBeOnTheScreen();
+    expect(
+      screen.queryByText(
+        /challenge=secret|topsecret|pairing-code|identity|pairing-secret|suffix|json-secret|refresh-secret|auth-secret|abc123|Users\/alice|ExpoModulesCore/,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps technical details available for an empty native rejection', async () => {
+    mockEstablishPairing.mockRejectedValue(undefined);
+    render(<OnboardingServerUrl />);
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => scan?.({ data: 'verity-pair://payload' }));
+
+    expect(await screen.findByText('Could not pair with this server.')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Toggle technical pairing details'));
+    expect(screen.getByText(/"errorName": "undefined"/)).toBeOnTheScreen();
+  });
+
   it('pairs immediately from a pasted installer pairing code', async () => {
     mockPaste.mockResolvedValue('verity://pair?payload=installer');
     mockEstablishPairing.mockResolvedValue(status());
