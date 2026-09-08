@@ -70,8 +70,24 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
       completionHandler(.cancelAuthenticationChallenge, nil)
       return
     }
-    // The installer's stable P-256 TLS key is the authority. Certificates can be
-    // renewed and IP endpoints changed without weakening the pin.
+
+    // A matching key is the authority, but URLSession still evaluates the
+    // self-signed leaf after `.useCredential`. Make that exact, already-pinned
+    // leaf the sole anchor so the remaining standard checks (hostname, validity,
+    // key usage) run against a trust graph iOS can accept. Without this explicit
+    // anchor iOS reports NSURLErrorSecureConnectionFailed even though the pin
+    // matched, because the certificate has no public CA above it.
+    guard
+      SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
+      SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+      SecTrustEvaluateWithError(trust, nil)
+    else {
+      completionHandler(.cancelAuthenticationChallenge, nil)
+      return
+    }
+
+    // The installer's stable P-256 TLS key remains the authority. Certificates
+    // can be renewed without breaking an existing pairing.
     completionHandler(.useCredential, URLCredential(trust: trust))
   }
 
