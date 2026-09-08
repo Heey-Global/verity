@@ -338,7 +338,7 @@ jobs:
                   lint=true
                   test=true
                   ;;
-                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose)
+                deploy/bin/verity-install|deploy/bin/verity-install.test.mjs|deploy/bin/verity-compose|deploy/bin/verity-pairing-material|deploy/bin/verity-pairing-material.test.mjs)
                   lint=true
                   test=true
                   installer=true
@@ -793,6 +793,8 @@ jobs:
           fi
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run the pairing material suite
+        run: node --test deploy/bin/verity-pairing-material.test.mjs
       # The suite's whole value depends on the namespace, so prove it is reachable
       # and fail with the reason in the step name — rather than inside the suite's
       # fail-closed fallback, where it reads as a broken test.

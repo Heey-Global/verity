@@ -109,6 +109,7 @@ temporary="$tls_cert.$$.tmp"
 openssl req -new -x509 -sha256 -days 397 -key "$tls_key" -out "$temporary" \
   -subj '/CN=Verity local control plane' \
   -addext "subjectAltName=$san" \
+  -addext 'basicConstraints=critical,CA:FALSE' \
   -addext 'keyUsage=digitalSignature,keyEncipherment' \
   -addext 'extendedKeyUsage=serverAuth'
 chmod 0644 "$temporary"

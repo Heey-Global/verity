@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { X509Certificate } from 'node:crypto';
 import {
   mkdtempSync,
   readFileSync,
@@ -64,6 +65,17 @@ test('creates stable identity and TLS material with a fresh compact one-time cod
   );
   assert.equal(certificate.status, 0, certificate.stderr);
   assert.match(certificate.stdout, /IP Address:192\.168\.1\.42/);
+  const parsedCertificate = new X509Certificate(readFileSync(join(state, 'tls-cert.pem')));
+  assert.equal(parsedCertificate.ca, false);
+  assert.ok(parsedCertificate.keyUsage?.includes('1.3.6.1.5.5.7.3.1'));
+  const constraints = spawnSync(
+    'openssl',
+    ['x509', '-in', join(state, 'tls-cert.pem'), '-noout', '-ext', 'basicConstraints'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(constraints.status, 0, constraints.stderr);
+  assert.match(constraints.stdout, /Basic Constraints: critical/);
+  assert.match(constraints.stdout, /CA:FALSE/);
 });
 
 test('refuses a symlink at every generated-material boundary', () => {
