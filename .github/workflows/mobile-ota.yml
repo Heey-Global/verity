@@ -266,37 +266,16 @@ jobs:
               echo "::error::Refusing to manage unexpected promotion branch: $promotion_branch" >&2
               exit 1
             fi
-            # GitHub's Git refs and GraphQL backends can briefly disagree just
-            # after a push or ref creation. Retry the complete, idempotent setup
-            # instead of orphaning an already-published EAS candidate.
+            # The REST ref endpoint rejects workflow-token branch creation with
+            # "Reference does not exist" in repositories governed by these
+            # rules. Checkout's authenticated Git transport is permitted, and
+            # force-updating this workflow-owned branch makes retries idempotent.
+            git push --force origin "$GITHUB_SHA:refs/heads/${promotion_branch}"
+
+            # GitHub's Git and GraphQL backends can briefly disagree just after
+            # the push, so retry only that propagation failure.
             commit_result=''
             for attempt in {1..6}; do
-              existing_head="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${promotion_branch}" \
-                --jq '.object.sha' 2>/dev/null || true)"
-              ref_failed=false
-              if [[ -n "$existing_head" ]]; then
-                # A previous attempt may have created the workflow-owned branch
-                # before failing to create its commit or PR. Restore the known
-                # candidate head so createCommitOnBranch remains retry-safe.
-                if ! ref_error="$(gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${promotion_branch}" \
-                  -f sha="$GITHUB_SHA" -F force=true 2>&1 >/dev/null)"; then
-                  ref_failed=true
-                fi
-              else
-                if ! ref_error="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-                  -f ref="refs/heads/${promotion_branch}" \
-                  -f sha="$GITHUB_SHA" 2>&1 >/dev/null)"; then
-                  ref_failed=true
-                fi
-              fi
-              if [[ "$ref_failed" == true ]]; then
-                if [[ "$ref_error" != *'Reference does not exist'* || "$attempt" == 6 ]]; then
-                  echo "$ref_error" >&2
-                  exit 1
-                fi
-                sleep "$attempt"
-                continue
-              fi
               if commit_result="$(gh api graphql \
               -f query='mutation($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) {
                 createCommitOnBranch(input: {
