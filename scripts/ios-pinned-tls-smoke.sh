@@ -1,0 +1,40 @@
+#!/bin/bash
+set -euo pipefail
+
+tmp="$(mktemp -d)"
+server_pid=''
+cleanup() {
+  if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/key.pem"
+openssl req -new -x509 -key "$tmp/key.pem" -out "$tmp/cert.pem" -days 1 \
+  -subj '/CN=127.0.0.1' \
+  -addext 'subjectAltName=IP:127.0.0.1' \
+  -addext 'basicConstraints=critical,CA:false' \
+  -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
+  -addext 'extendedKeyUsage=serverAuth'
+pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
+
+cp scripts/ios-pinned-tls-smoke.swift "$tmp/main.swift"
+swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tmp/smoke"
+python3 - "$tmp/cert.pem" "$tmp/key.pem" <<'PY' &
+import http.server, ssl, sys
+server = http.server.HTTPServer(('127.0.0.1', 18443), http.server.SimpleHTTPRequestHandler)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(sys.argv[1], sys.argv[2])
+server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
+PY
+server_pid=$!
+
+for _ in {1..20}; do
+  if nc -z 127.0.0.1 18443; then break; fi
+  sleep 0.1
+done
+"$tmp/smoke" 'https://127.0.0.1:18443/' "$pin" success
+"$tmp/smoke" 'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
+"$tmp/smoke" 'https://localhost:18443/' "$pin" TRUST_EVALUATION_FAILED
+echo 'Pinned TLS smoke test passed'

@@ -1,136 +1,12 @@
 internal import ExpoModulesCore
 import CryptoKit
 import Foundation
-import Security
 
 private enum PinnedTransportError: Error {
   case invalidURL
-  case invalidPin
   case invalidBody
   case nonHTTPResponse
   case invalidIdentity
-}
-
-final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebSocketDelegate {
-  private let expectedDigest: Data
-  private let expectedOrigin: URL
-  var onOpen: (() -> Void)?
-  var onClose: ((String?) -> Void)?
-
-  private static func effectivePort(_ url: URL) -> Int? {
-    if let port = url.port { return port }
-    return url.scheme == "https" ? 443 : nil
-  }
-
-  init(pin: String, origin: URL) throws {
-    guard pin.hasPrefix("sha256-"), let digest = Data(base64URLEncoded: String(pin.dropFirst(7))), digest.count == 32 else {
-      throw PinnedTransportError.invalidPin
-    }
-    expectedDigest = digest
-    expectedOrigin = origin
-  }
-
-  func urlSession(
-    _ session: URLSession,
-    task: URLSessionTask,
-    willPerformHTTPRedirection response: HTTPURLResponse,
-    newRequest request: URLRequest,
-    completionHandler: @escaping (URLRequest?) -> Void
-  ) {
-    guard
-      let target = request.url,
-      target.scheme == "https",
-      target.host == expectedOrigin.host,
-      Self.effectivePort(target) == Self.effectivePort(expectedOrigin),
-      target.user == nil,
-      target.password == nil
-    else {
-      completionHandler(nil)
-      return
-    }
-    completionHandler(request)
-  }
-
-  private func answer(
-    _ challenge: URLAuthenticationChallenge,
-    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-  ) {
-    guard
-      challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-      let trust = challenge.protectionSpace.serverTrust,
-      let certificate = SecTrustGetCertificateAtIndex(trust, 0),
-      let publicKey = SecCertificateCopyKey(certificate),
-      let publicKeyData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data?
-    else {
-      completionHandler(.cancelAuthenticationChallenge, nil)
-      return
-    }
-    let actualDigest = Data(SHA256.hash(data: publicKeyData))
-    guard actualDigest == expectedDigest else {
-      completionHandler(.cancelAuthenticationChallenge, nil)
-      return
-    }
-
-    // A matching key is the authority, but URLSession still evaluates the
-    // self-signed leaf after `.useCredential`. Make that exact, already-pinned
-    // leaf the sole anchor so the remaining standard checks (hostname, validity,
-    // key usage) run against a trust graph iOS can accept. Without this explicit
-    // anchor iOS reports NSURLErrorSecureConnectionFailed even though the pin
-    // matched, because the certificate has no public CA above it.
-    guard
-      SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
-      SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
-      SecTrustEvaluateWithError(trust, nil)
-    else {
-      completionHandler(.cancelAuthenticationChallenge, nil)
-      return
-    }
-
-    // The installer's stable P-256 TLS key remains the authority. Certificates
-    // can be renewed without breaking an existing pairing.
-    completionHandler(.useCredential, URLCredential(trust: trust))
-  }
-
-  func urlSession(
-    _ session: URLSession,
-    didReceive challenge: URLAuthenticationChallenge,
-    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-  ) {
-    answer(challenge, completionHandler: completionHandler)
-  }
-
-  // Data and upload requests can receive their authentication challenge on the
-  // task delegate. Handle both dispatch paths so default trust evaluation never
-  // rejects Verity's self-signed certificate before its pinned key is checked.
-  func urlSession(
-    _ session: URLSession,
-    task: URLSessionTask,
-    didReceive challenge: URLAuthenticationChallenge,
-    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-  ) {
-    answer(challenge, completionHandler: completionHandler)
-  }
-
-  func urlSession(
-    _ session: URLSession,
-    webSocketTask: URLSessionWebSocketTask,
-    didOpenWithProtocol protocol: String?
-  ) { onOpen?() }
-
-  func urlSession(
-    _ session: URLSession,
-    webSocketTask: URLSessionWebSocketTask,
-    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
-    reason: Data?
-  ) { onClose?(reason.flatMap { String(data: $0, encoding: .utf8) }) }
-}
-
-private extension Data {
-  init?(base64URLEncoded value: String) {
-    var standard = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-    standard += String(repeating: "=", count: (4 - standard.count % 4) % 4)
-    self.init(base64Encoded: standard)
-  }
 }
 
 class VerityPinnedTransport: Module {
@@ -200,7 +76,16 @@ class VerityPinnedTransport: Module {
         self.finishRequest(requestId)
         session.finishTasksAndInvalidate()
       }
-      let (data, response) = try await session.data(for: request)
+      let result: (Data, URLResponse)
+      do {
+        result = try await session.data(for: request)
+      } catch {
+        if let failure = delegate.failure {
+          throw GenericException("Pinned TLS verification failed [\(failure)].")
+        }
+        throw error
+      }
+      let (data, response) = result
       guard let http = response as? HTTPURLResponse else { throw PinnedTransportError.nonHTTPResponse }
       var responseHeaders: [String: String] = [:]
       for (name, value) in http.allHeaderFields {
