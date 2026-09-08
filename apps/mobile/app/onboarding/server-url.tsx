@@ -2,9 +2,11 @@
 // installer's QR or copyable pairing code. Manual addresses remain a recovery
 // control for an already-paired server, where its pinned identity can be verified.
 import { normalizeServerUrl, resumeStep, type OnboardingStatus } from '@verity/mobile';
+import * as Application from 'expo-application';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Updates from 'expo-updates';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -24,6 +26,7 @@ import { getAuthToken } from '../../lib/authToken';
 import { getVerityBaseUrl } from '../../lib/client';
 import { parsePairingUri, type VerityPairingPayload } from '../../lib/pairing';
 import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairingSession';
+import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
 
 function onboardingRoute(status: OnboardingStatus): string {
   return status.complete ? '/' : `/onboarding/${resumeStep(status)}`;
@@ -34,7 +37,83 @@ function unlockRoute(returnTo: string): string {
 }
 
 type TestState =
-  { kind: 'idle' } | { kind: 'testing' } | { kind: 'ok' } | { kind: 'error'; message: string };
+  | { kind: 'idle' }
+  | { kind: 'testing' }
+  | { kind: 'ok' }
+  | { kind: 'error'; message: string; technicalDetails?: string };
+
+function safeDiagnosticText(value: unknown, sensitiveValues: string[] = []): string | undefined {
+  const text = Array.isArray(value)
+    ? value.filter((item) => typeof item === 'string').join('\n')
+    : value;
+  if (typeof text !== 'string' || text.trim() === '') return undefined;
+  const withoutKnownSecrets = sensitiveValues
+    .filter((secret) => secret.length > 0)
+    .reduce((sanitized, secret) => sanitized.split(secret).join('[redacted]'), text);
+  return withoutKnownSecrets
+    .replace(/\bhttps?:\/\/[^\s)]+/gi, (raw) => {
+      try {
+        const parsed = new URL(raw.replace(/[.,;:]$/, ''));
+        return `${parsed.protocol}//${parsed.host}/[path redacted]`;
+      } catch {
+        return '[URL redacted]';
+      }
+    })
+    .replace(/\bverity(?:-pair)?:\/\/[^\s)]+/gi, '[pairing URI redacted]')
+    .replace(
+      /"(authorization|cookie|set-cookie|x-api-key|[a-z0-9_-]*(?:token|secret|code)[a-z0-9_-]*)"\s*:\s*"(?:\\.|[^"\\])*"/gi,
+      '"$1":"[redacted]"',
+    )
+    .replace(
+      /'(authorization|cookie|set-cookie|x-api-key|[a-z0-9_-]*(?:token|secret|code)[a-z0-9_-]*)'\s*:\s*'(?:\\.|[^'\\])*'/gi,
+      "'$1':'[redacted]'",
+    )
+    .replace(/\b(authorization|cookie|set-cookie|x-api-key)\s*[:=]\s*[^\n]+/gi, '$1: [redacted]')
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+    .replace(
+      /\b([a-z0-9_-]*(?:token|secret|code)[a-z0-9_-]*)\s*[:=]\s*[^\s,;]+/gi,
+      '$1: [redacted]',
+    )
+    .replace(/\/(?:Users|home|var|private|tmp)\/[^\s:)]+/g, '/[path redacted]')
+    .replace(/\s*\(at ExpoModulesCore\/[^)]*\)\.?$/i, '')
+    .slice(0, 2_000);
+}
+
+function pairingTechnicalDetails(error: unknown, pairing: VerityPairingPayload): string {
+  const nativeError =
+    typeof error === 'object' && error !== null
+      ? (error as Partial<Error> & { code?: unknown; nativeStackIOS?: unknown })
+      : {};
+  return JSON.stringify(
+    {
+      release: runningReleaseVersion(Application.nativeApplicationVersion),
+      nativeVersion: Application.nativeApplicationVersion ?? 'unknown',
+      nativeBuild: Application.nativeBuildVersion ?? 'unknown',
+      bundleCommit: describeBuild().text,
+      runtimeVersion: Updates.runtimeVersion ?? 'unknown',
+      updateId: Updates.updateId ?? (Updates.isEmbeddedLaunch ? 'embedded' : 'unknown'),
+      platform: Platform.OS,
+      osVersion: String(Platform.Version),
+      serverOrigin: new URL(pairing.suggestedUrl).origin,
+      serverId: pairing.serverId,
+      tlsPin: `${pairing.tlsPin.slice(0, 18)}…`,
+      errorName: safeDiagnosticText(nativeError.name) ?? typeof error,
+      errorCode: safeDiagnosticText(nativeError.code) ?? 'unknown',
+      errorMessage:
+        safeDiagnosticText(nativeError.message ?? String(error), [
+          pairing.pairingCode,
+          pairing.identityKey,
+        ]) ?? 'unknown',
+      nativeStack:
+        safeDiagnosticText(nativeError.nativeStackIOS, [
+          pairing.pairingCode,
+          pairing.identityKey,
+        ]) ?? 'unavailable',
+    },
+    null,
+    2,
+  );
+}
 
 function pairingErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -43,7 +122,7 @@ function pairingErrorMessage(error: unknown): string {
     return `Could not establish a secure connection to this server. TLS diagnostic: ${pinnedFailure}`;
   }
   if (/TLS|SSL|certificate|secure connection/i.test(message)) {
-    return 'Could not establish a secure connection to this server. Create a new pairing code and try again.';
+    return 'Could not establish a secure connection to this server. Open technical details below for the TLS diagnostic.';
   }
   if (/timed?\s*out|timeout|network request failed|could not connect/i.test(message)) {
     return 'Could not reach the server address in this pairing code. Make sure this phone can reach the selected IP address or DNS name, then create a new pairing code.';
@@ -65,6 +144,7 @@ export default function OnboardingServerUrl() {
   const [url, setUrl] = useState(getVerityBaseUrl() ?? '');
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [detailsVisible, setDetailsVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const mounted = useRef(true);
@@ -123,6 +203,7 @@ export default function OnboardingServerUrl() {
   const connectPairing = (pairing: VerityPairingPayload) => {
     if (pairingInFlight.current) return;
     pairingInFlight.current = true;
+    setDetailsVisible(false);
     setScannerOpen(false);
     setTest({ kind: 'testing' });
     void establishPairing(pairing, pairing.suggestedUrl)
@@ -140,6 +221,7 @@ export default function OnboardingServerUrl() {
         setTest({
           kind: 'error',
           message: pairingErrorMessage(error),
+          technicalDetails: pairingTechnicalDetails(error, pairing),
         });
       });
   };
@@ -215,9 +297,29 @@ export default function OnboardingServerUrl() {
               </Text>
 
               {test.kind === 'error' ? (
-                <Text style={styles.error} accessibilityRole="alert">
-                  {test.message}
-                </Text>
+                <>
+                  <Text style={styles.error} accessibilityRole="alert">
+                    {test.message}
+                  </Text>
+                  {test.technicalDetails ? (
+                    <>
+                      <Pressable
+                        onPress={() => setDetailsVisible((visible) => !visible)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Toggle technical pairing details"
+                      >
+                        <Text style={styles.diagnosticToggle}>
+                          {detailsVisible ? 'Hide technical details' : 'Show technical details'}
+                        </Text>
+                      </Pressable>
+                      {detailsVisible ? (
+                        <Text selectable style={styles.diagnosticDetails}>
+                          {test.technicalDetails}
+                        </Text>
+                      ) : null}
+                    </>
+                  ) : null}
+                </>
               ) : null}
 
               <Pressable
@@ -511,6 +613,18 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.tone.danger,
     fontSize: theme.text.sm,
     fontWeight: '600',
+  },
+  diagnosticToggle: {
+    color: theme.colors.accent,
+    fontSize: theme.text.sm,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+  diagnosticDetails: {
+    color: theme.colors.textMuted,
+    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+    fontSize: 11,
+    lineHeight: 16,
   },
   connected: {
     color: theme.colors.tone.done,
