@@ -7,6 +7,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
   private let expectedOrigin: URL
   private let failureLock = NSLock()
   private var storedFailure: String?
+  private var storedPhase = "NO_AUTH_CHALLENGE"
   var onOpen: (() -> Void)?
   var onClose: ((String?) -> Void)?
 
@@ -14,6 +15,18 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     failureLock.lock()
     defer { failureLock.unlock() }
     return storedFailure
+  }
+
+  var phase: String {
+    failureLock.lock()
+    defer { failureLock.unlock() }
+    return storedPhase
+  }
+
+  private func recordPhase(_ phase: String) {
+    failureLock.lock()
+    storedPhase = phase
+    failureLock.unlock()
   }
 
   private func reject(
@@ -64,6 +77,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     _ challenge: URLAuthenticationChallenge,
     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
+    recordPhase("AUTH_CHALLENGE_RECEIVED")
     guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust
     else {
       completionHandler(.performDefaultHandling, nil)
@@ -72,6 +86,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     guard
       let trust = challenge.protectionSpace.serverTrust,
       let certificate = SecTrustGetCertificateAtIndex(trust, 0),
+      let anchor = SecTrustGetCertificateAtIndex(trust, SecTrustGetCertificateCount(trust) - 1),
       let publicKey = SecCertificateCopyKey(certificate),
       let attributes = SecKeyCopyAttributes(publicKey) as? [CFString: Any],
       attributes[kSecAttrKeyType] as? String == kSecAttrKeyTypeECSECPrimeRandom as String,
@@ -114,7 +129,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     var trustError: CFError?
     guard
       SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, hostname as CFString)) == errSecSuccess,
-      SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
+      SecTrustSetAnchorCertificates(trust, [anchor] as CFArray) == errSecSuccess,
       SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
       SecTrustEvaluateWithError(trust, &trustError)
     else {
@@ -122,6 +137,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
       reject("TRUST_EVALUATION_FAILED:\(detail)", completionHandler: completionHandler)
       return
     }
+    recordPhase("PIN_AND_TRUST_ACCEPTED")
     completionHandler(.useCredential, URLCredential(trust: trust))
   }
 

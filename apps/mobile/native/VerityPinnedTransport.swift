@@ -83,7 +83,9 @@ class VerityPinnedTransport: Module {
         if let failure = delegate.failure {
           throw GenericException("Pinned TLS verification failed [\(failure)].")
         }
-        throw error
+        let native = error as NSError
+        throw GenericException(
+          "Pinned TLS transport failed [\(native.domain):\(native.code):\(delegate.phase)].")
       }
       let (data, response) = result
       guard let http = response as? HTTPURLResponse else { throw PinnedTransportError.nonHTTPResponse }

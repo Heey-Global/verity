@@ -9,13 +9,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
+openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/ca-key.pem"
+openssl req -new -x509 -key "$tmp/ca-key.pem" -out "$tmp/ca.pem" -days 1 \
+  -subj '/CN=Verity smoke CA' \
+  -addext 'basicConstraints=critical,CA:true,pathlen:0' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign'
 openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/key.pem"
-openssl req -new -x509 -key "$tmp/key.pem" -out "$tmp/cert.pem" -days 1 \
-  -subj '/CN=127.0.0.1' \
-  -addext 'subjectAltName=IP:127.0.0.1' \
-  -addext 'basicConstraints=critical,CA:false' \
-  -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
-  -addext 'extendedKeyUsage=serverAuth'
+openssl req -new -key "$tmp/key.pem" -out "$tmp/leaf.csr" -subj '/CN=127.0.0.1'
+printf '%s\n' \
+  'subjectAltName=IP:127.0.0.1' \
+  'basicConstraints=critical,CA:false' \
+  'keyUsage=critical,digitalSignature,keyEncipherment' \
+  'extendedKeyUsage=serverAuth' >"$tmp/leaf.ext"
+openssl x509 -req -in "$tmp/leaf.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pem" \
+  -set_serial 1 -out "$tmp/leaf.pem" -days 1 -extfile "$tmp/leaf.ext"
+cat "$tmp/leaf.pem" "$tmp/ca.pem" >"$tmp/cert.pem"
 pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
 
 cp scripts/ios-pinned-tls-smoke.swift "$tmp/main.swift"
