@@ -1,5 +1,13 @@
 # Changelog
 
+## [17.2.2](https://github.com/Heey-Global/verity/compare/v17.2.1...v17.2.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **installer:** issue pairing certificate as leaf ([6a2281a](https://github.com/Heey-Global/verity/commit/6a2281a4c5b986b070cb4ad1795db4e9e1f71eb4))
+* **mobile:** normalize iOS certificate pin keys ([9dba864](https://github.com/Heey-Global/verity/commit/9dba86450a5fda28197d8ee29779c398e2651e5a))
+
 ## [17.2.1](https://github.com/Heey-Global/verity/compare/v17.2.0...v17.2.1) (2026-09-07)
 
 
