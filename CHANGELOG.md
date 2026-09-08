@@ -1,5 +1,12 @@
 # Changelog
 
+## [17.2.3](https://github.com/Heey-Global/verity/compare/v17.2.2...v17.2.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* **release:** allow bundled toolkit sources in ledger ([93ca0df](https://github.com/Heey-Global/verity/commit/93ca0df9a361eb5a5e871a612cdbf8424635b2d1))
+
 ## [17.2.2](https://github.com/Heey-Global/verity/compare/v17.2.1...v17.2.2) (2026-09-08)
 
 
