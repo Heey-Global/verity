@@ -1,5 +1,15 @@
 # Changelog
 
+## [17.3.1](https://github.com/Heey-Global/verity/compare/v17.3.0...v17.3.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **ci:** scope generated release PR checks ([77f3a21](https://github.com/Heey-Global/verity/commit/77f3a2155d6af429a405dd71a1f36d6f90199478))
+* **mobile:** trust exact server key pins ([6c85273](https://github.com/Heey-Global/verity/commit/6c85273c15f572a268258c430b350bf2536cf6b3))
+* **release:** finalize recovered mobile state ([ab4f617](https://github.com/Heey-Global/verity/commit/ab4f61749db4e9992d5df7342f59d5657b3d0b32))
+* **release:** finalize recovered mobile state ([d2d8522](https://github.com/Heey-Global/verity/commit/d2d8522cb017ab99a0f751ed5ac0a16f3cd8764e))
+
 ## [17.3.0](https://github.com/Heey-Global/verity/compare/v17.2.3...v17.3.0) (2026-09-08)
 
 
