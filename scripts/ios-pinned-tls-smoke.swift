@@ -9,7 +9,9 @@ let delegate = try CertificatePinDelegate(pin: CommandLine.arguments[2], origin:
 let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
 let semaphore = DispatchSemaphore(value: 0)
 var succeeded = false
+var receivedError: Error?
 session.dataTask(with: url) { _, response, error in
+  receivedError = error
   succeeded = error == nil && (response as? HTTPURLResponse)?.statusCode == 200
   semaphore.signal()
 }.resume()
@@ -17,7 +19,17 @@ guard semaphore.wait(timeout: .now() + 10) == .success else { fatalError("reques
 session.invalidateAndCancel()
 
 if expected == "success" {
-  guard succeeded else { fatalError("expected success, got \(delegate.failure ?? "URLSession failure")") }
+  guard succeeded else {
+    let native = receivedError.map { error -> String in
+      let value = error as NSError
+      let details = value.userInfo
+        .map { key, value in "\(key)=\(String(describing: value))" }
+        .sorted()
+        .joined(separator: ", ")
+      return "\(value.domain):\(value.code) {\(details)}"
+    } ?? "no NSError"
+    fatalError("expected success, got \(delegate.failure ?? "URLSession failure"); \(native); phase=\(delegate.phase)")
+  }
 } else {
   guard !succeeded, delegate.failure?.hasPrefix(expected) == true else {
     fatalError("expected \(expected), got \(delegate.failure ?? (succeeded ? "success" : "URLSession failure"))")

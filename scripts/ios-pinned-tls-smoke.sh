@@ -3,8 +3,13 @@ set -euo pipefail
 
 tmp="$(mktemp -d)"
 server_pid=''
+simulator_udid=''
 cleanup() {
   if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
+  if [[ -n "$simulator_udid" ]]; then
+    xcrun simctl shutdown "$simulator_udid" >/dev/null 2>&1 || true
+    xcrun simctl delete "$simulator_udid" >/dev/null 2>&1 || true
+  fi
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -47,4 +52,39 @@ done
 # A matching key must not erase the TLS hostname check. This catches a fallback
 # to basic X.509 evaluation, which would accept this certificate for localhost.
 "$tmp/smoke" 'https://localhost:18443/' "$pin" PINNED_CHAIN_TRUST_FAILED
-echo 'Pinned TLS smoke test passed'
+
+# The macOS process above catches Security-framework mistakes but not the second
+# trust evaluation performed by iOS CFNetwork. Run the same executable inside an
+# iOS simulator so a native release cannot repeat a device-only -1200 failure
+# while this smoke remains green.
+runtime_id="$(xcrun simctl list runtimes --json | python3 -c '
+import json, sys
+runtimes = [r for r in json.load(sys.stdin)["runtimes"] if r.get("isAvailable") and r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]
+if not runtimes: raise SystemExit("no available iOS simulator runtime")
+print(max(runtimes, key=lambda r: tuple(map(int, r["version"].split("."))))["identifier"])
+')"
+device_type="$(xcrun simctl list devicetypes --json | python3 -c '
+import json, sys
+devices = [d for d in json.load(sys.stdin)["devicetypes"] if d["name"].startswith("iPhone")]
+if not devices: raise SystemExit("no iPhone simulator device type")
+print(devices[0]["identifier"])
+')"
+simulator_udid="$(xcrun simctl create "Verity pinned TLS smoke" "$device_type" "$runtime_id")"
+xcrun simctl boot "$simulator_udid"
+xcrun simctl bootstatus "$simulator_udid" -b
+simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+simulator_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+xcrun swiftc \
+  -sdk "$simulator_sdk" \
+  -target "$(uname -m)-apple-ios${simulator_version}-simulator" \
+  apps/mobile/native/CertificatePinDelegate.swift \
+  "$tmp/main.swift" \
+  -o "$tmp/smoke-ios"
+codesign --force --sign - "$tmp/smoke-ios"
+xcrun simctl spawn "$simulator_udid" "$tmp/smoke-ios" \
+  'https://127.0.0.1:18443/' "$pin" success
+xcrun simctl spawn "$simulator_udid" "$tmp/smoke-ios" \
+  'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
+xcrun simctl spawn "$simulator_udid" "$tmp/smoke-ios" \
+  'https://localhost:18443/' "$pin" PINNED_CHAIN_TRUST_FAILED
+echo 'Pinned TLS smoke test passed on macOS and iOS Simulator'
