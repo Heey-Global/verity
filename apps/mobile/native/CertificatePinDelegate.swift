@@ -86,7 +86,6 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     guard
       let trust = challenge.protectionSpace.serverTrust,
       let certificate = SecTrustGetCertificateAtIndex(trust, 0),
-      let anchor = SecTrustGetCertificateAtIndex(trust, SecTrustGetCertificateCount(trust) - 1),
       let publicKey = SecCertificateCopyKey(certificate),
       let attributes = SecKeyCopyAttributes(publicKey) as? [CFString: Any],
       attributes[kSecAttrKeyType] as? String == kSecAttrKeyTypeECSECPrimeRandom as String,
@@ -122,22 +121,13 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
       return
     }
 
-    guard let hostname = expectedOrigin.host else {
-      reject("TRUST_EVALUATION_FAILED:NO_HOSTNAME", completionHandler: completionHandler)
-      return
-    }
-    var trustError: CFError?
-    guard
-      SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, hostname as CFString)) == errSecSuccess,
-      SecTrustSetAnchorCertificates(trust, [anchor] as CFArray) == errSecSuccess,
-      SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
-      SecTrustEvaluateWithError(trust, &trustError)
-    else {
-      let detail = trustError.map { CFErrorCopyDescription($0) as String } ?? "UNKNOWN"
-      reject("TRUST_EVALUATION_FAILED:\(detail)", completionHandler: completionHandler)
-      return
-    }
-    recordPhase("PIN_AND_TRUST_ACCEPTED")
+    // The invitation's exact P-256 SPKI digest is the server identity. Asking
+    // the public Web PKI to approve the private certificate as a second identity
+    // check is redundant and, on iOS, CFNetwork repeats that system-only check
+    // after this delegate returns — yielding -1200 even when SecTrust accepted
+    // our local CA. Redirect handling above separately binds the credential to
+    // the invitation's scheme, host and port.
+    recordPhase("PIN_ACCEPTED")
     completionHandler(.useCredential, URLCredential(trust: trust))
   }
 

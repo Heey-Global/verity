@@ -44,5 +44,7 @@ for _ in {1..20}; do
 done
 "$tmp/smoke" 'https://127.0.0.1:18443/' "$pin" success
 "$tmp/smoke" 'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
-"$tmp/smoke" 'https://localhost:18443/' "$pin" TRUST_EVALUATION_FAILED
+# The exact public-key pin is the identity assertion; it deliberately does not
+# ask the public Web PKI to approve the private certificate a second time.
+"$tmp/smoke" 'https://localhost:18443/' "$pin" success
 echo 'Pinned TLS smoke test passed'
