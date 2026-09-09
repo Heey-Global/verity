@@ -9,13 +9,16 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
   ) -> Bool {
     DispatchQueue.global(qos: .userInitiated).async {
       let environment = ProcessInfo.processInfo.environment
+      // Resolved before the other variables are checked: a misconfigured launch
+      // reported to some other path is indistinguishable from a hang, because
+      // the host only ever polls this one.
+      let resultPath = environment["VERITY_SMOKE_RESULT"] ?? "/tmp/verity-pinned-tls-result"
       guard
         let origin = environment["VERITY_SMOKE_ORIGIN"],
         let wrongHostOrigin = environment["VERITY_SMOKE_WRONG_HOST_ORIGIN"],
-        let pin = environment["VERITY_SMOKE_PIN"],
-        let resultPath = environment["VERITY_SMOKE_RESULT"]
+        let pin = environment["VERITY_SMOKE_PIN"]
       else {
-        Self.finish("missing smoke environment", at: "/tmp/verity-pinned-tls-result")
+        Self.finish("missing smoke environment", at: resultPath)
       }
 
       let cases = [
@@ -71,7 +74,14 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
   }
 
   private static func finish(_ result: String, at path: String) -> Never {
-    try? Data(result.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+    do {
+      try Data(result.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+    } catch {
+      // Discarding this error leaves the host waiting out its deadline for a
+      // file that was never going to appear, with nothing naming the reason.
+      NSLog("pinned TLS smoke could not write %@: %@", path, String(describing: error))
+      exit(EXIT_FAILURE)
+    }
     exit(result == "success" ? EXIT_SUCCESS : EXIT_FAILURE)
   }
 }

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Runs from the repository root, after `expo prebuild --platform ios`: the iOS
+# half of this smoke reads App Transport Security out of the generated app
+# Info.plist. Point VERITY_SMOKE_APP_PLIST at that file to run it standalone.
 set -euo pipefail
 
 tmp="$(mktemp -d)"
@@ -17,7 +20,8 @@ trap cleanup EXIT
 # App Transport Security exempts loopback, so a smoke that only ever talks to
 # 127.0.0.1 stays green under rules that reject every real Verity server. Serve
 # the same certificate on a routable address and let the iOS run use that.
-host_ip="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+default_interface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+host_ip="$(ipconfig getifaddr "${default_interface:-en0}" 2>/dev/null || true)"
 case "$host_ip" in
   '' | 127.*) echo 'no routable IPv4 address for the ATS check' >&2; exit 1 ;;
 esac
@@ -41,8 +45,8 @@ pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 
 
 cp scripts/ios-pinned-tls-smoke.swift "$tmp/main.swift"
 swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tmp/smoke"
-python3 - "$tmp/cert.pem" "$tmp/key.pem" <<'PY' &
-import http.server, ssl, sys
+python3 - "$tmp/cert.pem" "$tmp/key.pem" "$host_ip" <<'PY' &
+import http.server, ssl, sys, threading
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -58,11 +62,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-server = http.server.HTTPServer(('0.0.0.0', 18443), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1], sys.argv[2])
-server.socket = context.wrap_socket(server.socket, server_side=True)
-server.serve_forever()
+# Bound to the two addresses under test instead of 0.0.0.0: the certificate and
+# its key are readable by anything that reaches this port, and on a runner with
+# a shared subnet that is more than the simulator.
+for address in ('127.0.0.1', sys.argv[3]):
+    server = http.server.ThreadingHTTPServer((address, 18443), Handler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+threading.Event().wait()
 PY
 server_pid=$!
 
@@ -81,28 +90,38 @@ done
 # iOS simulator, against a routable address and under the shipping App Transport
 # Security rules, so a native release cannot repeat a device-only -1200 failure
 # while this smoke remains green.
-runtime_id="$(xcrun simctl list runtimes --json | python3 -c '
+read -r runtime_id runtime_version device_type < <(xcrun simctl list --json | python3 -c '
 import json, sys
-runtimes = [r for r in json.load(sys.stdin)["runtimes"] if r.get("isAvailable") and r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]
+
+data = json.load(sys.stdin)
+runtimes = [r for r in data["runtimes"] if r.get("isAvailable") and r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]
 if not runtimes: raise SystemExit("no available iOS simulator runtime")
-print(max(runtimes, key=lambda r: tuple(map(int, r["version"].split("."))))["identifier"])
-')"
-device_type="$(xcrun simctl list devicetypes --json | python3 -c '
-import json, sys
-devices = [d for d in json.load(sys.stdin)["devicetypes"] if d["name"].startswith("iPhone")]
-if not devices: raise SystemExit("no iPhone simulator device type")
-print(devices[0]["identifier"])
-')"
+runtime = max(runtimes, key=lambda r: tuple(map(int, r["version"].split("."))))
+# A device type this runtime does not support is refused at create time, and an
+# unsorted first match makes that failure depend on the runner image.
+supported = {d["identifier"] for d in runtime.get("supportedDeviceTypes", [])}
+devices = sorted(
+    d["identifier"]
+    for d in data["devicetypes"]
+    if d["name"].startswith("iPhone") and (not supported or d["identifier"] in supported)
+)
+if not devices: raise SystemExit("no iPhone device type for " + runtime["identifier"])
+print(runtime["identifier"], runtime["version"], devices[-1])
+')
 simulator_udid="$(xcrun simctl create "Verity pinned TLS smoke" "$device_type" "$runtime_id")"
 xcrun simctl boot "$simulator_udid"
 xcrun simctl bootstatus "$simulator_udid" -b
 simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-simulator_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+# Deriving the deployment target from the SDK alone breaks on any image whose
+# newest runtime is older than it: `simctl install` then rejects the bundle for
+# requiring an iOS the simulator does not have.
+target_version="$(printf '%s\n%s\n' "$sdk_version" "$runtime_version" | sort -V | head -n 1)"
 app="$tmp/VerityPinnedTLSSmoke.app"
 mkdir -p "$app"
 xcrun swiftc \
   -sdk "$simulator_sdk" \
-  -target "$(uname -m)-apple-ios${simulator_version}-simulator" \
+  -target "$(uname -m)-apple-ios${target_version}-simulator" \
   -parse-as-library \
   apps/mobile/native/CertificatePinDelegate.swift \
   scripts/ios-pinned-tls-smoke-app.swift \
@@ -128,7 +147,8 @@ PLIST
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
 if [[ -z "$app_plist" ]]; then
   # Picking the first match would silently run under a second target's rules.
-  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*')"
+  # A missing directory has to reach the message below, not abort under set -e.
+  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*' 2>/dev/null || true)"
   [[ "$(printf '%s\n' "$app_plist" | grep -c .)" == 1 ]] || {
     echo "expected exactly one generated app Info.plist, found: ${app_plist:-none}" >&2
     exit 1
@@ -159,12 +179,16 @@ SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
   xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
 # Three cases at up to 15 seconds each: a budget below that reports a timeout
 # where the app was about to report the actual TLS failure.
-for _ in {1..600}; do
-  [[ -f "$result_file" ]] && break
+deadline=$((SECONDS + 120))
+while [[ ! -f "$result_file" && $SECONDS -lt $deadline ]]; do
   sleep 0.2
 done
 if [[ ! -f "$result_file" ]]; then
-  echo 'iOS app smoke did not produce a result within 120 seconds' >&2
+  echo "iOS app smoke wrote no result to $result_file before the deadline" >&2
+  # A crash, a launch failure and an unwritable result path are otherwise all
+  # the same silent timeout. The app's log lines say which one happened.
+  xcrun simctl spawn "$simulator_udid" log show --style compact --last 5m \
+    --predicate 'process == "VerityPinnedTLSSmoke"' 2>/dev/null | tail -n 40 >&2 || true
   exit 1
 fi
 result="$(cat "$result_file")"

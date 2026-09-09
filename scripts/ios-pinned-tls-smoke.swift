@@ -18,20 +18,26 @@ session.dataTask(with: url) { _, response, error in
 guard semaphore.wait(timeout: .now() + 10) == .success else { fatalError("request timed out") }
 session.invalidateAndCancel()
 
+// A rejection the delegate never saw carries its reason only in the NSError, so
+// both outcomes report it: the wrong-failure case is the one where the harness
+// itself is being fooled.
+let native =
+  receivedError.map { error -> String in
+    let value = error as NSError
+    let details = value.userInfo
+      .map { key, value in "\(key)=\(String(describing: value))" }
+      .sorted()
+      .joined(separator: ", ")
+    return "\(value.domain):\(value.code) {\(details)}"
+  } ?? "no NSError"
+
 if expected == "success" {
   guard succeeded else {
-    let native = receivedError.map { error -> String in
-      let value = error as NSError
-      let details = value.userInfo
-        .map { key, value in "\(key)=\(String(describing: value))" }
-        .sorted()
-        .joined(separator: ", ")
-      return "\(value.domain):\(value.code) {\(details)}"
-    } ?? "no NSError"
     fatalError("expected success, got \(delegate.failure ?? "URLSession failure"); \(native); phase=\(delegate.phase)")
   }
 } else {
   guard !succeeded, delegate.failure?.hasPrefix(expected) == true else {
-    fatalError("expected \(expected), got \(delegate.failure ?? (succeeded ? "success" : "URLSession failure"))")
+    let actual = delegate.failure ?? (succeeded ? "success" : "URLSession failure")
+    fatalError("expected \(expected), got \(actual); \(native); phase=\(delegate.phase)")
   }
 }
