@@ -1,5 +1,15 @@
 # Changelog
 
+## [17.3.2](https://github.com/Heey-Global/verity/compare/v17.3.1...v17.3.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **ci:** isolate native iOS verification ([cd16964](https://github.com/Heey-Global/verity/commit/cd169646b00b5cbf24ab41fc444b866721d91d1c))
+* **ci:** isolate OTA promotion checks ([c85bc1c](https://github.com/Heey-Global/verity/commit/c85bc1c4c901855a6af437f1f2f1b45192d200e8))
+* **deps:** regenerate Renovate artifacts ([7eecaf3](https://github.com/Heey-Global/verity/commit/7eecaf372cdff85412914a1ba630381399bc48c6))
+* **mobile:** anchor the pinned server leaf ([b2a37e1](https://github.com/Heey-Global/verity/commit/b2a37e111ec23f64cdd4668b77f7f301dbdeab57))
+
 ## [17.3.1](https://github.com/Heey-Global/verity/compare/v17.3.0...v17.3.1) (2026-09-09)
 
 
