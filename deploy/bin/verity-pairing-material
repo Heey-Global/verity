@@ -154,23 +154,52 @@ fi
 temporary="$tls_cert.$$.tmp"
 csr_temporary="$tls_cert.$$.csr.tmp"
 extensions_temporary="$tls_cert.$$.ext.tmp"
-trap 'rm -f "$temporary" "$csr_temporary" "$extensions_temporary"' EXIT
+ca_config_temporary="$tls_cert.$$.ca.tmp"
+ca_index_temporary="$tls_cert.$$.index.tmp"
+ca_serial_temporary="$tls_cert.$$.serial.tmp"
+ca_newcerts_temporary="$tls_cert.$$.newcerts.tmp"
+trap 'rm -rf "$temporary" "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary"' EXIT
 openssl req -new -sha256 -key "$tls_key" -out "$csr_temporary" \
   -subj '/CN=Verity local control plane'
 printf '%s\n' \
+  '[leaf]' \
   "subjectAltName=$san" \
   'basicConstraints=critical,CA:FALSE' \
   'keyUsage=digitalSignature,keyEncipherment' \
   'extendedKeyUsage=serverAuth' >"$extensions_temporary"
-openssl x509 -req -sha256 -days 397 -in "$csr_temporary" \
-  -CA "$tls_ca_cert" -CAkey "$tls_ca_key" \
-  -set_serial "0x$(openssl rand -hex 16)" \
-  -extfile "$extensions_temporary" -out "$temporary"
+: >"$ca_index_temporary"
+openssl rand -hex 16 >"$ca_serial_temporary"
+mkdir "$ca_newcerts_temporary"
+cat >"$ca_config_temporary" <<EOF
+[ca]
+default_ca=verity_pairing_ca
+[verity_pairing_ca]
+database=$ca_index_temporary
+new_certs_dir=$ca_newcerts_temporary
+certificate=$tls_ca_cert
+private_key=$tls_ca_key
+serial=$ca_serial_temporary
+default_md=sha256
+default_days=397
+policy=verity_pairing_policy
+unique_subject=no
+[verity_pairing_policy]
+commonName=supplied
+EOF
+# A phone may be a few minutes behind the freshly installed Server. Backdate
+# only the leaf's validity boundary so an invitation works immediately without
+# extending the 15-minute lifetime of its one-time pairing code.
+not_before="$(date -u -d '-5 minutes' '+%y%m%d%H%M%SZ')"
+openssl ca -batch -notext -config "$ca_config_temporary" \
+  -startdate "$not_before" -days 397 \
+  -extensions leaf -extfile "$extensions_temporary" \
+  -in "$csr_temporary" -out "$temporary"
 cat "$tls_ca_cert" >>"$temporary"
 chmod 0644 "$temporary"
 if [ "$(id -u)" = 0 ]; then chown root:root "$temporary"; fi
 mv -f "$temporary" "$tls_cert"
-rm -f "$csr_temporary" "$extensions_temporary"
+rm -rf "$csr_temporary" "$extensions_temporary" "$ca_config_temporary" \
+  "$ca_index_temporary" "$ca_serial_temporary" "$ca_newcerts_temporary"
 trap - EXIT
 
 code="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"

@@ -30,12 +30,26 @@ function run(state, extra = {}) {
 
 test('creates stable identity and TLS material with a fresh compact one-time code', () => {
   const state = mkdtempSync(join(tmpdir(), 'verity-pairing-'));
+  const generatedAfter = Date.now();
   const first = run(state);
   assert.equal(first.status, 0, first.stderr);
   const firstIdentity = readFileSync(join(state, 'pairing-identity.pem'), 'utf8');
   const firstKey = readFileSync(join(state, 'tls-key.pem'), 'utf8');
   const firstCa = readFileSync(join(state, 'tls-ca-cert.pem'), 'utf8');
   const firstCode = readFileSync(join(state, 'pairing-code'), 'utf8');
+  const firstCertificate = new X509Certificate(readFileSync(join(state, 'tls-cert.pem')));
+  const backdatingMs = generatedAfter - firstCertificate.validFromDate.getTime();
+  assert.ok(backdatingMs >= 4 * 60_000 && backdatingMs <= 6 * 60_000, {
+    backdatingMs,
+    validFrom: firstCertificate.validFrom,
+  });
+  const remainingValidityMs = firstCertificate.validToDate.getTime() - generatedAfter;
+  const expectedValidityMs = 397 * 86_400_000;
+  assert.ok(
+    remainingValidityMs >= expectedValidityMs - 60_000 &&
+      remainingValidityMs <= expectedValidityMs + 60_000,
+    { remainingValidityMs, validTo: firstCertificate.validTo },
+  );
   const parsed = new URL(first.stdout.trim());
   const payload = JSON.parse(
     Buffer.from(parsed.searchParams.get('payload'), 'base64url').toString(),
