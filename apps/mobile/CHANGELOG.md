@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0](https://github.com/Heey-Global/verity/compare/mobile-v1.23.0...mobile-v1.24.0) (2026-09-09)
+
+
+### Bug Fixes
+
+* **mobile:** let pinned servers bypass ATS ([63d6f3c](https://github.com/Heey-Global/verity/commit/63d6f3c2c393cb15cf39f2ee015693440d482fac))
+
 ## [1.23.0](https://github.com/Heey-Global/verity/compare/mobile-v1.22.0...mobile-v1.23.0) (2026-09-09)
 
 
