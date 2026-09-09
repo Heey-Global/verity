@@ -523,6 +523,7 @@ describe('mobile OTA promotion', () => {
     expect(source).toContain('sleep "$attempt"');
     expect(source).not.toContain('git commit -m "chore(mobile): promote OTA');
     expect(source).toContain('gh workflow run ci.yml --ref "$promotion_branch"');
+    expect(source).toContain('-f release-train=mobile-ota -f release-pr="$open_pr"');
     expect(source).toContain('git push origin "refs/tags/${OTA_TAG}"');
     expect(source).not.toContain('--channel testflight');
     expect(source).not.toContain('gh release create');
@@ -544,6 +545,7 @@ describe('mobile OTA promotion', () => {
 set -euo pipefail
 printf '%s\\n' "$*" >> "$GH_CALLS"
 if [[ "$*" == 'pr list '* ]]; then exit 0; fi
+if [[ "$*" == 'pr create '* ]]; then echo 'https://github.com/example/verity/pull/138'; exit 0; fi
 if [[ "$*" == 'api graphql '* ]]; then
   count="$(grep -c '^api graphql ' "$GH_CALLS" || true)"
   if [[ "$GH_MODE" == transient-graphql && "$count" == 1 ]]; then
@@ -2589,7 +2591,7 @@ describe('changed-area detector', () => {
         inputs?: Record<string, { default?: string; options?: string[] }>;
       };
     };
-    jobs: { changes: WorkflowJob };
+    jobs: { changes: WorkflowJob & { permissions?: Record<string, string> } };
   };
   const detect = workflow.jobs.changes.steps.find((step) => step.id === 'detect');
   const areas = [
@@ -2603,10 +2605,14 @@ describe('changed-area detector', () => {
     'agent_seed_drift',
   ] as const;
 
+  it('can validate scoped pull requests with the workflow token', () => {
+    expect(workflow.jobs.changes.permissions?.['pull-requests']).toBe('read');
+  });
+
   it('offers the full manual run and every isolated release train', () => {
     const input = workflow.on.workflow_dispatch?.inputs?.['release-train'];
     expect(input?.default).toBe('full');
-    expect(input?.options).toEqual(['full', 'backend', 'mobile', 'website']);
+    expect(input?.options).toEqual(['full', 'backend', 'mobile', 'website', 'mobile-ota']);
   });
 
   // The step's own list, not a copy of it: a test that restated these paths would
@@ -2614,13 +2620,13 @@ describe('changed-area detector', () => {
   // meaningful against whatever the shell actually treats as inert.
   const releaseManaged = (/\n +([^\n(]+)\) ;;\n/.exec(detect?.run ?? '')?.[1] ?? '').split('|');
   const releaseScopedFiles = Object.fromEntries(
-    [...(detect?.run ?? '').matchAll(/\n +(backend|mobile|website):([^\n)]+)\)\n/g)].map(
+    [...(detect?.run ?? '').matchAll(/\n +(backend|mobile|website|mobile-ota):([^\n)]+)\)\n/g)].map(
       ([, train, patterns]) => [
         train,
         (patterns ?? '').split('|').map((pattern) => pattern.replace(/^\w+:/, '')),
       ],
     ),
-  ) as Record<'backend' | 'mobile' | 'website', string[]>;
+  ) as Record<'backend' | 'mobile' | 'website' | 'mobile-ota', string[]>;
 
   const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
     .split('\n')
@@ -2659,8 +2665,9 @@ describe('changed-area detector', () => {
       before?: string;
       baseRef?: string;
       baseSha?: string;
-      releaseTrain?: 'backend' | 'mobile' | 'website';
+      releaseTrain?: 'backend' | 'mobile' | 'website' | 'mobile-ota';
       releasePr?: string;
+      prHead?: string;
     },
     changed: string[],
     options: {
@@ -2764,6 +2771,11 @@ describe('changed-area detector', () => {
           GITHUB_SHA: 'release-sha',
           RELEASE_TRAIN: event.releaseTrain ?? 'full',
           RELEASE_PR: event.releasePr ?? '',
+          PR_NUMBER: event.releasePr ?? '',
+          PR_AUTHOR: releaseAuthor,
+          PR_HEAD:
+            event.prHead ??
+            (event.releaseTrain === 'mobile-ota' ? 'automation/promote-mobile-v1.2.3' : ''),
         },
         stdio: 'pipe',
       });
@@ -3288,6 +3300,53 @@ describe('changed-area detector', () => {
     expect(
       await run({ name: 'workflow_dispatch', releaseTrain: 'website', releasePr: '119' }, []),
     ).toEqual(all('false'));
+    expect(
+      await run({ name: 'workflow_dispatch', releaseTrain: 'mobile-ota', releasePr: '119' }, []),
+    ).toEqual(all('false'));
+  });
+
+  it('does not run backend checks for a generated OTA promotion PR', async () => {
+    expect(
+      await run(
+        {
+          name: 'pull_request',
+          baseRef: 'main',
+          releaseTrain: 'mobile-ota',
+          releasePr: '138',
+        },
+        ['apps/mobile/ota-promotion.json'],
+      ),
+    ).toEqual(all('false'));
+  });
+
+  it('fails closed when an OTA promotion PR is not exactly workflow-owned', async () => {
+    const event = {
+      name: 'pull_request',
+      baseRef: 'main',
+      releaseTrain: 'mobile-ota' as const,
+      releasePr: '138',
+    };
+    const ordinaryPromotionChecks = {
+      ...all('false'),
+      lint: 'true',
+      typecheck: 'true',
+      test: 'true',
+      mobile_app: 'true',
+    };
+
+    await expect(
+      run(event, ['apps/mobile/ota-promotion.json'], { releaseAuthor: 'someone-else' }),
+    ).resolves.toEqual(ordinaryPromotionChecks);
+    await expect(
+      run({ ...event, prHead: 'automation/promote-mobile-v1.2' }, [
+        'apps/mobile/ota-promotion.json',
+      ]),
+    ).resolves.toEqual(ordinaryPromotionChecks);
+    await expect(
+      run(event, ['apps/mobile/ota-promotion.json', 'packages/server/src/app.ts'], {
+        releaseFiles: ['apps/mobile/ota-promotion.json', 'packages/server/src/app.ts'],
+      }),
+    ).resolves.toEqual({ ...ordinaryPromotionChecks, server_image: 'true' });
   });
 
   it('rejects scoped dispatches that are not the generated Release Please PR', async () => {

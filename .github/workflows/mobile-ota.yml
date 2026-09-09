@@ -304,11 +304,17 @@ jobs:
               echo '::error::GitHub did not create a verified promotion commit.' >&2
               exit 1
             fi
-            gh pr create --base main --head "$promotion_branch" --title "$title" --body "$body"
+            created_pr_url="$(gh pr create --base main --head "$promotion_branch" --title "$title" --body "$body")"
+            open_pr="${created_pr_url##*/}"
           fi
           # GITHUB_TOKEN-created commits intentionally emit no new push/PR event.
           # Dispatch CI explicitly so the approval PR always has a current verdict.
-          gh workflow run ci.yml --ref "$promotion_branch"
+          if [[ ! "$open_pr" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::The OTA promotion PR does not exist after creation.' >&2
+            exit 1
+          fi
+          gh workflow run ci.yml --ref "$promotion_branch" \
+            -f release-train=mobile-ota -f release-pr="$open_pr"
 
       # Reserve only after the approval PR and its CI run exist. This is the last
       # action in the serialized staging workflow, so a reserved version can no
