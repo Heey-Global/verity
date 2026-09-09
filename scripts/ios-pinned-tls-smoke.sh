@@ -10,6 +10,7 @@ tmp="$(mktemp -d)"
 server_pid=''
 simulator_udid=''
 cleanup() {
+  trap - EXIT INT TERM
   if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
   if [[ -n "$simulator_udid" ]]; then
     xcrun simctl shutdown "$simulator_udid" >/dev/null 2>&1 || true
@@ -115,6 +116,26 @@ done
 # iOS simulator, against a routable address and under the shipping App Transport
 # Security rules, so a native release cannot repeat a device-only -1200 failure
 # while this smoke remains green.
+#
+# ATS decides whether CFNetwork keeps a connection our delegate has already
+# accepted, so the harness has to run under the dictionary the released app
+# ships. Take it from the generated project rather than restating it here, and
+# resolve it before anything expensive: a missing prebuild should not cost a
+# simulator boot and a compile first.
+app_plist="${VERITY_SMOKE_APP_PLIST:-}"
+if [[ -z "$app_plist" ]]; then
+  # Picking the first match would silently run under a second target's rules.
+  # A missing directory has to reach the message below, not abort under set -e.
+  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*' 2>/dev/null || true)"
+  [[ "$(printf '%s\n' "$app_plist" | grep -c .)" == 1 ]] || {
+    echo "expected exactly one generated app Info.plist, found: ${app_plist:-none}" >&2
+    exit 1
+  }
+fi
+[[ -f "$app_plist" ]] || {
+  echo "no generated iOS Info.plist at ${app_plist:-apps/mobile/ios}" >&2
+  exit 1
+}
 read -r runtime_id runtime_version device_type < <(xcrun simctl list --json | python3 -c '
 import json, sys
 
@@ -122,8 +143,9 @@ data = json.load(sys.stdin)
 runtimes = [r for r in data["runtimes"] if r.get("isAvailable") and r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]
 if not runtimes: raise SystemExit("no available iOS simulator runtime")
 runtime = max(runtimes, key=lambda r: tuple(map(int, r["version"].split("."))))
-# A device type this runtime does not support is refused at create time, and an
-# unsorted first match makes that failure depend on the runner image.
+# A device type this runtime does not support is refused at create time. Any
+# supported iPhone will do; the sort is only there so which one is picked does
+# not depend on the order the runner image happens to list them in.
 supported = {d["identifier"] for d in runtime.get("supportedDeviceTypes", [])}
 devices = sorted(
     d["identifier"]
@@ -171,27 +193,9 @@ cat >"$app/Info.plist" <<PLIST
   <key>UILaunchScreen</key><dict/>
 </dict></plist>
 PLIST
-# ATS decides whether CFNetwork keeps a connection our delegate has already
-# accepted, so the harness has to run under the dictionary the released app
-# ships. Take it from the generated project rather than restating it here.
-# The global keys are what this exercises: the server is reached by IP, which no
-# NSExceptionDomains entry can match, exactly like a paired Verity server.
-app_plist="${VERITY_SMOKE_APP_PLIST:-}"
-if [[ -z "$app_plist" ]]; then
-  # Picking the first match would silently run under a second target's rules.
-  # A missing directory has to reach the message below, not abort under set -e.
-  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*' 2>/dev/null || true)"
-  [[ "$(printf '%s\n' "$app_plist" | grep -c .)" == 1 ]] || {
-    echo "expected exactly one generated app Info.plist, found: ${app_plist:-none}" >&2
-    exit 1
-  }
-fi
-[[ -f "$app_plist" ]] || {
-  echo "no generated iOS Info.plist at ${app_plist:-apps/mobile/ios}" >&2
-  exit 1
-}
 # An absent key is a valid (strict) configuration; a failed merge is not, and
 # would leave the harness testing rules nobody ships.
+merged=''
 if shipped_ats="$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app_plist" 2>/dev/null)"; then
   /usr/libexec/PlistBuddy -x -c 'Print :NSAppTransportSecurity' "$app_plist" >"$tmp/ats.plist"
   /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' \
@@ -211,19 +215,29 @@ codesign --force --sign - "$app"
 xcrun simctl install "$simulator_udid" "$app"
 data_container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.pinned-tls-smoke data)"
 result_file="$data_container/tmp/pinned-tls-result"
-SIMCTL_CHILD_VERITY_SMOKE_ORIGIN="https://$host_ip:18443/" \
-SIMCTL_CHILD_VERITY_SMOKE_WRONG_HOST_ORIGIN='https://localhost:18443/' \
-SIMCTL_CHILD_VERITY_SMOKE_PIN="$pin" \
-SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
-  xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
+launch_output="$(
+  SIMCTL_CHILD_VERITY_SMOKE_ORIGIN="https://$host_ip:18443/" \
+  SIMCTL_CHILD_VERITY_SMOKE_WRONG_HOST_ORIGIN='https://localhost:18443/' \
+  SIMCTL_CHILD_VERITY_SMOKE_PIN="$pin" \
+  SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
+    xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
+)"
+echo "$launch_output"
+app_pid="$(sed -n 's/.*: *\([0-9][0-9]*\) *$/\1/p' <<<"$launch_output")"
 # Three cases at up to 15 seconds each: a budget below that reports a timeout
 # where the app was about to report the actual TLS failure.
 deadline=$((SECONDS + 120))
 while [[ ! -f "$result_file" && $SECONDS -lt $deadline ]]; do
+  # An app that has already exited is never going to write the file, and waiting
+  # out the deadline only delays the same failure by two minutes.
+  if [[ -n "$app_pid" ]] && ! kill -0 "$app_pid" 2>/dev/null; then
+    sleep 0.5
+    break
+  fi
   sleep 0.2
 done
 if [[ ! -f "$result_file" ]]; then
-  echo "iOS app smoke wrote no result to $result_file before the deadline" >&2
+  echo "iOS app smoke exited or timed out without writing $result_file" >&2
   # A crash, a launch failure and an unwritable result path are otherwise all
   # the same silent timeout. The app's log lines say which one happened.
   xcrun simctl spawn "$simulator_udid" log show --style compact --last 5m \
@@ -233,6 +247,14 @@ fi
 result="$(cat "$result_file")"
 if [[ "$result" != success ]]; then
   echo "iOS app pinned TLS smoke failed: $result" >&2
+  exit 1
+fi
+# Checked only once the run passed, so the failure above stays the one reported:
+# a runner reaches itself over its own subnet, which NSAllowsLocalNetworking
+# exempts from ATS outright. A pass under that key therefore says nothing about
+# the routable address a paired server actually has.
+if grep -q NSAllowsLocalNetworking <<<"$merged"; then
+  echo 'NSAllowsLocalNetworking exempts the address this runs against — the iOS result proves nothing' >&2
   exit 1
 fi
 echo 'Pinned TLS smoke test passed on macOS and iOS Simulator'
