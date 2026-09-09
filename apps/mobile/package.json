@@ -17,7 +17,7 @@
     "@react-native-async-storage/async-storage": "2.2.0",
     "@shopify/flash-list": "2.0.2",
     "@verity/mobile": "*",
-    "expo": "57.0.18",
+    "expo": "57.0.20",
     "expo-application": "~57.0.2",
     "expo-auth-session": "~57.0.10",
     "expo-camera": "57.0.4",
