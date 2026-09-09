@@ -127,17 +127,27 @@ PLIST
 # ships. Take it from the generated project rather than restating it here.
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
 if [[ -z "$app_plist" ]]; then
-  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*' -print -quit)"
+  # Picking the first match would silently run under a second target's rules.
+  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*')"
+  [[ "$(printf '%s\n' "$app_plist" | grep -c .)" == 1 ]] || {
+    echo "expected exactly one generated app Info.plist, found: ${app_plist:-none}" >&2
+    exit 1
+  }
 fi
-[[ -n "$app_plist" && -f "$app_plist" ]] || {
-  echo 'no generated iOS Info.plist; run expo prebuild before this smoke' >&2
+[[ -f "$app_plist" ]] || {
+  echo "no generated iOS Info.plist at ${app_plist:-apps/mobile/ios}" >&2
   exit 1
 }
-if /usr/libexec/PlistBuddy -x -c 'Print :NSAppTransportSecurity' "$app_plist" \
-  >"$tmp/ats.plist" 2>/dev/null; then
+# An absent key is a valid (strict) configuration; a failed merge is not, and
+# would leave the harness testing rules nobody ships.
+if /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app_plist" >/dev/null 2>&1; then
+  /usr/libexec/PlistBuddy -x -c 'Print :NSAppTransportSecurity' "$app_plist" >"$tmp/ats.plist"
   /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' \
     -c "Merge $tmp/ats.plist :NSAppTransportSecurity" "$app/Info.plist"
 fi
+echo "App Transport Security rules under test (from $app_plist):"
+/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app/Info.plist" 2>/dev/null \
+  || echo '  none — ATS defaults'
 codesign --force --sign - "$app"
 xcrun simctl install "$simulator_udid" "$app"
 data_container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.pinned-tls-smoke data)"
@@ -147,12 +157,14 @@ SIMCTL_CHILD_VERITY_SMOKE_WRONG_HOST_ORIGIN='https://localhost:18443/' \
 SIMCTL_CHILD_VERITY_SMOKE_PIN="$pin" \
 SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
   xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
-for _ in {1..150}; do
+# Three cases at up to 15 seconds each: a budget below that reports a timeout
+# where the app was about to report the actual TLS failure.
+for _ in {1..600}; do
   [[ -f "$result_file" ]] && break
   sleep 0.2
 done
 if [[ ! -f "$result_file" ]]; then
-  echo 'iOS app smoke did not produce a result within 30 seconds' >&2
+  echo 'iOS app smoke did not produce a result within 120 seconds' >&2
   exit 1
 fi
 result="$(cat "$result_file")"
