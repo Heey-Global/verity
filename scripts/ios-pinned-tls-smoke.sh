@@ -44,8 +44,7 @@ for _ in {1..20}; do
 done
 "$tmp/smoke" 'https://127.0.0.1:18443/' "$pin" success
 "$tmp/smoke" 'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
-# The exact public-key pin is the identity assertion. The delegate anchors that
-# leaf directly, so the same key remains valid at another explicitly requested
-# origin without granting trust to the private CA or any sibling certificate.
-"$tmp/smoke" 'https://localhost:18443/' "$pin" success
+# A matching key must not erase the TLS hostname check. This catches a fallback
+# to basic X.509 evaluation, which would accept this certificate for localhost.
+"$tmp/smoke" 'https://localhost:18443/' "$pin" PINNED_LEAF_TRUST_FAILED
 echo 'Pinned TLS smoke test passed'
