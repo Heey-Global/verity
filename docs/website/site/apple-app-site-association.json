@@ -1,0 +1,10 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["__APPLE_TEAM_ID__.build.verity.app"],
+        "components": [{ "/": "/github/app/callback", "comment": "GitHub App manifest callbacks" }]
+      }
+    ]
+  }
+}

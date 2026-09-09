@@ -2789,13 +2789,38 @@ describe('VerityClient Doppler binding picker (#320)', () => {
 describe('VerityClient GitHub onboarding hardening', () => {
   it('prepareGithubManifest posts and returns the start token', async () => {
     const { fetch, calls } = fakeFetch(json({ startToken: 'ott-xyz' }));
-    const token = await new VerityClient({ baseUrl: 'http://host', fetch }).prepareGithubManifest(
-      'https://verity.example',
-    );
-    expect(token).toBe('ott-xyz');
+    const prepared = await new VerityClient({
+      baseUrl: 'http://host',
+      fetch,
+    }).prepareGithubManifest('https://verity.example');
+    expect(prepared).toEqual({ startToken: 'ott-xyz' });
     expect(calls[0]?.url).toBe('http://host/github/app/manifest/prepare');
     expect(calls[0]?.init?.method).toBe('POST');
-    expect(calls[0]?.init?.body).toBe(JSON.stringify({ baseUrl: 'https://verity.example' }));
+    expect(calls[0]?.init?.body).toBe(
+      JSON.stringify({
+        baseUrl: 'https://verity.example',
+        returnTo: '/github-connect',
+        native: false,
+      }),
+    );
+  });
+
+  it('completes both native GitHub manifest callbacks through API posts', async () => {
+    const { fetch, calls } = fakeFetch(
+      json({ installUrl: 'https://github.com/apps/verity/installations/new?state=s2' }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.completeGithubManifest('code-1', 'state-1')).resolves.toContain(
+      'github.com',
+    );
+    expect(calls[0]?.url).toBe('http://host/github/app/manifest/complete');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ code: 'code-1', state: 'state-1' }));
+
+    await client.completeGithubManifestInstallation('installation-1', 'state-2');
+    expect(calls[1]?.url).toBe('http://host/github/app/manifest/installed/complete');
+    expect(calls[1]?.init?.body).toBe(
+      JSON.stringify({ installationId: 'installation-1', state: 'state-2' }),
+    );
   });
 
   it('disconnectGithub posts to the disconnect endpoint', async () => {

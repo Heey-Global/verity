@@ -10,6 +10,7 @@ import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { generateKeyPairSync } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -17,6 +18,7 @@ import { buildServer } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
 import {
   buildManifest,
+  buildMobileManifest,
   createManifestStateStore,
   defaultManifestConvert,
   escapeHtml,
@@ -53,6 +55,25 @@ describe('buildManifest', () => {
     const m = buildManifest('https://verity.example/');
     expect(m.redirect_url).toBe('https://verity.example/github/app/manifest/callback');
     expect(m.url).toBe('https://verity.example');
+  });
+
+  it('returns GitHub to the native app without exposing a paired server address', () => {
+    const serialized = JSON.stringify(buildMobileManifest('/onboarding/github'));
+    expect(serialized).toContain('https://verity.build/github/app/callback');
+    expect(serialized).toContain('returnTo=%2Fonboarding%2Fgithub');
+    expect(serialized).not.toContain('verity.example');
+  });
+
+  it('keeps the public bridge permission allowlist equal to the generated manifest', () => {
+    const bridge = readFileSync(
+      new URL('../../../docs/website/site/github-app.js', import.meta.url),
+      'utf8',
+    );
+    const encoded = /\/\* manifest-permissions \*\/ (\{[^\n]+\})/.exec(bridge)?.[1];
+    expect(encoded).toBeDefined();
+    expect(JSON.parse(encoded ?? '{}')).toEqual(
+      buildMobileManifest('/github-connect').default_permissions,
+    );
   });
 
   it('uses a random globally-unique-ish name instead of reserved plain Verity', () => {
@@ -692,6 +713,84 @@ describe('manifest /start one-time-token auth (gate armed)', () => {
         url: `/github/app/manifest/start?base=https://verity.example&ott=${startToken}`,
       });
       expect(reused.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('native manifest callbacks', () => {
+  it('moves the GitHub code and installation id through authenticated API calls', async () => {
+    const cipher = createSealableSecretCipher();
+    const convert: ManifestConvert = () =>
+      Promise.resolve({ appId: '42', slug: 'verity-native', privateKey: pemString() });
+    const { app, store, token } = await buildGated(cipher, { manifestConvert: convert });
+    try {
+      await unlock(app);
+      const headers = { authorization: `Bearer ${token}` };
+      const prep = await app.inject({
+        method: 'POST',
+        url: '/github/app/manifest/prepare',
+        headers,
+        payload: {
+          baseUrl: 'https://217.154.18.187:8082',
+          returnTo: '/onboarding/github',
+          native: true,
+        },
+      });
+      expect(prep.statusCode).toBe(200);
+      expect(JSON.stringify(prep.json())).not.toContain('217.154.18.187');
+      expect(prep.json().startToken).toBeUndefined();
+      expect(prep.json().action).toMatch(/^https:\/\/github\.com\/settings\/apps\/new\?state=/);
+      expect(prep.json().manifest.redirect_url).toContain(
+        'https://verity.build/github/app/callback',
+      );
+      const state1 = new URL(prep.json().action as string).searchParams.get('state') ?? '';
+
+      const created = await app.inject({
+        method: 'POST',
+        url: '/github/app/manifest/complete',
+        headers,
+        payload: { code: 'github-code', state: state1 },
+      });
+      expect(created.statusCode).toBe(200);
+      const installUrl = new URL(created.json().installUrl as string);
+      const state2 = installUrl.searchParams.get('state') ?? '';
+
+      const installed = await app.inject({
+        method: 'POST',
+        url: '/github/app/manifest/installed/complete',
+        headers,
+        payload: { installationId: '9988', state: state2 },
+      });
+      expect(installed.statusCode).toBe(200);
+      expect(installed.json()).toEqual({ connected: true });
+      expect(await store.getVeritySettings()).toMatchObject({
+        githubAppId: '42',
+        githubAppInstallationId: '9988',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('requires the paired-device bearer before consuming callback state', async () => {
+    const cipher = createSealableSecretCipher();
+    const { app, token } = await buildGated(cipher);
+    try {
+      const prep = await app.inject({
+        method: 'POST',
+        url: '/github/app/manifest/prepare',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { baseUrl: 'https://server.test', native: true },
+      });
+      const state = new URL(prep.json().action as string).searchParams.get('state') ?? '';
+      const unauthenticated = await app.inject({
+        method: 'POST',
+        url: '/github/app/manifest/complete',
+        payload: { code: 'c', state },
+      });
+      expect(unauthenticated.statusCode).toBe(401);
     } finally {
       await app.close();
     }

@@ -51,7 +51,11 @@ function GithubStep({ client }: { client: VerityClient }) {
       {connected ? (
         <GithubCommitSetup client={client} onCompletionChange={setReady} />
       ) : (
-        <GithubConnectPanel client={client} onConnected={() => setConnected(true)} />
+        <GithubConnectPanel
+          client={client}
+          onConnected={() => setConnected(true)}
+          returnTo="/onboarding/github"
+        />
       )}
     </OnboardingStepScaffold>
   );

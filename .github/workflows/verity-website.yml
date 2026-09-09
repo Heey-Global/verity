@@ -68,6 +68,7 @@ jobs:
             echo 'Website contains a non-persisting signup confirmation' >&2
             exit 1
           fi
+          node --test docs/website/site/github-app.test.mjs
 
   pr-image-smoke:
     if: github.event_name == 'pull_request'
@@ -141,6 +142,9 @@ jobs:
           platforms: linux/amd64
           outputs: >-
             type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: REQUIRE_APPLE_ASSOCIATION=true
+          secrets: |
+            apple_team_id=${{ secrets.APPLE_TEAM_ID }}
           provenance: true
           sbom: true
 

@@ -1425,6 +1425,9 @@ jobs:
           platforms: linux/amd64
           outputs: >-
             type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: REQUIRE_APPLE_ASSOCIATION=true
+          secrets: |
+            apple_team_id=${{ secrets.APPLE_TEAM_ID }}
           provenance: true
           sbom: true
           labels: |

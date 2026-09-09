@@ -68,6 +68,22 @@ export function buildManifest(base: string): Record<string, unknown> {
   };
 }
 
+/** Manifest used by the native app flow. GitHub returns both browser round trips
+ * through the website's claimed Universal Link directly to the installed app;
+ * the app forwards the short-lived values to its paired server over the
+ * authenticated, certificate-pinned transport. */
+export function buildMobileManifest(
+  returnTo: '/github-connect' | '/onboarding/github',
+): Record<string, unknown> {
+  const manifest = buildManifest('https://verity.build');
+  const encodedReturn = encodeURIComponent(returnTo);
+  return {
+    ...manifest,
+    redirect_url: `https://verity.build/github/app/callback?phase=created&returnTo=${encodedReturn}`,
+    setup_url: `https://verity.build/github/app/callback?phase=installed&returnTo=${encodedReturn}`,
+  };
+}
+
 /** Escape a string for safe interpolation into HTML text or a single-quoted
  *  attribute value. Covers the five characters that can break out of either an
  *  attribute or an element body — the manifest JSON is placed inside a

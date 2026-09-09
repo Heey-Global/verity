@@ -927,9 +927,17 @@ export const githubAppValidateSchema = z.object({
 });
 export type GithubAppValidateResult = z.infer<typeof githubAppValidateSchema>;
 
-/** Response of `POST /github/app/manifest/prepare`: the single-use token that
- *  authenticates the browser-opened manifest `start` flow (audit C1 follow-up). */
-const manifestPrepareSchema = z.object({ startToken: z.string().min(1) });
+/** Response of `POST /github/app/manifest/prepare`. New servers include the
+ * native callback manifest; `startToken` keeps new apps compatible with servers
+ * that still use the browser-facing server page. */
+const manifestPrepareSchema = z.object({
+  startToken: z.string().min(1).optional(),
+  action: z.string().url().optional(),
+  manifest: z.record(z.string(), z.unknown()).optional(),
+});
+export type GithubManifestPreparation = z.infer<typeof manifestPrepareSchema>;
+
+const manifestCompleteSchema = z.object({ installUrl: z.string().url() });
 
 /** Result of `POST /doppler/validate` (#320, onboarding — OPTIONAL step): a live
  *  check that the stored Doppler Service Account token actually lists projects.
@@ -2161,16 +2169,40 @@ export class VerityClient {
     return githubAppValidateSchema.parse(await res.json());
   }
 
-  /** Mint the single-use token that authenticates the browser-opened manifest
-   *  `start` flow (audit C1 follow-up). Call this authenticated endpoint first,
-   *  then hang the returned `startToken` on the start URL as `?ott=`. */
-  async prepareGithubManifest(baseUrl: string): Promise<string> {
+  /** Prepare GitHub App onboarding. New servers return a native-callback manifest;
+   *  `startToken` preserves the old server-hosted browser flow as a compatibility
+   *  fallback without exposing an unauthenticated start endpoint. */
+  async prepareGithubManifest(
+    baseUrl: string,
+    owner?: string,
+    returnTo: '/github-connect' | '/onboarding/github' = '/github-connect',
+    native = false,
+  ): Promise<GithubManifestPreparation> {
     const res = await this.request('/github/app/manifest/prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ baseUrl }),
+      body: JSON.stringify({ baseUrl, ...(owner ? { owner } : {}), returnTo, native }),
     });
-    return manifestPrepareSchema.parse(await res.json()).startToken;
+    return manifestPrepareSchema.parse(await res.json());
+  }
+
+  /** Finish GitHub App creation after GitHub returns to the native deep link. */
+  async completeGithubManifest(code: string, state: string): Promise<string> {
+    const res = await this.request('/github/app/manifest/complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, state }),
+    });
+    return manifestCompleteSchema.parse(await res.json()).installUrl;
+  }
+
+  /** Persist the installation selected before GitHub's final native callback. */
+  async completeGithubManifestInstallation(installationId: string, state: string): Promise<void> {
+    await this.request('/github/app/manifest/installed/complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ installationId, state }),
+    });
   }
 
   /** Disconnect the connected GitHub App: clears the stored app id, installation

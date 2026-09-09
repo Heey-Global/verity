@@ -90,6 +90,7 @@ jest.mock('expo-clipboard', () => ({
 import OnboardingMasterPassword from '../app/onboarding/master-password';
 import UnlockDevice from '../app/unlock-device';
 import OnboardingGithub from '../app/onboarding/github';
+import GithubManifestCallback from '../app/github/app/callback';
 import OnboardingAiBackends from '../app/onboarding/ai-backends';
 
 function fakeClient(overrides: Partial<VerityClient>): VerityClient {
@@ -452,7 +453,7 @@ describe('onboarding github one-page setup', () => {
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
         fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
-        prepareGithubManifest: jest.fn().mockResolvedValue('ott-test'),
+        prepareGithubManifest: jest.fn().mockResolvedValue({ startToken: 'ott-test' }),
       }),
     );
 
@@ -462,6 +463,37 @@ describe('onboarding github one-page setup', () => {
     expect(screen.queryByText('Use existing App')).toBeNull();
     expect(screen.queryByLabelText('App ID')).toBeNull();
     expect(screen.queryByLabelText('App private key')).toBeNull();
+  });
+
+  it('opens the public fragment-only bridge instead of the paired server', async () => {
+    const prepareGithubManifest = jest.fn().mockResolvedValue({
+      startToken: 'legacy-token',
+      action: 'https://github.com/settings/apps/new?state=state-1',
+      manifest: { name: 'Verity-a1b2c3d4' },
+    });
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest,
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+    await waitFor(() => expect(openURL).toHaveBeenCalledTimes(1));
+    const opened = openURL.mock.calls[0]?.[0] ?? '';
+    expect(opened).toMatch(/^https:\/\/verity\.build\/github\/app\/#/);
+    expect(opened).not.toContain('verity.example:8082');
+    expect(JSON.parse(decodeURIComponent(new URL(opened).hash.slice(1)))).toEqual({
+      action: 'https://github.com/settings/apps/new?state=state-1',
+      manifest: { name: 'Verity-a1b2c3d4' },
+    });
+    expect(prepareGithubManifest).toHaveBeenCalledWith(
+      'http://verity.example:8082',
+      undefined,
+      '/onboarding/github',
+      true,
+    );
   });
 
   it('shows author and signing key on the same page and unlocks Next after copy', async () => {
@@ -511,6 +543,41 @@ describe('onboarding github one-page setup', () => {
     // No key to copy, so no copy affordance — but Next must still be reachable.
     expect(screen.queryByLabelText('Copy signing public key')).toBeNull();
     expect(await screen.findByLabelText('Next')).toBeOnTheScreen();
+  });
+});
+
+describe('native GitHub manifest callback', () => {
+  it('forwards the creation code to the paired server and opens installation', async () => {
+    mockLocalSearchParams = { phase: 'created', code: 'code-1', state: 'state-1' };
+    const completeGithubManifest = jest
+      .fn()
+      .mockResolvedValue('https://github.com/apps/verity/installations/new?state=state-2');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ completeGithubManifest }));
+
+    render(<GithubManifestCallback />);
+
+    await waitFor(() => expect(completeGithubManifest).toHaveBeenCalledWith('code-1', 'state-1'));
+    expect(openURL).toHaveBeenCalledWith(
+      'https://github.com/apps/verity/installations/new?state=state-2',
+    );
+  });
+
+  it('forwards the installation id and returns to the originating screen', async () => {
+    mockLocalSearchParams = {
+      phase: 'installed',
+      state: 'state-2',
+      installation_id: 'installation-1',
+      returnTo: '/onboarding/github',
+    };
+    const completeGithubManifestInstallation = jest.fn().mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(fakeClient({ completeGithubManifestInstallation }));
+
+    render(<GithubManifestCallback />);
+
+    await waitFor(() =>
+      expect(completeGithubManifestInstallation).toHaveBeenCalledWith('installation-1', 'state-2'),
+    );
+    expect(mockReplace).toHaveBeenCalledWith('/onboarding/github');
   });
 });
 

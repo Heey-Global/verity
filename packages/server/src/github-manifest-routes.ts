@@ -9,6 +9,7 @@ import {
 import type { AuthTokenRegistry } from './auth.js';
 import {
   buildManifest,
+  buildMobileManifest,
   createManifestStateStore,
   escapeHtml,
   type ManifestConvert,
@@ -128,19 +129,30 @@ export function registerGitHubManifestRoutes(
   };
 
   // `POST /github/app/manifest/prepare` — authenticated (NOT in the pre-auth
-  // allowlist): mint a single-use token the app hangs on the `start` URL it opens
-  // in the browser. This is how `start` gets authenticated despite being a
-  // browser navigation that carries no Authorization header.
-  app.post('/github/app/manifest/prepare', (request, reply): { startToken: string } | void => {
-    const body = request.body as { baseUrl?: unknown } | undefined;
+  // allowlist). Native iOS callers receive a state-bound Universal-Link manifest;
+  // legacy and Android callers receive only the one-time token for `/start`.
+  app.post('/github/app/manifest/prepare', (request, reply) => {
+    const body = request.body as
+      { baseUrl?: unknown; owner?: unknown; returnTo?: unknown; native?: unknown } | undefined;
     const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl : '';
     if (!isHttpUrl(baseUrl)) {
       reply.code(400).send({ error: 'a valid http(s) baseUrl is required' });
       return;
     }
-    const startToken = manifestStartTokens.issueState();
-    manifestStartBases.set(startToken, baseUrl);
-    return { startToken };
+    if (body?.native !== true) {
+      const startToken = manifestStartTokens.issueState();
+      manifestStartBases.set(startToken, baseUrl);
+      return { startToken };
+    }
+    const state = manifestState.issueState();
+    const owner = typeof body?.owner === 'string' && body.owner.length > 0 ? body.owner : null;
+    const returnTo =
+      body?.returnTo === '/onboarding/github' ? '/onboarding/github' : '/github-connect';
+    const action =
+      owner === null
+        ? `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`
+        : `https://github.com/organizations/${encodeURIComponent(owner)}/settings/apps/new?state=${encodeURIComponent(state)}`;
+    return { action, manifest: buildMobileManifest(returnTo) };
   });
 
   // `GET /github/app/manifest/start` — issue a CSRF state and render an auto-
@@ -328,6 +340,63 @@ export function registerGitHubManifestRoutes(
     return undefined;
   });
 
+  // Native flow counterpart to the browser callback above. GitHub opens the
+  // registered `verity:` URL; the app forwards only the one-hour code and the
+  // single-use state through its authenticated, pinned server connection.
+  app.post('/github/app/manifest/complete', async (request, reply) => {
+    const body = request.body as { code?: unknown; state?: unknown } | undefined;
+    const code = typeof body?.code === 'string' ? body.code : '';
+    const state = typeof body?.state === 'string' ? body.state : '';
+
+    if (state.length === 0 || code.length === 0 || !manifestState.consumeState(state)) {
+      reply.code(400).send({ error: 'the GitHub App onboarding link is invalid or expired' });
+      return;
+    }
+    if (
+      githubAppConfiguredFromSettings(
+        await manifestRouteStore(deps.eventStore).getVeritySettingsRaw(),
+      )
+    ) {
+      reply.code(409).send({ error: 'a GitHub App is already connected' });
+      return;
+    }
+    if (deps.secretCipher?.isSealed() === true) {
+      reply.code(503).send({ error: 'Verity is locked' });
+      return;
+    }
+    if (deps.manifestConvert === undefined) {
+      reply.code(500).send({ error: 'GitHub App manifest onboarding is not configured' });
+      return;
+    }
+
+    let converted;
+    try {
+      converted = await deps.manifestConvert(code);
+    } catch {
+      reply.code(502).send({ error: 'GitHub could not create the App from the manifest' });
+      return;
+    }
+    try {
+      await manifestRouteStore(deps.eventStore).updateVeritySettings({
+        githubAppId: converted.appId,
+        githubAppPrivateKey: converted.privateKey,
+      });
+    } catch (err) {
+      if (err instanceof SealedError) {
+        reply.code(503).send({ error: 'Verity is locked' });
+        return;
+      }
+      throw err;
+    }
+
+    const installState = manifestState.issueState();
+    return {
+      installUrl:
+        `https://github.com/apps/${encodeURIComponent(converted.slug)}/installations/new` +
+        `?state=${encodeURIComponent(installState)}`,
+    };
+  });
+
   // `GET /github/app/manifest/installed` — GitHub's post-install redirect
   // (`setup_url`) lands here with `?installation_id=&setup_action=`. Persist the
   // installation id (the THIRD and final cred) → `githubAppConfigured` flips true.
@@ -418,5 +487,45 @@ export function registerGitHubManifestRoutes(
         `<a class="button secondary" href="https://github.com/settings/installations">View GitHub installation</a>` +
         `</div>`,
     });
+  });
+
+  // Native flow counterpart to `installed`: the deep link lands in the app and
+  // this authenticated request performs the same state-gated final write.
+  app.post('/github/app/manifest/installed/complete', async (request, reply) => {
+    const body = request.body as { installationId?: unknown; state?: unknown } | undefined;
+    const state = typeof body?.state === 'string' ? body.state : '';
+    const installationId =
+      typeof body?.installationId === 'string' && body.installationId.length > 0
+        ? body.installationId
+        : '';
+
+    if (deps.secretCipher?.isSealed() === true) {
+      reply.code(503).send({ error: 'Verity is locked' });
+      return;
+    }
+    if (state.length === 0 || installationId.length === 0 || !manifestState.consumeState(state)) {
+      reply.code(400).send({ error: 'the GitHub App installation link is invalid or expired' });
+      return;
+    }
+    if (
+      githubAppConfiguredFromSettings(
+        await manifestRouteStore(deps.eventStore).getVeritySettingsRaw(),
+      )
+    ) {
+      reply.code(409).send({ error: 'a GitHub App is already connected' });
+      return;
+    }
+    try {
+      await manifestRouteStore(deps.eventStore).updateVeritySettings({
+        githubAppInstallationId: installationId,
+      });
+    } catch (err) {
+      if (err instanceof SealedError) {
+        reply.code(503).send({ error: 'Verity is locked' });
+        return;
+      }
+      throw err;
+    }
+    return { connected: true };
   });
 }
