@@ -13,6 +13,7 @@ on:
           - backend
           - mobile
           - website
+          - mobile-ota
       release-pr:
         description: Generated Release Please PR number (required with a release train)
         required: false
@@ -49,6 +50,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     outputs:
       lint: ${{ steps.detect.outputs.lint }}
       typecheck: ${{ steps.detect.outputs.typecheck }}
@@ -70,6 +72,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TRAIN: ${{ inputs['release-train'] || 'full' }}
           RELEASE_PR: ${{ inputs['release-pr'] || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
         run: |
           set -euo pipefail
 
@@ -87,6 +92,17 @@ jobs:
           # isolated train. Keep a plain manual dispatch broad, but do not turn a
           # mobile or website version bump into a complete backend test matrix.
           release_scoped=false
+          if [ "${{ github.event_name }}" = "pull_request" ] \
+            && [ "$PR_AUTHOR" = "github-actions[bot]" ] \
+            && [[ "$PR_HEAD" =~ ^automation/promote-mobile-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            mapfile -t promotion_files < <(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')
+            if [ "${#promotion_files[@]}" -eq 1 ] \
+              && [ "${promotion_files[0]}" = "apps/mobile/ota-promotion.json" ]; then
+              RELEASE_TRAIN=mobile-ota
+              release_scoped=true
+            fi
+          fi
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "${RELEASE_TRAIN:-full}" != "full" ]; then
               if [[ ! "${RELEASE_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
@@ -118,6 +134,9 @@ jobs:
                   website:docs/website/CHANGELOG.md|website:docs/website/version.txt|website:.release-please-manifest.website.json)
                     :
                     ;;
+                  mobile-ota:apps/mobile/ota-promotion.json)
+                    :
+                    ;;
                   *)
                     echo "::error::${file} does not belong to the ${RELEASE_TRAIN} release train" >&2
                     exit 1
@@ -144,6 +163,11 @@ jobs:
               website)
                 # The website has no gated CI job. public-snapshot and ci-checks
                 # are unconditional, and release.yml owns its image build.
+                release_scoped=true
+                ;;
+              mobile-ota)
+                # The promotion workflow validates and applies this approval
+                # record; no application or backend source changed here.
                 release_scoped=true
                 ;;
               *)
