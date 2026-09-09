@@ -9,10 +9,13 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
   ) -> Bool {
     DispatchQueue.global(qos: .userInitiated).async {
       let environment = ProcessInfo.processInfo.environment
-      // Resolved before the other variables are checked: a misconfigured launch
-      // reported to some other path is indistinguishable from a hang, because
-      // the host only ever polls this one.
-      let resultPath = environment["VERITY_SMOKE_RESULT"] ?? "/tmp/verity-pinned-tls-result"
+      // Resolved before the other variables are checked, and never guessed: the
+      // host polls one path only, so a launch reported anywhere else is
+      // indistinguishable from a hang. Say so in the log it dumps instead.
+      guard let resultPath = environment["VERITY_SMOKE_RESULT"] else {
+        NSLog("pinned TLS smoke launched without VERITY_SMOKE_RESULT")
+        exit(EXIT_FAILURE)
+      }
       guard
         let origin = environment["VERITY_SMOKE_ORIGIN"],
         let wrongHostOrigin = environment["VERITY_SMOKE_WRONG_HOST_ORIGIN"],

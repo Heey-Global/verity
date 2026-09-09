@@ -435,12 +435,22 @@ describe('native iOS compile gate', () => {
 
   it('runs the pinned TLS smoke against the generated app configuration', () => {
     const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      on: { pull_request: { paths: string[] } };
       jobs: Record<string, { steps: WorkflowStep[] }>;
     };
     const runs = github.jobs['verify-ios'].steps.map((step) => step.run ?? '');
     const prebuild = runs.findIndex((run) => run.includes('expo prebuild --platform ios'));
     const smoke = runs.findIndex((run) => run.includes('ios-pinned-tls-smoke.sh'));
     expect(prebuild).toBeGreaterThan(-1);
+    // A change to the harness that triggers no run is a smoke nobody notices
+    // has stopped working.
+    for (const source of [
+      'scripts/ios-pinned-tls-smoke.sh',
+      'scripts/ios-pinned-tls-smoke.swift',
+      'scripts/ios-pinned-tls-smoke-app.swift',
+    ]) {
+      expect(github.on.pull_request.paths).toContain(source);
+    }
     // The smoke copies App Transport Security out of the generated Info.plist.
     // Ahead of prebuild it would run under its own bundle defaults, which pass
     // while the shipping rules reject every self-hosted server.

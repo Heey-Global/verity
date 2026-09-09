@@ -2,6 +2,8 @@
 # Runs from the repository root, after `expo prebuild --platform ios`: the iOS
 # half of this smoke reads App Transport Security out of the generated app
 # Info.plist. Point VERITY_SMOKE_APP_PLIST at that file to run it standalone.
+# It also needs a routable IPv4 address, because loopback is exempt from the
+# rules under test — a machine with only a VPN interface cannot run it.
 set -euo pipefail
 
 tmp="$(mktemp -d)"
@@ -20,8 +22,15 @@ trap cleanup EXIT
 # App Transport Security exempts loopback, so a smoke that only ever talks to
 # 127.0.0.1 stays green under rules that reject every real Verity server. Serve
 # the same certificate on a routable address and let the iOS run use that.
-default_interface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
-host_ip="$(ipconfig getifaddr "${default_interface:-en0}" 2>/dev/null || true)"
+host_ip=''
+# The default route often points at a utun interface that carries no IPv4 of its
+# own, so an empty address has to fall through to the wired and wireless ones
+# rather than being taken as the answer.
+for interface in "$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')" en0 en1; do
+  [[ -n "$interface" ]] || continue
+  host_ip="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+  [[ -n "$host_ip" ]] && break
+done
 case "$host_ip" in
   '' | 127.*) echo 'no routable IPv4 address for the ATS check' >&2; exit 1 ;;
 esac
@@ -66,18 +75,35 @@ context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1], sys.argv[2])
 # Bound to the two addresses under test instead of 0.0.0.0: the certificate and
 # its key are readable by anything that reaches this port, and on a runner with
-# a shared subnet that is more than the simulator.
+# a shared subnet that is more than the simulator. Both sockets are bound before
+# either is served, so a bind failure cannot happen behind an already-answering
+# listener that would let the readiness probe through.
+servers = []
 for address in ('127.0.0.1', sys.argv[3]):
     server = http.server.ThreadingHTTPServer((address, 18443), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
+    servers.append(server)
+for server in servers:
     threading.Thread(target=server.serve_forever, daemon=True).start()
 threading.Event().wait()
 PY
 server_pid=$!
 
-for _ in {1..20}; do
-  if nc -z 127.0.0.1 18443; then break; fi
-  sleep 0.1
+# Both listeners are probed: waiting only on loopback would let the iOS run
+# start against an address that never came up and read as a TLS failure.
+for address in 127.0.0.1 "$host_ip"; do
+  ready=''
+  for _ in {1..50}; do
+    if nc -z "$address" 18443; then
+      ready=1
+      break
+    fi
+    sleep 0.1
+  done
+  [[ -n "$ready" ]] || {
+    echo "TLS smoke server never accepted connections on $address:18443" >&2
+    exit 1
+  }
 done
 "$tmp/smoke" 'https://127.0.0.1:18443/' "$pin" success
 "$tmp/smoke" 'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
@@ -127,7 +153,7 @@ xcrun swiftc \
   scripts/ios-pinned-tls-smoke-app.swift \
   -framework UIKit \
   -o "$app/VerityPinnedTLSSmoke"
-cat >"$app/Info.plist" <<'PLIST'
+cat >"$app/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -137,6 +163,11 @@ cat >"$app/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneSimulator</string></array>
+  <key>DTPlatformName</key><string>iphonesimulator</string>
+  <!-- Declared, not just compiled in: simctl reads the minimum OS from here, so
+       leaving it out means the target chosen above is never actually stated. -->
+  <key>MinimumOSVersion</key><string>${target_version}</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
 </dict></plist>
@@ -144,6 +175,8 @@ PLIST
 # ATS decides whether CFNetwork keeps a connection our delegate has already
 # accepted, so the harness has to run under the dictionary the released app
 # ships. Take it from the generated project rather than restating it here.
+# The global keys are what this exercises: the server is reached by IP, which no
+# NSExceptionDomains entry can match, exactly like a paired Verity server.
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
 if [[ -z "$app_plist" ]]; then
   # Picking the first match would silently run under a second target's rules.
