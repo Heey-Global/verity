@@ -1,5 +1,12 @@
 # Changelog
 
+## [17.3.5](https://github.com/Heey-Global/verity/compare/v17.3.4...v17.3.5) (2026-09-09)
+
+
+### Bug Fixes
+
+* **ci:** publish the required aggregate status ([ddf2cfc](https://github.com/Heey-Global/verity/commit/ddf2cfce1b8335f38906644957eadaea9304b2ae))
+
 ## [17.3.4](https://github.com/Heey-Global/verity/compare/v17.3.3...v17.3.4) (2026-09-09)
 
 
