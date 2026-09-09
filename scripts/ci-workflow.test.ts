@@ -2594,6 +2594,13 @@ describe('changed-area detector', () => {
     jobs: { changes: WorkflowJob & { permissions?: Record<string, string> } };
   };
   const detect = workflow.jobs.changes.steps.find((step) => step.id === 'detect');
+  const nativeWorkflow = parse(
+    readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8'),
+  ) as {
+    on?: { pull_request?: { paths?: string[] } };
+  };
+  const nativePullRequestPaths = nativeWorkflow.on?.pull_request?.paths ?? [];
+  const nativePullRequestFiles = ignore().add(nativePullRequestPaths);
   const areas = [
     'lint',
     'typecheck',
@@ -3373,6 +3380,27 @@ describe('changed-area detector', () => {
     });
   });
 
+  it('leaves native-only iOS changes to the macOS verification workflow', async () => {
+    for (const file of [
+      'apps/mobile/native/CertificatePinDelegate.swift',
+      'apps/mobile/native/VerityPinnedTransport.swift',
+      'scripts/ios-pinned-tls-smoke.sh',
+      'scripts/ios-pinned-tls-smoke.swift',
+    ]) {
+      expect(await run({ name: 'pull_request', baseRef: 'main' }, [file]), file).toEqual(
+        all('false'),
+      );
+    }
+
+    expect(nativePullRequestPaths).toEqual(
+      expect.arrayContaining([
+        'apps/mobile/**',
+        'scripts/ios-pinned-tls-smoke.sh',
+        'scripts/ios-pinned-tls-smoke.swift',
+      ]),
+    );
+  });
+
   it('skips every job on a release-please pull request', async () => {
     // This used to be a post-merge shortcut only, on the argument that the
     // allowlist, the two diff guards and the base's verdict did not exist on a
@@ -3620,10 +3648,10 @@ describe('changed-area detector', () => {
     for (const file of named) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
       expect(
-        outputs.test,
-        `a suite reads ${file}, but changing it alone runs no tests — give its arm ` +
-          '`test=true` in ci.yml, or stop reading it',
-      ).toBe('true');
+        outputs.test === 'true' || nativePullRequestFiles.ignores(file),
+        `a suite reads ${file}, but changing it alone reaches neither the root test job nor ` +
+          'the native verification workflow — route it to one of them, or stop reading it',
+      ).toBe(true);
     }
   }, 120_000);
 });

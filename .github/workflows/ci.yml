@@ -362,6 +362,12 @@ jobs:
                   server_image=true
                   agent_seed_drift=true
                   ;;
+                # Swift sources and their native TLS harness are compiled by
+                # verity-mobile-native-verify on macOS. Root TypeScript, backend,
+                # image and Jest jobs cannot exercise them.
+                apps/mobile/native/*|scripts/ios-pinned-tls-smoke.sh|scripts/ios-pinned-tls-smoke.swift)
+                  :
+                  ;;
                 # The native patch runner, ahead of the broad `scripts/*` arm. Its
                 # anchors are byte-exact against an installed dependency, and the
                 # `mobile-app` job — which has the only full mobile install in CI —
