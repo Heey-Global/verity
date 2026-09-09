@@ -16,6 +16,7 @@ on:
       - 'scripts/patch-mobile-native-deps.mjs'
       - 'scripts/ios-pinned-tls-smoke.sh'
       - 'scripts/ios-pinned-tls-smoke.swift'
+      - 'scripts/ios-pinned-tls-smoke-app.swift'
   workflow_dispatch:
     inputs:
       ref:

@@ -3386,6 +3386,7 @@ describe('changed-area detector', () => {
       'apps/mobile/native/VerityPinnedTransport.swift',
       'scripts/ios-pinned-tls-smoke.sh',
       'scripts/ios-pinned-tls-smoke.swift',
+      'scripts/ios-pinned-tls-smoke-app.swift',
     ]) {
       expect(await run({ name: 'pull_request', baseRef: 'main' }, [file]), file).toEqual(
         all('false'),
@@ -3397,6 +3398,7 @@ describe('changed-area detector', () => {
         'apps/mobile/**',
         'scripts/ios-pinned-tls-smoke.sh',
         'scripts/ios-pinned-tls-smoke.swift',
+        'scripts/ios-pinned-tls-smoke-app.swift',
       ]),
     );
   });
