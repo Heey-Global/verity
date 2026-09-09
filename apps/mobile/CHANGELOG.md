@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.22.0](https://github.com/Heey-Global/verity/compare/mobile-v1.21.0...mobile-v1.22.0) (2026-09-09)
+
+
+### Bug Fixes
+
+* **deps:** update dependency expo to v57.0.20 ([33bc7a1](https://github.com/Heey-Global/verity/commit/33bc7a11cc23054cfac080006dbbefeea3a1de90))
+* **deps:** update dependency react-native-qrcode-svg to v6.3.22 ([6cdf57e](https://github.com/Heey-Global/verity/commit/6cdf57e7527a1fadcfdfaff497b61b1de557ff55))
+* **mobile:** anchor the pinned server leaf ([b2a37e1](https://github.com/Heey-Global/verity/commit/b2a37e111ec23f64cdd4668b77f7f301dbdeab57))
+
 ## [1.21.0](https://github.com/Heey-Global/verity/compare/mobile-v1.20.0...mobile-v1.21.0) (2026-09-09)
 
 
