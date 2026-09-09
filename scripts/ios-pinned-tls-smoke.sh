@@ -30,18 +30,28 @@ trap 'cleanup; exit 143' TERM
 host_ip=''
 # The default route often points at a utun interface that carries no IPv4 of its
 # own, so an empty address has to fall through to the wired and wireless ones
-# rather than being taken as the answer.
-for interface in "$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')" en0 en1; do
+# rather than being taken as the answer — and then to whatever else the machine
+# has, so a runner image that numbers its interfaces differently fails the check
+# for a reason that is about pinning rather than about naming.
+# Both probes end in `|| true`: under `pipefail` a machine with no default route
+# would otherwise abort the script here, before the message below can say that
+# an address is what is missing.
+interfaces=("$( (route -n get default 2>/dev/null || true) | awk '/interface:/{print $2; exit}')" en0 en1)
+read -r -a other_interfaces <<<"$(ifconfig -l 2>/dev/null || true)"
+interfaces+=("${other_interfaces[@]+"${other_interfaces[@]}"}")
+tried=()
+for interface in "${interfaces[@]}"; do
   [[ -n "$interface" ]] || continue
+  tried+=("$interface")
   host_ip="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+  # A loopback or self-assigned link-local address routes nowhere and would
+  # surface as an opaque TLS error minutes later, so it counts as no address at
+  # all — and must not stop the search, now that lo0 is among the candidates.
+  case "$host_ip" in
+    127.* | 169.254.*) host_ip='' ;;
+  esac
   if [[ -n "$host_ip" ]]; then break; fi
 done
-# A self-assigned link-local address routes nowhere and would surface as an
-# opaque TLS error minutes later, so it counts as no address at all. The macOS
-# cases below still run without one; only the iOS half needs it.
-case "$host_ip" in
-  127.* | 169.254.*) host_ip='' ;;
-esac
 san='IP:127.0.0.1'
 if [[ -n "$host_ip" ]]; then san="$san,IP:$host_ip"; fi
 
@@ -135,6 +145,7 @@ done
 # simulator boot and a compile first.
 [[ -n "$host_ip" ]] || {
   echo 'the iOS half needs a routable IPv4 address, because ATS exempts loopback' >&2
+  echo "no interface carried one; tried: ${tried[*]}" >&2
   exit 1
 }
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
@@ -211,20 +222,41 @@ cat >"$app/Info.plist" <<PLIST
 PLIST
 # Canonical JSON, so the comparison below is about content: PlistBuddy prints a
 # dictionary in stored order, and a merge is under no obligation to preserve it.
+#
+# An absent key is a valid (strict) configuration and reports itself as exit 3.
+# Every other failure — an unreadable plist, a missing tool — is not, and must
+# not arrive here looking like an app that ships no rules: the harness would
+# then run under ATS defaults and the gate at the end would pass on an empty
+# dictionary, which is the silent green this whole file exists to refuse.
+#
+# plistlib rather than plutil: it reads the subtree without having to render the
+# rest of the file, which may hold types JSON has no spelling for.
 ats_json() {
-  plutil -extract NSAppTransportSecurity json -o - "$1" \
-    | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))'
+  python3 -c '
+import json, plistlib, sys
+
+with open(sys.argv[1], "rb") as handle:
+    plist = plistlib.load(handle)
+if "NSAppTransportSecurity" not in plist:
+    sys.exit(3)
+print(json.dumps(plist["NSAppTransportSecurity"], sort_keys=True))
+' "$1"
 }
-# An absent key is a valid (strict) configuration; a failed merge is not, and
-# would leave the harness testing rules nobody ships.
 merged=''
-if shipped_ats="$(ats_json "$app_plist" 2>/dev/null)"; then
+shipped_ats=''
+ats_status=0
+shipped_ats="$(ats_json "$app_plist")" || ats_status=$?
+if ((ats_status != 0 && ats_status != 3)); then
+  echo "could not read the App Transport Security rules out of $app_plist" >&2
+  exit 1
+fi
+if ((ats_status == 0)); then
   /usr/libexec/PlistBuddy -x -c 'Print :NSAppTransportSecurity' "$app_plist" >"$tmp/ats.plist"
   /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' \
     -c "Merge $tmp/ats.plist :NSAppTransportSecurity" "$app/Info.plist"
   # A half-completed merge reads exactly like an app that ships no ATS key, so
   # the copy is compared against its source instead of assumed.
-  merged="$(ats_json "$app/Info.plist" 2>/dev/null || true)"
+  merged="$(ats_json "$app/Info.plist" || true)"
   [[ "$merged" == "$shipped_ats" ]] || {
     echo "App Transport Security did not survive the copy out of $app_plist" >&2
     echo "  shipped: $shipped_ats" >&2
