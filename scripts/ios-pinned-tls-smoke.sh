@@ -46,5 +46,5 @@ done
 "$tmp/smoke" 'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
 # A matching key must not erase the TLS hostname check. This catches a fallback
 # to basic X.509 evaluation, which would accept this certificate for localhost.
-"$tmp/smoke" 'https://localhost:18443/' "$pin" PINNED_LEAF_TRUST_FAILED
+"$tmp/smoke" 'https://localhost:18443/' "$pin" PINNED_CHAIN_TRUST_FAILED
 echo 'Pinned TLS smoke test passed'

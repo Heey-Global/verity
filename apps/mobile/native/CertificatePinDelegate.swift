@@ -147,7 +147,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
       SecTrustEvaluateWithError(trust, &trustError)
     else {
       let detail = trustError.map { CFErrorCopyDescription($0) as String } ?? "UNKNOWN"
-      reject("PINNED_LEAF_TRUST_FAILED:\(detail)", completionHandler: completionHandler)
+      reject("PINNED_CHAIN_TRUST_FAILED:\(detail)", completionHandler: completionHandler)
       return
     }
     recordPhase("PIN_AND_CHAIN_TRUST_ACCEPTED")
