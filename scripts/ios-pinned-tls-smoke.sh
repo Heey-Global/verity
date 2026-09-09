@@ -18,7 +18,11 @@ cleanup() {
   fi
   rm -rf "$tmp"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# Without an explicit exit these resume at the interrupted line, with the
+# temporary directory and the simulator already gone.
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # App Transport Security exempts loopback, so a smoke that only ever talks to
 # 127.0.0.1 stays green under rules that reject every real Verity server. Serve
@@ -32,9 +36,14 @@ for interface in "$(route -n get default 2>/dev/null | awk '/interface:/{print $
   host_ip="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
   if [[ -n "$host_ip" ]]; then break; fi
 done
+# A self-assigned link-local address routes nowhere and would surface as an
+# opaque TLS error minutes later, so it counts as no address at all. The macOS
+# cases below still run without one; only the iOS half needs it.
 case "$host_ip" in
-  '' | 127.*) echo 'no routable IPv4 address for the ATS check' >&2; exit 1 ;;
+  127.* | 169.254.*) host_ip='' ;;
 esac
+san='IP:127.0.0.1'
+if [[ -n "$host_ip" ]]; then san="$san,IP:$host_ip"; fi
 
 openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/ca-key.pem"
 openssl req -new -x509 -key "$tmp/ca-key.pem" -out "$tmp/ca.pem" -days 1 \
@@ -44,7 +53,7 @@ openssl req -new -x509 -key "$tmp/ca-key.pem" -out "$tmp/ca.pem" -days 1 \
 openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/key.pem"
 openssl req -new -key "$tmp/key.pem" -out "$tmp/leaf.csr" -subj '/CN=127.0.0.1'
 printf '%s\n' \
-  "subjectAltName=IP:127.0.0.1,IP:$host_ip" \
+  "subjectAltName=$san" \
   'basicConstraints=critical,CA:false' \
   'keyUsage=critical,digitalSignature,keyEncipherment' \
   'extendedKeyUsage=serverAuth' >"$tmp/leaf.ext"
@@ -55,7 +64,9 @@ pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 
 
 cp scripts/ios-pinned-tls-smoke.swift "$tmp/main.swift"
 swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tmp/smoke"
-python3 - "$tmp/cert.pem" "$tmp/key.pem" "$host_ip" <<'PY' &
+addresses=(127.0.0.1)
+if [[ -n "$host_ip" ]]; then addresses+=("$host_ip"); fi
+python3 - "$tmp/cert.pem" "$tmp/key.pem" "${addresses[@]}" <<'PY' &
 import http.server, ssl, sys, threading
 
 
@@ -74,12 +85,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1], sys.argv[2])
-# Bound to the two addresses under test rather than every interface the runner
-# happens to have. Both sockets are bound before either is served, so a failed
-# bind cannot hide behind an already-answering listener and let the readiness
-# probe through.
+# Bound to the addresses under test rather than every interface the runner
+# happens to have. All sockets are bound before any is served, so a failed bind
+# cannot hide behind an already-answering listener and let the readiness probe
+# through.
 servers = []
-for address in ('127.0.0.1', sys.argv[3]):
+for address in sys.argv[3:]:
     server = http.server.ThreadingHTTPServer((address, 18443), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     servers.append(server)
@@ -91,7 +102,7 @@ server_pid=$!
 
 # Both listeners are probed: waiting only on loopback would let the iOS run
 # start against an address that never came up and read as a TLS failure.
-for address in 127.0.0.1 "$host_ip"; do
+for address in "${addresses[@]}"; do
   ready=''
   for _ in {1..50}; do
     if nc -z "$address" 18443; then
@@ -122,6 +133,10 @@ done
 # ships. Take it from the generated project rather than restating it here, and
 # resolve it before anything expensive: a missing prebuild should not cost a
 # simulator boot and a compile first.
+[[ -n "$host_ip" ]] || {
+  echo 'the iOS half needs a routable IPv4 address, because ATS exempts loopback' >&2
+  exit 1
+}
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
 if [[ -z "$app_plist" ]]; then
   # Picking the first match would silently run under a second target's rules.
@@ -193,24 +208,30 @@ cat >"$app/Info.plist" <<PLIST
   <key>UILaunchScreen</key><dict/>
 </dict></plist>
 PLIST
+# Canonical JSON, so the comparison below is about content: PlistBuddy prints a
+# dictionary in stored order, and a merge is under no obligation to preserve it.
+ats_json() {
+  plutil -extract NSAppTransportSecurity json -o - "$1" \
+    | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))'
+}
 # An absent key is a valid (strict) configuration; a failed merge is not, and
 # would leave the harness testing rules nobody ships.
 merged=''
-if shipped_ats="$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app_plist" 2>/dev/null)"; then
+if shipped_ats="$(ats_json "$app_plist" 2>/dev/null)"; then
   /usr/libexec/PlistBuddy -x -c 'Print :NSAppTransportSecurity' "$app_plist" >"$tmp/ats.plist"
   /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' \
     -c "Merge $tmp/ats.plist :NSAppTransportSecurity" "$app/Info.plist"
   # A half-completed merge reads exactly like an app that ships no ATS key, so
   # the copy is compared against its source instead of assumed.
-  merged="$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app/Info.plist" 2>/dev/null || true)"
+  merged="$(ats_json "$app/Info.plist" 2>/dev/null || true)"
   [[ "$merged" == "$shipped_ats" ]] || {
     echo "App Transport Security did not survive the copy out of $app_plist" >&2
+    echo "  shipped: $shipped_ats" >&2
+    echo "  copied:  ${merged:-none}" >&2
     exit 1
   }
 fi
-echo "App Transport Security rules under test (from $app_plist):"
-/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app/Info.plist" 2>/dev/null \
-  || echo '  none — ATS defaults'
+echo "App Transport Security rules under test (from $app_plist): ${merged:-none — ATS defaults}"
 codesign --force --sign - "$app"
 xcrun simctl install "$simulator_udid" "$app"
 data_container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.pinned-tls-smoke data)"
@@ -224,6 +245,9 @@ launch_output="$(
 )"
 echo "$launch_output"
 app_pid="$(sed -n 's/.*: *\([0-9][0-9]*\) *$/\1/p' <<<"$launch_output")"
+if [[ -z "$app_pid" ]]; then
+  echo 'no PID in the simctl launch output; a crashed app will only surface at the deadline' >&2
+fi
 # Three cases at up to 15 seconds each: a budget below that reports a timeout
 # where the app was about to report the actual TLS failure.
 deadline=$((SECONDS + 120))
