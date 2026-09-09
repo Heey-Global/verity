@@ -1,5 +1,12 @@
 # Changelog
 
+## [17.3.4](https://github.com/Heey-Global/verity/compare/v17.3.3...v17.3.4) (2026-09-09)
+
+
+### Bug Fixes
+
+* **installer:** tolerate pairing clock skew ([2c6ed95](https://github.com/Heey-Global/verity/commit/2c6ed956efc042c96f2a502e37e5cd71e9c33e61))
+
 ## [17.3.3](https://github.com/Heey-Global/verity/compare/v17.3.2...v17.3.3) (2026-09-09)
 
 
