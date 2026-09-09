@@ -99,9 +99,91 @@ jobs:
             fi
           fi
 
+      # The selector diffs immutable event SHAs locally. A complete checkout
+      # avoids the Compare API's 300-file ceiling and keeps large pushes from
+      # hiding a manifest or a file that does not belong to the selected train.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+
+      - name: Select release trains for this push
+        id: release-trains
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          diff="$(git diff --no-renames --name-status "$BEFORE" "$HEAD_SHA")" || {
+            echo "::error::Could not resolve the immutable push diff ${BEFORE}...${HEAD_SHA}." >&2
+            exit 1
+          }
+          [[ -n "$diff" ]] || {
+            echo '::error::The release push diff is empty; refusing to select a train.' >&2
+            exit 1
+          }
+
+          backend=false
+          mobile=false
+          website=false
+          while IFS=$'\t' read -r status file; do
+            case "$file" in
+              .release-please-manifest.backend.json) backend=true ;;
+              .release-please-manifest.mobile.json) mobile=true ;;
+              .release-please-manifest.website.json) website=true ;;
+              *) continue ;;
+            esac
+            [[ "$status" == M ]] || {
+              echo "::error::Release manifest $file had Git status $status rather than M." >&2
+              exit 1
+            }
+          done <<<"$diff"
+
+          if [[ "$backend" == false && "$mobile" == false && "$website" == false ]]; then
+            # Ordinary source pushes update or open every independent release PR.
+            backend=true
+            mobile=true
+            website=true
+          else
+            # A release-please merge may publish only the train whose manifest is
+            # in this event's immutable diff. Do not let a delayed run observe a
+            # later merge through the moving main branch and publish that train.
+            while IFS=$'\t' read -r _ file; do
+              owned=false
+              if [[ "$backend" == true ]]; then
+                case "$file" in
+                  .release-please-manifest.backend.json|CHANGELOG.md|version.txt) owned=true ;;
+                esac
+              fi
+              if [[ "$mobile" == true ]]; then
+                case "$file" in
+                  .release-please-manifest.mobile.json|apps/mobile/CHANGELOG.md|apps/mobile/app.config.ts|apps/mobile/version.txt) owned=true ;;
+                esac
+              fi
+              if [[ "$website" == true ]]; then
+                case "$file" in
+                  .release-please-manifest.website.json|docs/website/CHANGELOG.md|docs/website/version.txt) owned=true ;;
+                esac
+              fi
+              [[ "$owned" == true ]] || {
+                echo "::error::$file does not belong to the release train selected by this push." >&2
+                exit 1
+              }
+            done <<<"$diff"
+          fi
+
+          {
+            echo "backend=$backend"
+            echo "mobile=$mobile"
+            echo "website=$website"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Open backend release PR or create release
         id: release-backend
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.release-trains.outputs.backend == 'true'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -111,7 +193,7 @@ jobs:
 
       - name: Open mobile release PR or create release
         id: release-mobile
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.release-trains.outputs.mobile == 'true'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -121,7 +203,7 @@ jobs:
 
       - name: Open website release PR or create release
         id: release-website
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.release-trains.outputs.website == 'true'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
