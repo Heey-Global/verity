@@ -6,7 +6,7 @@ import {
 } from 'node:child_process';
 import { on, once } from 'node:events';
 import { access, chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +35,13 @@ type WorkflowJob = {
 describe('release-please train isolation', () => {
   const trains = ['backend', 'mobile', 'website'] as const;
 
+  const workflowReleaseJob = (): { steps?: WorkflowStep[] } => {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    return release.jobs['release-please'] ?? {};
+  };
+
   it('keeps every release PR on a disjoint manifest', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { steps?: WorkflowStep[] }>;
@@ -59,6 +66,7 @@ describe('release-please train isolation', () => {
       const action = steps.find((step) => step.id === `release-${train}`);
       expect(action?.with?.['config-file']).toBe(configFile);
       expect(action?.with?.['manifest-file']).toBe(manifestFile);
+      expect(action?.if).toContain(`steps.release-trains.outputs.${train} == 'true'`);
     }
 
     expect(existsSync('release-please-config.json')).toBe(false);
@@ -66,10 +74,7 @@ describe('release-please train isolation', () => {
   });
 
   it('dispatches each generated PR with its owning train', () => {
-    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-      jobs: Record<string, { steps?: WorkflowStep[] }>;
-    };
-    const dispatch = release.jobs['release-please']?.steps?.find(
+    const dispatch = workflowReleaseJob().steps?.find(
       (step) => step.name === 'Run checks for release PRs',
     );
 
@@ -78,6 +83,109 @@ describe('release-please train isolation', () => {
     );
     for (const train of trains) {
       expect(dispatch?.run).toContain(`["${train}", "${train.toUpperCase()}_PRS_JSON"]`);
+    }
+  });
+
+  it('binds publication to the trains in the immutable push diff', async () => {
+    const steps = workflowReleaseJob().steps ?? [];
+    const select = steps.find((step) => step.id === 'release-trains');
+    expect(select?.run).toBeDefined();
+    const selectIndex = steps.indexOf(select as WorkflowStep);
+    const checkoutIndex = steps.findIndex((step) => step.uses?.startsWith('actions/checkout@'));
+    expect(checkoutIndex).toBeGreaterThanOrEqual(0);
+    expect(checkoutIndex).toBeLessThan(selectIndex);
+    expect(steps[checkoutIndex]?.with?.['fetch-depth']).toBe(0);
+    expect(select?.run).toContain('git diff --no-renames --name-status "$BEFORE" "$HEAD_SHA"');
+    expect(select?.run).not.toContain('gh api');
+
+    const dir = await mkdtemp(join(tmpdir(), 'release-trains-'));
+    try {
+      await writeFile(
+        join(dir, 'git'),
+        '#!/usr/bin/env bash\n' +
+          '[[ "$RELEASE_DIFF_FAIL" != true ]] || exit 1\n' +
+          'printf "%s\\n" "$RELEASE_DIFF"\n',
+        { mode: 0o755 },
+      );
+      const run = (rows: string[], failDiff = false): Record<string, string> => {
+        const output = join(dir, 'github-output');
+        writeFileSync(output, '');
+        execFileSync('bash', ['-c', select?.run ?? 'exit 1'], {
+          env: {
+            ...process.env,
+            PATH: `${dir}:${process.env.PATH ?? ''}`,
+            BEFORE: 'before-sha',
+            HEAD_SHA: 'event-sha',
+            GITHUB_OUTPUT: output,
+            GITHUB_REPOSITORY: 'heey-global/verity',
+            RELEASE_DIFF: rows.join('\n'),
+            RELEASE_DIFF_FAIL: String(failDiff),
+          },
+          stdio: 'pipe',
+        });
+        return Object.fromEntries(
+          readFileSync(output, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => line.split('=') as [string, string]),
+        );
+      };
+      const manifest = (train: (typeof trains)[number]): string =>
+        ['.release-please-manifest.', train, '.json'].join('');
+      const releaseFiles = (train: (typeof trains)[number]): string[] => {
+        const config = JSON.parse(readFileSync(`release-please-config.${train}.json`, 'utf8')) as {
+          packages: Record<string, { 'extra-files'?: Array<{ path: string } | string> }>;
+        };
+        const [packagePath, packageConfig] = Object.entries(config.packages)[0] ?? [];
+        expect(packagePath).toBeDefined();
+        const underPackage = (file: string): string =>
+          packagePath === '.' ? file : `${packagePath}/${file}`;
+        return [
+          manifest(train),
+          underPackage(['CHANGE', 'LOG.md'].join('')),
+          underPackage(['version', '.txt'].join('')),
+          ...(packageConfig?.['extra-files'] ?? []).map((file) =>
+            underPackage(typeof file === 'string' ? file : file.path),
+          ),
+        ];
+      };
+      const rows = (train: (typeof trains)[number]): string[] =>
+        releaseFiles(train).map((file) => `M\t${file}`);
+
+      expect(run(['M\tpackages/server/src/app.ts'])).toEqual({
+        backend: 'true',
+        mobile: 'true',
+        website: 'true',
+      });
+      expect(run(rows('backend'))).toEqual({
+        backend: 'true',
+        mobile: 'false',
+        website: 'false',
+      });
+      expect(run(rows('mobile'))).toEqual({
+        backend: 'false',
+        mobile: 'true',
+        website: 'false',
+      });
+      expect(run(rows('website'))).toEqual({
+        backend: 'false',
+        mobile: 'false',
+        website: 'true',
+      });
+      expect(run([...rows('backend'), ...rows('mobile')])).toEqual({
+        backend: 'true',
+        mobile: 'true',
+        website: 'false',
+      });
+
+      const foreignMobileFile = releaseFiles('mobile').find((file) => file !== manifest('mobile'));
+      expect(foreignMobileFile).toBeDefined();
+      expect(() => run([...rows('backend'), `M\t${foreignMobileFile as string}`])).toThrow();
+      expect(() => run([`D\t${manifest('mobile')}`])).toThrow();
+      expect(() => run([])).toThrow();
+      expect(() => run(['M\tpackages/server/src/app.ts'], true)).toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
