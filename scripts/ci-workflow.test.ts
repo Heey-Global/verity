@@ -3410,12 +3410,26 @@ describe('changed-area detector', () => {
       'apps/mobile/native/VerityPinnedTransport.swift',
       'scripts/ios-pinned-tls-smoke.sh',
       'scripts/ios-pinned-tls-smoke.swift',
-      'scripts/ios-pinned-tls-smoke-app.swift',
     ]) {
       expect(await run({ name: 'pull_request', baseRef: 'main' }, [file]), file).toEqual(
         all('false'),
       );
     }
+
+    // The UIKit harness is also a root-CI input. Keeping this path broad avoids
+    // leaving the required ci-checks status absent if GitHub rejects the native
+    // workflow before it can create a job.
+    expect(
+      await run({ name: 'pull_request', baseRef: 'main' }, [
+        'scripts/ios-pinned-tls-smoke-app.swift',
+      ]),
+    ).toEqual({
+      ...all('false'),
+      lint: 'true',
+      typecheck: 'true',
+      test: 'true',
+      server_image: 'true',
+    });
 
     expect(nativePullRequestPaths).toEqual(
       expect.arrayContaining([
