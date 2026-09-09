@@ -1,5 +1,12 @@
 # Changelog
 
+## [17.3.3](https://github.com/Heey-Global/verity/compare/v17.3.2...v17.3.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **mobile:** trust the pinned server chain on iOS ([e2deb2c](https://github.com/Heey-Global/verity/commit/e2deb2cf924bfea93b00829f4db0b930704e52fd))
+
 ## [17.3.2](https://github.com/Heey-Global/verity/compare/v17.3.1...v17.3.2) (2026-09-09)
 
 
