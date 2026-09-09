@@ -11,6 +11,7 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
       let environment = ProcessInfo.processInfo.environment
       guard
         let origin = environment["VERITY_SMOKE_ORIGIN"],
+        let wrongHostOrigin = environment["VERITY_SMOKE_WRONG_HOST_ORIGIN"],
         let pin = environment["VERITY_SMOKE_PIN"],
         let resultPath = environment["VERITY_SMOKE_RESULT"]
       else {
@@ -20,8 +21,7 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
       let cases = [
         (origin, pin, "success"),
         (origin, "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "PIN_MISMATCH"),
-        (origin.replacingOccurrences(of: "127.0.0.1", with: "localhost"), pin,
-         "PINNED_CHAIN_TRUST_FAILED"),
+        (wrongHostOrigin, pin, "PINNED_CHAIN_TRUST_FAILED"),
       ]
       var failures: [String] = []
       for (url, candidatePin, expected) in cases {

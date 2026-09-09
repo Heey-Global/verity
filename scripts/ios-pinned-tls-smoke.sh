@@ -14,6 +14,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# App Transport Security exempts loopback, so a smoke that only ever talks to
+# 127.0.0.1 stays green under rules that reject every real Verity server. Serve
+# the same certificate on a routable address and let the iOS run use that.
+host_ip="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+case "$host_ip" in
+  '' | 127.*) echo 'no routable IPv4 address for the ATS check' >&2; exit 1 ;;
+esac
+
 openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/ca-key.pem"
 openssl req -new -x509 -key "$tmp/ca-key.pem" -out "$tmp/ca.pem" -days 1 \
   -subj '/CN=Verity smoke CA' \
@@ -22,7 +30,7 @@ openssl req -new -x509 -key "$tmp/ca-key.pem" -out "$tmp/ca.pem" -days 1 \
 openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/key.pem"
 openssl req -new -key "$tmp/key.pem" -out "$tmp/leaf.csr" -subj '/CN=127.0.0.1'
 printf '%s\n' \
-  'subjectAltName=IP:127.0.0.1' \
+  "subjectAltName=IP:127.0.0.1,IP:$host_ip" \
   'basicConstraints=critical,CA:false' \
   'keyUsage=critical,digitalSignature,keyEncipherment' \
   'extendedKeyUsage=serverAuth' >"$tmp/leaf.ext"
@@ -35,7 +43,22 @@ cp scripts/ios-pinned-tls-smoke.swift "$tmp/main.swift"
 swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tmp/smoke"
 python3 - "$tmp/cert.pem" "$tmp/key.pem" <<'PY' &
 import http.server, ssl, sys
-server = http.server.HTTPServer(('127.0.0.1', 18443), http.server.SimpleHTTPRequestHandler)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    # The socket is reachable from the runner's subnet for the ATS case, so this
+    # answers a fixed body instead of serving the checkout.
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Length', '2')
+        self.end_headers()
+        self.wfile.write(b'ok')
+
+    def log_message(self, *args):
+        pass
+
+
+server = http.server.HTTPServer(('0.0.0.0', 18443), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1], sys.argv[2])
 server.socket = context.wrap_socket(server.socket, server_side=True)
@@ -55,7 +78,8 @@ done
 
 # The macOS process above catches Security-framework mistakes but not the second
 # trust evaluation performed by iOS CFNetwork. Run the same executable inside an
-# iOS simulator so a native release cannot repeat a device-only -1200 failure
+# iOS simulator, against a routable address and under the shipping App Transport
+# Security rules, so a native release cannot repeat a device-only -1200 failure
 # while this smoke remains green.
 runtime_id="$(xcrun simctl list runtimes --json | python3 -c '
 import json, sys
@@ -98,11 +122,28 @@ cat >"$app/Info.plist" <<'PLIST'
   <key>UILaunchScreen</key><dict/>
 </dict></plist>
 PLIST
+# ATS decides whether CFNetwork keeps a connection our delegate has already
+# accepted, so the harness has to run under the dictionary the released app
+# ships. Take it from the generated project rather than restating it here.
+app_plist="${VERITY_SMOKE_APP_PLIST:-}"
+if [[ -z "$app_plist" ]]; then
+  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*' -print -quit)"
+fi
+[[ -n "$app_plist" && -f "$app_plist" ]] || {
+  echo 'no generated iOS Info.plist; run expo prebuild before this smoke' >&2
+  exit 1
+}
+if /usr/libexec/PlistBuddy -x -c 'Print :NSAppTransportSecurity' "$app_plist" \
+  >"$tmp/ats.plist" 2>/dev/null; then
+  /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' \
+    -c "Merge $tmp/ats.plist :NSAppTransportSecurity" "$app/Info.plist"
+fi
 codesign --force --sign - "$app"
 xcrun simctl install "$simulator_udid" "$app"
 data_container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.pinned-tls-smoke data)"
 result_file="$data_container/tmp/pinned-tls-result"
-SIMCTL_CHILD_VERITY_SMOKE_ORIGIN='https://127.0.0.1:18443/' \
+SIMCTL_CHILD_VERITY_SMOKE_ORIGIN="https://$host_ip:18443/" \
+SIMCTL_CHILD_VERITY_SMOKE_WRONG_HOST_ORIGIN='https://localhost:18443/' \
 SIMCTL_CHILD_VERITY_SMOKE_PIN="$pin" \
 SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
   xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
