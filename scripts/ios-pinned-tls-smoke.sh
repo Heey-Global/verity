@@ -232,8 +232,14 @@ if shipped_ats="$(ats_json "$app_plist" 2>/dev/null)"; then
   }
 fi
 echo "App Transport Security rules under test (from $app_plist): ${merged:-none — ATS defaults}"
+# A rejected bundle or a refused launch is the first thing a new runner image
+# breaks, and simctl's one-line message rarely says why. The simulator log does.
+simulator_log() {
+  xcrun simctl spawn "$simulator_udid" log show --style compact --last 5m \
+    --predicate 'process == "VerityPinnedTLSSmoke"' 2>/dev/null | tail -n 40 >&2 || true
+}
 codesign --force --sign - "$app"
-xcrun simctl install "$simulator_udid" "$app"
+xcrun simctl install "$simulator_udid" "$app" || { simulator_log; exit 1; }
 data_container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.pinned-tls-smoke data)"
 result_file="$data_container/tmp/pinned-tls-result"
 launch_output="$(
@@ -242,7 +248,7 @@ launch_output="$(
   SIMCTL_CHILD_VERITY_SMOKE_PIN="$pin" \
   SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
     xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
-)"
+)" || { simulator_log; exit 1; }
 echo "$launch_output"
 app_pid="$(sed -n 's/.*: *\([0-9][0-9]*\) *$/\1/p' <<<"$launch_output")"
 if [[ -z "$app_pid" ]]; then
@@ -264,8 +270,7 @@ if [[ ! -f "$result_file" ]]; then
   echo "iOS app smoke exited or timed out without writing $result_file" >&2
   # A crash, a launch failure and an unwritable result path are otherwise all
   # the same silent timeout. The app's log lines say which one happened.
-  xcrun simctl spawn "$simulator_udid" log show --style compact --last 5m \
-    --predicate 'process == "VerityPinnedTLSSmoke"' 2>/dev/null | tail -n 40 >&2 || true
+  simulator_log
   exit 1
 fi
 result="$(cat "$result_file")"
@@ -273,12 +278,23 @@ if [[ "$result" != success ]]; then
   echo "iOS app pinned TLS smoke failed: $result" >&2
   exit 1
 fi
-# Checked only once the run passed, so the failure above stays the one reported:
-# a runner reaches itself over its own subnet, which NSAllowsLocalNetworking
-# exempts from ATS outright. A pass under that key therefore says nothing about
-# the routable address a paired server actually has.
-if grep -q NSAllowsLocalNetworking <<<"$merged"; then
-  echo 'NSAllowsLocalNetworking exempts the address this runs against — the iOS result proves nothing' >&2
-  exit 1
-fi
+# Checked only once the run passed, so the failure above stays the one reported.
+# A runner only ever reaches itself over its own subnet, and ATS can be relaxed
+# for exactly that subnet — by NSAllowsLocalNetworking, or since iOS 17 by an
+# exception keyed to an address or CIDR range. Under either, this run says
+# nothing about the routable address a paired server actually has.
+python3 - "$merged" <<'PY'
+import ipaddress, json, sys
+
+rules = json.loads(sys.argv[1] or '{}')
+scoped = ['NSAllowsLocalNetworking'] if rules.get('NSAllowsLocalNetworking') else []
+for domain in rules.get('NSExceptionDomains', {}):
+    try:
+        ipaddress.ip_network(domain, strict=False)
+    except ValueError:
+        continue  # a hostname exception cannot match the address used here
+    scoped.append('NSExceptionDomains:' + domain)
+if scoped:
+    raise SystemExit('these rules exempt by address, so the iOS run proves nothing: ' + ', '.join(scoped))
+PY
 echo 'Pinned TLS smoke test passed on macOS and iOS Simulator'
