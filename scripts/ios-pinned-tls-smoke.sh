@@ -275,7 +275,7 @@ if [[ ! -f "$result_file" ]]; then
   echo "iOS app smoke exited or timed out without writing $result_file" >&2
   # A crash, a launch failure and an unwritable result path are otherwise all
   # the same silent timeout. The app's log lines say which one happened.
-  simulator_log
+  simulator_log "$app_log"
   exit 1
 fi
 result="$(cat "$result_file")"
@@ -288,6 +288,13 @@ fi
 # for exactly that subnet — by NSAllowsLocalNetworking, or since iOS 17 by an
 # exception keyed to an address or CIDR range. Under either, this run says
 # nothing about the routable address a paired server actually has.
+#
+# NSAllowsArbitraryLoads deliberately is not on that list. It is what the app
+# ships, and it is not scoped to an address: whatever it lets through here it
+# lets through for the public address a user pairs with too, which is the whole
+# claim this run is making. What still has to hold under it — that the pinning
+# delegate accepts only the pinned key, chain and host — is what the mismatch
+# and wrong-host cases above check.
 python3 - "$merged" <<'PY'
 import ipaddress, json, sys
 
