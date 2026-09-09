@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/Heey-Global/verity/compare/mobile-v1.20.0...mobile-v1.21.0) (2026-09-09)
+
+
+### Bug Fixes
+
+* **mobile:** trust exact server key pins ([6c85273](https://github.com/Heey-Global/verity/commit/6c85273c15f572a268258c430b350bf2536cf6b3))
+
 ## [1.20.0](https://github.com/Heey-Global/verity/compare/mobile-v1.19.0...mobile-v1.20.0) (2026-09-08)
 
 
