@@ -433,6 +433,30 @@ describe('native iOS compile gate', () => {
     expect(commands).not.toMatch(/testflight|submit/iu);
   });
 
+  it('runs the pinned TLS smoke against the generated app configuration', () => {
+    const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      on: { pull_request: { paths: string[] } };
+      jobs: Record<string, { steps: WorkflowStep[] }>;
+    };
+    const runs = github.jobs['verify-ios'].steps.map((step) => step.run ?? '');
+    const prebuild = runs.findIndex((run) => run.includes('expo prebuild --platform ios'));
+    const smoke = runs.findIndex((run) => run.includes('ios-pinned-tls-smoke.sh'));
+    expect(prebuild).toBeGreaterThan(-1);
+    // A change to the harness that triggers no run is a smoke nobody notices
+    // has stopped working.
+    for (const source of [
+      'scripts/ios-pinned-tls-smoke.sh',
+      'scripts/ios-pinned-tls-smoke.swift',
+      'scripts/ios-pinned-tls-smoke-app.swift',
+    ]) {
+      expect(github.on.pull_request.paths).toContain(source);
+    }
+    // The smoke copies App Transport Security out of the generated Info.plist.
+    // Ahead of prebuild it would run under its own bundle defaults, which pass
+    // while the shipping rules reject every self-hosted server.
+    expect(smoke).toBeGreaterThan(prebuild);
+  });
+
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<
@@ -3392,11 +3416,27 @@ describe('changed-area detector', () => {
       );
     }
 
+    // The UIKit harness is also a root-CI input. Keeping this path broad avoids
+    // leaving the required ci-checks status absent if GitHub rejects the native
+    // workflow before it can create a job.
+    expect(
+      await run({ name: 'pull_request', baseRef: 'main' }, [
+        'scripts/ios-pinned-tls-smoke-app.swift',
+      ]),
+    ).toEqual({
+      ...all('false'),
+      lint: 'true',
+      typecheck: 'true',
+      test: 'true',
+      server_image: 'true',
+    });
+
     expect(nativePullRequestPaths).toEqual(
       expect.arrayContaining([
         'apps/mobile/**',
         'scripts/ios-pinned-tls-smoke.sh',
         'scripts/ios-pinned-tls-smoke.swift',
+        'scripts/ios-pinned-tls-smoke-app.swift',
       ]),
     );
   });

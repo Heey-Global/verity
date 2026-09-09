@@ -69,13 +69,26 @@ const config: ExpoConfig = {
       // Verity uses only standard/exempt encryption; declaring export compliance
       // stops EAS/App Store Connect prompting for it on every build.
       ITSAppUsesNonExemptEncryption: false,
-      // The control-plane server is reached over Tailscale by its bare MagicDNS
-      // hostname over plain HTTP (http://dev-server:8082). iOS App Transport
-      // Security blocks cleartext by default; NSAllowsLocalNetworking permits it
-      // for unqualified (dot-less) hostnames like `dev-server` without disabling
-      // ATS globally. The tailnet transport is itself encrypted.
+      // Verity connects to whatever address the user pairs with — usually a bare
+      // IP literal, always behind a private pairing CA. App Transport Security
+      // refuses both: since iOS 17 it blocks IP destinations that are not listed
+      // as exception domains, and it re-runs the system trust evaluation after
+      // our delegate has already accepted the certificate, so a pinned
+      // connection dies with NSURLErrorDomain:-1200. The addresses cannot be
+      // enumerated ahead of time, so ATS is turned off and the app's own
+      // CertificatePinDelegate carries the guarantee: it requires the exact SPKI
+      // pin from the pairing invitation, a chain to the pinned CA, and a
+      // matching hostname — strictly more than ATS would have checked.
       NSAppTransportSecurity: {
-        NSAllowsLocalNetworking: true,
+        // NSAllowsLocalNetworking must stay out: iOS 10 and later ignore
+        // NSAllowsArbitraryLoads whenever it is present, which is how every
+        // loopback test stayed green while real servers were rejected.
+        NSAllowsArbitraryLoads: true,
+        // A domain dictionary overrides the global key even when empty, so the
+        // one host Verity itself talks to keeps full ATS enforcement.
+        NSExceptionDomains: {
+          'u.expo.dev': {},
+        },
       },
     },
   },
