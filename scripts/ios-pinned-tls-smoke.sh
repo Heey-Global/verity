@@ -44,7 +44,8 @@ for _ in {1..20}; do
 done
 "$tmp/smoke" 'https://127.0.0.1:18443/' "$pin" success
 "$tmp/smoke" 'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
-# The exact public-key pin is the identity assertion; it deliberately does not
-# ask the public Web PKI to approve the private certificate a second time.
+# The exact public-key pin is the identity assertion. The delegate anchors that
+# leaf directly, so the same key remains valid at another explicitly requested
+# origin without granting trust to the private CA or any sibling certificate.
 "$tmp/smoke" 'https://localhost:18443/' "$pin" success
 echo 'Pinned TLS smoke test passed'
