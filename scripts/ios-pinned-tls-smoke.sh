@@ -144,6 +144,7 @@ if [[ -z "$app_plist" ]]; then
   app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*' 2>/dev/null || true)"
   [[ "$(printf '%s\n' "$app_plist" | grep -c .)" == 1 ]] || {
     echo "expected exactly one generated app Info.plist, found: ${app_plist:-none}" >&2
+    echo 'run `npx expo prebuild -p ios` first, or name the file in VERITY_SMOKE_APP_PLIST' >&2
     exit 1
   }
 fi
@@ -233,13 +234,17 @@ if shipped_ats="$(ats_json "$app_plist" 2>/dev/null)"; then
 fi
 echo "App Transport Security rules under test (from $app_plist): ${merged:-none — ATS defaults}"
 # A rejected bundle or a refused launch is the first thing a new runner image
-# breaks, and simctl's one-line message rarely says why. The simulator log does.
+# breaks, and simctl's one-line message rarely says why. The simulator log does
+# — but installd and launchd_sim log those, not the app, so the caller says
+# which process it needs.
 simulator_log() {
   xcrun simctl spawn "$simulator_udid" log show --style compact --last 5m \
-    --predicate 'process == "VerityPinnedTLSSmoke"' 2>/dev/null | tail -n 40 >&2 || true
+    --predicate "$1" 2>/dev/null | tail -n 40 >&2 || true
 }
+staging_log='process == "installd" OR process == "launchd_sim" OR process == "CoreSimulatorBridge"'
+app_log='process == "VerityPinnedTLSSmoke"'
 codesign --force --sign - "$app"
-xcrun simctl install "$simulator_udid" "$app" || { simulator_log; exit 1; }
+xcrun simctl install "$simulator_udid" "$app" || { simulator_log "$staging_log"; exit 1; }
 data_container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.pinned-tls-smoke data)"
 result_file="$data_container/tmp/pinned-tls-result"
 launch_output="$(
@@ -248,7 +253,7 @@ launch_output="$(
   SIMCTL_CHILD_VERITY_SMOKE_PIN="$pin" \
   SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
     xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
-)" || { simulator_log; exit 1; }
+)" || { simulator_log "$staging_log"; exit 1; }
 echo "$launch_output"
 app_pid="$(sed -n 's/.*: *\([0-9][0-9]*\) *$/\1/p' <<<"$launch_output")"
 if [[ -z "$app_pid" ]]; then
