@@ -121,13 +121,24 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
       return
     }
 
-    // The invitation's exact P-256 SPKI digest is the server identity. Asking
-    // the public Web PKI to approve the private certificate as a second identity
-    // check is redundant and, on iOS, CFNetwork repeats that system-only check
-    // after this delegate returns — yielding -1200 even when SecTrust accepted
-    // our local CA. Redirect handling above separately binds the credential to
-    // the invitation's scheme, host and port.
-    recordPhase("PIN_ACCEPTED")
+    // URLCredential(trust:) alone does not make the private certificate trusted
+    // on iOS: CFNetwork evaluates the same SecTrust again after this callback and
+    // returns -1200 even though the exact invitation pin matched. Anchor that
+    // exact leaf in the object handed back to CFNetwork. A basic X.509 policy is
+    // intentional: the SPKI pin is the server identity, while redirect handling
+    // above separately binds requests to the invitation's scheme, host and port.
+    var trustError: CFError?
+    guard
+      SecTrustSetPolicies(trust, SecPolicyCreateBasicX509()) == errSecSuccess,
+      SecTrustSetAnchorCertificates(trust, [certificate] as CFArray) == errSecSuccess,
+      SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+      SecTrustEvaluateWithError(trust, &trustError)
+    else {
+      let detail = trustError.map { CFErrorCopyDescription($0) as String } ?? "UNKNOWN"
+      reject("PINNED_LEAF_TRUST_FAILED:\(detail)", completionHandler: completionHandler)
+      return
+    }
+    recordPhase("PIN_AND_LEAF_TRUST_ACCEPTED")
     completionHandler(.useCredential, URLCredential(trust: trust))
   }
 
