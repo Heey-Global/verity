@@ -150,26 +150,34 @@ done
 }
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
 if [[ -z "$app_plist" ]]; then
-  # Picking the first match would silently run under a second target's rules.
-  # A missing directory has to reach the message below, not abort under set -e.
-  app_plist="$(find apps/mobile/ios -maxdepth 2 -name Info.plist -not -path '*/Pods/*' 2>/dev/null || true)"
-  [[ "$(printf '%s\n' "$app_plist" | grep -c .)" == 1 ]] || {
-    echo "expected exactly one generated app Info.plist, found: ${app_plist:-none}" >&2
+  # Named after the generated project rather than found by pattern: a test
+  # target's Info.plist, or one left in a build directory, sits at the same
+  # depth as the app's and would silently put a different target's rules under
+  # test. A missing directory has to reach the message below, not abort under
+  # set -e.
+  project="$(find apps/mobile/ios -maxdepth 1 -name '*.xcodeproj' -print -quit 2>/dev/null || true)"
+  [[ -n "$project" ]] || {
+    echo 'no generated Xcode project under apps/mobile/ios' >&2
     echo 'run `npx expo prebuild -p ios` first, or name the file in VERITY_SMOKE_APP_PLIST' >&2
     exit 1
   }
+  app_plist="apps/mobile/ios/$(basename "$project" .xcodeproj)/Info.plist"
 fi
 [[ -f "$app_plist" ]] || {
   echo "no generated iOS Info.plist at ${app_plist:-apps/mobile/ios}" >&2
   exit 1
 }
-read -r runtime_id runtime_version device_type < <(xcrun simctl list --json | python3 -c '
-import json, sys
+runtime_selection="$(xcrun simctl list --json | python3 -c '
+import json, re, sys
 
 data = json.load(sys.stdin)
 runtimes = [r for r in data["runtimes"] if r.get("isAvailable") and r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]
 if not runtimes: raise SystemExit("no available iOS simulator runtime")
-runtime = max(runtimes, key=lambda r: tuple(map(int, r["version"].split("."))))
+def version(value):
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", value):
+        raise SystemExit("invalid iOS simulator runtime version: " + value)
+    return tuple(map(int, value.split(".")))
+runtime = max(runtimes, key=lambda r: version(r["version"]))
 # A device type this runtime does not support is refused at create time. Any
 # supported iPhone will do; the sort is only there so which one is picked does
 # not depend on the order the runner image happens to list them in.
@@ -181,7 +189,11 @@ devices = sorted(
 )
 if not devices: raise SystemExit("no iPhone device type for " + runtime["identifier"])
 print(runtime["identifier"], runtime["version"], devices[-1])
-')
+')" || {
+  echo 'could not select an available iOS simulator runtime and device' >&2
+  exit 1
+}
+read -r runtime_id runtime_version device_type <<<"$runtime_selection"
 simulator_udid="$(xcrun simctl create "Verity pinned TLS smoke" "$device_type" "$runtime_id")"
 xcrun simctl boot "$simulator_udid"
 xcrun simctl bootstatus "$simulator_udid" -b
@@ -190,7 +202,13 @@ sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
 # Deriving the deployment target from the SDK alone breaks on any image whose
 # newest runtime is older than it: `simctl install` then rejects the bundle for
 # requiring an iOS the simulator does not have.
-target_version="$(printf '%s\n%s\n' "$sdk_version" "$runtime_version" | sort -V | head -n 1)"
+target_version="$(python3 - "$sdk_version" "$runtime_version" <<'PY'
+import sys
+
+versions = sys.argv[1:]
+print(min(versions, key=lambda value: tuple(map(int, value.split('.')))))
+PY
+)"
 app="$tmp/VerityPinnedTLSSmoke.app"
 mkdir -p "$app"
 xcrun swiftc \
