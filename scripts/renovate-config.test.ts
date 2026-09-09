@@ -30,6 +30,16 @@ interface RenovateConfig {
   dockerfile?: { managerFilePatterns?: string[]; fileMatch?: string[] };
 }
 
+describe('Renovate generated dependency artifacts', () => {
+  it('pins the npm release Renovate uses to update the workspace lock', () => {
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      packageManager?: string;
+    };
+
+    expect(manifest.packageManager).toMatch(/^npm@\d+\.\d+\.\d+$/);
+  });
+});
+
 describe('Renovate version ranges', () => {
   it('does not turn supported runtime ranges into exact release pins', () => {
     const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
