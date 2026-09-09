@@ -74,17 +74,49 @@ xcrun simctl boot "$simulator_udid"
 xcrun simctl bootstatus "$simulator_udid" -b
 simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 simulator_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+app="$tmp/VerityPinnedTLSSmoke.app"
+mkdir -p "$app"
 xcrun swiftc \
   -sdk "$simulator_sdk" \
   -target "$(uname -m)-apple-ios${simulator_version}-simulator" \
+  -parse-as-library \
   apps/mobile/native/CertificatePinDelegate.swift \
-  "$tmp/main.swift" \
-  -o "$tmp/smoke-ios"
-codesign --force --sign - "$tmp/smoke-ios"
-xcrun simctl spawn "$simulator_udid" "$tmp/smoke-ios" \
-  'https://127.0.0.1:18443/' "$pin" success
-xcrun simctl spawn "$simulator_udid" "$tmp/smoke-ios" \
-  'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
-xcrun simctl spawn "$simulator_udid" "$tmp/smoke-ios" \
-  'https://localhost:18443/' "$pin" PINNED_CHAIN_TRUST_FAILED
+  scripts/ios-pinned-tls-smoke-app.swift \
+  -framework UIKit \
+  -o "$app/VerityPinnedTLSSmoke"
+cat >"$app/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>VerityPinnedTLSSmoke</string>
+  <key>CFBundleIdentifier</key><string>app.verity.pinned-tls-smoke</string>
+  <key>CFBundleName</key><string>VerityPinnedTLSSmoke</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSRequiresIPhoneOS</key><true/>
+  <key>UILaunchScreen</key><dict/>
+</dict></plist>
+PLIST
+codesign --force --sign - "$app"
+xcrun simctl install "$simulator_udid" "$app"
+data_container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.pinned-tls-smoke data)"
+result_file="$data_container/tmp/pinned-tls-result"
+SIMCTL_CHILD_VERITY_SMOKE_ORIGIN='https://127.0.0.1:18443/' \
+SIMCTL_CHILD_VERITY_SMOKE_PIN="$pin" \
+SIMCTL_CHILD_VERITY_SMOKE_RESULT="$result_file" \
+  xcrun simctl launch --terminate-running-process "$simulator_udid" app.verity.pinned-tls-smoke
+for _ in {1..150}; do
+  [[ -f "$result_file" ]] && break
+  sleep 0.2
+done
+if [[ ! -f "$result_file" ]]; then
+  echo 'iOS app smoke did not produce a result within 30 seconds' >&2
+  exit 1
+fi
+result="$(cat "$result_file")"
+if [[ "$result" != success ]]; then
+  echo "iOS app pinned TLS smoke failed: $result" >&2
+  exit 1
+fi
 echo 'Pinned TLS smoke test passed on macOS and iOS Simulator'
