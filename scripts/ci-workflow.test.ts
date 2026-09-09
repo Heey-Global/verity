@@ -433,6 +433,20 @@ describe('native iOS compile gate', () => {
     expect(commands).not.toMatch(/testflight|submit/iu);
   });
 
+  it('runs the pinned TLS smoke against the generated app configuration', () => {
+    const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      jobs: Record<string, { steps: WorkflowStep[] }>;
+    };
+    const runs = github.jobs['verify-ios'].steps.map((step) => step.run ?? '');
+    const prebuild = runs.findIndex((run) => run.includes('expo prebuild --platform ios'));
+    const smoke = runs.findIndex((run) => run.includes('ios-pinned-tls-smoke.sh'));
+    expect(prebuild).toBeGreaterThan(-1);
+    // The smoke copies App Transport Security out of the generated Info.plist.
+    // Ahead of prebuild it would run under its own bundle defaults, which pass
+    // while the shipping rules reject every self-hosted server.
+    expect(smoke).toBeGreaterThan(prebuild);
+  });
+
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<
