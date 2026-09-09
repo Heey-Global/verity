@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/Heey-Global/verity/compare/mobile-v1.22.0...mobile-v1.23.0) (2026-09-09)
+
+
+### Bug Fixes
+
+* **mobile:** trust the pinned server chain on iOS ([e2deb2c](https://github.com/Heey-Global/verity/commit/e2deb2cf924bfea93b00829f4db0b930704e52fd))
+
 ## [1.22.0](https://github.com/Heey-Global/verity/compare/mobile-v1.21.0...mobile-v1.22.0) (2026-09-09)
 
 
