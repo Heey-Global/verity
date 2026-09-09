@@ -17,7 +17,7 @@ cleanup() {
   fi
   rm -rf "$tmp"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # App Transport Security exempts loopback, so a smoke that only ever talks to
 # 127.0.0.1 stays green under rules that reject every real Verity server. Serve
@@ -29,7 +29,7 @@ host_ip=''
 for interface in "$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')" en0 en1; do
   [[ -n "$interface" ]] || continue
   host_ip="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
-  [[ -n "$host_ip" ]] && break
+  if [[ -n "$host_ip" ]]; then break; fi
 done
 case "$host_ip" in
   '' | 127.*) echo 'no routable IPv4 address for the ATS check' >&2; exit 1 ;;
@@ -73,11 +73,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1], sys.argv[2])
-# Bound to the two addresses under test instead of 0.0.0.0: the certificate and
-# its key are readable by anything that reaches this port, and on a runner with
-# a shared subnet that is more than the simulator. Both sockets are bound before
-# either is served, so a bind failure cannot happen behind an already-answering
-# listener that would let the readiness probe through.
+# Bound to the two addresses under test rather than every interface the runner
+# happens to have. Both sockets are bound before either is served, so a failed
+# bind cannot hide behind an already-answering listener and let the readiness
+# probe through.
 servers = []
 for address in ('127.0.0.1', sys.argv[3]):
     server = http.server.ThreadingHTTPServer((address, 18443), Handler)
@@ -193,10 +192,17 @@ fi
 }
 # An absent key is a valid (strict) configuration; a failed merge is not, and
 # would leave the harness testing rules nobody ships.
-if /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app_plist" >/dev/null 2>&1; then
+if shipped_ats="$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app_plist" 2>/dev/null)"; then
   /usr/libexec/PlistBuddy -x -c 'Print :NSAppTransportSecurity' "$app_plist" >"$tmp/ats.plist"
   /usr/libexec/PlistBuddy -c 'Add :NSAppTransportSecurity dict' \
     -c "Merge $tmp/ats.plist :NSAppTransportSecurity" "$app/Info.plist"
+  # A half-completed merge reads exactly like an app that ships no ATS key, so
+  # the copy is compared against its source instead of assumed.
+  merged="$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app/Info.plist" 2>/dev/null || true)"
+  [[ "$merged" == "$shipped_ats" ]] || {
+    echo "App Transport Security did not survive the copy out of $app_plist" >&2
+    exit 1
+  }
 fi
 echo "App Transport Security rules under test (from $app_plist):"
 /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app/Info.plist" 2>/dev/null \
