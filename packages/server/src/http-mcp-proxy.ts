@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { IncomingMessage } from 'node:http';
+import ipaddr from 'ipaddr.js';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
@@ -15,6 +16,7 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_STREAM_BYTES = 16 * 1024 * 1024;
 const MAX_EVENT_STREAM_BYTES = 256 * 1024 * 1024;
 const MAX_EVENT_STREAM_LIFETIME_MS = 8 * 60 * 60_000;
+const EVENT_STREAM_IDLE_TIMEOUT_MS = 5 * 60_000;
 const MCP_TIMEOUT_MS = 60_000;
 const BINDING_HEADER = 'x-verity-mcp-binding';
 const RESPONSE_HEADERS = ['content-type', 'mcp-session-id'] as const;
@@ -34,50 +36,17 @@ export interface HttpMcpProxyDeps {
   }): Promise<HttpMcpProxyConnection | undefined>;
 }
 
-function forbiddenIpv4(address: string): boolean {
-  const p = address.split('.').map(Number);
-  return (
-    p.length !== 4 ||
-    p.some((part) => !Number.isInteger(part) || part < 0 || part > 255) ||
-    p[0] === 0 ||
-    p[0] === 10 ||
-    p[0] === 127 ||
-    (p[0] === 100 && p[1]! >= 64 && p[1]! <= 127) ||
-    (p[0] === 169 && p[1] === 254) ||
-    (p[0] === 172 && p[1]! >= 16 && p[1]! <= 31) ||
-    (p[0] === 192 && p[1] === 168) ||
-    (p[0] === 192 && p[1] === 0 && p[2]! <= 2) ||
-    (p[0] === 198 && (p[1] === 18 || p[1] === 19 || p[1] === 51)) ||
-    (p[0] === 203 && p[1] === 0 && p[2] === 113) ||
-    p[0]! >= 224
-  );
-}
-
 export function isForbiddenHttpMcpAddress(address: string): boolean {
-  const family = isIP(address);
-  if (family === 4) return forbiddenIpv4(address);
-  if (family !== 6) return true;
-  let normalized = address.toLowerCase();
   try {
-    normalized = new URL(`http://[${normalized}]/`).hostname.slice(1, -1);
+    const parsed = ipaddr.parse(address);
+    const normalized =
+      parsed.kind() === 'ipv6' && (parsed as ipaddr.IPv6).isIPv4MappedAddress()
+        ? (parsed as ipaddr.IPv6).toIPv4Address()
+        : parsed;
+    return normalized.range() !== 'unicast';
   } catch {
     return true;
   }
-  // Global unicast is 2000::/3. Deny special-use and local families by default.
-  if (!/^[23][0-9a-f]{0,3}(?::|$)/u.test(normalized)) return true;
-  return (
-    normalized === '::' ||
-    normalized === '::1' ||
-    normalized.startsWith('fc') ||
-    normalized.startsWith('fd') ||
-    normalized.startsWith('fe8') ||
-    normalized.startsWith('fe9') ||
-    normalized.startsWith('fea') ||
-    normalized.startsWith('feb') ||
-    normalized.startsWith('ff') ||
-    normalized.startsWith('2001:db8:') ||
-    normalized.startsWith('::ffff:')
-  );
 }
 
 export function parseHttpMcpUpstream(value: string): URL {
@@ -166,11 +135,9 @@ async function forward(
         }
         const eventStream =
           response.headers['content-type']?.startsWith('text/event-stream') === true;
-        if (!eventStream) {
-          response.setTimeout(MCP_TIMEOUT_MS, () =>
-            response.destroy(new Error('HTTP MCP upstream stream stalled')),
-          );
-        }
+        response.setTimeout(eventStream ? EVENT_STREAM_IDLE_TIMEOUT_MS : MCP_TIMEOUT_MS, () =>
+          response.destroy(new Error('HTTP MCP upstream stream stalled')),
+        );
         resolve({
           status: response.statusCode ?? 502,
           headers: safeHeaders,

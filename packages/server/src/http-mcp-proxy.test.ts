@@ -30,10 +30,13 @@ describe('HTTP MCP proxy address filtering', () => {
     '172.16.0.1',
     '192.168.0.1',
     '198.18.0.1',
+    '192.0.0.8',
     '::1',
     'fd00::1',
     'fe80::1',
     '2001:db8::1',
+    '2001::1',
+    '2001:2::1',
   ])('rejects non-public address %s', (address) => {
     expect(isForbiddenHttpMcpAddress(address)).toBe(true);
   });
