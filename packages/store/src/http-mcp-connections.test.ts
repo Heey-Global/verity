@@ -77,4 +77,30 @@ describe('EventStore — HTTP MCP connections', () => {
     await ctx.store.deleteHttpMcpConnection('gmail');
     expect(await ctx.store.listProjectMcpBindings(projectId)).toEqual([]);
   });
+
+  it('enforces the per-project enabled connection limit at the store boundary', async () => {
+    const projectId = randomUUID();
+    await ctx.store.upsertProject({
+      id: projectId,
+      owner: 'example',
+      repo: 'mcp-limit',
+      containerName: `mcp-limit-${projectId}`,
+      state: 'absent',
+    });
+    for (let index = 0; index < 17; index += 1) {
+      const id = `connection-${String(index)}`;
+      await ctx.store.upsertHttpMcpConnection({
+        id,
+        name: `MCP ${String(index)}`,
+        url: `https://mcp-${String(index)}.example.test`,
+        authorization: null,
+        enabled: true,
+      });
+      const binding = { projectId, connectionId: id, enabled: true };
+      if (index < 16)
+        await expect(ctx.store.upsertProjectMcpBinding(binding)).resolves.toBeUndefined();
+      else
+        await expect(ctx.store.upsertProjectMcpBinding(binding)).rejects.toThrow(/limit exceeded/u);
+    }
+  });
 });

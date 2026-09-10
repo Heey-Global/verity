@@ -18,7 +18,8 @@ const connectionBody = z
       .trim()
       .min(1)
       .max(80)
-      .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u),
+      .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
+      .refine((name) => name.toLowerCase() !== 'verity', 'the name verity is reserved'),
     url: z.string().max(2048),
     authorization: z.string().min(1).max(8192).nullable().optional(),
     enabled: z.boolean().optional(),
@@ -92,21 +93,20 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
       return { error: 'MCP connection not found' };
     }
     const body = bindingBody.parse(request.body);
-    const bindings = await store.listProjectMcpBindings(id);
-    if (
-      body.enabled &&
-      !bindings.some((binding) => binding.connectionId === connectionId && binding.enabled) &&
-      bindings.filter((binding) => binding.enabled).length >= 16
-    ) {
-      reply.code(409);
-      return { error: 'a project may enable at most 16 MCP connections' };
-    }
     const binding = {
       projectId: id,
       connectionId,
       enabled: body.enabled,
     };
-    await store.upsertProjectMcpBinding(binding);
+    try {
+      await store.upsertProjectMcpBinding(binding);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'project MCP connection limit exceeded') {
+        reply.code(409);
+        return { error: 'a project may enable at most 16 MCP connections' };
+      }
+      throw error;
+    }
     return { binding };
   });
 

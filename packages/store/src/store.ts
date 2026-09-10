@@ -5782,19 +5782,40 @@ export class EventStore implements EventSink {
   }
 
   async upsertProjectMcpBinding(binding: ProjectMcpBindingRecord): Promise<void> {
-    await this.db
-      .insertInto('project_mcp_bindings')
-      .values({
-        project_id: binding.projectId,
-        connection_id: binding.connectionId,
-        enabled: binding.enabled,
-      })
-      .onConflict((conflict) =>
-        conflict.columns(['project_id', 'connection_id']).doUpdateSet({
+    await this.db.transaction().execute(async (transaction) => {
+      await transaction
+        .selectFrom('projects')
+        .select('id')
+        .where('id', '=', binding.projectId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (binding.enabled) {
+        const existing = await transaction
+          .selectFrom('project_mcp_bindings')
+          .select(['connection_id', 'enabled'])
+          .where('project_id', '=', binding.projectId)
+          .execute();
+        const alreadyEnabled = existing.some(
+          (row) => row.connection_id === binding.connectionId && row.enabled,
+        );
+        if (!alreadyEnabled && existing.filter((row) => row.enabled).length >= 16) {
+          throw new Error('project MCP connection limit exceeded');
+        }
+      }
+      await transaction
+        .insertInto('project_mcp_bindings')
+        .values({
+          project_id: binding.projectId,
+          connection_id: binding.connectionId,
           enabled: binding.enabled,
-        }),
-      )
-      .execute();
+        })
+        .onConflict((conflict) =>
+          conflict.columns(['project_id', 'connection_id']).doUpdateSet({
+            enabled: binding.enabled,
+          }),
+        )
+        .execute();
+    });
   }
 
   async listProjectMcpBindings(projectId: string): Promise<ProjectMcpBindingRecord[]> {

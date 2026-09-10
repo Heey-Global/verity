@@ -1093,7 +1093,7 @@ function AgentLoopsSection({
   const loadGeneration = useRef(0);
   const pendingLoopMutations = useRef(new Map<string, { loop: AgentLoop; generation: number }>());
 
-  const load = useCallback(() => {
+  const load = useCallback(async (): Promise<void> => {
     const generation = ++loadGeneration.current;
     setLoading(true);
     setError(undefined);
@@ -2996,14 +2996,14 @@ function ProjectMcpBindingsSection({
       return;
     }
     setError(undefined);
-    void Promise.all([client.listHttpMcpConnections(), client.listProjectMcpBindings(projectId)])
+    await Promise.all([client.listHttpMcpConnections(), client.listProjectMcpBindings(projectId)])
       .then(([nextConnections, nextBindings]) => {
         setConnections(nextConnections.filter((connection) => connection.enabled));
         setBindings(nextBindings);
       })
       .catch(() => setError('Could not load MCP connections.'));
   }, [client, projectId]);
-  useEffect(load, [load]);
+  useEffect(() => void load(), [load]);
   const enabled = useCallback(
     (connectionId: string) =>
       bindings.some((binding) => binding.connectionId === connectionId && binding.enabled),

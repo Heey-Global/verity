@@ -107,7 +107,12 @@ async function forward(
     protocolVersion?: string;
     sessionId?: string;
   },
-): Promise<{ status: number; headers: Record<string, string>; body: IncomingMessage }> {
+): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  body: IncomingMessage;
+  eventStream: boolean;
+}> {
   const url = parseHttpMcpUpstream(connection.url);
   return new Promise((resolve, reject) => {
     const request = httpsRequest(
@@ -152,15 +157,24 @@ async function forward(
       },
       (response) => {
         request.setTimeout(0);
-        response.setTimeout(MCP_TIMEOUT_MS, () =>
-          response.destroy(new Error('HTTP MCP upstream stream stalled')),
-        );
         const safeHeaders: Record<string, string> = {};
         for (const name of RESPONSE_HEADERS) {
           const value = response.headers[name];
           if (typeof value === 'string') safeHeaders[name] = value;
         }
-        resolve({ status: response.statusCode ?? 502, headers: safeHeaders, body: response });
+        const eventStream =
+          response.headers['content-type']?.startsWith('text/event-stream') === true;
+        if (!eventStream) {
+          response.setTimeout(MCP_TIMEOUT_MS, () =>
+            response.destroy(new Error('HTTP MCP upstream stream stalled')),
+          );
+        }
+        resolve({
+          status: response.statusCode ?? 502,
+          headers: safeHeaders,
+          body: response,
+          eventStream,
+        });
       },
     );
     request.setTimeout(MCP_TIMEOUT_MS, () =>
@@ -216,17 +230,23 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       reply.hijack();
       hijacked = true;
       reply.raw.writeHead(response.status, response.headers);
-      let streamed = 0;
-      const limiter = new Transform({
-        transform(chunk: Buffer, _encoding, callback) {
-          streamed += chunk.byteLength;
-          callback(
-            streamed > MAX_STREAM_BYTES ? new Error('HTTP MCP upstream response too large') : null,
-            chunk,
-          );
-        },
-      });
-      await pipeline(response.body, limiter, reply.raw);
+      if (response.eventStream) {
+        await pipeline(response.body, reply.raw);
+      } else {
+        let streamed = 0;
+        const limiter = new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            streamed += chunk.byteLength;
+            callback(
+              streamed > MAX_STREAM_BYTES
+                ? new Error('HTTP MCP upstream response too large')
+                : null,
+              chunk,
+            );
+          },
+        });
+        await pipeline(response.body, limiter, reply.raw);
+      }
       return reply;
     } catch {
       if (hijacked) {
