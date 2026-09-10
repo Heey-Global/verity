@@ -919,6 +919,7 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const connectionRevision = useRef(0);
+  const mutationInFlight = useRef(false);
   const load = useCallback(async (): Promise<void> => {
     if (typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function') return;
     const revision = connectionRevision.current;
@@ -931,6 +932,8 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
   }, [client]);
   useEffect(() => void load(), [load]);
   const add = useCallback(() => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
     connectionRevision.current += 1;
     setBusy(true);
     setError(undefined);
@@ -947,7 +950,10 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
         setAuthorization('');
       })
       .catch(() => setError('Could not save the MCP connection. Use a public HTTPS URL.'))
-      .finally(() => setBusy(false));
+      .finally(() => {
+        mutationInFlight.current = false;
+        setBusy(false);
+      });
   }, [authorization, client, name, url]);
   return (
     <View style={styles.settingsGroup}>
@@ -975,13 +981,18 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
                       text: 'Remove',
                       style: 'destructive',
                       onPress: () => {
+                        if (mutationInFlight.current) return;
+                        mutationInFlight.current = true;
                         setBusy(true);
                         setError(undefined);
                         void client
                           .deleteHttpMcpConnection(connection.id)
                           .then(load)
                           .catch(() => setError('Could not remove the MCP connection.'))
-                          .finally(() => setBusy(false));
+                          .finally(() => {
+                            mutationInFlight.current = false;
+                            setBusy(false);
+                          });
                       },
                     },
                   ],

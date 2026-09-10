@@ -2988,6 +2988,7 @@ function ProjectMcpBindingsSection({
   const [bindings, setBindings] = useState<ProjectMcpBinding[]>([]);
   const [pendingConnectionId, setPendingConnectionId] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const mutationInFlight = useRef(false);
   const load = useCallback(async (): Promise<void> => {
     if (
       typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function' ||
@@ -3011,15 +3012,19 @@ function ProjectMcpBindingsSection({
   );
   const toggle = useCallback(
     (connectionId: string) => {
-      if (pendingConnectionId !== undefined) return;
+      if (mutationInFlight.current) return;
+      mutationInFlight.current = true;
       setPendingConnectionId(connectionId);
       void client
         .setProjectMcpBinding(projectId, connectionId, !enabled(connectionId))
         .then(load)
         .catch(() => setError('Could not update the MCP connection.'))
-        .finally(() => setPendingConnectionId(undefined));
+        .finally(() => {
+          mutationInFlight.current = false;
+          setPendingConnectionId(undefined);
+        });
     },
-    [client, enabled, load, pendingConnectionId, projectId],
+    [client, enabled, load, projectId],
   );
   return (
     <View style={styles.section}>
