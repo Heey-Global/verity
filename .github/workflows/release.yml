@@ -607,14 +607,15 @@ jobs:
           # fails so either state remains retryable: pending+draft or tagged+public.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             version="${MOBILE_TAG#mobile-v}"
-            pr_number="$(gh pr list --state merged \
-              --search "chore(main): release mobile ${version} in:title" \
-              --json number,title --jq \
-              'map(select(.title == "chore(main): release mobile '"$version"'"))[0].number // empty')"
-            if [ -z "$pr_number" ]; then
-              echo "::error::Could not resolve the release PR for $MOBILE_TAG." >&2
+            pr_numbers="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
+              '.[] | select(.merged_at != null and .title == "chore(main): release mobile '"$version"'") | .number')"
+            pr_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$pr_numbers")"
+            if [ "$pr_count" -ne 1 ]; then
+              echo "::error::Expected exactly one release PR for $MOBILE_TAG, found $pr_count." >&2
               exit 1
             fi
+            pr_number="$pr_numbers"
             require_release_labels() {
               expected_pending="$1"
               expected_tagged="$2"
