@@ -101,12 +101,19 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: SettingsRoute
       try {
         await deps.onOpenCodeSettingsChanged?.(settings);
       } catch (error) {
-        const restored = await deps.store().updateVeritySettings({
-          opencodeBaseUrl: previousOpenCode?.opencodeBaseUrl ?? null,
-          opencodeApiKey: previousOpenCode?.opencodeApiKey ?? null,
-          opencodeModels: previousOpenCode?.opencodeModels ?? null,
-        });
-        if (restored !== undefined) await deps.onOpenCodeSettingsChanged?.(restored);
+        const current = await deps.store().getVeritySettings();
+        if (
+          current?.opencodeBaseUrl === settings.opencodeBaseUrl &&
+          current?.opencodeApiKey === settings.opencodeApiKey &&
+          current?.opencodeModels === settings.opencodeModels
+        ) {
+          const restored = await deps.store().updateVeritySettings({
+            opencodeBaseUrl: previousOpenCode?.opencodeBaseUrl ?? null,
+            opencodeApiKey: previousOpenCode?.opencodeApiKey ?? null,
+            opencodeModels: previousOpenCode?.opencodeModels ?? null,
+          });
+          if (restored !== undefined) await deps.onOpenCodeSettingsChanged?.(restored);
+        }
         throw error;
       }
     }

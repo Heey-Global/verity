@@ -71,6 +71,7 @@ export async function startAgentGatewayRuntime(options: {
   let pendingCodexUpdate: CodexCredentialUpdate | undefined;
   let claudeRequired = false;
   let codexRequired = false;
+  let opencodeRequired = false;
   let opencodeCredential: { baseUrl: string; apiKey: string } | undefined;
   let peerBindings = new Map<string, string>();
   const spill = new AgentGatewaySpill(options.spillPath);
@@ -325,6 +326,7 @@ export async function startAgentGatewayRuntime(options: {
       };
       claudeRequired = credential !== undefined && credential.accessToken !== null;
       codexRequired = nextCodexCredential !== undefined && nextCodexCredential.authJson !== null;
+      opencodeRequired = next.opencode?.apiKey != null;
     },
     status,
     readCodexCredentialUpdate: () => pendingCodexUpdate,
@@ -374,10 +376,12 @@ export async function startAgentGatewayRuntime(options: {
       }
       const current = status();
       const providerReady =
-        (claudeRequired || codexRequired) &&
+        (claudeRequired || codexRequired || opencodeRequired) &&
         (!claudeRequired || (current.credentialReady === true && current.listenerReady === true)) &&
         (!codexRequired ||
-          (current.codexCredentialReady === true && current.codexListenerReady === true));
+          (current.codexCredentialReady === true && current.codexListenerReady === true)) &&
+        (!opencodeRequired ||
+          (current.opencodeReady === true && current.codexListenerReady === true));
       response.writeHead(current.configured && providerReady ? 200 : 503, {
         'content-type': 'application/json',
       });

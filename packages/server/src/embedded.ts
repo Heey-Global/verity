@@ -3406,9 +3406,12 @@ export async function buildEmbeddedServer(
       const openCodeBaseUrl = settings?.opencodeBaseUrl?.trim();
       const openCodeApiKey = settings?.opencodeApiKey?.trim();
       const projectedOpenCode =
-        openCodeBaseUrl === undefined || openCodeBaseUrl.length === 0
+        openCodeBaseUrl === undefined ||
+        openCodeBaseUrl.length === 0 ||
+        openCodeApiKey === undefined ||
+        openCodeApiKey.length === 0
           ? undefined
-          : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey || null };
+          : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey };
       if (
         projected === agentGatewayAccessToken &&
         projectedCodex === agentGatewayCodexAuthJson &&
@@ -4199,6 +4202,9 @@ export async function buildEmbeddedServer(
         // above. Codex uses the same dedicated-runner fail-closed boundary.
         const sessionSelected = selected;
         if (session.projectId === null) {
+          if (isOpenCodeSession) {
+            throw new Error('OpenCode turns require a project sandbox.');
+          }
           if (isCodexSession) {
             if (config.controlPlaneRunner !== true || !supervisorAvailable) {
               throw new Error(

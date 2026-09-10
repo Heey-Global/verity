@@ -267,10 +267,16 @@ import { registerServerUpdateRoutes, type ServerUpdateController } from './serve
 export type { ServerUpdateController } from './server-update-routes.js';
 
 function isProjectSessionModel(model: string | undefined): boolean {
-  return model === undefined || !model.includes('/') || isCodexModel(model);
+  return (
+    model === undefined ||
+    !model.includes('/') ||
+    isCodexModel(model) ||
+    (model.startsWith('verity/') && model.length > 'verity/'.length)
+  );
 }
 
-const PROJECT_MODEL_ERROR = 'project sessions currently support Claude and Codex models only';
+const PROJECT_MODEL_ERROR =
+  'project sessions currently support Claude, Codex, and configured OpenCode models only';
 const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
   state: 'unknown',
   kind: null,
@@ -6189,7 +6195,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       codexDefault ??
       (options.allowLegacyCodexFallback === true && codexConfigured
         ? CODEX_DEFAULT_MODEL
-        : models[0]);
+        : models.find((model) => !model.startsWith('verity/')));
     return {
       models,
       ...(codexModels.length > 0 ? { modelOrder } : {}),
@@ -6200,6 +6206,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           ? { default: fallbackDefault }
           : {}),
     };
+  };
+  const isConfiguredProjectSessionModel = async (model: string | undefined): Promise<boolean> => {
+    if (!isProjectSessionModel(model)) return false;
+    if (model === undefined || !model.startsWith('verity/')) return true;
+    const settings = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
+    if (!settings?.opencodeBaseUrl?.trim() || !settings.opencodeApiKey?.trim()) return false;
+    const configured = (settings.opencodeModels ?? '')
+      .split(/[\n,]/u)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    return configured.includes(model.slice('verity/'.length));
   };
 
   registerSessionReadRoutes(app, {
@@ -7252,8 +7269,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     let projectSettings: ProjectSettingsRecord | undefined;
     let projectWorktrees: WorktreeProvisioner | undefined;
     let effectiveModel = body.model;
+    if (
+      body.project === undefined &&
+      body.projectId === undefined &&
+      body.model?.startsWith('verity/')
+    ) {
+      reply.code(400);
+      return { error: 'OpenCode sessions require a project sandbox' };
+    }
     if (body.project !== undefined || body.projectId !== undefined) {
-      if (body.model !== undefined && !isProjectSessionModel(body.model)) {
+      if (body.model !== undefined && !(await isConfiguredProjectSessionModel(body.model))) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }
@@ -7317,7 +7342,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const projectStore = projectSettingsStore(deps.eventStore);
         projectSettings = await projectStore.getProjectSettings(project.id);
         effectiveModel = body.model ?? projectSettings?.defaultModel ?? undefined;
-        if (!isProjectSessionModel(effectiveModel)) {
+        if (!(await isConfiguredProjectSessionModel(effectiveModel))) {
           reply.code(400);
           return { error: PROJECT_MODEL_ERROR };
         }
@@ -7682,7 +7707,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'a turn needs a prompt or at least one attachment' };
       }
       const session = await deps.eventStore.getSession(id);
-      if (!isProjectSessionModel(body.model) && session?.projectId != null) {
+      if (!(await isConfiguredProjectSessionModel(body.model)) && session?.projectId != null) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }

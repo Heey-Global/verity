@@ -67,6 +67,7 @@ import {
   signingBrokerTokenHash,
 } from './git-signer.js';
 import { signHistoryForPush } from './sign-history.js';
+import { OPENCODE_EGRESS_PLACEHOLDER } from './opencode-egress-policy.js';
 import { RUNNER_CLAUDE_HOME_DIRNAME, RUNNER_CODEX_SESSIONS_DIRNAME } from './runner-transcript.js';
 import {
   attestRunnerSupervisorBoundary,
@@ -1438,7 +1439,7 @@ export function openCodeSettingsConfig(
           name: 'OpenAI-compatible',
           options: {
             baseURL: `http://127.0.0.1:${String(connectorPort)}/opencode`,
-            apiKey: 'verity-opencode-gateway-placeholder-v1',
+            apiKey: OPENCODE_EGRESS_PLACEHOLDER,
           },
           models: Object.fromEntries(models.map((model) => [model, { name: model }])),
         },
