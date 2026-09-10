@@ -2986,6 +2986,7 @@ function ProjectMcpBindingsSection({
 }) {
   const [connections, setConnections] = useState<HttpMcpConnection[]>([]);
   const [bindings, setBindings] = useState<ProjectMcpBinding[]>([]);
+  const [pendingConnectionId, setPendingConnectionId] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const load = useCallback(() => {
     if (
@@ -3010,12 +3011,15 @@ function ProjectMcpBindingsSection({
   );
   const toggle = useCallback(
     (connectionId: string) => {
+      if (pendingConnectionId !== undefined) return;
+      setPendingConnectionId(connectionId);
       void client
         .setProjectMcpBinding(projectId, connectionId, !enabled(connectionId))
         .then(load)
-        .catch(() => setError('Could not update the MCP connection.'));
+        .catch(() => setError('Could not update the MCP connection.'))
+        .finally(() => setPendingConnectionId(undefined));
     },
-    [client, enabled, load, projectId],
+    [client, enabled, load, pendingConnectionId, projectId],
   );
   return (
     <View style={styles.section}>
@@ -3035,6 +3039,7 @@ function ProjectMcpBindingsSection({
               key={connection.id}
               style={({ pressed }) => [styles.bindingRow, pressed ? styles.rowPressed : null]}
               onPress={() => toggle(connection.id)}
+              disabled={pendingConnectionId !== undefined}
               accessibilityRole="switch"
               accessibilityState={{ checked: enabled(connection.id) }}
               accessibilityLabel={`${enabled(connection.id) ? 'Disable' : 'Enable'} ${connection.name} MCP connection`}

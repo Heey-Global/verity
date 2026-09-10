@@ -738,7 +738,7 @@ const migrations: Record<string, Migration> = {
         .addColumn('project_id', 'text', (c) =>
           c.notNull().references('projects.id').onDelete('cascade'),
         )
-        .addColumn('name', 'text', (c) => c.notNull().unique())
+        .addColumn('name', 'text', (c) => c.notNull())
         .addColumn('status', 'text', (c) => c.notNull().defaultTo('draft'))
         .addColumn('schedule_kind', 'text')
         .addColumn('schedule_config', 'jsonb')

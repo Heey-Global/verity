@@ -22029,6 +22029,33 @@ function sameCapability(candidate, expected) {
   return timingSafeEqual(left, right);
 }
 
+// packages/session/dist/runner-mcp-servers.js
+function resolveRunnerMcpServers(input) {
+  const usesInternalProxy = input.servers?.some((server2) => server2.url === "verity-internal://mcp-proxy");
+  if (usesInternalProxy === true && (input.gatewayUrl === void 0 || input.gatewayUrl === "")) {
+    throw new Error("the internal MCP proxy has no gateway URL");
+  }
+  if (usesInternalProxy === true && input.proxyToken === void 0) {
+    throw new Error("the internal MCP proxy has no per-turn bearer");
+  }
+  if (usesInternalProxy !== true && input.proxyToken !== void 0) {
+    throw new Error("the MCP proxy bearer has no internal proxy descriptor");
+  }
+  return input.servers?.map((server2) => {
+    if (server2.url !== "verity-internal://mcp-proxy")
+      return server2;
+    const binding = server2.headers.filter((header) => header.name.toLowerCase() === "x-verity-mcp-binding");
+    if (binding.length !== 1 || input.proxyToken === void 0 || input.gatewayUrl === void 0) {
+      throw new Error("the internal MCP proxy requires exactly one binding header");
+    }
+    return {
+      name: server2.name,
+      url: new URL("/internal/mcp-proxy", input.gatewayUrl).toString(),
+      headers: [binding[0], { name: "Authorization", value: `Bearer ${input.proxyToken}` }]
+    };
+  });
+}
+
 // packages/session/dist/runner-worker-entry.js
 var safeIdSchema = external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
 var boundedString = (max) => external_exports.string().max(max);
@@ -22127,28 +22154,10 @@ var usesInternalMcpProxy = request.mcpServers?.some((server2) => server2.url ===
 if ((request.mcpGatewayToken !== void 0 || usesInternalMcpProxy === true) && (mcpGatewayUrl === void 0 || mcpGatewayUrl === "")) {
   throw new Error("the MCP gateway bearer has no VERITY_MCP_GATEWAY_URL to redeem it against; the runner container was provisioned without the gateway URL");
 }
-if (usesInternalMcpProxy === true && request.mcpProxyToken === void 0) {
-  throw new Error("the internal MCP proxy has no per-turn bearer");
-}
-if (usesInternalMcpProxy !== true && request.mcpProxyToken !== void 0) {
-  throw new Error("the MCP proxy bearer has no internal proxy descriptor");
-}
-var mcpServers = request.mcpServers?.map((server2) => {
-  if (server2.url !== "verity-internal://mcp-proxy")
-    return server2;
-  const binding = server2.headers.filter((header) => header.name.toLowerCase() === "x-verity-mcp-binding");
-  if (binding.length !== 1 || request.mcpProxyToken === void 0 || mcpGatewayUrl === void 0) {
-    throw new Error("the internal MCP proxy requires exactly one binding header");
-  }
-  const bindingHeader = binding[0];
-  if (bindingHeader === void 0) {
-    throw new Error("the internal MCP proxy requires a binding header");
-  }
-  return {
-    name: server2.name,
-    url: new URL("/internal/mcp-proxy", mcpGatewayUrl).toString(),
-    headers: [bindingHeader, { name: "Authorization", value: `Bearer ${request.mcpProxyToken}` }]
-  };
+var mcpServers = resolveRunnerMcpServers({
+  ...request.mcpServers === void 0 ? {} : { servers: request.mcpServers },
+  ...request.mcpProxyToken === void 0 ? {} : { proxyToken: request.mcpProxyToken },
+  ...mcpGatewayUrl === void 0 ? {} : { gatewayUrl: mcpGatewayUrl }
 });
 var brokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
 if (brokerSocket === void 0)

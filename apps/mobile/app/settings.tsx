@@ -961,8 +961,28 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
             <Pressable
               style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
               onPress={() => {
-                void client.deleteHttpMcpConnection(connection.id).then(load);
+                Alert.alert(
+                  'Remove MCP connection?',
+                  `This also removes ${connection.name} from every project.`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Remove',
+                      style: 'destructive',
+                      onPress: () => {
+                        setBusy(true);
+                        setError(undefined);
+                        void client
+                          .deleteHttpMcpConnection(connection.id)
+                          .then(load)
+                          .catch(() => setError('Could not remove the MCP connection.'))
+                          .finally(() => setBusy(false));
+                      },
+                    },
+                  ],
+                );
               }}
+              disabled={busy}
               accessibilityRole="button"
               accessibilityLabel={`Remove ${connection.name} MCP connection`}
             >

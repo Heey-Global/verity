@@ -41,7 +41,13 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
 
   app.post('/mcp-connections', async (request, reply) => {
     const body = connectionBody.parse(request.body);
-    const url = parseHttpMcpUpstream(body.url).toString();
+    let url: string;
+    try {
+      url = parseHttpMcpUpstream(body.url).toString();
+    } catch {
+      reply.code(400);
+      return { error: 'MCP connection URL must be a public HTTPS endpoint' };
+    }
     const connection = {
       id: randomUUID(),
       name: body.name,

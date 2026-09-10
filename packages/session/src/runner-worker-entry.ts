@@ -13,6 +13,7 @@ import { AcpCodexBackend } from './acp-codex-backend.js';
 import { AcpOpenCodeBackend } from './acp-opencode-backend.js';
 import { createBrokerSpawner } from './broker-spawner.js';
 import { RunnerServer } from './runner-server.js';
+import { resolveRunnerMcpServers } from './runner-mcp-servers.js';
 
 const safeIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
 const boundedString = (max: number): z.ZodString => z.string().max(max);
@@ -161,29 +162,10 @@ if (
     'the MCP gateway bearer has no VERITY_MCP_GATEWAY_URL to redeem it against; the runner container was provisioned without the gateway URL',
   );
 }
-if (usesInternalMcpProxy === true && request.mcpProxyToken === undefined) {
-  throw new Error('the internal MCP proxy has no per-turn bearer');
-}
-if (usesInternalMcpProxy !== true && request.mcpProxyToken !== undefined) {
-  throw new Error('the MCP proxy bearer has no internal proxy descriptor');
-}
-const mcpServers = request.mcpServers?.map((server) => {
-  if (server.url !== 'verity-internal://mcp-proxy') return server;
-  const binding = server.headers.filter(
-    (header) => header.name.toLowerCase() === 'x-verity-mcp-binding',
-  );
-  if (binding.length !== 1 || request.mcpProxyToken === undefined || mcpGatewayUrl === undefined) {
-    throw new Error('the internal MCP proxy requires exactly one binding header');
-  }
-  const bindingHeader = binding[0];
-  if (bindingHeader === undefined) {
-    throw new Error('the internal MCP proxy requires a binding header');
-  }
-  return {
-    name: server.name,
-    url: new URL('/internal/mcp-proxy', mcpGatewayUrl).toString(),
-    headers: [bindingHeader, { name: 'Authorization', value: `Bearer ${request.mcpProxyToken}` }],
-  };
+const mcpServers = resolveRunnerMcpServers({
+  ...(request.mcpServers === undefined ? {} : { servers: request.mcpServers }),
+  ...(request.mcpProxyToken === undefined ? {} : { proxyToken: request.mcpProxyToken }),
+  ...(mcpGatewayUrl === undefined ? {} : { gatewayUrl: mcpGatewayUrl }),
 });
 const brokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
 if (brokerSocket === undefined) throw new Error('runner worker requires the agent spawn broker');

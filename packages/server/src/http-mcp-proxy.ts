@@ -1,6 +1,9 @@
 import { lookup as dnsLookup } from 'node:dns';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { IncomingMessage } from 'node:http';
 
 import type { FastifyInstance } from 'fastify';
 
@@ -9,6 +12,7 @@ import { internalConnectionIdentity } from './internal-listener.js';
 import type { McpGatewayCaller } from './mcp-gateway-tokens.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_STREAM_BYTES = 16 * 1024 * 1024;
 const MCP_TIMEOUT_MS = 60_000;
 const BINDING_HEADER = 'x-verity-mcp-binding';
 const RESPONSE_HEADERS = ['content-type', 'mcp-session-id'] as const;
@@ -90,7 +94,7 @@ async function forward(
     protocolVersion?: string;
     sessionId?: string;
   },
-): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
+): Promise<{ status: number; headers: Record<string, string>; body: IncomingMessage }> {
   const url = parseHttpMcpUpstream(connection.url);
   return new Promise((resolve, reject) => {
     const request = httpsRequest(
@@ -102,7 +106,6 @@ async function forward(
         path: `${url.pathname}${url.search}`,
         servername: url.hostname,
         agent: false,
-        signal: AbortSignal.timeout(MCP_TIMEOUT_MS),
         headers: {
           accept: headers.accept ?? 'application/json, text/event-stream',
           'content-type': headers.contentType ?? 'application/json',
@@ -131,29 +134,17 @@ async function forward(
         },
       },
       (response) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on('data', (chunk: Buffer) => {
-          size += chunk.byteLength;
-          if (size > MAX_BODY_BYTES) {
-            request.destroy(new Error('HTTP MCP upstream response too large'));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        response.on('end', () => {
-          const safeHeaders: Record<string, string> = {};
-          for (const name of RESPONSE_HEADERS) {
-            const value = response.headers[name];
-            if (typeof value === 'string') safeHeaders[name] = value;
-          }
-          resolve({
-            status: response.statusCode ?? 502,
-            headers: safeHeaders,
-            body: Buffer.concat(chunks),
-          });
-        });
+        request.setTimeout(0);
+        const safeHeaders: Record<string, string> = {};
+        for (const name of RESPONSE_HEADERS) {
+          const value = response.headers[name];
+          if (typeof value === 'string') safeHeaders[name] = value;
+        }
+        resolve({ status: response.statusCode ?? 502, headers: safeHeaders, body: response });
       },
+    );
+    request.setTimeout(MCP_TIMEOUT_MS, () =>
+      request.destroy(new Error('HTTP MCP upstream timeout')),
     );
     request.on('error', reject);
     request.end(body);
@@ -197,9 +188,20 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           ? { sessionId: request.headers['mcp-session-id'] }
           : {}),
       });
-      for (const [name, value] of Object.entries(response.headers)) reply.header(name, value);
-      reply.code(response.status);
-      return reply.send(response.body);
+      reply.hijack();
+      reply.raw.writeHead(response.status, response.headers);
+      let streamed = 0;
+      const limiter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          streamed += chunk.byteLength;
+          callback(
+            streamed > MAX_STREAM_BYTES ? new Error('HTTP MCP upstream response too large') : null,
+            chunk,
+          );
+        },
+      });
+      await pipeline(response.body, limiter, reply.raw);
+      return reply;
     } catch {
       reply.code(502);
       return { error: 'MCP upstream unavailable' };
