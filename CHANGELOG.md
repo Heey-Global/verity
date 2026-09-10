@@ -1,5 +1,12 @@
 # Changelog
 
+## [17.3.7](https://github.com/Heey-Global/verity/compare/v17.3.6...v17.3.7) (2026-09-10)
+
+
+### Bug Fixes
+
+* **release:** resolve mobile recovery PR reliably ([f9e0ac6](https://github.com/Heey-Global/verity/commit/f9e0ac6e6da43146e6b809366e47c761245defce))
+
 ## [17.3.6](https://github.com/Heey-Global/verity/compare/v17.3.5...v17.3.6) (2026-09-10)
 
 
