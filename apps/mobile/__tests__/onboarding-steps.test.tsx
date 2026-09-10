@@ -496,6 +496,40 @@ describe('onboarding github one-page setup', () => {
     );
   });
 
+  it('opens organization setup through the public bridge too', async () => {
+    const prepareGithubManifest = jest.fn().mockResolvedValue({
+      state: 'state-organization',
+      manifest: { name: 'Verity-a1b2c3d4' },
+    });
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest,
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    fireEvent.press(screen.getByLabelText('Connect a GitHub organization'));
+    fireEvent.changeText(screen.getByLabelText('GitHub organization'), 'Heey-Global');
+    fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+
+    await waitFor(() => expect(openURL).toHaveBeenCalledTimes(1));
+    const opened = openURL.mock.calls[0]?.[0] ?? '';
+    expect(opened).toMatch(/^https:\/\/verity\.build\/github\/app\/#/);
+    expect(opened).not.toContain('verity.example:8082');
+    expect(JSON.parse(decodeURIComponent(new URL(opened).hash.slice(1)))).toEqual({
+      state: 'state-organization',
+      manifest: { name: 'Verity-a1b2c3d4' },
+      owner: 'Heey-Global',
+    });
+    expect(prepareGithubManifest).toHaveBeenCalledWith(
+      'http://verity.example:8082',
+      'Heey-Global',
+      '/onboarding/github',
+      true,
+    );
+  });
+
   it('shows author and signing key on the same page and unlocks Next after copy', async () => {
     mockCreateVerityClient.mockReturnValue(
       fakeClient({

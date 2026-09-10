@@ -19,6 +19,17 @@ function validState(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{16,256}$/.test(value);
 }
 
+function validOwner(value) {
+  return typeof value === 'string' &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(value);
+}
+
+export function githubFormAction(owner) {
+  if (owner === undefined) return 'https://github.com/settings/apps/new';
+  if (!validOwner(owner)) throw new Error('invalid launch request');
+  return `https://github.com/organizations/${encodeURIComponent(owner)}/settings/apps/new`;
+}
+
 function validManifest(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const manifest = value;
@@ -40,7 +51,10 @@ export function parseLaunchFragment(hash) {
   if (!hash.startsWith('#') || hash.length > 12_000) throw new Error('invalid launch request');
   let payload;
   try { payload = JSON.parse(decodeURIComponent(hash.slice(1))); } catch { throw new Error('invalid launch request'); }
-  if (payload === null || typeof payload !== 'object' || !validState(payload.state) || !validManifest(payload.manifest)) {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload) ||
+      !hasExactKeys(payload, payload.owner === undefined ? ['state', 'manifest'] : ['state', 'manifest', 'owner']) ||
+      !validState(payload.state) || !validManifest(payload.manifest) ||
+      (payload.owner !== undefined && !validOwner(payload.owner))) {
     throw new Error('invalid launch request');
   }
   return payload;
@@ -56,6 +70,7 @@ if (typeof document !== 'undefined') {
     history.replaceState(null, '', window.location.pathname);
     state.value = payload.state;
     input.value = JSON.stringify(payload.manifest);
+    form.setAttribute('action', githubFormAction(payload.owner));
     form.hidden = false;
     status.textContent = 'Your request is ready. Continue to GitHub to choose the account and repositories.';
     form.requestSubmit();

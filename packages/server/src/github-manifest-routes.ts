@@ -180,10 +180,6 @@ export function registerGitHubManifestRoutes(
       manifestStartBases.set(startToken, baseUrl);
       return { startToken };
     }
-    if (typeof body.owner === 'string' && body.owner.length > 0) {
-      reply.code(400).send({ error: 'organization-owned Apps require the browser flow' });
-      return;
-    }
     const state = manifestState.issueState();
     const returnTo =
       body?.returnTo === '/onboarding/github' ? '/onboarding/github' : '/github-connect';
