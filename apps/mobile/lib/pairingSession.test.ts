@@ -42,10 +42,12 @@ jest.mock('./pinnedTransport', () => ({
   verifyPairedIdentity: jest.fn().mockResolvedValue(undefined),
 }));
 const mockSetAuthToken = jest.fn();
+const mockClearStoredAuthState = jest.fn();
 const mockSetBaseUrl = jest.fn();
 const mockSaveProfile = jest.fn();
 jest.mock('./authToken', () => ({
   setAuthToken: (...args: unknown[]) => mockSetAuthToken(...args),
+  clearStoredAuthState: (...args: unknown[]) => mockClearStoredAuthState(...args),
   copyAuthTokenToEndpoint: jest.fn(),
 }));
 jest.mock('./client', () => ({
@@ -71,6 +73,7 @@ beforeEach(() => {
   });
   mockStatus.mockReset().mockResolvedValue({ complete: true });
   mockSetAuthToken.mockReset().mockResolvedValue(true);
+  mockClearStoredAuthState.mockReset().mockResolvedValue(undefined);
   mockSetBaseUrl.mockReset().mockResolvedValue(undefined);
   mockSaveProfile.mockReset().mockResolvedValue(undefined);
   mockSecureItems.clear();
@@ -110,6 +113,7 @@ it('enrolls a device even when an installer bootstrap is retained for the same s
 
   expect(mockRedeem).toHaveBeenCalledTimes(1);
   expect(mockEnroll).toHaveBeenCalledTimes(1);
+  expect(mockClearStoredAuthState).toHaveBeenCalledWith('https://verity.example:8082');
   expect(mockSecureItems.size).toBe(0);
   expect(mockSetAuthToken).toHaveBeenCalledWith(
     'https://verity.example:8082',
@@ -137,6 +141,7 @@ it('uses the newly enrolled bearer for the post-pairing status request', async (
   expect(clients[1]?.opts.getToken?.()).toBe('new-device-token');
   expect(clients[0]?.fetchOnboardingStatus).not.toHaveBeenCalled();
   expect(clients[1]?.fetchOnboardingStatus).toHaveBeenCalledTimes(1);
+  expect(mockClearStoredAuthState).toHaveBeenCalledWith('https://verity.example:8082');
 });
 
 it('keeps the verified profile and enrolled token when the final status read fails', async () => {
