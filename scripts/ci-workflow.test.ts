@@ -370,6 +370,7 @@ describe('Verity website publication smoke', () => {
         string,
         {
           'package-name'?: string;
+          'pull-request-title-pattern'?: string;
           'initial-version'?: string;
           'include-component-in-tag'?: boolean;
           'tag-separator'?: string;
@@ -404,6 +405,9 @@ describe('Verity website publication smoke', () => {
       ),
     ).toBe(false);
     expect(backendConfig.packages['.']?.['package-name']).toBe('server');
+    expect(backendConfig.packages['.']?.['pull-request-title-pattern']).toBe(
+      'chore${scope}: release server ${version}',
+    );
     expect(backendConfig.packages['.']?.['include-component-in-tag']).toBe(false);
     expect(website?.['include-component-in-tag']).toBe(true);
     expect(website?.['tag-separator']).toBe('-');

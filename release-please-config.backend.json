@@ -4,6 +4,7 @@
     ".": {
       "release-type": "simple",
       "package-name": "server",
+      "pull-request-title-pattern": "chore${scope}: release server ${version}",
       "include-component-in-tag": false,
       "exclude-paths": [".github/**", "**/*.test.*", "apps/mobile", "docs/website"]
     }
