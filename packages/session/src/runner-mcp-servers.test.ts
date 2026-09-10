@@ -42,4 +42,14 @@ describe('runner MCP proxy boundary', () => {
     ).toThrow(/exactly one binding/u);
     expect(() => resolveRunnerMcpServers({ proxyToken: 'orphan' })).toThrow(/no internal/u);
   });
+
+  it('keeps external proxy descriptors backend-neutral, including for OpenCode', () => {
+    expect(
+      resolveRunnerMcpServers({
+        servers: [internal([{ name: 'X-Verity-MCP-Binding', value: 'gmail-id' }])],
+        proxyToken: 'opencode-turn-token',
+        gatewayUrl: 'http://relay:8080/internal/mcp',
+      })?.[0]?.headers,
+    ).toContainEqual({ name: 'Authorization', value: 'Bearer opencode-turn-token' });
+  });
 });

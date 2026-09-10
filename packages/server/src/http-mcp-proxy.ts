@@ -40,9 +40,13 @@ function forbiddenIpv4(address: string): boolean {
     p[0] === 0 ||
     p[0] === 10 ||
     p[0] === 127 ||
+    (p[0] === 100 && p[1]! >= 64 && p[1]! <= 127) ||
     (p[0] === 169 && p[1] === 254) ||
     (p[0] === 172 && p[1]! >= 16 && p[1]! <= 31) ||
     (p[0] === 192 && p[1] === 168) ||
+    (p[0] === 192 && p[1] === 0 && p[2]! <= 2) ||
+    (p[0] === 198 && (p[1] === 18 || p[1] === 19 || p[1] === 51)) ||
+    (p[0] === 203 && p[1] === 0 && p[2] === 113) ||
     p[0]! >= 224
   );
 }
@@ -51,7 +55,14 @@ function forbiddenAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return forbiddenIpv4(address);
   if (family !== 6) return true;
-  const normalized = address.toLowerCase();
+  let normalized = address.toLowerCase();
+  try {
+    normalized = new URL(`http://[${normalized}]/`).hostname.slice(1, -1);
+  } catch {
+    return true;
+  }
+  // Global unicast is 2000::/3. Deny special-use and local families by default.
+  if (!/^[23][0-9a-f]{0,3}(?::|$)/u.test(normalized)) return true;
   return (
     normalized === '::' ||
     normalized === '::1' ||
@@ -62,6 +73,7 @@ function forbiddenAddress(address: string): boolean {
     normalized.startsWith('fea') ||
     normalized.startsWith('feb') ||
     normalized.startsWith('ff') ||
+    normalized.startsWith('2001:db8:') ||
     normalized.startsWith('::ffff:')
   );
 }
@@ -135,6 +147,9 @@ async function forward(
       },
       (response) => {
         request.setTimeout(0);
+        response.setTimeout(MCP_TIMEOUT_MS, () =>
+          response.destroy(new Error('HTTP MCP upstream stream stalled')),
+        );
         const safeHeaders: Record<string, string> = {};
         for (const name of RESPONSE_HEADERS) {
           const value = response.headers[name];
@@ -175,6 +190,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       return { error: 'unauthorized' };
     }
     const body = Buffer.from(JSON.stringify(request.body));
+    let hijacked = false;
     try {
       const response = await forward(connection, body, {
         ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
@@ -189,6 +205,7 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           : {}),
       });
       reply.hijack();
+      hijacked = true;
       reply.raw.writeHead(response.status, response.headers);
       let streamed = 0;
       const limiter = new Transform({
@@ -203,6 +220,10 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       await pipeline(response.body, limiter, reply.raw);
       return reply;
     } catch {
+      if (hijacked) {
+        reply.raw.destroy();
+        return reply;
+      }
       reply.code(502);
       return { error: 'MCP upstream unavailable' };
     }

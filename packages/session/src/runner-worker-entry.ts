@@ -150,6 +150,9 @@ const mcpGatewayUrl = process.env.VERITY_MCP_GATEWAY_URL;
 const usesInternalMcpProxy = request.mcpServers?.some(
   (server) => server.url === 'verity-internal://mcp-proxy',
 );
+// External MCP bindings are intentionally backend-neutral. Their separate proxy bearer
+// proves only turn/project identity and does not expose the built-in Verity gateway or
+// trusted CLI executor that `mcpGatewayToken` restricts to Claude/Codex above.
 // A bearer is the Server's decision that this turn is entitled to brokered tools.
 // Without a URL to redeem it against, the container is misprovisioned and no retry or
 // prompt can recover. Fail closed instead of silently starting a tool-less agent;
