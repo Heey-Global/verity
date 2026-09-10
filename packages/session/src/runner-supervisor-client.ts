@@ -161,6 +161,13 @@ export interface SupervisorRunnerClientOptions {
         release: (token: string) => void;
       }
     | undefined;
+  /** Mint and retire the bearer used by configured MCP proxy bindings. */
+  mcpProxyTokens?:
+    | {
+        issue: (turnId: string) => string;
+        release: (token: string) => void;
+      }
+    | undefined;
 }
 
 export interface TrustedCliExecutionInput {
@@ -596,6 +603,39 @@ const GATEWAY_BEARER = Symbol('verity.mcpGatewayBearer');
 
 interface GatewayBearerBox {
   token?: string;
+  proxyToken?: string;
+}
+
+function validatedMcpServers(servers: RunTurnOptions['mcpServers']): RunTurnOptions['mcpServers'] {
+  if (servers === undefined) return undefined;
+  if (servers.length > 16) throw new Error('supervisor runner supports at most 16 MCP servers');
+  for (const server of servers) {
+    if (
+      server.name.length < 1 ||
+      server.name.length > 128 ||
+      server.url.length < 1 ||
+      server.url.length > 4096
+    ) {
+      throw new Error('supervisor runner received an invalid MCP server descriptor');
+    }
+    if (server.url !== 'verity-internal://mcp-proxy') {
+      try {
+        if (!['http:', 'https:'].includes(new URL(server.url).protocol)) throw new Error();
+      } catch {
+        throw new Error('supervisor runner MCP server URL must use HTTP');
+      }
+    }
+    if (
+      server.headers.length > 32 ||
+      server.headers.some(
+        (header) =>
+          header.name.length < 1 || header.name.length > 256 || header.value.length > 4096,
+      )
+    ) {
+      throw new Error('supervisor runner received invalid MCP server headers');
+    }
+  }
+  return servers;
 }
 
 /** Stage 5c client: starts a fresh turn on the Sandbox supervisor, then delegates
@@ -725,14 +765,23 @@ export class SupervisorRunnerClient implements RunnerClient {
    * fence. */
   private releaseGatewayTokenOnSettle(turn: RunnerTurn, bearer: GatewayBearerBox): RunnerTurn {
     const tokens = this.options.mcpGatewayTokens;
-    if (!this.acpBackend || tokens === undefined) return turn;
+    const proxyTokens = this.options.mcpProxyTokens;
+    if ((!this.acpBackend || tokens === undefined) && proxyTokens === undefined) return turn;
     const release = (): void => {
       const token = bearer.token;
-      if (token === undefined) return;
-      try {
-        tokens.release(token);
-      } catch {
-        // Cleanup must never turn a settled turn into a failed one.
+      if (token !== undefined && tokens !== undefined) {
+        try {
+          tokens.release(token);
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+      if (bearer.proxyToken !== undefined && proxyTokens !== undefined) {
+        try {
+          proxyTokens.release(bearer.proxyToken);
+        } catch {
+          /* best-effort cleanup */
+        }
       }
     };
     return {
@@ -804,6 +853,7 @@ export class SupervisorRunnerClient implements RunnerClient {
     if (opts.storeSessionId === undefined || !SAFE_ID.test(opts.storeSessionId)) {
       throw new Error('supervisor runner requires storeSessionId');
     }
+    const mcpServers = validatedMcpServers(opts.mcpServers);
     // `command`, `extraArgs`, `spawner`, `claudeHome` and `env` describe how the SERVER
     // would spawn the agent on the loopback path. They are deliberately NOT forwarded:
     // the worker already runs inside the Sandbox and owns its own spawn through the
@@ -856,15 +906,25 @@ export class SupervisorRunnerClient implements RunnerClient {
       );
       this.resumeOffsets.set(opts.turnId, offset);
     }
+    const needsMcpProxy = mcpServers?.some(
+      (server) => server.url === 'verity-internal://mcp-proxy',
+    );
+    if (needsMcpProxy === true && this.options.mcpProxyTokens === undefined) {
+      throw new Error('supervisor runner requires MCP proxy token issuance');
+    }
+    const bearer = (opts as { [GATEWAY_BEARER]?: GatewayBearerBox })[GATEWAY_BEARER];
     const mcpGatewayToken = this.acpBackend
       ? this.options.mcpGatewayTokens?.issue(opts.turnId)
       : undefined;
+    if (mcpGatewayToken !== undefined && bearer !== undefined) bearer.token = mcpGatewayToken;
+    const mcpProxyToken =
+      needsMcpProxy === true ? this.options.mcpProxyTokens?.issue(opts.turnId) : undefined;
+    if (mcpProxyToken !== undefined && bearer !== undefined) bearer.proxyToken = mcpProxyToken;
+    if (needsMcpProxy === true && mcpProxyToken === undefined) {
+      throw new Error('supervisor runner requires MCP proxy token issuance');
+    }
     // Hand it back to the start attempt that asked for this launch, which is the only
     // one entitled to retire it.
-    if (mcpGatewayToken !== undefined) {
-      const bearer = (opts as { [GATEWAY_BEARER]?: GatewayBearerBox })[GATEWAY_BEARER];
-      if (bearer !== undefined) bearer.token = mcpGatewayToken;
-    }
     // Built ONCE and re-sent byte-identical on retry. Idempotence here is not a
     // nicety: the supervisor keys its claim on `turnId`, so an identical frame can
     // only ever adopt the existing turn, while a frame carrying a fresh id would
@@ -892,6 +952,16 @@ export class SupervisorRunnerClient implements RunnerClient {
       // bearer is minted per turn and carries the turn's identity on the Server side;
       // the endpoint itself comes from the Sandbox's own broker environment.
       ...(mcpGatewayToken === undefined ? {} : { mcpGatewayToken }),
+      ...(mcpProxyToken === undefined ? {} : { mcpProxyToken }),
+      ...(mcpServers === undefined
+        ? {}
+        : {
+            mcpServers: mcpServers.map((server) => ({
+              name: server.name,
+              url: server.url,
+              headers: server.headers.map((header) => ({ ...header })),
+            })),
+          }),
       ...(opts.appendSystemPrompt !== undefined
         ? { appendSystemPrompt: opts.appendSystemPrompt }
         : {}),

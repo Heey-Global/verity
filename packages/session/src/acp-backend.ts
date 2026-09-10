@@ -705,17 +705,26 @@ export async function runAcpTurn(
         // bearer identifies the turn, it does not authorize anything.
         const gateway = opts.mcpGateway;
         const agentSpeaksHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http === true;
-        const mcpServers: McpServer[] =
-          gateway !== undefined && agentSpeaksHttpMcp
-            ? [
-                {
-                  type: 'http',
-                  name: 'verity',
-                  url: gateway.url,
-                  headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
-                },
-              ]
-            : [];
+        const mcpServers: McpServer[] = agentSpeaksHttpMcp
+          ? [
+              ...(gateway === undefined
+                ? []
+                : [
+                    {
+                      type: 'http' as const,
+                      name: 'verity',
+                      url: gateway.url,
+                      headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
+                    },
+                  ]),
+              ...(opts.mcpServers ?? []).map((server) => ({
+                type: 'http' as const,
+                name: server.name,
+                url: server.url,
+                headers: server.headers.map((header) => ({ ...header })),
+              })),
+            ]
+          : [];
         // A bearer was minted but no server was offered, so tell the turn through the
         // channel its profile supports. Claude carries this in `sessionMeta`; Codex and
         // OpenCode have no native system-prompt slot and receive it in `promptBlocks`.

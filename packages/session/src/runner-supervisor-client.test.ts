@@ -517,6 +517,48 @@ describe('SupervisorRunnerClient', () => {
     expect(request).toMatchObject({ backend: 'opencode-acp', trustedCliExecution: false });
   });
 
+  it('carries proxy-bound MCP descriptors and a separate bearer for OpenCode', async () => {
+    const issued: string[] = [];
+    const request = await captureStartRequest(
+      'opencode-mcp-proxy-runtime',
+      {
+        prompt: 'read mail',
+        mcpServers: [
+          {
+            name: 'gmail',
+            url: 'verity-internal://mcp-proxy',
+            headers: [{ name: 'X-Verity-MCP-Binding', value: 'binding-1' }],
+          },
+        ],
+      },
+      {
+        backend: { runnerSupervisorBackend: 'opencode-acp' } as Backend,
+        clientOptions: {
+          mcpProxyTokens: {
+            issue: (turnId: string) => {
+              issued.push(turnId);
+              return 'proxy-token-1';
+            },
+            release: () => undefined,
+          },
+        },
+      },
+    );
+    expect(issued).toEqual(['turn-1']);
+    expect(request).toMatchObject({
+      backend: 'opencode-acp',
+      mcpProxyToken: 'proxy-token-1',
+      mcpServers: [
+        {
+          name: 'gmail',
+          url: 'verity-internal://mcp-proxy',
+          headers: [{ name: 'X-Verity-MCP-Binding', value: 'binding-1' }],
+        },
+      ],
+    });
+    expect(request).not.toHaveProperty('mcpGatewayToken');
+  });
+
   // Retiring is keyed on the bearer this start attempt minted, never on its turn id:
   // a second attempt for one turn would otherwise cut off a worker still using the
   // first attempt's bearer.

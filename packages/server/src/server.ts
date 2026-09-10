@@ -112,6 +112,8 @@ import Fastify, {
 } from 'fastify';
 import { z, ZodError } from 'zod';
 import { deriveSessionStatusFromProjection, type SessionStatus } from './status.js';
+import { registerHttpMcpProxyRoute } from './http-mcp-proxy.js';
+import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -4554,6 +4556,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
   if (deps.mcpGateway !== undefined) {
     const gatewayDeps = deps.mcpGateway;
+    registerHttpMcpProxyRoute(app, {
+      resolveCaller: gatewayDeps.resolveCaller,
+      resolveConnection: async ({ projectId, connectionId }) => {
+        const [bindings, connections] = await Promise.all([
+          deps.eventStore.listProjectMcpBindings(projectId),
+          deps.eventStore.listHttpMcpConnections(),
+        ]);
+        const binding = bindings.find(
+          (candidate) => candidate.connectionId === connectionId && candidate.enabled,
+        );
+        const connection = connections.find(
+          (candidate) => candidate.id === connectionId && candidate.enabled,
+        );
+        return binding === undefined || connection === undefined
+          ? undefined
+          : {
+              id: connection.id,
+              url: connection.url,
+              ...(connection.authorization === null
+                ? {}
+                : { authorization: connection.authorization }),
+            };
+      },
+    });
     // The two control-plane session tools are bound on the same seam as `requestApproval`,
     // and for the same reason: they need this server's conductor to deliver a turn, and the
     // route's own session projection for `status`/`resumable`. Neither exists where the rest
@@ -5349,6 +5375,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     githubTargetReservations: githubTargetLinkReservations,
     isUniqueViolation,
   });
+  registerHttpMcpConnectionRoutes(app, deps.eventStore);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {
       const cached = await deps.eventStore.getProject(id);

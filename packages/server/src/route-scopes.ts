@@ -172,6 +172,18 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/mcp-proxy',
+    'gateway-turn',
+    'per-turn gateway bearer plus a project-bound MCP connection binding',
+  ),
+  declare(
+    'GET',
+    '/internal/mcp-proxy',
+    'gateway-turn',
+    'project-bound transport; answers 405 when no server-message stream is available',
+  ),
+  declare(
+    'POST',
     '/internal/control-plane/mcp',
     'gateway-turn',
     'per-turn gateway bearer, for the one caller that arrives on the shared internal listener rather than a project socket',

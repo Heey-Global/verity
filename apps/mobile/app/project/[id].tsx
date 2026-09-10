@@ -35,6 +35,8 @@ import {
   type DopplerConfigSummary,
   type ProjectSettings,
   type ProjectSettingsDraft,
+  type HttpMcpConnection,
+  type ProjectMcpBinding,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
@@ -2966,10 +2968,87 @@ function ProjectSettingsSection({
         settings={settings}
         onSaved={onSaved}
       />
+      <ProjectMcpBindingsSection client={client} projectId={projectId} />
       <Text style={styles.settingsHint}>
         Verity resolves approved secrets in the central broker. No Doppler credential is stored in
         or injected into the project container.
       </Text>
+    </View>
+  );
+}
+
+function ProjectMcpBindingsSection({
+  client,
+  projectId,
+}: {
+  client: VerityClient;
+  projectId: string;
+}) {
+  const [connections, setConnections] = useState<HttpMcpConnection[]>([]);
+  const [bindings, setBindings] = useState<ProjectMcpBinding[]>([]);
+  const [error, setError] = useState<string | undefined>();
+  const load = useCallback(() => {
+    if (
+      typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function' ||
+      typeof (client as Partial<VerityClient>).listProjectMcpBindings !== 'function'
+    ) {
+      return;
+    }
+    setError(undefined);
+    void Promise.all([client.listHttpMcpConnections(), client.listProjectMcpBindings(projectId)])
+      .then(([nextConnections, nextBindings]) => {
+        setConnections(nextConnections.filter((connection) => connection.enabled));
+        setBindings(nextBindings);
+      })
+      .catch(() => setError('Could not load MCP connections.'));
+  }, [client, projectId]);
+  useEffect(load, [load]);
+  const enabled = useCallback(
+    (connectionId: string) =>
+      bindings.some((binding) => binding.connectionId === connectionId && binding.enabled),
+    [bindings],
+  );
+  const toggle = useCallback(
+    (connectionId: string) => {
+      void client
+        .setProjectMcpBinding(projectId, connectionId, !enabled(connectionId))
+        .then(load)
+        .catch(() => setError('Could not update the MCP connection.'));
+    },
+    [client, enabled, load, projectId],
+  );
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionHeader}>MCP connections</Text>
+      <Text style={styles.settingsGroupDescription}>
+        Enable only the global MCP connections this project may use. Authorization stays on the
+        Verity server.
+      </Text>
+      {connections.length === 0 ? (
+        <Text style={styles.settingsHint}>
+          Add an HTTP MCP connection in global Settings first.
+        </Text>
+      ) : (
+        <View style={styles.bindingList}>
+          {connections.map((connection) => (
+            <Pressable
+              key={connection.id}
+              style={({ pressed }) => [styles.bindingRow, pressed ? styles.rowPressed : null]}
+              onPress={() => toggle(connection.id)}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: enabled(connection.id) }}
+              accessibilityLabel={`${enabled(connection.id) ? 'Disable' : 'Enable'} ${connection.name} MCP connection`}
+            >
+              <Text style={styles.bindingRowText}>{connection.name}</Text>
+              <StatusPill
+                intent={enabled(connection.id) ? 'ready' : 'optional'}
+                label={enabled(connection.id) ? 'Enabled' : 'Disabled'}
+              />
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {error ? <Text style={styles.settingsError}>{error}</Text> : null}
     </View>
   );
 }

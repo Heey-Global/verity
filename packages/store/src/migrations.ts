@@ -738,7 +738,7 @@ const migrations: Record<string, Migration> = {
         .addColumn('project_id', 'text', (c) =>
           c.notNull().references('projects.id').onDelete('cascade'),
         )
-        .addColumn('name', 'text', (c) => c.notNull())
+        .addColumn('name', 'text', (c) => c.notNull().unique())
         .addColumn('status', 'text', (c) => c.notNull().defaultTo('draft'))
         .addColumn('schedule_kind', 'text')
         .addColumn('schedule_config', 'jsonb')
@@ -2746,6 +2746,33 @@ const migrations: Record<string, Migration> = {
     },
     async down(db: Kysely<unknown>): Promise<void> {
       await db.schema.alterTable('session_slide_decks').dropColumn('assignment_id').execute();
+    },
+  },
+  '0093_http_mcp_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('http_mcp_connections')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('name', 'text', (c) => c.notNull().unique())
+        .addColumn('url', 'text', (c) => c.notNull())
+        .addColumn('authorization', 'text')
+        .addColumn('enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .execute();
+      await db.schema
+        .createTable('project_mcp_bindings')
+        .addColumn('project_id', 'text', (c) =>
+          c.notNull().references('projects.id').onDelete('cascade'),
+        )
+        .addColumn('connection_id', 'text', (c) =>
+          c.notNull().references('http_mcp_connections.id').onDelete('cascade'),
+        )
+        .addColumn('enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .addPrimaryKeyConstraint('project_mcp_bindings_pkey', ['project_id', 'connection_id'])
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('project_mcp_bindings').execute();
+      await db.schema.dropTable('http_mcp_connections').execute();
     },
   },
 };

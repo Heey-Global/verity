@@ -16,6 +16,7 @@ import {
   type VerityClient,
   type VeritySettings,
   type VeritySettingsPatch,
+  type HttpMcpConnection,
   type SecretSettingsDraft,
   type SecretStatus,
   type ServerUpdateStatus,
@@ -846,6 +847,8 @@ function SettingsView({
           </View>
         </View>
 
+        <McpConnectionsSection client={client} />
+
         <View style={styles.settingsGroup}>
           <Text style={styles.groupHeader}>Maintenance</Text>
           <ServerUpdateSection client={client} />
@@ -903,6 +906,121 @@ function SettingsView({
           </Pressable>
         </View>
       </ScrollView>
+    </View>
+  );
+}
+
+function McpConnectionsSection({ client }: { client: VerityClient }) {
+  const { theme } = useUnistyles();
+  const [connections, setConnections] = useState<HttpMcpConnection[]>([]);
+  const [name, setName] = useState('');
+  const [url, setUrl] = useState('');
+  const [authorization, setAuthorization] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const load = useCallback(() => {
+    if (typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function') return;
+    void client
+      .listHttpMcpConnections()
+      .then(setConnections)
+      .catch(() => setError('Could not load MCP connections.'));
+  }, [client]);
+  useEffect(load, [load]);
+  const add = useCallback(() => {
+    setBusy(true);
+    setError(undefined);
+    void client
+      .createHttpMcpConnection({
+        name: name.trim(),
+        url: url.trim(),
+        ...(authorization.trim() === '' ? {} : { authorization: authorization.trim() }),
+      })
+      .then((connection) => {
+        setConnections((current) => [...current, connection]);
+        setName('');
+        setUrl('');
+        setAuthorization('');
+      })
+      .catch(() => setError('Could not save the MCP connection. Use a public HTTPS URL.'))
+      .finally(() => setBusy(false));
+  }, [authorization, client, name, url]);
+  return (
+    <View style={styles.settingsGroup}>
+      <Text style={styles.groupHeader}>MCP connections</Text>
+      <Text style={styles.groupDescription}>
+        Configure remote HTTP MCP servers once, then enable them explicitly per project. Credentials
+        stay on the Verity server.
+      </Text>
+      <View style={styles.panel}>
+        {connections.map((connection) => (
+          <View key={connection.id} style={styles.pathContent}>
+            <Text style={styles.disclosureTitle}>{connection.name}</Text>
+            <Text style={styles.identityEmail} numberOfLines={1}>
+              {connection.url}
+            </Text>
+            <Pressable
+              style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
+              onPress={() => {
+                void client.deleteHttpMcpConnection(connection.id).then(load);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${connection.name} MCP connection`}
+            >
+              <Text style={styles.reproButtonLabel}>Remove</Text>
+            </Pressable>
+          </View>
+        ))}
+        <View style={styles.pathContent}>
+          <Text style={styles.pathLabel}>Connection name</Text>
+          <TextInput
+            style={styles.pathInput}
+            value={name}
+            onChangeText={setName}
+            placeholder="gmail"
+            placeholderTextColor={theme.colors.textFaint}
+            autoCapitalize="none"
+          />
+        </View>
+        <View style={styles.pathContent}>
+          <Text style={styles.pathLabel}>Remote HTTPS MCP URL</Text>
+          <TextInput
+            style={styles.pathInput}
+            value={url}
+            onChangeText={setUrl}
+            placeholder="https://mcp.example.com/gmail"
+            placeholderTextColor={theme.colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
+        <View style={styles.pathContent}>
+          <Text style={styles.pathLabel}>Authorization header (optional)</Text>
+          <TextInput
+            style={styles.pathInput}
+            value={authorization}
+            onChangeText={setAuthorization}
+            placeholder="Bearer …"
+            placeholderTextColor={theme.colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+          />
+        </View>
+        {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+        <Pressable
+          style={({ pressed }) => [
+            styles.reproButton,
+            busy || name.trim() === '' || url.trim() === '' ? styles.buttonDisabled : null,
+            pressed ? styles.pressed : null,
+          ]}
+          onPress={add}
+          disabled={busy || name.trim() === '' || url.trim() === ''}
+          accessibilityRole="button"
+          accessibilityLabel="Add MCP connection"
+        >
+          <Text style={styles.reproButtonLabel}>{busy ? 'Saving…' : 'Add connection'}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }

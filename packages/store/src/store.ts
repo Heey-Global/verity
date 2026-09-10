@@ -393,6 +393,21 @@ export interface ProjectSettingsRecord {
   updatedAt: Date;
 }
 
+export interface HttpMcpConnectionRecord {
+  id: string;
+  name: string;
+  url: string;
+  /** Decrypted only at the trusted store boundary; public APIs must project this out. */
+  authorization: string | null;
+  enabled: boolean;
+}
+
+export interface ProjectMcpBindingRecord {
+  projectId: string;
+  connectionId: string;
+  enabled: boolean;
+}
+
 type ProjectSettingsKey =
   | 'dopplerTokenRef'
   | 'dopplerToken'
@@ -5717,6 +5732,90 @@ export class EventStore implements EventSink {
     const result = await this.db
       .deleteFrom('push_receipts')
       .where('receipt_id', '=', receiptId)
+      .executeTakeFirst();
+    return (result.numDeletedRows ?? 0n) > 0n;
+  }
+
+  async upsertHttpMcpConnection(record: HttpMcpConnectionRecord): Promise<void> {
+    await this.db
+      .insertInto('http_mcp_connections')
+      .values({
+        id: record.id,
+        name: record.name,
+        url: record.url,
+        authorization: this.encryptSecret(record.authorization),
+        enabled: record.enabled,
+      })
+      .onConflict((conflict) =>
+        conflict.column('id').doUpdateSet({
+          name: record.name,
+          url: record.url,
+          authorization: this.encryptSecret(record.authorization),
+          enabled: record.enabled,
+        }),
+      )
+      .execute();
+  }
+
+  async listHttpMcpConnections(): Promise<HttpMcpConnectionRecord[]> {
+    const rows = await this.db
+      .selectFrom('http_mcp_connections')
+      .selectAll()
+      .orderBy('name', 'asc')
+      .orderBy('id', 'asc')
+      .execute();
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      authorization: this.decryptSecret(row.authorization),
+      enabled: row.enabled,
+    }));
+  }
+
+  async deleteHttpMcpConnection(id: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('http_mcp_connections')
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return (result.numDeletedRows ?? 0n) > 0n;
+  }
+
+  async upsertProjectMcpBinding(binding: ProjectMcpBindingRecord): Promise<void> {
+    await this.db
+      .insertInto('project_mcp_bindings')
+      .values({
+        project_id: binding.projectId,
+        connection_id: binding.connectionId,
+        enabled: binding.enabled,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(['project_id', 'connection_id']).doUpdateSet({
+          enabled: binding.enabled,
+        }),
+      )
+      .execute();
+  }
+
+  async listProjectMcpBindings(projectId: string): Promise<ProjectMcpBindingRecord[]> {
+    const rows = await this.db
+      .selectFrom('project_mcp_bindings')
+      .selectAll()
+      .where('project_id', '=', projectId)
+      .orderBy('connection_id', 'asc')
+      .execute();
+    return rows.map((row) => ({
+      projectId: row.project_id,
+      connectionId: row.connection_id,
+      enabled: row.enabled,
+    }));
+  }
+
+  async deleteProjectMcpBinding(projectId: string, connectionId: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('project_mcp_bindings')
+      .where('project_id', '=', projectId)
+      .where('connection_id', '=', connectionId)
       .executeTakeFirst();
     return (result.numDeletedRows ?? 0n) > 0n;
   }

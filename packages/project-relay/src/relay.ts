@@ -40,6 +40,8 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   // reads as "no stream here" and drops. Rejecting the GET at the relay instead would answer
   // 404, which the same transport reports as a connection error on every ACP turn.
   'GET /internal/mcp',
+  'POST /internal/mcp-proxy',
+  'GET /internal/mcp-proxy',
 ]);
 /**
  * Routes the Server does not answer from its own state but parks on an operator decision.
@@ -85,6 +87,8 @@ const ACCEPTED_REQUEST_HEADERS = new Set([
   // rejecting the header would leave the gateway reachable and unusable: the handshake
   // would pass and the first `tools/list` would come back 400.
   'mcp-protocol-version',
+  'mcp-session-id',
+  'x-verity-mcp-binding',
   'sec-fetch-mode',
   'transfer-encoding',
   'user-agent',

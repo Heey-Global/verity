@@ -66,6 +66,17 @@ export interface Spawner {
   (command: string, args: readonly string[], options: SpawnOptions): SpawnedProcess;
 }
 
+/**
+ * A Server-resolved HTTP MCP endpoint that is safe to expose to an agent turn.
+ * Authentication is already represented by the supplied headers; backends must
+ * forward the descriptor as-is and must never resolve credentials themselves.
+ */
+export interface HttpMcpServerDescriptor {
+  name: string;
+  url: string;
+  headers: readonly { name: string; value: string }[];
+}
+
 export interface RunTurnOptions {
   /**
    * The persistence seam the runner's ingest drives (ADR 0006 D2). Typed as the
@@ -163,6 +174,12 @@ export interface RunTurnOptions {
    * HTTP MCP support — the tools are then simply absent rather than half-wired.
    */
   mcpGateway?: { url: string; token: string };
+  /**
+   * Additional Server-resolved HTTP MCP endpoints enabled for this turn. Only
+   * HTTP descriptors cross this agent-neutral boundary: executable/stdio MCP
+   * configuration is deliberately not part of the contract.
+   */
+  mcpServers?: readonly HttpMcpServerDescriptor[];
   /** Permission mode; defaults to `auto` (fleet operator default, §5b). */
   permissionMode?: string;
   /**

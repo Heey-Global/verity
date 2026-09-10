@@ -1041,6 +1041,8 @@ export function buildRunnerConductorWiring(deps: {
   /** ADR 0014 D1: per-turn bearer registry for the loopback MCP gateway. Only ACP
    *  turns are issued one; the supervisor client decides that from its own backend. */
   mcpGatewayTokens?: McpGatewayTokens | undefined;
+  listProjectHttpMcpServers?:
+    ((projectId: string) => Promise<readonly { id: string; name: string }[]>) | undefined;
   /** ADR 0011 D2: resolve a standing grant before a prompt becomes a card + push.
    *  `channel` is supplied by the runner client from its own backend (ADR 0014 D3). */
   autoApprovePermission?:
@@ -1168,6 +1170,10 @@ export function buildRunnerConductorWiring(deps: {
           );
         }
         const ephemeral = context.ephemeralEventSink !== undefined;
+        const projectHttpMcpServers =
+          ephemeral || context.projectId === null || deps.listProjectHttpMcpServers === undefined
+            ? []
+            : await deps.listProjectHttpMcpServers(context.projectId);
         const gatewayToolContext =
           !ephemeral && context.sessionId !== null
             ? {
@@ -1266,6 +1272,15 @@ export function buildRunnerConductorWiring(deps: {
             ...opts,
             worktree: sandboxPath(opts.worktree),
             cwd: sandboxPath(opts.cwd),
+            ...(projectHttpMcpServers.length === 0
+              ? {}
+              : {
+                  mcpServers: projectHttpMcpServers.map((server) => ({
+                    name: server.name,
+                    url: 'verity-internal://mcp-proxy',
+                    headers: [{ name: 'X-Verity-MCP-Binding', value: server.id }],
+                  })),
+                }),
           }),
           ...(ephemeral || deps.autoApprovePermission === undefined
             ? {}
@@ -1274,6 +1289,19 @@ export function buildRunnerConductorWiring(deps: {
             ? {}
             : {
                 mcpGatewayTokens: {
+                  issue: (turnId: string) =>
+                    deps.mcpGatewayTokens!.issue({
+                      projectId: gatewayToolContext.projectId,
+                      sessionId: gatewayToolContext.sessionId,
+                      turnId,
+                    }),
+                  release: (token: string) =>
+                    deps.mcpGatewayTokens!.release({
+                      projectId: gatewayToolContext.projectId,
+                      token,
+                    }),
+                },
+                mcpProxyTokens: {
                   issue: (turnId: string) =>
                     deps.mcpGatewayTokens!.issue({
                       projectId: gatewayToolContext.projectId,
@@ -4195,6 +4223,18 @@ export async function buildEmbeddedServer(
         // registry is the Server's half of the gateway bearer — the runner client
         // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
+        listProjectHttpMcpServers: async (projectId) => {
+          const [bindings, connections] = await Promise.all([
+            eventStore.listProjectMcpBindings(projectId),
+            eventStore.listHttpMcpConnections(),
+          ]);
+          const enabled = new Set(
+            bindings.filter((binding) => binding.enabled).map((binding) => binding.connectionId),
+          );
+          return connections
+            .filter((connection) => connection.enabled && enabled.has(connection.id))
+            .map((connection) => ({ id: connection.id, name: connection.name }));
+        },
         // ADR 0011 D2: a standing grant answers the prompt inside the tail, before
         // it can become an approval card or a push notification.
         autoApprovePermission: async (sessionId, request, channel) => {

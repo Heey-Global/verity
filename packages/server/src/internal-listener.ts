@@ -152,6 +152,8 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   // only so the 405 that says so comes from the gateway route rather than from a route table
   // that would answer 404 — a difference the MCP client transport acts on.
   'GET /internal/mcp',
+  'POST /internal/mcp-proxy',
+  'GET /internal/mcp-proxy',
 ]);
 
 /**
