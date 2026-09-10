@@ -33,9 +33,6 @@ const BADGES: Record<SessionStatus, SessionBadge> = {
 
 /** Map a session status to its badge descriptor for the session-list UI. */
 export function sessionBadge(status: SessionStatus): SessionBadge {
-  // The type-aware lint resolver can lose the Zod-inferred union after workspace installs;
-  // TypeScript still checks this exhaustive Record lookup at build time.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-return
   return BADGES[status];
 }
 

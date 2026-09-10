@@ -9,7 +9,11 @@ const outfile = 'features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs';
 const entryPoint = 'packages/session/dist/runner-worker-entry.js';
 const workerPackage = '@verity/session';
 // Replaced at bundle time, so nothing this resolves to ships in the artifact.
-const bundleAliases = { '@verity/store': resolve('scripts/runner-worker-store-shim.mjs') };
+const bundleAliases = {
+  '@verity/store': resolve('scripts/runner-worker-store-shim.mjs'),
+  // Match the dependency version the session workspace lockfile resolves in a clean install.
+  zod: resolve('packages/session/node_modules/zod'),
+};
 const check = process.argv.includes('--check');
 const buildTarget = check ? `${outfile}.check` : outfile;
 

@@ -51,7 +51,7 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
     }
     const connection = {
       id: randomUUID(),
-      name: body.name,
+      name: body.name.toLowerCase(),
       url,
       authorization: body.authorization ?? null,
       enabled: body.enabled ?? true,

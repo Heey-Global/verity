@@ -37,6 +37,8 @@ describe('HTTP MCP proxy address filtering', () => {
     '2001:db8::1',
     '2001::1',
     '2001:2::1',
+    '64:ff9b::7f00:1',
+    '2002:7f00:1::',
   ])('rejects non-public address %s', (address) => {
     expect(isForbiddenHttpMcpAddress(address)).toBe(true);
   });

@@ -8,7 +8,7 @@ import { constants as osConstants } from 'node:os';
 import { access, chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { TextDecoder } from 'node:util';
 import { setImmediate } from 'node:timers';
 
@@ -1465,6 +1465,15 @@ export function validateStartTurnRequest(request) {
       const url = optionalString(server.url, 'mcpServers.url', 4096);
       if (name === undefined || name === '' || url === undefined || url === '') {
         throw new Error('invalid mcpServers');
+      }
+      if (url !== 'verity-internal://mcp-proxy') {
+        try {
+          if (!['http:', 'https:'].includes(new URL(url).protocol)) {
+            throw new Error('invalid scheme');
+          }
+        } catch {
+          throw new Error('invalid mcpServers');
+        }
       }
       if (!Array.isArray(server.headers) || server.headers.length > 32) {
         throw new Error('invalid mcpServers');
