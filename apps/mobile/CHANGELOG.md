@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.0](https://github.com/Heey-Global/verity/compare/mobile-v1.25.0...mobile-v1.26.0) (2026-09-10)
+
+
+### Bug Fixes
+
+* **mobile:** clear stale pairing after reinstall ([9a39aba](https://github.com/Heey-Global/verity/commit/9a39aba9828dae48efd975bf935ecfb0176ac931))
+
 ## [1.25.0](https://github.com/Heey-Global/verity/compare/mobile-v1.24.0...mobile-v1.25.0) (2026-09-10)
 
 
