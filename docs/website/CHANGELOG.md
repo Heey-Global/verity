@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.2](https://github.com/Heey-Global/verity/compare/website-v1.3.1...website-v1.3.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **github:** return manifest callbacks through the app ([768e5c0](https://github.com/Heey-Global/verity/commit/768e5c0fe74110ce6de2c752be9d73c61d38f912))
+* **website:** harden GitHub App bridge ([9eb6f6c](https://github.com/Heey-Global/verity/commit/9eb6f6cefd3c32c0b9698ef7a4ac5168d00e0050))
+
 ## [1.3.1](https://github.com/Heey-Global/verity/compare/website-v1.3.0...website-v1.3.1) (2026-09-07)
 
 
