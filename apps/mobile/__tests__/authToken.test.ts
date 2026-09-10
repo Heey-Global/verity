@@ -1,5 +1,7 @@
 import {
   clearAuthToken,
+  clearLegacyAuthState,
+  clearStoredAuthState,
   copyAuthTokenToEndpoint,
   disableBiometricUnlock,
   enableBiometricUnlock,
@@ -196,6 +198,26 @@ describe('authToken', () => {
     await clearAuthToken(DOGFOOD);
 
     expect(await isBiometricUnlockEnabled(DOGFOOD)).toBe(true);
+  });
+
+  it('clears every Keychain artifact when a new installation forgets an endpoint', async () => {
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    await setAuthToken(DOGFOOD, 'dogfood-token', 'device-id');
+    expect(await enableBiometricUnlock(DOGFOOD, 'master-password')).toBe(true);
+
+    await clearStoredAuthState(DOGFOOD);
+
+    expect([...secureStore.keys()].filter((key) => key.startsWith('verity.authToken'))).toEqual([]);
+    expect(getAuthToken(DOGFOOD)).toBeNull();
+  });
+
+  it('clears the legacy global credential without a retained server profile', async () => {
+    secureStore.set('verity.authToken', 'legacy-token');
+
+    await clearLegacyAuthState();
+
+    expect(secureStore.has('verity.authToken')).toBe(false);
   });
 
   it('does not load the token after biometric unlock is disabled', async () => {

@@ -108,6 +108,13 @@ export function getServerProfile(): VerityServerProfile | null {
   return currentProfile;
 }
 
+/** Remove the paired identity when the app container proves this is a fresh
+ * installation. SecureStore survives an iOS uninstall, unlike AsyncStorage. */
+export async function clearServerProfile(): Promise<void> {
+  await SecureStore.deleteItemAsync(PROFILE_KEY);
+  currentProfile = null;
+}
+
 export async function saveServerProfile(profile: VerityServerProfile): Promise<void> {
   const validated = validateServerProfile(profile);
   await SecureStore.setItemAsync(PROFILE_KEY, JSON.stringify(validated), {

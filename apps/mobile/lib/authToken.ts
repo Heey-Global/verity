@@ -363,3 +363,29 @@ export async function clearAuthToken(baseUrl: string | null): Promise<void> {
     // Best effort — the in-memory token is already cleared.
   }
 }
+
+/** Remove every credential and preference associated with a server endpoint.
+ * Unlike the rejected-bearer path above, this establishes a new-installation
+ * boundary and must also forget biometric and master-password state. */
+export async function clearStoredAuthState(baseUrl: string): Promise<void> {
+  const key = await tokenKey(baseUrl);
+  const idKey = await tokenIdKey(baseUrl);
+  const preferenceKey = await biometricPreferenceKey(baseUrl);
+  const passwordKey = await masterPasswordKey(baseUrl);
+  if (baseUrl === currentTokenBaseUrl) {
+    currentTokenBaseUrl = null;
+    currentToken = null;
+    currentTokenId = null;
+  }
+  for (const storedKey of [key, idKey, preferenceKey, passwordKey, LEGACY_TOKEN_KEY]) {
+    if (storedKey !== null) await SecureStore.deleteItemAsync(storedKey);
+  }
+}
+
+/** Remove the pre-URL-scoping credential left by older releases. */
+export async function clearLegacyAuthState(): Promise<void> {
+  currentTokenBaseUrl = null;
+  currentToken = null;
+  currentTokenId = null;
+  await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
+}

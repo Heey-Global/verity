@@ -4,8 +4,7 @@ import * as SecureStore from 'expo-secure-store';
 
 import { setVerityBaseUrl } from './client';
 import { deviceLabel } from './deviceLabel';
-import { copyAuthTokenToEndpoint } from './authToken';
-import { setAuthToken } from './authToken';
+import { clearStoredAuthState, copyAuthTokenToEndpoint, setAuthToken } from './authToken';
 import type { VerityPairingPayload } from './pairing';
 import { createPinnedFetch, verifyPairedIdentity } from './pinnedTransport';
 import {
@@ -108,6 +107,7 @@ export async function establishPairing(
       // Enrollment consumes the invitation. Persist its token and the already
       // verified identity before the best-effort status read, but never mutate
       // local routing for a rejected/expired invitation.
+      await clearStoredAuthState(profile.activeUrl);
       const tokenPersisted = await setAuthToken(
         profile.activeUrl,
         enrolled.token,
@@ -143,6 +143,9 @@ export async function establishPairing(
   // A failed status request must not leave a half-selected endpoint or a usable
   // bootstrap capability behind.
   const status = await client.fetchOnboardingStatus();
+  // A prior installation can leave URL-scoped Keychain entries even when its
+  // profile was unreadable. Never adopt an endpoint while those can resurface.
+  await clearStoredAuthState(profile.activeUrl);
   await saveServerProfile(profile);
   await setVerityBaseUrl(profile.activeUrl);
   return status;
@@ -198,4 +201,12 @@ export function clearPairingBootstrap(serverId?: string, token?: string): void {
   if (serverId !== undefined && bootstrap?.serverId !== serverId) return;
   if (token !== undefined && bootstrap?.token !== token) return;
   bootstrap = null;
+}
+
+/** Clear retry state that may survive an iOS uninstall in SecureStore. */
+export async function clearPairingSession(): Promise<void> {
+  bootstrap = null;
+  enrollment = null;
+  enrollmentAttempt = null;
+  await SecureStore.deleteItemAsync(ENROLLMENT_ATTEMPT_KEY);
 }

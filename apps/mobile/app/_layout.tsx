@@ -30,6 +30,7 @@ import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { hydrateVerityBaseUrl } from '../lib/client';
 import { TASKS_ENABLED } from '../lib/featureFlags';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
+import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
 
@@ -69,7 +70,14 @@ export default function RootLayout() {
     void (async () => {
       const update = await applyStartupUpdate();
       if (update === 'reloading') return;
-      await hydrateVerityBaseUrl().catch(() => undefined);
+      const installationReady = await prepareInstallationState().then(
+        () => true,
+        () => false,
+      );
+      // If the reinstall cleanup fails, stay unpaired for this launch and retry
+      // next time. Hydrating the surviving Keychain profile would reconnect to
+      // the old server; keeping the app behind onboarding is the safe fallback.
+      if (installationReady) await hydrateVerityBaseUrl().catch(() => undefined);
       if (active) setHydrated(true);
     })();
     return () => {
