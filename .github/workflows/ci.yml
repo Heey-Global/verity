@@ -495,10 +495,6 @@ jobs:
                   test=true
                   installer=true
                   ;;
-                docs/website/site/github-app.html|docs/website/site/github-app.js|docs/website/site/github-app.test.mjs)
-                  lint=true
-                  test=true
-                  ;;
                 # Same reason for `test`: verity-git-guard.test.ts executes
                 # `agent-seed/bin/git`, and the drift job compares the two copies
                 # rather than reading either one's behaviour.

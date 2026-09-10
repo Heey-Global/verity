@@ -84,16 +84,19 @@ export function GithubConnectPanel({
       const owner = organization.trim();
       if (owner.length > 0) startUrl += `&owner=${encodeURIComponent(owner)}`;
       try {
-        const nativeCallback = Platform.OS === 'ios';
+        // GitHub's organization-owned App endpoint contains the organization
+        // login in its path. Keep that case on the server-rendered flow so the
+        // public bridge can retain a single, constant form destination.
+        const nativeCallback = Platform.OS === 'ios' && owner.length === 0;
         const prepared = await client.prepareGithubManifest(
           base,
           owner || undefined,
           returnTo,
           nativeCallback,
         );
-        if (nativeCallback && prepared.action !== undefined && prepared.manifest !== undefined) {
+        if (nativeCallback && prepared.state !== undefined && prepared.manifest !== undefined) {
           const payload = encodeURIComponent(
-            JSON.stringify({ action: prepared.action, manifest: prepared.manifest }),
+            JSON.stringify({ state: prepared.state, manifest: prepared.manifest }),
           );
           startUrl = `https://verity.build/github/app/#${payload}`;
         } else if (prepared.startToken !== undefined) {

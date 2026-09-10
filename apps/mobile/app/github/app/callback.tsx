@@ -19,42 +19,54 @@ export default function GithubManifestCallback() {
     returnTo?: string;
   }>();
   const { theme } = useUnistyles();
-  const started = useRef(false);
+  const handledCallbacks = useRef(new Set<string>());
   const [error, setError] = useState<string | null>(null);
+  const [retryUrl, setRetryUrl] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    const client = createVerityClient();
     const phase = one(params.phase);
     const state = one(params.state);
+    const phaseValue = phase === 'created' ? one(params.code) : one(params.installation_id);
+    const callbackKey = `${phase}:${state}:${phaseValue}`;
+    if (handledCallbacks.current.has(callbackKey)) return;
+    setError(null);
+    setRetryUrl(null);
+    const client = createVerityClient();
     const returnTo =
       one(params.returnTo) === '/onboarding/github' ? '/onboarding/github' : '/github-connect';
-    if (client === null || state.length === 0) {
+    if (client === null || state.length === 0 || phaseValue.length === 0) {
       setError('The GitHub callback is incomplete. Return to Verity and try again.');
       return;
     }
+    handledCallbacks.current.add(callbackKey);
 
     const complete =
       phase === 'created'
-        ? client.completeGithubManifest(one(params.code), state).then((installUrl) =>
+        ? client.completeGithubManifest(phaseValue, state).then(async (installUrl) => {
             // The second GitHub step remains in the regular browser session.
-            Linking.openURL(installUrl),
-          )
+            try {
+              await Linking.openURL(installUrl);
+            } catch {
+              setRetryUrl(installUrl);
+              setError('GitHub is ready. Try opening the installation page again.');
+            }
+          })
         : phase === 'installed'
           ? client
-              .completeGithubManifestInstallation(one(params.installation_id), state)
+              .completeGithubManifestInstallation(phaseValue, state)
               .then(() => router.replace(returnTo))
           : Promise.reject(new Error('unknown callback phase'));
 
     void complete.catch((caught) => {
+      handledCallbacks.current.delete(callbackKey);
       setError(
         caught instanceof VerityApiError
           ? caught.message
           : 'GitHub authorization could not be completed. Return to Verity and try again.',
       );
     });
-  }, [params]);
+  }, [params, retry]);
 
   return (
     <View style={styles.page}>
@@ -70,8 +82,15 @@ export default function GithubManifestCallback() {
           <Text style={styles.message} accessibilityRole="alert">
             {error}
           </Text>
-          <Pressable style={styles.button} onPress={() => router.replace('/github-connect')}>
-            <Text style={styles.buttonLabel}>Return to GitHub settings</Text>
+          <Pressable
+            style={styles.button}
+            onPress={() =>
+              retryUrl === null ? setRetry((value) => value + 1) : void Linking.openURL(retryUrl)
+            }
+          >
+            <Text style={styles.buttonLabel}>
+              {retryUrl === null ? 'Try again' : 'Open GitHub'}
+            </Text>
           </Pressable>
         </>
       )}

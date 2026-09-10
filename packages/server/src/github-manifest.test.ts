@@ -720,6 +720,22 @@ describe('manifest /start one-time-token auth (gate armed)', () => {
 });
 
 describe('native manifest callbacks', () => {
+  it('keeps organization-owned Apps on the server-rendered browser flow', async () => {
+    const cipher = createSealableSecretCipher();
+    const { app, token } = await buildGated(cipher);
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/github/app/manifest/prepare',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { baseUrl: 'https://server.test', owner: 'acme', native: true },
+      });
+      expect(response.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('moves the GitHub code and installation id through authenticated API calls', async () => {
     const cipher = createSealableSecretCipher();
     const convert: ManifestConvert = () =>
@@ -741,11 +757,11 @@ describe('native manifest callbacks', () => {
       expect(prep.statusCode).toBe(200);
       expect(JSON.stringify(prep.json())).not.toContain('217.154.18.187');
       expect(prep.json().startToken).toBeUndefined();
-      expect(prep.json().action).toMatch(/^https:\/\/github\.com\/settings\/apps\/new\?state=/);
+      expect(prep.json().state).toMatch(/^[A-Za-z0-9_-]+$/);
       expect(prep.json().manifest.redirect_url).toContain(
         'https://verity.build/github/app/callback',
       );
-      const state1 = new URL(prep.json().action as string).searchParams.get('state') ?? '';
+      const state1 = prep.json().state as string;
 
       const created = await app.inject({
         method: 'POST',
@@ -784,7 +800,7 @@ describe('native manifest callbacks', () => {
         headers: { authorization: `Bearer ${token}` },
         payload: { baseUrl: 'https://server.test', native: true },
       });
-      const state = new URL(prep.json().action as string).searchParams.get('state') ?? '';
+      const state = prep.json().state as string;
       const unauthenticated = await app.inject({
         method: 'POST',
         url: '/github/app/manifest/complete',

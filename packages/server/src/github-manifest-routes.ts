@@ -49,6 +49,14 @@ function githubAppConfiguredFromSettings(settings: VeritySettingsRecord | undefi
   );
 }
 
+function githubAppCredentialsPresent(settings: VeritySettingsRecord | undefined): boolean {
+  return configured(settings?.githubAppId) || configured(settings?.githubAppPrivateKey);
+}
+
+function githubAppPartiallyConfigured(settings: VeritySettingsRecord | undefined): boolean {
+  return githubAppCredentialsPresent(settings) && !githubAppConfiguredFromSettings(settings);
+}
+
 export interface GitHubManifestRouteDeps {
   eventStore: EventStore;
   authRegistry?: AuthTokenRegistry | undefined;
@@ -87,6 +95,8 @@ export function registerGitHubManifestRoutes(
     ttlMs: 10 * 60 * 1000,
   });
   const manifestStartBases = new Map<string, string>();
+  const nativeInstallUrls = new Map<string, string>();
+  const completedNativeInstallations = new Set<string>();
 
   // Browser-facing GitHub onboarding pages. Text is caller-supplied but always a
   // fixed, non-secret string chosen at the call site (never GitHub body / PEM).
@@ -131,28 +141,53 @@ export function registerGitHubManifestRoutes(
   // `POST /github/app/manifest/prepare` — authenticated (NOT in the pre-auth
   // allowlist). Native iOS callers receive a state-bound Universal-Link manifest;
   // legacy and Android callers receive only the one-time token for `/start`.
-  app.post('/github/app/manifest/prepare', (request, reply) => {
+  app.post('/github/app/manifest/prepare', async (request, reply) => {
     const body = request.body as
-      { baseUrl?: unknown; owner?: unknown; returnTo?: unknown; native?: unknown } | undefined;
+      | {
+          baseUrl?: unknown;
+          owner?: unknown;
+          returnTo?: unknown;
+          native?: unknown;
+          restartPartial?: unknown;
+        }
+      | undefined;
     const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl : '';
     if (!isHttpUrl(baseUrl)) {
       reply.code(400).send({ error: 'a valid http(s) baseUrl is required' });
       return;
+    }
+    const settings = await manifestRouteStore(deps.eventStore).getVeritySettingsRaw();
+    if (githubAppPartiallyConfigured(settings)) {
+      if (body?.restartPartial !== true) {
+        reply.code(409).send({ error: 'GitHub App setup is already in progress' });
+        return;
+      }
+      if (deps.secretCipher?.isSealed() === true) {
+        reply.code(503).send({ error: 'Verity is locked' });
+        return;
+      }
+      await manifestRouteStore(deps.eventStore).updateVeritySettings({
+        githubAppId: null,
+        githubAppInstallationId: null,
+        githubAppPrivateKey: null,
+      });
+      manifestState.clear();
+      nativeInstallUrls.clear();
+      completedNativeInstallations.clear();
     }
     if (body?.native !== true) {
       const startToken = manifestStartTokens.issueState();
       manifestStartBases.set(startToken, baseUrl);
       return { startToken };
     }
+    if (typeof body.owner === 'string' && body.owner.length > 0) {
+      reply.code(400).send({ error: 'organization-owned Apps require the browser flow' });
+      return;
+    }
     const state = manifestState.issueState();
-    const owner = typeof body?.owner === 'string' && body.owner.length > 0 ? body.owner : null;
     const returnTo =
       body?.returnTo === '/onboarding/github' ? '/onboarding/github' : '/github-connect';
-    const action =
-      owner === null
-        ? `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`
-        : `https://github.com/organizations/${encodeURIComponent(owner)}/settings/apps/new?state=${encodeURIComponent(state)}`;
-    return { action, manifest: buildMobileManifest(returnTo) };
+    return { state, manifest: buildMobileManifest(returnTo) };
   });
 
   // `GET /github/app/manifest/start` — issue a CSRF state and render an auto-
@@ -264,9 +299,7 @@ export function registerGitHubManifestRoutes(
     // explicit, authenticated disconnect first. Raw (non-decrypting) read → works
     // while sealed too. Legacy env-configured Apps also count as connected.
     if (
-      githubAppConfiguredFromSettings(
-        await manifestRouteStore(deps.eventStore).getVeritySettingsRaw(),
-      )
+      githubAppCredentialsPresent(await manifestRouteStore(deps.eventStore).getVeritySettingsRaw())
     ) {
       reply.code(409).type('text/html; charset=utf-8');
       return manifestPage({
@@ -348,14 +381,15 @@ export function registerGitHubManifestRoutes(
     const code = typeof body?.code === 'string' ? body.code : '';
     const state = typeof body?.state === 'string' ? body.state : '';
 
-    if (state.length === 0 || code.length === 0 || !manifestState.consumeState(state)) {
+    const previousInstallUrl = nativeInstallUrls.get(state);
+    if (previousInstallUrl !== undefined) return { installUrl: previousInstallUrl };
+
+    if (state.length === 0 || code.length === 0 || !manifestState.hasState(state)) {
       reply.code(400).send({ error: 'the GitHub App onboarding link is invalid or expired' });
       return;
     }
     if (
-      githubAppConfiguredFromSettings(
-        await manifestRouteStore(deps.eventStore).getVeritySettingsRaw(),
-      )
+      githubAppCredentialsPresent(await manifestRouteStore(deps.eventStore).getVeritySettingsRaw())
     ) {
       reply.code(409).send({ error: 'a GitHub App is already connected' });
       return;
@@ -376,12 +410,19 @@ export function registerGitHubManifestRoutes(
       reply.code(502).send({ error: 'GitHub could not create the App from the manifest' });
       return;
     }
+    // Keep retryable preconditions and conversion failures from burning the
+    // callback. Consume only once credentials are ready to be persisted.
+    if (!manifestState.consumeState(state)) {
+      reply.code(400).send({ error: 'the GitHub App onboarding link is invalid or expired' });
+      return;
+    }
     try {
       await manifestRouteStore(deps.eventStore).updateVeritySettings({
         githubAppId: converted.appId,
         githubAppPrivateKey: converted.privateKey,
       });
     } catch (err) {
+      manifestState.restoreState(state);
       if (err instanceof SealedError) {
         reply.code(503).send({ error: 'Verity is locked' });
         return;
@@ -390,11 +431,13 @@ export function registerGitHubManifestRoutes(
     }
 
     const installState = manifestState.issueState();
-    return {
-      installUrl:
-        `https://github.com/apps/${encodeURIComponent(converted.slug)}/installations/new` +
-        `?state=${encodeURIComponent(installState)}`,
-    };
+    const installUrl =
+      `https://github.com/apps/${encodeURIComponent(converted.slug)}/installations/new` +
+      `?state=${encodeURIComponent(installState)}`;
+    nativeInstallUrls.set(state, installUrl);
+    if (nativeInstallUrls.size > 256)
+      nativeInstallUrls.delete(nativeInstallUrls.keys().next().value!);
+    return { installUrl };
   });
 
   // `GET /github/app/manifest/installed` — GitHub's post-install redirect
@@ -499,11 +542,13 @@ export function registerGitHubManifestRoutes(
         ? body.installationId
         : '';
 
+    if (completedNativeInstallations.has(state)) return { connected: true };
+
     if (deps.secretCipher?.isSealed() === true) {
       reply.code(503).send({ error: 'Verity is locked' });
       return;
     }
-    if (state.length === 0 || installationId.length === 0 || !manifestState.consumeState(state)) {
+    if (state.length === 0 || installationId.length === 0) {
       reply.code(400).send({ error: 'the GitHub App installation link is invalid or expired' });
       return;
     }
@@ -515,16 +560,25 @@ export function registerGitHubManifestRoutes(
       reply.code(409).send({ error: 'a GitHub App is already connected' });
       return;
     }
+    if (!manifestState.consumeState(state)) {
+      reply.code(400).send({ error: 'the GitHub App installation link is invalid or expired' });
+      return;
+    }
     try {
       await manifestRouteStore(deps.eventStore).updateVeritySettings({
         githubAppInstallationId: installationId,
       });
     } catch (err) {
+      manifestState.restoreState(state);
       if (err instanceof SealedError) {
         reply.code(503).send({ error: 'Verity is locked' });
         return;
       }
       throw err;
+    }
+    completedNativeInstallations.add(state);
+    if (completedNativeInstallations.size > 256) {
+      completedNativeInstallations.delete(completedNativeInstallations.values().next().value!);
     }
     return { connected: true };
   });

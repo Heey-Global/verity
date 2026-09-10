@@ -22,7 +22,8 @@
       <img src="/assets/verity-mark.png" alt="" />
       <h1>Continue to GitHub</h1>
       <p id="status">Checking the one-time request from the Verity app…</p>
-      <form id="github-form" method="post" hidden>
+      <form id="github-form" action="https://github.com/settings/apps/new" method="post" hidden>
+        <input id="state" name="state" type="hidden" />
         <input id="manifest" name="manifest" type="hidden" />
         <button type="submit">Continue to GitHub</button>
       </form>

@@ -24,16 +24,24 @@ const manifest = {
 
 function fragment(overrides = {}) {
   return `#${encodeURIComponent(JSON.stringify({
-    action: 'https://github.com/settings/apps/new?state=one-time-state', manifest, ...overrides,
+    state: 'one-time-state-value', manifest, ...overrides,
   }))}`;
 }
 
-test('accepts the fixed GitHub action and native callback manifest', () => {
+test('accepts an opaque state and native callback manifest', () => {
   assert.deepEqual(parseLaunchFragment(fragment()).manifest, manifest);
 });
 
-test('rejects a non-GitHub form destination', () => {
-  assert.throws(() => parseLaunchFragment(fragment({ action: 'https://example.com/collect' })));
+test('rejects malformed or oversized state', () => {
+  assert.throws(() => parseLaunchFragment(fragment({ state: 'bad state' })));
+  assert.throws(() => parseLaunchFragment(fragment({ state: 'a'.repeat(257) })));
+});
+
+test('the form destination is constant and never assigned from fragment data', () => {
+  const html = readFileSync(join(here, 'github-app.html'), 'utf8');
+  const script = readFileSync(join(here, 'github-app.js'), 'utf8');
+  assert.match(html, /action="https:\/\/github\.com\/settings\/apps\/new"/);
+  assert.doesNotMatch(script, /\.action\s*=/);
 });
 
 test('rejects a manifest with broader permissions or a web callback', () => {
@@ -42,6 +50,9 @@ test('rejects a manifest with broader permissions or a web callback', () => {
   } })));
   assert.throws(() => parseLaunchFragment(fragment({ manifest: {
     ...manifest, redirect_url: 'https://example.com/collect',
+  } })));
+  assert.throws(() => parseLaunchFragment(fragment({ manifest: {
+    ...manifest, callback_urls: ['https://example.com/collect'],
   } })));
 });
 

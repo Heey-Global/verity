@@ -932,7 +932,7 @@ export type GithubAppValidateResult = z.infer<typeof githubAppValidateSchema>;
  * that still use the browser-facing server page. */
 const manifestPrepareSchema = z.object({
   startToken: z.string().min(1).optional(),
-  action: z.string().url().optional(),
+  state: z.string().min(1).optional(),
   manifest: z.record(z.string(), z.unknown()).optional(),
 });
 export type GithubManifestPreparation = z.infer<typeof manifestPrepareSchema>;
@@ -2181,7 +2181,14 @@ export class VerityClient {
     const res = await this.request('/github/app/manifest/prepare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ baseUrl, ...(owner ? { owner } : {}), returnTo, native }),
+      body: JSON.stringify({
+        baseUrl,
+        ...(owner ? { owner } : {}),
+        returnTo,
+        native,
+        // Pressing Connect explicitly abandons an interrupted partial setup.
+        restartPartial: true,
+      }),
     });
     return manifestPrepareSchema.parse(await res.json());
   }

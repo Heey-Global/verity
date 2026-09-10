@@ -107,7 +107,10 @@ export function escapeHtml(s: string): string {
  *  failure direction. */
 export interface ManifestStateStore {
   issueState(): string;
+  hasState(state: string): boolean;
   consumeState(state: string): boolean;
+  restoreState(state: string): void;
+  clear(): void;
 }
 
 export interface ManifestStateStoreOptions {
@@ -140,6 +143,10 @@ export function createManifestStateStore(opts: ManifestStateStoreOptions = {}): 
       entries.set(token, { createdAt: issuedAt });
       return token;
     },
+    hasState(state: string): boolean {
+      const entry = entries.get(state);
+      return entry !== undefined && now() - entry.createdAt <= ttlMs;
+    },
     consumeState(state: string): boolean {
       const entry = entries.get(state);
       if (entry === undefined) return false;
@@ -147,6 +154,12 @@ export function createManifestStateStore(opts: ManifestStateStoreOptions = {}): 
       // probed repeatedly, and a valid token can't be replayed.
       entries.delete(state);
       return now() - entry.createdAt <= ttlMs;
+    },
+    restoreState(state: string): void {
+      entries.set(state, { createdAt: now() });
+    },
+    clear(): void {
+      entries.clear();
     },
   };
 }

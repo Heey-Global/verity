@@ -2801,6 +2801,7 @@ describe('VerityClient GitHub onboarding hardening', () => {
         baseUrl: 'https://verity.example',
         returnTo: '/github-connect',
         native: false,
+        restartPartial: true,
       }),
     );
   });

@@ -468,7 +468,7 @@ describe('onboarding github one-page setup', () => {
   it('opens the public fragment-only bridge instead of the paired server', async () => {
     const prepareGithubManifest = jest.fn().mockResolvedValue({
       startToken: 'legacy-token',
-      action: 'https://github.com/settings/apps/new?state=state-1',
+      state: 'state-1',
       manifest: { name: 'Verity-a1b2c3d4' },
     });
     mockCreateVerityClient.mockReturnValue(
@@ -485,7 +485,7 @@ describe('onboarding github one-page setup', () => {
     expect(opened).toMatch(/^https:\/\/verity\.build\/github\/app\/#/);
     expect(opened).not.toContain('verity.example:8082');
     expect(JSON.parse(decodeURIComponent(new URL(opened).hash.slice(1)))).toEqual({
-      action: 'https://github.com/settings/apps/new?state=state-1',
+      state: 'state-1',
       manifest: { name: 'Verity-a1b2c3d4' },
     });
     expect(prepareGithubManifest).toHaveBeenCalledWith(
@@ -573,6 +573,33 @@ describe('native GitHub manifest callback', () => {
     mockCreateVerityClient.mockReturnValue(fakeClient({ completeGithubManifestInstallation }));
 
     render(<GithubManifestCallback />);
+
+    await waitFor(() =>
+      expect(completeGithubManifestInstallation).toHaveBeenCalledWith('installation-1', 'state-2'),
+    );
+    expect(mockReplace).toHaveBeenCalledWith('/onboarding/github');
+  });
+
+  it('handles installation when the callback parameters change on the mounted route', async () => {
+    mockLocalSearchParams = { phase: 'created', code: 'code-1', state: 'state-1' };
+    const completeGithubManifest = jest
+      .fn()
+      .mockResolvedValue('https://github.com/apps/verity/installations/new?state=state-2');
+    const completeGithubManifestInstallation = jest.fn().mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({ completeGithubManifest, completeGithubManifestInstallation }),
+    );
+
+    const view = render(<GithubManifestCallback />);
+    await waitFor(() => expect(completeGithubManifest).toHaveBeenCalledWith('code-1', 'state-1'));
+
+    mockLocalSearchParams = {
+      phase: 'installed',
+      state: 'state-2',
+      installation_id: 'installation-1',
+      returnTo: '/onboarding/github',
+    };
+    view.rerender(<GithubManifestCallback />);
 
     await waitFor(() =>
       expect(completeGithubManifestInstallation).toHaveBeenCalledWith('installation-1', 'state-2'),

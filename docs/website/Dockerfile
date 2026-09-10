@@ -13,14 +13,17 @@ COPY --chown=101:101 docs/website/site/github-app.html /usr/share/nginx/html/git
 COPY --chown=101:101 docs/website/site/github-app.js /usr/share/nginx/html/github/app/github-app.js
 COPY --chown=101:101 docs/website/site/github-callback.html /usr/share/nginx/html/github/app/callback.html
 COPY --chown=101:101 docs/website/site/apple-app-site-association.json /tmp/apple-app-site-association.json
+USER root
 RUN --mount=type=secret,id=apple_team_id,required=false \
-    APPLE_TEAM_ID="$(cat /run/secrets/apple_team_id 2>/dev/null || printf TEAMID)" \
-    && case "$APPLE_TEAM_ID" in (*[!A-Z0-9]*|'') exit 1;; esac \
-    && if [ "$REQUIRE_APPLE_ASSOCIATION" = true ] && [ "$APPLE_TEAM_ID" = TEAMID ]; then exit 1; fi \
+    APPLE_TEAM_ID="$(cat /run/secrets/apple_team_id 2>/dev/null || printf TEAMID0000)" \
+    && case "$APPLE_TEAM_ID" in (??????????) :;; (*) exit 1;; esac \
+    && case "$APPLE_TEAM_ID" in (*[!A-Z0-9]*) exit 1;; esac \
+    && if [ "$REQUIRE_APPLE_ASSOCIATION" = true ] && [ "$APPLE_TEAM_ID" = TEAMID0000 ]; then exit 1; fi \
     && mkdir -p /usr/share/nginx/html/.well-known \
     && sed "s/__APPLE_TEAM_ID__/$APPLE_TEAM_ID/g" /tmp/apple-app-site-association.json \
       > /usr/share/nginx/html/.well-known/apple-app-site-association \
     && rm /tmp/apple-app-site-association.json
+USER 101:101
 COPY --chown=101:101 docs/website/site/assets/hero-product-verity-v5.png /usr/share/nginx/html/assets/hero-product-verity-v5.png
 COPY --chown=101:101 docs/website/site/assets/verity-mark.png /usr/share/nginx/html/assets/verity-mark.png
 COPY --chown=101:101 docs/website/site/assets/verity-favicon.png /usr/share/nginx/html/assets/verity-favicon.png
