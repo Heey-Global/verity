@@ -68,6 +68,22 @@ export function buildManifest(base: string): Record<string, unknown> {
   };
 }
 
+/** Manifest used by the native app flow. GitHub returns both browser round trips
+ * through the website's claimed Universal Link directly to the installed app;
+ * the app forwards the short-lived values to its paired server over the
+ * authenticated, certificate-pinned transport. */
+export function buildMobileManifest(
+  returnTo: '/github-connect' | '/onboarding/github',
+): Record<string, unknown> {
+  const manifest = buildManifest('https://verity.build');
+  const encodedReturn = encodeURIComponent(returnTo);
+  return {
+    ...manifest,
+    redirect_url: `https://verity.build/github/app/callback?phase=created&returnTo=${encodedReturn}`,
+    setup_url: `https://verity.build/github/app/callback?phase=installed&returnTo=${encodedReturn}`,
+  };
+}
+
 /** Escape a string for safe interpolation into HTML text or a single-quoted
  *  attribute value. Covers the five characters that can break out of either an
  *  attribute or an element body — the manifest JSON is placed inside a
@@ -91,7 +107,10 @@ export function escapeHtml(s: string): string {
  *  failure direction. */
 export interface ManifestStateStore {
   issueState(): string;
+  hasState(state: string): boolean;
   consumeState(state: string): boolean;
+  restoreState(state: string): void;
+  clear(): void;
 }
 
 export interface ManifestStateStoreOptions {
@@ -124,6 +143,10 @@ export function createManifestStateStore(opts: ManifestStateStoreOptions = {}): 
       entries.set(token, { createdAt: issuedAt });
       return token;
     },
+    hasState(state: string): boolean {
+      const entry = entries.get(state);
+      return entry !== undefined && now() - entry.createdAt <= ttlMs;
+    },
     consumeState(state: string): boolean {
       const entry = entries.get(state);
       if (entry === undefined) return false;
@@ -131,6 +154,12 @@ export function createManifestStateStore(opts: ManifestStateStoreOptions = {}): 
       // probed repeatedly, and a valid token can't be replayed.
       entries.delete(state);
       return now() - entry.createdAt <= ttlMs;
+    },
+    restoreState(state: string): void {
+      entries.set(state, { createdAt: now() });
+    },
+    clear(): void {
+      entries.clear();
     },
   };
 }

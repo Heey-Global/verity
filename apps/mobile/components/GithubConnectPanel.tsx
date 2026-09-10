@@ -4,7 +4,15 @@
 // the connected-state UI (commit author + verified commits).
 import { VerityApiError, type VerityClient, type OnboardingStatus } from '@verity/mobile';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Linking,
+  Platform,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getVerityBaseUrl } from '../lib/client';
@@ -16,9 +24,11 @@ type Phase = { kind: 'idle' } | { kind: 'waiting' } | { kind: 'error'; message: 
 export function GithubConnectPanel({
   client,
   onConnected,
+  returnTo = '/github-connect',
 }: {
   client: VerityClient;
   onConnected: (status?: OnboardingStatus) => void;
+  returnTo?: '/github-connect' | '/onboarding/github';
 }) {
   const { theme } = useUnistyles();
   const [organization, setOrganization] = useState('');
@@ -74,8 +84,26 @@ export function GithubConnectPanel({
       const owner = organization.trim();
       if (owner.length > 0) startUrl += `&owner=${encodeURIComponent(owner)}`;
       try {
-        const token = await client.prepareGithubManifest(base);
-        startUrl += `&ott=${encodeURIComponent(token)}`;
+        // GitHub's organization-owned App endpoint contains the organization
+        // login in its path. Keep that case on the server-rendered flow so the
+        // public bridge can retain a single, constant form destination.
+        const nativeCallback = Platform.OS === 'ios' && owner.length === 0;
+        const prepared = await client.prepareGithubManifest(
+          base,
+          owner || undefined,
+          returnTo,
+          nativeCallback,
+        );
+        if (nativeCallback && prepared.state !== undefined && prepared.manifest !== undefined) {
+          const payload = encodeURIComponent(
+            JSON.stringify({ state: prepared.state, manifest: prepared.manifest }),
+          );
+          startUrl = `https://verity.build/github/app/#${payload}`;
+        } else if (prepared.startToken !== undefined) {
+          startUrl += `&ott=${encodeURIComponent(prepared.startToken)}`;
+        } else {
+          throw new Error('the server returned no compatible GitHub manifest flow');
+        }
       } catch (caught) {
         // Older servers predate the single-use token. Only their 404 is safe to
         // fall through; all other failures would open a dead authorization page.
