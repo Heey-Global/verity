@@ -604,6 +604,15 @@ describe('native iOS compile gate', () => {
     expect(commands).toContain('App Store Connect check failed transiently');
     expect(commands).toContain('labels/autorelease%3A%20pending');
     expect(commands).toContain('labels[]=autorelease: tagged');
+    // GitHub's search grammar tokenizes the conventional-commit punctuation in
+    // the exact release title and can return no result for an existing PR. The
+    // Pull the canonical REST list and filter it locally. GitHub's search grammar
+    // tokenizes the conventional-commit punctuation and misses this exact title.
+    expect(commands).toContain('gh api --paginate');
+    expect(commands).toContain('pulls?state=closed&per_page=100');
+    expect(commands).toContain("awk 'NF { count++ } END { print count + 0 }'");
+    expect(commands).not.toContain('mapfile');
+    expect(commands).not.toContain('--search "chore(main): release mobile');
     expect(commands.indexOf('labels[]=autorelease: tagged')).toBeLessThan(
       commands.indexOf('labels/autorelease%3A%20pending'),
     );
