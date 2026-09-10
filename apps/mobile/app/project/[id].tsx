@@ -1093,7 +1093,7 @@ function AgentLoopsSection({
   const loadGeneration = useRef(0);
   const pendingLoopMutations = useRef(new Map<string, { loop: AgentLoop; generation: number }>());
 
-  const load = useCallback(async (): Promise<void> => {
+  const load = useCallback(() => {
     const generation = ++loadGeneration.current;
     setLoading(true);
     setError(undefined);
@@ -2988,7 +2988,7 @@ function ProjectMcpBindingsSection({
   const [bindings, setBindings] = useState<ProjectMcpBinding[]>([]);
   const [pendingConnectionId, setPendingConnectionId] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
-  const load = useCallback(() => {
+  const load = useCallback(async (): Promise<void> => {
     if (
       typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function' ||
       typeof (client as Partial<VerityClient>).listProjectMcpBindings !== 'function'

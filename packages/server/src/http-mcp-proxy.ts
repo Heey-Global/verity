@@ -13,6 +13,8 @@ import type { McpGatewayCaller } from './mcp-gateway-tokens.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_STREAM_BYTES = 16 * 1024 * 1024;
+const MAX_EVENT_STREAM_BYTES = 256 * 1024 * 1024;
+const MAX_EVENT_STREAM_LIFETIME_MS = 8 * 60 * 60_000;
 const MCP_TIMEOUT_MS = 60_000;
 const BINDING_HEADER = 'x-verity-mcp-binding';
 const RESPONSE_HEADERS = ['content-type', 'mcp-session-id'] as const;
@@ -51,7 +53,7 @@ function forbiddenIpv4(address: string): boolean {
   );
 }
 
-function forbiddenAddress(address: string): boolean {
+export function isForbiddenHttpMcpAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return forbiddenIpv4(address);
   if (family !== 6) return true;
@@ -145,7 +147,7 @@ async function forward(
             if (
               error !== null ||
               addresses.length === 0 ||
-              addresses.some((a) => forbiddenAddress(a.address))
+              addresses.some((a) => isForbiddenHttpMcpAddress(a.address))
             ) {
               callback(new Error('HTTP MCP upstream resolution rejected'), []);
               return;
@@ -230,22 +232,28 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       reply.hijack();
       hijacked = true;
       reply.raw.writeHead(response.status, response.headers);
-      if (response.eventStream) {
-        await pipeline(response.body, reply.raw);
-      } else {
-        let streamed = 0;
-        const limiter = new Transform({
-          transform(chunk: Buffer, _encoding, callback) {
-            streamed += chunk.byteLength;
-            callback(
-              streamed > MAX_STREAM_BYTES
-                ? new Error('HTTP MCP upstream response too large')
-                : null,
-              chunk,
-            );
-          },
-        });
+      const maxBytes = response.eventStream ? MAX_EVENT_STREAM_BYTES : MAX_STREAM_BYTES;
+      let streamed = 0;
+      const limiter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          streamed += chunk.byteLength;
+          callback(
+            streamed > maxBytes ? new Error('HTTP MCP upstream response too large') : null,
+            chunk,
+          );
+        },
+      });
+      const lifetime = response.eventStream
+        ? setTimeout(
+            () => response.body.destroy(new Error('HTTP MCP event stream lifetime exceeded')),
+            MAX_EVENT_STREAM_LIFETIME_MS,
+          )
+        : undefined;
+      lifetime?.unref();
+      try {
         await pipeline(response.body, limiter, reply.raw);
+      } finally {
+        if (lifetime !== undefined) clearTimeout(lifetime);
       }
       return reply;
     } catch {
