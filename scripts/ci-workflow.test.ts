@@ -546,10 +546,15 @@ describe('native iOS compile gate', () => {
   it('compiles a non-publishing simulator build on a GitHub macOS runner', () => {
     const github = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
       on?: { pull_request?: unknown };
-      jobs: Record<string, { 'runs-on': string; steps: WorkflowStep[] }>;
+      jobs: Record<
+        string,
+        { 'runs-on': string; steps: WorkflowStep[]; needs?: string; if?: string }
+      >;
     };
     const job = github.jobs['verify-ios'];
     expect(job?.['runs-on']).toBe('macos-26');
+    expect(job?.needs).toBe('changes');
+    expect(job?.if).toContain("needs.changes.outputs.required == 'true'");
     expect(github.on?.pull_request).toBeDefined();
     const commands = job?.steps.map((step) => step.run ?? '').join('\n') ?? '';
     expect(commands).toContain('expo prebuild --platform ios');
@@ -558,6 +563,56 @@ describe('native iOS compile gate', () => {
     expect(commands).toContain('CODE_SIGNING_ALLOWED=NO');
     expect(commands).not.toContain('eas-cli');
     expect(commands).not.toMatch(/testflight|submit/iu);
+  });
+
+  it('reserves the macOS build for native-sensitive mobile changes', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      on: { pull_request: { paths: string[] } };
+      jobs: Record<string, { steps: WorkflowStep[] }>;
+    };
+    const paths = ignore().add(workflow.on.pull_request.paths);
+    const otaSource = readFileSync('.github/workflows/mobile-ota.yml', 'utf8');
+    const nativePathBlock = /native_path_changes=.*?-- \\\n([\s\S]*?)\)"; then/.exec(
+      otaSource,
+    )?.[1];
+    expect(nativePathBlock, 'could not read the OTA native-path contract').toBeDefined();
+    const otaNativePaths = (nativePathBlock ?? '').replaceAll('\\', '').trim().split(/\s+/);
+    for (const source of otaNativePaths) {
+      expect(
+        workflow.on.pull_request.paths.includes(source) ||
+          workflow.on.pull_request.paths.includes(`${source}/**`),
+        `native verification does not cover OTA-sensitive path ${source}`,
+      ).toBe(true);
+    }
+    for (const source of [
+      '.github/workflows/mobile-native-verify.yml',
+      'apps/mobile/app.config.ts',
+      'apps/mobile/android/build.gradle',
+      'apps/mobile/assets/icon.png',
+      'apps/mobile/eas.json',
+      'apps/mobile/ios/Podfile',
+      'apps/mobile/native/CertificatePinDelegate.swift',
+      'apps/mobile/package.json',
+      'apps/mobile/patches/react-native.patch',
+      'apps/mobile/plugins/with-native-config.js',
+    ]) {
+      expect(paths.ignores(source), source).toBe(true);
+    }
+    for (const otaSafe of [
+      `apps/mobile/${'app'}/index.tsx`,
+      `apps/mobile/${'components'}/GithubConnectPanel.tsx`,
+      `apps/mobile/${'__tests__'}/onboarding-steps.test.tsx`,
+      `packages/${'mobile'}/src/api.ts`,
+      `packages/${'events'}/src/index.ts`,
+    ]) {
+      expect(paths.ignores(otaSafe), otaSafe).toBe(false);
+    }
+    const detector = workflow.jobs.changes.steps.find((step) => step.id === 'native')?.run ?? '';
+    // Editing the gate must exercise its cheap classifier without recursively
+    // allocating the macOS runner that the edit is trying to avoid.
+    expect(detector).toContain('.github/workflows/mobile-native-verify\\.yml');
+    expect(detector).toContain('scripts/mobile-native-lock-changes\\.mjs');
+    expect(detector).toContain("echo 'required=false'");
   });
 
   it('runs the pinned TLS smoke against the generated app configuration', () => {
@@ -789,8 +844,12 @@ fi
   });
 
   it('does not compile the native app for an OTA promotion manifest', () => {
-    const source = readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8');
-    expect(source).toContain("'!apps/mobile/ota-promotion.json'");
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      on: { pull_request: { paths: string[] } };
+    };
+    expect(
+      ignore().add(workflow.on.pull_request.paths).ignores('apps/mobile/ota-promotion.json'),
+    ).toBe(false);
   });
 });
 
@@ -3569,7 +3628,11 @@ describe('changed-area detector', () => {
 
     expect(nativePullRequestPaths).toEqual(
       expect.arrayContaining([
-        'apps/mobile/**',
+        'apps/mobile/app.config.ts',
+        'apps/mobile/native/**',
+        'apps/mobile/package.json',
+        'package-lock.json',
+        'scripts/mobile-native-lock-changes.mjs',
         'scripts/ios-pinned-tls-smoke.sh',
         'scripts/ios-pinned-tls-smoke.swift',
         'scripts/ios-pinned-tls-smoke-app.swift',
