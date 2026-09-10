@@ -110,8 +110,13 @@ const FORWARDED_RESPONSE_HEADERS = new Set([
   'allow',
   'content-length',
   'content-type',
+  'mcp-session-id',
   'retry-after',
 ]);
+const MCP_PROXY_PATH = '/internal/mcp-proxy';
+const MCP_PROXY_MAX_RESPONSE_BYTES = 256 * 1024 * 1024;
+const MCP_PROXY_TIMEOUT_MS = 8 * 60 * 60_000 + 60_000;
+const MCP_PROXY_IDLE_TIMEOUT_MS = 6 * 60_000;
 const trackedConnections = new WeakMap<HttpServer | Server, Set<Socket>>();
 
 export interface RelayLimits {
@@ -309,6 +314,7 @@ async function relayBrokerRequest(
       return;
     }
     const body = await readBounded(request, limits.maxBodyBytes);
+    const mcpProxy = path === MCP_PROXY_PATH;
     // The idle reaper counts silence, and a request waiting on a permission card is silent
     // by definition. Lift it only now: until the body is in, silence is a stalled sender
     // rather than a pending decision, and the short profile is the right guard for that.
@@ -318,6 +324,7 @@ async function relayBrokerRequest(
     // reapers cannot race: the deadline always fires first and the caller is told 502,
     // rather than having the connection pulled out from under it at the same instant.
     if (parked) request.socket.setTimeout(limits.decisionTimeoutMs + limits.requestTimeoutMs);
+    else if (mcpProxy) request.socket.setTimeout(MCP_PROXY_IDLE_TIMEOUT_MS);
     await forwardBrokerRequest(
       response,
       socketPath,
@@ -325,8 +332,9 @@ async function relayBrokerRequest(
       path,
       request.headers,
       body,
-      limits,
-      parked ? limits.decisionTimeoutMs : limits.requestTimeoutMs,
+      mcpProxy ? { ...limits, maxResponseBytes: MCP_PROXY_MAX_RESPONSE_BYTES } : limits,
+      parked ? limits.decisionTimeoutMs : mcpProxy ? MCP_PROXY_TIMEOUT_MS : limits.requestTimeoutMs,
+      mcpProxy,
     );
   } catch (error) {
     // `destroyed` covers the caller that hung up first: the failure it would be told about
@@ -354,6 +362,7 @@ function forwardBrokerRequest(
   body: Buffer,
   limits: RelayLimits,
   upstreamTimeoutMs: number,
+  streamResponse = false,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -380,6 +389,28 @@ function forwardBrokerRequest(
         timeout: upstreamTimeoutMs,
       },
       (upstreamResponse) => {
+        if (streamResponse) {
+          let bytes = 0;
+          response.writeHead(upstreamResponse.statusCode ?? 502, {
+            ...responseHeaders(upstreamResponse.headers),
+            connection: 'close',
+          });
+          upstreamResponse.on('data', (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (bytes > limits.maxResponseBytes) {
+              upstreamResponse.destroy(new RelayLimitError());
+              return;
+            }
+            if (!response.write(chunk)) upstreamResponse.pause();
+          });
+          response.on('drain', () => upstreamResponse.resume());
+          upstreamResponse.once('end', () => {
+            response.end();
+            settle();
+          });
+          upstreamResponse.once('error', (error) => settle(error));
+          return;
+        }
         const chunks: Buffer[] = [];
         let bytes = 0;
         upstreamResponse.on('data', (chunk: Buffer) => {
