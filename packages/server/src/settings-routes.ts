@@ -29,6 +29,8 @@ export interface SettingsRouteDeps {
   };
   transcriptionConfigured: (settings: VeritySettingsRecord | null) => boolean;
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  onOpenCodeSettingsChanged?:
+    ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
 }
 
 export const SELECTABLE_TRANSCRIBE_BACKEND_MODES = ['external'] as const;
@@ -67,11 +69,22 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: SettingsRoute
   app.patch('/settings', async (request) => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
     const patch = deps.parseSettingsPatch(request.body);
+    const changesOpenCode =
+      patch.opencodeBaseUrl !== undefined ||
+      patch.opencodeApiKey !== undefined ||
+      patch.opencodeModels !== undefined;
+    const previousOpenCode = changesOpenCode ? await deps.store().getVeritySettings() : undefined;
     if (patch.transcribeBaseUrl !== undefined && patch.transcribeApiKey === undefined) {
       const current = await deps.store().getVeritySettings();
       const currentBaseUrl = current?.transcribeBaseUrl?.trim() || null;
       const nextBaseUrl = patch.transcribeBaseUrl?.trim() || null;
       if (currentBaseUrl !== nextBaseUrl) patch.transcribeApiKey = null;
+    }
+    if (patch.opencodeBaseUrl !== undefined && patch.opencodeApiKey === undefined) {
+      const current = await deps.store().getVeritySettings();
+      const currentBaseUrl = current?.opencodeBaseUrl?.trim() || null;
+      const nextBaseUrl = patch.opencodeBaseUrl?.trim() || null;
+      if (currentBaseUrl !== nextBaseUrl) patch.opencodeApiKey = null;
     }
     const containsAgentCredentials =
       patch.claudeCodeOauthCredentialsJson !== undefined || patch.codexAuthJson !== undefined;
@@ -84,6 +97,19 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: SettingsRoute
     }
     if (settings === undefined) throw new Error('Verity settings disappeared after update');
     if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
+    if (changesOpenCode) {
+      try {
+        await deps.onOpenCodeSettingsChanged?.(settings);
+      } catch (error) {
+        const restored = await deps.store().updateVeritySettings({
+          opencodeBaseUrl: previousOpenCode?.opencodeBaseUrl ?? null,
+          opencodeApiKey: previousOpenCode?.opencodeApiKey ?? null,
+          opencodeModels: previousOpenCode?.opencodeModels ?? null,
+        });
+        if (restored !== undefined) await deps.onOpenCodeSettingsChanged?.(restored);
+        throw error;
+      }
+    }
     return { settings: deps.publicSettings(settings) };
   });
 

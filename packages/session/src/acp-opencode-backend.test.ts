@@ -474,7 +474,7 @@ describe('AcpOpenCodeBackend', () => {
       model: 'deepinfra/nobody/Nothing-9',
       spawner: fake.spawner,
     });
-    // The OpenCode picker is the operator's pinned `VERITY_EXTRA_MODELS` list, which
+    // The OpenCode picker is populated from the server-managed model list, which
     // has no way to know what the sandbox's opencode config actually serves — so a
     // stale entry is expected and must not cost the turn.
     expect(result.exitCode).toBe(0);

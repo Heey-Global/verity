@@ -44,6 +44,8 @@ import {
   devcontainerLifecyclePath,
   unsupportedDevcontainerRuntimeKeys,
   runnerSupervisorBoundarySafe,
+  openCodeSettingsConfig,
+  materializeOpenCodeSettings,
   RUNNER_BROKER_CAPABILITIES,
   CLAUDE_EGRESS_GATEWAY_URL_LABEL,
   type ProvisionerOptions,
@@ -69,6 +71,56 @@ import {
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
 import type { ProjectRelayBinding } from './project-relay-lifecycle.js';
+
+describe('openCodeSettingsConfig', () => {
+  it('builds a provider config only from complete settings', () => {
+    expect(openCodeSettingsConfig(undefined)).toBeUndefined();
+    const config = openCodeSettingsConfig({
+      opencodeBaseUrl: 'https://api.example.test/v1',
+      opencodeApiKey: 'provider-key-fixture',
+      opencodeModels: 'model-a\nmodel-b\nmodel-a',
+    } as VeritySettingsRecord);
+    expect(JSON.parse(config ?? '{}')).toMatchObject({
+      provider: {
+        verity: {
+          options: {
+            baseURL: 'http://127.0.0.1:47821/opencode',
+            apiKey: 'verity-opencode-gateway-placeholder-v1',
+          },
+          models: { 'model-a': { name: 'model-a' }, 'model-b': { name: 'model-b' } },
+        },
+      },
+    });
+    expect(config).not.toContain('provider-key-fixture');
+    expect(config).not.toContain('api.example.test');
+  });
+
+  it('updates the stable directory mounted by running sandboxes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-opencode-settings-'));
+    try {
+      const first = materializeOpenCodeSettings(undefined, root);
+      expect(JSON.parse(readFileSync(join(first, 'opencode.json'), 'utf8'))).not.toHaveProperty(
+        'provider',
+      );
+      expect(statSync(first).mode & 0o777).toBe(0o755);
+      expect(statSync(join(first, 'opencode.json')).mode & 0o777).toBe(0o644);
+      const second = materializeOpenCodeSettings(
+        {
+          opencodeBaseUrl: 'https://api.example.test/v1',
+          opencodeApiKey: 'provider-key-fixture',
+          opencodeModels: 'model-a',
+        } as VeritySettingsRecord,
+        root,
+      );
+      expect(second).toBe(first);
+      expect(JSON.parse(readFileSync(join(first, 'opencode.json'), 'utf8'))).toHaveProperty(
+        'provider.verity.models.model-a',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 /** Fake {@link ClaudeEgressIdentityService} returning fixed sandbox material and
  *  recording revocations. `gatewayMaterial` is never used by the provisioner. */
@@ -352,7 +404,6 @@ describe('ProvisionerImpl (#174)', () => {
       hostCloneRoot: '/var/lib/verity-dev',
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
-      opencodeConfigVolume: 'opencode-config-verity',
       piConfigVolume: 'pi-config-verity',
       git,
       isDirectory: isDir,
@@ -397,7 +448,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.binds).toContain('/dev/null:/etc/profile.d/gh-token.sh:ro');
     expect(spec.binds).not.toContain('claude-config-verity:/home/dev/.claude');
     expect(spec.binds).not.toContain('codex-config-verity:/home/dev/.codex');
-    expect(spec.binds).toContain('opencode-config-verity:/home/dev/.config/opencode');
+    expect(spec.binds).not.toContain('opencode-config-verity:/home/dev/.config/opencode');
     expect(spec.binds).toContain('pi-config-verity:/home/dev/.pi');
     expect(spec.env).toEqual(
       expect.arrayContaining([
@@ -1738,7 +1789,6 @@ describe('ProvisionerImpl (#174)', () => {
       hostCloneRoot: '/var/lib/verity-dev',
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
-      opencodeConfigVolume: 'opencode-config-verity',
       piConfigVolume: 'pi-config-verity',
       git,
       isDirectory: () => false,

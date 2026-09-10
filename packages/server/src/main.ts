@@ -14,7 +14,6 @@ import {
   parseCpuCores,
   parseDefaultOnFlag,
   parseNonNegativeInt,
-  parseOpenCodeEnabled,
   parsePort,
   parsePushEnabled,
   parseTasksProjectNumber,
@@ -1178,32 +1177,9 @@ async function main(): Promise<void> {
         process.env.VERITY_DEFAULT_PROJECT_IMAGE === undefined ||
         process.env.VERITY_DEFAULT_PROJECT_IMAGE.trim().length === 0,
       permissionMode: process.env.VERITY_PERMISSION_MODE,
-      // OpenCode over ACP in the project Sandbox (#143, ADR 0012 Amendment 4) —
-      // turns on a provider-qualified model (`deepinfra/…`) route there; unset →
-      // Claude-only. Opt-in rather than default-on because the picker's OpenCode
-      // entries are the operator's own `VERITY_EXTRA_MODELS` list: a deployment
-      // that has not named any models has nothing to route.
-      // A still-set `OPENCODE_BASE_URL` stops the boot — see the parser. Worth being
-      // explicit about how far that goes: the throw here is not scoped to OpenCode, it
-      // aborts `main()` and the whole Server with it, so Claude and Codex sessions stay
-      // down until the variable is answered for. That is the intended trade for exactly
-      // one upgrade: a stale variable that silently did nothing would leave a deployment
-      // believing it still has the shared `opencode serve` it configured, and the fix is
-      // one edit to the env file. It surfaces on stderr through the generic
-      // `verity: failed to start` arm at the bottom of this file — with a stack trace,
-      // unlike the advisory-lock case, because a bad env value is a configuration bug the
-      // operator has to correct rather than a well-formed refusal.
-      openCodeEnabled: parseOpenCodeEnabled(
-        {
-          enabled: process.env.VERITY_OPENCODE_ENABLED,
-          legacyBaseUrl: process.env.OPENCODE_BASE_URL,
-        },
-        (message) => console.warn(message),
-      ),
       codexEnabled: process.env.CODEX_ENABLED !== '0',
       // Codex runs over ACP and receives brokered tools through the MCP gateway.
       codexModels: splitList(process.env.CODEX_MODELS),
-      extraModels: splitList(process.env.VERITY_EXTRA_MODELS),
       // GitHub Projects v2 board backing task management (ADR 0007). Unset → the
       // `/tasks` routes 503 and the mobile Plan tab hides; set to the board number
       // (with `repoDir` + a GitHub token) to activate it.

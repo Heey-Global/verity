@@ -452,6 +452,7 @@ type PublicVeritySettingsRecord = Omit<
   | 'transcribeApiKey'
   | 'claudeCodeOauthCredentialsJson'
   | 'codexAuthJson'
+  | 'opencodeApiKey'
   | 'googleDriveRefreshToken'
   | 'uplinkSubscriptionKey'
 > & {
@@ -486,6 +487,7 @@ type PublicVeritySettingsRecord = Omit<
   sandboxAutoUpdateNormal: boolean;
   claudeCodeOauthCredentialsConfigured: boolean;
   codexAuthJsonConfigured: boolean;
+  opencodeApiKeyConfigured: boolean;
   /** True once a Drive refresh token is stored (ADR 0009). The client id +
    *  account email pass through as plaintext for the connect UI. */
   googleDriveConnected: boolean;
@@ -780,6 +782,7 @@ function publicVeritySettings(
     transcribeApiKey,
     claudeCodeOauthCredentialsJson,
     codexAuthJson,
+    opencodeApiKey,
     googleDriveRefreshToken,
     uplinkSubscriptionKey,
     advancedModeEnabled,
@@ -805,6 +808,7 @@ function publicVeritySettings(
     sandboxAutoUpdateNormal: false,
     claudeCodeOauthCredentialsConfigured: configured(claudeCodeOauthCredentialsJson),
     codexAuthJsonConfigured: configured(codexAuthJson),
+    opencodeApiKeyConfigured: configured(opencodeApiKey),
     googleDriveConnected: configured(googleDriveRefreshToken),
     uplinkSubscriptionKeyConfigured: configured(uplinkSubscriptionKey),
     // The app reads this to build the OAuth request. Prefer the env-baked client
@@ -959,6 +963,9 @@ export interface ServerDeps {
   previewShareManager?: PreviewShareManager | undefined;
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  /** Rewrite the OpenCode config directory after its central settings change. */
+  onOpenCodeSettingsChanged?:
+    ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
   /** Fan-out bus the live WS stream subscribes to (M3-2). */
   bus: EventBus;
   /** Google Drive OAuth *iOS* client id (ADR 0009), supplied as server env
@@ -4380,6 +4387,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
       : {}),
+    ...(deps.onOpenCodeSettingsChanged !== undefined
+      ? { onOpenCodeSettingsChanged: deps.onOpenCodeSettingsChanged }
+      : {}),
   });
 
   registerGoogleDriveRoutes(app, {
@@ -5435,6 +5445,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     transcribeBackendMode: z.enum(SELECTABLE_TRANSCRIBE_BACKEND_MODES).nullable().optional(),
     claudeCodeOauthCredentialsJson: z.string().nullable().optional(),
     codexAuthJson: z.string().nullable().optional(),
+    opencodeBaseUrl: z
+      .string()
+      .url()
+      .refine((value) => {
+        const url = new URL(value);
+        return (
+          url.protocol === 'https:' &&
+          url.username === '' &&
+          url.password === '' &&
+          url.search === '' &&
+          url.hash === ''
+        );
+      }, 'OpenCode Base URL must be an HTTPS origin or path without credentials, query, or fragment')
+      .nullable()
+      .optional(),
+    opencodeApiKey: z
+      .string()
+      .refine((value) => !/[\r\n]/u.test(value))
+      .nullable()
+      .optional(),
+    opencodeModels: z.string().nullable().optional(),
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
   });
 

@@ -4879,6 +4879,36 @@ describe('agent login routes', () => {
 });
 
 describe('GET/PATCH /settings', () => {
+  it('clears the OpenCode credential when its provider URL changes', async () => {
+    await ctx.store.updateVeritySettings({
+      opencodeBaseUrl: 'https://first-provider.example/v1',
+      opencodeApiKey: 'provider-key',
+    });
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { opencodeBaseUrl: 'https://second-provider.example/v1' },
+    });
+    expect(response.statusCode).toBe(200);
+    const stored = await ctx.store.getVeritySettingsRaw();
+    expect(stored?.opencodeBaseUrl).toBe('https://second-provider.example/v1');
+    expect(stored?.opencodeApiKey).toBeNull();
+  });
+
+  it.each([
+    { opencodeBaseUrl: 'http://provider.example/v1' },
+    { opencodeBaseUrl: 'https://user:password@provider.example/v1' },
+    { opencodeBaseUrl: 'https://provider.example/v1?api_key=secret' },
+    { opencodeBaseUrl: 'https://provider.example/v1#fragment' },
+    { opencodeApiKey: 'provider-key\nsmuggled-header' },
+  ])('rejects OpenCode settings the credential gateway cannot safely use', async (payload) => {
+    const response = await app.inject({ method: 'PATCH', url: '/settings', payload });
+    expect(response.statusCode).toBe(400);
+    const stored = await ctx.store.getVeritySettingsRaw();
+    expect(stored?.opencodeBaseUrl ?? null).toBeNull();
+    expect(stored?.opencodeApiKey ?? null).toBeNull();
+  });
+
   it('persists a non-secret transcription choice while the secret store is sealed', async () => {
     const sealedApp = buildServer({
       eventStore: ctx.store,

@@ -13,6 +13,12 @@ import {
   validateCodexEgress,
 } from './codex-egress-policy.js';
 import {
+  injectOpenCodeCredential,
+  OPENCODE_EGRESS_ORIGIN,
+  OpenCodeEgressPolicyError,
+  validateOpenCodeEgress,
+} from './opencode-egress-policy.js';
+import {
   closeServerBounded,
   DEFAULT_AGENT_GATEWAY_SHUTDOWN_GRACE_MS,
 } from './claude-egress-gateway.js';
@@ -113,6 +119,7 @@ export interface CodexEgressGatewayHandlerOptions {
   listenerAuthority: string;
   authenticatePeer: (socket: Socket) => string | undefined;
   credential: () => Promise<CodexGatewayCredential>;
+  opencodeCredential?: () => { baseUrl: string; apiKey: string } | undefined;
   refreshAfterUnauthorized?: (previousAccessToken: string) => Promise<unknown>;
   forward?: CodexEgressForward;
   /** Called exactly once for each request. Observer failures never affect egress. */
@@ -236,15 +243,34 @@ async function handleRequest(
       }
     });
     const method = request.method ?? 'GET';
-    const validated = validateCodexEgress({
-      method,
-      url: new URL(request.url ?? '/', CODEX_EGRESS_ORIGIN),
-      headers: requestHeaders(request),
-    });
-    // Resolve the real credential only after transport identity and all
-    // sandbox-controlled request fields passed policy.
-    const credential = await options.credential();
-    const authorized = injectCodexEgressCredential(validated, credential);
+    const isOpenCode = (request.url ?? '').startsWith('/opencode/');
+    let previousAccessToken: string | undefined;
+    const authorized = isOpenCode
+      ? (() => {
+          const credential = options.opencodeCredential?.();
+          if (credential === undefined) {
+            throw new CodexCredentialUnavailableError('OpenCode gateway credential is unavailable');
+          }
+          return injectOpenCodeCredential(
+            validateOpenCodeEgress({
+              method,
+              url: new URL(request.url ?? '/', OPENCODE_EGRESS_ORIGIN),
+              headers: requestHeaders(request),
+              baseUrl: credential.baseUrl,
+            }),
+            credential.apiKey,
+          );
+        })()
+      : await (async () => {
+          const validated = validateCodexEgress({
+            method,
+            url: new URL(request.url ?? '/', CODEX_EGRESS_ORIGIN),
+            headers: requestHeaders(request),
+          });
+          const credential = await options.credential();
+          previousAccessToken = credential.accessToken;
+          return injectCodexEgressCredential(validated, credential);
+        })();
     const upstream = await forward({
       method,
       url: authorized.url,
@@ -259,8 +285,8 @@ async function handleRequest(
     }
     // A POST body cannot be replayed safely. Rotate centrally for the next
     // request, but preserve this upstream response exactly as Codex received it.
-    if (upstream.status === 401 && options.refreshAfterUnauthorized !== undefined) {
-      void options.refreshAfterUnauthorized(credential.accessToken).catch(() => undefined);
+    if (upstream.status === 401 && previousAccessToken && options.refreshAfterUnauthorized) {
+      void options.refreshAfterUnauthorized(previousAccessToken).catch(() => undefined);
     }
     sentStatus = upstream.status;
     response.writeHead(upstream.status, responseHeaders(upstream.headers));
@@ -281,7 +307,8 @@ async function handleRequest(
       return;
     }
     const unavailable = error instanceof CodexCredentialUnavailableError;
-    const denied = error instanceof CodexEgressPolicyError;
+    const denied =
+      error instanceof CodexEgressPolicyError || error instanceof OpenCodeEgressPolicyError;
     const status = unavailable ? 503 : denied ? 403 : 502;
     response.writeHead(status, {
       'content-type': 'text/plain; charset=utf-8',

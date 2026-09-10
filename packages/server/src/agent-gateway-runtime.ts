@@ -71,6 +71,7 @@ export async function startAgentGatewayRuntime(options: {
   let pendingCodexUpdate: CodexCredentialUpdate | undefined;
   let claudeRequired = false;
   let codexRequired = false;
+  let opencodeCredential: { baseUrl: string; apiKey: string } | undefined;
   let peerBindings = new Map<string, string>();
   const spill = new AgentGatewaySpill(options.spillPath);
   const codexSpill = new CodexCredentialSpill(
@@ -94,6 +95,7 @@ export async function startAgentGatewayRuntime(options: {
           codexCredentialReady: codexAuthority !== undefined,
           codexListenerReady: codexListener !== undefined,
           ...(codexListener === undefined ? {} : { codexPort: codexListener.port }),
+          opencodeReady: opencodeCredential !== undefined,
         }),
   });
   const control = await startAgentGatewayControlServer({
@@ -175,11 +177,16 @@ export async function startAgentGatewayRuntime(options: {
       const previousToken = accessToken;
       const previousSpillKey = spillKey;
       const previousCodexAuthority = codexAuthority;
+      const previousOpenCodeCredential = opencodeCredential;
       try {
         // Listener callbacks close over these mutable authority slots. Install
         // the candidate before a first listener can accept traffic; rollback
         // restores the previous authority if any later configuration step fails.
         codexAuthority = nextCodexAuthority;
+        opencodeCredential =
+          next.opencode?.apiKey == null
+            ? undefined
+            : { baseUrl: next.opencode.baseUrl, apiKey: next.opencode.apiKey };
         if (
           nextCodexCredential?.sourceRevision !== codexSourceRevision &&
           pendingCodexUpdate?.sourceRevision !== nextCodexCredential?.sourceRevision
@@ -216,7 +223,7 @@ export async function startAgentGatewayRuntime(options: {
         }
         if (
           codexListener === undefined &&
-          nextCodexAuthority !== undefined &&
+          (nextCodexAuthority !== undefined || opencodeCredential !== undefined) &&
           options.codexPort !== undefined &&
           options.codexListenerAuthority !== undefined
         ) {
@@ -237,12 +244,14 @@ export async function startAgentGatewayRuntime(options: {
             },
             refreshAfterUnauthorized: (previousAccessToken) =>
               codexAuthority?.refreshAfterUnauthorized(previousAccessToken) ?? Promise.resolve(),
+            opencodeCredential: () => opencodeCredential,
             onRequestEnd: options.onCodexRequestEnd ?? logCodexEgressRequestEnd,
           });
         }
       } catch (error) {
         peerBindings = previousBindings;
         codexAuthority = previousCodexAuthority;
+        opencodeCredential = previousOpenCodeCredential;
         codexSpillKey = previousCodexSpillKey;
         codexSourceRevision = previousCodexSourceRevision;
         pendingCodexUpdate = previousPendingCodexUpdate;
@@ -282,12 +291,14 @@ export async function startAgentGatewayRuntime(options: {
         throw error;
       }
       if (nextCodexAuthority === undefined) {
+        await codexSpill.clear();
+        pendingCodexUpdate = undefined;
+      }
+      if (nextCodexAuthority === undefined && opencodeCredential === undefined) {
         if (codexListener !== undefined) {
           await codexListener.close();
           codexListener = undefined;
         }
-        await codexSpill.clear();
-        pendingCodexUpdate = undefined;
       }
       peerBindings = nextBindings;
       accessToken = nextToken;
@@ -310,6 +321,7 @@ export async function startAgentGatewayRuntime(options: {
                 },
               },
             }),
+        ...(next.opencode === undefined ? {} : { opencode: { ...next.opencode, apiKey: null } }),
       };
       claudeRequired = credential !== undefined && credential.accessToken !== null;
       codexRequired = nextCodexCredential !== undefined && nextCodexCredential.authJson !== null;

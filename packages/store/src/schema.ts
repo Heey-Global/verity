@@ -305,6 +305,11 @@ export interface VeritySettingsTable {
    *  `~/.codex/auth.json` from `codex login`). A secret, encrypted at rest;
    *  materialized into the codex config volume. */
   codex_auth_json: ColumnType<string | null, string | null | undefined, string | null>;
+  /** OpenAI-compatible provider used by OpenCode. The key is encrypted at rest;
+   * URL and newline-separated provider/model ids are ordinary configuration. */
+  opencode_base_url: ColumnType<string | null, string | null | undefined, string | null>;
+  opencode_api_key: ColumnType<string | null, string | null | undefined, string | null>;
+  opencode_models: ColumnType<string | null, string | null | undefined, string | null>;
   /** Google connection for Drive imports and assigned Slides editing (ADRs 0009/0016). The iOS
    *  OAuth client id is non-secret config (it ships in the app); the connected
    *  account email is non-secret display metadata; the refresh token is a

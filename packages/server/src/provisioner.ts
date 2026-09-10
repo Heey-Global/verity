@@ -437,8 +437,6 @@ export interface ProvisionerOptions {
   claudeConfigVolume?: string | undefined;
   /** Shared Codex CLI config/auth volume mounted into project containers. */
   codexConfigVolume?: string | undefined;
-  /** Shared OpenCode config/auth volume mounted into project containers. */
-  opencodeConfigVolume?: string | undefined;
   /** Shared pi config/auth volume mounted into project containers. */
   piConfigVolume?: string | undefined;
   /** Central Verity settings provider for git identity/signing material. */
@@ -1344,20 +1342,15 @@ function projectPortBindings(
 }
 
 function agentConfigBinds(
-  opts: Pick<
-    ProvisionerOptions,
-    'claudeConfigVolume' | 'codexConfigVolume' | 'opencodeConfigVolume' | 'piConfigVolume'
-  >,
+  opts: Pick<ProvisionerOptions, 'claudeConfigVolume' | 'codexConfigVolume' | 'piConfigVolume'>,
   mode: 'home' | 'neutral' = 'home',
 ): string[] {
   const paths =
     mode === 'neutral'
       ? {
-          opencode: '/run/verity/xdg/opencode',
           pi: '/run/verity/pi',
         }
       : {
-          opencode: '/home/dev/.config/opencode',
           pi: '/home/dev/.pi',
         };
   return [
@@ -1365,9 +1358,6 @@ function agentConfigBinds(
     // settings below. Do not mount legacy shared config volumes into project
     // sandboxes, or a clean server can inherit stale credentials from an older
     // dogfood container.
-    ...(opts.opencodeConfigVolume !== undefined
-      ? [`${opts.opencodeConfigVolume}:${paths.opencode}`]
-      : []),
     ...(opts.piConfigVolume !== undefined ? [`${opts.piConfigVolume}:${paths.pi}`] : []),
   ];
 }
@@ -1377,9 +1367,11 @@ function writeSecretFile(
   contents: string,
   subdir = 'git',
   mode = 0o600,
+  directoryMode = 0o700,
 ): string {
   const dir = join(root, subdir);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  mkdirSync(dir, { recursive: true, mode: directoryMode });
+  chmodSync(dir, directoryMode);
   const path = join(dir, name);
   const tmp = join(dir, `.${name}.${process.pid}.${Date.now()}.tmp`);
   try {
@@ -1420,6 +1412,70 @@ function codexGatewayConfigBind(
   const config = codexGatewayConfig(connectorPort);
   const path = writeSecretFile(secretRoot, 'config.toml', config, 'codex', 0o644);
   return [`${path}:${codexHome}/config.toml:ro`];
+}
+
+/** Build the complete OpenCode provider configuration from server-owned settings.
+ * The generated file is read-only in sandboxes; its API key never comes from an
+ * environment variable or a deployment-managed shared volume. */
+export function openCodeSettingsConfig(
+  settings: VeritySettingsRecord | undefined,
+  connectorPort = 47_821,
+): string | undefined {
+  const baseURL = settings?.opencodeBaseUrl?.trim();
+  const apiKey = settings?.opencodeApiKey?.trim();
+  const models = (settings?.opencodeModels ?? '')
+    .split(/[\n,]/)
+    .map((model) => model.trim())
+    .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index);
+  if (!baseURL || !apiKey || models.length === 0) return undefined;
+  return JSON.stringify(
+    {
+      $schema: 'https://opencode.ai/config.json',
+      autoupdate: false,
+      provider: {
+        verity: {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'OpenAI-compatible',
+          options: {
+            baseURL: `http://127.0.0.1:${String(connectorPort)}/opencode`,
+            apiKey: 'verity-opencode-gateway-placeholder-v1',
+          },
+          models: Object.fromEntries(models.map((model) => [model, { name: model }])),
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
+function openCodeSettingsBind(
+  settings: VeritySettingsRecord | undefined,
+  secretRoot: string | undefined,
+  mode: 'home' | 'neutral',
+  connectorPort: number | undefined,
+): string[] {
+  if (secretRoot === undefined || connectorPort === undefined) return [];
+  const directory = materializeOpenCodeSettings(settings, secretRoot, connectorPort);
+  const target = mode === 'neutral' ? '/run/verity/xdg/opencode' : '/home/dev/.config/opencode';
+  return [`${directory}:${target}:ro`];
+}
+
+/** Refresh the directory bind shared by existing and future sandboxes. Mounting
+ * the directory (rather than one inode) makes the atomic file replacement visible
+ * to already-running containers without recreating them. */
+export function materializeOpenCodeSettings(
+  settings: VeritySettingsRecord | undefined,
+  secretRoot: string,
+  connectorPort = 47_821,
+): string {
+  const config =
+    openCodeSettingsConfig(settings, connectorPort) ??
+    JSON.stringify({ $schema: 'https://opencode.ai/config.json', autoupdate: false }, null, 2);
+  // This directory is mounted as the non-root agent's XDG config root. It holds
+  // only the local gateway address, a fixed placeholder, and model names.
+  writeSecretFile(secretRoot, 'opencode.json', config, 'opencode', 0o644, 0o755);
+  return join(secretRoot, 'opencode');
 }
 
 function gitSettingsBinds(
@@ -4123,6 +4179,12 @@ export class ProvisionerImpl implements Provisioner {
         ...ghTokenBrokerBinds,
         ...claudeEgressBinds,
         ...agentConfigBinds(this.opts, pathMode),
+        ...openCodeSettingsBind(
+          veritySettings,
+          this.opts.gitSecretRoot,
+          pathMode,
+          this.opts.claudeConnectorPort,
+        ),
         ...gitBinds,
         ...signingBrokerBinds,
         ...codexGatewayConfigBind(

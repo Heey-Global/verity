@@ -186,6 +186,7 @@ import {
   gitAuthHeader,
   defaultDevcontainerBuildSpawner,
   projectNetworkName,
+  materializeOpenCodeSettings,
   type ProjectRelayControl,
   type ProjectImageRefSource,
   type DevcontainerFeatureSource,
@@ -641,13 +642,6 @@ export interface EmbeddedServerConfig {
    * branches endpoint reports the current branch's open PR; omit to disable the lookup
    * (the header then shows only the branch-derived issue chip). */
   githubToken?: string | (() => string | undefined) | undefined;
-  /** Enable the OpenCode backend (ADR 0001 / #143, ADR 0012 Amendment 4). When set,
-   * turns whose model is provider-qualified (`providerID/modelID`, e.g.
-   * `deepinfra/zai-org/GLM-5`) route to `opencode-acp` in the project Sandbox; omit to
-   * run Claude only. The models offered for it are {@link EmbeddedServerConfig.extraModels}:
-   * unlike the retired HTTP transport there is no long-lived server to enumerate
-   * providers from, and spawning an agent per picker refresh would be a poor trade. */
-  openCodeEnabled?: boolean | undefined;
   /** Enable the Codex CLI backend and discover its visible model ids daily. */
   codexEnabled?: boolean | undefined;
   /** Explicit Codex model allow-list. When omitted, the bundled Codex CLI catalog is used. */
@@ -655,9 +649,6 @@ export interface EmbeddedServerConfig {
   /** Test seam for the bundled Codex catalog (the sealed-boot seed). Production uses
    *  `codex debug models --bundled`, which needs neither an unlock nor a CODEX_HOME. */
   codexBundledModelLoader?: (() => Promise<string[]>) | undefined;
-  /** The provider-qualified model ids (`providerID/modelID`) the picker offers for
-   *  OpenCode. Read only when {@link EmbeddedServerConfig.openCodeEnabled} is set. */
-  extraModels?: readonly string[] | undefined;
   /** The GitHub Projects v2 board number (under the `repoDir` origin's owner) that
    *  backs task management — the `/tasks` routes (ADR 0007). Set together with `repoDir`
    *  to wire the GraphQL task service; omit either to disable it (the `/tasks` routes
@@ -744,7 +735,6 @@ export interface EmbeddedServerConfig {
   devcontainerFeatureRefConfigured?: boolean | undefined;
   claudeConfigVolume?: string | undefined;
   codexConfigVolume?: string | undefined;
-  opencodeConfigVolume?: string | undefined;
   piConfigVolume?: string | undefined;
   /** Path to the host-side gh-token file (e.g. `~/.gh-token`) — mounted
    * read-only in project containers so agent processes inside can `git push`.
@@ -1508,88 +1498,6 @@ export function parseTranscriptSweep(value: string | undefined): 'on' | 'dry' | 
   if (normalized === 'dry') return 'dry';
   if (['off', '0', 'false'].includes(normalized)) return 'off';
   throw new Error('invalid VERITY_TRANSCRIPT_SWEEP (expected on, dry, or off)');
-}
-
-const OPENCODE_FLAG_ON = ['1', 'true', 'yes', 'on'];
-const OPENCODE_FLAG_OFF = ['0', 'false', 'no', 'off'];
-
-/**
- * `VERITY_OPENCODE_ENABLED`, with a hard stop for the configuration the ACP
- * migration retired.
- *
- * `OPENCODE_BASE_URL` used to be the whole of OpenCode's configuration: it named the
- * shared `opencode serve` the Server talked to, and its presence was what turned the
- * route on. Nothing reads it now (ADR 0012 Amendment 4). Left to default, a
- * deployment that still sets only that variable would boot looking healthy while
- * every stored `provider/model` id routes to Claude and fails there on an unknown
- * model — a silent, per-turn failure discovered one confusing session at a time.
- *
- * So refuse the boot instead. The variable cannot be honoured, an upgrade is exactly
- * when it is still set, and the fix is two variables named in the message. Setting
- * `VERITY_OPENCODE_ENABLED` — to EITHER value — is the operator's statement that
- * they have read it, after which the stale variable is merely ignored and only
- * worth a warning. An explicit `0` is as much an answer as an explicit `1`: it says
- * "yes, OpenCode is going away here", which is one of the two outcomes the refusal
- * asks for, and refusing it anyway would hold a deployment hostage over a variable
- * it has already declared dead. Only silence leaves the question unanswered, and only
- * that stops the boot — where silence includes a flag DECLARED EMPTY, because that is
- * the shape env plumbing produces when the value it meant to pass is missing
- * (`VERITY_OPENCODE_ENABLED=${SOMETHING_UNSET}`), not a decision anyone typed. The
- * refusal says so, so an operator who did mean "off" knows which spelling to use.
- *
- * The flag itself takes the usual spellings and, like {@link parseTranscriptSweep},
- * throws on anything else. A typo silently reading as "off" is the same failure this
- * function exists to prevent, one variable over: the deployment sets the flag, boots
- * clean, and finds out at the first OpenCode turn.
- *
- * Both messages name what turning OpenCode off costs, because the refusal recommends
- * it as one of two remedies and it is not free: the conductor routes by model format,
- * and with no OpenCode backend configured a provider-qualified id falls through to
- * Claude (`backendKey` in `conductor.ts`), which does not know it. Sessions already
- * holding such a model therefore fail their next turn until a different model is
- * picked for them. Routing them to a refusal that says so instead would read better,
- * but it is a change to the model-routing contract of ADR 0001 rather than to this
- * migration, and the same fallthrough predates it.
- */
-export function parseOpenCodeEnabled(
-  input: { enabled: string | undefined; legacyBaseUrl: string | undefined },
-  warn?: (message: string) => void,
-): boolean {
-  const flag = (input.enabled ?? '').trim().toLowerCase();
-  if (flag !== '' && !OPENCODE_FLAG_ON.includes(flag) && !OPENCODE_FLAG_OFF.includes(flag)) {
-    throw new Error(
-      `invalid VERITY_OPENCODE_ENABLED (expected ${OPENCODE_FLAG_ON.join('/')} or ` +
-        `${OPENCODE_FLAG_OFF.join('/')})`,
-    );
-  }
-  const enabled = OPENCODE_FLAG_ON.includes(flag);
-  const legacy = (input.legacyBaseUrl ?? '').trim().length > 0;
-  if (!legacy) return enabled;
-  if (flag === '') {
-    throw new Error(
-      'OPENCODE_BASE_URL is set but no longer does anything: OpenCode runs over ACP in the ' +
-        'project Sandbox and has no shared server to point at (ADR 0012 Amendment 4). Set ' +
-        'VERITY_OPENCODE_ENABLED=1 and list the models in VERITY_EXTRA_MODELS to keep ' +
-        'OpenCode, then unset OPENCODE_BASE_URL; unset it alone to drop OpenCode. ' +
-        'VERITY_OPENCODE_ENABLED=0 also clears this — but declaring it empty does not, ' +
-        'because an empty value is what unset plumbing produces, not an answer. ' +
-        'Dropping OpenCode leaves sessions whose stored model is a provider-qualified ' +
-        'id without a backend: their next turn fails until another model is picked.',
-    );
-  }
-  if (!enabled) {
-    warn?.(
-      'verity: OPENCODE_BASE_URL is ignored and OpenCode is off — sessions whose stored ' +
-        'model is a provider-qualified id fail their next turn until another model is ' +
-        'picked. Unset OPENCODE_BASE_URL.',
-    );
-    return enabled;
-  }
-  warn?.(
-    'verity: OPENCODE_BASE_URL is ignored — OpenCode runs over ACP in the project Sandbox. ' +
-      'Unset it.',
-  );
-  return enabled;
 }
 
 /** ACP adapters must only run behind the supervised sandbox boundary. */
@@ -2466,13 +2374,21 @@ export async function buildEmbeddedServer(
         })
       : undefined;
   if (codexModelCatalog !== undefined) await codexModelCatalog.refresh();
-  // Model picker source for OpenCode (#143). The retired HTTP transport enumerated a
-  // running `opencode serve` over `GET /config/providers`; ACP has no such server to
-  // ask, and the only ACP route to the catalogue is `session/new`'s config options —
-  // which means spawning an agent process in a project Sandbox for every picker
-  // refresh, on behalf of no session. The operator's pinned list is the better trade
-  // until a session-scoped catalogue is worth building.
-  const openCodeModels = config.openCodeEnabled === true ? (config.extraModels ?? []) : [];
+  const openCodeModels = async (): Promise<string[]> => {
+    const settings = await eventStore.getVeritySettingsRaw();
+    if (
+      !settings?.opencodeBaseUrl?.trim() ||
+      !settings.opencodeApiKey?.trim() ||
+      !settings.opencodeModels?.trim()
+    ) {
+      return [];
+    }
+    return settings.opencodeModels
+      .split(/[\n,]/)
+      .map((model) => model.trim())
+      .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index)
+      .map((model) => `verity/${model}`);
+  };
 
   // Multi-repo fleet-registry provisioning (concept §19.3/#19.8, #174):
   // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
@@ -2667,6 +2583,7 @@ export async function buildEmbeddedServer(
   let agentGatewayBindingProjection: Promise<void> = Promise.resolve();
   let agentGatewayAccessToken: string | null | undefined;
   let agentGatewayCodexAuthJson: string | null | undefined;
+  let agentGatewayOpenCode: { baseUrl: string; apiKey: string | null } | undefined;
   const { url: agentGatewayUrl } = validateAgentGatewayRoutingConfig({
     url: config.agentGatewayUrl,
     controlSocket: config.agentGatewayControlSocket,
@@ -2723,6 +2640,11 @@ export async function buildEmbeddedServer(
             : `\0codex:${agentGatewayCodexAuthJson}`,
       )
       .update(
+        agentGatewayOpenCode === undefined
+          ? '\0opencode-pending'
+          : `\0opencode:${agentGatewayOpenCode.baseUrl}:${agentGatewayOpenCode.apiKey ?? '\0revoked'}`,
+      )
+      .update(
         routedBindings
           .map((binding) => `${binding.projectId}:${binding.fingerprint256}`)
           .sort()
@@ -2756,6 +2678,7 @@ export async function buildEmbeddedServer(
               },
             },
           }),
+      ...(agentGatewayOpenCode === undefined ? {} : { opencode: agentGatewayOpenCode }),
     };
   };
   const syncAgentGateway = (): void => {
@@ -3383,7 +3306,6 @@ export async function buildEmbeddedServer(
         : {}),
       claudeConfigVolume: config.claudeConfigVolume ?? 'claude-config-verity',
       codexConfigVolume: config.codexConfigVolume ?? 'codex-config-verity',
-      opencodeConfigVolume: config.opencodeConfigVolume ?? 'opencode-config-verity',
       piConfigVolume: config.piConfigVolume ?? 'pi-config-verity',
       // ghcr auth for devcontainer builds: mint a `packages:read` installation token
       // so the build resolves the PRIVATE verity-sandbox-toolkit Feature + pulls the
@@ -3481,10 +3403,21 @@ export async function buildEmbeddedServer(
       const codexAuth = settings?.codexAuthJson;
       const projectedCodex =
         typeof codexAuth === 'string' && codexAuth.trim().length > 0 ? codexAuth : null;
-      if (projected === agentGatewayAccessToken && projectedCodex === agentGatewayCodexAuthJson)
+      const openCodeBaseUrl = settings?.opencodeBaseUrl?.trim();
+      const openCodeApiKey = settings?.opencodeApiKey?.trim();
+      const projectedOpenCode =
+        openCodeBaseUrl === undefined || openCodeBaseUrl.length === 0
+          ? undefined
+          : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey || null };
+      if (
+        projected === agentGatewayAccessToken &&
+        projectedCodex === agentGatewayCodexAuthJson &&
+        JSON.stringify(projectedOpenCode) === JSON.stringify(agentGatewayOpenCode)
+      )
         return;
       agentGatewayAccessToken = projected;
       agentGatewayCodexAuthJson = projectedCodex;
+      agentGatewayOpenCode = projectedOpenCode;
       syncAgentGateway();
     };
     let projection: Promise<void> | undefined;
@@ -3777,7 +3710,7 @@ export async function buildEmbeddedServer(
         };
 
   const usesClaudeBackend = (model: string | undefined): boolean =>
-    !isCodexModel(model) && !(config.openCodeEnabled === true && model?.includes('/'));
+    !isCodexModel(model) && !model?.includes('/');
   let cachedProjects: { at: number; result: ProjectRecord[] } | undefined;
   let projectsInflight: Promise<ProjectRecord[]> | undefined;
 
@@ -3820,6 +3753,10 @@ export async function buildEmbeddedServer(
     ...(uplinkControl !== undefined
       ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }
       : {}),
+    onOpenCodeSettingsChanged: async (settings) => {
+      materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
+      await refreshAgentGatewayCredential();
+    },
     ...(config.googleDriveClientId !== undefined
       ? { googleDriveClientId: config.googleDriveClientId }
       : {}),
@@ -3875,20 +3812,17 @@ export async function buildEmbeddedServer(
     // refresh timer only runs when `codexModels` was left unset, and that is precisely
     // the case where this list falls back to `[CODEX_DEFAULT_MODEL]`. So a populated
     // catalogue always has a non-empty list beside it, and this gate cannot drop one.
-    ...(openCodeModels.length > 0 || configuredCodexModels.length > 0
-      ? {
-          // Synchronous behind an async contract: the Codex catalogue is a cache the
-          // refresh timer fills, and the OpenCode half is the operator's pinned list,
-          // so neither half has anything to await since the transport migration. The
-          // signature stays a promise because it is the seam a live catalogue would
-          // reappear in.
-          listModels: () =>
-            Promise.resolve([
-              ...(codexModelCatalog?.list() ?? configuredCodexModels),
-              ...openCodeModels,
-            ]),
-        }
-      : {}),
+    ...{
+      // Synchronous behind an async contract: the Codex catalogue is a cache the
+      // refresh timer fills, and the OpenCode half is the operator's pinned list,
+      // so neither half has anything to await since the transport migration. The
+      // signature stays a promise because it is the seam a live catalogue would
+      // reappear in.
+      listModels: async () => [
+        ...(codexModelCatalog?.list() ?? configuredCodexModels),
+        ...(await openCodeModels()),
+      ],
+    },
     ...(config.logger !== undefined ? { logger: config.logger } : {}),
     ...(config.workspacesDir !== undefined ? { spawnWorktreeRoot: config.workspacesDir } : {}),
     ...(worktrees !== undefined ? { worktrees } : {}),
@@ -4224,7 +4158,7 @@ export async function buildEmbeddedServer(
       // OpenCode backend (#143) for provider-qualified models, over ACP like every
       // other agent since ADR 0012 Amendment 4. The conductor routes by model; not
       // enabled → Claude-only.
-      ...(config.openCodeEnabled === true ? { openCodeBackend: new AcpOpenCodeBackend() } : {}),
+      openCodeBackend: new AcpOpenCodeBackend(),
       // Codex runs exclusively over ACP. ADR 0014 supplies its brokered tools through
       // the approval-gated per-turn MCP gateway.
       ...(config.codexEnabled === true
@@ -4235,6 +4169,7 @@ export async function buildEmbeddedServer(
       sessionBackend: async (session, selected, preparation) => {
         const isClaudeSession = usesClaudeBackend(session.model);
         const isCodexSession = isCodexModel(session.model);
+        const isOpenCodeSession = selected.runnerSupervisorBackend === 'opencode-acp';
         // Every branch below assumes a Claude turn is an ACP turn: none of them
         // fetches an access token, and no agent process is handed
         // `CLAUDE_CODE_OAUTH_TOKEN` except the non-secret egress placeholder. The
@@ -4395,7 +4330,7 @@ export async function buildEmbeddedServer(
             // therefore never matched and failed every Claude turn closed; the relay,
             // not the sandbox, is what forwards to the gateway.
             if (
-              (isClaudeSession || isCodexSession) &&
+              (isClaudeSession || isCodexSession || isOpenCodeSession) &&
               claudeEgressActive &&
               agentGatewayUrl !== undefined
             ) {

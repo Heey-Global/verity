@@ -2748,6 +2748,21 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('session_slide_decks').dropColumn('assignment_id').execute();
     },
   },
+  '0093_opencode_settings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('opencode_base_url', 'text')
+        .execute();
+      await db.schema.alterTable('verity_settings').addColumn('opencode_api_key', 'text').execute();
+      await db.schema.alterTable('verity_settings').addColumn('opencode_models', 'text').execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_models').execute();
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_api_key').execute();
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_base_url').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

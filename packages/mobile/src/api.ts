@@ -695,6 +695,9 @@ export const veritySettingsSchema = z.object({
   transcribeExternalConfigured: z.boolean().default(false),
   claudeCodeOauthCredentialsConfigured: z.boolean(),
   codexAuthJsonConfigured: z.boolean(),
+  opencodeBaseUrl: z.string().nullable().optional(),
+  opencodeModels: z.string().nullable().optional(),
+  opencodeApiKeyConfigured: z.boolean().optional(),
   // Google Drive connection (ADR 0009). The client id + account email are
   // non-secret; `googleDriveConnected` reflects whether a refresh token is held.
   googleDriveClientId: z.string().nullable(),
@@ -845,6 +848,9 @@ export type VeritySettingsPatch = {
   uplinkSubscriptionKey?: string | null | undefined;
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
+  opencodeBaseUrl?: string | null | undefined;
+  opencodeModels?: string | null | undefined;
+  opencodeApiKey?: string | null | undefined;
 };
 
 export const agentLoginProviderSchema = z.enum(['claude', 'codex']);

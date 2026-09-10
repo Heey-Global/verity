@@ -42,7 +42,6 @@ import {
   parseCpuCores,
   parseDefaultOnFlag,
   parseNonNegativeInt,
-  parseOpenCodeEnabled,
   parsePort,
   parsePushEnabled,
   parseTasksProjectNumber,
@@ -455,93 +454,6 @@ describe('parseTranscriptSweep', () => {
     // back to `on` would defeat the single purpose it has.
     expect(() => parseTranscriptSweep('of')).toThrow(/VERITY_TRANSCRIPT_SWEEP/);
     expect(() => parseTranscriptSweep('no')).toThrow(/VERITY_TRANSCRIPT_SWEEP/);
-  });
-});
-
-describe('parseOpenCodeEnabled', () => {
-  it('is off unless a deployment opts in', () => {
-    expect(parseOpenCodeEnabled({ enabled: undefined, legacyBaseUrl: undefined })).toBe(false);
-    expect(parseOpenCodeEnabled({ enabled: '0', legacyBaseUrl: undefined })).toBe(false);
-    expect(parseOpenCodeEnabled({ enabled: '1', legacyBaseUrl: undefined })).toBe(true);
-    expect(parseOpenCodeEnabled({ enabled: 'true', legacyBaseUrl: undefined })).toBe(true);
-  });
-
-  it('takes the usual spellings and refuses the ones it cannot read', () => {
-    for (const on of ['1', 'true', 'TRUE', ' yes ', 'On'])
-      expect(parseOpenCodeEnabled({ enabled: on, legacyBaseUrl: undefined })).toBe(true);
-    for (const off of ['0', 'false', 'No', 'OFF', ''])
-      expect(parseOpenCodeEnabled({ enabled: off, legacyBaseUrl: undefined })).toBe(false);
-    // A typo reading as "off" is the same silent failure the legacy-variable refusal
-    // above exists to prevent, one variable over: the deployment sets the flag, boots
-    // clean, and discovers at the first OpenCode turn that the route was never on.
-    expect(() => parseOpenCodeEnabled({ enabled: 'ture', legacyBaseUrl: undefined })).toThrow(
-      /VERITY_OPENCODE_ENABLED/,
-    );
-  });
-
-  it('refuses to boot on the retired OPENCODE_BASE_URL alone', () => {
-    // The pre-ACP deployment shape. Booting would leave every stored provider/model id
-    // routing to Claude, so the upgrade has to be noticed at boot, not per turn.
-    expect(() =>
-      parseOpenCodeEnabled({ enabled: undefined, legacyBaseUrl: 'http://opencode:4096' }),
-    ).toThrow(/VERITY_OPENCODE_ENABLED/);
-  });
-
-  it('ignores a blank OPENCODE_BASE_URL', () => {
-    // An env file that keeps the key with an empty value is not a deployment pointing at
-    // a server; failing that boot would be a migration hazard of its own.
-    expect(parseOpenCodeEnabled({ enabled: undefined, legacyBaseUrl: '  ' })).toBe(false);
-  });
-
-  it('warns instead of refusing once the new flag is set', () => {
-    const warnings: string[] = [];
-    expect(
-      parseOpenCodeEnabled({ enabled: '1', legacyBaseUrl: 'http://opencode:4096' }, (message) =>
-        warnings.push(message),
-      ),
-    ).toBe(true);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/OPENCODE_BASE_URL is ignored/);
-  });
-
-  it('does not read a declared-empty flag as that acknowledgement', () => {
-    // `VERITY_OPENCODE_ENABLED=${SOMETHING_UNSET}` is what env plumbing produces when
-    // the value it meant to pass is missing, so an empty flag is silence rather than a
-    // decision — and silence beside the retired variable is the case the refusal
-    // exists for. It says which spelling means "off", so an operator who did mean it
-    // is one character away rather than guessing.
-    expect(() =>
-      parseOpenCodeEnabled({ enabled: '', legacyBaseUrl: 'http://opencode:4096' }),
-    ).toThrow(/VERITY_OPENCODE_ENABLED=0 also clears this/);
-  });
-
-  it('accepts an explicit off as the same acknowledgement', () => {
-    // The refusal asks for one of two answers, and "drop OpenCode" is one of them.
-    // A deployment that has said so in the new variable has read the message; still
-    // refusing its boot over the dead one would be holding it hostage to an env
-    // edit that changes nothing about how it runs.
-    const warnings: string[] = [];
-    expect(
-      parseOpenCodeEnabled({ enabled: '0', legacyBaseUrl: 'http://opencode:4096' }, (message) =>
-        warnings.push(message),
-      ),
-    ).toBe(false);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/OPENCODE_BASE_URL is ignored/);
-    // The remedy has a cost the operator has to hear about once, here: with no
-    // OpenCode backend configured the conductor routes a provider-qualified model to
-    // Claude, which does not know it, so sessions already on such a model stop
-    // running until someone picks a different one.
-    expect(warnings[0]).toMatch(/fail their next turn/);
-  });
-
-  it('says what dropping OpenCode costs in the refusal too', () => {
-    // Same fact on the other path: the refusal recommends "unset it alone to drop
-    // OpenCode" as one of its two remedies, and an operator choosing it from this
-    // message should not learn about the stranded sessions from a red turn.
-    expect(() =>
-      parseOpenCodeEnabled({ enabled: undefined, legacyBaseUrl: 'http://opencode:4096' }),
-    ).toThrow(/their next turn fails until another model is picked/);
   });
 });
 
@@ -2597,31 +2509,42 @@ describe('buildEmbeddedServer', () => {
     expect(res.json().pushEnabled).toBe(true);
   });
 
-  it('wires the OpenCode backend + /models when OpenCode is enabled (#143)', async () => {
-    // Smoke: the OpenCode backend is constructed + passed to the conductor, and the
-    // operator's pinned ids reach the picker. Since the ACP migration those ids ARE
-    // the OpenCode catalogue — there is no `opencode serve` left to enumerate — so
-    // this also covers the `listModels` glue no other test exercises end-to-end.
-    server = await buildTestEmbeddedServer({
-      openCodeEnabled: true,
-      extraModels: ['deepinfra/zai-org/GLM-5.2'],
+  it('wires the OpenCode backend + /models from settings', async () => {
+    server = await buildTestEmbeddedServer();
+    const init = await server.app.inject({
+      method: 'POST',
+      url: '/secret/init',
+      payload: { password: 'correct horse battery staple', deviceLabel: 'test device' },
+    });
+    const token = String(init.json().token);
+    await server.app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        opencodeBaseUrl: 'https://api.deepinfra.test/v1',
+        opencodeApiKey: 'opencode-key-fixture',
+        opencodeModels: 'zai-org/GLM-5.2',
+      },
     });
     const res = await server.app.inject({ method: 'GET', url: '/healthz' });
     expect(res.statusCode).toBe(200);
 
-    const models = await server.app.inject({ method: 'GET', url: '/models' });
+    const models = await server.app.inject({
+      method: 'GET',
+      url: '/models',
+      headers: { authorization: `Bearer ${token}` },
+    });
     expect(models.statusCode).toBe(200);
     const body = models.json<{ models: string[]; default?: string }>();
-    expect(body.default).toBe('deepinfra/zai-org/GLM-5.2');
-    expect(body.models).toEqual(['deepinfra/zai-org/GLM-5.2']);
+    expect(body.default).toBe('verity/zai-org/GLM-5.2');
+    expect(body.models).toEqual(['verity/zai-org/GLM-5.2']);
   });
 
   it('offers Codex and OpenCode models side by side', async () => {
     server = await buildTestEmbeddedServer({
       codexEnabled: true,
       codexModels: ['codex/gpt-5.6-sol'],
-      openCodeEnabled: true,
-      extraModels: ['deepinfra/zai-org/GLM-5.2'],
     });
 
     // Codex ids are gated on a stored Codex login — a subscription backend is not
@@ -2638,7 +2561,12 @@ describe('buildEmbeddedServer', () => {
       method: 'PATCH',
       url: '/settings',
       headers: { authorization: `Bearer ${token}` },
-      payload: { codexAuthJson: '{"tokens":{"access_token":"codex-token"}}' },
+      payload: {
+        codexAuthJson: '{"tokens":{"access_token":"codex-token"}}',
+        opencodeBaseUrl: 'https://api.deepinfra.test/v1',
+        opencodeApiKey: 'opencode-key-fixture',
+        opencodeModels: 'zai-org/GLM-5.2',
+      },
     });
     expect(settings.statusCode).toBe(200);
 
@@ -2650,7 +2578,7 @@ describe('buildEmbeddedServer', () => {
     expect(models.statusCode).toBe(200);
     const body = models.json<{ models: string[]; default?: string }>();
     expect(body.default).toBe('codex/gpt-5.6-sol');
-    expect(body.models).toEqual(['codex/gpt-5.6-sol', 'deepinfra/zai-org/GLM-5.2']);
+    expect(body.models).toEqual(['codex/gpt-5.6-sol', 'verity/zai-org/GLM-5.2']);
   });
 
   it('refreshes visible Codex models from the credential-free bundled catalog', async () => {
@@ -2875,39 +2803,8 @@ describe('buildEmbeddedServer', () => {
     }
   });
 
-  it('keeps the operator ordering of the OpenCode picker catalogue', async () => {
-    server = await buildTestEmbeddedServer({
-      extraModels: ['deepinfra/moonshotai/Kimi-K2.7-Code', 'deepinfra/zai-org/GLM-5.2'],
-      openCodeEnabled: true,
-    });
-
-    const models = await server.app.inject({ method: 'GET', url: '/models' });
-    expect(models.statusCode).toBe(200);
-    const body = models.json<{ models: string[]; default?: string }>();
-    expect(body.default).toBe('deepinfra/moonshotai/Kimi-K2.7-Code');
-    expect(body.models).toEqual([
-      'deepinfra/moonshotai/Kimi-K2.7-Code',
-      'deepinfra/zai-org/GLM-5.2',
-    ]);
-  });
-
-  it('does not expose provider-qualified extra models without an OpenCode backend', async () => {
-    server = await buildTestEmbeddedServer({
-      extraModels: ['deepinfra/moonshotai/Kimi-K2.7-Code', 'deepinfra/zai-org/GLM-5.2'],
-    });
-
-    const models = await server.app.inject({ method: 'GET', url: '/models' });
-    expect(models.statusCode).toBe(200);
-    const body = models.json<{ models: string[]; default?: string }>();
-    expect(body.default).toBeUndefined();
-    expect(body.models).toEqual([]);
-  });
-
-  it('boots with OpenCode enabled but no models pinned', async () => {
-    // Half-configured is the deployment that used to break: the flag alone means the
-    // backend exists with nothing to offer, and that must read as an empty picker
-    // (200) rather than a boot failure or a 500 on /models.
-    server = await buildTestEmbeddedServer({ openCodeEnabled: true });
+  it('does not expose OpenCode models until all settings are configured', async () => {
+    server = await buildTestEmbeddedServer();
     const res = await server.app.inject({ method: 'GET', url: '/healthz' });
     expect(res.statusCode).toBe(200);
 
