@@ -384,6 +384,25 @@ describe('Verity website publication smoke', () => {
     ) as typeof config;
     expect(path, 'the website has no package in the release config').toBeDefined();
     expect(backendConfig.packages['.']?.['exclude-paths'] ?? []).toContain(path);
+    const backendExclusions = backendConfig.packages['.']?.['exclude-paths'] ?? [];
+    expect(backendExclusions).toContain('.github/**');
+    // A workflow-only fix commonly changes its guard in the same commit. Tests
+    // are not shipped Server artifacts and must not turn that into a release.
+    expect(backendExclusions).toContain('**/*.test.*');
+    const infrastructureMatcher = ignore().add(
+      backendExclusions.filter((pattern) => pattern === '.github/**' || pattern === '**/*.test.*'),
+    );
+    const isInfrastructureOnly = (path: string) => infrastructureMatcher.ignores(path);
+    expect(isInfrastructureOnly('.github/workflows/release.yml')).toBe(true);
+    expect(isInfrastructureOnly('scripts/ci-workflow.test.ts')).toBe(true);
+    expect(isInfrastructureOnly('deploy/bin/verity-install.test.mjs')).toBe(true);
+    expect(isInfrastructureOnly('apps/mobile/__tests__/onboarding.test.tsx')).toBe(true);
+    expect(isInfrastructureOnly('packages/server/src/server.ts')).toBe(false);
+    expect(
+      ['.github/workflows/release.yml', 'packages/server/src/server.ts'].every(
+        isInfrastructureOnly,
+      ),
+    ).toBe(false);
     expect(backendConfig.packages['.']?.['package-name']).toBe('server');
     expect(backendConfig.packages['.']?.['include-component-in-tag']).toBe(false);
     expect(website?.['include-component-in-tag']).toBe(true);

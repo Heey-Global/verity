@@ -5,7 +5,7 @@
       "release-type": "simple",
       "package-name": "server",
       "include-component-in-tag": false,
-      "exclude-paths": ["apps/mobile", "docs/website"]
+      "exclude-paths": [".github/**", "**/*.test.*", "apps/mobile", "docs/website"]
     }
   }
 }
