@@ -1,5 +1,14 @@
 # Changelog
 
+## [17.3.6](https://github.com/Heey-Global/verity/compare/v17.3.5...v17.3.6) (2026-09-10)
+
+
+### Bug Fixes
+
+* **github:** return manifest callbacks through the app ([768e5c0](https://github.com/Heey-Global/verity/commit/768e5c0fe74110ce6de2c752be9d73c61d38f912))
+* **release:** isolate publishing to event train ([88f710b](https://github.com/Heey-Global/verity/commit/88f710b3f29435ec55aec1184b51a5f42a487a38))
+* **website:** harden GitHub App bridge ([9eb6f6c](https://github.com/Heey-Global/verity/commit/9eb6f6cefd3c32c0b9698ef7a4ac5168d00e0050))
+
 ## [17.3.5](https://github.com/Heey-Global/verity/compare/v17.3.4...v17.3.5) (2026-09-09)
 
 
