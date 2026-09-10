@@ -154,6 +154,7 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'GET /internal/mcp',
   'POST /internal/mcp-proxy',
   'GET /internal/mcp-proxy',
+  'DELETE /internal/mcp-proxy',
 ]);
 
 /**

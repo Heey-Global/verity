@@ -92,6 +92,15 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
       return { error: 'MCP connection not found' };
     }
     const body = bindingBody.parse(request.body);
+    const bindings = await store.listProjectMcpBindings(id);
+    if (
+      body.enabled &&
+      !bindings.some((binding) => binding.connectionId === connectionId && binding.enabled) &&
+      bindings.filter((binding) => binding.enabled).length >= 16
+    ) {
+      reply.code(409);
+      return { error: 'a project may enable at most 16 MCP connections' };
+    }
     const binding = {
       projectId: id,
       connectionId,

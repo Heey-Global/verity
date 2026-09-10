@@ -20302,6 +20302,9 @@ ${prompt}`;
 var GATEWAY_UNAVAILABLE_DIRECTIVE = `## Brokered Verity tools unavailable
 
 This turn started without the Verity MCP gateway because this agent adapter does not advertise HTTP MCP support. Tools such as \`verity_http_request\`, \`verity_secret_run\`, and the control-plane session tools are absent for this turn only. Report this reason when a request needs one of them; do not look for a substitute credential, socket, or CLI, and do not claim only that a tool is missing.`;
+var MCP_SERVERS_UNAVAILABLE_DIRECTIVE = `## Configured MCP connections unavailable
+
+This turn started without the project\u2019s configured MCP connections because this agent adapter does not advertise HTTP MCP support. Report this reason when the request needs one of those connections; do not silently continue as if their tools were available.`;
 function withSystemDirective(opts, directive) {
   const existing = opts.appendSystemPrompt;
   return {
@@ -20525,7 +20528,13 @@ async function runAcpTurn(opts, profile) {
           headers: server2.headers.map((header) => ({ ...header }))
         }))
       ] : [];
-      const turnOpts = gateway !== void 0 && !agentSpeaksHttpMcp ? withSystemDirective(opts, GATEWAY_UNAVAILABLE_DIRECTIVE) : opts;
+      let turnOpts = opts;
+      if (!agentSpeaksHttpMcp && gateway !== void 0) {
+        turnOpts = withSystemDirective(turnOpts, GATEWAY_UNAVAILABLE_DIRECTIVE);
+      }
+      if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
+        turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
+      }
       const request2 = {
         cwd: opts.cwd,
         mcpServers: mcpServers2,

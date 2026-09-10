@@ -864,6 +864,7 @@ describe('AcpClaudeBackend', () => {
       params: { mcpServers: [] },
     });
     expect(JSON.stringify(fake.writes)).not.toContain('proxy-session-token');
+    expect(JSON.stringify(fake.writes)).toContain('Configured MCP connections unavailable');
   });
 
   // An agent that cannot speak HTTP MCP would be handed a server it can never

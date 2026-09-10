@@ -42,6 +42,7 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   'GET /internal/mcp',
   'POST /internal/mcp-proxy',
   'GET /internal/mcp-proxy',
+  'DELETE /internal/mcp-proxy',
 ]);
 /**
  * Routes the Server does not answer from its own state but parks on an operator decision.

@@ -5,7 +5,7 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { IncomingMessage } from 'node:http';
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { bearerToken } from './auth.js';
 import { internalConnectionIdentity } from './internal-listener.js';
@@ -99,7 +99,8 @@ export function parseHttpMcpUpstream(value: string): URL {
 
 async function forward(
   connection: HttpMcpProxyConnection,
-  body: Buffer,
+  method: 'POST' | 'GET' | 'DELETE',
+  body: Buffer | undefined,
   headers: {
     accept?: string;
     contentType?: string;
@@ -114,14 +115,18 @@ async function forward(
         protocol: 'https:',
         hostname: url.hostname,
         port: 443,
-        method: 'POST',
+        method,
         path: `${url.pathname}${url.search}`,
         servername: url.hostname,
         agent: false,
         headers: {
           accept: headers.accept ?? 'application/json, text/event-stream',
-          'content-type': headers.contentType ?? 'application/json',
-          'content-length': String(body.byteLength),
+          ...(body === undefined
+            ? {}
+            : {
+                'content-type': headers.contentType ?? 'application/json',
+                'content-length': String(body.byteLength),
+              }),
           ...(headers.protocolVersion === undefined
             ? {}
             : { 'mcp-protocol-version': headers.protocolVersion }),
@@ -167,7 +172,11 @@ async function forward(
 }
 
 export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpProxyDeps): void {
-  app.post('/internal/mcp-proxy', { bodyLimit: MAX_BODY_BYTES }, async (request, reply) => {
+  const handle = async (
+    method: 'POST' | 'GET' | 'DELETE',
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
     const identity = internalConnectionIdentity(request);
     const token = bearerToken(request.headers.authorization);
     const connectionId = request.headers[BINDING_HEADER];
@@ -189,10 +198,10 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       reply.code(401);
       return { error: 'unauthorized' };
     }
-    const body = Buffer.from(JSON.stringify(request.body));
+    const body = method === 'POST' ? Buffer.from(JSON.stringify(request.body)) : undefined;
     let hijacked = false;
     try {
-      const response = await forward(connection, body, {
+      const response = await forward(connection, method, body, {
         ...(typeof request.headers.accept === 'string' ? { accept: request.headers.accept } : {}),
         ...(typeof request.headers['content-type'] === 'string'
           ? { contentType: request.headers['content-type'] }
@@ -227,15 +236,10 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
       reply.code(502);
       return { error: 'MCP upstream unavailable' };
     }
-  });
-  // Stateless upstreams have no server-initiated stream. MCP clients treat 405 as the
-  // protocol-compatible signal to continue without one, matching the built-in gateway.
-  app.get('/internal/mcp-proxy', async (request, reply) => {
-    if (internalConnectionIdentity(request) === undefined) {
-      reply.code(401);
-      return { error: 'unauthorized' };
-    }
-    reply.code(405).header('allow', 'POST');
-    return { error: 'method_not_allowed' };
-  });
+  };
+  app.post('/internal/mcp-proxy', { bodyLimit: MAX_BODY_BYTES }, (request, reply) =>
+    handle('POST', request, reply),
+  );
+  app.get('/internal/mcp-proxy', (request, reply) => handle('GET', request, reply));
+  app.delete('/internal/mcp-proxy', (request, reply) => handle('DELETE', request, reply));
 }

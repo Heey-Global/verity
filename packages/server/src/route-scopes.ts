@@ -180,6 +180,18 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'GET',
     '/internal/mcp-proxy',
     'gateway-turn',
+    'per-turn gateway bearer plus a project-bound MCP connection binding',
+  ),
+  declare(
+    'DELETE',
+    '/internal/mcp-proxy',
+    'gateway-turn',
+    'per-turn gateway bearer plus a project-bound MCP connection binding',
+  ),
+  declare(
+    'GET',
+    '/internal/mcp-proxy',
+    'gateway-turn',
     'project-bound transport; answers 405 when no server-message stream is available',
   ),
   declare(
