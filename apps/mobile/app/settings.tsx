@@ -918,15 +918,20 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
   const [authorization, setAuthorization] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const connectionRevision = useRef(0);
   const load = useCallback(async (): Promise<void> => {
     if (typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function') return;
+    const revision = connectionRevision.current;
     await client
       .listHttpMcpConnections()
-      .then(setConnections)
+      .then((loaded) => {
+        if (connectionRevision.current === revision) setConnections(loaded);
+      })
       .catch(() => setError('Could not load MCP connections.'));
   }, [client]);
   useEffect(() => void load(), [load]);
   const add = useCallback(() => {
+    connectionRevision.current += 1;
     setBusy(true);
     setError(undefined);
     void client

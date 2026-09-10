@@ -31,6 +31,15 @@ const bindingBody = z
   })
   .strict();
 
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === '23505'
+  );
+}
+
 /** Global server definitions with explicit per-project activation. No credential value is public. */
 export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: EventStore): void {
   app.get('/mcp-connections', async () => ({
@@ -56,7 +65,15 @@ export function registerHttpMcpConnectionRoutes(app: FastifyInstance, store: Eve
       authorization: body.authorization ?? null,
       enabled: body.enabled ?? true,
     };
-    await store.upsertHttpMcpConnection(connection);
+    try {
+      await store.upsertHttpMcpConnection(connection);
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        reply.code(409);
+        return { error: 'an MCP connection with this name already exists' };
+      }
+      throw error;
+    }
     reply.code(201);
     const { authorization, ...publicConnection } = connection;
     return {

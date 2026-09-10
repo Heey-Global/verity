@@ -111,7 +111,7 @@ async function forward(
             ? {}
             : { authorization: connection.authorization }),
         },
-        lookup: (hostname, _options, callback) => {
+        lookup: (hostname, options, callback) => {
           dnsLookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
             if (
               error !== null ||
@@ -119,6 +119,10 @@ async function forward(
               addresses.some((a) => isForbiddenHttpMcpAddress(a.address))
             ) {
               callback(new Error('HTTP MCP upstream resolution rejected'), []);
+              return;
+            }
+            if (typeof options === 'object' && options.all) {
+              callback(null, addresses);
               return;
             }
             const first = addresses[0]!;
