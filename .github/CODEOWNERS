@@ -1,0 +1,45 @@
+# Review ownership for this repository.
+#
+# GitHub requests a review from the owner of every path a pull request touches.
+# On its own that is a request and not a gate: the `main` ruleset has
+# `require_code_owner_review` disabled, so a pull request still merges without
+# the owner ever answering. This file is the half that has to live in the
+# repository — enabling that toggle without it protects nothing, because there
+# is no owner to ask.
+#
+# Last match wins. The catch-all comes first on purpose, and the paths below it
+# are the ones that must not change hands silently when someone later adds a
+# narrower rule for a package or an app. They decide what CI executes, what may
+# reach a secret, and what is allowed to be pushed at all — a reviewer looking
+# at a source change would not think to check them.
+
+*                             @h-teske
+
+# Everything CI runs with a token, including the composite actions the
+# workflows call. A change here can widen its own permissions.
+/.github/                     @h-teske
+
+# The pre-push gate itself: the secret scan and the code review receipt. A
+# change that weakens these also removes the check that would have caught it.
+/agent-seed/                  @h-teske
+
+# The secret catalogue and its audit rules — what a brokered request is
+# allowed to resolve at all.
+/packages/secret-contracts/   @h-teske
+
+# What gets built, signed, published, and deployed.
+/deploy/                      @h-teske
+/release-please-config.*.json @h-teske
+/snapshot-policy.json         @h-teske
+
+# The supply-chain floor: the minimum release age and `engine-strict` live in
+# `.npmrc`, the resolved tree in the lockfile, and the update policy that feeds
+# both in `renovate.json`.
+/.npmrc                       @h-teske
+/package-lock.json            @h-teske
+/renovate.json                @h-teske
+
+# The policies these owners are the ones enforcing.
+/SECURITY.md                  @h-teske
+/CONTRIBUTING.md              @h-teske
+/AGENTS.md                    @h-teske
