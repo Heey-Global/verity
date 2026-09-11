@@ -39,6 +39,10 @@ opt_tag='latest'
 opt_project=''
 opt_check=0
 opt_advance_unpaired_from=''
+opt_update=0
+opt_reinstall=0
+opt_yes=0
+original_args=("$@")
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
   # Match the AMOLED Verity UI palette in true-colour terminals.
@@ -93,6 +97,14 @@ Options:
                        then persisted; defaults to "verity" on a fresh host.
   --check              Run the preflight and print what would be installed, then
                        stop without touching the deployment.
+  --update             Update an existing, not-yet-paired installation to --image
+                       or --tag while keeping its data. Paired installations update
+                       from the Verity app instead.
+  --reinstall          Delete the existing Verity installation and install the
+                       selected release from scratch. This deletes all projects,
+                       sessions, secrets, database data, and paired-device state.
+  --yes                Confirm --reinstall non-interactively. Has no effect without
+                       --reinstall.
   -h, --help           Show this help.
 
 Environment:
@@ -122,11 +134,29 @@ while [ "$#" -gt 0 ]; do
     --project) [ "$#" -ge 2 ] || die 'option --project needs a value'; opt_project="$2"; shift 2 ;;
     --project=*) opt_project="${1#--project=}"; shift ;;
     --check) opt_check=1; shift ;;
+    --update) opt_update=1; shift ;;
+    --reinstall) opt_reinstall=1; shift ;;
+    --yes) opt_yes=1; shift ;;
     --advance-unpaired-from) [ "$#" -ge 2 ] || die 'option --advance-unpaired-from needs a value'; opt_advance_unpaired_from="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
 done
+
+[ "$opt_yes" = 0 ] || [ "$opt_reinstall" = 1 ] \
+  || die '--yes is accepted only together with --reinstall'
+[ "$opt_check" = 0 ] || [ "$opt_reinstall" = 0 ] \
+  || die '--check and --reinstall cannot be used together'
+[ "$opt_update" = 0 ] || [ "$opt_reinstall" = 0 ] \
+  || die '--update and --reinstall cannot be used together'
+[ "$opt_update" = 0 ] || [ "$opt_check" = 0 ] \
+  || die '--update and --check cannot be used together'
+# The public bootstrap resolves an unpaired deployment's release before it can
+# execute this release-matched payload. Treat its guarded advance as the same
+# explicit update action so the existing-install prompt cannot mislabel it repair.
+if [ -n "$opt_advance_unpaired_from" ] && [ "$opt_check" = 0 ]; then opt_update=1; fi
+[ "$opt_update" = 0 ] || [ "$opt_reinstall" = 0 ] \
+  || die '--advance-unpaired-from and --reinstall cannot be used together'
 
 banner
 
@@ -552,6 +582,137 @@ compose_project="$(resolve_project)"
 valid_project_name "$compose_project" \
   || die "resolved the Compose project name '$compose_project', which Compose will not accept: a project name is lowercase letters, digits, dashes and underscores, starting with a letter or a digit. It comes from $PROJECT_PATH or from the label on an existing container; correct that file, or delete it and pass --project."
 
+# ── existing-installation decision ────────────────────────────────────────
+# A rerun is normally a host-side repair: it keeps the sealed Server image and
+# every byte of deployment data. That is intentionally different from installing
+# the newest release from scratch, so do not hide the distinction behind an image
+# mismatch several minutes later. Ask before pairing material is rotated or any
+# migration runs. Non-interactive invocations retain the safe repair behaviour;
+# automation must spell the destructive choice as --reinstall --yes.
+if [ "$first_install" = 0 ] && [ "$opt_check" = 0 ] && [ "$opt_update" = 0 ] && [ "$opt_reinstall" = 0 ]; then
+  if ( : </dev/tty && : >/dev/tty ) 2>/dev/null; then
+    printf '\nAn existing Verity installation was found.\n' >/dev/tty
+    printf '  1) Repair this installation (keep its version and all data)\n' >/dev/tty
+    printf '  2) Update to the selected release (keep data; only before first pairing)\n' >/dev/tty
+    printf '  3) Completely replace it with the selected release (DELETE ALL VERITY DATA)\n' >/dev/tty
+    printf '  q) Cancel\n' >/dev/tty
+    printf 'Selection [1]: ' >/dev/tty
+    IFS= read -r existing_choice </dev/tty || existing_choice='q'
+    case "${existing_choice:-1}" in
+      1) ;;
+      2) opt_update=1 ;;
+      3) opt_reinstall=1 ;;
+      q|Q) die 'installation cancelled; nothing was changed' ;;
+      *) die "invalid installation selection: $existing_choice" ;;
+    esac
+  fi
+fi
+
+if [ "$opt_update" = 1 ]; then
+  [ "$first_install" = 0 ] \
+    || die '--update was requested, but no existing managed Verity installation was found'
+  # managed-bootstrap resolves "current" inside the sealed state and changes the
+  # image only while the database proves that no device has paired yet. Once paired,
+  # app-initiated updates are the only supported path.
+  if [ -z "$opt_advance_unpaired_from" ]; then opt_advance_unpaired_from=current; fi
+fi
+
+if [ "$opt_reinstall" = 1 ]; then
+  if [ "$first_install" = 1 ]; then
+    die '--reinstall was requested, but no existing managed Verity installation was found'
+  fi
+  if [ "$opt_yes" = 0 ]; then
+    ( : </dev/tty && : >/dev/tty ) 2>/dev/null \
+      || die '--reinstall deletes all Verity data and needs an interactive terminal; pass --yes only after reviewing that consequence'
+    printf '\nThis permanently deletes every Verity project, session, stored secret,\n' >/dev/tty
+    printf 'database, pairing identity, and installer setting on this host.\n' >/dev/tty
+    printf 'Type DELETE VERITY to continue: ' >/dev/tty
+    IFS= read -r reinstall_confirmation </dev/tty || reinstall_confirmation=''
+    [ "$reinstall_confirmation" = 'DELETE VERITY' ] \
+      || die 'confirmation did not match; nothing was changed'
+  fi
+
+  heading 'Removing existing Verity installation'
+  reinstall_networks="$(docker_query 'Docker networks before reinstall cleanup' \
+    network ls --format '{{.Name}}')"
+  project_network_rows="$(docker_query 'Verity project networks before reinstall cleanup' \
+    network ls --filter 'label=verity.project-id' \
+    --format '{{.Name}}'$'\t''{{.Label "verity.project-id"}}')"
+  project_networks=''
+  while IFS=$'\t' read -r network_name network_project_id; do
+    [ -n "$network_project_id" ] || continue
+    [[ $network_name =~ ^verity-proj-[a-z0-9][a-z0-9_.-]*$ ]] || continue
+    project_networks+="${project_networks:+$'\n'}$network_name"
+  done <<<"$project_network_rows"
+  note "Removing containers owned by Compose project $compose_project"
+  compose_container_ids="$(docker_query "containers owned by Compose project $compose_project" \
+    ps -aq --filter "label=com.docker.compose.project=$compose_project")"
+  data_container_ids="$(docker_query 'containers attached to the Verity data volume' \
+    ps -aq --filter 'volume=verity-data')"
+  managed_container_ids=''
+  if [ -n "$all_managed_names" ]; then
+    managed_container_ids="$(docker_query 'managed Server container identities' \
+      inspect --format '{{.Id}}' $all_managed_names)"
+  fi
+  mapfile -t reinstall_container_ids < <(printf '%s\n%s\n%s\n' \
+    "$compose_container_ids" "$data_container_ids" "$managed_container_ids" \
+    | grep -E '^[a-f0-9]{12,64}$' | sort -u || true)
+  if [ "${#reinstall_container_ids[@]}" -gt 0 ]; then
+    # Every id came from the exact Compose project, the globally named Verity data
+    # volume, or the already shape-checked managed Server prefix above. The generic
+    # verity.project-id label is deliberately insufficient ownership evidence.
+    docker rm -f -v "${reinstall_container_ids[@]}" >/dev/null \
+      || die 'could not remove every Verity container; no volumes or state files were deleted'
+  fi
+
+  note 'Removing Verity data volumes and network'
+  for volume in \
+    "${compose_project}_verity-db" \
+    "${compose_project}_verity-agent-gateway-state" \
+    verity-data \
+    verity-agent-gateway-control \
+    verity-managed-deployment \
+    verity-updater-control \
+    verity-managed-gateway-control \
+    verity-control-runner-runtime \
+    verity-control-runner-identity; do
+    if printf '%s\n' "$volumes_raw" | grep -Fxq "$volume"; then
+      docker volume rm "$volume" >/dev/null \
+        || die "could not remove Verity volume $volume; installer state was kept"
+    fi
+  done
+  while IFS= read -r network_name; do
+    [ -n "$network_name" ] || continue
+    docker network rm "$network_name" >/dev/null \
+      || die "could not remove Verity project network $network_name; installer state was kept"
+  done <<<"$project_networks"
+  if printf '%s\n' "$reinstall_networks" | grep -Fxq verity-net; then
+    docker network rm verity-net >/dev/null \
+      || die 'could not remove the Verity network; installer state was kept'
+  fi
+
+  # The directory may be an explicitly chosen shared directory. Remove only the
+  # files Verity owns, never the directory or unknown neighbours.
+  rm -f -- \
+    "$TOKEN_PATH" "$ID_PATH" "$PROJECT_PATH" "$SUPERVISOR_PATH" \
+    "$GVISOR_PATH" "$POSTGRES_PASSWORD_PATH" \
+    "$STATE_DIR/pairing-identity.pem" "$STATE_DIR/tls-key.pem" \
+    "$STATE_DIR/tls-cert.pem" "$STATE_DIR/tls-ca-key.pem" \
+    "$STATE_DIR/tls-ca-cert.pem" "$STATE_DIR/pairing-code" \
+    "$STATE_DIR/pairing-expires-at" "$STATE_DIR/pairing-uri"
+  exec 8>&-
+
+  retry_args=()
+  for argument in "${original_args[@]}"; do
+    case "$argument" in
+      --reinstall|--yes) ;;
+      *) retry_args+=("$argument") ;;
+    esac
+  done
+  note 'Existing installation removed; starting a fresh install'
+  exec "$0" "${retry_args[@]}"
+fi
+
 # ── Runner supervisor ──────────────────────────────────────────────────────
 # managed-bootstrap matches the literal string '1' and nothing else when it decides
 # whether to seal CAP_CHOWN into the spec, while the Server treats 'true' as enabled
@@ -638,7 +799,7 @@ if [ -n "$opt_image" ]; then
   valid_server_image "$server_image" \
     || die "--image must be the official digest-pinned Server image ($SERVER_REPO@sha256:<64 hex>); a tag is not accepted"
   image_source='--image'
-elif [ -n "$managed_ref" ]; then
+elif [ "$opt_update" = 0 ] && [ -n "$managed_ref" ]; then
   # The re-run path. The sealed spec is what the Server follows, so the digest it
   # runs is the one the rest of the host has to catch up to — not the newest
   # release, and not what this checkout happens to be pinned at. A stopped Server is
@@ -654,7 +815,7 @@ elif [ -n "$managed_ref" ]; then
   else
     image_source="stopped $managed_ref"
   fi
-elif [ "$first_install" = 0 ]; then
+elif [ "$opt_update" = 0 ] && [ "$first_install" = 0 ]; then
   # Sealed deployment, no container left to read the digest off. Resolving the tag
   # here would look like recovery and then fail inside bootstrap, which compares
   # VERITY_SERVER_IMAGE against the sealed spec (managed-bootstrap.ts:151) — and
@@ -668,7 +829,11 @@ elif [ "$opt_check" = 1 ]; then
   server_image=''
   image_source="$SERVER_REPO:$opt_tag (resolved at install time)"
 else
-  note "no managed Server yet — resolving $SERVER_REPO:$opt_tag"
+  if [ "$opt_update" = 1 ]; then
+    note "resolving update $SERVER_REPO:$opt_tag"
+  else
+    note "no managed Server yet — resolving $SERVER_REPO:$opt_tag"
+  fi
   docker pull --quiet "$SERVER_REPO:$opt_tag" >/dev/null \
     || die "could not pull $SERVER_REPO:$opt_tag"
   server_image="$(docker image inspect --format '{{join .RepoDigests "\n"}}' "$SERVER_REPO:$opt_tag" 2>/dev/null \
@@ -681,7 +846,14 @@ fi
 
 # ── report ─────────────────────────────────────────────────────────────────
 heading 'Installation plan'
-field 'Mode' "$([ "$first_install" = 1 ] && printf 'first install' || printf 'host-side upgrade')"
+if [ "$first_install" = 1 ]; then
+  install_mode='first install'
+elif [ "$opt_update" = 1 ]; then
+  install_mode='pre-pairing update'
+else
+  install_mode='host-side repair'
+fi
+field 'Mode' "$install_mode"
 field 'Server image' "${server_image:-<resolved at install time>}"
 if [ "$opt_check" = 1 ]; then
   field 'Image source' "$image_source"

@@ -72,6 +72,7 @@ function makeHost({ docker = [], state = {} } = {}) {
   const binDir = join(checkout, 'deploy', 'bin');
   const stubDir = join(root, 'stub');
   const stateDir = join(root, 'state');
+  const dockerLog = join(root, 'docker.log');
   mkdirSync(binDir, { recursive: true });
   mkdirSync(stubDir, { recursive: true });
   mkdirSync(stateDir, { recursive: true });
@@ -92,11 +93,13 @@ function makeHost({ docker = [], state = {} } = {}) {
       `printf '%s' 'test-identity' >"$state_dir/pairing-identity.pem"\n` +
       `printf '%s' 'test-key' >"$state_dir/tls-key.pem"\n` +
       `printf '%s' 'test-cert' >"$state_dir/tls-cert.pem"\n` +
+      `printf '%s' 'test-ca-key' >"$state_dir/tls-ca-key.pem"\n` +
+      `printf '%s' 'test-ca-cert' >"$state_dir/tls-ca-cert.pem"\n` +
       `printf '%s' 'test-code' >"$state_dir/pairing-code"\n` +
       `printf '%s' '2099-01-01T00:00:00.000Z' >"$state_dir/pairing-expires-at"\n` +
       `printf '%s' 'verity://pair?payload=test' >"$state_dir/pairing-uri"\n` +
-      `chmod 0600 "$state_dir"/pairing-identity.pem "$state_dir"/tls-key.pem "$state_dir"/pairing-code "$state_dir"/pairing-expires-at "$state_dir"/pairing-uri\n` +
-      `chmod 0644 "$state_dir/tls-cert.pem"\n` +
+      `chmod 0600 "$state_dir"/pairing-identity.pem "$state_dir"/tls-key.pem "$state_dir"/tls-ca-key.pem "$state_dir"/pairing-code "$state_dir"/pairing-expires-at "$state_dir"/pairing-uri\n` +
+      `chmod 0644 "$state_dir"/tls-cert.pem "$state_dir"/tls-ca-cert.pem\n` +
       `printf '%s\\n' 'verity://pair?payload=test'\n`,
     { mode: 0o755 },
   );
@@ -128,7 +131,13 @@ function makeHost({ docker = [], state = {} } = {}) {
     .join('');
   writeFileSync(
     join(stubDir, 'docker'),
-    `#!/usr/bin/env bash\nargv="$*"\n` +
+    `#!/usr/bin/env bash\nargv="$*"\nprintf '%s\\n' "$argv" >>${JSON.stringify(dockerLog)}\n` +
+      `containers_removed=${JSON.stringify(join(root, 'containers-removed'))}\n` +
+      `volume_removed=${JSON.stringify(join(root, 'volume-removed'))}\n` +
+      `if [[ $argv == rm\\ -f\\ -v* ]]; then touch "$containers_removed"; exit 0; fi\n` +
+      `if [[ $argv == volume\\ rm*verity-managed-deployment* ]]; then touch "$volume_removed"; exit 0; fi\n` +
+      `if [ -e "$containers_removed" ] && { [[ $argv == ps*name=^/verity-managed-server* ]] || [[ $argv == ps\\ -a*label=com.docker.compose.project* ]]; }; then exit 0; fi\n` +
+      `if [ -e "$volume_removed" ] && [[ $argv == volume\\ ls* ]]; then exit 0; fi\n` +
       `if [[ $argv == version* ]]; then echo '27.1.0'; exit 0; fi\n` +
       branches +
       `if [[ $argv == ps*label=com.docker.compose.service=postgres* ]]; then echo 'verity-postgres-1'; exit 0; fi\n` +
@@ -140,7 +149,7 @@ function makeHost({ docker = [], state = {} } = {}) {
     writeFileSync(join(stateDir, name), contents);
   }
 
-  return { root, checkout, stateDir, stubDir, handover, pairingHandoff, binDir };
+  return { root, checkout, stateDir, stubDir, handover, pairingHandoff, binDir, dockerLog };
 }
 
 function run(host, args = [], env = {}) {
@@ -356,7 +365,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, []);
     assert.equal(result.status, 0, result.output);
-    assert.match(result.output, /Mode +host-side upgrade/);
+    assert.match(result.output, /Mode +host-side repair/);
 
     const env = handoverEnv(host);
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_B);
@@ -368,6 +377,74 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     // brokered-secret runtime requirement, and the migration never objects.
     assert.equal(env.VERITY_GVISOR_REQUIRED, '1');
     assert.equal(stateFile(host, 'updater-token'), 'f'.repeat(64));
+  });
+
+  test('--reinstall --yes removes the detected installation and starts fresh', () => {
+    const host = makeHost({
+      docker: [
+        {
+          match: 'network ls --filter label=verity.project-id',
+          out: 'verity-proj-project-1\tproject-1',
+        },
+        { match: 'network ls --format {{.Name}}', out: 'verity-net' },
+        { match: 'inspect --format {{.Id}}', out: 'abcdef123456' },
+        ...runningServer('verity-managed-server-g4', 'host-abc', '["CHOWN"]', DIGEST_B),
+      ],
+      state: {
+        'deployment-id': 'host-abc\n',
+        'compose-project': 'verity\n',
+        'runner-supervisor': '1\n',
+        'updater-token': 'f'.repeat(64),
+        'tls-ca-key.pem': 'old-ca-key',
+        'tls-ca-cert.pem': 'old-ca-cert',
+      },
+    });
+
+    const result = run(host, ['--image', DIGEST_A, '--reinstall', '--yes']);
+
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /Removing existing Verity installation/);
+    assert.match(result.output, /Existing installation removed; starting a fresh install/);
+    assert.match(result.output, /Mode +first install/);
+    assert.notEqual(stateFile(host, 'deployment-id'), 'host-abc');
+    assert.equal(stateFile(host, 'tls-ca-key.pem'), 'test-ca-key');
+    assert.equal(stateFile(host, 'tls-ca-cert.pem'), 'test-ca-cert');
+    assert.equal(handoverEnv(host).VERITY_SERVER_IMAGE, DIGEST_A);
+    const dockerCalls = readFileSync(host.dockerLog, 'utf8');
+    assert.match(dockerCalls, /ps -aq --filter volume=verity-data/);
+    assert.doesNotMatch(dockerCalls, /ps -aq --filter label=verity\.project-id/);
+    assert.match(dockerCalls, /volume rm verity-managed-deployment/);
+    assert.match(dockerCalls, /network rm verity-proj-project-1/);
+    assert.match(dockerCalls, /network rm verity-net/);
+  });
+
+  test('--reinstall keeps installer state when Docker network discovery fails', () => {
+    const host = makeHost({
+      docker: [
+        { match: 'network ls --format {{.Name}}', status: 70 },
+        ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+      ],
+      state: { 'deployment-id': 'host-abc\n', 'compose-project': 'verity\n' },
+    });
+
+    const result = run(host, ['--reinstall', '--yes']);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /could not ask Docker for Docker networks/);
+    assert.equal(stateFile(host, 'deployment-id'), 'host-abc');
+  });
+
+  test('--reinstall refuses a non-interactive data deletion without --yes', () => {
+    const host = makeHost({
+      docker: runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+      state: { 'deployment-id': 'host-abc\n', 'compose-project': 'verity\n' },
+    });
+
+    const result = run(host, ['--reinstall']);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /needs an interactive terminal/);
+    assert.equal(stateFile(host, 'deployment-id'), 'host-abc');
   });
 
   test('hands an explicitly verified unpaired image advance to managed bootstrap', () => {
@@ -384,6 +461,28 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const env = handoverEnv(host);
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_B);
     assert.equal(env.VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM, DIGEST_A);
+  });
+
+  test('--update resolves the selected release and advances only an unpaired install', () => {
+    const host = makeHost({
+      docker: [
+        { match: 'image inspect --format {{join .RepoDigests', out: DIGEST_B },
+        ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+      ],
+      state: {
+        'deployment-id': 'host-abc\n',
+        'compose-project': 'verity\n',
+        'updater-token': 'f'.repeat(64),
+      },
+    });
+
+    const result = run(host, ['--update']);
+
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /Mode +pre-pairing update/);
+    const env = handoverEnv(host);
+    assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_B);
+    assert.equal(env.VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM, 'current');
   });
 
   test('reuses the persisted PostgreSQL credential and rejects malformed state', () => {

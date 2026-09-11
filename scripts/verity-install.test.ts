@@ -243,6 +243,24 @@ esac
       expect(await readFile(marker, 'utf8')).toContain('--advance-unpaired-from current');
 
       await writeFile(dockerLog, '');
+      await execFileAsync('bash', [installerPath, '--reinstall', '--yes'], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          MOCK_DOCKER: join(bin, 'docker'),
+          MOCK_DOCKER_LOG: dockerLog,
+          MOCK_MANAGED_IMAGE: managedImage,
+          MOCK_MARKER: marker,
+          MOCK_PAYLOAD: payload,
+          MOCK_PRIVILEGED: privileged,
+        },
+      });
+      expect(await readFile(dockerLog, 'utf8')).toContain(
+        'pull --quiet ghcr.io/heey-global/verity/verity-server:latest',
+      );
+      expect(await readFile(marker, 'utf8')).toContain('--reinstall --yes');
+
+      await writeFile(dockerLog, '');
       const oldManagedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
       await execFileAsync(
         'bash',
