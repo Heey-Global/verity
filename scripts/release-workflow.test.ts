@@ -197,6 +197,7 @@ describe('signed GitHub release evidence', () => {
     expect(Object.values(backend.packages)[0]?.draft).toBe(true);
 
     const finalize = workflow.jobs['finalize-backend-release'];
+    expect(finalize.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(finalize.needs).toContain('publish-server-release-evidence');
     const publish = finalize.steps.find((step) => step.name === 'Publish verified backend release');
     expect(publish?.run).toContain('--json isDraft');
