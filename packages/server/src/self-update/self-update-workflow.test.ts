@@ -155,9 +155,9 @@ describe('self-update workflow image', () => {
   // latter. Neither `git describe` nor a walk over `git tag` can express that
   // difference — git has no idea which of its tags reached a registry — so
   // neither comes back as a "simplification" of the resolution the tests below
-  // exercise. `git tag --merged HEAD^ --sort=-version:refname` is named because
-  // it is the exact spelling that blocked the 13.2.14 release.
-  it('does not pick the previous image from the local tag set', async () => {
+  // exercise. GitHub's published-release state is still required: a failed draft
+  // can push an image without becoming a release a host could install.
+  it('starts from the registry catalogue rather than the local tag set', async () => {
     // Comments stripped, because the step explains at length what it stopped
     // doing and naming the old command there is the point.
     const executed = (await step('Fetch the previously released Server image'))
@@ -191,9 +191,7 @@ describe('self-update workflow image', () => {
 
     /**
      * Runs the step against a stubbed ghcr.io that publishes `catalogue`, a
-     * stubbed `docker`, and a `git` that answers the two blob reads the step makes
-     * and refuses everything else — so any reach for the local ref set shows up as
-     * a failure rather than as an answer.
+     * stubbed `docker`, and a stubbed GitHub release listing.
      *
      * `underTest` is what the commit under test records as its version and
      * `parentVersion` is what its parent recorded, so the two together decide
@@ -212,6 +210,8 @@ describe('self-update workflow image', () => {
         catalogueFails?: boolean;
         catalogueMissing?: boolean;
         bootstrapVersion?: string;
+        unpublishedTags?: string[];
+        releasesFail?: boolean;
         pullFails?: { tag: string; error: string };
       } = {},
     ): Promise<{
@@ -231,7 +231,17 @@ describe('self-update workflow image', () => {
       const dir = await mkdtemp(join(tmpdir(), 'self-update-step-'));
       const dockerCalls = join(dir, 'docker-calls');
       const gitCalls = join(dir, 'git-calls');
+      const releasedTags = join(dir, 'released-tags');
       try {
+        const released: string[] = [];
+        for (const page of pages) {
+          if (!Array.isArray(page)) continue;
+          for (const tag of page as unknown[]) {
+            if (typeof tag === 'string' && !(options.unpublishedTags ?? []).includes(tag))
+              released.push(tag);
+          }
+        }
+        await writeFile(releasedTags, released.join('\n'));
         await writeFile(
           join(dir, 'git'),
           `#!/usr/bin/env bash\n` +
@@ -244,9 +254,21 @@ describe('self-update workflow image', () => {
             `  printf '%s\\n' "$STUB_PARENT_VERSION"\n` +
             `  exit 0\n` +
             `fi\n` +
-            // A parent blob that is not there, or anything at all about the local
-            // ref set — which this step must not consult.
             `exit 128\n`,
+          { mode: 0o755 },
+        );
+        await writeFile(
+          join(dir, 'gh'),
+          `#!/usr/bin/env bash\n` +
+            `set -euo pipefail\n` +
+            `[[ "$1" == api && "$2" == --paginate ]]\n` +
+            `[[ "$*" == *"repos/$GITHUB_REPOSITORY/releases?per_page=100"* ]]\n` +
+            `[[ "$*" == *'select(.draft == false and .prerelease == false)'* ]]\n` +
+            `if [[ -n "\${STUB_RELEASES_FAILS:-}" ]]; then\n` +
+            `  echo 'GitHub release API refused the request' >&2\n` +
+            `  exit 1\n` +
+            `fi\n` +
+            `cat ${JSON.stringify(releasedTags)}\n`,
           { mode: 0o755 },
         );
         await writeFile(
@@ -346,6 +368,8 @@ describe('self-update workflow image', () => {
           ...(options.tokenFails === true ? { STUB_TOKEN_FAILS: '1' } : {}),
           ...(options.catalogueFails === true ? { STUB_CATALOGUE_FAILS: '1' } : {}),
           ...(options.catalogueMissing === true ? { STUB_CATALOGUE_MISSING: '1' } : {}),
+          GITHUB_REPOSITORY: 'heey-global/verity',
+          ...(options.releasesFail === true ? { STUB_RELEASES_FAILS: '1' } : {}),
           VERITY_BOOTSTRAP_VERSION: options.bootstrapVersion ?? '',
           ...(options.pullFails === undefined
             ? {}
@@ -382,9 +406,21 @@ describe('self-update workflow image', () => {
 
       expect(code, out).toBe(0);
       expect(out).toContain('Testing candidate against v13.2.12');
-      // Two blob reads and nothing else. `git tag`, `git describe` and `git
-      // rev-list` are all one line away and all read the state this bug lived in.
       expect(git).toEqual(['show HEAD:version.txt', 'show HEAD^:version.txt']);
+    });
+
+    it('ignores an image left behind by an unpublished draft release', async () => {
+      const { code, out, exported } = await runStep(['v17.5.0', 'v17.6.0'], {
+        underTest: '18.0.0',
+        parentVersion: '17.6.0',
+        unpublishedTags: ['v17.6.0'],
+      });
+
+      expect(code, out).toBe(0);
+      expect(out).toContain(
+        'Ignoring registry image v17.6.0 because its GitHub release is not published',
+      );
+      expect(exported).toContain('VERITY_SMOKE_PREVIOUS_TAG=v17.5.0');
     });
 
     /**
@@ -455,6 +491,19 @@ describe('self-update workflow image', () => {
       // sends whoever reads it looking for a missing release rather than a broken
       // credential. Non-zero is not enough here; the reason has to survive.
       expect(out).not.toContain('publishes no Server image');
+      expect(out).not.toContain('Testing candidate against');
+    });
+
+    it('fails closed when GitHub release state cannot be read', async () => {
+      const { code, out, docker } = await runStep(['v13.2.11', 'v13.2.12'], {
+        underTest: '13.2.14',
+        parentVersion: '13.2.13',
+        releasesFail: true,
+      });
+
+      expect(code).not.toBe(0);
+      expect(out).toContain('GitHub release API refused the request');
+      expect(docker).toEqual([]);
       expect(out).not.toContain('Testing candidate against');
     });
 

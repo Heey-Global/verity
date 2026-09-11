@@ -204,6 +204,7 @@ jobs:
           # through the daemon, so it needs the credential in its own hand;
           # docker/login-action only wrote it into the daemon's config.
           VERITY_GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERITY_BOOTSTRAP_VERSION: ${{ inputs.bootstrap-version }}
         run: |
           set -euo pipefail
@@ -253,9 +254,10 @@ jobs:
           #
           # So the skip moves off the error text and onto the registry's own
           # catalogue, where an absence is an absence and a refusal is an HTTP
-          # status. Everything below reads exactly two things: what the COMMIT
-          # says, and what ghcr.io has. Nothing reads this runner's ref state, and
-          # nothing reads its working tree.
+          # status. A predecessor must exist in BOTH halves of a release: its
+          # image must be in ghcr.io and its GitHub release must be published. A
+          # failed draft can leave either half behind, and neither is a release a
+          # host could actually have installed.
           repository='heey-global/verity/verity-server'
 
           # The version the commit under test carries. Its own release is the one
@@ -266,11 +268,9 @@ jobs:
           # parent blob leaves it exclusive, which is the safe side.
           #
           # Read out of the commit rather than off the working tree, and the parent
-          # can only be read that way at all. It costs nothing and it keeps this
-          # step's inputs to two: what the commit says, and what ghcr.io has. A
-          # persistent runner's checkout is reset to the commit before the job
-          # starts, so today the two agree — but "today they agree" is the shape of
-          # assumption this whole step is being rewritten to stop making.
+          # can only be read that way at all. GitHub's release API supplies the
+          # published-release half of the intersection below; ghcr.io supplies
+          # the image half. Neither source alone may name a predecessor.
           under_test="$(git show 'HEAD:version.txt' | tr -d '[:space:]')"
           if [[ ! "$under_test" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::HEAD:version.txt does not name an X.Y.Z version, got '${under_test}'." >&2
@@ -316,7 +316,11 @@ jobs:
           body="$RUNNER_TEMP/verity-registry-body.json"
           headers="$RUNNER_TEMP/verity-registry-headers"
           published="$RUNNER_TEMP/verity-published-server-tags"
+          released="$RUNNER_TEMP/verity-released-server-tags"
           : >"$published"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+            >"$released"
 
           # `--fail` is the whole point of this call: a 401 from a broken login, a
           # 404 from a renamed package and a 200 are three different outcomes here,
@@ -418,11 +422,18 @@ jobs:
                 continue
               fi
               printf '%s %s\n' "$key" "$tag"
-            # `head` closes its input as soon as it has the winner. With a large
-            # catalogue that makes `sort` hit EPIPE, and `pipefail` then aborts
-            # the release before the smoke starts. `sed` prints the same first
-            # line while continuing to drain the sorted input.
-            done <"$published" | sort -rn | sed -n '1p' | cut -d' ' -f2
+            done <"$published" | sort -rn | {
+              selected=''
+              while read -r _ tag; do
+                [[ -z "$selected" ]] || continue
+                if grep -qxF "$tag" "$released"; then
+                  selected="$tag"
+                else
+                  echo "::warning::Ignoring registry image $tag because its GitHub release is not published." >&2
+                fi
+              done
+              printf '%s\n' "$selected"
+            }
           )"
           # The condition that started this: a release that got its tag and never
           # got its image. It is not fatal here — the walk simply goes one release
@@ -433,7 +444,7 @@ jobs:
             under_test_published=true
           fi
           echo "ghcr.io lists $(wc -l <"$published" | tr -d ' ') published Server releases"
-          rm -f "$published" "$headers" "$body"
+          rm -f "$published" "$released" "$headers" "$body"
           if [[ -z "$previous_tag" ]]; then
             if [[ "$bootstrap" == true ]]; then
               printf 'VERITY_SMOKE_BOOTSTRAP=true\n' >>"$GITHUB_ENV"
