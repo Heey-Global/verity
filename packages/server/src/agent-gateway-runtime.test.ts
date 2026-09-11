@@ -23,6 +23,42 @@ afterEach(async () => {
 });
 
 describe('standalone agent gateway runtime', () => {
+  it('reports an OpenCode-only gateway healthy once its shared listener is ready', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-agent-gateway-runtime-'));
+    roots.push(root);
+    const startCodexGateway = vi.fn(async () => ({
+      port: 9444,
+      reloadTls: vi.fn(),
+      close: vi.fn(async () => undefined),
+    }));
+    const runtime = await startAgentGatewayRuntime({
+      ...runtimeOptions(root, async () => {
+        throw new Error('Claude listener must not start');
+      }),
+      codexPort: 9444,
+      codexListenerAuthority: 'verity-agent-gateway:9444',
+      startCodexGateway,
+    });
+    runtimes.push(runtime);
+
+    await configureAgentGateway(join(root, 'control.sock'), {
+      revision: 'opencode-only',
+      claude: {
+        tls: { ca: 'ca', cert: 'cert', key: 'key' },
+        peerBindings: [{ projectId: 'one', fingerprint256: '1'.repeat(64) }],
+      },
+      opencode: { baseUrl: 'https://provider.example/v1', apiKey: 'provider-key' },
+    });
+
+    await expect(health(runtime.healthPort)).resolves.toMatchObject({
+      configured: true,
+      opencodeReady: true,
+      codexListenerReady: true,
+      codexPort: 9444,
+    });
+    expect(startCodexGateway).toHaveBeenCalledOnce();
+  });
+
   it('serves health independently and reflects control-plane configuration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-agent-gateway-runtime-'));
     roots.push(root);

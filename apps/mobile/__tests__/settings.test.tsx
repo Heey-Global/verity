@@ -100,6 +100,9 @@ function makeSettings(overrides: Partial<VeritySettings> = {}): VeritySettings {
     transcribeExternalConfigured: false,
     claudeCodeOauthCredentialsConfigured: false,
     codexAuthJsonConfigured: false,
+    opencodeBaseUrl: null,
+    opencodeModels: null,
+    opencodeApiKeyConfigured: false,
     uplinkSubscriptionKeyConfigured: false,
     uplinkInstallationId: null,
     googleDriveClientId: null,
@@ -592,6 +595,36 @@ describe('SettingsScreen — secret store onboarding', () => {
       expect.objectContaining({ gitUserName: 'new-bot' }),
     );
     expect(screen.queryByLabelText('Save Verity settings')).toBeNull();
+    expect(await screen.findByLabelText('Reprovision running containers now')).toBeOnTheScreen();
+  });
+
+  it('stores OpenCode endpoint, models, and the write-only API key through settings', async () => {
+    const initial = makeSettings();
+    const updateVeritySettings = jest
+      .fn()
+      .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch }));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { settings: initial, updateVeritySettings }),
+    );
+    render(<SettingsScreen />);
+
+    fireEvent.changeText(
+      await screen.findByLabelText('OpenCode API base URL'),
+      'https://api.test/v1',
+    );
+    fireEvent.changeText(screen.getByLabelText('OpenCode models'), 'model-a\nmodel-b');
+    const key = screen.getByPlaceholderText('Paste the provider API key…');
+    fireEvent.changeText(key, 'provider-key-fixture');
+    fireEvent(key, 'blur');
+
+    await waitFor(() => expect(updateVeritySettings).toHaveBeenCalled());
+    expect(updateVeritySettings.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({
+        opencodeBaseUrl: 'https://api.test/v1',
+        opencodeModels: 'model-a\nmodel-b',
+        opencodeApiKey: 'provider-key-fixture',
+      }),
+    );
     expect(await screen.findByLabelText('Reprovision running containers now')).toBeOnTheScreen();
   });
 

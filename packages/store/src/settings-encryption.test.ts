@@ -45,6 +45,9 @@ async function rawVerityRow(): Promise<Record<string, string | null>> {
       'transcribe_model',
       'claude_code_oauth_credentials_json',
       'codex_auth_json',
+      'opencode_base_url',
+      'opencode_api_key',
+      'opencode_models',
       'uplink_subscription_key',
       'uplink_installation_id',
     ])
@@ -178,6 +181,21 @@ describe('EventStore — secret encryption at rest (ADR 0002 D3)', () => {
     const rawRead = await store.getVeritySettingsRaw();
     expect(rawRead?.transcribeApiKey?.startsWith('enc:v1:')).toBe(true);
     expect(rawRead?.transcribeApiKey).not.toBe(apiKey);
+  });
+
+  it('encrypts the OpenCode API key while keeping endpoint and models readable', async () => {
+    const apiKey = 'opencode-api-key-fixture';
+    await store.updateVeritySettings({
+      opencodeBaseUrl: 'https://api.example.test/v1',
+      opencodeApiKey: apiKey,
+      opencodeModels: 'model-a\nmodel-b',
+    });
+    const rawRow = await rawVerityRow();
+    expect(rawRow.opencode_base_url).toBe('https://api.example.test/v1');
+    expect(rawRow.opencode_models).toBe('model-a\nmodel-b');
+    expect(rawRow.opencode_api_key?.startsWith('enc:v1:')).toBe(true);
+    expect(rawRow.opencode_api_key).not.toContain(apiKey);
+    await expect(store.getVeritySettings()).resolves.toMatchObject({ opencodeApiKey: apiKey });
   });
 
   it('encrypts the Claude Code + Codex subscription logins at rest and decrypts on read', async () => {

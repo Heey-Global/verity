@@ -66,6 +66,7 @@ export type SecretSettingsDraft = {
    *  connected through the provider login flow so Verity stores the full
    *  `~/.claude/.credentials.json`. */
   codexAuthJson: string;
+  opencodeApiKey: string;
   /** Doppler account-level Service Account token (`dp.sa.…`). Write-only paste box —
    *  empty = leave the stored token as-is. Set during onboarding OR later here; the
    *  server validates it via {@link VerityClient.validateDoppler} once stored. */
@@ -110,6 +111,8 @@ export function secretPatchFromDraft(draft: SecretSettingsDraft): VeritySettings
   if (codexAuthJson.length > 0) {
     patch.codexAuthJson = codexAuthJson;
   }
+  const opencodeApiKey = draft.opencodeApiKey.trim();
+  if (opencodeApiKey.length > 0) patch.opencodeApiKey = opencodeApiKey;
   const dopplerServiceToken = draft.dopplerServiceToken.trim();
   if (dopplerServiceToken.length > 0) {
     patch.dopplerServiceToken = dopplerServiceToken;

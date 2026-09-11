@@ -16,6 +16,7 @@ const EMPTY_DRAFT: SecretSettingsDraft = {
   githubAppPrivateKey: '',
   gitSshPrivateKey: '',
   codexAuthJson: '',
+  opencodeApiKey: '',
   dopplerServiceToken: '',
   uplinkSubscriptionKey: '',
   transcribeApiKey: '',
