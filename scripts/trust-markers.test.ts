@@ -205,4 +205,12 @@ describe('release verification instructions', () => {
     const publish = readFileSync('.github/workflows/release.yml', 'utf8');
     expect(publish, 'the channel tag moved').toContain('channel-stable-amd64');
   });
+
+  it('documents verification of the Server provenance the release publishes', () => {
+    const publish = readFileSync('.github/workflows/release.yml', 'utf8');
+    expect(publish).toContain('actions/attest@');
+    expect(publish).toContain('.intoto.jsonl');
+    expect(SECURITY).toContain('gh attestation verify');
+    expect(SECURITY).toContain('oci://$(jq -r .serverImage payload.json)');
+  });
 });

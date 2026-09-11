@@ -787,6 +787,8 @@ jobs:
     # ci.yml's `server-image` job.
     timeout-minutes: 45
     permissions:
+      artifact-metadata: write
+      attestations: write
       contents: read
       packages: write
       # Keyless Sigstore signing of the release channel document. The OIDC token
@@ -929,6 +931,18 @@ jobs:
           cache-from: type=gha,scope=verity-server
           cache-to: type=gha,mode=max,scope=verity-server,ignore-error=true
 
+      # GitHub signs an in-toto SLSA provenance statement for the immutable
+      # image digest and stores the attestation both with the repository and as
+      # an OCI referrer. The release evidence below exports that same statement;
+      # it never synthesizes provenance from mutable tags.
+      # renovate: datasource=github-actions depName=actions/attest
+      - name: Attest Server image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
       # Everything below publishes the signed stable release channel (ADR 0008
       # D4) — the only thing a managed deployment will accept as an update
       # offer. It runs last, after the image it describes is pushed, so the
@@ -1014,6 +1028,20 @@ jobs:
             --certificate-github-workflow-sha "$REVISION" \
             "$workdir/payload.json"
 
+          # Verify the registry copy before exporting the signed DSSE envelope.
+          # Select SLSA v1 explicitly: BuildKit may publish its own provenance,
+          # and mixing unrelated predicates into one release asset would make
+          # offline verification ambiguous.
+          cosign verify-attestation \
+            --type slsaprovenance \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main" \
+            "$image" >/dev/null
+          cosign download attestation \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            "$image" > "$workdir/verity-server-v${VERSION}.intoto.jsonl"
+          test "$(wc -l < "$workdir/verity-server-v${VERSION}.intoto.jsonl")" -eq 1
+
           cp "$workdir/payload.json" \
             "$workdir/verity-server-v${VERSION}.release-channel.json"
           cp "$workdir/bundle.json" \
@@ -1042,6 +1070,7 @@ jobs:
           path: |
             ${{ runner.temp }}/server-release-evidence/verity-server-v${{ env.VERSION }}.release-channel.json
             ${{ runner.temp }}/server-release-evidence/verity-server-v${{ env.VERSION }}.release-channel.sigstore.json
+            ${{ runner.temp }}/server-release-evidence/verity-server-v${{ env.VERSION }}.intoto.jsonl
           if-no-files-found: error
           retention-days: 7
 
@@ -1072,10 +1101,12 @@ jobs:
           set -euo pipefail
           payload="evidence/verity-server-v${VERSION}.release-channel.json"
           bundle="evidence/verity-server-v${VERSION}.release-channel.sigstore.json"
+          provenance="evidence/verity-server-v${VERSION}.intoto.jsonl"
           test -s "$payload"
           test -s "$bundle"
+          test -s "$provenance"
           jq -e --arg version "$VERSION" '.version == $version' "$payload" >/dev/null
-          gh release upload "v${VERSION}" "$payload" "$bundle" --clobber
+          gh release upload "v${VERSION}" "$payload" "$bundle" "$provenance" --clobber
 
   publish-sandbox:
     needs: [release-please, self-update-gate]
