@@ -980,7 +980,9 @@ jobs:
             exit 1
           fi
           image="${REGISTRY}/${IMAGE_NAME}@${SERVER_DIGEST}"
-          workdir="$(mktemp -d)"
+          workdir="$RUNNER_TEMP/server-release-evidence"
+          rm -rf "$workdir"
+          mkdir -p "$workdir"
 
           # The document is rendered BY the image it describes, so the
           # compatibility window that gets signed is the one this build actually
@@ -1012,6 +1014,11 @@ jobs:
             --certificate-github-workflow-sha "$REVISION" \
             "$workdir/payload.json"
 
+          cp "$workdir/payload.json" \
+            "$workdir/verity-server-v${VERSION}.release-channel.json"
+          cp "$workdir/bundle.json" \
+            "$workdir/verity-server-v${VERSION}.release-channel.sigstore.json"
+
           # The envelope carries the payload as opaque base64 rather than inline
           # JSON: the signature covers exact bytes, and re-serializing the
           # document anywhere between here and the Server would break it.
@@ -1025,6 +1032,47 @@ jobs:
           oras push "${REGISTRY}/${IMAGE_NAME}:channel-stable-amd64" \
             --artifact-type application/vnd.verity.release-channel.v1+json \
             channel.json:application/json
+
+      # Pass only the already-verified evidence to the narrow release-writer
+      # below. The image build and signing job does not need contents:write.
+      # renovate: datasource=github-actions depName=actions/upload-artifact
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-release-evidence-v${{ env.VERSION }}
+          path: |
+            ${{ runner.temp }}/server-release-evidence/verity-server-v${{ env.VERSION }}.release-channel.json
+            ${{ runner.temp }}/server-release-evidence/verity-server-v${{ env.VERSION }}.release-channel.sigstore.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-server-release-evidence:
+    needs: [release-please, publish-server]
+    if: >-
+      needs.release-please.outputs.backend-release-created == 'true' &&
+      !inputs['backend-republish']
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/download-artifact
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: server-release-evidence-v${{ env.VERSION }}
+          path: evidence
+      - name: Attach verified Sigstore evidence to the GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="evidence/verity-server-v${VERSION}.release-channel.json"
+          bundle="evidence/verity-server-v${VERSION}.release-channel.sigstore.json"
+          test -s "$payload"
+          test -s "$bundle"
+          jq -e --arg version "$VERSION" '.version == $version' "$payload" >/dev/null
+          gh release upload "v${VERSION}" "$payload" "$bundle" --clobber
 
   publish-sandbox:
     needs: [release-please, self-update-gate]
@@ -1619,19 +1667,20 @@ jobs:
             echo "\`$version_target\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  finalize-maintenance-backend:
+  finalize-backend-release:
     needs:
       - release-please
       - publish-server
+      - publish-server-release-evidence
       - publish-sandbox
       - publish-toolkit
       - publish-project-relay
       - publish-preview-images
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs['backend-version'] != '' &&
+      needs.release-please.outputs.backend-release-created == 'true' &&
       !inputs['backend-republish'] &&
       needs.publish-server.result == 'success' &&
+      needs.publish-server-release-evidence.result == 'success' &&
       needs.publish-sandbox.result == 'success' &&
       needs.publish-toolkit.result == 'success' &&
       needs.publish-project-relay.result == 'success' &&
@@ -1641,7 +1690,11 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: v${{ inputs.backend-version }}
+      TAG: v${{ needs.release-please.outputs.backend-version }}
     steps:
-      - name: Publish verified maintenance release
-        run: gh release edit "$TAG" --draft=false --latest=false
+      - name: Publish verified backend release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+          gh release edit "$TAG" --draft=false --latest=false

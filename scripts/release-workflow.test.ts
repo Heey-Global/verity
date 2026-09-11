@@ -25,6 +25,15 @@ interface ReleaseWorkflow {
       needs?: string[];
       steps: WorkflowStep[];
     };
+    'publish-server-release-evidence': {
+      needs?: string[];
+      permissions?: Record<string, string>;
+      steps: WorkflowStep[];
+    };
+    'finalize-backend-release': {
+      needs?: string[];
+      steps: WorkflowStep[];
+    };
   };
 }
 
@@ -128,6 +137,44 @@ describe('release relay digest output', () => {
     const compose = readFileSync('deploy/docker-compose.yml', 'utf8');
     const pins = compose.match(/^\s*image:\s*postgres:\S+@sha256:[0-9a-f]{64}\s*$/gm);
     expect(pins).toHaveLength(1);
+  });
+});
+
+describe('signed GitHub release evidence', () => {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
+  const server = workflow.jobs['publish-server'];
+  const evidence = workflow.jobs['publish-server-release-evidence'];
+
+  it('passes the verified channel payload to a narrow release writer', () => {
+    const upload = server.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    expect(upload?.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/);
+    expect(upload?.with?.path).toContain('.release-channel.sigstore.json');
+
+    expect(evidence.needs).toEqual(['release-please', 'publish-server']);
+    expect(evidence.permissions).toEqual({ actions: 'read', contents: 'write' });
+    const download = evidence.steps.find((step) =>
+      step.uses?.startsWith('actions/download-artifact@'),
+    );
+    expect(download?.uses).toMatch(/^actions\/download-artifact@[a-f0-9]{40}$/);
+    const publish = evidence.steps.find(
+      (step) => step.name === 'Attach verified Sigstore evidence to the GitHub release',
+    );
+    expect(publish?.run).toContain('jq -e');
+    expect(publish?.run).toContain('gh release upload');
+    expect(publish?.run).toContain('.release-channel.sigstore.json');
+  });
+
+  it('keeps the release mutable until its evidence and artifacts are complete', () => {
+    const backend = JSON.parse(readFileSync('release-please-config.backend.json', 'utf8')) as {
+      packages: Record<string, { draft?: boolean }>;
+    };
+    expect(Object.values(backend.packages)[0]?.draft).toBe(true);
+
+    const finalize = workflow.jobs['finalize-backend-release'];
+    expect(finalize.needs).toContain('publish-server-release-evidence');
+    const publish = finalize.steps.find((step) => step.name === 'Publish verified backend release');
+    expect(publish?.run).toContain('--json isDraft');
+    expect(publish?.run).toContain('--draft=false');
   });
 });
 

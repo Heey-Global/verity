@@ -1249,7 +1249,7 @@ describe('self-update release gate', () => {
     expect(validation?.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(source).toContain('backend-schema-forward-max:');
     expect(source).toContain('VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}');
-    expect(source).toContain('finalize-maintenance-backend:');
+    expect(source).toContain('finalize-backend-release:');
     expect(source).not.toContain('gh workflow run self-update.yml');
     expect(source).toContain('candidate-sha: ${{ needs.release-please.outputs.backend-sha }}');
   });
