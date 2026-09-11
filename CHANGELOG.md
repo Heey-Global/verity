@@ -1,5 +1,19 @@
 # Changelog
 
+## [17.5.0](https://github.com/Heey-Global/verity/compare/v17.4.1...v17.5.0) (2026-09-11)
+
+
+### Features
+
+* **release:** publish signed release evidence ([8f1cd12](https://github.com/Heey-Global/verity/commit/8f1cd12c8070513018d92f72dc845f6a3311a7ab))
+* **release:** publish signed release evidence ([b880314](https://github.com/Heey-Global/verity/commit/b8803140ed57ca35130397bb42d67b82c637273a))
+
+
+### Bug Fixes
+
+* **ci:** measure product coverage accurately ([7e677e4](https://github.com/Heey-Global/verity/commit/7e677e4db5eef6568c7aadd500171915177a99a1))
+* **server:** update Fastify past security advisories ([772806f](https://github.com/Heey-Global/verity/commit/772806fff23a03a211a6620665db1d4f68c2e077))
+
 ## [17.4.1](https://github.com/Heey-Global/verity/compare/v17.4.0...v17.4.1) (2026-09-11)
 
 
