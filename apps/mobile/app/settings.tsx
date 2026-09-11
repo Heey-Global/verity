@@ -1007,18 +1007,25 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
   const [error, setError] = useState<string | undefined>();
   const connectionRevision = useRef(0);
   const mutationInFlight = useRef(false);
-  const load = useCallback(async (): Promise<void> => {
-    if (typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function') return;
+  const load = useCallback(async (): Promise<boolean> => {
+    if (typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function')
+      return false;
     const revision = connectionRevision.current;
-    await client
+    return client
       .listHttpMcpConnections()
       .then((loaded) => {
         if (connectionRevision.current === revision) {
           setConnections(loaded);
           setError(undefined);
         }
+        return true;
       })
-      .catch(() => setError('Could not load MCP connections.'));
+      .catch(() => {
+        if (connectionRevision.current === revision) {
+          setError('Could not load MCP connections.');
+        }
+        return false;
+      });
   }, [client]);
   useEffect(() => void load(), [load]);
   const add = useCallback(() => {
@@ -1034,7 +1041,7 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
         ...(authorization.trim() === '' ? {} : { authorization: authorization.trim() }),
       })
       .then(async () => {
-        await load();
+        if (!(await load())) return;
         setName('');
         setUrl('');
         setAuthorization('');
@@ -1078,7 +1085,7 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
                         setError(undefined);
                         void client
                           .deleteHttpMcpConnection(connection.id)
-                          .then(load)
+                          .then(() => load())
                           .catch(() => setError('Could not remove the MCP connection.'))
                           .finally(() => {
                             mutationInFlight.current = false;

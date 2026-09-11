@@ -10,6 +10,7 @@ describe('HTTP MCP proxy upstream validation', () => {
   it('recognizes event-stream media types case-insensitively', () => {
     expect(isHttpMcpEventStream('Text/Event-Stream; charset=utf-8')).toBe(true);
     expect(isHttpMcpEventStream('application/json')).toBe(false);
+    expect(isHttpMcpEventStream('text/event-streaming')).toBe(false);
   });
 
   it('accepts a canonical public HTTPS endpoint', () => {

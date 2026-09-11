@@ -69,7 +69,7 @@ export function parseHttpMcpUpstream(value: string): URL {
 }
 
 export function isHttpMcpEventStream(contentType: string | undefined): boolean {
-  return contentType?.toLowerCase().startsWith('text/event-stream') === true;
+  return contentType?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream';
 }
 
 async function forward(
