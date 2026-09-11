@@ -68,6 +68,10 @@ export function parseHttpMcpUpstream(value: string): URL {
   return url;
 }
 
+export function isHttpMcpEventStream(contentType: string | undefined): boolean {
+  return contentType?.toLowerCase().startsWith('text/event-stream') === true;
+}
+
 async function forward(
   connection: HttpMcpProxyConnection,
   method: 'POST' | 'GET' | 'DELETE',
@@ -139,8 +143,7 @@ async function forward(
           const value = response.headers[name];
           if (typeof value === 'string') safeHeaders[name] = value;
         }
-        const eventStream =
-          response.headers['content-type']?.startsWith('text/event-stream') === true;
+        const eventStream = isHttpMcpEventStream(response.headers['content-type']);
         response.setTimeout(eventStream ? EVENT_STREAM_IDLE_TIMEOUT_MS : MCP_TIMEOUT_MS, () =>
           response.destroy(new Error('HTTP MCP upstream stream stalled')),
         );

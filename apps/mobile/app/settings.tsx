@@ -1033,8 +1033,8 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
         url: url.trim(),
         ...(authorization.trim() === '' ? {} : { authorization: authorization.trim() }),
       })
-      .then((connection) => {
-        setConnections((current) => [...current, connection]);
+      .then(async () => {
+        await load();
         setName('');
         setUrl('');
         setAuthorization('');
@@ -1044,7 +1044,7 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
         mutationInFlight.current = false;
         setBusy(false);
       });
-  }, [authorization, client, name, url]);
+  }, [authorization, client, load, name, url]);
   return (
     <View style={styles.panel}>
       <Text style={styles.disclosureTitle}>MCP connections</Text>

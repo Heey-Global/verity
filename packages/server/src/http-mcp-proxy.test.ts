@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { isForbiddenHttpMcpAddress, parseHttpMcpUpstream } from './http-mcp-proxy.js';
+import {
+  isForbiddenHttpMcpAddress,
+  isHttpMcpEventStream,
+  parseHttpMcpUpstream,
+} from './http-mcp-proxy.js';
 
 describe('HTTP MCP proxy upstream validation', () => {
+  it('recognizes event-stream media types case-insensitively', () => {
+    expect(isHttpMcpEventStream('Text/Event-Stream; charset=utf-8')).toBe(true);
+    expect(isHttpMcpEventStream('application/json')).toBe(false);
+  });
+
   it('accepts a canonical public HTTPS endpoint', () => {
     expect(parseHttpMcpUpstream('https://mcp.example.com/gmail?account=work').toString()).toBe(
       'https://mcp.example.com/gmail?account=work',
