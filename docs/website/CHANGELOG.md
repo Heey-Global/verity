@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.4](https://github.com/Heey-Global/verity/compare/website-v1.3.3...website-v1.3.4) (2026-09-11)
+
+
+### Bug Fixes
+
+* **installer:** handle existing deployments safely ([b8419ea](https://github.com/Heey-Global/verity/commit/b8419ea0f714d33a5504ddc4cef231526570d395))
+* **installer:** handle existing deployments safely ([2582c19](https://github.com/Heey-Global/verity/commit/2582c1907bf2e573640967e71f6adcb25d9faf71))
+
 ## [1.3.3](https://github.com/Heey-Global/verity/compare/website-v1.3.2...website-v1.3.3) (2026-09-11)
 
 
