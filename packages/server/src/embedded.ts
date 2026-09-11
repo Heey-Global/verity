@@ -1287,9 +1287,7 @@ export function buildRunnerConductorWiring(deps: {
           ...(ephemeral || deps.autoApprovePermission === undefined
             ? {}
             : { autoApprovePermission: deps.autoApprovePermission }),
-          ...(deps.mcpGatewayTokens === undefined ||
-          deps.mcpProxyTokens === undefined ||
-          gatewayToolContext === undefined
+          ...(deps.mcpGatewayTokens === undefined || gatewayToolContext === undefined
             ? {}
             : {
                 mcpGatewayTokens: {
@@ -1305,6 +1303,10 @@ export function buildRunnerConductorWiring(deps: {
                       token,
                     }),
                 },
+              }),
+          ...(deps.mcpProxyTokens === undefined || gatewayToolContext === undefined
+            ? {}
+            : {
                 mcpProxyTokens: {
                   issue: (turnId: string) =>
                     deps.mcpProxyTokens!.issue({

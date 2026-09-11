@@ -4556,10 +4556,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
-  if (deps.mcpGateway !== undefined) {
-    const gatewayDeps = deps.mcpGateway;
+  if (deps.mcpProxyResolveCaller !== undefined) {
     registerHttpMcpProxyRoute(app, {
-      resolveCaller: deps.mcpProxyResolveCaller ?? (() => Promise.resolve(undefined)),
+      resolveCaller: deps.mcpProxyResolveCaller,
       resolveConnection: async ({ projectId, connectionId }) => {
         const [bindings, connections] = await Promise.all([
           deps.eventStore.listProjectMcpBindings(projectId),
@@ -4582,6 +4581,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             };
       },
     });
+  }
+  if (deps.mcpGateway !== undefined) {
+    const gatewayDeps = deps.mcpGateway;
     // The two control-plane session tools are bound on the same seam as `requestApproval`,
     // and for the same reason: they need this server's conductor to deliver a turn, and the
     // route's own session projection for `status`/`resumable`. Neither exists where the rest
