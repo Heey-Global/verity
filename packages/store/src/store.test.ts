@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { extractToolResultImages, sessionProjectionEvents, type AgentEvent } from '@verity/events';
 import { sql } from 'kysely';
@@ -1588,7 +1588,9 @@ describe('EventStore — session projection facts', () => {
       { encoding: 'utf8', cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 },
     )
       .split('\n')
-      .filter((path) => path.length > 0 && !path.endsWith('.test.ts'));
+      .filter(
+        (path) => path.length > 0 && !path.endsWith('.test.ts') && existsSync(join(repoRoot, path)),
+      );
 
     // The two spellings the repo uses: Kysely's builder and a raw statement.
     const insertPattern = /insertInto\(\s*'events'\s*\)|insert\s+into\s+events\b/g;
