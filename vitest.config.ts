@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { configDefaults, defineConfig } from 'vitest/config';
 
+import { TYPE_ONLY_MODULES } from './scripts/coverage-exclusions.js';
 import { MAX_TEST_WORKERS } from './scripts/test-postgres.js';
 
 const DEFAULT_TEST_TIMEOUT_MS = 20_000;
@@ -115,6 +116,18 @@ export default defineConfig({
         'packages/server/src/agent-gateway-main.ts',
         'packages/preview-tunnel/src/connector-main.ts',
         'packages/preview-tunnel/src/edge-main.ts',
+        // Same category, reached the same way — top-level module code that acts
+        // on import, so no unit test can enter it without starting what it
+        // starts. `secret-worker-bin.ts` awaits `runSecretWorkerMain` (tested);
+        // `project-relay/src/main.ts` is `startRelay` plus signal handlers, the
+        // `main.ts` shape exactly. `pairing-qr.ts` is an operator CLI that reads
+        // argv or stdin and writes a QR matrix to the terminal: it carries a
+        // little argument handling rather than none, but that handling only
+        // exists to feed the side effect, and extracting it would be inventing a
+        // seam to satisfy the measurement rather than to serve a caller.
+        'packages/server/src/secret-worker-bin.ts',
+        'packages/project-relay/src/main.ts',
+        'packages/server/src/pairing-qr.ts',
         // Group 2 — CI-only live harnesses. Nothing in the product starts these:
         // their only callers are `scripts/test-runner-*.sh`, which
         // `verity-sandbox.yml` runs (wiring that `ci-workflow.test.ts` asserts).
@@ -127,6 +140,31 @@ export default defineConfig({
         'packages/server/src/runner-claude-live-server.ts',
         'packages/server/src/runner-claude-recreate-server.ts',
         'packages/server/src/runner-codex-recreate-server.ts',
+        // The self-update and canary harnesses, same category and by far the
+        // heaviest: 1150 statements and 457 branches of TEST code that the gate
+        // was counting as untested PRODUCT code. Neither exports anything — both
+        // are argv-dispatched scripts run out of `dist/`:
+        // `deploy/bin/verity-self-update-live-smoke` invokes
+        // `self-update-live-smoke.js <subcommand>` and starts
+        // `self-update-live-smoke-client.js` in its own container on
+        // `verity-net` (that script is what `self-update.yml` runs), and
+        // `brokered-secret-canary.yml` is the only caller of the two canary
+        // files.
+        //
+        // This is the entry that moves the number, and it is worth being plain
+        // about why: statements 84.55% -> 87.34%, lines 86.72% -> 89.61%. None
+        // of that is product code becoming better tested. It is the denominator
+        // losing files that never belonged in it, and it is also why the gate
+        // drifted under its floor in the first place — these harnesses grew.
+        'packages/server/src/self-update-live-smoke.ts',
+        'packages/server/src/self-update-live-smoke-client.ts',
+        'packages/server/src/doppler-secret-canary-smoke.ts',
+        'packages/server/src/doppler-secret-canary-env-hash.ts',
+        // Group 3 — modules with nothing executable in them at all. Cosmetic,
+        // guarded, and moves no threshold; the reasoning and the list live in
+        // `scripts/coverage-exclusions.ts`, which the guard reads instead of
+        // this file so that importing it carries no vitest types.
+        ...TYPE_ONLY_MODULES,
         // DELIBERATELY still counted: packages/server/src/secret-job-live-smoke.ts.
         // Superficially the same shape — run by `secret-job-worker.yml`, never
         // unit tested, 56 branches at 0%. The line drawn here is whether a file
