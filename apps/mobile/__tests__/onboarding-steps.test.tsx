@@ -80,8 +80,10 @@ jest.mock('../lib/authToken', () => ({
 // without opening a URL (jsdom/jest has no native Linking backend).
 const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
 const mockOpenAuthSessionAsync = jest.fn();
+const mockDismissAuthSession = jest.fn<void, []>();
 jest.mock('expo-web-browser', () => ({
   openAuthSessionAsync: (...args: unknown[]) => mockOpenAuthSessionAsync(...args),
+  dismissAuthSession: () => mockDismissAuthSession(),
 }));
 
 // `expo-clipboard` has no jsdom backend — mock it so the copy button's effect is
@@ -506,6 +508,62 @@ describe('onboarding github one-page setup', () => {
     ).toBeOnTheScreen();
     expect(screen.getByLabelText('Connect to GitHub')).toBeOnTheScreen();
     jest.useRealTimers();
+  });
+
+  // The reported "I tap Connect to GitHub and nothing happens". `openAuthSessionAsync`
+  // reports "the operator closed the sheet" and "the sheet never opened" with the same
+  // `cancel`/`dismiss` value, and a session held from an earlier attempt as `locked`.
+  // Reading all three as a cancellation returns the panel to idle rendering NOTHING —
+  // the manifest was prepared, a browser was asked for, and the screen is byte-identical
+  // to before the tap, so the operator has no way to tell a failure from a dead button.
+  // Assert on the screen CHANGING rather than on a message, so rewording a string cannot
+  // quietly restore the silence this guards against.
+  it.each([
+    ['locked', { type: 'locked' }],
+    ['an auth session that never presented', { type: 'cancel' }],
+  ])('reports %s instead of silently returning to the button', async (_name, result) => {
+    mockOpenAuthSessionAsync.mockResolvedValue(result);
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest: jest
+          .fn()
+          .mockResolvedValue({ state: 'state-1', manifest: { name: 'Verity-a1b2c3d4' } }),
+      }),
+    );
+    render(<OnboardingGithub />);
+    const before = JSON.stringify(screen.toJSON());
+
+    await act(async () => {
+      fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+    });
+
+    expect(JSON.stringify(screen.toJSON())).not.toBe(before);
+    expect(screen.getByRole('alert')).toBeOnTheScreen();
+    // Still recoverable: the operator can act on what they were told.
+    expect(screen.getByLabelText('Connect to GitHub')).toBeOnTheScreen();
+  });
+
+  // A stale session makes every later open return `locked` without presenting
+  // anything, so the panel must clear one before asking for a new sheet.
+  it('clears a held auth session before opening a new one', async () => {
+    mockDismissAuthSession.mockClear();
+    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'cancel' });
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest: jest
+          .fn()
+          .mockResolvedValue({ state: 'state-1', manifest: { name: 'Verity-a1b2c3d4' } }),
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    await act(async () => {
+      fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+    });
+
+    expect(mockDismissAuthSession).toHaveBeenCalled();
   });
 
   it('shows one Connect to GitHub path without existing-App credentials', () => {

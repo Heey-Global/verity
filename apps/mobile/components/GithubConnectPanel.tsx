@@ -21,6 +21,55 @@ import { getVerityBaseUrl } from '../lib/client';
 const POLL_INTERVAL_MS = 3000;
 const PREPARE_TIMEOUT_MS = 15000;
 const GITHUB_CALLBACK_URL = 'https://verity.build/github/app/callback';
+// Shortest round-trip we are willing to read as a human closing the sheet. A
+// person cannot see, read and dismiss an authorization sheet inside this, so a
+// faster `cancel`/`dismiss` means the sheet never presented at all.
+const AUTH_SESSION_MIN_MS = 600;
+
+type SessionOutcome =
+  { kind: 'success'; url: string } | { kind: 'cancelled' } | { kind: 'failed'; message: string };
+
+/**
+ * Open one GitHub authorization session and classify the result.
+ *
+ * `openAuthSessionAsync` reports "the operator closed the sheet" and "the sheet
+ * never opened" with the SAME `cancel`/`dismiss` value, and reports a session
+ * left over from an earlier attempt as `locked`. Collapsing all three into "the
+ * operator cancelled" puts the panel straight back to idle without rendering
+ * anything — the reported "I tap Connect and nothing happens", which repeats
+ * identically on every tap because nothing about the state changed.
+ */
+async function authSession(url: string): Promise<SessionOutcome> {
+  try {
+    // A session still held from an earlier attempt makes every later open return
+    // `locked` without presenting anything. Clearing first is a no-op when none
+    // is held, and `dismissAuthSession` is iOS-only — hence the guard.
+    WebBrowser.dismissAuthSession();
+  } catch {
+    // No session to dismiss, or the platform has no such concept.
+  }
+  const startedAt = Date.now();
+  const result = await WebBrowser.openAuthSessionAsync(url, GITHUB_CALLBACK_URL, {
+    preferUniversalLinks: true,
+  });
+  if (result.type === 'success') return { kind: 'success', url: result.url };
+  // `WebBrowserResultType` is a string enum; widen to compare without a cast.
+  const type: string = result.type;
+  if (type === 'locked') {
+    return {
+      kind: 'failed',
+      message: 'A GitHub authorization window is still open. Close it, then try again.',
+    };
+  }
+  if (Date.now() - startedAt < AUTH_SESSION_MIN_MS) {
+    return {
+      kind: 'failed',
+      message:
+        'GitHub authorization could not open on this device. Try again, and restart Verity if it keeps happening.',
+    };
+  }
+  return { kind: 'cancelled' };
+}
 
 type Phase =
   | { kind: 'idle' }
@@ -47,6 +96,13 @@ function githubCallback(
     throw new Error('GitHub returned an invalid callback');
   }
   return { state, phaseValue };
+}
+
+/** A real cancellation returns to the button; anything else has to say why. */
+function idleOrError(outcome: Exclude<SessionOutcome, { kind: 'success' }>): Phase {
+  return outcome.kind === 'cancelled'
+    ? { kind: 'idle' }
+    : { kind: 'error', message: outcome.message };
 }
 
 export function GithubConnectPanel({
@@ -160,27 +216,21 @@ export function GithubConnectPanel({
           return;
         }
         if (mountedRef.current) setPhase({ kind: 'waiting' });
-        const createdResult = await WebBrowser.openAuthSessionAsync(startUrl, GITHUB_CALLBACK_URL, {
-          preferUniversalLinks: true,
-        });
-        if (createdResult.type !== 'success') {
+        const createdSession = await authSession(startUrl);
+        if (createdSession.kind !== 'success') {
           connectingRef.current = false;
-          if (mountedRef.current) setPhase({ kind: 'idle' });
+          if (mountedRef.current) setPhase(idleOrError(createdSession));
           return;
         }
-        const created = githubCallback(createdResult.url, 'created');
+        const created = githubCallback(createdSession.url, 'created');
         const installUrl = await client.completeGithubManifest(created.phaseValue, created.state);
-        const installedResult = await WebBrowser.openAuthSessionAsync(
-          installUrl,
-          GITHUB_CALLBACK_URL,
-          { preferUniversalLinks: true },
-        );
-        if (installedResult.type !== 'success') {
+        const installedSession = await authSession(installUrl);
+        if (installedSession.kind !== 'success') {
           connectingRef.current = false;
-          if (mountedRef.current) setPhase({ kind: 'idle' });
+          if (mountedRef.current) setPhase(idleOrError(installedSession));
           return;
         }
-        const installed = githubCallback(installedResult.url, 'installed');
+        const installed = githubCallback(installedSession.url, 'installed');
         await client.completeGithubManifestInstallation(installed.phaseValue, installed.state);
         const status = await client.fetchOnboardingStatus();
         finish(status);
