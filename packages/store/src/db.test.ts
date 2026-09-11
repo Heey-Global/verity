@@ -442,16 +442,19 @@ describe('migrateToLatest', () => {
       await expect(
         ctx.db.selectFrom('verity_settings').select('transcribe_backend_mode').execute(),
       ).resolves.toEqual([{ transcribe_backend_mode: null }]);
-      expect((await ctx.store.getVeritySettings())?.transcribeBackendMode).toBeNull();
-      expect((await ctx.store.getVeritySettingsRaw())?.transcribeBackendMode).toBeNull();
-
       // A real choice is left alone: only the unsatisfiable one is cleared.
-      await ctx.store.updateVeritySettings({ transcribeBackendMode: 'external' });
+      await ctx.db
+        .updateTable('verity_settings')
+        .set({ transcribe_backend_mode: 'external' })
+        .where('id', '=', 'global')
+        .execute();
       const rewind = await migrator.migrateTo('0082_uplink_pending_share_removals');
       expect(rewind.error).toBeUndefined();
       const reapply = await migrator.migrateTo('0083_drop_local_transcribe_backend_mode');
       expect(reapply.error).toBeUndefined();
-      expect((await ctx.store.getVeritySettings())?.transcribeBackendMode).toBe('external');
+      await expect(
+        ctx.db.selectFrom('verity_settings').select('transcribe_backend_mode').execute(),
+      ).resolves.toEqual([{ transcribe_backend_mode: 'external' }]);
     } finally {
       await ctx.close();
     }

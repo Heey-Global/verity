@@ -2748,7 +2748,7 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('session_slide_decks').dropColumn('assignment_id').execute();
     },
   },
-  '0093_http_mcp_connections': {
+  '0094_http_mcp_connections': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema
         .createTable('http_mcp_connections')
@@ -2773,6 +2773,21 @@ const migrations: Record<string, Migration> = {
     async down(db: Kysely<unknown>): Promise<void> {
       await db.schema.dropTable('project_mcp_bindings').execute();
       await db.schema.dropTable('http_mcp_connections').execute();
+    },
+  },
+  '0093_opencode_settings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('opencode_base_url', 'text')
+        .execute();
+      await db.schema.alterTable('verity_settings').addColumn('opencode_api_key', 'text').execute();
+      await db.schema.alterTable('verity_settings').addColumn('opencode_models', 'text').execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_models').execute();
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_api_key').execute();
+      await db.schema.alterTable('verity_settings').dropColumn('opencode_base_url').execute();
     },
   },
 };

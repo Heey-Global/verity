@@ -45,6 +45,10 @@ export interface AgentGatewayConfiguration {
       authJson?: string | null;
     };
   };
+  opencode?: {
+    baseUrl: string;
+    apiKey: string | null;
+  };
 }
 
 export interface AgentGatewayStatus {
@@ -58,6 +62,7 @@ export interface AgentGatewayStatus {
   codexCredentialReady?: boolean;
   codexListenerReady?: boolean;
   codexPort?: number;
+  opencodeReady?: boolean;
 }
 
 type ControlRequest =
@@ -380,6 +385,18 @@ function isConfiguration(value: unknown): value is AgentGatewayConfiguration {
       return false;
     }
   }
+  if (value.opencode !== undefined) {
+    if (
+      !isRecord(value.opencode) ||
+      typeof value.opencode.baseUrl !== 'string' ||
+      value.opencode.baseUrl.length === 0 ||
+      (value.opencode.apiKey !== null &&
+        (typeof value.opencode.apiKey !== 'string' ||
+          value.opencode.apiKey.length === 0 ||
+          /[\r\n]/u.test(value.opencode.apiKey)))
+    )
+      return false;
+  }
   return claude.peerBindings.every(
     (binding) =>
       isRecord(binding) &&
@@ -443,6 +460,7 @@ function isControlResponse(value: unknown): value is ControlResponse {
       typeof status.codexCredentialReady === 'boolean') &&
     (status.codexListenerReady === undefined || typeof status.codexListenerReady === 'boolean') &&
     (status.codexPort === undefined || typeof status.codexPort === 'number') &&
+    (status.opencodeReady === undefined || typeof status.opencodeReady === 'boolean') &&
     (status.revision === undefined || typeof status.revision === 'string')
   );
 }

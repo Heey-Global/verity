@@ -720,7 +720,7 @@ describe('manifest /start one-time-token auth (gate armed)', () => {
 });
 
 describe('native manifest callbacks', () => {
-  it('keeps organization-owned Apps on the server-rendered browser flow', async () => {
+  it('prepares organization-owned Apps for the native public bridge', async () => {
     const cipher = createSealableSecretCipher();
     const { app, token } = await buildGated(cipher);
     try {
@@ -730,7 +730,12 @@ describe('native manifest callbacks', () => {
         headers: { authorization: `Bearer ${token}` },
         payload: { baseUrl: 'https://server.test', owner: 'acme', native: true },
       });
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(200);
+      expect(response.json().startToken).toBeUndefined();
+      expect(response.json().state).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(response.json().manifest.redirect_url).toContain(
+        'https://verity.build/github/app/callback',
+      );
     } finally {
       await app.close();
     }

@@ -2,7 +2,8 @@
 // sees one action; the GitHub App manifest remains an implementation detail on
 // the server. After the browser round-trip, the caller replaces this panel with
 // the connected-state UI (commit author + verified commits).
-import { VerityApiError, type VerityClient, type OnboardingStatus } from '@verity/mobile';
+import { type VerityClient, type OnboardingStatus } from '@verity/mobile';
+import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -18,8 +19,30 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { getVerityBaseUrl } from '../lib/client';
 
 const POLL_INTERVAL_MS = 3000;
+const GITHUB_CALLBACK_URL = 'https://verity.build/github/app/callback';
 
 type Phase = { kind: 'idle' } | { kind: 'waiting' } | { kind: 'error'; message: string };
+
+function githubCallback(
+  value: string,
+  expectedPhase: 'created' | 'installed',
+): { state: string; phaseValue: string } {
+  const url = new URL(value);
+  const phaseValue = url.searchParams.get(expectedPhase === 'created' ? 'code' : 'installation_id');
+  const state = url.searchParams.get('state');
+  if (
+    url.origin !== 'https://verity.build' ||
+    url.pathname !== '/github/app/callback' ||
+    url.searchParams.get('phase') !== expectedPhase ||
+    state === null ||
+    state.length === 0 ||
+    phaseValue === null ||
+    phaseValue.length === 0
+  ) {
+    throw new Error('GitHub returned an invalid callback');
+  }
+  return { state, phaseValue };
+}
 
 export function GithubConnectPanel({
   client,
@@ -80,23 +103,26 @@ export function GithubConnectPanel({
     }
 
     void (async () => {
-      let startUrl = `${base}/github/app/manifest/start?base=${encodeURIComponent(base)}`;
       const owner = organization.trim();
+      const nativeCallback = Platform.OS === 'ios';
+      let startUrl = `${base}/github/app/manifest/start?base=${encodeURIComponent(base)}`;
       if (owner.length > 0) startUrl += `&owner=${encodeURIComponent(owner)}`;
       try {
-        // GitHub's organization-owned App endpoint contains the organization
-        // login in its path. Keep that case on the server-rendered flow so the
-        // public bridge can retain a single, constant form destination.
-        const nativeCallback = Platform.OS === 'ios' && owner.length === 0;
         const prepared = await client.prepareGithubManifest(
           base,
           owner || undefined,
           returnTo,
           nativeCallback,
         );
-        if (nativeCallback && prepared.state !== undefined && prepared.manifest !== undefined) {
+        if (nativeCallback) {
+          if (prepared.state === undefined || prepared.manifest === undefined)
+            throw new Error('the server returned no native GitHub manifest flow');
           const payload = encodeURIComponent(
-            JSON.stringify({ state: prepared.state, manifest: prepared.manifest }),
+            JSON.stringify({
+              state: prepared.state,
+              manifest: prepared.manifest,
+              ...(owner.length > 0 ? { owner } : {}),
+            }),
           );
           startUrl = `https://verity.build/github/app/#${payload}`;
         } else if (prepared.startToken !== undefined) {
@@ -104,20 +130,42 @@ export function GithubConnectPanel({
         } else {
           throw new Error('the server returned no compatible GitHub manifest flow');
         }
-      } catch (caught) {
-        // Older servers predate the single-use token. Only their 404 is safe to
-        // fall through; all other failures would open a dead authorization page.
-        if (!(caught instanceof VerityApiError && caught.status === 404)) {
-          setPhase({
-            kind: 'error',
-            message: 'Could not start GitHub authorization. Check the connection and try again.',
-          });
-          return;
-        }
+      } catch {
+        setPhase({
+          kind: 'error',
+          message: 'Could not start GitHub authorization. Check the connection and try again.',
+        });
+        return;
       }
       try {
-        await Linking.openURL(startUrl);
+        if (!nativeCallback) {
+          await Linking.openURL(startUrl);
+          if (mountedRef.current) setPhase({ kind: 'waiting' });
+          return;
+        }
         if (mountedRef.current) setPhase({ kind: 'waiting' });
+        const createdResult = await WebBrowser.openAuthSessionAsync(startUrl, GITHUB_CALLBACK_URL, {
+          preferUniversalLinks: true,
+        });
+        if (createdResult.type !== 'success') {
+          if (mountedRef.current) setPhase({ kind: 'idle' });
+          return;
+        }
+        const created = githubCallback(createdResult.url, 'created');
+        const installUrl = await client.completeGithubManifest(created.phaseValue, created.state);
+        const installedResult = await WebBrowser.openAuthSessionAsync(
+          installUrl,
+          GITHUB_CALLBACK_URL,
+          { preferUniversalLinks: true },
+        );
+        if (installedResult.type !== 'success') {
+          if (mountedRef.current) setPhase({ kind: 'idle' });
+          return;
+        }
+        const installed = githubCallback(installedResult.url, 'installed');
+        await client.completeGithubManifestInstallation(installed.phaseValue, installed.state);
+        const status = await client.fetchOnboardingStatus();
+        finish(status);
       } catch {
         if (mountedRef.current) {
           setPhase({

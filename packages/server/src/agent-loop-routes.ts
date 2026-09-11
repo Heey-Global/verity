@@ -32,8 +32,12 @@ const scheduleSchema: z.ZodType<ScheduleConfig> = z.discriminatedUnion('kind', [
 
 const nullableTrimmed = z.string().trim().min(1).nullable();
 const projectReactionModel = nullableTrimmed.refine(
-  (model) => model === null || !model.includes('/') || model.startsWith('codex/'),
-  'project Agent Loops currently support Claude and Codex models only',
+  (model) =>
+    model === null ||
+    !model.includes('/') ||
+    model.startsWith('codex/') ||
+    (model.startsWith('verity/') && model.length > 'verity/'.length),
+  'project Agent Loops currently support Claude, Codex, and configured OpenCode models only',
 );
 const createBody = z.object({
   name: z.string().trim().min(1).max(200),
@@ -89,6 +93,15 @@ export function registerAgentLoopRoutes(
   },
 ): void {
   const changed = (): void => deps.onAgentLoopsChanged?.();
+  const configuredReactionModel = async (model: string | null | undefined): Promise<boolean> => {
+    if (model == null || !model.startsWith('verity/')) return true;
+    const settings = await deps.eventStore.getVeritySettingsRaw();
+    if (!settings?.opencodeBaseUrl?.trim() || !settings.opencodeApiKey?.trim()) return false;
+    return (settings.opencodeModels ?? '')
+      .split(/[\n,]/u)
+      .map((entry) => entry.trim())
+      .includes(model.slice('verity/'.length));
+  };
 
   app.get('/projects/:projectId/agent-loops', async (request, reply) => {
     const { projectId } = projectParams.parse(request.params);
@@ -107,6 +120,10 @@ export function registerAgentLoopRoutes(
     if (project === undefined) {
       reply.code(404);
       return { error: 'project not found' };
+    }
+    if (!(await configuredReactionModel(body.reactionModel))) {
+      reply.code(400);
+      return { error: 'OpenCode model is not configured' };
     }
     if (!deps.createLoopSession) {
       reply.code(503);
@@ -151,6 +168,10 @@ export function registerAgentLoopRoutes(
   app.patch('/agent-loops/:loopId', async (request, reply) => {
     const { loopId } = loopParams.parse(request.params);
     const body = patchBody.parse(request.body ?? {});
+    if (!(await configuredReactionModel(body.reactionModel))) {
+      reply.code(400);
+      return { error: 'OpenCode model is not configured' };
+    }
     const patch: AgentLoopPatch = {};
     if (body.name !== undefined) patch.name = body.name;
     if (body.status !== undefined) patch.status = body.status;

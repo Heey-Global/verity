@@ -269,10 +269,16 @@ import { registerServerUpdateRoutes, type ServerUpdateController } from './serve
 export type { ServerUpdateController } from './server-update-routes.js';
 
 function isProjectSessionModel(model: string | undefined): boolean {
-  return model === undefined || !model.includes('/') || isCodexModel(model);
+  return (
+    model === undefined ||
+    !model.includes('/') ||
+    isCodexModel(model) ||
+    (model.startsWith('verity/') && model.length > 'verity/'.length)
+  );
 }
 
-const PROJECT_MODEL_ERROR = 'project sessions currently support Claude and Codex models only';
+const PROJECT_MODEL_ERROR =
+  'project sessions currently support Claude, Codex, and configured OpenCode models only';
 const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
   state: 'unknown',
   kind: null,
@@ -454,6 +460,7 @@ type PublicVeritySettingsRecord = Omit<
   | 'transcribeApiKey'
   | 'claudeCodeOauthCredentialsJson'
   | 'codexAuthJson'
+  | 'opencodeApiKey'
   | 'googleDriveRefreshToken'
   | 'uplinkSubscriptionKey'
 > & {
@@ -488,6 +495,7 @@ type PublicVeritySettingsRecord = Omit<
   sandboxAutoUpdateNormal: boolean;
   claudeCodeOauthCredentialsConfigured: boolean;
   codexAuthJsonConfigured: boolean;
+  opencodeApiKeyConfigured: boolean;
   /** True once a Drive refresh token is stored (ADR 0009). The client id +
    *  account email pass through as plaintext for the connect UI. */
   googleDriveConnected: boolean;
@@ -782,6 +790,7 @@ function publicVeritySettings(
     transcribeApiKey,
     claudeCodeOauthCredentialsJson,
     codexAuthJson,
+    opencodeApiKey,
     googleDriveRefreshToken,
     uplinkSubscriptionKey,
     advancedModeEnabled,
@@ -807,6 +816,7 @@ function publicVeritySettings(
     sandboxAutoUpdateNormal: false,
     claudeCodeOauthCredentialsConfigured: configured(claudeCodeOauthCredentialsJson),
     codexAuthJsonConfigured: configured(codexAuthJson),
+    opencodeApiKeyConfigured: configured(opencodeApiKey),
     googleDriveConnected: configured(googleDriveRefreshToken),
     uplinkSubscriptionKeyConfigured: configured(uplinkSubscriptionKey),
     // The app reads this to build the OAuth request. Prefer the env-baked client
@@ -961,6 +971,9 @@ export interface ServerDeps {
   previewShareManager?: PreviewShareManager | undefined;
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  /** Rewrite the OpenCode config directory after its central settings change. */
+  onOpenCodeSettingsChanged?:
+    ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
   /** Fan-out bus the live WS stream subscribes to (M3-2). */
   bus: EventBus;
   /** Google Drive OAuth *iOS* client id (ADR 0009), supplied as server env
@@ -4384,6 +4397,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
       : {}),
+    ...(deps.onOpenCodeSettingsChanged !== undefined
+      ? { onOpenCodeSettingsChanged: deps.onOpenCodeSettingsChanged }
+      : {}),
   });
 
   registerGoogleDriveRoutes(app, {
@@ -5466,6 +5482,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     transcribeBackendMode: z.enum(SELECTABLE_TRANSCRIBE_BACKEND_MODES).nullable().optional(),
     claudeCodeOauthCredentialsJson: z.string().nullable().optional(),
     codexAuthJson: z.string().nullable().optional(),
+    opencodeBaseUrl: z
+      .string()
+      .url()
+      .refine((value) => {
+        const url = new URL(value);
+        return (
+          url.protocol === 'https:' &&
+          url.username === '' &&
+          url.password === '' &&
+          url.search === '' &&
+          url.hash === ''
+        );
+      }, 'OpenCode Base URL must be an HTTPS origin or path without credentials, query, or fragment')
+      .nullable()
+      .optional(),
+    opencodeApiKey: z
+      .string()
+      .refine((value) => !/[\r\n]/u.test(value))
+      .nullable()
+      .optional(),
+    opencodeModels: z.string().nullable().optional(),
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
   });
 
@@ -6189,7 +6226,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       codexDefault ??
       (options.allowLegacyCodexFallback === true && codexConfigured
         ? CODEX_DEFAULT_MODEL
-        : models[0]);
+        : models.find((model) => !model.startsWith('verity/')));
     return {
       models,
       ...(codexModels.length > 0 ? { modelOrder } : {}),
@@ -6200,6 +6237,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           ? { default: fallbackDefault }
           : {}),
     };
+  };
+  const isConfiguredProjectSessionModel = async (model: string | undefined): Promise<boolean> => {
+    if (!isProjectSessionModel(model)) return false;
+    if (model === undefined || !model.startsWith('verity/')) return true;
+    const settings = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
+    if (!settings?.opencodeBaseUrl?.trim() || !settings.opencodeApiKey?.trim()) return false;
+    const configured = (settings.opencodeModels ?? '')
+      .split(/[\n,]/u)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    return configured.includes(model.slice('verity/'.length));
   };
 
   registerSessionReadRoutes(app, {
@@ -7252,8 +7300,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     let projectSettings: ProjectSettingsRecord | undefined;
     let projectWorktrees: WorktreeProvisioner | undefined;
     let effectiveModel = body.model;
+    if (
+      body.project === undefined &&
+      body.projectId === undefined &&
+      body.model?.startsWith('verity/')
+    ) {
+      reply.code(400);
+      return { error: 'OpenCode sessions require a project sandbox' };
+    }
     if (body.project !== undefined || body.projectId !== undefined) {
-      if (body.model !== undefined && !isProjectSessionModel(body.model)) {
+      if (body.model !== undefined && !(await isConfiguredProjectSessionModel(body.model))) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }
@@ -7317,7 +7373,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const projectStore = projectSettingsStore(deps.eventStore);
         projectSettings = await projectStore.getProjectSettings(project.id);
         effectiveModel = body.model ?? projectSettings?.defaultModel ?? undefined;
-        if (!isProjectSessionModel(effectiveModel)) {
+        if (!(await isConfiguredProjectSessionModel(effectiveModel))) {
           reply.code(400);
           return { error: PROJECT_MODEL_ERROR };
         }
@@ -7682,7 +7738,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'a turn needs a prompt or at least one attachment' };
       }
       const session = await deps.eventStore.getSession(id);
-      if (!isProjectSessionModel(body.model) && session?.projectId != null) {
+      if (
+        !(await isConfiguredProjectSessionModel(body.model ?? session?.model)) &&
+        session?.projectId != null
+      ) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }

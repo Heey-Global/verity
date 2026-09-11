@@ -608,6 +608,11 @@ export interface VeritySettingsRecord {
    *  database value is projected only to the agent gateway credential authority;
    *  it is never materialized into an agent runtime or Sandbox. */
   codexAuthJson: string | null;
+  opencodeBaseUrl?: string | null;
+  /** OpenCode provider credential, encrypted at rest. */
+  opencodeApiKey?: string | null;
+  /** Newline-separated OpenCode model ids, without a deployment-env fallback. */
+  opencodeModels?: string | null;
   /** Google connection for Drive imports and Slides editing (ADRs 0009/0016).
    *  Client id + account email are non-secret;
    *  the refresh token is a secret, encrypted at rest and decrypted on read via
@@ -646,6 +651,9 @@ type VeritySettingsKey =
   | 'transcribeBackendMode'
   | 'claudeCodeOauthCredentialsJson'
   | 'codexAuthJson'
+  | 'opencodeBaseUrl'
+  | 'opencodeApiKey'
+  | 'opencodeModels'
   | 'googleDriveClientId'
   | 'googleDriveAccountEmail'
   | 'googleDriveRefreshToken'
@@ -4449,6 +4457,9 @@ export class EventStore implements EventSink {
       transcribe_backend_mode: string | null;
       claude_code_oauth_credentials_json: string | null;
       codex_auth_json: string | null;
+      opencode_base_url: string | null;
+      opencode_api_key: string | null;
+      opencode_models: string | null;
       google_drive_client_id: string | null;
       google_drive_account_email: string | null;
       google_drive_refresh_token: string | null;
@@ -4498,6 +4509,9 @@ export class EventStore implements EventSink {
         ? this.decryptSecret(row.claude_code_oauth_credentials_json)
         : row.claude_code_oauth_credentials_json,
       codexAuthJson: decrypt ? this.decryptSecret(row.codex_auth_json) : row.codex_auth_json,
+      opencodeBaseUrl: row.opencode_base_url,
+      opencodeApiKey: decrypt ? this.decryptSecret(row.opencode_api_key) : row.opencode_api_key,
+      opencodeModels: row.opencode_models,
       googleDriveClientId: row.google_drive_client_id,
       googleDriveAccountEmail: row.google_drive_account_email,
       googleDriveRefreshToken: decrypt
@@ -4534,6 +4548,9 @@ export class EventStore implements EventSink {
     'transcribe_backend_mode',
     'claude_code_oauth_credentials_json',
     'codex_auth_json',
+    'opencode_base_url',
+    'opencode_api_key',
+    'opencode_models',
     'google_drive_client_id',
     'google_drive_account_email',
     'google_drive_refresh_token',
@@ -4595,6 +4612,9 @@ export class EventStore implements EventSink {
         normalizeSetting(patch.claudeCodeOauthCredentialsJson),
       ),
       codex_auth_json: this.encryptSecret(normalizeSetting(patch.codexAuthJson)),
+      opencode_base_url: normalizeSetting(patch.opencodeBaseUrl),
+      opencode_api_key: this.encryptSecret(normalizeSetting(patch.opencodeApiKey)),
+      opencode_models: normalizeSetting(patch.opencodeModels),
       google_drive_client_id: normalizeSetting(patch.googleDriveClientId),
       google_drive_account_email: normalizeSetting(patch.googleDriveAccountEmail),
       google_drive_refresh_token: this.encryptSecret(
@@ -4684,6 +4704,15 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.codexAuthJson !== undefined
             ? { codex_auth_json: this.encryptSecret(normalizeSetting(patch.codexAuthJson)) }
+            : {}),
+          ...(patch.opencodeBaseUrl !== undefined
+            ? { opencode_base_url: normalizeSetting(patch.opencodeBaseUrl) }
+            : {}),
+          ...(patch.opencodeApiKey !== undefined
+            ? { opencode_api_key: this.encryptSecret(normalizeSetting(patch.opencodeApiKey)) }
+            : {}),
+          ...(patch.opencodeModels !== undefined
+            ? { opencode_models: normalizeSetting(patch.opencodeModels) }
             : {}),
           ...(patch.googleDriveClientId !== undefined
             ? { google_drive_client_id: normalizeSetting(patch.googleDriveClientId) }

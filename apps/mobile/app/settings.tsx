@@ -62,6 +62,8 @@ type SettingsDraft = {
   githubAppInstallationId: string;
   transcribeBaseUrl: string;
   transcribeModel: string;
+  opencodeBaseUrl: string;
+  opencodeModels: string;
   transcribeBackendMode: 'local' | 'external' | null;
 };
 
@@ -80,6 +82,8 @@ const EMPTY_DRAFT: SettingsDraft = {
   githubAppInstallationId: '',
   transcribeBaseUrl: '',
   transcribeModel: '',
+  opencodeBaseUrl: '',
+  opencodeModels: '',
   transcribeBackendMode: null,
 };
 
@@ -92,6 +96,7 @@ const EMPTY_SECRET_DRAFT: SecretSettingsDraft = {
   githubAppPrivateKey: '',
   gitSshPrivateKey: '',
   codexAuthJson: '',
+  opencodeApiKey: '',
   dopplerServiceToken: '',
   uplinkSubscriptionKey: '',
   transcribeApiKey: '',
@@ -111,6 +116,8 @@ const ALL_DRAFT_FIELDS: FieldKey[] = [
   'githubAppInstallationId',
   'transcribeBaseUrl',
   'transcribeModel',
+  'opencodeBaseUrl',
+  'opencodeModels',
 ];
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
@@ -141,6 +148,8 @@ function draftFromSettings(settings: VeritySettings | null): SettingsDraft {
     githubAppInstallationId: valueFromSettings(settings, 'githubAppInstallationId'),
     transcribeBaseUrl: valueFromSettings(settings, 'transcribeBaseUrl'),
     transcribeModel: valueFromSettings(settings, 'transcribeModel'),
+    opencodeBaseUrl: valueFromSettings(settings, 'opencodeBaseUrl'),
+    opencodeModels: valueFromSettings(settings, 'opencodeModels'),
     transcribeBackendMode: settings?.transcribeBackendMode ?? null,
     advancedModeEnabled: settings?.advancedModeEnabled ?? false,
   };
@@ -162,6 +171,8 @@ function patchFromDraft(
     gitAllowedSignersPath: trimOrNull(draft.gitAllowedSignersPath),
     transcribeBaseUrl: trimOrNull(draft.transcribeBaseUrl),
     transcribeModel: trimOrNull(draft.transcribeModel),
+    opencodeBaseUrl: trimOrNull(draft.opencodeBaseUrl),
+    opencodeModels: trimOrNull(draft.opencodeModels),
     transcribeBackendMode: draft.transcribeBackendMode,
     advancedModeEnabled: draft.advancedModeEnabled,
     ...secretPatchFromDraft({
@@ -170,6 +181,7 @@ function patchFromDraft(
       githubAppPrivateKey: secretDraft.githubAppPrivateKey,
       gitSshPrivateKey: secretDraft.gitSshPrivateKey,
       codexAuthJson: secretDraft.codexAuthJson,
+      opencodeApiKey: secretDraft.opencodeApiKey,
       dopplerServiceToken: secretDraft.dopplerServiceToken,
       uplinkSubscriptionKey: secretDraft.uplinkSubscriptionKey,
       transcribeApiKey: secretDraft.transcribeApiKey,
@@ -193,6 +205,7 @@ function secretDraftDirty(secretDraft: SecretSettingsDraft): boolean {
     secretDraft.githubAppPrivateKey.trim().length > 0 ||
     secretDraft.gitSshPrivateKey.trim().length > 0 ||
     secretDraft.codexAuthJson.trim().length > 0 ||
+    secretDraft.opencodeApiKey.trim().length > 0 ||
     secretDraft.dopplerServiceToken.trim().length > 0 ||
     secretDraft.uplinkSubscriptionKey.trim().length > 0 ||
     secretDraft.transcribeApiKey.trim().length > 0
@@ -383,7 +396,13 @@ function SettingsView({
     }
     const savingVersion = editVersion.current;
     const requiresContainerApply =
-      secretDirty ||
+      secretDraft.githubAppPrivateKey.trim().length > 0 ||
+      secretDraft.gitSshPrivateKey.trim().length > 0 ||
+      secretDraft.codexAuthJson.trim().length > 0 ||
+      secretDraft.opencodeApiKey.trim().length > 0 ||
+      secretDraft.dopplerServiceToken.trim().length > 0 ||
+      secretDraft.uplinkSubscriptionKey.trim().length > 0 ||
+      secretDraft.transcribeApiKey.trim().length > 0 ||
       ALL_DRAFT_FIELDS.some(
         (key) => trimOrNull(draft[key]) !== trimOrNull(valueFromSettings(settings, key)),
       );
@@ -770,8 +789,8 @@ function SettingsView({
             <View style={styles.panel}>
               <Text style={styles.disclosureTitle}>AI backend logins</Text>
               <Text style={styles.reproSubtitle}>
-                Connect or rotate Claude and Codex subscriptions. Credentials stay encrypted on this
-                Verity server.
+                Connect Claude and Codex subscriptions or configure an OpenAI-compatible provider
+                for OpenCode.
               </Text>
               {secretWritableNow ? (
                 <AgentLoginPanel
@@ -800,6 +819,73 @@ function SettingsView({
                       'Unlock the secret store to sign in — the login will start once it is open.'}
                 </Text>
               )}
+              <View style={styles.connectedServiceSubsection}>
+                <View style={styles.serviceStatusRow}>
+                  <Text style={styles.serviceStatusLabel}>OpenCode</Text>
+                  <StatusPill
+                    intent={
+                      settings?.opencodeApiKeyConfigured &&
+                      trimOrNull(draft.opencodeBaseUrl) !== null &&
+                      trimOrNull(draft.opencodeModels) !== null
+                        ? 'ready'
+                        : 'optional'
+                    }
+                    label={
+                      settings?.opencodeApiKeyConfigured &&
+                      trimOrNull(draft.opencodeBaseUrl) !== null &&
+                      trimOrNull(draft.opencodeModels) !== null
+                        ? 'Configured'
+                        : 'Not configured'
+                    }
+                  />
+                </View>
+                <Text style={styles.reproSubtitle}>
+                  Models run through one OpenAI-compatible API. Enter one model id per line.
+                </Text>
+                <View style={styles.pathContent}>
+                  <Text style={styles.pathLabel}>API base URL</Text>
+                  <TextInput
+                    style={styles.secretInput}
+                    value={draft.opencodeBaseUrl}
+                    onChangeText={(value) => updateField('opencodeBaseUrl', value)}
+                    onBlur={requestSave}
+                    placeholder="https://api.example.com/v1"
+                    placeholderTextColor={theme.colors.textFaint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="url"
+                    accessibilityLabel="OpenCode API base URL"
+                  />
+                </View>
+                <SecretPasteField
+                  label="API key"
+                  placeholder="Paste the provider API key…"
+                  value={secretDraft.opencodeApiKey}
+                  onChangeText={(value) => updateSecretField('opencodeApiKey', value)}
+                  configured={settings?.opencodeApiKeyConfigured ?? false}
+                  editable={secretWritableNow}
+                  onBlur={requestSave}
+                  masked
+                />
+                <View style={styles.pathContent}>
+                  <Text style={styles.pathLabel}>Models</Text>
+                  <TextInput
+                    style={[styles.secretInput, { minHeight: 88 }]}
+                    value={draft.opencodeModels}
+                    onChangeText={(value) => updateField('opencodeModels', value)}
+                    onBlur={requestSave}
+                    placeholder={'gpt-4.1\nqwen3-coder'}
+                    placeholderTextColor={theme.colors.textFaint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    multiline
+                    accessibilityLabel="OpenCode models"
+                  />
+                </View>
+                {!secretWritableNow ? (
+                  <Text style={styles.reproHint}>Unlock credentials to configure OpenCode.</Text>
+                ) : null}
+              </View>
             </View>
           ) : null}
 
@@ -830,6 +916,8 @@ function SettingsView({
               ) : null}
             </View>
           ) : null}
+
+          <McpConnectionsSection client={client} />
         </View>
 
         <View style={styles.settingsGroup}>
@@ -846,8 +934,6 @@ function SettingsView({
             />
           </View>
         </View>
-
-        <McpConnectionsSection client={client} />
 
         <View style={styles.settingsGroup}>
           <Text style={styles.groupHeader}>Maintenance</Text>
@@ -956,13 +1042,13 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
       });
   }, [authorization, client, name, url]);
   return (
-    <View style={styles.settingsGroup}>
-      <Text style={styles.groupHeader}>MCP connections</Text>
-      <Text style={styles.groupDescription}>
+    <View style={styles.panel}>
+      <Text style={styles.disclosureTitle}>MCP connections</Text>
+      <Text style={styles.reproSubtitle}>
         Configure remote HTTP MCP servers once, then enable them explicitly per project. Credentials
         stay on the Verity server.
       </Text>
-      <View style={styles.panel}>
+      <View>
         {connections.map((connection) => (
           <View key={connection.id} style={styles.pathContent}>
             <Text style={styles.disclosureTitle}>{connection.name}</Text>

@@ -5,14 +5,24 @@ name: verity-mobile-native-verify
 on:
   pull_request:
     paths:
-      - 'apps/mobile/**'
+      # JavaScript/TypeScript screens, components and tests are OTA-safe and are
+      # already covered by the Linux mobile-app job. Reserve the scarce macOS
+      # runner for inputs that can change the generated native project or binary.
+      - '.github/workflows/mobile-native-verify.yml'
+      - 'apps/mobile/app.config.ts'
+      - 'apps/mobile/android/**'
+      - 'apps/mobile/assets/**'
+      - 'apps/mobile/eas.json'
+      - 'apps/mobile/ios/**'
+      - 'apps/mobile/native/**'
+      - 'apps/mobile/package.json'
+      - 'apps/mobile/patches/**'
+      - 'apps/mobile/plugins/**'
       # OTA promotion only moves an already-published EAS branch. It neither
       # changes nor rebuilds the native app.
-      - '!apps/mobile/ota-promotion.json'
-      - 'packages/mobile/**'
-      - 'packages/events/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'scripts/mobile-native-lock-changes.mjs'
       - 'scripts/patch-mobile-native-deps.mjs'
       - 'scripts/ios-pinned-tls-smoke.sh'
       - 'scripts/ios-pinned-tls-smoke.swift'
@@ -33,7 +43,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      required: ${{ steps.native.outputs.required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - id: native
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          native_sources="$(printf '%s\n' "$changed" | grep -Ev '^(\.github/workflows/mobile-native-verify\.yml|package-lock\.json|scripts/mobile-native-lock-changes\.mjs)$' || true)"
+          if [ -n "$native_sources" ]; then
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! grep -Fxq 'package-lock.json' <<< "$changed"; then
+            echo 'required=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          native_changes="$(node scripts/mobile-native-lock-changes.mjs "$BASE_SHA" HEAD)"
+          if [ -n "$native_changes" ]; then
+            printf '%s\n' "$native_changes"
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'required=false' >> "$GITHUB_OUTPUT"
+          fi
+
   verify-ios:
+    needs: changes
+    if: needs.changes.outputs.required == 'true'
     runs-on: macos-26
     timeout-minutes: 120
     steps:

@@ -4879,6 +4879,36 @@ describe('agent login routes', () => {
 });
 
 describe('GET/PATCH /settings', () => {
+  it('clears the OpenCode credential when its provider URL changes', async () => {
+    await ctx.store.updateVeritySettings({
+      opencodeBaseUrl: 'https://first-provider.example/v1',
+      opencodeApiKey: 'provider-key',
+    });
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { opencodeBaseUrl: 'https://second-provider.example/v1' },
+    });
+    expect(response.statusCode).toBe(200);
+    const stored = await ctx.store.getVeritySettingsRaw();
+    expect(stored?.opencodeBaseUrl).toBe('https://second-provider.example/v1');
+    expect(stored?.opencodeApiKey).toBeNull();
+  });
+
+  it.each([
+    { opencodeBaseUrl: 'http://provider.example/v1' },
+    { opencodeBaseUrl: 'https://user:password@provider.example/v1' },
+    { opencodeBaseUrl: 'https://provider.example/v1?api_key=secret' },
+    { opencodeBaseUrl: 'https://provider.example/v1#fragment' },
+    { opencodeApiKey: 'provider-key\nsmuggled-header' },
+  ])('rejects OpenCode settings the credential gateway cannot safely use', async (payload) => {
+    const response = await app.inject({ method: 'PATCH', url: '/settings', payload });
+    expect(response.statusCode).toBe(400);
+    const stored = await ctx.store.getVeritySettingsRaw();
+    expect(stored?.opencodeBaseUrl ?? null).toBeNull();
+    expect(stored?.opencodeApiKey ?? null).toBeNull();
+  });
+
   it('persists a non-secret transcription choice while the secret store is sealed', async () => {
     const sealedApp = buildServer({
       eventStore: ctx.store,
@@ -7168,7 +7198,7 @@ describe('POST /sessions/:id/turns', () => {
     });
   });
 
-  it('rejects OpenCode-routed model overrides for project-bound sessions', async () => {
+  it('rejects unknown provider model overrides for project-bound sessions', async () => {
     await ctx.store.upsertProject({
       id: 'p-turn-model',
       owner: 'heey-global',
@@ -7191,8 +7221,69 @@ describe('POST /sessions/:id/turns', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({
-      error: 'project sessions currently support Claude and Codex models only',
+      error:
+        'project sessions currently support Claude, Codex, and configured OpenCode models only',
     });
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+
+  it('allows configured OpenCode model overrides for project-bound sessions', async () => {
+    await ctx.store.updateVeritySettings({
+      opencodeBaseUrl: 'https://provider.example/v1',
+      opencodeApiKey: 'provider-key',
+      opencodeModels: 'model-a',
+    });
+    dispatchTurn.mockResolvedValueOnce({ queued: false });
+    await ctx.store.upsertProject({
+      id: 'p-turn-opencode',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-project-opencode-turn',
+      worktree: '/data/dev/heey-global-verity/.verity-sessions/agent-opencode-turn',
+      model: 'claude-opus-4-8',
+      projectId: 'p-turn-opencode',
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-project-opencode-turn/turns',
+      payload: { prompt: 'go', model: 'verity/model-a' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(dispatchTurn).toHaveBeenCalledWith(
+      's-project-opencode-turn',
+      'go',
+      expect.objectContaining({ model: 'verity/model-a' }),
+    );
+  });
+
+  it('rejects a stored OpenCode model after its central configuration is removed', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-turn-stale-opencode',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-project-stale-opencode-turn',
+      worktree: '/data/dev/heey-global-verity/.verity-sessions/agent-stale-opencode-turn',
+      model: 'verity/model-a',
+      projectId: 'p-turn-stale-opencode',
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-project-stale-opencode-turn/turns',
+      payload: { prompt: 'go' },
+    });
+
+    expect(res.statusCode).toBe(400);
     expect(dispatchTurn).not.toHaveBeenCalled();
   });
 
@@ -10458,7 +10549,8 @@ describe('POST /sessions with project field (#174)', () => {
 
       expect(res.statusCode).toBe(400);
       expect(res.json()).toEqual({
-        error: 'project sessions currently support Claude and Codex models only',
+        error:
+          'project sessions currently support Claude, Codex, and configured OpenCode models only',
       });
       expect(p.provision).not.toHaveBeenCalled();
       expect(startSession).not.toHaveBeenCalled();

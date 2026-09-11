@@ -205,11 +205,6 @@ services:
       # required overlay privileges and volumes. The guarded wrapper supplies the
       # overlay, whose service override sets this to 1.
       VERITY_RUNNER_SUPERVISOR: ${VERITY_RUNNER_SUPERVISOR:-0}
-      VERITY_OPENCODE_ENABLED: ${VERITY_OPENCODE_ENABLED:-}
-      VERITY_EXTRA_MODELS: ${VERITY_EXTRA_MODELS:-}
-      # Forwarded only so upgraded deployments receive the migration refusal in
-      # main.ts instead of silently ignoring the retired setting.
-      OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-}
       # Control-plane database — a real PostgreSQL running as the `postgres`
       # service below. Postgres is now the ONLY runtime database (pglite has been
       # removed from the runtime); the server fails fast without this. The

@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { parseLaunchFragment } from './github-app.js';
+import { githubFormAction, parseLaunchFragment } from './github-app.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const manifest = {
@@ -37,11 +37,17 @@ test('rejects malformed or oversized state', () => {
   assert.throws(() => parseLaunchFragment(fragment({ state: 'a'.repeat(257) })));
 });
 
-test('the form destination is constant and never assigned from fragment data', () => {
+test('selects only personal or strictly validated organization form destinations', () => {
   const html = readFileSync(join(here, 'github-app.html'), 'utf8');
-  const script = readFileSync(join(here, 'github-app.js'), 'utf8');
   assert.match(html, /action="https:\/\/github\.com\/settings\/apps\/new"/);
-  assert.doesNotMatch(script, /\.action\s*=/);
+  assert.equal(githubFormAction(undefined), 'https://github.com/settings/apps/new');
+  assert.equal(
+    githubFormAction(parseLaunchFragment(fragment({ owner: 'Heey-Global' })).owner),
+    'https://github.com/organizations/Heey-Global/settings/apps/new',
+  );
+  for (const owner of ['-acme', 'acme-', 'acme/example', 'acme?x=1', 'a'.repeat(40)]) {
+    assert.throws(() => parseLaunchFragment(fragment({ owner })));
+  }
 });
 
 test('rejects a manifest with broader permissions or a web callback', () => {

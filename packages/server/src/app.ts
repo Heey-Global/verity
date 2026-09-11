@@ -84,6 +84,7 @@ export interface ControlPlaneDeps {
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
   /** Activates encrypted runtime services after the store is initialized/unlocked. */
   onSecretUnlocked?: (() => Promise<void>) | undefined;
+  onOpenCodeSettingsChanged?: ServerDeps['onOpenCodeSettingsChanged'];
   /** Per-device API auth-token registry (audit C1). Omit → the control plane is
    *  unauthenticated (test/local default); when present and enabled, every route
    *  outside the pre-auth allowlist requires a Bearer token. */
@@ -332,6 +333,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { codexGatewayCredentialProvider: deps.codexGatewayCredentialProvider }
       : {}),
     ...(deps.onSecretUnlocked !== undefined ? { onSecretUnlocked: deps.onSecretUnlocked } : {}),
+    ...(deps.onOpenCodeSettingsChanged !== undefined
+      ? { onOpenCodeSettingsChanged: deps.onOpenCodeSettingsChanged }
+      : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
     ...(deps.listBrokeredGrants !== undefined

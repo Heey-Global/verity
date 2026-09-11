@@ -440,9 +440,9 @@ describe('verity-runner supervisor runtime', () => {
     expect(stackLauncher).toContain('/generation');
     expect(stackLauncher).toContain('claude-egress-generation');
     expect(stackLauncher).toContain('/usr/local/bin/verity-egress-connector-start');
-    expect(baseCompose).toContain('VERITY_OPENCODE_ENABLED: ${VERITY_OPENCODE_ENABLED:-}');
-    expect(baseCompose).toContain('VERITY_EXTRA_MODELS: ${VERITY_EXTRA_MODELS:-}');
-    expect(baseCompose).toContain('OPENCODE_BASE_URL: ${OPENCODE_BASE_URL:-}');
+    expect(baseCompose).not.toContain('VERITY_OPENCODE_ENABLED');
+    expect(baseCompose).not.toContain('VERITY_EXTRA_MODELS');
+    expect(baseCompose).not.toContain('OPENCODE_BASE_URL');
     expect(stackLauncher).toContain('incomplete Sandbox egress connector configuration');
     // Stage-5b Slice 2b: root pass creates the Claude transcript dir on the
     // shared runner-runtime mount and hands it to the agent uid so the worker

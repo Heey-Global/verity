@@ -210,7 +210,11 @@ async function handle(request, response, options, egressUrl, codexEgressUrl, for
     });
   };
   const requestPath = request.url ?? '/';
-  const codex = requestPath === '/codex' || requestPath.startsWith('/codex/');
+  const codex =
+    requestPath === '/codex' ||
+    requestPath.startsWith('/codex/') ||
+    requestPath === '/opencode' ||
+    requestPath.startsWith('/opencode/');
   try {
     const hostValues = request.headersDistinct.host;
     if (!hostValues || hostValues.length !== 1 || hostValues[0] !== options.localAuthority) {
