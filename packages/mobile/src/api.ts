@@ -2198,6 +2198,7 @@ export class VerityClient {
     owner?: string,
     returnTo: '/github-connect' | '/onboarding/github' = '/github-connect',
     native = false,
+    signal?: AbortSignal,
   ): Promise<GithubManifestPreparation> {
     const res = await this.request('/github/app/manifest/prepare', {
       method: 'POST',
@@ -2210,6 +2211,7 @@ export class VerityClient {
         // Pressing Connect explicitly abandons an interrupted partial setup.
         restartPartial: true,
       }),
+      ...(signal ? { signal } : {}),
     });
     return manifestPrepareSchema.parse(await res.json());
   }

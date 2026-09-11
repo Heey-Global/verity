@@ -12,7 +12,7 @@
 // so `secretUiMode` / `secretPatchFromDraft` run for real.
 import { VerityApiError } from '@verity/mobile';
 import type { VerityClient, OnboardingStatus, SecretUnlocked } from '@verity/mobile';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Linking } from 'react-native';
 
 const mockReplace = jest.fn<void, [string]>();
@@ -454,6 +454,60 @@ describe('onboarding master-password step', () => {
 describe('onboarding github one-page setup', () => {
   const PUBLIC_KEY = 'ssh-ed25519 AAAAExamplePublicKeyBody holger@example.test';
 
+  it('shows progress immediately and prevents duplicate authorization starts', async () => {
+    let resolvePreparation!: (value: { state: string; manifest: { name: string } }) => void;
+    const prepareGithubManifest = jest.fn(
+      () =>
+        new Promise<{ state: string; manifest: { name: string } }>((resolve) => {
+          resolvePreparation = resolve;
+        }),
+    );
+    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'cancel' });
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest,
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    const connect = screen.getByLabelText('Connect to GitHub');
+    fireEvent.press(connect);
+    fireEvent.press(connect);
+
+    expect(screen.getByText('Opening GitHub…')).toBeOnTheScreen();
+    expect(prepareGithubManifest).toHaveBeenCalledTimes(1);
+
+    resolvePreparation({ state: 'state-1', manifest: { name: 'Verity-a1b2c3d4' } });
+    expect(await screen.findByLabelText('Connect to GitHub')).toBeOnTheScreen();
+  });
+
+  it('stops a stuck authorization preparation and offers a retry', async () => {
+    jest.useFakeTimers();
+    const prepareGithubManifest = jest.fn(
+      (...args: Parameters<VerityClient['prepareGithubManifest']>) =>
+        new Promise<never>((_resolve, reject) => {
+          args[4]?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest,
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+    await act(() => jest.advanceTimersByTimeAsync(15000));
+
+    expect(
+      screen.getByText('Could not start GitHub authorization. Check the connection and try again.'),
+    ).toBeOnTheScreen();
+    expect(screen.getByLabelText('Connect to GitHub')).toBeOnTheScreen();
+    jest.useRealTimers();
+  });
+
   it('shows one Connect to GitHub path without existing-App credentials', () => {
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
@@ -522,6 +576,7 @@ describe('onboarding github one-page setup', () => {
       undefined,
       '/onboarding/github',
       true,
+      expect.anything(),
     );
     expect(mockOpenAuthSessionAsync).toHaveBeenNthCalledWith(
       1,
@@ -613,6 +668,7 @@ describe('onboarding github one-page setup', () => {
       'Heey-Global',
       '/onboarding/github',
       true,
+      expect.anything(),
     );
   });
 

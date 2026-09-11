@@ -19,9 +19,14 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { getVerityBaseUrl } from '../lib/client';
 
 const POLL_INTERVAL_MS = 3000;
+const PREPARE_TIMEOUT_MS = 15000;
 const GITHUB_CALLBACK_URL = 'https://verity.build/github/app/callback';
 
-type Phase = { kind: 'idle' } | { kind: 'waiting' } | { kind: 'error'; message: string };
+type Phase =
+  | { kind: 'idle' }
+  | { kind: 'starting' }
+  | { kind: 'waiting' }
+  | { kind: 'error'; message: string };
 
 function githubCallback(
   value: string,
@@ -58,6 +63,7 @@ export function GithubConnectPanel({
   const [showOrganization, setShowOrganization] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const connectedRef = useRef(false);
+  const connectingRef = useRef(false);
   const mountedRef = useRef(true);
   const waiting = phase.kind === 'waiting';
 
@@ -96,23 +102,29 @@ export function GithubConnectPanel({
   }, [waiting, client]);
 
   const connect = () => {
+    if (connectingRef.current) return;
     const base = getVerityBaseUrl();
     if (base === null) {
       setPhase({ kind: 'error', message: 'Set the server address first, then try again.' });
       return;
     }
+    connectingRef.current = true;
+    setPhase({ kind: 'starting' });
 
     void (async () => {
       const owner = organization.trim();
       const nativeCallback = Platform.OS === 'ios';
       let startUrl = `${base}/github/app/manifest/start?base=${encodeURIComponent(base)}`;
       if (owner.length > 0) startUrl += `&owner=${encodeURIComponent(owner)}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), PREPARE_TIMEOUT_MS);
       try {
         const prepared = await client.prepareGithubManifest(
           base,
           owner || undefined,
           returnTo,
           nativeCallback,
+          controller.signal,
         );
         if (nativeCallback) {
           if (prepared.state === undefined || prepared.manifest === undefined)
@@ -131,11 +143,15 @@ export function GithubConnectPanel({
           throw new Error('the server returned no compatible GitHub manifest flow');
         }
       } catch {
-        setPhase({
-          kind: 'error',
-          message: 'Could not start GitHub authorization. Check the connection and try again.',
-        });
+        connectingRef.current = false;
+        if (mountedRef.current)
+          setPhase({
+            kind: 'error',
+            message: 'Could not start GitHub authorization. Check the connection and try again.',
+          });
         return;
+      } finally {
+        clearTimeout(timeout);
       }
       try {
         if (!nativeCallback) {
@@ -148,6 +164,7 @@ export function GithubConnectPanel({
           preferUniversalLinks: true,
         });
         if (createdResult.type !== 'success') {
+          connectingRef.current = false;
           if (mountedRef.current) setPhase({ kind: 'idle' });
           return;
         }
@@ -159,6 +176,7 @@ export function GithubConnectPanel({
           { preferUniversalLinks: true },
         );
         if (installedResult.type !== 'success') {
+          connectingRef.current = false;
           if (mountedRef.current) setPhase({ kind: 'idle' });
           return;
         }
@@ -167,6 +185,7 @@ export function GithubConnectPanel({
         const status = await client.fetchOnboardingStatus();
         finish(status);
       } catch {
+        connectingRef.current = false;
         if (mountedRef.current) {
           setPhase({
             kind: 'error',
@@ -217,7 +236,15 @@ export function GithubConnectPanel({
         </Text>
       ) : null}
 
-      {waiting ? (
+      {phase.kind === 'starting' ? (
+        <View style={styles.waiting} accessibilityLiveRegion="polite">
+          <ActivityIndicator size="small" color={theme.colors.primary} />
+          <View style={styles.waitingCopy}>
+            <Text style={styles.waitingTitle}>Opening GitHub…</Text>
+            <Text style={styles.hint}>Preparing a secure authorization request.</Text>
+          </View>
+        </View>
+      ) : waiting ? (
         <View style={styles.waiting} accessibilityLiveRegion="polite">
           <ActivityIndicator size="small" color={theme.colors.primary} />
           <View style={styles.waitingCopy}>

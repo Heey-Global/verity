@@ -326,13 +326,13 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.primary,
   },
   buttonDisabled: {
     opacity: 0.5,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '800',
   },
