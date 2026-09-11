@@ -79,6 +79,10 @@ jest.mock('../lib/authToken', () => ({
 // Spy on the real `Linking.openURL` so the guidance link's effect is observable
 // without opening a URL (jsdom/jest has no native Linking backend).
 const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+const mockOpenAuthSessionAsync = jest.fn();
+jest.mock('expo-web-browser', () => ({
+  openAuthSessionAsync: (...args: unknown[]) => mockOpenAuthSessionAsync(...args),
+}));
 
 // `expo-clipboard` has no jsdom backend — mock it so the copy button's effect is
 // observable without a native module.
@@ -141,6 +145,7 @@ beforeEach(() => {
   mockUnlockServerSecretWithBiometrics.mockReset();
   mockUnlockServerSecretWithBiometrics.mockResolvedValue(false);
   openURL.mockClear();
+  mockOpenAuthSessionAsync.mockReset();
   mockSetStringAsync.mockClear();
 });
 
@@ -466,22 +471,46 @@ describe('onboarding github one-page setup', () => {
   });
 
   it('opens the public fragment-only bridge instead of the paired server', async () => {
+    mockOpenAuthSessionAsync
+      .mockResolvedValueOnce({
+        type: 'success',
+        url: 'https://verity.build/github/app/callback?phase=created&code=github-code&state=state-1',
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        url: 'https://verity.build/github/app/callback?phase=installed&installation_id=installation-1&state=state-2',
+      });
     const prepareGithubManifest = jest.fn().mockResolvedValue({
       startToken: 'legacy-token',
       state: 'state-1',
       manifest: { name: 'Verity-a1b2c3d4' },
     });
+    const fetchOnboardingStatus = jest
+      .fn()
+      .mockResolvedValueOnce(status())
+      .mockResolvedValue(status({ githubAppConfigured: true }));
+    const completeGithubManifest = jest
+      .fn()
+      .mockResolvedValue('https://github.com/apps/verity-test/installations/new?state=state-2');
+    const completeGithubManifestInstallation = jest.fn().mockResolvedValue(undefined);
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
-        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        fetchOnboardingStatus,
         prepareGithubManifest,
+        completeGithubManifest,
+        completeGithubManifestInstallation,
+        getVeritySettings: jest.fn().mockResolvedValue({
+          gitUserName: 'Holger',
+          gitUserEmail: 'holger@example.test',
+        }),
+        getSigningKey: jest.fn().mockResolvedValue({ configured: true, publicKey: PUBLIC_KEY }),
       }),
     );
     render(<OnboardingGithub />);
 
     fireEvent.press(screen.getByLabelText('Connect to GitHub'));
-    await waitFor(() => expect(openURL).toHaveBeenCalledTimes(1));
-    const opened = openURL.mock.calls[0]?.[0] ?? '';
+    await waitFor(() => expect(mockOpenAuthSessionAsync).toHaveBeenCalledTimes(2));
+    const opened = mockOpenAuthSessionAsync.mock.calls[0]?.[0] ?? '';
     expect(opened).toMatch(/^https:\/\/verity\.build\/github\/app\/#/);
     expect(opened).not.toContain('verity.example:8082');
     expect(JSON.parse(decodeURIComponent(new URL(opened).hash.slice(1)))).toEqual({
@@ -494,9 +523,66 @@ describe('onboarding github one-page setup', () => {
       '/onboarding/github',
       true,
     );
+    expect(mockOpenAuthSessionAsync).toHaveBeenNthCalledWith(
+      1,
+      opened,
+      'https://verity.build/github/app/callback',
+      { preferUniversalLinks: true },
+    );
+    expect(completeGithubManifest).toHaveBeenCalledWith('github-code', 'state-1');
+    expect(mockOpenAuthSessionAsync).toHaveBeenNthCalledWith(
+      2,
+      'https://github.com/apps/verity-test/installations/new?state=state-2',
+      'https://verity.build/github/app/callback',
+      { preferUniversalLinks: true },
+    );
+    expect(completeGithubManifestInstallation).toHaveBeenCalledWith('installation-1', 'state-2');
+  });
+
+  it('leaves the waiting state when the GitHub auth session is cancelled', async () => {
+    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'cancel' });
+    const completeGithubManifest = jest.fn();
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest: jest.fn().mockResolvedValue({
+          state: 'state-1',
+          manifest: { name: 'Verity-a1b2c3d4' },
+        }),
+        completeGithubManifest,
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+
+    await waitFor(() => expect(mockOpenAuthSessionAsync).toHaveBeenCalledTimes(1));
+    expect(await screen.findByLabelText('Connect to GitHub')).toBeOnTheScreen();
+    expect(completeGithubManifest).not.toHaveBeenCalled();
+  });
+
+  it('rejects a server response that only offers the legacy browser flow', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest: jest.fn().mockResolvedValue({ startToken: 'legacy-token' }),
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+
+    expect(
+      await screen.findByText(
+        'Could not start GitHub authorization. Check the connection and try again.',
+      ),
+    ).toBeOnTheScreen();
+    expect(mockOpenAuthSessionAsync).not.toHaveBeenCalled();
+    expect(openURL).not.toHaveBeenCalled();
   });
 
   it('opens organization setup through the public bridge too', async () => {
+    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'cancel' });
     const prepareGithubManifest = jest.fn().mockResolvedValue({
       state: 'state-organization',
       manifest: { name: 'Verity-a1b2c3d4' },
@@ -513,8 +599,8 @@ describe('onboarding github one-page setup', () => {
     fireEvent.changeText(screen.getByLabelText('GitHub organization'), 'Heey-Global');
     fireEvent.press(screen.getByLabelText('Connect to GitHub'));
 
-    await waitFor(() => expect(openURL).toHaveBeenCalledTimes(1));
-    const opened = openURL.mock.calls[0]?.[0] ?? '';
+    await waitFor(() => expect(mockOpenAuthSessionAsync).toHaveBeenCalledTimes(1));
+    const opened = mockOpenAuthSessionAsync.mock.calls[0]?.[0] ?? '';
     expect(opened).toMatch(/^https:\/\/verity\.build\/github\/app\/#/);
     expect(opened).not.toContain('verity.example:8082');
     expect(JSON.parse(decodeURIComponent(new URL(opened).hash.slice(1)))).toEqual({
