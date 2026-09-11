@@ -241,7 +241,9 @@ jobs:
             exit 1
           fi
           tag="v${VERSION}"
-          is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
+          release_json="$(gh release view "$tag" --json isDraft,targetCommitish)"
+          is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+          target="$(jq -r '.targetCommitish' <<<"$release_json")"
           if [[ "$REPUBLISH" == 'true' ]]; then
             if [[ "$is_draft" == 'true' ]]; then
               echo "::error::$tag is still a draft; republish is only for an existing release." >&2
@@ -252,16 +254,30 @@ jobs:
             exit 1
           fi
           sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_REF}" --jq '.sha')"
-          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
-          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
-          if [[ "$tag_type" == 'tag' ]]; then
-            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')"
-          elif [[ "$tag_type" != 'commit' ]]; then
-            echo "::error::$tag resolves to unsupported object type $tag_type." >&2
-            exit 1
+          if [[ "$is_draft" == 'true' ]]; then
+            # GitHub creates refs/tags/<tag> only when publishing the release, so
+            # accept only a pinned commit target that cannot move before then.
+            if [[ ! "$target" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$tag draft target must be a full commit SHA, got '$target'." >&2
+              exit 1
+            fi
+            release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${target}" --jq '.sha')"
+            if [[ "$target" != "$release_sha" ]]; then
+              echo "::error::$tag draft target does not resolve to its recorded commit." >&2
+              exit 1
+            fi
+          else
+            tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+            release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+            if [[ "$tag_type" == 'tag' ]]; then
+              release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${release_sha}" --jq '.object.sha')"
+            elif [[ "$tag_type" != 'commit' ]]; then
+              echo "::error::$tag resolves to unsupported object type $tag_type." >&2
+              exit 1
+            fi
           fi
-          if [[ "$sha" != "$tag_sha" ]]; then
-            echo "::error::$tag points to $tag_sha but backend-ref resolves to $sha." >&2
+          if [[ "$sha" != "$release_sha" ]]; then
+            echo "::error::$tag resolves to $release_sha but backend-ref resolves to $sha." >&2
             exit 1
           fi
           {

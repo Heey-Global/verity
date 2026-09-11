@@ -1299,6 +1299,13 @@ describe('self-update release gate', () => {
       (step) => step.name === 'Validate maintenance backend release',
     );
     expect(validation?.env?.GH_REPO).toBe('${{ github.repository }}');
+    expect(validation?.run).toContain('--json isDraft,targetCommitish');
+    expect(validation?.run).toContain('commits/${target}');
+    const authorization = validation?.run?.slice(validation.run.indexOf('sha='));
+    expect(authorization).toContain('if [[ "$is_draft" == \'true\' ]]');
+    expect(authorization).toContain('"$target" =~ ^[0-9a-f]{40}$');
+    expect(authorization).toContain('"$target" != "$release_sha"');
+    expect(validation?.run).toContain('git/ref/tags/${tag}');
     expect(source).toContain('backend-schema-forward-max:');
     expect(source).toContain('VERITY_SCHEMA_FORWARD_MAX=${{ env.SCHEMA_FORWARD_MAX }}');
     expect(source).toContain('finalize-backend-release:');
