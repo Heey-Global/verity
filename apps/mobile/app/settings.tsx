@@ -281,6 +281,7 @@ function SettingsView({
   const [secretStatus, setSecretStatus] = useState<SecretStatus | undefined>(undefined);
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const editVersion = useRef(0);
+  const secretDraftRef = useRef<SecretSettingsDraft>(EMPTY_SECRET_DRAFT);
 
   const updateAgentConfigured = useCallback((provider: 'claude' | 'codex', configured: boolean) => {
     setSettings((current) =>
@@ -373,7 +374,9 @@ function SettingsView({
 
   const updateSecretField = useCallback((key: keyof SecretSettingsDraft, value: string) => {
     editVersion.current += 1;
-    setSecretDraft((current) => ({ ...current, [key]: value }));
+    const next = { ...secretDraftRef.current, [key]: value };
+    secretDraftRef.current = next;
+    setSecretDraft(next);
   }, []);
 
   const updateToggleField = useCallback((key: ToggleFieldKey, value: boolean) => {
@@ -394,26 +397,23 @@ function SettingsView({
       setSaveQueued(true);
       return;
     }
+    const submittedSecrets = secretDraftRef.current;
     const savingVersion = editVersion.current;
     const requiresContainerApply =
-      secretDraft.githubAppPrivateKey.trim().length > 0 ||
-      secretDraft.gitSshPrivateKey.trim().length > 0 ||
-      secretDraft.codexAuthJson.trim().length > 0 ||
-      secretDraft.opencodeApiKey.trim().length > 0 ||
-      secretDraft.dopplerServiceToken.trim().length > 0 ||
-      secretDraft.uplinkSubscriptionKey.trim().length > 0 ||
-      secretDraft.transcribeApiKey.trim().length > 0 ||
+      secretDraftDirty(submittedSecrets) ||
       ALL_DRAFT_FIELDS.some(
         (key) => trimOrNull(draft[key]) !== trimOrNull(valueFromSettings(settings, key)),
       );
     setSaving(true);
     setError(undefined);
     setRepro({ phase: 'idle' });
-    const patch = patchFromDraft(draft, secretDraft);
-    const submittedSecrets = secretDraft;
+    const patch = patchFromDraft(draft, submittedSecrets);
     // The request owns an immutable snapshot now. Do not retain plaintext in
     // component state for the lifetime of a failed or slow network request.
-    if (secretDirty) setSecretDraft(EMPTY_SECRET_DRAFT);
+    if (secretDraftDirty(submittedSecrets)) {
+      secretDraftRef.current = EMPTY_SECRET_DRAFT;
+      setSecretDraft(EMPTY_SECRET_DRAFT);
+    }
     void client
       .updateVeritySettings(patch)
       .then((next) => {
@@ -430,6 +430,7 @@ function SettingsView({
           for (const key of Object.keys(submittedSecrets) as (keyof SecretSettingsDraft)[]) {
             if (restored[key] === '') restored[key] = submittedSecrets[key];
           }
+          secretDraftRef.current = restored;
           return restored;
         });
         // A 503 means the store is sealed — a secret write can't land until it's

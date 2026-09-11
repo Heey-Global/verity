@@ -608,6 +608,10 @@ describe('SettingsScreen — secret store onboarding', () => {
     );
     render(<SettingsScreen />);
 
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('Paste the provider API key…').props.editable).toBe(true),
+    );
+
     fireEvent.changeText(
       await screen.findByLabelText('OpenCode API base URL'),
       'https://api.test/v1',
@@ -615,15 +619,21 @@ describe('SettingsScreen — secret store onboarding', () => {
     fireEvent.changeText(screen.getByLabelText('OpenCode models'), 'model-a\nmodel-b');
     const key = screen.getByPlaceholderText('Paste the provider API key…');
     fireEvent.changeText(key, 'provider-key-fixture');
-    fireEvent(key, 'blur');
-
-    await waitFor(() => expect(updateVeritySettings).toHaveBeenCalled());
-    expect(updateVeritySettings.mock.calls.at(-1)?.[0]).toEqual(
-      expect.objectContaining({
-        opencodeBaseUrl: 'https://api.test/v1',
-        opencodeModels: 'model-a\nmodel-b',
-        opencodeApiKey: 'provider-key-fixture',
-      }),
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText('Paste the provider API key…').props.value).toBe(
+        'provider-key-fixture',
+      ),
+    );
+    fireEvent(screen.getByPlaceholderText('Paste the provider API key…'), 'blur');
+    await waitFor(() =>
+      expect(
+        updateVeritySettings.mock.calls.some(
+          ([patch]) =>
+            patch.opencodeBaseUrl === 'https://api.test/v1' &&
+            patch.opencodeModels === 'model-a\nmodel-b' &&
+            patch.opencodeApiKey === 'provider-key-fixture',
+        ),
+      ).toBe(true),
     );
     expect(await screen.findByLabelText('Reprovision running containers now')).toBeOnTheScreen();
   });
