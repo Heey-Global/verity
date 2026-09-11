@@ -184,7 +184,10 @@ describe('signed GitHub release evidence', () => {
     });
     const channel = server.steps.find((step) => step.name === 'Publish the signed release channel');
     expect(channel?.run).toContain('cosign verify-attestation');
-    expect(channel?.run).toContain('https://slsa.dev/provenance/v1');
+    expect(channel?.run).toContain('predicate_type=https://slsa.dev/provenance/v1');
+    expect(channel?.run).toContain('--type "$predicate_type"');
+    expect(channel?.run).toContain('--predicate-type "$predicate_type"');
+    expect(channel?.run).not.toContain('--type slsaprovenance');
   });
 
   it('keeps the release mutable until its evidence and artifacts are complete', () => {

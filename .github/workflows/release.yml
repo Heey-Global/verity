@@ -1037,13 +1037,14 @@ jobs:
           # Select SLSA v1 explicitly: BuildKit may publish its own provenance,
           # and mixing unrelated predicates into one release asset would make
           # offline verification ambiguous.
+          predicate_type=https://slsa.dev/provenance/v1
           cosign verify-attestation \
-            --type slsaprovenance \
+            --type "$predicate_type" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main" \
             "$image" >/dev/null
           cosign download attestation \
-            --predicate-type https://slsa.dev/provenance/v1 \
+            --predicate-type "$predicate_type" \
             "$image" > "$workdir/verity-server-v${VERSION}.intoto.jsonl"
           test "$(wc -l < "$workdir/verity-server-v${VERSION}.intoto.jsonl")" -eq 1
 
