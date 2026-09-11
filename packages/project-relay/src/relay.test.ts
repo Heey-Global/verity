@@ -128,6 +128,43 @@ describe('broker relay', () => {
     ]);
   });
 
+  it('streams MCP proxy responses with their session identifier beyond ordinary limits', async () => {
+    let lastEventId: string | undefined;
+    const socketPath = await fakeBroker(async (incoming) => {
+      const presented = incoming.headers['last-event-id'];
+      lastEventId = Array.isArray(presented) ? presented[0] : presented;
+      await readBody(incoming);
+      return {
+        status: 200,
+        headers: { 'mcp-session-id': 'session-123', 'content-type': 'text/event-stream' },
+        body: 'data: {"jsonrpc":"2.0"}\n\n',
+      };
+    });
+    const relay = createBrokerRelayServer({
+      socketPath,
+      limits: { maxResponseBytes: 1 },
+    });
+    const port = await listenTcp(relay);
+
+    const response = await httpCall(port, {
+      method: 'GET',
+      path: '/internal/mcp-proxy',
+      headers: {
+        authorization: 'Bearer proxy-turn',
+        'x-verity-mcp-binding': 'connection-1',
+        'last-event-id': 'event-42',
+        accept: 'text/event-stream',
+      },
+    });
+
+    expect(response).toMatchObject({
+      status: 200,
+      body: 'data: {"jsonrpc":"2.0"}\n\n',
+    });
+    expect(response.headers['mcp-session-id']).toBe('session-123');
+    expect(lastEventId).toBe('event-42');
+  });
+
   // Every other test here writes the request by hand, which is how the gateway hop shipped
   // broken twice over: the route was missing, and then the header allowlist rejected what
   // `fetch` adds by itself. So drive the real MCP client and let it choose its own request

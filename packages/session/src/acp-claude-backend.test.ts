@@ -810,6 +810,63 @@ describe('AcpClaudeBackend', () => {
     });
   });
 
+  it('offers additional trusted HTTP MCP servers alongside the loopback gateway', async () => {
+    const fake = acpSpawner({ httpMcp: true });
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-additional-mcp',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Read mail',
+      spawner: fake.spawner,
+      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'turn-bearer' },
+      mcpServers: [
+        {
+          name: 'gmail',
+          url: 'http://relay:8080/mcp/connections/gmail',
+          headers: [{ name: 'Authorization', value: 'Bearer proxy-session-token' }],
+        },
+      ],
+    });
+    expect(fake.writes.find((message) => message['method'] === 'session/new')).toMatchObject({
+      params: {
+        mcpServers: [
+          { type: 'http', name: 'verity' },
+          {
+            type: 'http',
+            name: 'gmail',
+            url: 'http://relay:8080/mcp/connections/gmail',
+            headers: [{ name: 'Authorization', value: 'Bearer proxy-session-token' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('withholds every HTTP MCP descriptor when the agent lacks HTTP MCP support', async () => {
+    const fake = acpSpawner({ httpMcp: false });
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-additional-mcp-unsupported',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Read mail',
+      spawner: fake.spawner,
+      mcpServers: [
+        {
+          name: 'gmail',
+          url: 'http://relay:8080/mcp/connections/gmail',
+          headers: [{ name: 'Authorization', value: 'Bearer proxy-session-token' }],
+        },
+      ],
+    });
+    expect(fake.writes.find((message) => message['method'] === 'session/new')).toMatchObject({
+      params: { mcpServers: [] },
+    });
+    expect(JSON.stringify(fake.writes)).not.toContain('proxy-session-token');
+    expect(JSON.stringify(fake.writes)).toContain('Configured MCP connections unavailable');
+  });
+
   // An agent that cannot speak HTTP MCP would be handed a server it can never
   // call, so the bearer stays with the Server rather than travelling for nothing.
   it('withholds the gateway from an agent that does not advertise HTTP MCP', async () => {

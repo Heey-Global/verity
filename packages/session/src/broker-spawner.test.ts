@@ -318,7 +318,7 @@ describe('agent spawn broker', () => {
   it('refuses a gateway bearer the container has no endpoint to redeem', async () => {
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
     expect(text).toMatch(
-      /request\.mcpGatewayToken !== undefined &&\s*\(mcpGatewayUrl === undefined \|\| mcpGatewayUrl === ''\)/u,
+      /\(request\.mcpGatewayToken !== undefined \|\| usesInternalMcpProxy === true\) &&\s*\(mcpGatewayUrl === undefined \|\| mcpGatewayUrl === ''\)/u,
     );
     expect(text).toContain("mcpGatewayUrl === ''");
     expect(text).toMatch(

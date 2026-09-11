@@ -709,6 +709,21 @@ export const veritySettingsSchema = z.object({
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
 
+const httpMcpConnectionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  url: z.string(),
+  enabled: z.boolean(),
+  authorizationConfigured: z.boolean(),
+});
+export type HttpMcpConnection = z.infer<typeof httpMcpConnectionSchema>;
+const projectMcpBindingSchema = z.object({
+  projectId: z.string(),
+  connectionId: z.string(),
+  enabled: z.boolean(),
+});
+export type ProjectMcpBinding = z.infer<typeof projectMcpBindingSchema>;
+
 // Managed self-update (ADR 0008 D4). The server projects the privileged update
 // journal down to this closed shape; the app must not widen it — an unknown
 // state or failure code is a mismatched server, not something to render.
@@ -2302,6 +2317,56 @@ export class VerityClient {
       body: JSON.stringify(patch),
     });
     return projectSettingsResponseSchema.parse(await res.json()).settings;
+  }
+
+  async listHttpMcpConnections(): Promise<HttpMcpConnection[]> {
+    const res = await this.request('/mcp-connections', { method: 'GET' });
+    return z.object({ connections: z.array(httpMcpConnectionSchema) }).parse(await res.json())
+      .connections;
+  }
+
+  async createHttpMcpConnection(input: {
+    name: string;
+    url: string;
+    enabled?: boolean;
+    authorization?: string | null;
+  }): Promise<HttpMcpConnection> {
+    const res = await this.request('/mcp-connections', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return z.object({ connection: httpMcpConnectionSchema }).parse(await res.json()).connection;
+  }
+
+  async deleteHttpMcpConnection(connectionId: string): Promise<void> {
+    await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async setProjectMcpBinding(
+    projectId: string,
+    connectionId: string,
+    enabled: boolean,
+  ): Promise<ProjectMcpBinding> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/mcp-bindings/${encodeURIComponent(connectionId)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      },
+    );
+    return z.object({ binding: projectMcpBindingSchema }).parse(await res.json()).binding;
+  }
+
+  async listProjectMcpBindings(projectId: string): Promise<ProjectMcpBinding[]> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/mcp-bindings`, {
+      method: 'GET',
+    });
+    return z.object({ bindings: z.array(projectMcpBindingSchema) }).parse(await res.json())
+      .bindings;
   }
 
   async startDevServer(devServerId: string): Promise<ProjectRuntimeStarted> {

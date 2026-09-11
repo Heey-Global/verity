@@ -35,6 +35,8 @@ import {
   type DopplerConfigSummary,
   type ProjectSettings,
   type ProjectSettingsDraft,
+  type HttpMcpConnection,
+  type ProjectMcpBinding,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
@@ -2966,10 +2968,102 @@ function ProjectSettingsSection({
         settings={settings}
         onSaved={onSaved}
       />
+      <ProjectMcpBindingsSection client={client} projectId={projectId} />
       <Text style={styles.settingsHint}>
         Verity resolves approved secrets in the central broker. No Doppler credential is stored in
         or injected into the project container.
       </Text>
+    </View>
+  );
+}
+
+function ProjectMcpBindingsSection({
+  client,
+  projectId,
+}: {
+  client: VerityClient;
+  projectId: string;
+}) {
+  const [connections, setConnections] = useState<HttpMcpConnection[]>([]);
+  const [bindings, setBindings] = useState<ProjectMcpBinding[]>([]);
+  const [pendingConnectionId, setPendingConnectionId] = useState<string | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  const mutationInFlight = useRef(false);
+  const loadGeneration = useRef(0);
+  const load = useCallback(async (): Promise<void> => {
+    if (
+      typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function' ||
+      typeof (client as Partial<VerityClient>).listProjectMcpBindings !== 'function'
+    ) {
+      return;
+    }
+    const generation = ++loadGeneration.current;
+    setError(undefined);
+    await Promise.all([client.listHttpMcpConnections(), client.listProjectMcpBindings(projectId)])
+      .then(([nextConnections, nextBindings]) => {
+        if (loadGeneration.current !== generation) return;
+        setConnections(nextConnections.filter((connection) => connection.enabled));
+        setBindings(nextBindings);
+      })
+      .catch(() => {
+        if (loadGeneration.current === generation) setError('Could not load MCP connections.');
+      });
+  }, [client, projectId]);
+  useEffect(() => void load(), [load]);
+  const enabled = useCallback(
+    (connectionId: string) =>
+      bindings.some((binding) => binding.connectionId === connectionId && binding.enabled),
+    [bindings],
+  );
+  const toggle = useCallback(
+    (connectionId: string) => {
+      if (mutationInFlight.current) return;
+      mutationInFlight.current = true;
+      setPendingConnectionId(connectionId);
+      void client
+        .setProjectMcpBinding(projectId, connectionId, !enabled(connectionId))
+        .then(load)
+        .catch(() => setError('Could not update the MCP connection.'))
+        .finally(() => {
+          mutationInFlight.current = false;
+          setPendingConnectionId(undefined);
+        });
+    },
+    [client, enabled, load, projectId],
+  );
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionHeader}>MCP connections</Text>
+      <Text style={styles.settingsGroupDescription}>
+        Enable only the global MCP connections this project may use. Authorization stays on the
+        Verity server.
+      </Text>
+      {connections.length === 0 ? (
+        <Text style={styles.settingsHint}>
+          Add an HTTP MCP connection in global Settings first.
+        </Text>
+      ) : (
+        <View style={styles.bindingList}>
+          {connections.map((connection) => (
+            <Pressable
+              key={connection.id}
+              style={({ pressed }) => [styles.bindingRow, pressed ? styles.rowPressed : null]}
+              onPress={() => toggle(connection.id)}
+              disabled={pendingConnectionId !== undefined}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: enabled(connection.id) }}
+              accessibilityLabel={`${enabled(connection.id) ? 'Disable' : 'Enable'} ${connection.name} MCP connection`}
+            >
+              <Text style={styles.bindingRowText}>{connection.name}</Text>
+              <StatusPill
+                intent={enabled(connection.id) ? 'ready' : 'optional'}
+                label={enabled(connection.id) ? 'Enabled' : 'Disabled'}
+              />
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {error ? <Text style={styles.settingsError}>{error}</Text> : null}
     </View>
   );
 }

@@ -13,9 +13,26 @@ import { AcpCodexBackend } from './acp-codex-backend.js';
 import { AcpOpenCodeBackend } from './acp-opencode-backend.js';
 import { createBrokerSpawner } from './broker-spawner.js';
 import { RunnerServer } from './runner-server.js';
+import { resolveRunnerMcpServers } from './runner-mcp-servers.js';
 
 const safeIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
 const boundedString = (max: number): z.ZodString => z.string().max(max);
+const httpMcpServerSchema = z.strictObject({
+  name: boundedString(128).min(1),
+  url: boundedString(4096)
+    .min(1)
+    .refine((value) => {
+      if (value === 'verity-internal://mcp-proxy') return true;
+      try {
+        return ['http:', 'https:'].includes(new URL(value).protocol);
+      } catch {
+        return false;
+      }
+    }, 'MCP server URL must use HTTP'),
+  headers: z
+    .array(z.strictObject({ name: boundedString(256).min(1), value: boundedString(4096) }))
+    .max(32),
+});
 const startTurnRequestSchema = z
   .strictObject({
     protocolVersion: z.literal(1),
@@ -39,6 +56,8 @@ const startTurnRequestSchema = z
     timeoutMs: z.number().int().min(1).max(86_400_000).optional(),
     trustedCliExecution: z.boolean().optional(),
     mcpGatewayToken: boundedString(512).min(1).optional(),
+    mcpProxyToken: boundedString(512).min(1).optional(),
+    mcpServers: z.array(httpMcpServerSchema).max(16).optional(),
     sessionEnv: z
       .strictObject({
         VERITY_SESSION_BACKEND: boundedString(256).optional(),
@@ -128,18 +147,29 @@ if (request.sessionEnv !== undefined) {
   }
 }
 const mcpGatewayUrl = process.env.VERITY_MCP_GATEWAY_URL;
+const usesInternalMcpProxy = request.mcpServers?.some(
+  (server) => server.url === 'verity-internal://mcp-proxy',
+);
+// External MCP bindings are intentionally backend-neutral. Their separate proxy bearer
+// proves only turn/project identity and does not expose the built-in Verity gateway or
+// trusted CLI executor that `mcpGatewayToken` restricts to Claude/Codex above.
 // A bearer is the Server's decision that this turn is entitled to brokered tools.
 // Without a URL to redeem it against, the container is misprovisioned and no retry or
 // prompt can recover. Fail closed instead of silently starting a tool-less agent;
 // empty counts as absent, matching `supervisorWorkerEnv`.
 if (
-  request.mcpGatewayToken !== undefined &&
+  (request.mcpGatewayToken !== undefined || usesInternalMcpProxy === true) &&
   (mcpGatewayUrl === undefined || mcpGatewayUrl === '')
 ) {
   throw new Error(
     'the MCP gateway bearer has no VERITY_MCP_GATEWAY_URL to redeem it against; the runner container was provisioned without the gateway URL',
   );
 }
+const mcpServers = resolveRunnerMcpServers({
+  ...(request.mcpServers === undefined ? {} : { servers: request.mcpServers }),
+  ...(request.mcpProxyToken === undefined ? {} : { proxyToken: request.mcpProxyToken }),
+  ...(mcpGatewayUrl === undefined ? {} : { gatewayUrl: mcpGatewayUrl }),
+});
 const brokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
 if (brokerSocket === undefined) throw new Error('runner worker requires the agent spawn broker');
 const backends: Readonly<Record<RunnerSupervisorBackend, () => Backend>> = {
@@ -172,6 +202,7 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
   ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
   ...(request.allowedTools !== undefined ? { allowedTools: request.allowedTools } : {}),
   ...(request.disallowedTools !== undefined ? { disallowedTools: request.disallowedTools } : {}),
+  ...(mcpServers !== undefined ? { mcpServers } : {}),
   ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
   // The Sandbox's own environment stays the base; only Verity's per-turn runtime
   // context is layered on, so in-Sandbox helpers resolve this turn's backend/model.

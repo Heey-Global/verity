@@ -3,13 +3,18 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { readFileSync, readdirSync } from 'node:fs';
 import { chmod, readFile, rm, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 const outfile = 'features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs';
 const entryPoint = 'packages/session/dist/runner-worker-entry.js';
 const workerPackage = '@verity/session';
+const requireFromSession = createRequire(resolve('packages/session/package.json'));
 // Replaced at bundle time, so nothing this resolves to ships in the artifact.
-const bundleAliases = { '@verity/store': resolve('scripts/runner-worker-store-shim.mjs') };
+const bundleAliases = {
+  '@verity/store': resolve('scripts/runner-worker-store-shim.mjs'),
+  // Match the dependency version Node resolves for the session workspace, independent of hoisting.
+  zod: dirname(requireFromSession.resolve('zod/package.json')),
+};
 const check = process.argv.includes('--check');
 const buildTarget = check ? `${outfile}.check` : outfile;
 

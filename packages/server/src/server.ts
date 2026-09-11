@@ -112,6 +112,8 @@ import Fastify, {
 } from 'fastify';
 import { z, ZodError } from 'zod';
 import { deriveSessionStatusFromProjection, type SessionStatus } from './status.js';
+import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
+import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -1315,6 +1317,8 @@ export interface ServerDeps {
    * its own approval seam could supply one that never asks.
    */
   mcpGateway?: Omit<McpGatewayDeps, 'requestApproval'> | undefined;
+  /** Separate bearer audience for configured upstream MCP connections. */
+  mcpProxyResolveCaller?: HttpMcpProxyDeps['resolveCaller'] | undefined;
   /** Mint a repo-scoped GitHub token for a resolved capability binding (the same
    *  App-installation mint the provisioner uses). The broker calls this AFTER
    *  resolving the capability, so the sandbox never influences owner/repo/scope. */
@@ -4568,6 +4572,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
+  if (deps.mcpProxyResolveCaller !== undefined) {
+    registerHttpMcpProxyRoute(app, {
+      resolveCaller: deps.mcpProxyResolveCaller,
+      resolveConnection: async ({ projectId, connectionId }) => {
+        const [bindings, connections] = await Promise.all([
+          deps.eventStore.listProjectMcpBindings(projectId),
+          deps.eventStore.listHttpMcpConnections(),
+        ]);
+        const binding = bindings.find(
+          (candidate) => candidate.connectionId === connectionId && candidate.enabled,
+        );
+        const connection = connections.find(
+          (candidate) => candidate.id === connectionId && candidate.enabled,
+        );
+        return binding === undefined || connection === undefined
+          ? undefined
+          : {
+              id: connection.id,
+              url: connection.url,
+              ...(connection.authorization === null
+                ? {}
+                : { authorization: connection.authorization }),
+            };
+      },
+    });
+  }
   if (deps.mcpGateway !== undefined) {
     const gatewayDeps = deps.mcpGateway;
     // The two control-plane session tools are bound on the same seam as `requestApproval`,
@@ -5365,6 +5395,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     githubTargetReservations: githubTargetLinkReservations,
     isUniqueViolation,
   });
+  registerHttpMcpConnectionRoutes(app, deps.eventStore);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {
       const cached = await deps.eventStore.getProject(id);

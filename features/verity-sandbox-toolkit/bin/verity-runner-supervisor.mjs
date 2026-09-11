@@ -8,7 +8,7 @@ import { constants as osConstants } from 'node:os';
 import { access, chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { TextDecoder } from 'node:util';
 import { setImmediate } from 'node:timers';
 
@@ -1452,6 +1452,44 @@ export function validateStartTurnRequest(request) {
   ) {
     throw new Error('invalid mcpGatewayToken');
   }
+  const mcpProxyToken = optionalString(request.mcpProxyToken, 'mcpProxyToken', 512);
+  if (mcpProxyToken === '') throw new Error('invalid mcpProxyToken');
+  let mcpServers;
+  if (request.mcpServers !== undefined) {
+    if (!Array.isArray(request.mcpServers) || request.mcpServers.length > 16) {
+      throw new Error('invalid mcpServers');
+    }
+    mcpServers = request.mcpServers.map((server) => {
+      if (!isObject(server)) throw new Error('invalid mcpServers');
+      const name = optionalString(server.name, 'mcpServers.name', 128);
+      const url = optionalString(server.url, 'mcpServers.url', 4096);
+      if (name === undefined || name === '' || url === undefined || url === '') {
+        throw new Error('invalid mcpServers');
+      }
+      if (url !== 'verity-internal://mcp-proxy') {
+        try {
+          if (!['http:', 'https:'].includes(new URL(url).protocol)) {
+            throw new Error('invalid scheme');
+          }
+        } catch {
+          throw new Error('invalid mcpServers');
+        }
+      }
+      if (!Array.isArray(server.headers) || server.headers.length > 32) {
+        throw new Error('invalid mcpServers');
+      }
+      const headers = server.headers.map((header) => {
+        if (!isObject(header)) throw new Error('invalid mcpServers');
+        const headerName = optionalString(header.name, 'mcpServers.headers.name', 256);
+        const value = optionalString(header.value, 'mcpServers.headers.value', 4096);
+        if (headerName === undefined || headerName === '' || value === undefined) {
+          throw new Error('invalid mcpServers');
+        }
+        return { name: headerName, value };
+      });
+      return { name, url, headers };
+    });
+  }
   if (request.trustedCliExecution === true && !ACP_WORKER_BACKENDS.has(request.backend)) {
     throw new Error('invalid trustedCliExecution');
   }
@@ -1506,6 +1544,8 @@ export function validateStartTurnRequest(request) {
     ...(appendSystemPrompt !== undefined ? { appendSystemPrompt } : {}),
     ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
     ...(mcpGatewayToken !== undefined ? { mcpGatewayToken } : {}),
+    ...(mcpProxyToken !== undefined ? { mcpProxyToken } : {}),
+    ...(mcpServers !== undefined ? { mcpServers } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(disallowedTools !== undefined ? { disallowedTools } : {}),

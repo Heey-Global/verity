@@ -262,6 +262,8 @@ export {
   type VerityClientOptions,
   type VeritySettings,
   type VeritySettingsPatch,
+  type HttpMcpConnection,
+  type ProjectMcpBinding,
   type MeetingTranscriptionBackendStatus,
   type CreateProjectRequest,
   type DevicePushTokenRequest,

@@ -16,6 +16,7 @@ import {
   type VerityClient,
   type VeritySettings,
   type VeritySettingsPatch,
+  type HttpMcpConnection,
   type SecretSettingsDraft,
   type SecretStatus,
   type ServerUpdateStatus,
@@ -280,6 +281,7 @@ function SettingsView({
   const [secretStatus, setSecretStatus] = useState<SecretStatus | undefined>(undefined);
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const editVersion = useRef(0);
+  const secretDraftRef = useRef<SecretSettingsDraft>(EMPTY_SECRET_DRAFT);
 
   const updateAgentConfigured = useCallback((provider: 'claude' | 'codex', configured: boolean) => {
     setSettings((current) =>
@@ -372,7 +374,9 @@ function SettingsView({
 
   const updateSecretField = useCallback((key: keyof SecretSettingsDraft, value: string) => {
     editVersion.current += 1;
-    setSecretDraft((current) => ({ ...current, [key]: value }));
+    const next = { ...secretDraftRef.current, [key]: value };
+    secretDraftRef.current = next;
+    setSecretDraft(next);
   }, []);
 
   const updateToggleField = useCallback((key: ToggleFieldKey, value: boolean) => {
@@ -393,26 +397,23 @@ function SettingsView({
       setSaveQueued(true);
       return;
     }
+    const submittedSecrets = secretDraftRef.current;
     const savingVersion = editVersion.current;
     const requiresContainerApply =
-      secretDraft.githubAppPrivateKey.trim().length > 0 ||
-      secretDraft.gitSshPrivateKey.trim().length > 0 ||
-      secretDraft.codexAuthJson.trim().length > 0 ||
-      secretDraft.opencodeApiKey.trim().length > 0 ||
-      secretDraft.dopplerServiceToken.trim().length > 0 ||
-      secretDraft.uplinkSubscriptionKey.trim().length > 0 ||
-      secretDraft.transcribeApiKey.trim().length > 0 ||
+      secretDraftDirty(submittedSecrets) ||
       ALL_DRAFT_FIELDS.some(
         (key) => trimOrNull(draft[key]) !== trimOrNull(valueFromSettings(settings, key)),
       );
     setSaving(true);
     setError(undefined);
     setRepro({ phase: 'idle' });
-    const patch = patchFromDraft(draft, secretDraft);
-    const submittedSecrets = secretDraft;
+    const patch = patchFromDraft(draft, submittedSecrets);
     // The request owns an immutable snapshot now. Do not retain plaintext in
     // component state for the lifetime of a failed or slow network request.
-    if (secretDirty) setSecretDraft(EMPTY_SECRET_DRAFT);
+    if (secretDraftDirty(submittedSecrets)) {
+      secretDraftRef.current = EMPTY_SECRET_DRAFT;
+      setSecretDraft(EMPTY_SECRET_DRAFT);
+    }
     void client
       .updateVeritySettings(patch)
       .then((next) => {
@@ -429,6 +430,7 @@ function SettingsView({
           for (const key of Object.keys(submittedSecrets) as (keyof SecretSettingsDraft)[]) {
             if (restored[key] === '') restored[key] = submittedSecrets[key];
           }
+          secretDraftRef.current = restored;
           return restored;
         });
         // A 503 means the store is sealed — a secret write can't land until it's
@@ -915,6 +917,8 @@ function SettingsView({
               ) : null}
             </View>
           ) : null}
+
+          <McpConnectionsSection client={client} />
         </View>
 
         <View style={styles.settingsGroup}>
@@ -989,6 +993,168 @@ function SettingsView({
           </Pressable>
         </View>
       </ScrollView>
+    </View>
+  );
+}
+
+function McpConnectionsSection({ client }: { client: VerityClient }) {
+  const { theme } = useUnistyles();
+  const [connections, setConnections] = useState<HttpMcpConnection[]>([]);
+  const [name, setName] = useState('');
+  const [url, setUrl] = useState('');
+  const [authorization, setAuthorization] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const connectionRevision = useRef(0);
+  const mutationInFlight = useRef(false);
+  const load = useCallback(async (): Promise<boolean> => {
+    if (typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function')
+      return false;
+    const revision = connectionRevision.current;
+    return client
+      .listHttpMcpConnections()
+      .then((loaded) => {
+        if (connectionRevision.current === revision) {
+          setConnections(loaded);
+          setError(undefined);
+        }
+        return true;
+      })
+      .catch(() => {
+        if (connectionRevision.current === revision) {
+          setError('Could not load MCP connections.');
+        }
+        return false;
+      });
+  }, [client]);
+  useEffect(() => void load(), [load]);
+  const add = useCallback(() => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    connectionRevision.current += 1;
+    setBusy(true);
+    setError(undefined);
+    void client
+      .createHttpMcpConnection({
+        name: name.trim(),
+        url: url.trim(),
+        ...(authorization.trim() === '' ? {} : { authorization: authorization.trim() }),
+      })
+      .then(async () => {
+        if (!(await load())) return;
+        setName('');
+        setUrl('');
+        setAuthorization('');
+      })
+      .catch(() => setError('Could not save the MCP connection. Use a public HTTPS URL.'))
+      .finally(() => {
+        mutationInFlight.current = false;
+        setBusy(false);
+      });
+  }, [authorization, client, load, name, url]);
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.disclosureTitle}>MCP connections</Text>
+      <Text style={styles.reproSubtitle}>
+        Configure remote HTTP MCP servers once, then enable them explicitly per project. Credentials
+        stay on the Verity server.
+      </Text>
+      <View>
+        {connections.map((connection) => (
+          <View key={connection.id} style={styles.pathContent}>
+            <Text style={styles.disclosureTitle}>{connection.name}</Text>
+            <Text style={styles.identityEmail} numberOfLines={1}>
+              {connection.url}
+            </Text>
+            <Pressable
+              style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
+              onPress={() => {
+                Alert.alert(
+                  'Remove MCP connection?',
+                  `This also removes ${connection.name} from every project.`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Remove',
+                      style: 'destructive',
+                      onPress: () => {
+                        if (mutationInFlight.current) return;
+                        mutationInFlight.current = true;
+                        connectionRevision.current += 1;
+                        setBusy(true);
+                        setError(undefined);
+                        void client
+                          .deleteHttpMcpConnection(connection.id)
+                          .then(() => load())
+                          .catch(() => setError('Could not remove the MCP connection.'))
+                          .finally(() => {
+                            mutationInFlight.current = false;
+                            setBusy(false);
+                          });
+                      },
+                    },
+                  ],
+                );
+              }}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${connection.name} MCP connection`}
+            >
+              <Text style={styles.reproButtonLabel}>Remove</Text>
+            </Pressable>
+          </View>
+        ))}
+        <View style={styles.pathContent}>
+          <Text style={styles.pathLabel}>Connection name</Text>
+          <TextInput
+            style={styles.pathInput}
+            value={name}
+            onChangeText={setName}
+            placeholder="gmail"
+            placeholderTextColor={theme.colors.textFaint}
+            autoCapitalize="none"
+          />
+        </View>
+        <View style={styles.pathContent}>
+          <Text style={styles.pathLabel}>Remote HTTPS MCP URL</Text>
+          <TextInput
+            style={styles.pathInput}
+            value={url}
+            onChangeText={setUrl}
+            placeholder="https://mcp.example.com/gmail"
+            placeholderTextColor={theme.colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
+        <View style={styles.pathContent}>
+          <Text style={styles.pathLabel}>Authorization header (optional)</Text>
+          <TextInput
+            style={styles.pathInput}
+            value={authorization}
+            onChangeText={setAuthorization}
+            placeholder="Bearer …"
+            placeholderTextColor={theme.colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+          />
+        </View>
+        {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+        <Pressable
+          style={({ pressed }) => [
+            styles.reproButton,
+            busy || name.trim() === '' || url.trim() === '' ? styles.buttonDisabled : null,
+            pressed ? styles.pressed : null,
+          ]}
+          onPress={add}
+          disabled={busy || name.trim() === '' || url.trim() === ''}
+          accessibilityRole="button"
+          accessibilityLabel="Add MCP connection"
+        >
+          <Text style={styles.reproButtonLabel}>{busy ? 'Saving…' : 'Add connection'}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }

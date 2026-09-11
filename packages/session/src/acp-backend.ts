@@ -255,6 +255,10 @@ export const GATEWAY_UNAVAILABLE_DIRECTIVE = `## Brokered Verity tools unavailab
 
 This turn started without the Verity MCP gateway because this agent adapter does not advertise HTTP MCP support. Tools such as \`verity_http_request\`, \`verity_secret_run\`, and the control-plane session tools are absent for this turn only. Report this reason when a request needs one of them; do not look for a substitute credential, socket, or CLI, and do not claim only that a tool is missing.`;
 
+const MCP_SERVERS_UNAVAILABLE_DIRECTIVE = `## Configured MCP connections unavailable
+
+This turn started without the project’s configured MCP connections because this agent adapter does not advertise HTTP MCP support. Report this reason when the request needs one of those connections; do not silently continue as if their tools were available.`;
+
 /** Fold a Verity directive into the caller's existing system prompt rather than
  * replacing it and trading one silent loss for another. */
 function withSystemDirective(opts: RunTurnOptions, directive: string): RunTurnOptions {
@@ -705,24 +709,36 @@ export async function runAcpTurn(
         // bearer identifies the turn, it does not authorize anything.
         const gateway = opts.mcpGateway;
         const agentSpeaksHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http === true;
-        const mcpServers: McpServer[] =
-          gateway !== undefined && agentSpeaksHttpMcp
-            ? [
-                {
-                  type: 'http',
-                  name: 'verity',
-                  url: gateway.url,
-                  headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
-                },
-              ]
-            : [];
+        const mcpServers: McpServer[] = agentSpeaksHttpMcp
+          ? [
+              ...(gateway === undefined
+                ? []
+                : [
+                    {
+                      type: 'http' as const,
+                      name: 'verity',
+                      url: gateway.url,
+                      headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
+                    },
+                  ]),
+              ...(opts.mcpServers ?? []).map((server) => ({
+                type: 'http' as const,
+                name: server.name,
+                url: server.url,
+                headers: server.headers.map((header) => ({ ...header })),
+              })),
+            ]
+          : [];
         // A bearer was minted but no server was offered, so tell the turn through the
         // channel its profile supports. Claude carries this in `sessionMeta`; Codex and
         // OpenCode have no native system-prompt slot and receive it in `promptBlocks`.
-        const turnOpts =
-          gateway !== undefined && !agentSpeaksHttpMcp
-            ? withSystemDirective(opts, GATEWAY_UNAVAILABLE_DIRECTIVE)
-            : opts;
+        let turnOpts = opts;
+        if (!agentSpeaksHttpMcp && gateway !== undefined) {
+          turnOpts = withSystemDirective(turnOpts, GATEWAY_UNAVAILABLE_DIRECTIVE);
+        }
+        if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
+          turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
+        }
         const request = {
           cwd: opts.cwd,
           mcpServers,

@@ -87,6 +87,20 @@ interface GoogleSlideInvocationsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+export interface HttpMcpConnectionsTable {
+  id: string;
+  name: string;
+  url: string;
+  authorization: string | null;
+  enabled: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
+export interface ProjectMcpBindingsTable {
+  project_id: string;
+  connection_id: string;
+  enabled: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
 /**
  * Multi-repo fleet registry (concept §19, #174). One row per GitHub repo the
  * App-installation lists + Verity has registered. **Cache** of the GitHub-
@@ -1144,6 +1158,8 @@ export interface WorkflowPolicyDecisionsTable {
 }
 
 export interface Database {
+  http_mcp_connections: HttpMcpConnectionsTable;
+  project_mcp_bindings: ProjectMcpBindingsTable;
   workflow_services: WorkflowServicesTable;
   workflows: WorkflowsTable;
   workflow_steps: WorkflowStepsTable;
