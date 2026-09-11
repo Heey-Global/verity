@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3](https://github.com/Heey-Global/verity/compare/website-v1.3.2...website-v1.3.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* **github:** route organization setup through public bridge ([1ce4932](https://github.com/Heey-Global/verity/commit/1ce4932bc11576404d9c4b2231a40cc018673ec5))
+
 ## [1.3.2](https://github.com/Heey-Global/verity/compare/website-v1.3.1...website-v1.3.2) (2026-09-10)
 
 
