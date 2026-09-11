@@ -1,5 +1,26 @@
 # Changelog
 
+## [17.6.0](https://github.com/Heey-Global/verity/compare/v17.5.0...v17.6.0) (2026-09-11)
+
+
+### Features
+
+* **release:** attest Server image provenance ([af65d36](https://github.com/Heey-Global/verity/commit/af65d36593238ea4a459268038bc76bd38f3e829))
+* **release:** attest Server image provenance ([239e854](https://github.com/Heey-Global/verity/commit/239e854e4a6e66a149885a3b9acf4de12722bab7))
+
+
+### Bug Fixes
+
+* **agent-seed:** sanitize reviewer diagnostics ([a20c8a7](https://github.com/Heey-Global/verity/commit/a20c8a7f38a07852fbfacaf2c868ace582a2ddf4))
+* **agent-seed:** size review chunks against the prompt, and say why a call failed ([c13a75f](https://github.com/Heey-Global/verity/commit/c13a75f274967bd8e3912410dbd44444a0de8824))
+* **ci:** scope workflow write permissions ([420ef48](https://github.com/Heey-Global/verity/commit/420ef4846022faa917dabe3ce1a45a4eae5abf58))
+* **release:** identify repository for evidence upload ([a8f5bc5](https://github.com/Heey-Global/verity/commit/a8f5bc54b4cf21bea5236f8d99da178586dbe21b))
+* **release:** identify repository for evidence upload ([99b91a5](https://github.com/Heey-Global/verity/commit/99b91a5306b13f278560e7cae061756c0f02d35a))
+* **server,agent-seed:** address code review findings ([497ece8](https://github.com/Heey-Global/verity/commit/497ece800c499359d5aabf387f6e4a7eef1ee86a))
+* **server,agent-seed:** harden regression guards ([ef01b70](https://github.com/Heey-Global/verity/commit/ef01b7036bed5eeefbb169a3bd1540a330fdfcb2))
+* **server:** complete broker signing and review large diffs ([51a7a7c](https://github.com/Heey-Global/verity/commit/51a7a7c83053c5c3894cfc15a9b40efdbf85d94c))
+* **server:** provision all four SSH signing settings in broker mode ([c20e69d](https://github.com/Heey-Global/verity/commit/c20e69d14fa685a67ab0801e809665e5498922fa))
+
 ## [17.5.0](https://github.com/Heey-Global/verity/compare/v17.4.1...v17.5.0) (2026-09-11)
 
 
