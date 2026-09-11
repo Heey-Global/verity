@@ -706,7 +706,7 @@ export const veritySettingsSchema = z.object({
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
 
-export const httpMcpConnectionSchema = z.object({
+const httpMcpConnectionSchema = z.object({
   id: z.string(),
   name: z.string(),
   url: z.string(),
@@ -714,7 +714,7 @@ export const httpMcpConnectionSchema = z.object({
   authorizationConfigured: z.boolean(),
 });
 export type HttpMcpConnection = z.infer<typeof httpMcpConnectionSchema>;
-export const projectMcpBindingSchema = z.object({
+const projectMcpBindingSchema = z.object({
   projectId: z.string(),
   connectionId: z.string(),
   enabled: z.boolean(),

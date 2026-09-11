@@ -255,7 +255,7 @@ export const GATEWAY_UNAVAILABLE_DIRECTIVE = `## Brokered Verity tools unavailab
 
 This turn started without the Verity MCP gateway because this agent adapter does not advertise HTTP MCP support. Tools such as \`verity_http_request\`, \`verity_secret_run\`, and the control-plane session tools are absent for this turn only. Report this reason when a request needs one of them; do not look for a substitute credential, socket, or CLI, and do not claim only that a tool is missing.`;
 
-export const MCP_SERVERS_UNAVAILABLE_DIRECTIVE = `## Configured MCP connections unavailable
+const MCP_SERVERS_UNAVAILABLE_DIRECTIVE = `## Configured MCP connections unavailable
 
 This turn started without the project’s configured MCP connections because this agent adapter does not advertise HTTP MCP support. Report this reason when the request needs one of those connections; do not silently continue as if their tools were available.`;
 

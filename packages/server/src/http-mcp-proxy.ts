@@ -21,7 +21,7 @@ const MCP_TIMEOUT_MS = 60_000;
 const BINDING_HEADER = 'x-verity-mcp-binding';
 const RESPONSE_HEADERS = ['content-type', 'mcp-session-id'] as const;
 
-export interface HttpMcpProxyConnection {
+interface HttpMcpProxyConnection {
   id: string;
   url: string;
   /** Server-resolved short-lived authorization. Never persisted in a project binding. */
