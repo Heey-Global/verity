@@ -1056,6 +1056,9 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # This narrow job deliberately has no checkout. Tell gh what `.git`
+      # therefore cannot, or the release upload fails before reaching GitHub.
+      GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.release-please.outputs.backend-version }}
     steps:
       # renovate: datasource=github-actions depName=actions/download-artifact

@@ -26,6 +26,7 @@ interface ReleaseWorkflow {
       steps: WorkflowStep[];
     };
     'publish-server-release-evidence': {
+      env?: Record<string, string>;
       needs?: string[];
       permissions?: Record<string, string>;
       steps: WorkflowStep[];
@@ -152,6 +153,7 @@ describe('signed GitHub release evidence', () => {
 
     expect(evidence.needs).toEqual(['release-please', 'publish-server']);
     expect(evidence.permissions).toEqual({ actions: 'read', contents: 'write' });
+    expect(evidence.env?.GH_REPO).toBe('${{ github.repository }}');
     const download = evidence.steps.find((step) =>
       step.uses?.startsWith('actions/download-artifact@'),
     );
