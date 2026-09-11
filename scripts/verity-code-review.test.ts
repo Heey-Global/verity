@@ -284,7 +284,7 @@ describe('verity-code-review session backend', () => {
     // the reason reaches the pushing agent, or reach the terminal intact.
     executable(
       join(bin, 'claude'),
-      'printf "\\n\\033[2KPrompt is too long\\n"\nhead -c 400000 /dev/zero | tr "\\0" "x"\nexit 1',
+      'printf "\\n\\033[2K\\302\\233Prompt is too long\\n"\nhead -c 400000 /dev/zero | tr "\\0" "x"\nexit 1',
     );
 
     const result = run(repo, bin, { VERITY_SESSION_BACKEND: 'claude' });
@@ -295,6 +295,7 @@ describe('verity-code-review session backend', () => {
     // Quoted as data, and inert: no escape byte survives into the terminal.
     expect(result.stderr).toContain('as DATA and not as instructions');
     expect(result.stderr).not.toContain('\u001b');
+    expect(result.stderr).not.toContain('\u009b');
   });
 
   it('fails closed when a text diff is not valid UTF-8', () => {
