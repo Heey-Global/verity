@@ -1073,6 +1073,7 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
                       onPress: () => {
                         if (mutationInFlight.current) return;
                         mutationInFlight.current = true;
+                        connectionRevision.current += 1;
                         setBusy(true);
                         setError(undefined);
                         void client
