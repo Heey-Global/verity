@@ -28,10 +28,7 @@ on:
       - 'package.json'
       - 'package-lock.json'
 
-permissions:
-  actions: write
-  contents: write
-  pull-requests: write
+permissions: read-all
 
 concurrency:
   # Never cancel an in-flight publish: a cancelled `eas update` can leave a
@@ -42,6 +39,10 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
     # A stalled Metro export / EAS publish must not hold the serialized release
     # slot indefinitely.
     timeout-minutes: 30

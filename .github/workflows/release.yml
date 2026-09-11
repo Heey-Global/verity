@@ -52,17 +52,19 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  actions: write
-  contents: write
-  packages: write
-  pull-requests: write
-  issues: write
+permissions: read-all
 
 jobs:
   release-please:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Release Please creates releases and PRs; this job also dispatches the
+    # checks that GITHUB_TOKEN-created PRs do not trigger automatically.
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
       backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs.release_created }}
       backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs.major, steps.release-backend.outputs.minor, steps.release-backend.outputs.patch) }}
@@ -343,6 +345,9 @@ jobs:
     # second runner merely to poll the first one.
     needs: release-please
     if: needs.release-please.outputs.backend-release-created == 'true'
+    permissions:
+      contents: read
+      packages: read
     uses: ./.github/workflows/self-update.yml
     with:
       candidate-sha: ${{ needs.release-please.outputs.backend-sha }}

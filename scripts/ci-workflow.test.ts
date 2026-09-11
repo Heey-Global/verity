@@ -32,6 +32,58 @@ type WorkflowJob = {
   steps: WorkflowStep[];
 };
 
+describe('workflow token least privilege', () => {
+  const workflow = (file: string) =>
+    parse(readFileSync(join('.github/workflows', file), 'utf8')) as {
+      permissions?: string | Record<string, string>;
+      jobs?: Record<string, { permissions?: Record<string, string> }>;
+    };
+
+  it('never grants write access to every job in a workflow', () => {
+    const offenders = readdirSync('.github/workflows')
+      .filter((file) => /\.ya?ml$/.test(file))
+      .filter((file) => {
+        const permissions = workflow(file).permissions;
+        return (
+          permissions === 'write-all' ||
+          (typeof permissions === 'object' && Object.values(permissions).includes('write'))
+        );
+      });
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('keeps release and maintenance writes on the jobs that use them', () => {
+    const expected: Record<string, Record<string, Record<string, string>>> = {
+      'cache-janitor.yml': {
+        prune: { actions: 'write', contents: 'read' },
+      },
+      'mobile-ota-promote.yml': {
+        promote: { contents: 'write' },
+      },
+      'mobile-ota.yml': {
+        update: { actions: 'write', contents: 'write', 'pull-requests': 'write' },
+      },
+      'release.yml': {
+        'release-please': {
+          actions: 'write',
+          contents: 'write',
+          issues: 'write',
+          'pull-requests': 'write',
+        },
+        'self-update-gate': { contents: 'read', packages: 'read' },
+      },
+    };
+
+    for (const [file, jobs] of Object.entries(expected)) {
+      const parsed = workflow(file);
+      expect(parsed.permissions, file).toBe('read-all');
+      for (const [job, permissions] of Object.entries(jobs))
+        expect(parsed.jobs?.[job]?.permissions, `${file}:${job}`).toEqual(permissions);
+    }
+  });
+});
+
 describe('release-please train isolation', () => {
   const trains = ['backend', 'mobile', 'website'] as const;
 
@@ -2237,7 +2289,11 @@ describe('Actions cache budget', () => {
   // GitHub evicted them mid-build, and `cache-from` died on `blob <sha>: not
   // found` — on a PR whose diff was a single Vitest flag. Each assertion below is
   // one of the three ways a build step can spend that budget badly.
-  type Job = { steps?: WorkflowStep[]; 'timeout-minutes'?: number };
+  type Job = {
+    steps?: WorkflowStep[];
+    permissions?: Record<string, string>;
+    'timeout-minutes'?: number;
+  };
   const gha = readdirSync('.github/workflows')
     .filter((file) => file.endsWith('.yml'))
     .flatMap((file) => {
@@ -2266,7 +2322,7 @@ describe('Actions cache budget', () => {
 
   const janitor = parse(readFileSync('.github/workflows/cache-janitor.yml', 'utf8')) as {
     on?: Record<string, unknown>;
-    permissions?: Record<string, string>;
+    permissions?: string | Record<string, string>;
     jobs?: Record<string, Job>;
   };
 
@@ -2363,7 +2419,8 @@ describe('Actions cache budget', () => {
     // token (packages/server/src/github-app-token.ts) — this scheduled workflow is
     // the sanctioned place for it, so its permission block stays minimal.
     expect(Object.keys(janitor.on ?? {})).toContain('schedule');
-    expect(janitor.permissions).toEqual({ actions: 'write', contents: 'read' });
+    expect(janitor.permissions).toBe('read-all');
+    expect(janitor.jobs?.prune?.permissions).toEqual({ actions: 'write', contents: 'read' });
     const steps = Object.values(janitor.jobs ?? {}).flatMap((job) => job.steps ?? []);
     // The policy lives in a unit-tested script, not in inline bash: "which entries
     // are safe to delete" is the part that can go wrong quietly.
