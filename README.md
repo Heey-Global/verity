@@ -1,5 +1,11 @@
 # Verity
 
+[![CI](https://github.com/Heey-Global/verity/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Heey-Global/verity/actions/workflows/ci.yml?query=branch%3Amain)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Heey-Global/verity/badge)](https://scorecard.dev/viewer/?uri=github.com/Heey-Global/verity)
+[![Server release](https://img.shields.io/github/v/release/Heey-Global/verity?filter=v*&label=server)](https://github.com/Heey-Global/verity/releases)
+[![Signed releases](https://img.shields.io/badge/releases-cosign%20signed-0b7285)](SECURITY.md#verifying-a-release)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 **Run coding agents in a secure, isolated environment—without locking your
 workflow to a single AI provider.**
 
