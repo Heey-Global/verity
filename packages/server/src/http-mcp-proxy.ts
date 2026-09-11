@@ -226,10 +226,26 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           )
         : undefined;
       lifetime?.unref();
+      const authorizationPoll = response.eventStream
+        ? setInterval(() => {
+            void deps
+              .resolveCaller({ projectId: identity.projectId, token })
+              .then((activeCaller) => {
+                if (activeCaller === undefined) {
+                  response.body.destroy(new Error('HTTP MCP proxy authorization expired'));
+                }
+              })
+              .catch(() =>
+                response.body.destroy(new Error('HTTP MCP proxy authorization unavailable')),
+              );
+          }, 1_000)
+        : undefined;
+      authorizationPoll?.unref();
       try {
         await pipeline(response.body, limiter, reply.raw);
       } finally {
         if (lifetime !== undefined) clearTimeout(lifetime);
+        if (authorizationPoll !== undefined) clearInterval(authorizationPoll);
       }
       return reply;
     } catch {
