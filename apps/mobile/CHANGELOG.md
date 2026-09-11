@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.27.0](https://github.com/Heey-Global/verity/compare/mobile-v1.26.0...mobile-v1.27.0) (2026-09-11)
+
+
+### Features
+
+* **mcp:** add project-scoped HTTP proxy connections ([2d1e270](https://github.com/Heey-Global/verity/commit/2d1e2703118214f313c958064109855d1ac38350))
+* **settings:** manage OpenCode centrally ([8aa3d00](https://github.com/Heey-Global/verity/commit/8aa3d00c6cddec9b86c0217a7ef50ea167cd4c66))
+
+
+### Bug Fixes
+
+* **deps:** update dependency react-native-qrcode-svg to v6.3.23 ([3b62a12](https://github.com/Heey-Global/verity/commit/3b62a126bac681815b0c717e1fe5ebdbefb1aeee))
+* **github:** route organization setup through public bridge ([1ce4932](https://github.com/Heey-Global/verity/commit/1ce4932bc11576404d9c4b2231a40cc018673ec5))
+* **mcp:** address proxy review findings ([e71215d](https://github.com/Heey-Global/verity/commit/e71215d338ee9bca42fef7e99e96fdca782210c5))
+* **mcp:** bound event stream resources ([c3b521a](https://github.com/Heey-Global/verity/commit/c3b521a8c16979c4bb8a5b2389799c07a3c98022))
+* **mcp:** enforce connection lifecycle invariants ([f7ae2bc](https://github.com/Heey-Global/verity/commit/f7ae2bcde84c0bc021db289d42d7e97cca248230))
+* **mcp:** guard mobile connection refreshes ([2c24afc](https://github.com/Heey-Global/verity/commit/2c24afc7db4913c045d16d1d360dd4157a696923))
+* **mcp:** handle proxy and settings races ([1677fd7](https://github.com/Heey-Global/verity/commit/1677fd7a566b431e2d0d9c1679ed246949cd4ab8))
+* **mcp:** invalidate stale loads on deletion ([c201234](https://github.com/Heey-Global/verity/commit/c201234ac05b1036ab3eb51d0eb1946786780276))
+* **mcp:** preserve failed catalog mutations ([dff59d1](https://github.com/Heey-Global/verity/commit/dff59d1b3cebb348a9aa99bf3430e082a239daa0))
+* **mcp:** refresh catalog and normalize streams ([8e806e9](https://github.com/Heey-Global/verity/commit/8e806e91bdcf2f0735cbae533157716a457c24ec))
+* **mcp:** serialize mobile connection mutations ([93cf8b2](https://github.com/Heey-Global/verity/commit/93cf8b22edeec34ac1455ccdac8bc0528bbee98e))
+* **mobile:** complete GitHub setup in auth session ([7b0082d](https://github.com/Heey-Global/verity/commit/7b0082d59903123a8e4696bfa024e22bf7e2fc50))
+* **settings:** preserve secrets across async autosave ([6c1b990](https://github.com/Heey-Global/verity/commit/6c1b9904fc303ae0b17c1721f67758dad68340df))
+
 ## [1.26.0](https://github.com/Heey-Global/verity/compare/mobile-v1.25.0...mobile-v1.26.0) (2026-09-10)
 
 
