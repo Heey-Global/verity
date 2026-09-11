@@ -1,5 +1,36 @@
 # Changelog
 
+## [17.4.0](https://github.com/Heey-Global/verity/compare/v17.3.7...v17.4.0) (2026-09-11)
+
+
+### Features
+
+* **mcp:** add project-scoped HTTP proxy connections ([2d1e270](https://github.com/Heey-Global/verity/commit/2d1e2703118214f313c958064109855d1ac38350))
+* **settings:** manage OpenCode centrally ([8aa3d00](https://github.com/Heey-Global/verity/commit/8aa3d00c6cddec9b86c0217a7ef50ea167cd4c66))
+
+
+### Bug Fixes
+
+* **ci:** align MCP exports and boundary guard ([b83288f](https://github.com/Heey-Global/verity/commit/b83288f96fbfc2538052bfcbd9cf70812f4b3c1a))
+* **deps:** update dependency react-native-qrcode-svg to v6.3.23 ([3b62a12](https://github.com/Heey-Global/verity/commit/3b62a126bac681815b0c717e1fe5ebdbefb1aeee))
+* **github:** route organization setup through public bridge ([1ce4932](https://github.com/Heey-Global/verity/commit/1ce4932bc11576404d9c4b2231a40cc018673ec5))
+* **mcp:** address proxy review findings ([e71215d](https://github.com/Heey-Global/verity/commit/e71215d338ee9bca42fef7e99e96fdca782210c5))
+* **mcp:** align supervisor dependency boundary ([e87153a](https://github.com/Heey-Global/verity/commit/e87153a39e27802fe01b55731db0b23daa861490))
+* **mcp:** bound event stream resources ([c3b521a](https://github.com/Heey-Global/verity/commit/c3b521a8c16979c4bb8a5b2389799c07a3c98022))
+* **mcp:** classify public proxy addresses ([a2dce55](https://github.com/Heey-Global/verity/commit/a2dce553ff4b473310a7223ae8a54a67ca7bbd8b))
+* **mcp:** decouple gateway and proxy wiring ([8cf08d1](https://github.com/Heey-Global/verity/commit/8cf08d18614fee6bd07161b917c4c7e10aa0a117))
+* **mcp:** enforce connection lifecycle invariants ([f7ae2bc](https://github.com/Heey-Global/verity/commit/f7ae2bcde84c0bc021db289d42d7e97cca248230))
+* **mcp:** handle proxy and settings races ([1677fd7](https://github.com/Heey-Global/verity/commit/1677fd7a566b431e2d0d9c1679ed246949cd4ab8))
+* **mcp:** harden streaming proxy boundary ([99e55d9](https://github.com/Heey-Global/verity/commit/99e55d9476cf53e69d82d557f73053bee436ca9e))
+* **mcp:** isolate proxy bearer audience ([282c169](https://github.com/Heey-Global/verity/commit/282c16947f56b3ca4088f68d3d2aa65d64e10045))
+* **mcp:** preserve failed catalog mutations ([dff59d1](https://github.com/Heey-Global/verity/commit/dff59d1b3cebb348a9aa99bf3430e082a239daa0))
+* **mcp:** preserve streaming through project relay ([26066a6](https://github.com/Heey-Global/verity/commit/26066a67f5390e98e69c2d3a3f599ab20a41a05a))
+* **mcp:** refresh catalog and normalize streams ([8e806e9](https://github.com/Heey-Global/verity/commit/8e806e91bdcf2f0735cbae533157716a457c24ec))
+* **mcp:** revoke active streams with turn tokens ([ac24d9d](https://github.com/Heey-Global/verity/commit/ac24d9d19f571eab3eb71a5ecfbe67e8f0db949f))
+* **mcp:** support sessionful HTTP transports ([bf44608](https://github.com/Heey-Global/verity/commit/bf44608d2e2d37d5d5d8563366c9ac96b8b43394))
+* **release:** identify server release pull requests ([590f673](https://github.com/Heey-Global/verity/commit/590f673693678ebeea61aa72972aa293ce44da16))
+* **settings:** reuse OpenCode gateway placeholder ([98eacdc](https://github.com/Heey-Global/verity/commit/98eacdcc98b145cb48a68893bcfe76817083ba91))
+
 ## [17.3.7](https://github.com/Heey-Global/verity/compare/v17.3.6...v17.3.7) (2026-09-10)
 
 
