@@ -24,7 +24,7 @@
     "@verity/session": "*",
     "@verity/store": "*",
     "expo-server-sdk": "6.1.0",
-    "fastify": "5.8.5",
+    "fastify": "5.12.1",
     "ipaddr.js": "2.5.0",
     "minimatch": "10.2.6",
     "qrcode": "1.5.4",
