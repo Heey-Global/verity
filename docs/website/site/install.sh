@@ -8,6 +8,8 @@ IMAGE_REPOSITORY=ghcr.io/heey-global/verity/verity-server
 IMAGE_TAG=${VERITY_IMAGE_TAG:-${VARITY_IMAGE_TAG:-latest}}
 INSTALL_MISSING=0
 PREFLIGHT_ONLY=0
+REQUEST_REINSTALL=0
+REQUEST_UPDATE=0
 
 die() {
   printf 'verity-install: %s\n' "$*" >&2
@@ -48,6 +50,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --preflight) PREFLIGHT_ONLY=1; shift ;;
     --install-missing) INSTALL_MISSING=1; shift ;;
+    --reinstall) REQUEST_REINSTALL=1; installer_args+=("$1"); shift ;;
+    --update) REQUEST_UPDATE=1; installer_args+=("$1"); shift ;;
     --image)
       [ "$#" -ge 2 ] || die 'option --image needs a value'
       [[ "$2" != --* ]] || die 'option --image needs a value'
@@ -280,9 +284,13 @@ done <<<"$managed_output"
 if [ "${#managed_names[@]}" -gt 1 ]; then
   die 'more than one managed Server exists; wait for the in-flight update to finish'
 fi
+if [ "$REQUEST_REINSTALL" = 1 ] && [ "$REQUEST_UPDATE" = 1 ]; then
+  die '--update and --reinstall cannot be used together'
+fi
+
 if [ -n "$source_image_override" ]; then
   source_image="$source_image_override"
-  if [ "${#managed_names[@]}" -eq 1 ]; then
+  if [ "${#managed_names[@]}" -eq 1 ] && [ "$REQUEST_REINSTALL" = 0 ]; then
     previous_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
     valid_image_override "$previous_image" ||
       die 'the managed Server does not use an official digest-pinned image'
@@ -296,6 +304,18 @@ if [ -n "$source_image_override" ]; then
     fi
   fi
   printf 'verity-install: using explicitly requested release\n'
+elif [ "$REQUEST_REINSTALL" = 1 ]; then
+  source_image="$IMAGE_REPOSITORY:$IMAGE_TAG"
+  printf 'verity-install: replacing the existing installation with the latest release\n'
+elif [ "$REQUEST_UPDATE" = 1 ]; then
+  if [ "${#managed_names[@]}" -ne 1 ]; then
+    die '--update requires an existing managed Server installation'
+  fi
+  if ! managed_server_is_unpaired "${managed_names[0]}"; then
+    die 'a paired installation updates from the Verity app; use --reinstall to delete it completely'
+  fi
+  source_image="$IMAGE_REPOSITORY:$IMAGE_TAG"
+  printf 'verity-install: updating the unpaired installation to the latest release\n'
 elif [ "${#managed_names[@]}" -eq 1 ]; then
   if managed_server_is_unpaired "${managed_names[0]}"; then
     previous_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")

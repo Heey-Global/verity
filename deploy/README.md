@@ -168,6 +168,22 @@ preflight and prints what it would install without touching the deployment.
 
 Because it persists every decision, later recovery runs take no arguments; see
 [the companion handoff recovery path](#after-an-update-companion-handoff).
+When an interactive run detects an existing installation, it offers three explicit
+paths: repair the current release without changing data, update an installation that
+has not paired its first device yet, or completely replace it. A paired deployment
+updates from the Verity app; the host-side `--update` path is fenced off after pairing.
+
+To discard an installation and all of its data, run:
+
+```sh
+sudo deploy/bin/verity-install --reinstall
+```
+
+The installer requires the exact phrase `DELETE VERITY` before removing containers,
+volumes, network, database, projects, sessions, stored secrets, pairing identity, and
+installer state. Automation can make the same destructive choice explicitly with
+`--reinstall --yes`. After cleanup, the command immediately performs a fresh install.
+
 Fresh installations enable the Runner supervisor because Claude is ACP-only. The
 capability this implies is sealed into the deployment spec; installations previously
 sealed without it must be reinstalled before Claude can run. Set
