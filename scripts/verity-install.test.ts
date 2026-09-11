@@ -33,7 +33,8 @@ describe('public Verity installer', () => {
     expect(installer).toContain("printf ' · %d/%d layers'");
     expect(installer).toContain('download complete  %ds');
     expect(installer).toContain("run_docker ps -a --filter 'name=^/verity-managed-server'");
-    expect(installer).toContain("source_image=$(run_docker inspect --format '{{.Config.Image}}'");
+    expect(installer).toContain("previous_image=$(run_docker inspect --format '{{.Config.Image}}'");
+    expect(installer).toContain('source_image=$(sealed_managed_image "$previous_image")');
     expect(installer).toContain('source_image="$source_image_override"');
     expect(installer).toContain('[ "$generation" -le 2147483647 ]');
     expect(installer).toContain('payload_root=/opt/verity-install');
@@ -138,6 +139,9 @@ case "$1" in
   exec)
     [ -n "\${MOCK_MANAGED_IMAGE:-}" ] || exit 1
     printf '%s' "\${MOCK_PAIRING_STATUS:-401}" ;;
+  run)
+    [ -n "\${MOCK_MANAGED_IMAGE:-}" ] || exit 1
+    printf '%s' "\${MOCK_SEALED_IMAGE:-$MOCK_MANAGED_IMAGE}" ;;
   create) [ "$2" = 'ghcr.io/heey-global/verity/verity-server@sha256:${digest}' ] || exit 1; printf 'container-id\\n' ;;
   cp)
     [ "$2" = "container-id:\${MOCK_PAYLOAD_ROOT:-/opt/verity-install}/." ] || exit 1
@@ -223,6 +227,28 @@ esac
       expect(await readFile(dockerLog, 'utf8')).toContain(`pull --quiet ${managedImage}`);
 
       await writeFile(dockerLog, '');
+      const staleManagedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
+      await execFileAsync('bash', [installerPath, '--check'], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          MOCK_DOCKER: join(bin, 'docker'),
+          MOCK_DOCKER_LOG: dockerLog,
+          MOCK_MANAGED_IMAGE: staleManagedImage,
+          MOCK_SEALED_IMAGE: managedImage,
+          MOCK_MARKER: marker,
+          MOCK_PAYLOAD: payload,
+          MOCK_PRIVILEGED: privileged,
+        },
+      });
+      const recoveryLog = await readFile(dockerLog, 'utf8');
+      expect(recoveryLog).toContain(
+        'run --rm --network none --read-only --cap-drop ALL --user 0:0',
+      );
+      expect(recoveryLog).toContain(`pull --quiet ${managedImage}`);
+      expect(recoveryLog).not.toContain(`pull --quiet ${staleManagedImage}`);
+
+      await writeFile(dockerLog, '');
       await execFileAsync('bash', [installerPath, '--check'], {
         env: {
           ...process.env,
@@ -293,6 +319,31 @@ esac
       expect(forwarded).toBe(
         `--image ghcr.io/heey-global/verity/verity-server@sha256:${digest} --check --advance-unpaired-from ${oldManagedImage}\n`,
       );
+
+      await writeFile(dockerLog, '');
+      await execFileAsync(
+        'bash',
+        [
+          installerPath,
+          '--image',
+          `ghcr.io/heey-global/verity/verity-server@sha256:${digest}`,
+          '--check',
+        ],
+        {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            MOCK_DOCKER: join(bin, 'docker'),
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_MANAGED_IMAGE: oldManagedImage,
+            MOCK_SEALED_IMAGE: managedImage,
+            MOCK_MARKER: marker,
+            MOCK_PAYLOAD: payload,
+            MOCK_PRIVILEGED: privileged,
+          },
+        },
+      );
+      expect(await readFile(dockerLog, 'utf8')).toContain(`pull --quiet ${managedImage}`);
 
       await writeFile(dockerLog, '');
       await execFileAsync(
