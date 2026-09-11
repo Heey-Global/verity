@@ -122,6 +122,38 @@ describe('openCodeSettingsConfig', () => {
   });
 });
 
+/**
+ * Decode a container spec's `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
+ * `GIT_CONFIG_VALUE_n` triples the way git itself does, into `key -> value`.
+ *
+ * Reading the entries through the count is the point. git stops at
+ * `GIT_CONFIG_COUNT` and ignores every pair beyond it, so a spec that carries
+ * the right keys under a count that does not reach them configures nothing —
+ * and an assertion that looked the variables up by name directly would still be
+ * green. A later entry wins, matching git's last-one-wins precedence.
+ */
+function gitConfigEnv(env: string[]): Record<string, string> {
+  const byName = new Map(
+    env
+      .filter((entry) => entry.includes('='))
+      .map((entry) => {
+        const separator = entry.indexOf('=');
+        return [entry.slice(0, separator), entry.slice(separator + 1)] as const;
+      }),
+  );
+  const count = Number.parseInt(byName.get('GIT_CONFIG_COUNT') ?? '0', 10);
+  const config: Record<string, string> = {};
+  for (let index = 0; index < count; index += 1) {
+    const key = byName.get(`GIT_CONFIG_KEY_${String(index)}`);
+    const value = byName.get(`GIT_CONFIG_VALUE_${String(index)}`);
+    if (key === undefined || value === undefined) {
+      throw new Error(`GIT_CONFIG_COUNT=${String(count)} but entry ${String(index)} is missing`);
+    }
+    config[key] = value;
+  }
+  return config;
+}
+
 /** Fake {@link ClaudeEgressIdentityService} returning fixed sandbox material and
  *  recording revocations. `gatewayMaterial` is never used by the provisioner. */
 function fakeEgressIdentity(): { service: ClaudeEgressIdentityService; revoked: string[] } {
@@ -3341,9 +3373,23 @@ describe('ProvisionerImpl (#174)', () => {
       expect(binds).toContain(`${tokenPath}:${SIGNING_BROKER_TOKEN_FILE}:ro`);
       expect(spec.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL]).toBe(tokenHash);
       // git is pointed at the broker wrapper via GIT_CONFIG_* env (image-agnostic).
-      expect(spec.env).toContain('GIT_CONFIG_COUNT=1');
-      expect(spec.env).toContain('GIT_CONFIG_KEY_0=gpg.ssh.program');
-      expect(spec.env).toContain('GIT_CONFIG_VALUE_0=/opt/agent-seed/bin/verity-git-sign');
+      // All FOUR signing settings travel this route, not just the wrapper: the
+      // other three used to come from the image-baked `$REMOTE_HOME/.gitconfig`,
+      // which git never reads when HOME does not resolve to that directory
+      // (devcontainer `remoteUser`, no HOME in the container env). The sandbox
+      // then had `gpg.ssh.program` and no `user.signingkey`, and every
+      // `git commit -S` aborted — with nothing here failing.
+      expect(gitConfigEnv(spec.env ?? [])).toMatchObject({
+        'gpg.ssh.program': '/opt/agent-seed/bin/verity-git-sign',
+        'gpg.format': 'ssh',
+        // The PUBLIC key, on the mode-independent path: `/home/dev/.ssh` is
+        // mounted in home mode only and is absent under a `remoteUser` image.
+        'user.signingkey': '/run/verity/ssh/id_ed25519.pub',
+        'commit.gpgsign': 'true',
+      });
+      expect(binds).toContain(
+        `${join(secretRoot, 'git', 'id_ed25519.pub')}:/run/verity/ssh/id_ed25519.pub:ro`,
+      );
       expect(spec.network).toBe(projectNetworkName(id));
     } finally {
       rmSync(secretRoot, { recursive: true, force: true });
@@ -3423,6 +3469,81 @@ describe('ProvisionerImpl (#174)', () => {
       expect(env.some((e) => e.includes('fleet-key'))).toBe(false);
     } finally {
       rmSync(keyDir, { recursive: true, force: true });
+      rmSync(secretRoot, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `commit.gpgsign=true` is only safe to push once the key it names is actually
+   * mounted, and broker mode does not imply that: it is decided by the PRIVATE
+   * key plus the secret root, while the public key bind needs
+   * `gitSshPublicKey`/`gitSshPublicKeyPath`. Configured unconditionally, a
+   * project with a private key and no public one would get
+   * `user.signingkey=/run/verity/ssh/id_ed25519.pub` pointing at nothing — and
+   * because `GIT_CONFIG_*` outranks every config file, EVERY commit in that
+   * sandbox would fail, including the unsigned ones that work today. That is a
+   * worse outcome than the missing-signingkey bug this pairing exists to fix,
+   * and it would only ever show up in a sandbox, never here.
+   */
+  it('withholds the signing config when the public key is not mounted', async () => {
+    const id = await seedProject();
+    const secretRoot = mkdtempSync(join(tmpdir(), 'verity-broker-nopub-'));
+    try {
+      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+      const { client: docker, calls: dockerCalls } = fakeDocker();
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        token: 'tok',
+        defaultImageRef: 'default',
+        ghTokenFilePath: '/etc/gh-token',
+        hostCloneRoot: '/var/lib/verity-dev',
+        gitSecretRoot: secretRoot,
+        veritySettings: async () => ({
+          gitUserName: null,
+          gitUserEmail: null,
+          gitSshPrivateKeyPath: null,
+          gitSshPrivateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nk\n-----END KEY-----\n',
+          // No public key in settings, so nothing mounts at the signingkey path.
+          gitSshPublicKeyPath: null,
+          gitSshPublicKey: null,
+          gitKnownHostsPath: null,
+          gitKnownHosts: null,
+          gitAllowedSignersPath: null,
+          gitAllowedSigners: null,
+          githubAppId: null,
+          githubAppInstallationId: null,
+          githubAppPrivateKey: null,
+          dopplerServiceToken: null,
+          claudeCodeOauthCredentialsJson: null,
+          codexAuthJson: null,
+          googleDriveClientId: null,
+          googleDriveAccountEmail: null,
+          googleDriveRefreshToken: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+        git,
+        isDirectory: () => false,
+      });
+
+      await provisioner.provision(id);
+
+      const created = dockerCalls.find((c) => c.method === 'createContainer');
+      const spec = created?.payload as ContainerSpec;
+      expect(spec.binds?.some((b) => b.endsWith('id_ed25519.pub:ro'))).toBe(false);
+      const config = gitConfigEnv(spec.env ?? []);
+      // Broker mode still engaged — the wrapper is configured either way.
+      expect(config['gpg.ssh.program']).toBe('/opt/agent-seed/bin/verity-git-sign');
+      // Indexed, not `toHaveProperty('user.signingkey')`: these keys contain the
+      // character that matcher also uses as a path separator, so the negative
+      // form reads as a claim about `config.user` even where it happens to
+      // resolve the literal key.
+      expect(config['user.signingkey']).toBeUndefined();
+      expect(config['commit.gpgsign']).toBeUndefined();
+      expect(config['gpg.format']).toBeUndefined();
+    } finally {
       rmSync(secretRoot, { recursive: true, force: true });
     }
   });
