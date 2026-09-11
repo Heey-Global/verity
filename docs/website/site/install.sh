@@ -265,6 +265,20 @@ managed_server_is_unpaired() {
   [ "$status" = 200 ]
 }
 
+sealed_managed_image() {
+  local bootstrap_image=$1
+  run_docker run --rm --network none --read-only --cap-drop ALL --user 0:0 \
+    --security-opt no-new-privileges \
+    --mount type=volume,source=verity-managed-deployment,target=/managed,readonly \
+    --entrypoint node "$bootstrap_image" -e '
+      const { readFileSync } = require("node:fs");
+      const value = JSON.parse(readFileSync("/managed/server-deployment.json", "utf8"));
+      const image = value?.image;
+      if (typeof image !== "string") process.exit(1);
+      process.stdout.write(image);
+    '
+}
+
 progress 2 'resolving the release to install'
 managed_names=()
 if ! managed_output=$(run_docker ps -a --filter 'name=^/verity-managed-server' --format '{{.Names}}'); then
@@ -294,12 +308,16 @@ if [ -n "$source_image_override" ]; then
     previous_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
     valid_image_override "$previous_image" ||
       die 'the managed Server does not use an official digest-pinned image'
+    sealed_image=$(sealed_managed_image "$previous_image") ||
+      die 'could not read the sealed managed Server image'
+    valid_image_override "$sealed_image" ||
+      die 'the sealed deployment does not use an official digest-pinned image'
     if managed_server_is_unpaired "${managed_names[0]}"; then
       # An explicit image may be an intentional downgrade. Keep the observed
       # digest fence so a queued/stale invocation cannot overwrite another
       # install that moved the authority while this one was resolving.
-      installer_args+=(--advance-unpaired-from "$previous_image")
-    elif [ "$source_image" != "$previous_image" ]; then
+      installer_args+=(--advance-unpaired-from "$sealed_image")
+    elif [ "$source_image" != "$sealed_image" ]; then
       die 'a paired installation can only recover its current release; install updates from the Verity app'
     fi
   fi
@@ -325,7 +343,17 @@ elif [ "${#managed_names[@]}" -eq 1 ]; then
     installer_args+=(--advance-unpaired-from current)
     printf 'verity-install: setup is not paired yet; using the latest release\n'
   else
-    source_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
+    previous_image=$(run_docker inspect --format '{{.Config.Image}}' "${managed_names[0]}")
+    valid_image_override "$previous_image" ||
+      die 'the managed Server does not use an official digest-pinned image'
+    # A failed bootstrap can advance the sealed spec before replacing the old
+    # container. The seal remains the deployment authority, so recovering from
+    # Config.Image would replay the stale digest and the guarded migration would
+    # reject it only after rotating pairing material.
+    source_image=$(sealed_managed_image "$previous_image") ||
+      die 'could not read the sealed managed Server image'
+    valid_image_override "$source_image" ||
+      die 'the sealed deployment does not use an official digest-pinned image'
     printf 'verity-install: recovering the paired installation from %s\n' "${managed_names[0]}"
   fi
 else
