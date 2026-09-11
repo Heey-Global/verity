@@ -1,0 +1,84 @@
+name: verity-scorecard
+
+# Publishes an OpenSSF Scorecard run for this repository.
+#
+# The point is the third-party part: the checks are run by OpenSSF's analyser
+# against the public repository and published to their API, so the badge in the
+# README is a claim someone else computed and anyone can re-derive from
+# https://scorecard.dev/viewer/?uri=github.com/Heey-Global/verity. A badge we
+# rendered from our own assertions would carry none of that.
+#
+# The score also moves on things this repository already decided deliberately —
+# actions pinned to commit SHAs, signed releases, branch protection, a secret
+# scan on every push — and would otherwise only notice a regression in them by
+# accident. Scorecard notices weekly.
+#
+# `publish_results: true` is what feeds the public API, and it only takes effect
+# on the default branch: a run from a pull request produces a SARIF file and
+# publishes nothing, which is the intended behaviour (the token a fork run gets
+# must not be able to write this repository's score).
+
+on:
+  # Scorecard's Branch-Protection check reads settings, not files, so a
+  # protection change is a score change with no commit behind it.
+  branch_protection_rule:
+  schedule:
+    # Weekly, off the hour and off midnight UTC — that is when every scheduled
+    # workflow on GitHub fires at once and queues behind everyone else's.
+    - cron: '37 5 * * 2'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    runs-on: ubuntu-24.04
+    # The analyser is API-bound against GitHub, not compute-bound. A run that has
+    # not finished by here is rate-limited or hung, and waiting out the default
+    # six hours on a weekly job only delays noticing that.
+    timeout-minutes: 20
+    permissions:
+      # Upload the findings to the Security tab, so a dropped check is visible
+      # as an alert here rather than only as a lower number on an external page.
+      security-events: write
+      # Scorecard reads workflow run metadata for its Token-Permissions and
+      # Dangerous-Workflow checks.
+      actions: read
+      contents: read
+      # The keyless Sigstore identity Scorecard signs its published result with.
+      # Without it the run still analyses, but `publish_results` cannot attest
+      # who produced the score, so the API rejects it and the badge stays blank.
+      id-token: write
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Scorecard analyses the tree and the GitHub API, never pushes. Leaving
+          # the checkout credential behind would itself cost points on the
+          # Token-Permissions check it is here to run.
+          persist-credentials: false
+
+      # renovate: datasource=github-actions depName=ossf/scorecard-action
+      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      # Kept for the runs the Security tab drops: code scanning expires alerts
+      # after a retention window, and the raw SARIF is how a score change is
+      # compared against the run before it.
+      # renovate: datasource=github-actions depName=actions/upload-artifact
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 14
+
+      # renovate: datasource=github-actions depName=github/codeql-action
+      - uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: results.sarif
