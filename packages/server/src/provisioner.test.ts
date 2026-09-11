@@ -134,10 +134,12 @@ describe('openCodeSettingsConfig', () => {
  */
 function gitConfigEnv(env: string[]): Record<string, string> {
   const byName = new Map(
-    env.map((entry) => {
-      const separator = entry.indexOf('=');
-      return [entry.slice(0, separator), entry.slice(separator + 1)] as const;
-    }),
+    env
+      .filter((entry) => entry.includes('='))
+      .map((entry) => {
+        const separator = entry.indexOf('=');
+        return [entry.slice(0, separator), entry.slice(separator + 1)] as const;
+      }),
   );
   const count = Number.parseInt(byName.get('GIT_CONFIG_COUNT') ?? '0', 10);
   const config: Record<string, string> = {};
@@ -3534,9 +3536,13 @@ describe('ProvisionerImpl (#174)', () => {
       const config = gitConfigEnv(spec.env ?? []);
       // Broker mode still engaged — the wrapper is configured either way.
       expect(config['gpg.ssh.program']).toBe('/opt/agent-seed/bin/verity-git-sign');
-      expect(config).not.toHaveProperty('user.signingkey');
-      expect(config).not.toHaveProperty('commit.gpgsign');
-      expect(config).not.toHaveProperty('gpg.format');
+      // Indexed, not `toHaveProperty('user.signingkey')`: these keys contain the
+      // character that matcher also uses as a path separator, so the negative
+      // form reads as a claim about `config.user` even where it happens to
+      // resolve the literal key.
+      expect(config['user.signingkey']).toBeUndefined();
+      expect(config['commit.gpgsign']).toBeUndefined();
+      expect(config['gpg.format']).toBeUndefined();
     } finally {
       rmSync(secretRoot, { recursive: true, force: true });
     }

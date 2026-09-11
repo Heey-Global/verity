@@ -17,6 +17,20 @@ import { CLAUDE_EGRESS_PLACEHOLDER } from '../packages/server/src/claude-egress-
 const review = fileURLToPath(new URL('../agent-seed/bin/verity-code-review', import.meta.url));
 const tempRoots: string[] = [];
 
+/** Read a numeric budget out of the script rather than restating it here: a
+ *  restated copy keeps passing after the budget it was meant to bound has moved
+ *  back above the size the model refuses. */
+function scriptBudget(pattern: RegExp): number {
+  const match = pattern.exec(readFileSync(review, 'utf8'));
+  if (!match) {
+    throw new Error(`verity-code-review no longer declares ${String(pattern)}`);
+  }
+  return Number.parseInt(match[1], 10);
+}
+
+const CHUNK_BYTES = scriptBudget(/^\s*CHUNK_BYTES=(\d+)\s*$/m);
+const MANIFEST_BYTES = scriptBudget(/manifest truncated at (\d+) bytes/);
+
 function fixture(): { bin: string; repo: string } {
   const repo = mkdtempSync(join(tmpdir(), 'verity-code-review-'));
   tempRoots.push(repo);
@@ -226,7 +240,11 @@ describe('verity-code-review session backend', () => {
       }),
       'utf8',
     );
-    expect(diffBytes).toBeGreaterThan(500_000);
+    // The reproduction size: `claude -p` refused a 581,436-byte prompt and
+    // accepted 150,000. A 1 MB request limit would have sent this whole diff as
+    // one chunk, so the diff has to stay under that and above the chunk budget
+    // for the split this test asserts to be the script's doing.
+    expect(diffBytes).toBeGreaterThan(CHUNK_BYTES);
     expect(diffBytes).toBeLessThan(1_000_000);
 
     const result = run(repo, bin, {
@@ -240,9 +258,12 @@ describe('verity-code-review session backend', () => {
       .map((name) => readFileSync(join(repo, name)))
       .filter((payload) => /Review chunk \d+ of \d+\./.test(payload.toString('utf8')));
     expect(chunkPayloads.length).toBeGreaterThan(1);
-    // Every prompt actually sent stays well under the refused size, manifest and
-    // fencing included — the chunk budget alone does not bound the prompt.
-    expect(Math.max(...chunkPayloads.map((payload) => payload.byteLength))).toBeLessThan(300_000);
+    // Every prompt actually sent stays under the refused size, manifest and
+    // fencing included — the chunk budget alone does not bound the prompt, and a
+    // chunk budget raised back past what the manifest leaves would refuse again.
+    expect(Math.max(...chunkPayloads.map((payload) => payload.byteLength))).toBeLessThan(
+      CHUNK_BYTES + MANIFEST_BYTES + 10_000,
+    );
   });
 
   /**
@@ -257,9 +278,10 @@ describe('verity-code-review session backend', () => {
     const { bin, repo } = fixture();
     executable(join(bin, 'codex'), 'exit 99');
     // A blank first line, an ANSI erase-line sequence before the message, and
-    // enough trailing output to SIGPIPE the excerpt pipeline's head: the backend
-    // was reading a hostile diff, so none of that may decide whether the reason
-    // reaches the pushing agent, or reach the terminal intact.
+    // enough trailing output that both bounded readers — the log's `head -c` and
+    // the excerpt's `grep -m1` — stop early and SIGPIPE the `tr` feeding them:
+    // the backend was reading a hostile diff, so none of that may decide whether
+    // the reason reaches the pushing agent, or reach the terminal intact.
     executable(
       join(bin, 'claude'),
       'printf "\\n\\033[2KPrompt is too long\\n"\nhead -c 400000 /dev/zero | tr "\\0" "x"\nexit 1',
