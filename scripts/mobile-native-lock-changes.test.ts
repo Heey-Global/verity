@@ -36,6 +36,26 @@ describe('mobile native lockfile changes', () => {
     expect(nativeLockChanges(base, head)).toEqual(['expo: 56.0.15 -> 56.1.0']);
   });
 
+  it('reports changed artifact bytes even when the version is unchanged', () => {
+    const before = lock({
+      'apps/mobile': { dependencies: { expo: '~56.0.0' } },
+      'node_modules/expo': {
+        version: '56.0.15',
+        resolved: 'https://registry.example/expo-a.tgz',
+        integrity: 'sha512-before',
+      },
+    });
+    const after = lock({
+      'apps/mobile': { dependencies: { expo: '~56.0.0' } },
+      'node_modules/expo': {
+        version: '56.0.15',
+        resolved: 'https://registry.example/expo-b.tgz',
+        integrity: 'sha512-after',
+      },
+    });
+    expect(nativeLockChanges(before, after)).toEqual(['expo: 56.0.15 -> 56.0.15']);
+  });
+
   it('prefers a nested workspace install over the hoisted copy', () => {
     const head = lock({
       'apps/mobile': { dependencies: { expo: '~56.0.0', 'react-native': '0.85.3' } },

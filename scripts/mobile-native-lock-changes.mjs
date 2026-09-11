@@ -22,11 +22,21 @@ import { execFileSync } from 'node:child_process';
  *   optionalDependencies?: Record<string, string>,
  *   link?: boolean,
  *   resolved?: string,
+ *   integrity?: string,
  * }} LockPackage
  * @typedef {{ packages?: Record<string, LockPackage> }} Lockfile
  */
 
 const MOBILE_WORKSPACE = 'apps/mobile';
+
+/** Version alone is not an installed artifact identity: a lockfile can repoint
+ * the same version to different bytes. Include npm's source and integrity pin so
+ * any such move fails closed into native verification.
+ * @param {LockPackage | undefined} pkg
+ */
+function packageIdentity(pkg) {
+  return JSON.stringify([pkg?.version, pkg?.resolved, pkg?.integrity]);
+}
 
 /** Follow npm workspace links without allowing a lockfile to traverse outside the
  * checkout. A malformed/missing link fails closed instead of hiding native deps.
@@ -104,7 +114,7 @@ function mobileDependencyClosure(lock) {
     const key = resolvedPackageKey(lock, fromKey, name);
     if (key === undefined || closure.has(key)) continue;
     const pkg = packageAt(lock, key);
-    closure.set(key, pkg?.version);
+    closure.set(key, packageIdentity(pkg));
     for (const field of /** @type {const} */ (['dependencies', 'optionalDependencies'])) {
       for (const child of Object.keys(pkg?.[field] ?? {})) queue.push([key, child]);
     }
@@ -152,17 +162,21 @@ export function nativeLockChanges(baseLock, headLock) {
     const headKey = resolvedPackageKey(headLock, MOBILE_WORKSPACE, name);
     if (baseKey !== undefined) directKeys.add(baseKey);
     if (headKey !== undefined) directKeys.add(headKey);
-    const before = baseKey === undefined ? undefined : packageAt(baseLock, baseKey)?.version;
-    const after = headKey === undefined ? undefined : packageAt(headLock, headKey)?.version;
-    if (before !== after)
-      changes.push(`${name}: ${before ?? '(absent)'} -> ${after ?? '(absent)'}`);
+    const beforePackage = baseKey === undefined ? undefined : packageAt(baseLock, baseKey);
+    const afterPackage = headKey === undefined ? undefined : packageAt(headLock, headKey);
+    if (packageIdentity(beforePackage) !== packageIdentity(afterPackage))
+      changes.push(
+        `${name}: ${beforePackage?.version ?? '(absent)'} -> ${afterPackage?.version ?? '(absent)'}`,
+      );
   }
   const keys = new Set([...baseClosure.keys(), ...headClosure.keys()]);
   for (const key of [...keys].sort()) {
     if (directKeys.has(key)) continue;
-    const before = baseClosure.get(key);
-    const after = headClosure.get(key);
-    if (before !== after) changes.push(`${key}: ${before ?? '(absent)'} -> ${after ?? '(absent)'}`);
+    if (baseClosure.get(key) !== headClosure.get(key)) {
+      const before = packageAt(baseLock, key)?.version;
+      const after = packageAt(headLock, key)?.version;
+      changes.push(`${key}: ${before ?? '(absent)'} -> ${after ?? '(absent)'}`);
+    }
   }
   return changes;
 }
