@@ -118,6 +118,7 @@ export interface ControlPlaneDeps {
    *  minus the approval seam — {@link buildServer} binds that to its own
    *  conductor so no composition can substitute one that never asks. */
   mcpGateway?: Omit<McpGatewayDeps, 'requestApproval'> | undefined;
+  mcpProxyResolveCaller?: ServerDeps['mcpProxyResolveCaller'];
   /**
    * Conductor construction options (spawner / command / transcript / claudeHome
    * / permissionMode / timeoutMs / env). `store`, `bus`, and the background-
@@ -353,6 +354,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.ghTokenMint !== undefined ? { ghTokenMint: deps.ghTokenMint } : {}),
     ...(deps.mcpGateway !== undefined ? { mcpGateway: deps.mcpGateway } : {}),
+    ...(deps.mcpProxyResolveCaller !== undefined
+      ? { mcpProxyResolveCaller: deps.mcpProxyResolveCaller }
+      : {}),
     ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
     ...(deps.spawnWorktreeRoot !== undefined ? { spawnWorktreeRoot: deps.spawnWorktreeRoot } : {}),
     ...(deps.worktrees !== undefined ? { worktrees: deps.worktrees } : {}),

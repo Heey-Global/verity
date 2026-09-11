@@ -77,6 +77,7 @@ async function forward(
     contentType?: string;
     protocolVersion?: string;
     sessionId?: string;
+    lastEventId?: string;
   },
 ): Promise<{
   status: number;
@@ -107,6 +108,7 @@ async function forward(
             ? {}
             : { 'mcp-protocol-version': headers.protocolVersion }),
           ...(headers.sessionId === undefined ? {} : { 'mcp-session-id': headers.sessionId }),
+          ...(headers.lastEventId === undefined ? {} : { 'last-event-id': headers.lastEventId }),
           ...(connection.authorization === undefined
             ? {}
             : { authorization: connection.authorization }),
@@ -198,6 +200,9 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           : {}),
         ...(typeof request.headers['mcp-session-id'] === 'string'
           ? { sessionId: request.headers['mcp-session-id'] }
+          : {}),
+        ...(typeof request.headers['last-event-id'] === 'string'
+          ? { lastEventId: request.headers['last-event-id'] }
           : {}),
       });
       reply.hijack();

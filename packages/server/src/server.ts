@@ -112,7 +112,7 @@ import Fastify, {
 } from 'fastify';
 import { z, ZodError } from 'zod';
 import { deriveSessionStatusFromProjection, type SessionStatus } from './status.js';
-import { registerHttpMcpProxyRoute } from './http-mcp-proxy.js';
+import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import {
   attentionSignals,
@@ -1304,6 +1304,8 @@ export interface ServerDeps {
    * its own approval seam could supply one that never asks.
    */
   mcpGateway?: Omit<McpGatewayDeps, 'requestApproval'> | undefined;
+  /** Separate bearer audience for configured upstream MCP connections. */
+  mcpProxyResolveCaller?: HttpMcpProxyDeps['resolveCaller'] | undefined;
   /** Mint a repo-scoped GitHub token for a resolved capability binding (the same
    *  App-installation mint the provisioner uses). The broker calls this AFTER
    *  resolving the capability, so the sandbox never influences owner/repo/scope. */
@@ -4557,7 +4559,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   if (deps.mcpGateway !== undefined) {
     const gatewayDeps = deps.mcpGateway;
     registerHttpMcpProxyRoute(app, {
-      resolveCaller: gatewayDeps.resolveCaller,
+      resolveCaller: deps.mcpProxyResolveCaller ?? (() => Promise.resolve(undefined)),
       resolveConnection: async ({ projectId, connectionId }) => {
         const [bindings, connections] = await Promise.all([
           deps.eventStore.listProjectMcpBindings(projectId),

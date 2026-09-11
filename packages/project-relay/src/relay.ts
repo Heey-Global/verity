@@ -83,6 +83,7 @@ const ACCEPTED_REQUEST_HEADERS = new Set([
   'content-length',
   'content-type',
   'host',
+  'last-event-id',
   // The MCP Streamable HTTP client sends this on every request after `initialize`. The
   // gateway ignores the value — it negotiates the version in the `initialize` body — but
   // rejecting the header would leave the gateway reachable and unusable: the handshake

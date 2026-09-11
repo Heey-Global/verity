@@ -1041,6 +1041,8 @@ export function buildRunnerConductorWiring(deps: {
   /** ADR 0014 D1: per-turn bearer registry for the loopback MCP gateway. Only ACP
    *  turns are issued one; the supervisor client decides that from its own backend. */
   mcpGatewayTokens?: McpGatewayTokens | undefined;
+  /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
+  mcpProxyTokens?: McpGatewayTokens | undefined;
   listProjectHttpMcpServers?:
     ((projectId: string) => Promise<readonly { id: string; name: string }[]>) | undefined;
   /** ADR 0011 D2: resolve a standing grant before a prompt becomes a card + push.
@@ -1285,7 +1287,9 @@ export function buildRunnerConductorWiring(deps: {
           ...(ephemeral || deps.autoApprovePermission === undefined
             ? {}
             : { autoApprovePermission: deps.autoApprovePermission }),
-          ...(deps.mcpGatewayTokens === undefined || gatewayToolContext === undefined
+          ...(deps.mcpGatewayTokens === undefined ||
+          deps.mcpProxyTokens === undefined ||
+          gatewayToolContext === undefined
             ? {}
             : {
                 mcpGatewayTokens: {
@@ -1303,13 +1307,13 @@ export function buildRunnerConductorWiring(deps: {
                 },
                 mcpProxyTokens: {
                   issue: (turnId: string) =>
-                    deps.mcpGatewayTokens!.issue({
+                    deps.mcpProxyTokens!.issue({
                       projectId: gatewayToolContext.projectId,
                       sessionId: gatewayToolContext.sessionId,
                       turnId,
                     }),
                   release: (token: string) =>
-                    deps.mcpGatewayTokens!.release({
+                    deps.mcpProxyTokens!.release({
                       projectId: gatewayToolContext.projectId,
                       token,
                     }),
@@ -2060,6 +2064,7 @@ export async function buildEmbeddedServer(
   const secretAuditLog = createPostgresSecretAuditLog(db);
   const gatewayRequestMacKeys = createGatewayRequestMacKeyring(db, secretCipher);
   const mcpGatewayTokens = createMcpGatewayTokens();
+  const mcpProxyTokens = createMcpGatewayTokens();
   const mcpGateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     // Trusted CLI needs the project supervisor: it is the authority that proves this bearer
     // still names a live turn whose start request enabled execution. Deployments without the
@@ -3950,6 +3955,7 @@ export async function buildEmbeddedServer(
     // Loopback MCP gateway for ACP sessions (ADR 0014 D1). The approval seam is
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,
+    mcpProxyResolveCaller: (input) => Promise.resolve(mcpProxyTokens.resolve(input)),
     // Derive the git committer identity from the App installation for the
     // signing-key onboarding step. Resolves the (decrypted) creds from settings;
     // undefined when no App is configured yet (nothing to derive).
@@ -4223,6 +4229,7 @@ export async function buildEmbeddedServer(
         // registry is the Server's half of the gateway bearer — the runner client
         // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
+        mcpProxyTokens,
         listProjectHttpMcpServers: async (projectId) => {
           const [bindings, connections] = await Promise.all([
             eventStore.listProjectMcpBindings(projectId),

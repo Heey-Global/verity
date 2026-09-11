@@ -129,7 +129,10 @@ describe('broker relay', () => {
   });
 
   it('streams MCP proxy responses with their session identifier beyond ordinary limits', async () => {
+    let lastEventId: string | undefined;
     const socketPath = await fakeBroker(async (incoming) => {
+      const presented = incoming.headers['last-event-id'];
+      lastEventId = Array.isArray(presented) ? presented[0] : presented;
       await readBody(incoming);
       return {
         status: 200,
@@ -149,6 +152,7 @@ describe('broker relay', () => {
       headers: {
         authorization: 'Bearer proxy-turn',
         'x-verity-mcp-binding': 'connection-1',
+        'last-event-id': 'event-42',
         accept: 'text/event-stream',
       },
     });
@@ -158,6 +162,7 @@ describe('broker relay', () => {
       body: 'data: {"jsonrpc":"2.0"}\n\n',
     });
     expect(response.headers['mcp-session-id']).toBe('session-123');
+    expect(lastEventId).toBe('event-42');
   });
 
   // Every other test here writes the request by hand, which is how the gateway hop shipped
