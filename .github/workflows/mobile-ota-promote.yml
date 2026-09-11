@@ -9,8 +9,7 @@ on:
     paths: [apps/mobile/ota-promotion.json]
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: read-all
 
 concurrency:
   group: mobile-ota-testflight-promotion
@@ -21,6 +20,8 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

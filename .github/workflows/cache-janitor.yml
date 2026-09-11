@@ -37,14 +37,7 @@ on:
         type: string
         default: ''
 
-permissions:
-  # `actions: write` is the whole point — deleting a cache entry needs it, and
-  # nothing else here does. Notably NOT granted to the project App token
-  # (packages/server/src/github-app-token.ts), which stays read-only so agent
-  # sessions cannot delete or re-run workflow runs; this scheduled workflow is
-  # the sanctioned place for that permission.
-  actions: write
-  contents: read
+permissions: read-all
 
 concurrency:
   # Two janitors listing the same entries would race each other into 404s on
@@ -60,6 +53,12 @@ jobs:
     # is fullest.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      # `actions: write` is the whole point — deleting a cache entry needs it,
+      # and no other job inherits it. It is deliberately absent from the project
+      # App token, so this job remains the sanctioned cache-deletion boundary.
+      actions: write
+      contents: read
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
