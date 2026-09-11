@@ -189,6 +189,82 @@ describe('verity-code-review session backend', () => {
     expect(result.stderr).toContain(`split the diff into ${callCount} review chunk(s)`);
   });
 
+  /**
+   * The chunk budget has to be the size the MODEL accepts, not the size the
+   * transport accepts. It was set against "a reviewer's 1 MB request limit", and
+   * because sections are only split ABOVE the budget, a diff below that number
+   * is sent as one chunk however large it is. A 581,436-byte diff went out whole
+   * and came back "Prompt is too long" — the gate failed on a branch it was
+   * supposed to be able to review, and nothing here noticed, because the other
+   * chunking test uses inputs far above 1 MB and splits either way.
+   *
+   * This one is sized at the reproduction: big enough to be refused, small
+   * enough that a byte-sized budget keeps it in a single chunk.
+   */
+  it('splits a diff the model refuses but a 1 MB request limit would not', () => {
+    const { bin, repo } = fixture();
+    writeFileSync(
+      join(repo, 'refused.txt'),
+      `${'refused review line'.padEnd(59, '.')}\n`.repeat(9_670),
+    );
+    execFileSync('git', ['-C', repo, 'add', 'refused.txt']);
+    execFileSync('git', ['-C', repo, 'commit', '-qm', 'diff at the refused size']);
+    executable(
+      join(bin, 'codex'),
+      `review_payload="$(mktemp ${JSON.stringify(join(repo, 'review-payload.XXXXXX'))})"\n` +
+        'cat >"$review_payload"\n' +
+        'while [ "$#" -gt 0 ]; do\n' +
+        '  if [ "$1" = "-o" ]; then printf "No findings for this chunk.\\n" >"$2"; exit 0; fi\n' +
+        '  shift\n' +
+        'done\nexit 2',
+    );
+
+    const diffBytes = Buffer.byteLength(
+      execFileSync('git', ['-C', repo, 'diff', 'origin/main..HEAD'], {
+        encoding: 'utf8',
+        maxBuffer: 10_000_000,
+      }),
+      'utf8',
+    );
+    expect(diffBytes).toBeGreaterThan(500_000);
+    expect(diffBytes).toBeLessThan(1_000_000);
+
+    const result = run(repo, bin, {
+      VERITY_SESSION_BACKEND: 'codex',
+      CODEX_HOME: join(repo, '.codex'),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const chunkPayloads = readdirSync(repo)
+      .filter((name) => name.startsWith('review-payload.'))
+      .map((name) => readFileSync(join(repo, name)))
+      .filter((payload) => /Review chunk \d+ of \d+\./.test(payload.toString('utf8')));
+    expect(chunkPayloads.length).toBeGreaterThan(1);
+    // Every prompt actually sent stays well under the refused size, manifest and
+    // fencing included — the chunk budget alone does not bound the prompt.
+    expect(Math.max(...chunkPayloads.map((payload) => payload.byteLength))).toBeLessThan(300_000);
+  });
+
+  /**
+   * A reviewer that fails without saying why sends the pushing agent looking for
+   * `--no-verify`. `claude -p` refuses an over-long prompt on STDOUT and exits 1
+   * with stderr EMPTY, and stdout is the channel the review comes back on — it
+   * goes to a temp file the failure path deletes. The gate printed "the isolated
+   * claude reviewer failed on chunk 1 of 1 (exit 1)" and pointed at a log with
+   * nothing in it.
+   */
+  it('reports a backend failure that arrives on stdout instead of stderr', () => {
+    const { bin, repo } = fixture();
+    executable(join(bin, 'codex'), 'exit 99');
+    executable(join(bin, 'claude'), 'printf "Prompt is too long\\n"\nexit 1');
+
+    const result = run(repo, bin, { VERITY_SESSION_BACKEND: 'claude' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Prompt is too long');
+    expect(result.stderr).toContain('failed on chunk');
+  });
+
   it('fails closed when a text diff is not valid UTF-8', () => {
     const { bin, repo } = fixture();
     writeFileSync(join(repo, 'invalid.txt'), Buffer.from([0x66, 0x6f, 0x80, 0x6f, 0x0a]));
