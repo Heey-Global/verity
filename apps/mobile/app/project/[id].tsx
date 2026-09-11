@@ -2989,6 +2989,7 @@ function ProjectMcpBindingsSection({
   const [pendingConnectionId, setPendingConnectionId] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const mutationInFlight = useRef(false);
+  const loadGeneration = useRef(0);
   const load = useCallback(async (): Promise<void> => {
     if (
       typeof (client as Partial<VerityClient>).listHttpMcpConnections !== 'function' ||
@@ -2996,13 +2997,17 @@ function ProjectMcpBindingsSection({
     ) {
       return;
     }
+    const generation = ++loadGeneration.current;
     setError(undefined);
     await Promise.all([client.listHttpMcpConnections(), client.listProjectMcpBindings(projectId)])
       .then(([nextConnections, nextBindings]) => {
+        if (loadGeneration.current !== generation) return;
         setConnections(nextConnections.filter((connection) => connection.enabled));
         setBindings(nextBindings);
       })
-      .catch(() => setError('Could not load MCP connections.'));
+      .catch(() => {
+        if (loadGeneration.current === generation) setError('Could not load MCP connections.');
+      });
   }, [client, projectId]);
   useEffect(() => void load(), [load]);
   const enabled = useCallback(

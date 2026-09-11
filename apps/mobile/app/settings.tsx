@@ -1013,7 +1013,10 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
     await client
       .listHttpMcpConnections()
       .then((loaded) => {
-        if (connectionRevision.current === revision) setConnections(loaded);
+        if (connectionRevision.current === revision) {
+          setConnections(loaded);
+          setError(undefined);
+        }
       })
       .catch(() => setError('Could not load MCP connections.'));
   }, [client]);
