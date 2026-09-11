@@ -7262,6 +7262,31 @@ describe('POST /sessions/:id/turns', () => {
     );
   });
 
+  it('rejects a stored OpenCode model after its central configuration is removed', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-turn-stale-opencode',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-project-stale-opencode-turn',
+      worktree: '/data/dev/heey-global-verity/.verity-sessions/agent-stale-opencode-turn',
+      model: 'verity/model-a',
+      projectId: 'p-turn-stale-opencode',
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-project-stale-opencode-turn/turns',
+      payload: { prompt: 'go' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+
   it('rejects a turn (409) when the project sandbox is not active (SBX-4)', async () => {
     await ctx.store.upsertProject({
       id: 'p-inactive',

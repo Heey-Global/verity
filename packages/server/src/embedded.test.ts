@@ -2537,7 +2537,9 @@ describe('buildEmbeddedServer', () => {
     });
     expect(models.statusCode).toBe(200);
     const body = models.json<{ models: string[]; default?: string }>();
-    expect(body.default).toBe('verity/zai-org/GLM-5.2');
+    // OpenCode requires a project sandbox, so it is available for explicit
+    // project selection but never becomes the project-less global default.
+    expect(body.default).toBeUndefined();
     expect(body.models).toEqual(['verity/zai-org/GLM-5.2']);
   });
 

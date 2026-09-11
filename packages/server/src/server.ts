@@ -7707,7 +7707,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: 'a turn needs a prompt or at least one attachment' };
       }
       const session = await deps.eventStore.getSession(id);
-      if (!(await isConfiguredProjectSessionModel(body.model)) && session?.projectId != null) {
+      if (
+        !(await isConfiguredProjectSessionModel(body.model ?? session?.model)) &&
+        session?.projectId != null
+      ) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }
