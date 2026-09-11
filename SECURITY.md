@@ -104,9 +104,25 @@ repository, its immutable numeric id, the ref, and that commit
 Then confirm that `serverImage` in `payload.json` is the digest you verified
 above, and that `version` is the release you expected.
 
+### Server image provenance
+
+Each Server release also carries a GitHub-signed SLSA provenance attestation for
+the exact image digest. Copy `serverImage` from the verified channel payload and
+verify the registry attestation against this repository:
+
+```bash
+gh attestation verify \
+  "oci://$(jq -r .serverImage payload.json)" \
+  --repo Heey-Global/verity
+```
+
+The matching `verity-server-vX.Y.Z.intoto.jsonl` GitHub release asset is the
+signed in-toto envelope exported from that OCI attestation. Its subject digest
+must equal the `serverImage` digest in `payload.json`.
+
 ### What is not signed yet
 
-Signature coverage stops at those two artifacts. The Sandbox, project-relay,
+Signature and provenance coverage stops at those Server artifacts. The Sandbox, project-relay,
 preview, and toolkit images are published unsigned today; the website image
 carries builder-generated provenance and an SBOM but no cosign signature. That
 gap is the open release-readiness gate the security model above names.

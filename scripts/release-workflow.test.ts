@@ -23,6 +23,7 @@ interface ReleaseWorkflow {
     };
     'publish-server': {
       needs?: string[];
+      permissions?: Record<string, string>;
       steps: WorkflowStep[];
     };
     'publish-server-release-evidence': {
@@ -150,6 +151,7 @@ describe('signed GitHub release evidence', () => {
     const upload = server.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
     expect(upload?.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/);
     expect(upload?.with?.path).toContain('.release-channel.sigstore.json');
+    expect(upload?.with?.path).toContain('.intoto.jsonl');
 
     expect(evidence.needs).toEqual(['release-please', 'publish-server']);
     expect(evidence.permissions).toEqual({ actions: 'read', contents: 'write' });
@@ -164,6 +166,25 @@ describe('signed GitHub release evidence', () => {
     expect(publish?.run).toContain('jq -e');
     expect(publish?.run).toContain('gh release upload');
     expect(publish?.run).toContain('.release-channel.sigstore.json');
+    expect(publish?.run).toContain('.intoto.jsonl');
+  });
+
+  it('creates signed provenance for the immutable Server image digest', () => {
+    expect(server.permissions).toMatchObject({
+      'artifact-metadata': 'write',
+      attestations: 'write',
+      'id-token': 'write',
+      packages: 'write',
+    });
+    const attest = server.steps.find((step) => step.uses?.startsWith('actions/attest@'));
+    expect(attest?.uses).toMatch(/^actions\/attest@[a-f0-9]{40}$/);
+    expect(attest?.with).toMatchObject({
+      'subject-digest': '${{ steps.build.outputs.digest }}',
+      'push-to-registry': true,
+    });
+    const channel = server.steps.find((step) => step.name === 'Publish the signed release channel');
+    expect(channel?.run).toContain('cosign verify-attestation');
+    expect(channel?.run).toContain('https://slsa.dev/provenance/v1');
   });
 
   it('keeps the release mutable until its evidence and artifacts are complete', () => {
