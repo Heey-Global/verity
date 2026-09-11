@@ -3471,6 +3471,77 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
+  /**
+   * `commit.gpgsign=true` is only safe to push once the key it names is actually
+   * mounted, and broker mode does not imply that: it is decided by the PRIVATE
+   * key plus the secret root, while the public key bind needs
+   * `gitSshPublicKey`/`gitSshPublicKeyPath`. Configured unconditionally, a
+   * project with a private key and no public one would get
+   * `user.signingkey=/run/verity/ssh/id_ed25519.pub` pointing at nothing — and
+   * because `GIT_CONFIG_*` outranks every config file, EVERY commit in that
+   * sandbox would fail, including the unsigned ones that work today. That is a
+   * worse outcome than the missing-signingkey bug this pairing exists to fix,
+   * and it would only ever show up in a sandbox, never here.
+   */
+  it('withholds the signing config when the public key is not mounted', async () => {
+    const id = await seedProject();
+    const secretRoot = mkdtempSync(join(tmpdir(), 'verity-broker-nopub-'));
+    try {
+      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+      const { client: docker, calls: dockerCalls } = fakeDocker();
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        token: 'tok',
+        defaultImageRef: 'default',
+        ghTokenFilePath: '/etc/gh-token',
+        hostCloneRoot: '/var/lib/verity-dev',
+        gitSecretRoot: secretRoot,
+        veritySettings: async () => ({
+          gitUserName: null,
+          gitUserEmail: null,
+          gitSshPrivateKeyPath: null,
+          gitSshPrivateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nk\n-----END KEY-----\n',
+          // No public key in settings, so nothing mounts at the signingkey path.
+          gitSshPublicKeyPath: null,
+          gitSshPublicKey: null,
+          gitKnownHostsPath: null,
+          gitKnownHosts: null,
+          gitAllowedSignersPath: null,
+          gitAllowedSigners: null,
+          githubAppId: null,
+          githubAppInstallationId: null,
+          githubAppPrivateKey: null,
+          dopplerServiceToken: null,
+          claudeCodeOauthCredentialsJson: null,
+          codexAuthJson: null,
+          googleDriveClientId: null,
+          googleDriveAccountEmail: null,
+          googleDriveRefreshToken: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+        git,
+        isDirectory: () => false,
+      });
+
+      await provisioner.provision(id);
+
+      const created = dockerCalls.find((c) => c.method === 'createContainer');
+      const spec = created?.payload as ContainerSpec;
+      expect(spec.binds?.some((b) => b.endsWith('id_ed25519.pub:ro'))).toBe(false);
+      const config = gitConfigEnv(spec.env ?? []);
+      // Broker mode still engaged — the wrapper is configured either way.
+      expect(config['gpg.ssh.program']).toBe('/opt/agent-seed/bin/verity-git-sign');
+      expect(config).not.toHaveProperty('user.signingkey');
+      expect(config).not.toHaveProperty('commit.gpgsign');
+      expect(config).not.toHaveProperty('gpg.format');
+    } finally {
+      rmSync(secretRoot, { recursive: true, force: true });
+    }
+  });
+
   it('always provisions an isolated project network with a relay (H2)', async () => {
     const id = await seedProject();
     const secretRoot = mkdtempSync(join(tmpdir(), 'verity-h2-net-'));

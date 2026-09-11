@@ -170,6 +170,14 @@ const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
  *  credential helper / gh wrapper read it to authenticate to the token broker. */
 const GH_TOKEN_CAPABILITY_FILE = '/run/verity/gh-token-capability';
 
+/** In-container path of the read-only PUBLIC SSH signing key — what
+ *  `user.signingkey` points at. The `/home/dev/.ssh` spelling is mounted in home
+ *  mode only, so this is the one a devcontainer `remoteUser` can also resolve.
+ *  Everything that names this path has to agree: {@link gitSettingsBinds} mounts
+ *  it, the broker `GIT_CONFIG_*` block configures git against it, and the
+ *  remoteUser readiness probe checks it is readable. */
+const SSH_SIGNING_PUBLIC_KEY_FILE = '/run/verity/ssh/id_ed25519.pub';
+
 /** In-container paths of the read-only Claude-egress mTLS material. Only the
  *  public CA and this project's own client identity are projected here; the CA
  *  private key and the OAuth token never cross into the sandbox (ADR 0006 D10).
@@ -1509,7 +1517,7 @@ function gitSettingsBinds(
     // conventions too (see the private-key note above). ssh-keygen -Y sign reads
     // the private key sitting next to it in the same dir.
     if (includeHome) binds.push(`${publicKeyPath}:/home/dev/.ssh/id_ed25519.pub:ro`);
-    binds.push(`${publicKeyPath}:/run/verity/ssh/id_ed25519.pub:ro`);
+    binds.push(`${publicKeyPath}:${SSH_SIGNING_PUBLIC_KEY_FILE}:ro`);
   }
   const knownHostsPath =
     settings?.gitKnownHosts && secretRoot
@@ -4110,16 +4118,22 @@ export class ProvisionerImpl implements Provisioner {
       // where the baked file IS read — identical values, and env-level git
       // config outranks it anyway.
       //
-      // `/run/verity/...`, not `/home/dev/...`: the latter is mounted in home
-      // mode only (see gitSettingsBinds) and does not exist under a devcontainer
-      // `remoteUser`. The value is the PUBLIC key; the wrapper discards git's
-      // `-f` argument and the private key never leaves the server.
-      gitRuntimeConfig.push({ key: 'gpg.format', value: 'ssh' });
-      gitRuntimeConfig.push({
-        key: 'user.signingkey',
-        value: '/run/verity/ssh/id_ed25519.pub',
-      });
-      gitRuntimeConfig.push({ key: 'commit.gpgsign', value: 'true' });
+      // Conditional on the key actually being MOUNTED, which broker mode alone
+      // does not imply: `brokerMode` is decided by the private key and the secret
+      // root, while the public key bind needs `gitSshPublicKey`/-`Path` in
+      // settings. Pushing `commit.gpgsign=true` with `user.signingkey` naming a
+      // path that is not there would fail EVERY commit — including the unsigned
+      // ones that still work today, since env-level config cannot be overridden
+      // per repository. That is a strictly worse failure than the one being
+      // fixed, so it is tied to the bind instead of assumed from broker mode.
+      // The readiness probe below checks the same bind for the same reason.
+      if (gitBinds.some((bind) => bind.includes(`:${SSH_SIGNING_PUBLIC_KEY_FILE}:`))) {
+        // The PUBLIC key: the wrapper discards git's `-f` argument and the
+        // private key never leaves the server.
+        gitRuntimeConfig.push({ key: 'gpg.format', value: 'ssh' });
+        gitRuntimeConfig.push({ key: 'user.signingkey', value: SSH_SIGNING_PUBLIC_KEY_FILE });
+        gitRuntimeConfig.push({ key: 'commit.gpgsign', value: 'true' });
+      }
     }
     if (ghTokenCapabilityPath !== undefined) {
       // Do not rely on verity-agent-run having already reconciled ~/.gitconfig:
@@ -4485,9 +4499,9 @@ export class ProvisionerImpl implements Provisioner {
           // verifies the (still-mounted) signing PUBLIC key, plus the capability file
           // when present; a capability-less project must not fail readiness on it.
           const readinessChecks = gitBinds.some((bind) =>
-            bind.includes(':/run/verity/ssh/id_ed25519.pub:'),
+            bind.includes(`:${SSH_SIGNING_PUBLIC_KEY_FILE}:`),
           )
-            ? ['test -r /run/verity/ssh/id_ed25519.pub']
+            ? [`test -r ${SSH_SIGNING_PUBLIC_KEY_FILE}`]
             : [];
           if (ghTokenCapabilityPath !== undefined) {
             readinessChecks.unshift(`test -r ${GH_TOKEN_CAPABILITY_FILE}`);
