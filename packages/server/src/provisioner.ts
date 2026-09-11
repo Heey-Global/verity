@@ -4098,6 +4098,28 @@ export class ProvisionerImpl implements Provisioner {
         key: 'gpg.ssh.program',
         value: '/opt/agent-seed/bin/verity-git-sign',
       });
+      // The other three settings that make `git commit -S` work are baked into
+      // `$REMOTE_HOME/.gitconfig` by the toolkit Feature (features/
+      // verity-sandbox-toolkit/install.sh, F6). That file is only read when HOME
+      // resolves to the same directory at runtime, which a devcontainer with
+      // `remoteUser` set and no HOME in the container environment does not
+      // guarantee: git then finds `gpg.ssh.program` (injected here) but no
+      // `user.signingkey`, and the commit aborts with "user.signingkey needs to
+      // be set for ssh signing". Setting the whole quartet by the same
+      // HOME-independent route removes that split. Re-stating them is harmless
+      // where the baked file IS read — identical values, and env-level git
+      // config outranks it anyway.
+      //
+      // `/run/verity/...`, not `/home/dev/...`: the latter is mounted in home
+      // mode only (see gitSettingsBinds) and does not exist under a devcontainer
+      // `remoteUser`. The value is the PUBLIC key; the wrapper discards git's
+      // `-f` argument and the private key never leaves the server.
+      gitRuntimeConfig.push({ key: 'gpg.format', value: 'ssh' });
+      gitRuntimeConfig.push({
+        key: 'user.signingkey',
+        value: '/run/verity/ssh/id_ed25519.pub',
+      });
+      gitRuntimeConfig.push({ key: 'commit.gpgsign', value: 'true' });
     }
     if (ghTokenCapabilityPath !== undefined) {
       // Do not rely on verity-agent-run having already reconciled ~/.gitconfig:
