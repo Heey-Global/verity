@@ -1746,6 +1746,8 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # This job has no checkout, so gh cannot infer the repository from .git.
+      GH_REPO: ${{ github.repository }}
       TAG: v${{ needs.release-please.outputs.backend-version }}
     steps:
       - name: Publish verified backend release
