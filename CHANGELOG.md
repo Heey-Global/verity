@@ -1,5 +1,23 @@
 # Changelog
 
+## [18.0.1](https://github.com/Heey-Global/verity/compare/v18.0.0...v18.0.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **deps:** update dependency expo to v57.0.21 ([75cc4f7](https://github.com/Heey-Global/verity/commit/75cc4f77db4635aa2929a1d3e5219c5cd7ef1a7f))
+* **deps:** update dependency fastify to v5.12.3 ([44625c5](https://github.com/Heey-Global/verity/commit/44625c51adc2ed6e7c50968fee411cd963ed69c7))
+* **installer:** recover the sealed server image ([256ca76](https://github.com/Heey-Global/verity/commit/256ca76b410fcefa6c898e4233c46e5d74ab77ef))
+* **installer:** recover the sealed server image ([e1a6d7d](https://github.com/Heey-Global/verity/commit/e1a6d7d120ee7b626d1a006cdbb55b9660a3d61a))
+* **mobile:** stop the GitHub connect button failing silently ([f4df578](https://github.com/Heey-Global/verity/commit/f4df5787b41eef19dca7312217791ad9b3d2b70d))
+* **mobile:** surface GitHub authorization startup ([542bea4](https://github.com/Heey-Global/verity/commit/542bea459bae8f63a3632ecce65c4cd6c55c6e27))
+* **release:** ignore orphaned predecessor images ([bfd71dd](https://github.com/Heey-Global/verity/commit/bfd71ddbe83b6427bb088d64d7c1e8e963f85378))
+* **release:** ignore orphaned predecessor images ([ead3eb1](https://github.com/Heey-Global/verity/commit/ead3eb1e125e7e7d8969bf499e9a395172c9b269))
+* **release:** recover draft releases by target ([555855b](https://github.com/Heey-Global/verity/commit/555855b8eadbf5aecee0347230cc86d20774ab31))
+* **release:** recover draft releases by target ([354ef69](https://github.com/Heey-Global/verity/commit/354ef6975a6bc0e1715399b78d8f810756aae45a))
+* **release:** target repository during finalization ([573da3c](https://github.com/Heey-Global/verity/commit/573da3c5e87bf8e8c9043ae013496897c642a0fa))
+* **release:** target repository during finalization ([402f2d2](https://github.com/Heey-Global/verity/commit/402f2d28e25955b7e7c2eed3f5a9d8a368f647df))
+
 ## [18.0.0](https://github.com/Heey-Global/verity/compare/v17.6.0...v18.0.0) (2026-09-11)
 
 
