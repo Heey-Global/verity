@@ -87,19 +87,12 @@ jobs:
           server_image=false
           agent_seed_drift=false
 
-          # Release Please PRs opened with GITHUB_TOKEN do not emit a pull_request
-          # event, so release.yml dispatches this workflow explicitly and names the
-          # isolated train. Keep a plain manual dispatch broad, but do not turn a
-          # mobile or website version bump into a complete backend test matrix.
+          # Scope generated PR `synchronize` events through the checked classifier.
           release_scoped=false
-          if [ "${{ github.event_name }}" = "pull_request" ] \
-            && [ "$PR_AUTHOR" = "github-actions[bot]" ] \
-            && [[ "$PR_HEAD" =~ ^automation/promote-mobile-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            mapfile -t promotion_files < <(gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')
-            if [ "${#promotion_files[@]}" -eq 1 ] \
-              && [ "${promotion_files[0]}" = "apps/mobile/ota-promotion.json" ]; then
-              RELEASE_TRAIN=mobile-ota
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            detected_train="$(scripts/ci-release-pr-scope "$PR_AUTHOR" "$PR_HEAD" "$PR_NUMBER")"
+            if [ -n "$detected_train" ]; then
+              RELEASE_TRAIN="$detected_train"
               release_scoped=true
             fi
           fi
@@ -144,6 +137,8 @@ jobs:
                 esac
               done
             fi
+          fi
+          if [ "$release_scoped" = true ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             case "${RELEASE_TRAIN:-full}" in
               full)
                 ;;
