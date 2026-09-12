@@ -142,6 +142,28 @@ describe('release relay digest output', () => {
   });
 });
 
+describe('release merge policy', () => {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+    jobs: { 'release-please': { steps: WorkflowStep[] } };
+  };
+
+  it('requires squash and rebase without merge wrappers before Release Please', () => {
+    const steps = workflow.jobs['release-please'].steps;
+    const guardIndex = steps.findIndex((step) => step.name === 'Enforce release-safe merge policy');
+    const guard = steps[guardIndex];
+    const firstReleasePleaseIndex = steps.findIndex((step) =>
+      step.uses?.startsWith('googleapis/release-please-action@'),
+    );
+    expect(guard?.env?.GH_TOKEN).toBe('${{ github.token }}');
+    expect(guard?.run).toContain(
+      '[.allow_merge_commit, .allow_squash_merge, .allow_rebase_merge] | @tsv',
+    );
+    expect(guard?.run).toContain("!= $'false\\ttrue\\ttrue'");
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+    expect(firstReleasePleaseIndex).toBeGreaterThan(guardIndex);
+  });
+});
+
 describe('signed GitHub release evidence', () => {
   const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
   const server = workflow.jobs['publish-server'];
