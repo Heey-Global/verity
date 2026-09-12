@@ -138,6 +138,89 @@ describe('release-please train isolation', () => {
     }
   });
 
+  it('removes only a next-release PR created before its draft tag is published', async () => {
+    const steps = workflowReleaseJob().steps ?? [];
+    const cleanup = steps.find((step) => step.name === 'Remove premature next release PRs');
+    const dispatch = steps.find((step) => step.name === 'Run checks for release PRs');
+    expect(cleanup?.if).toContain("release_created == 'true'");
+    expect(cleanup?.if).toContain("prs_created == 'true'");
+    expect(cleanup?.run).toContain('release-please--branches--main--components--${component}');
+    expect(cleanup?.run).toContain('.parents[0].sha');
+    expect(cleanup?.run).toContain('parent" != "$release_sha');
+    expect(cleanup?.run).toContain('gh pr close "$pr_number" --delete-branch');
+    expect(cleanup?.run).toContain('>> "$removed_file"');
+    expect(cleanup?.run).toContain('>> "$GITHUB_OUTPUT"');
+    expect(dispatch?.if).not.toContain("release_created != 'true'");
+    expect(dispatch?.env?.REMOVED_RELEASE_BRANCHES).toBe(
+      '${{ steps.remove-premature-prs.outputs.branches }}',
+    );
+    expect(dispatch?.run).toContain('grep -Fxq "$branch" <<< "$REMOVED_RELEASE_BRANCHES"');
+    expect(dispatch?.run).toContain('Could not resolve the release PR for $branch');
+
+    const dir = await mkdtemp(join(tmpdir(), 'premature-release-pr-'));
+    try {
+      const branch = 'release-please--branches--main--components--server';
+      const releaseSha = 'a'.repeat(40);
+      const headSha = 'b'.repeat(40);
+      const run = (identity = 'app/github-actions', parent = releaseSha, closeFails = false) => {
+        const output = join(dir, 'github-output');
+        const closed = join(dir, 'closed');
+        writeFileSync(output, '');
+        writeFileSync(closed, '');
+        execFileSync('bash', ['-c', cleanup?.run ?? 'exit 1'], {
+          env: {
+            ...process.env,
+            PATH: `${dir}:${process.env.PATH ?? ''}`,
+            GITHUB_OUTPUT: output,
+            GITHUB_REPOSITORY: 'heey-global/verity',
+            RUNNER_TEMP: dir,
+            BACKEND_RELEASED: 'true',
+            BACKEND_SHA: releaseSha,
+            BACKEND_PRS: JSON.stringify([{ headBranchName: branch }]),
+            MOBILE_RELEASED: 'false',
+            MOBILE_PRS: '[]',
+            WEBSITE_RELEASED: 'false',
+            WEBSITE_PRS: '[]',
+            MOCK_IDENTITY: identity,
+            MOCK_HEAD: headSha,
+            MOCK_PARENT: parent,
+            MOCK_CLOSED: closed,
+            MOCK_CLOSE_FAIL: String(closeFails),
+          },
+          stdio: 'pipe',
+        });
+        return { output: readFileSync(output, 'utf8'), closed: readFileSync(closed, 'utf8') };
+      };
+      await writeFile(
+        join(dir, 'gh'),
+        `#!/usr/bin/env bash
+if [[ "$1 $2" == "pr list" ]]; then
+  printf '{"number":211,"author":{"login":"%s"},"baseRefName":"main","headRefOid":"%s"}\n' "$MOCK_IDENTITY" "$MOCK_HEAD"
+elif [[ "$1" == api ]]; then
+  printf '%s\n' "$MOCK_PARENT"
+elif [[ "$1 $2" == "pr close" ]]; then
+  [[ "$MOCK_CLOSE_FAIL" != true ]] || exit 1
+  printf '%s\n' "$3" >> "$MOCK_CLOSED"
+fi
+`,
+        { mode: 0o755 },
+      );
+
+      expect(run()).toEqual({ output: `branches<<EOF\n${branch}\nEOF\n`, closed: '211\n' });
+      expect(run('someone-else')).toEqual({ output: 'branches<<EOF\nEOF\n', closed: '' });
+      expect(run('app/github-actions', 'c'.repeat(40))).toEqual({
+        output: 'branches<<EOF\nEOF\n',
+        closed: '',
+      });
+      expect(run('app/github-actions', releaseSha, true)).toEqual({
+        output: 'branches<<EOF\nEOF\n',
+        closed: '',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('binds publication to the trains in the immutable push diff', async () => {
     const steps = workflowReleaseJob().steps ?? [];
     const select = steps.find((step) => step.id === 'release-trains');
