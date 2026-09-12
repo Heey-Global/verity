@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.5](https://github.com/Heey-Global/verity/compare/website-v1.3.4...website-v1.3.5) (2026-09-12)
+
+
+### Bug Fixes
+
+* **installer:** recover the sealed server image ([256ca76](https://github.com/Heey-Global/verity/commit/256ca76b410fcefa6c898e4233c46e5d74ab77ef))
+* **installer:** recover the sealed server image ([e1a6d7d](https://github.com/Heey-Global/verity/commit/e1a6d7d120ee7b626d1a006cdbb55b9660a3d61a))
+
 ## [1.3.4](https://github.com/Heey-Global/verity/compare/website-v1.3.3...website-v1.3.4) (2026-09-11)
 
 
