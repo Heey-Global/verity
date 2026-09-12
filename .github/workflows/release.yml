@@ -496,7 +496,15 @@ jobs:
       # One-time, version-bounded authorization for the first public Server
       # package. A later missing/renamed package must fail closed rather than
       # silently treating an established release train as a bootstrap.
-      bootstrap-version: '16.4.0'
+      #
+      # 0.1.0 is the first release of the reset numbering, and the ghcr Server
+      # package was deleted along with it — so the catalogue 404s and this is
+      # the version that must claim the bootstrap. It has to name the release
+      # release-please actually cuts first (`initial-version` in
+      # release-please-config.backend.json); if those two ever disagree the gate
+      # fails closed with "no explicit bootstrap authorization" rather than
+      # publishing an unverified first image.
+      bootstrap-version: '0.1.0'
 
   publish-mobile-native:
     # Not gated on the cutover: the native app is its own release train and

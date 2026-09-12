@@ -63,7 +63,7 @@ the channel document.
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main \
-  ghcr.io/heey-global/verity/verity-server:v17.3.7
+  ghcr.io/heey-global/verity/verity-server:v0.1.0
 ```
 
 Substitute the release you are checking. Pass `@sha256:…` instead of a tag when

@@ -35,31 +35,6 @@
     "the compatibility this file describes begins when the build that publishes a",
     "release starts writing its hashes here."
   ],
-  "minimumVersion": "9.0.0",
-  "releases": [
-    {
-      "version": "16.3.1",
-      "architecture": "amd64",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "3de5209f67f8b1ce26561f44bc710f2d5b4e6b441824da7b4b7157abae62b698",
-        "/usr/local/bin/verity-runner-supervisor-start": "c63006713fd22af6d1de6646ecab2b28ee0300a7a1c0ffa2b11d30d0d6cd7490",
-        "/usr/local/bin/verity-runner-worker": "2009cf4d80ffeabc4442d567858850d3a135e2e40ff97d2a4f13d5ff0f307418",
-        "/usr/local/bin/verity-runner-stack-start": "234a787c58eb497e03f3a3b5f9b513e28663afff612f6316e5b7f031fa290e86",
-        "/usr/local/bin/verity-agent-spawn-broker": "8feb1193870c0adc71976fd79a7c1a9d17ab085ec9720822daf277fd14974903",
-        "/usr/local/bin/verity-script-sandbox": "f20953180e72d1da910215f134e5f172952166dde19e1f8a6c49562334dc19ad"
-      }
-    },
-    {
-      "version": "16.3.1",
-      "architecture": "arm64",
-      "hashes": {
-        "/usr/local/bin/verity-runner-supervisor": "3de5209f67f8b1ce26561f44bc710f2d5b4e6b441824da7b4b7157abae62b698",
-        "/usr/local/bin/verity-runner-supervisor-start": "c63006713fd22af6d1de6646ecab2b28ee0300a7a1c0ffa2b11d30d0d6cd7490",
-        "/usr/local/bin/verity-runner-worker": "2009cf4d80ffeabc4442d567858850d3a135e2e40ff97d2a4f13d5ff0f307418",
-        "/usr/local/bin/verity-runner-stack-start": "234a787c58eb497e03f3a3b5f9b513e28663afff612f6316e5b7f031fa290e86",
-        "/usr/local/bin/verity-agent-spawn-broker": "8feb1193870c0adc71976fd79a7c1a9d17ab085ec9720822daf277fd14974903",
-        "/usr/local/bin/verity-script-sandbox": "6c16197ae3cbd184c8d1d9b1a0725a3f290575a694150da2e11d095b237ee4ed"
-      }
-    }
-  ]
+  "minimumVersion": "0.1.0",
+  "releases": []
 }

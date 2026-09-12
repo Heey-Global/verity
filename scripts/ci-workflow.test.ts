@@ -1378,7 +1378,20 @@ describe('self-update release gate', () => {
     expect(gate?.if).toBe("needs.release-please.outputs.backend-release-created == 'true'");
     expect(gate?.uses).toBe('./.github/workflows/self-update.yml');
     expect(gate?.with?.['candidate-sha']).toBe('${{ needs.release-please.outputs.backend-sha }}');
-    expect(gate?.with?.['bootstrap-version']).toBe('16.4.0');
+    // Derived from the release config rather than restated. The bootstrap
+    // authorization is version-bounded: it only unlocks the first image when it
+    // names the exact version release-please cuts. Drift between the two is
+    // silent until release day — the PR merges, the tag and GitHub release are
+    // created, and only then does the gate refuse the image as unauthorized,
+    // leaving a public release with nothing published behind it. Removing
+    // `initial-version` once the train is established must therefore remove the
+    // bootstrap authorization with it, which is what comparing them enforces.
+    const backendRelease = JSON.parse(
+      readFileSync('release-please-config.backend.json', 'utf8'),
+    ) as { packages: Record<string, { 'initial-version'?: string } | undefined> };
+    expect(gate?.with?.['bootstrap-version']).toBe(
+      backendRelease.packages['.']?.['initial-version'],
+    );
     expect(gate?.with?.['allow-no-rollback']).toContain("inputs['backend-republish']");
     expect(gate?.with?.['allow-no-rollback']).toContain("inputs['backend-accept-no-rollback']");
 
