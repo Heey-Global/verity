@@ -661,8 +661,29 @@ if [ "$opt_reinstall" = 1 ]; then
     # Every id came from the exact Compose project, the globally named Verity data
     # volume, or the already shape-checked managed Server prefix above. The generic
     # verity.project-id label is deliberately insufficient ownership evidence.
-    docker rm -f -v "${reinstall_container_ids[@]}" >/dev/null \
-      || die 'could not remove every Verity container; no volumes or state files were deleted'
+    if ! docker rm -f -v "${reinstall_container_ids[@]}" >/dev/null; then
+      # Docker returns an error when another removal of the same container is
+      # already in progress. Treat that as success only after the daemon proves
+      # that every container we selected has actually disappeared.
+      containers_gone=0
+      for _ in {1..30}; do
+        containers_gone=1
+        for container_id in "${reinstall_container_ids[@]}"; do
+          if inspect_result="$(docker inspect "$container_id" 2>&1)"; then
+            containers_gone=0
+            break
+          fi
+          if ! grep -Eq '^(Error: No such object:|Error response from daemon: No such container:)' \
+            <<<"$inspect_result"; then
+            die "could not verify removal of Verity container $container_id: $inspect_result; no volumes or state files were deleted"
+          fi
+        done
+        [ "$containers_gone" = 0 ] || break
+        sleep 1
+      done
+      [ "$containers_gone" = 1 ] \
+        || die 'could not remove every Verity container; no volumes or state files were deleted'
+    fi
   fi
 
   note 'Removing Verity data volumes and network'
