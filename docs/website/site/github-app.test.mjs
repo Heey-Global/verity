@@ -76,10 +76,13 @@ test('the claimed callback is bound to the signed Verity app at image build time
     'utf8',
   );
   const association = JSON.parse(
-    associationTemplate.replace('__APPLE_TEAM_ID__', 'ABCDE12345'),
+    associationTemplate.replaceAll('__APPLE_TEAM_ID__', 'ABCDE12345'),
   );
   assert.deepEqual(association.applinks.details[0].appIDs, ['ABCDE12345.build.verity.app']);
   assert.equal(association.applinks.details[0].components[0]['/'], '/github/app/callback');
+  // ASWebAuthenticationSession refuses an HTTPS callback before showing its
+  // sheet unless the app is also authorized under `webcredentials`.
+  assert.deepEqual(association.webcredentials.apps, ['ABCDE12345.build.verity.app']);
 
   const dockerfile = readFileSync(join(here, '..', 'Dockerfile'), 'utf8');
   assert.match(dockerfile, /type=secret,id=apple_team_id/);

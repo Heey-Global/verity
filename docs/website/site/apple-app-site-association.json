@@ -6,5 +6,8 @@
         "components": [{ "/": "/github/app/callback", "comment": "GitHub App manifest callbacks" }]
       }
     ]
+  },
+  "webcredentials": {
+    "apps": ["__APPLE_TEAM_ID__.build.verity.app"]
   }
 }

@@ -61,8 +61,11 @@ const config: ExpoConfig = {
   ios: {
     bundleIdentifier: 'build.verity.app',
     // GitHub's manifest code has no PKCE protection, so its callback must use a
-    // claimed Universal Link rather than a custom scheme another app could steal.
-    associatedDomains: ['applinks:verity.build'],
+    // claimed HTTPS link rather than a custom scheme another app could steal.
+    // ASWebAuthenticationSession validates HTTPS callbacks through the
+    // `webcredentials` association; `applinks` makes the returned URL route into
+    // the app after GitHub completes the flow.
+    associatedDomains: ['applinks:verity.build', 'webcredentials:verity.build'],
     ...(iosBuildNumber ? { buildNumber: iosBuildNumber } : {}),
     // Enables native iPad builds and lets App Store Connect/TestFlight offer the
     // same iPad binary on Apple Silicon Macs unless Mac availability is disabled

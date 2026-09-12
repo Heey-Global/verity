@@ -26,3 +26,15 @@ describe('iOS App Transport Security', () => {
     expect(Object.keys(ats.NSExceptionDomains ?? {})).toContain(updateHost);
   });
 });
+
+describe('iOS GitHub callback association', () => {
+  it('claims the callback host for both routing and HTTPS authentication sessions', () => {
+    // `applinks` alone opens Universal Links, but ASWebAuthenticationSession
+    // rejects its HTTPS callback before presentation unless the same host is
+    // also present under `webcredentials` in the signed entitlement.
+    expect(config.ios?.associatedDomains).toEqual([
+      'applinks:verity.build',
+      'webcredentials:verity.build',
+    ]);
+  });
+});
