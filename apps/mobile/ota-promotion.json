@@ -1,6 +1,6 @@
 {
-  "branch": "staging-mobile-v1.28.1",
-  "commit": "03d96f32b1ad3d4434dc0c5175d91d556dc23f06",
-  "tag": "mobile-v1.28.1",
-  "version": "1.28.1"
+  "branch": "staging-mobile-v1.28.2",
+  "commit": "181b277eb33371270388e3bc7def4bb417c79821",
+  "tag": "mobile-v1.28.2",
+  "version": "1.28.2"
 }
