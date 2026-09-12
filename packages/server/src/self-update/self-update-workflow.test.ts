@@ -516,9 +516,11 @@ describe('self-update workflow image', () => {
       });
 
       expect(code, out).toBe(0);
-      expect(out).toContain('testing v16.4.0 as the first-release bootstrap');
+      expect(out).toContain('testing HEAD as the first-release bootstrap');
       expect(exported).toContain('VERITY_SMOKE_BOOTSTRAP=true');
-      expect(exported).toContain('VERITY_SMOKE_PREVIOUS_TAG=v16.4.0');
+      // release-please creates the Git tag only after this gate succeeds. Using
+      // the future tag here deadlocks the first release before it can publish.
+      expect(exported).toContain('VERITY_SMOKE_PREVIOUS_TAG=HEAD');
       expect(docker).toEqual([]);
     });
 
