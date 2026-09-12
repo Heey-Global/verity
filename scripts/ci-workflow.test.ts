@@ -134,8 +134,24 @@ describe('release-please train isolation', () => {
       'gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"',
     );
     for (const train of trains) {
-      expect(dispatch?.run).toContain(`["${train}", "${train.toUpperCase()}_PRS_JSON"]`);
+      expect(dispatch?.run).toContain(
+        `["${train}", "${train.toUpperCase()}_PRS_JSON", "${train.toUpperCase()}_RELEASED"]`,
+      );
     }
+  });
+
+  it('removes only a next-release PR created before its draft tag is published', () => {
+    const steps = workflowReleaseJob().steps ?? [];
+    const cleanup = steps.find((step) => step.name === 'Remove premature next release PRs');
+    const dispatch = steps.find((step) => step.name === 'Run checks for release PRs');
+    expect(cleanup?.if).toContain("release_created == 'true'");
+    expect(cleanup?.if).toContain("prs_created == 'true'");
+    expect(cleanup?.run).toContain('release-please--branches--main--components--${component}');
+    expect(cleanup?.run).toContain('.parents[0].sha');
+    expect(cleanup?.run).toContain('parent" != "$release_sha');
+    expect(cleanup?.run).toContain('gh pr close "$pr_number" --delete-branch');
+    expect(dispatch?.if).toContain("release_created != 'true'");
+    expect(dispatch?.run).toContain('process.env[released] === "true"');
   });
 
   it('binds publication to the trains in the immutable push diff', async () => {

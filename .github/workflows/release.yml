@@ -244,6 +244,70 @@ jobs:
           config-file: release-please-config.website.json
           manifest-file: .release-please-manifest.website.json
 
+      # A draft release has no Git tag until the verified artifacts publish it.
+      # Release Please can therefore create a next-release PR in the same action
+      # from the previous tag, repeating already released commits. Such a PR is
+      # identifiable without trusting its title: the action reports both a release
+      # and a PR, and the generated PR commit is parented directly by that release
+      # SHA. Remove only that exact bot-owned branch. A later main push recreates a
+      # real next-release PR after the tag exists.
+      - name: Remove premature next release PRs
+        if: >-
+          (steps.release-backend.outputs.release_created == 'true' && steps.release-backend.outputs.prs_created == 'true') ||
+          (steps.release-mobile.outputs['apps/mobile--release_created'] == 'true' && steps.release-mobile.outputs.prs_created == 'true') ||
+          (steps.release-website.outputs['docs/website--release_created'] == 'true' && steps.release-website.outputs.prs_created == 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BACKEND_RELEASED: ${{ steps.release-backend.outputs.release_created }}
+          BACKEND_SHA: ${{ steps.release-backend.outputs.sha }}
+          BACKEND_PRS: ${{ steps.release-backend.outputs.prs }}
+          MOBILE_RELEASED: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
+          MOBILE_SHA: ${{ steps.release-mobile.outputs['apps/mobile--sha'] }}
+          MOBILE_PRS: ${{ steps.release-mobile.outputs.prs }}
+          WEBSITE_RELEASED: ${{ steps.release-website.outputs['docs/website--release_created'] }}
+          WEBSITE_SHA: ${{ steps.release-website.outputs['docs/website--sha'] }}
+          WEBSITE_PRS: ${{ steps.release-website.outputs.prs }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            for (const [train, component, released, sha, raw] of [
+              ["backend", "server", "BACKEND_RELEASED", "BACKEND_SHA", "BACKEND_PRS"],
+              ["mobile", "mobile", "MOBILE_RELEASED", "MOBILE_SHA", "MOBILE_PRS"],
+              ["website", "website", "WEBSITE_RELEASED", "WEBSITE_SHA", "WEBSITE_PRS"],
+            ]) {
+              if (process.env[released] !== "true") continue;
+              const value = JSON.parse(process.env[raw] || "[]");
+              for (const pr of Array.isArray(value) ? value : [value]) {
+                const branch = pr.headBranchName || pr.headRefName || pr.branchName;
+                if (branch) process.stdout.write(`${train}\t${component}\t${process.env[sha]}\t${branch}\n`);
+              }
+            }
+          ' | while IFS=$'\t' read -r train component release_sha branch; do
+            expected_branch="release-please--branches--main--components--${component}"
+            if [[ "$branch" != "$expected_branch" || ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::warning::Refusing to remove unexpected $train next-release branch '$branch'."
+              continue
+            fi
+            pr="$(gh pr list --state open --head "$branch" --json number,author,baseRefName,headRefOid --jq '.[0] // empty')"
+            if [[ -z "$pr" ]]; then
+              echo "::warning::Could not resolve the premature $train release PR on $branch."
+              continue
+            fi
+            pr_number="$(jq -r .number <<<"$pr")"
+            identity="$(jq -r '[.author.login, .baseRefName] | join("|")' <<<"$pr")"
+            head_sha="$(jq -r .headRefOid <<<"$pr")"
+            parent="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}" --jq 'if (.parents | length) == 1 then .parents[0].sha else "" end')"
+            if [[ "$identity" != 'app/github-actions|main' && "$identity" != 'github-actions|main' ]] || [[ "$parent" != "$release_sha" ]]; then
+              echo "::warning::Refusing to remove PR #$pr_number: identity or release parent did not match."
+              continue
+            fi
+            gh pr close "$pr_number" --delete-branch --comment \
+              "Closing a premature next-release PR created before this run publishes its verified tag. A later main push will recreate it from the published release boundary." || \
+              echo "::warning::Could not close premature $train release PR #$pr_number."
+          done
+
       - name: Validate maintenance backend release
         id: maintenance
         if: github.event_name == 'workflow_dispatch' && inputs['backend-version'] != ''
@@ -323,30 +387,34 @@ jobs:
       # create a PR in the same run, so collect all three `prs` outputs.
       # renovate: datasource=github-actions depName=actions/setup-node
       - if: >-
-          steps.release-backend.outputs.prs_created == 'true' ||
-          steps.release-mobile.outputs.prs_created == 'true' ||
-          steps.release-website.outputs.prs_created == 'true'
+          (steps.release-backend.outputs.prs_created == 'true' && steps.release-backend.outputs.release_created != 'true') ||
+          (steps.release-mobile.outputs.prs_created == 'true' && steps.release-mobile.outputs['apps/mobile--release_created'] != 'true') ||
+          (steps.release-website.outputs.prs_created == 'true' && steps.release-website.outputs['docs/website--release_created'] != 'true')
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24.19.0'
 
       - name: Run checks for release PRs
         if: >-
-          steps.release-backend.outputs.prs_created == 'true' ||
-          steps.release-mobile.outputs.prs_created == 'true' ||
-          steps.release-website.outputs.prs_created == 'true'
+          (steps.release-backend.outputs.prs_created == 'true' && steps.release-backend.outputs.release_created != 'true') ||
+          (steps.release-mobile.outputs.prs_created == 'true' && steps.release-mobile.outputs['apps/mobile--release_created'] != 'true') ||
+          (steps.release-website.outputs.prs_created == 'true' && steps.release-website.outputs['docs/website--release_created'] != 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           BACKEND_PRS_JSON: ${{ steps.release-backend.outputs.prs }}
           MOBILE_PRS_JSON: ${{ steps.release-mobile.outputs.prs }}
           WEBSITE_PRS_JSON: ${{ steps.release-website.outputs.prs }}
+          BACKEND_RELEASED: ${{ steps.release-backend.outputs.release_created }}
+          MOBILE_RELEASED: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
+          WEBSITE_RELEASED: ${{ steps.release-website.outputs['docs/website--release_created'] }}
         shell: bash
         run: |
           set -euo pipefail
           node -e '
-            const prs = [["backend", "BACKEND_PRS_JSON"], ["mobile", "MOBILE_PRS_JSON"], ["website", "WEBSITE_PRS_JSON"]]
-              .flatMap(([train, name]) => {
+            const prs = [["backend", "BACKEND_PRS_JSON", "BACKEND_RELEASED"], ["mobile", "MOBILE_PRS_JSON", "MOBILE_RELEASED"], ["website", "WEBSITE_PRS_JSON", "WEBSITE_RELEASED"]]
+              .flatMap(([train, name, released]) => {
+                if (process.env[released] === "true") return [];
                 const value = JSON.parse(process.env[name] || "[]");
                 return (Array.isArray(value) ? value : [value]).map((pr) => ({ train, pr }));
               });
