@@ -2957,6 +2957,11 @@ describe('changed-area detector', () => {
 
   it('can validate scoped pull requests with the workflow token', () => {
     expect(workflow.jobs.changes.permissions?.['pull-requests']).toBe('read');
+    expect(detect?.run).toContain('scripts/ci-release-pr-scope');
+    // GitHub wraps interpolated `run` blocks in one expression with a hard
+    // 21,000-character ceiling. Crossing it creates a zero-job failure with no
+    // logs, so keep enough room that a useful comment cannot silently break CI.
+    expect(detect?.run?.length).toBeLessThan(20_500);
   });
 
   it('offers the full manual run and every isolated release train', () => {

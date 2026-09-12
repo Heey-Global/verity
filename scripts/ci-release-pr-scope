@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Classify a bot-owned generated PR into its isolated CI train. Print nothing
+# for an ordinary or malformed PR so the caller fails broad into normal CI.
+set -euo pipefail
+
+author="${1:-}"
+head="${2:-}"
+pr_number="${3:-}"
+
+[[ "$author" == 'github-actions[bot]' ]] || exit 0
+[[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || exit 0
+
+case "$head" in
+  release-please--branches--main--components--server) train=backend ;;
+  release-please--branches--main--components--mobile) train=mobile ;;
+  release-please--branches--main--components--website) train=website ;;
+  automation/promote-mobile-v[0-9]*.[0-9]*.[0-9]*)
+    [[ "$head" =~ ^automation/promote-mobile-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 0
+    train=mobile-ota
+    ;;
+  *) exit 0 ;;
+esac
+
+mapfile -t files < <(gh api --paginate \
+  "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" --jq '.[].filename')
+[[ "${#files[@]}" -gt 0 ]] || exit 0
+for file in "${files[@]}"; do
+  case "${train}:${file}" in
+    backend:CHANGELOG.md|backend:version.txt|backend:.release-please-manifest.backend.json) ;;
+    mobile:apps/mobile/CHANGELOG.md|mobile:apps/mobile/app.config.ts|mobile:apps/mobile/version.txt|mobile:.release-please-manifest.mobile.json) ;;
+    website:docs/website/CHANGELOG.md|website:docs/website/version.txt|website:.release-please-manifest.website.json) ;;
+    mobile-ota:apps/mobile/ota-promotion.json) ;;
+    *) exit 0 ;;
+  esac
+done
+
+printf '%s\n' "$train"

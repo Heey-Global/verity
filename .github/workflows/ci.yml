@@ -87,42 +87,11 @@ jobs:
           server_image=false
           agent_seed_drift=false
 
-          # Release Please PRs opened with GITHUB_TOKEN do not emit a pull_request
-          # event, so release.yml dispatches this workflow explicitly and names the
-          # isolated train. Updates to an existing PR DO emit `synchronize`, though;
-          # recognize those bot-owned branches here as well or every refresh starts
-          # a second, unscoped backend matrix. Keep a plain manual dispatch broad,
-          # but do not turn a mobile or website version bump into one.
+          # Scope generated PR `synchronize` events through the checked classifier.
           release_scoped=false
-          if [ "${{ github.event_name }}" = "pull_request" ] \
-            && [ "$PR_AUTHOR" = "github-actions[bot]" ]; then
-            detected_train=''
-            case "$PR_HEAD" in
-              release-please--branches--main--components--server) detected_train='backend' ;;
-              release-please--branches--main--components--mobile) detected_train='mobile' ;;
-              release-please--branches--main--components--website) detected_train='website' ;;
-              *)
-                if [[ "$PR_HEAD" =~ ^automation/promote-mobile-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                  detected_train=mobile-ota
-                fi
-                ;;
-            esac
-          fi
-          if [ -n "${detected_train:-}" ]; then
-            mapfile -t promotion_files < <(gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')
-            files_match=true
-            [ "${#promotion_files[@]}" -gt 0 ] || files_match=false
-            for file in "${promotion_files[@]}"; do
-              case "${detected_train}:${file}" in
-                backend:CHANGELOG.md|backend:version.txt|backend:.release-please-manifest.backend.json) files_match="$files_match" ;;
-                mobile:apps/mobile/CHANGELOG.md|mobile:apps/mobile/app.config.ts|mobile:apps/mobile/version.txt|mobile:.release-please-manifest.mobile.json) files_match="$files_match" ;;
-                website:docs/website/CHANGELOG.md|website:docs/website/version.txt|website:.release-please-manifest.website.json) files_match="$files_match" ;;
-                mobile-ota:apps/mobile/ota-promotion.json) files_match="$files_match" ;;
-                *) files_match=false ;;
-              esac
-            done
-            if [ "$files_match" = true ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            detected_train="$(scripts/ci-release-pr-scope "$PR_AUTHOR" "$PR_HEAD" "$PR_NUMBER")"
+            if [ -n "$detected_train" ]; then
               RELEASE_TRAIN="$detected_train"
               release_scoped=true
             fi
