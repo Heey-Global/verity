@@ -2789,13 +2789,21 @@ describe('VerityClient Doppler binding picker (#320)', () => {
 describe('VerityClient GitHub onboarding hardening', () => {
   it('prepareGithubManifest posts and returns the start token', async () => {
     const { fetch, calls } = fakeFetch(json({ startToken: 'ott-xyz' }));
+    const controller = new AbortController();
     const prepared = await new VerityClient({
       baseUrl: 'http://host',
       fetch,
-    }).prepareGithubManifest('https://verity.example');
+    }).prepareGithubManifest(
+      'https://verity.example',
+      undefined,
+      '/github-connect',
+      false,
+      controller.signal,
+    );
     expect(prepared).toEqual({ startToken: 'ott-xyz' });
     expect(calls[0]?.url).toBe('http://host/github/app/manifest/prepare');
     expect(calls[0]?.init?.method).toBe('POST');
+    expect(calls[0]?.init?.signal).toBe(controller.signal);
     expect(calls[0]?.init?.body).toBe(
       JSON.stringify({
         baseUrl: 'https://verity.example',
