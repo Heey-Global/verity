@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.28.0](https://github.com/Heey-Global/verity/compare/mobile-v1.27.0...mobile-v1.28.0) (2026-09-12)
+
+
+### Bug Fixes
+
+* **deps:** update dependency expo to v57.0.21 ([75cc4f7](https://github.com/Heey-Global/verity/commit/75cc4f77db4635aa2929a1d3e5219c5cd7ef1a7f))
+* **mobile:** report an authorization sheet that never opened ([cfacc9c](https://github.com/Heey-Global/verity/commit/cfacc9cf2cd353923f343212bfab7ac39332a0c4))
+* **mobile:** stop the GitHub connect button failing silently ([f4df578](https://github.com/Heey-Global/verity/commit/f4df5787b41eef19dca7312217791ad9b3d2b70d))
+* **mobile:** surface GitHub authorization startup ([542bea4](https://github.com/Heey-Global/verity/commit/542bea459bae8f63a3632ecce65c4cd6c55c6e27))
+
 ## [1.27.0](https://github.com/Heey-Global/verity/compare/mobile-v1.26.0...mobile-v1.27.0) (2026-09-11)
 
 
