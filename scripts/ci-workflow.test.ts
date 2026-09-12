@@ -149,17 +149,53 @@ describe('release-please train isolation', () => {
     expect(steps[checkoutIndex]?.with?.['fetch-depth']).toBe(0);
     expect(select?.run).toContain('git diff --no-renames --name-status "$BEFORE" "$HEAD_SHA"');
     expect(select?.run).not.toContain('gh api');
+    expect(select?.run).toContain('git tag --merged "$HEAD_SHA"');
+    expect(select?.run).toContain('scripts/mobile-native-lock-changes.mjs');
+    const nativePaths = (source: string): string[] => {
+      const block = /native_path_changes=.*?-- \\\n([\s\S]*?)\)"; then/.exec(source)?.[1];
+      expect(block, 'could not read the native-path contract').toBeDefined();
+      return (block ?? '').replaceAll('\\', '').trim().split(/\s+/);
+    };
+    expect(nativePaths(select?.run ?? '')).toEqual(
+      nativePaths(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')),
+    );
 
     const dir = await mkdtemp(join(tmpdir(), 'release-trains-'));
     try {
       await writeFile(
         join(dir, 'git'),
         '#!/usr/bin/env bash\n' +
-          '[[ "$RELEASE_DIFF_FAIL" != true ]] || exit 1\n' +
-          'printf "%s\\n" "$RELEASE_DIFF"\n',
+          'if [[ "$1" == diff && "$2" == --no-renames ]]; then\n' +
+          '  [[ "$RELEASE_DIFF_FAIL" != true ]] || exit 1\n' +
+          '  printf "%s\\n" "$RELEASE_DIFF"\n' +
+          'elif [[ "$1" == tag ]]; then\n' +
+          '  printf "%s\\n" "$RELEASE_NATIVE_TAG"\n' +
+          'elif [[ "$1" == diff && "$2" == --name-only ]]; then\n' +
+          '  [[ "$RELEASE_NATIVE_DIFF_FAIL" != true ]] || exit 1\n' +
+          '  printf "%s\\n" "$RELEASE_NATIVE_PATHS"\n' +
+          'else\n' +
+          '  exit 2\n' +
+          'fi\n',
         { mode: 0o755 },
       );
-      const run = (rows: string[], failDiff = false): Record<string, string> => {
+      await writeFile(
+        join(dir, 'node'),
+        '#!/usr/bin/env bash\n' +
+          '[[ "$RELEASE_NATIVE_LOCK_FAIL" != true ]] || exit 1\n' +
+          'printf "%s\\n" "$RELEASE_NATIVE_LOCK"\n',
+        { mode: 0o755 },
+      );
+      const run = (
+        rows: string[],
+        options: {
+          failDiff?: boolean;
+          nativeTag?: string;
+          nativePaths?: string;
+          nativeLock?: string;
+          failNativeDiff?: boolean;
+          failNativeLock?: boolean;
+        } = {},
+      ): Record<string, string> => {
         const output = join(dir, 'github-output');
         writeFileSync(output, '');
         execFileSync('bash', ['-c', select?.run ?? 'exit 1'], {
@@ -171,7 +207,12 @@ describe('release-please train isolation', () => {
             GITHUB_OUTPUT: output,
             GITHUB_REPOSITORY: 'heey-global/verity',
             RELEASE_DIFF: rows.join('\n'),
-            RELEASE_DIFF_FAIL: String(failDiff),
+            RELEASE_DIFF_FAIL: String(options.failDiff === true),
+            RELEASE_NATIVE_TAG: options.nativeTag ?? 'mobile-v1.27.0',
+            RELEASE_NATIVE_PATHS: options.nativePaths ?? '',
+            RELEASE_NATIVE_LOCK: options.nativeLock ?? '',
+            RELEASE_NATIVE_DIFF_FAIL: String(options.failNativeDiff === true),
+            RELEASE_NATIVE_LOCK_FAIL: String(options.failNativeLock === true),
           },
           stdio: 'pipe',
         });
@@ -206,6 +247,19 @@ describe('release-please train isolation', () => {
 
       expect(run(['M\tpackages/server/src/app.ts'])).toEqual({
         backend: 'true',
+        mobile: 'false',
+        website: 'true',
+      });
+      expect(
+        run(['M\tapps/mobile/app/index.tsx'], { nativePaths: 'apps/mobile/app.config.ts' }),
+      ).toEqual({ backend: 'true', mobile: 'true', website: 'true' });
+      expect(run(['M\tpackage-lock.json'], { nativeLock: 'expo: 57.0.20 -> 57.0.21' })).toEqual({
+        backend: 'true',
+        mobile: 'true',
+        website: 'true',
+      });
+      expect(run(['M\tapps/mobile/app/index.tsx'], { nativeTag: '' })).toEqual({
+        backend: 'true',
         mobile: 'true',
         website: 'true',
       });
@@ -235,7 +289,9 @@ describe('release-please train isolation', () => {
       expect(() => run([...rows('backend'), `M\t${foreignMobileFile as string}`])).toThrow();
       expect(() => run([`D\t${manifest('mobile')}`])).toThrow();
       expect(() => run([])).toThrow();
-      expect(() => run(['M\tpackages/server/src/app.ts'], true)).toThrow();
+      expect(() => run(['M\tpackages/server/src/app.ts'], { failDiff: true })).toThrow();
+      expect(() => run(['M\tapps/mobile/app/index.tsx'], { failNativeDiff: true })).toThrow();
+      expect(() => run(['M\tapps/mobile/app/index.tsx'], { failNativeLock: true })).toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -3611,6 +3667,65 @@ describe('changed-area detector', () => {
         ['apps/mobile/ota-promotion.json'],
       ),
     ).toEqual(all('false'));
+  });
+
+  it('scopes Release Please synchronize events to their owning train', async () => {
+    expect(
+      await run(
+        {
+          name: 'pull_request',
+          baseRef: 'main',
+          releaseTrain: 'mobile',
+          releasePr: '205',
+          prHead: 'release-please--branches--main--components--mobile',
+        },
+        ['apps/mobile/app.config.ts'],
+      ),
+    ).toEqual({ ...all('false'), mobile_app: 'true' });
+    expect(
+      await run(
+        {
+          name: 'pull_request',
+          baseRef: 'main',
+          releaseTrain: 'backend',
+          releasePr: '195',
+          prHead: 'release-please--branches--main--components--server',
+        },
+        [['CHANGE', 'LOG.md'].join('')],
+      ),
+    ).toEqual({
+      ...all('false'),
+      lint: 'true',
+      typecheck: 'true',
+      test: 'true',
+      installer: 'true',
+      server_image: 'true',
+    });
+  });
+
+  it('fails broad when a Release Please branch contains a foreign file', async () => {
+    expect(
+      await run(
+        {
+          name: 'pull_request',
+          baseRef: 'main',
+          releaseTrain: 'mobile',
+          releasePr: '205',
+          prHead: 'release-please--branches--main--components--mobile',
+        },
+        ['apps/mobile/app.config.ts', 'packages/server/src/app.ts'],
+        {
+          releaseFiles: ['apps/mobile/app.config.ts', 'packages/server/src/app.ts'],
+        },
+      ),
+    ).toEqual({
+      ...all('false'),
+      lint: 'true',
+      typecheck: 'true',
+      test: 'true',
+      mobile_app: 'true',
+      server_image: 'true',
+    });
   });
 
   it('fails closed when an OTA promotion PR is not exactly workflow-owned', async () => {

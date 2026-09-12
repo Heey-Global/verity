@@ -7,8 +7,10 @@ name: verity-release
 #
 # Backend releases keep the existing `v<semver>` tag and shared artifact version.
 # Native app releases use `mobile-vX.Y.0`; every native release bumps the minor
-# version and always triggers a new native TestFlight build. OTA patches are
-# handled separately by mobile-ota.yml as `mobile-vX.Y.1`, `.2`, and so on.
+# version and always triggers a new native TestFlight build. The mobile release
+# PR is opened only when the cumulative diff from the latest `.0` contains a
+# native-sensitive change. OTA patches are handled separately by mobile-ota.yml
+# as `mobile-vX.Y.1`, `.2`, and so on.
 # Website releases use `website-vX.Y.Z` and publish one image, tagged `vX.Y.Z`,
 # which the k8s repository pins. The website is on its own train so that a
 # backend release does not move a version the cluster tracks, and so that an
@@ -145,10 +147,39 @@ jobs:
           done <<<"$diff"
 
           if [[ "$backend" == false && "$mobile" == false && "$website" == false ]]; then
-            # Ordinary source pushes update or open every independent release PR.
+            # Ordinary source pushes update the always-on trains. Mobile is
+            # different: JS-only changes ship through the OTA train and must not
+            # make a native release look necessary. Compare cumulatively from
+            # the latest native release so an OTA-safe merge cannot hide an
+            # earlier native change that has not reached TestFlight yet.
             backend=true
-            mobile=true
             website=true
+            native_tag="$(git tag --merged "$HEAD_SHA" --list 'mobile-v[0-9]*.[0-9]*.0' --sort=-version:refname | head -n 1)"
+            if [[ -z "$native_tag" ]]; then
+              mobile=true
+              echo 'No native mobile release exists; enabling the initial mobile release PR.'
+            else
+              if ! native_path_changes="$(git diff --name-only "$native_tag" "$HEAD_SHA" -- \
+                  apps/mobile/package.json apps/mobile/app.config.ts apps/mobile/eas.json \
+                  apps/mobile/ios apps/mobile/android apps/mobile/native \
+                  apps/mobile/plugins apps/mobile/patches)"; then
+                echo "::error::Could not compare native-sensitive mobile paths with $native_tag." >&2
+                exit 1
+              fi
+              if ! native_lock_changes="$(node scripts/mobile-native-lock-changes.mjs "$native_tag" "$HEAD_SHA")"; then
+                echo "::error::Could not compare the mobile dependency closure with $native_tag." >&2
+                exit 1
+              fi
+              native_changes="$(printf '%s\n%s\n' "$native_path_changes" "$native_lock_changes" | sed '/^$/d')"
+              if [[ -n "$native_changes" ]]; then
+                mobile=true
+                echo "Native mobile release required since $native_tag:"
+                echo "$native_changes"
+              else
+                mobile=false
+                echo "No native-sensitive changes since $native_tag; the OTA train owns mobile delivery."
+              fi
+            fi
           else
             # A release-please merge may publish only the train whose manifest is
             # in this event's immutable diff. Do not let a delayed run observe a
