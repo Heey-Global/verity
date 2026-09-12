@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1](https://github.com/Heey-Global/verity/compare/v0.1.0...v0.1.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **ci:** disable unconfigured secret canary schedule ([#219](https://github.com/Heey-Global/verity/issues/219)) ([ed6ade5](https://github.com/Heey-Global/verity/commit/ed6ade5edabd2b7b4593a23bd8da7f9f2a6efb08))
+* **mobile:** let the GitHub authorization sheet actually present ([#223](https://github.com/Heey-Global/verity/issues/223)) ([03d96f3](https://github.com/Heey-Global/verity/commit/03d96f32b1ad3d4434dc0c5175d91d556dc23f06))
+* **release:** bootstrap smoke from the candidate commit ([#221](https://github.com/Heey-Global/verity/issues/221)) ([159d790](https://github.com/Heey-Global/verity/commit/159d7902778850fc66df794f4df53b9a633b1389))
+
 ## 0.1.0 (2026-09-12)
 
 
