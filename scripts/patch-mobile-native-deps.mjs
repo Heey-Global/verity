@@ -89,6 +89,48 @@ export const NATIVE_PATCHES = [
       '}',
     ].join('\n'),
   },
+  {
+    package: 'expo-web-browser',
+    file: 'ios/WebAuthSession.swift',
+    // Upstream carries no fix (expo main, checked 2026-09-12), so this names the
+    // next major to force re-verification instead of a release that fixes it.
+    // What enforces that is "fails once a patched dependency is upgraded past
+    // the fix" in patch-mobile-native-deps.test.ts, reading the lockfile: the
+    // SDK 58 bump goes red there, and whoever bumps re-checks the installed
+    // source before deleting or re-anchoring this entry.
+    fixedFrom: '58.0.0',
+    reference: 'expo/expo#28219 (same symptom; no upstream fix as of 57.0.2)',
+    // `ASWebAuthenticationSession` asks its presentation context provider for the
+    // window to present the authorization sheet from. The provider resolves it
+    // through `UIApplication.shared.keyWindow` — deprecated since iOS 13 and
+    // unreliable under multi-scene setups (Stage Manager, iPad-on-Mac) — and
+    // falls back to `ASPresentationAnchor()`: a fresh window attached to no
+    // scene, from which nothing can ever present. The session then completes
+    // immediately without showing anything, reported through the same `cancel`
+    // as the user closing the sheet (seen in TestFlight 1.28.0, GitHub
+    // onboarding). Resolve the anchor from the connected scenes instead,
+    // preferring the key window of a foreground-active scene. The detached
+    // `ASPresentationAnchor()` remains as the very last resort — reached only
+    // when no scene has a window at all, where nothing could present anyway.
+    why: 'auth sheet cannot present from the deprecated keyWindow anchor (iPad multi-scene / iPad-on-Mac)',
+    // The rewritten anchor only matters while `open()` still attaches the
+    // provider to the session. Fail on that line's disappearance rather than
+    // shipping a build whose corrected provider is never consulted.
+    requires: ['authSession?.presentationContextProvider = presentationContextProvider'],
+    before: [
+      '  func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {',
+      '    #if os(iOS)',
+      '    return UIApplication.shared.keyWindow ?? ASPresentationAnchor()',
+    ].join('\n'),
+    after: [
+      '  func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {',
+      '    #if os(iOS)',
+      '    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }',
+      '    let active = scenes.filter { $0.activationState == .foregroundActive }',
+      '    let windows = (active.isEmpty ? scenes : active).flatMap { $0.windows }',
+      '    return windows.first { $0.isKeyWindow } ?? windows.first ?? ASPresentationAnchor()',
+    ].join('\n'),
+  },
 ];
 
 /**

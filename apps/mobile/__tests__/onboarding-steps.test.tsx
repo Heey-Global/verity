@@ -148,6 +148,7 @@ beforeEach(() => {
   mockUnlockServerSecretWithBiometrics.mockResolvedValue(false);
   openURL.mockClear();
   mockOpenAuthSessionAsync.mockReset();
+  mockDismissAuthSession.mockClear();
   mockSetStringAsync.mockClear();
 });
 
@@ -464,7 +465,8 @@ describe('onboarding github one-page setup', () => {
           resolvePreparation = resolve;
         }),
     );
-    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'cancel' });
+    // The authorization sheet stays open — the panel keeps waiting on it.
+    mockOpenAuthSessionAsync.mockReturnValue(new Promise(() => {}));
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
         fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
@@ -481,7 +483,9 @@ describe('onboarding github one-page setup', () => {
     expect(prepareGithubManifest).toHaveBeenCalledTimes(1);
 
     resolvePreparation({ state: 'state-1', manifest: { name: 'Verity-a1b2c3d4' } });
-    expect(await screen.findByLabelText('Connect to GitHub')).toBeOnTheScreen();
+    expect(await screen.findByText('Waiting for GitHub…')).toBeOnTheScreen();
+    expect(mockOpenAuthSessionAsync).toHaveBeenCalledTimes(1);
+    expect(openURL).not.toHaveBeenCalled();
   });
 
   it('stops a stuck authorization preparation and offers a retry', async () => {
@@ -511,17 +515,34 @@ describe('onboarding github one-page setup', () => {
   });
 
   // The reported "I tap Connect to GitHub and nothing happens". `openAuthSessionAsync`
-  // reports "the operator closed the sheet" and "the sheet never opened" with the same
+  // reports "the user closed the sheet" and "the sheet never opened" with the same
   // `cancel`/`dismiss` value, and a session held from an earlier attempt as `locked`.
   // Reading all three as a cancellation returns the panel to idle rendering NOTHING —
-  // the manifest was prepared, a browser was asked for, and the screen is byte-identical
-  // to before the tap, so the operator has no way to tell a failure from a dead button.
-  // Assert on the screen CHANGING rather than on a message, so rewording a string cannot
-  // quietly restore the silence this guards against.
+  // the screen is byte-identical to before the tap, on every tap. Each startup
+  // failure has to say why; the iOS module attaches the ASWebAuthenticationSession
+  // error text untyped to the result, and it is the only place the OS names the
+  // actual presentation failure, so it must reach the screen.
   it.each([
-    ['locked', { type: 'locked' }],
-    ['an auth session that never presented', { type: 'cancel' }],
-  ])('reports %s instead of silently returning to the button', async (_name, result) => {
+    [
+      'locked',
+      { type: 'locked' },
+      'A stale GitHub authorization window was detected. Try again, and restart Verity if it stays locked.',
+    ],
+    [
+      'an auth session that never presented',
+      { type: 'cancel' },
+      'GitHub authorization could not open on this device. Try again, and restart Verity if it keeps happening.',
+    ],
+    [
+      'an auth session that failed with a native reason',
+      {
+        type: 'cancel',
+        error:
+          'Application with identifier build.verity.app is not associated with domain verity.build.',
+      },
+      'GitHub authorization could not open on this device: Application with identifier build.verity.app is not associated with domain verity.build.',
+    ],
+  ])('reports %s instead of silently returning to the button', async (_name, result, message) => {
     mockOpenAuthSessionAsync.mockResolvedValue(result);
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
@@ -532,23 +553,21 @@ describe('onboarding github one-page setup', () => {
       }),
     );
     render(<OnboardingGithub />);
-    const before = JSON.stringify(screen.toJSON());
-
     await act(async () => {
       fireEvent.press(screen.getByLabelText('Connect to GitHub'));
     });
 
-    expect(JSON.stringify(screen.toJSON())).not.toBe(before);
-    expect(screen.getByRole('alert')).toBeOnTheScreen();
-    // Still recoverable: the operator can act on what they were told.
+    expect(openURL).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(message);
     expect(screen.getByLabelText('Connect to GitHub')).toBeOnTheScreen();
+    expect(mockDismissAuthSession).toHaveBeenCalledTimes(_name === 'locked' ? 1 : 0);
   });
 
-  // A stale session makes every later open return `locked` without presenting
-  // anything, so the panel must clear one before asking for a new sheet.
-  it('clears a held auth session before opening a new one', async () => {
-    mockDismissAuthSession.mockClear();
-    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'cancel' });
+  it('still offers recovery when clearing a locked native session throws', async () => {
+    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'locked' });
+    mockDismissAuthSession.mockImplementationOnce(() => {
+      throw new Error('native cleanup failed');
+    });
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
         fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
@@ -563,7 +582,62 @@ describe('onboarding github one-page setup', () => {
       fireEvent.press(screen.getByLabelText('Connect to GitHub'));
     });
 
-    expect(mockDismissAuthSession).toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'A stale GitHub authorization window was detected. Try again, and restart Verity if it stays locked.',
+    );
+  });
+
+  it('reports a thrown auth-session start instead of silently returning', async () => {
+    mockOpenAuthSessionAsync.mockRejectedValue(new Error('Web browser is already open'));
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest: jest
+          .fn()
+          .mockResolvedValue({ state: 'state-1', manifest: { name: 'Verity-a1b2c3d4' } }),
+      }),
+    );
+    render(<OnboardingGithub />);
+
+    await act(async () => {
+      fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+    });
+
+    expect(openURL).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'GitHub authorization could not open in the app.',
+    );
+    expect(screen.getByLabelText('Connect to GitHub')).toBeOnTheScreen();
+  });
+
+  it('single-lines and caps the native failure reason', async () => {
+    // An NSError description is unbounded and may span paragraphs; the alert is
+    // a one-line layout. Without the cap this regression ships green on the
+    // short single-line fixtures above.
+    mockOpenAuthSessionAsync.mockResolvedValue({
+      type: 'cancel',
+      error: `sheet\n\n  failed ${'x'.repeat(300)}`,
+    });
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        prepareGithubManifest: jest
+          .fn()
+          .mockResolvedValue({ state: 'state-1', manifest: { name: 'Verity-a1b2c3d4' } }),
+      }),
+    );
+    render(<OnboardingGithub />);
+    await act(async () => {
+      fireEvent.press(screen.getByLabelText('Connect to GitHub'));
+    });
+
+    const message = screen.getByRole('alert').props.children as string;
+    expect(message).toMatch(
+      /^GitHub authorization could not open on this device: sheet failed x+$/,
+    );
+    expect(message.length).toBeLessThanOrEqual(
+      'GitHub authorization could not open on this device: '.length + 200,
+    );
   });
 
   it('shows one Connect to GitHub path without existing-App credentials', () => {
@@ -653,7 +727,20 @@ describe('onboarding github one-page setup', () => {
   });
 
   it('leaves the waiting state when the GitHub auth session is cancelled', async () => {
-    mockOpenAuthSessionAsync.mockResolvedValue({ type: 'cancel' });
+    // The auth session itself advances the clock, so elapsed time survives any
+    // other Date.now caller in the render path — an ordering-coupled
+    // `mockReturnValueOnce` would hand the "session open" reading to whichever
+    // caller happens to come first. A genuine cancel also arrives with iOS's
+    // `canceledLogin` error text, which must not flip it into the failure path.
+    let clock = 0;
+    const now = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    mockOpenAuthSessionAsync.mockImplementation(() => {
+      clock += 60_000;
+      return Promise.resolve({
+        type: 'cancel',
+        error: 'The operation couldn’t be completed. (…WebAuthenticationSession error 1.)',
+      });
+    });
     const completeGithubManifest = jest.fn();
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
@@ -671,7 +758,11 @@ describe('onboarding github one-page setup', () => {
 
     await waitFor(() => expect(mockOpenAuthSessionAsync).toHaveBeenCalledTimes(1));
     expect(await screen.findByLabelText('Connect to GitHub')).toBeOnTheScreen();
+    // Silently back to the button — what separates a genuine cancel from the
+    // reported-failure paths above, which all render an alert.
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(completeGithubManifest).not.toHaveBeenCalled();
+    now.mockRestore();
   });
 
   it('rejects a server response that only offers the legacy browser flow', async () => {
