@@ -54,11 +54,18 @@ if (reanimated === undefined) {
       'do not need it.',
   );
 }
+const webBrowser = patches.find((patch) => patch.package === 'expo-web-browser');
+if (webBrowser === undefined) {
+  throw new Error(
+    'expo-web-browser has no entry in NATIVE_PATCHES. If the backport was retired, ' +
+      'delete the tests that describe it.',
+  );
+}
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-const installed = ((): { packageRoot: string; version: string } | undefined => {
+const installedOf = (patch: NativePatch): { packageRoot: string; version: string } | undefined => {
   let packageRoot: string;
   try {
-    packageRoot = resolvePackageRoot(repoRoot, reanimated.package);
+    packageRoot = resolvePackageRoot(repoRoot, patch.package);
   } catch (error) {
     // Only "the mobile workspace's dependencies were never installed here" may skip
     // the drift check — a broader catch would turn any failure into a green run and
@@ -70,7 +77,9 @@ const installed = ((): { packageRoot: string; version: string } | undefined => {
     version: string;
   };
   return { packageRoot, version: manifest.version };
-})();
+};
+const installed = installedOf(reanimated);
+const installedWebBrowser = installedOf(webBrowser);
 
 const roots: string[] = [];
 
@@ -336,11 +345,10 @@ describe('mobile native dependency patches', () => {
     // A guard that compares paths without realpath is a silent no-op: the script
     // does nothing, exits 0, and the release workflow ships an unpatched build.
     const root = makeRoot();
-    const target = installCopy(
-      root,
-      reanimated,
-      '4.3.1',
-      `${reanimated.requires.join('\n')}\n${reanimated.before}\n`,
+    // Every patch gets a fixture: the entry point runs them all, and one missing
+    // dependency would fail the run for a reason this test is not about.
+    const targets = patches.map((patch) =>
+      installCopy(root, patch, '0.0.0', `${patch.requires.join('\n')}\n${patch.before}\n`),
     );
     mkdirSync(join(root, 'scripts'));
     const script = join(root, 'scripts', 'patch-mobile-native-deps.mjs');
@@ -349,7 +357,9 @@ describe('mobile native dependency patches', () => {
 
     const stdout = execFileSync(process.execPath, [join(root, 'entry.mjs')], { encoding: 'utf8' });
     expect(stdout).toMatch(/— patched:/);
-    expect(readFileSync(target, 'utf8')).toContain(reanimated.after);
+    for (const [index, target] of targets.entries()) {
+      expect(readFileSync(target, 'utf8')).toContain(patches[index]!.after);
+    }
   });
 
   it('refuses to guess at a version it cannot parse', () => {
@@ -509,4 +519,24 @@ describe('mobile native dependency patches', () => {
     for (const needle of reanimated.requires) expect(source).toContain(needle);
     expect(source.includes(reanimated.before) || source.includes(reanimated.after)).toBe(true);
   });
+
+  it.skipIf(installedWebBrowser === undefined)(
+    'matches the installed expo-web-browser source',
+    () => {
+      // Same drift anchor as above, for the auth-session presentation fix: what
+      // prebuild copies into the Xcode project is the tree that has to match.
+      const { packageRoot, version } = installedWebBrowser!;
+      if (isFixedUpstream(version, webBrowser.fixedFrom)) {
+        // Going green here does not let the 58 bump slip through unreviewed:
+        // `fixedFrom` names the next major, not a fix release, and the lockfile
+        // test above ("fails once a patched dependency is upgraded past the
+        // fix") is what goes red on that bump.
+        expect(runPatch(webBrowser, repoRoot)).toMatch(/skipped, fixed upstream/);
+        return;
+      }
+      const source = readFileSync(join(packageRoot, webBrowser.file), 'utf8');
+      for (const needle of webBrowser.requires) expect(source).toContain(needle);
+      expect(source.includes(webBrowser.before) || source.includes(webBrowser.after)).toBe(true);
+    },
+  );
 });

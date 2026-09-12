@@ -32,42 +32,62 @@ type SessionOutcome =
 /**
  * Open one GitHub authorization session and classify the result.
  *
- * `openAuthSessionAsync` reports "the operator closed the sheet" and "the sheet
+ * `openAuthSessionAsync` reports "the user closed the sheet" and "the sheet
  * never opened" with the SAME `cancel`/`dismiss` value, and reports a session
- * left over from an earlier attempt as `locked`. Collapsing all three into "the
- * operator cancelled" puts the panel straight back to idle without rendering
- * anything — the reported "I tap Connect and nothing happens", which repeats
- * identically on every tap because nothing about the state changed.
+ * left over from an earlier attempt as `locked`. Only a real cancellation may
+ * return the panel silently to idle; every startup failure has to say why.
  */
 async function authSession(url: string): Promise<SessionOutcome> {
-  try {
-    // A session still held from an earlier attempt makes every later open return
-    // `locked` without presenting anything. Clearing first is a no-op when none
-    // is held, and `dismissAuthSession` is iOS-only — hence the guard.
-    WebBrowser.dismissAuthSession();
-  } catch {
-    // No session to dismiss, or the platform has no such concept.
-  }
   const startedAt = Date.now();
-  const result = await WebBrowser.openAuthSessionAsync(url, GITHUB_CALLBACK_URL, {
-    preferUniversalLinks: true,
-  });
+  let result: Awaited<ReturnType<typeof WebBrowser.openAuthSessionAsync>>;
+  try {
+    result = await WebBrowser.openAuthSessionAsync(url, GITHUB_CALLBACK_URL, {
+      preferUniversalLinks: true,
+    });
+  } catch {
+    return {
+      kind: 'failed',
+      message: 'GitHub authorization could not open in the app.',
+    };
+  }
   if (result.type === 'success') return { kind: 'success', url: result.url };
   // `WebBrowserResultType` is a string enum; widen to compare without a cast.
   const type: string = result.type;
   if (type === 'locked') {
-    return {
-      kind: 'failed',
-      message: 'A GitHub authorization window is still open. Close it, then try again.',
-    };
-  }
-  if (Date.now() - startedAt < AUTH_SESSION_MIN_MS) {
+    // Recover the stale session only after iOS identifies it. Dismissing before
+    // every open races the main-queue presentation and can cancel the new sheet.
+    try {
+      WebBrowser.dismissAuthSession();
+    } catch {
+      // The message below remains the useful recovery path if native cleanup
+      // itself fails; restarting the app releases the retained session.
+    }
     return {
       kind: 'failed',
       message:
-        'GitHub authorization could not open on this device. Try again, and restart Verity if it keeps happening.',
+        'A stale GitHub authorization window was detected. Try again, and restart Verity if it stays locked.',
     };
   }
+  if (Date.now() - startedAt < AUTH_SESSION_MIN_MS) {
+    // The iOS module attaches ASWebAuthenticationSession's error text to the
+    // result without typing it — the only place the OS says WHY the sheet did
+    // not present (invalid presentation anchor, unverified associated domain, …).
+    // Single-lined and capped: it is an unbounded NSError description headed
+    // for a one-alert layout.
+    const detail = (result as { error?: unknown }).error;
+    const reason =
+      typeof detail === 'string' ? detail.replace(/\s+/gu, ' ').trim().slice(0, 200) : '';
+    return {
+      kind: 'failed',
+      message:
+        reason.length > 0
+          ? `GitHub authorization could not open on this device: ${reason}`
+          : 'GitHub authorization could not open on this device. Try again, and restart Verity if it keeps happening.',
+    };
+  }
+  // Past the threshold the same value is a person closing the sheet. It arrives
+  // with an error text too (`canceledLogin`), so the text's presence must not
+  // reclassify a genuine cancel as a technical failure.
   return { kind: 'cancelled' };
 }
 
