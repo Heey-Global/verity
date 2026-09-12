@@ -1,5 +1,16 @@
 # Changelog
 
+## [18.0.2](https://github.com/Heey-Global/verity/compare/v18.0.1...v18.0.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **ci:** keep generated PR detection below expression limit ([2b0fa72](https://github.com/Heey-Global/verity/commit/2b0fa7202d5553f6779bcf93dc4c6f20c6b18adb))
+* **release:** discard premature next release PRs ([0433857](https://github.com/Heey-Global/verity/commit/04338575863ffa3783183c5d824ab5adddf75743))
+* **release:** discard premature next release PRs ([a6cece0](https://github.com/Heey-Global/verity/commit/a6cece005da9cb5973b9bdd2a66511f899757931))
+* **release:** retain CI fallback for stale PRs ([41121d4](https://github.com/Heey-Global/verity/commit/41121d4b95f2a0b6a005e4b13975383c7be838f0))
+* **release:** verify stale PR cleanup before skipping CI ([d80660e](https://github.com/Heey-Global/verity/commit/d80660e8b6ea2bd5bf730a9089cdefcc573d2726))
+
 ## [18.0.1](https://github.com/Heey-Global/verity/compare/v18.0.0...v18.0.1) (2026-09-12)
 
 
