@@ -114,6 +114,7 @@ import { z, ZodError } from 'zod';
 import { deriveSessionStatusFromProjection, type SessionStatus } from './status.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
+import { httpMcpAuthorization } from './http-mcp-oauth.js';
 import {
   attentionSignals,
   sessionAttentionSignals,
@@ -4586,15 +4587,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const connection = connections.find(
           (candidate) => candidate.id === connectionId && candidate.enabled,
         );
-        return binding === undefined || connection === undefined
-          ? undefined
-          : {
-              id: connection.id,
-              url: connection.url,
-              ...(connection.authorization === null
-                ? {}
-                : { authorization: connection.authorization }),
-            };
+        if (binding === undefined || connection === undefined) return undefined;
+        const authorization = await httpMcpAuthorization(deps.eventStore, connection);
+        return {
+          id: connection.id,
+          url: connection.url,
+          ...(authorization === undefined ? {} : { authorization }),
+        };
       },
     });
   }
