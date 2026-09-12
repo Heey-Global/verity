@@ -103,6 +103,20 @@ jobs:
             fi
           fi
 
+      - name: Enforce release-safe merge policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          merge_policy="$(gh api "repos/${GITHUB_REPOSITORY}" \
+            --jq '[.allow_merge_commit, .allow_squash_merge, .allow_rebase_merge] | @tsv')"
+          # Verity deliberately offers both linear-history choices while banning
+          # the merge wrapper that Release Please can parse a second time.
+          if [[ "$merge_policy" != $'false\ttrue\ttrue' ]]; then
+            echo "::error::Under Settings > General > Pull Requests, disable merge commits and enable squash and rebase merging. Merge wrappers make Release Please emit a second changelog entry for conventional commits."
+            exit 1
+          fi
+
       # The selector diffs immutable event SHAs locally. A complete checkout
       # avoids the Compare API's 300-file ceiling and keeps large pushes from
       # hiding a manifest or a file that does not belong to the selected train.

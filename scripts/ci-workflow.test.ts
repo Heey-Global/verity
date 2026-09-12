@@ -3040,7 +3040,15 @@ describe('changed-area detector', () => {
 
   it('can validate scoped pull requests with the workflow token', () => {
     expect(workflow.jobs.changes.permissions?.['pull-requests']).toBe('read');
-    expect(detect?.run).toContain('scripts/ci-release-pr-scope');
+    const classifier = /detected_train="\$\(([^ ]+)/.exec(detect?.run ?? '')?.[1];
+    expect(classifier).toBeDefined();
+    expect(existsSync(classifier ?? '')).toBe(true);
+
+    const backend = JSON.parse(readFileSync('release-please-config.backend.json', 'utf8')) as {
+      packages: { '.': { 'exclude-paths': string[] } };
+    };
+    const backendExcluded = ignore().add(backend.packages['.']['exclude-paths']);
+    expect(backendExcluded.ignores(classifier ?? '')).toBe(true);
     // GitHub wraps interpolated `run` blocks in one expression with a hard
     // 21,000-character ceiling. Crossing it creates a zero-job failure with no
     // logs, so keep enough room that a useful comment cannot silently break CI.

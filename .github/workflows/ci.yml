@@ -90,7 +90,7 @@ jobs:
           # Scope generated PR `synchronize` events through the checked classifier.
           release_scoped=false
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            detected_train="$(scripts/ci-release-pr-scope "$PR_AUTHOR" "$PR_HEAD" "$PR_NUMBER")"
+            detected_train="$(.github/scripts/ci-release-pr-scope "$PR_AUTHOR" "$PR_HEAD" "$PR_NUMBER")"
             if [ -n "$detected_train" ]; then
               RELEASE_TRAIN="$detected_train"
               release_scoped=true
