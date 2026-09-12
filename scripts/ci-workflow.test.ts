@@ -1510,8 +1510,9 @@ describe('brokered secret canary', () => {
     };
   };
 
-  it('runs every six hours and remains available for manual diagnosis', () => {
-    expect(workflow.on.schedule).toEqual([{ cron: '17 */6 * * *' }]);
+  it('runs only when manually requested', () => {
+    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+    expect(workflow.on.schedule).toBeUndefined();
     expect(workflow.on.pull_request).toBeUndefined();
     expect(workflow.on.workflow_call).toBeUndefined();
     expect(workflow.on.workflow_dispatch).toBeDefined();
