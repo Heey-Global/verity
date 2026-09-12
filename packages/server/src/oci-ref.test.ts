@@ -1,4 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_SANDBOX_IMAGE_FALLBACK,
+  DEFAULT_TOOLKIT_FEATURE_FALLBACK,
+  FALLBACK_ARTIFACT_VERSION,
+  SANDBOX_IMAGE_REPO,
+  TOOLKIT_FEATURE_REPO,
+} from './sandbox-artifacts.js';
 import {
   clearRegistryTokenCache,
   createCachedImageVersionResolver,
@@ -1218,5 +1227,64 @@ describe('releasePinnedRef', () => {
     expect(releasePinnedRef(IMAGE_REPO, 'v', '1.15')).toBeUndefined();
     expect(releasePinnedRef(IMAGE_REPO, 'v', '1.15.3-rc.1')).toBeUndefined();
     expect(releasePinnedRef(IMAGE_REPO, 'v', 'latest')).toBeUndefined();
+  });
+});
+
+describe('the last-resort fallbacks the composition roots hand this resolver', () => {
+  // Resolved from this file, not the working directory. The read below sits at
+  // describe scope, where an ENOENT fails collection of the whole file rather
+  // than the one test that wanted it.
+  const repoRootFile = (name: string): string => resolve(import.meta.dirname, '../../..', name);
+
+  // Read once here rather than inside the test, so the bound below can SKIP
+  // rather than return early: `initial-version` disappearing is the bootstrap
+  // completing, and a guard that quietly starts passing on the day its subject
+  // changes is the failure this whole file keeps running into.
+  const initialVersion = (
+    JSON.parse(readFileSync(repoRootFile('release-please-config.backend.json'), 'utf8')) as {
+      packages: Record<string, { 'initial-version'?: string } | undefined>;
+    }
+  ).packages['.']?.['initial-version'];
+
+  // The failure is silent for as long as the registry stays up: the fallback is
+  // reached only on a cold start that cannot resolve the published tag, so one
+  // naming a deleted artifact looks exactly like a working one until the day it
+  // is the only thing left to try — and then it turns a registry outage into a
+  // deployment that cannot provision at all, which is the single thing the
+  // fallback exists to prevent. Both previous fallbacks had been 404 for
+  // releases before anyone looked.
+  it.skipIf(initialVersion === undefined)(
+    'names the version the backend train first publishes',
+    () => {
+      // Bounded by `initial-version` rather than the current release because the
+      // fallback must not follow the pin, and because the manifest that carries
+      // the current version is release-managed: the changed-area detector treats
+      // it as inert, so a test reading it would not run when it moved.
+      expect(FALLBACK_ARTIFACT_VERSION).toBe(initialVersion);
+    },
+  );
+
+  // Not a mutable channel ref. `:latest` as the last resort would hand out the
+  // one thing `rejectLatestImageRef` exists to refuse, and on the cold-start path
+  // there is nothing left behind it to catch that.
+  it('falls back on pinned version tags for both siblings', () => {
+    expect(DEFAULT_SANDBOX_IMAGE_FALLBACK).toBe(
+      `${SANDBOX_IMAGE_REPO}:v${FALLBACK_ARTIFACT_VERSION}`,
+    );
+    expect(DEFAULT_TOOLKIT_FEATURE_FALLBACK).toBe(
+      `${TOOLKIT_FEATURE_REPO}:${FALLBACK_ARTIFACT_VERSION}`,
+    );
+    // Each sibling with ITS OWN tag prefix: the image repo carries `v`, the
+    // Feature repo carries none, and a fallback that swapped them would name
+    // nothing while still reading as a pinned version.
+    expect(releasePinnedRef(SANDBOX_IMAGE_REPO, 'v', FALLBACK_ARTIFACT_VERSION)).toBe(
+      DEFAULT_SANDBOX_IMAGE_FALLBACK,
+    );
+    expect(releasePinnedRef(TOOLKIT_FEATURE_REPO, '', FALLBACK_ARTIFACT_VERSION)).toBe(
+      DEFAULT_TOOLKIT_FEATURE_FALLBACK,
+    );
+    for (const ref of [DEFAULT_SANDBOX_IMAGE_FALLBACK, DEFAULT_TOOLKIT_FEATURE_FALLBACK]) {
+      expect(ref).not.toMatch(/:latest$/u);
+    }
   });
 });

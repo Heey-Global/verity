@@ -1389,9 +1389,23 @@ describe('self-update release gate', () => {
     const backendRelease = JSON.parse(
       readFileSync('release-please-config.backend.json', 'utf8'),
     ) as { packages: Record<string, { 'initial-version'?: string } | undefined> };
-    expect(gate?.with?.['bootstrap-version']).toBe(
-      backendRelease.packages['.']?.['initial-version'],
-    );
+    const bootstrapVersion = backendRelease.packages['.']?.['initial-version'];
+    // Both sides are optional lookups, so a bare equality is also satisfied by
+    // both being absent — which is either the bootstrap correctly retired or a
+    // key typed wrong on one side, and those must not read alike. Retirement is
+    // the pair disappearing together; anything else is drift.
+    if (bootstrapVersion === undefined) {
+      // Read through a default, because a gate step that dropped its `with:`
+      // block entirely is one of the shapes retirement takes, and a matcher that
+      // rejects an undefined receiver would error on it rather than pass.
+      expect(
+        gate?.with ?? {},
+        'the bootstrap authorization outlived `initial-version`',
+      ).not.toHaveProperty('bootstrap-version');
+    } else {
+      expect(bootstrapVersion).toMatch(/^\d+\.\d+\.\d+$/u);
+      expect(gate?.with?.['bootstrap-version']).toBe(bootstrapVersion);
+    }
     expect(gate?.with?.['allow-no-rollback']).toContain("inputs['backend-republish']");
     expect(gate?.with?.['allow-no-rollback']).toContain("inputs['backend-accept-no-rollback']");
 

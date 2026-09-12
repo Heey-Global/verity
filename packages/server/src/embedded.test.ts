@@ -31,6 +31,10 @@ import {
   type Backend,
 } from '@verity/session';
 import type { StreamingRedactorProfile } from '@verity/secret-contracts';
+// The published toolkit Feature default, named rather than restated: what these
+// tests assert is that the fallback PATH is taken, not which version it lands on.
+// A restated tag kept passing while the ref it copied went dead.
+import { DEFAULT_TOOLKIT_FEATURE_FALLBACK } from './sandbox-artifacts.js';
 
 import {
   branchRenameAppliesToSession,
@@ -813,9 +817,9 @@ describe('publishedDevcontainerFeatureRef (R3.1/#299)', () => {
     delete process.env.VERITY_SANDBOX_TOOLKIT_FEATURE_REF;
 
     expect(publishedDevcontainerFeatureRef()).toEqual({
-      ref: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+      ref: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
       version: 'published',
-      identity: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+      identity: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
     });
   });
 
@@ -974,9 +978,9 @@ describe('resolveToolkitFeatureRef (devcontainer build key)', () => {
     delete process.env.VERITY_SANDBOX_TOOLKIT_FEATURE_REF;
 
     expect(resolveToolkitFeatureRef(bundled)).toEqual({
-      ref: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+      ref: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
       version: 'published',
-      identity: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+      identity: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
     });
   });
 
@@ -985,9 +989,9 @@ describe('resolveToolkitFeatureRef (devcontainer build key)', () => {
     process.env.VERITY_FEATURE_DIR = join(tmpdir(), 'missing-verity-feature-dir');
 
     expect(resolveToolkitFeatureRef()).toEqual({
-      ref: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+      ref: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
       version: 'published',
-      identity: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+      identity: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
     });
   });
 
@@ -1098,9 +1102,9 @@ describe('devcontainerBuildOptionsForDockerBaseUrl (R3.1/#299)', () => {
       devcontainerBuild: expect.any(Function),
       dockerHostForBuild: 'unix:///var/run/docker.sock',
       devcontainerFeature: {
-        ref: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+        ref: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
         version: 'published',
-        identity: 'ghcr.io/heey-global/verity/verity-sandbox-toolkit:1.14.1',
+        identity: DEFAULT_TOOLKIT_FEATURE_FALLBACK,
       },
     });
     process.env.VERITY_SANDBOX_TOOLKIT_FEATURE_REF = '   ';
