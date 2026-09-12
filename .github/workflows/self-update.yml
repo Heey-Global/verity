@@ -448,8 +448,11 @@ jobs:
           if [[ -z "$previous_tag" ]]; then
             if [[ "$bootstrap" == true ]]; then
               printf 'VERITY_SMOKE_BOOTSTRAP=true\n' >>"$GITHUB_ENV"
-              printf 'VERITY_SMOKE_PREVIOUS_TAG=v%s\n' "$under_test" >>"$GITHUB_ENV"
-              echo "No Server package exists yet; testing v${under_test} as the first-release bootstrap."
+              # release-please does not create the tag until this gate succeeds.
+              # The candidate is also the bootstrap's behavioural predecessor,
+              # so name its already-checked-out commit instead of a future tag.
+              printf 'VERITY_SMOKE_PREVIOUS_TAG=HEAD\n' >>"$GITHUB_ENV"
+              echo 'No Server package exists yet; testing HEAD as the first-release bootstrap.'
               exit 0
             fi
             echo "::error::ghcr.io publishes no Server image at or below ${under_test}." >&2
