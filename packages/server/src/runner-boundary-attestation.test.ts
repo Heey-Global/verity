@@ -862,7 +862,17 @@ describe('acceptedToolkits (ADR 0006 D9)', () => {
     expect(Array.isArray(shipped.releases)).toBe(true);
     const accepted = await labels('features/verity-sandbox-toolkit');
     expect(accepted[0]).toBe('this Server bundled toolkit');
-    expect(accepted).toContain('release 16.3.1 (amd64)');
+    // Derived from the shipped ledger rather than naming a release, because the
+    // release train is what moves: the version reset emptied `releases`, and a
+    // restated version would have kept passing by testing nothing. What has to
+    // hold is that every entry the file lists survives the reader — an entry
+    // that silently fell out (a version below `minimumVersion`, a release not
+    // naming every boundary binary) widens nothing while still looking shipped.
+    const listed = (shipped.releases as { version?: unknown; architecture?: unknown }[]).map(
+      (release) => `release ${String(release.version)} (${String(release.architecture)})`,
+    );
+    for (const label of listed) expect(accepted).toContain(label);
+    expect(accepted).toHaveLength(listed.length + 1);
   });
 });
 
