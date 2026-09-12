@@ -12,6 +12,7 @@ COPY --chown=101:101 docs/website/site/install.sh /usr/share/nginx/html/install.
 COPY --chown=101:101 docs/website/site/github-app.html /usr/share/nginx/html/github/app/index.html
 COPY --chown=101:101 docs/website/site/github-app.js /usr/share/nginx/html/github/app/github-app.js
 COPY --chown=101:101 docs/website/site/github-callback.html /usr/share/nginx/html/github/app/callback.html
+COPY --chown=101:101 docs/website/site/mcp-oauth-callback.html /usr/share/nginx/html/mcp/oauth/callback.html
 COPY --chown=101:101 docs/website/site/apple-app-site-association.json /tmp/apple-app-site-association.json
 USER root
 RUN --mount=type=secret,id=apple_team_id,required=false \

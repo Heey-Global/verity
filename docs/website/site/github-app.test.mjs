@@ -68,6 +68,7 @@ test('bridge CSP sends forms only to GitHub and never sends a referrer', () => {
   assert.match(nginx, /Referrer-Policy "no-referrer"/);
   assert.match(nginx, /form-action https:\/\/github\.com/);
   assert.match(nginx, /location = \/github\/app\/callback \{\s+access_log off;/);
+  assert.match(nginx, /location = \/mcp\/oauth\/callback \{\s+access_log off;/);
 });
 
 test('the claimed callback is bound to the signed Verity app at image build time', () => {
@@ -79,7 +80,10 @@ test('the claimed callback is bound to the signed Verity app at image build time
     associationTemplate.replace('__APPLE_TEAM_ID__', 'ABCDE12345'),
   );
   assert.deepEqual(association.applinks.details[0].appIDs, ['ABCDE12345.build.verity.app']);
-  assert.equal(association.applinks.details[0].components[0]['/'], '/github/app/callback');
+  assert.deepEqual(
+    association.applinks.details[0].components.map((component) => component['/']),
+    ['/github/app/callback', '/mcp/oauth/callback'],
+  );
 
   const dockerfile = readFileSync(join(here, '..', 'Dockerfile'), 'utf8');
   assert.match(dockerfile, /type=secret,id=apple_team_id/);

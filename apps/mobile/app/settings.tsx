@@ -43,6 +43,7 @@ import { AgentLoginPanel } from '../components/AgentLoginPanel';
 import { StatusPill } from '../components/StatusPill';
 import { setAuthToken } from '../lib/authToken';
 import { checkForAppUpdate } from '../lib/automaticUpdates';
+import { isOfficialGmailMcpUrl, runMcpOAuth } from '../lib/mcpOAuth';
 import { runningReleaseVersion } from '../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 
@@ -1003,6 +1004,12 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [authorization, setAuthorization] = useState('');
+  const [useOAuth, setUseOAuth] = useState(false);
+  const [oauthClientId, setOauthClientId] = useState('');
+  const [oauthClientSecret, setOauthClientSecret] = useState('');
+  const [oauthAuthorizationEndpoint, setOauthAuthorizationEndpoint] = useState('');
+  const [oauthTokenEndpoint, setOauthTokenEndpoint] = useState('');
+  const [oauthScopes, setOauthScopes] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const connectionRevision = useRef(0);
@@ -1038,20 +1045,71 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
       .createHttpMcpConnection({
         name: name.trim(),
         url: url.trim(),
-        ...(authorization.trim() === '' ? {} : { authorization: authorization.trim() }),
+        authType: useOAuth ? 'oauth' : authorization.trim() === '' ? 'none' : 'static',
+        ...(useOAuth
+          ? {
+              oauthClientId: oauthClientId.trim(),
+              ...(oauthClientSecret.trim() === ''
+                ? {}
+                : { oauthClientSecret: oauthClientSecret.trim() }),
+              oauthAuthorizationEndpoint: oauthAuthorizationEndpoint.trim(),
+              oauthTokenEndpoint: oauthTokenEndpoint.trim(),
+              oauthScopes: oauthScopes.trim(),
+            }
+          : authorization.trim() === ''
+            ? {}
+            : { authorization: authorization.trim() }),
       })
       .then(async () => {
         if (!(await load())) return;
         setName('');
         setUrl('');
         setAuthorization('');
+        setOauthClientId('');
+        setOauthClientSecret('');
+        setOauthAuthorizationEndpoint('');
+        setOauthTokenEndpoint('');
+        setOauthScopes('');
+        setUseOAuth(false);
       })
       .catch(() => setError('Could not save the MCP connection. Use a public HTTPS URL.'))
       .finally(() => {
         mutationInFlight.current = false;
         setBusy(false);
       });
-  }, [authorization, client, load, name, url]);
+  }, [
+    authorization,
+    client,
+    load,
+    name,
+    oauthAuthorizationEndpoint,
+    oauthClientId,
+    oauthClientSecret,
+    oauthScopes,
+    oauthTokenEndpoint,
+    url,
+    useOAuth,
+  ]);
+  const connectOAuth = useCallback(
+    (connection: HttpMcpConnection) => {
+      if (mutationInFlight.current) return;
+      mutationInFlight.current = true;
+      setBusy(true);
+      setError(undefined);
+      void runMcpOAuth(connection)
+        .then(async (result) => {
+          if (result.kind === 'cancelled') return;
+          await client.completeHttpMcpOAuth(connection.id, result);
+          await load();
+        })
+        .catch(() => setError('Could not authorize the MCP connection.'))
+        .finally(() => {
+          mutationInFlight.current = false;
+          setBusy(false);
+        });
+    },
+    [client, load],
+  );
   return (
     <View style={styles.panel}>
       <Text style={styles.disclosureTitle}>MCP connections</Text>
@@ -1066,6 +1124,18 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
             <Text style={styles.identityEmail} numberOfLines={1}>
               {connection.url}
             </Text>
+            {connection.authType === 'oauth' ? (
+              <Pressable
+                style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
+                onPress={() => connectOAuth(connection)}
+                disabled={busy}
+                accessibilityRole="button"
+              >
+                <Text style={styles.reproButtonLabel}>
+                  {connection.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}
+                </Text>
+              </Pressable>
+            ) : null}
             <Pressable
               style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
               onPress={() => {
@@ -1128,18 +1198,87 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
           />
         </View>
         <View style={styles.pathContent}>
-          <Text style={styles.pathLabel}>Authorization header (optional)</Text>
-          <TextInput
-            style={styles.pathInput}
-            value={authorization}
-            onChangeText={setAuthorization}
-            placeholder="Bearer …"
-            placeholderTextColor={theme.colors.textFaint}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-          />
+          <Pressable
+            style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
+            onPress={() => {
+              if (Platform.OS !== 'ios') return;
+              const next = !useOAuth;
+              setUseOAuth(next);
+              if (next && isOfficialGmailMcpUrl(url.trim())) {
+                setOauthAuthorizationEndpoint('https://accounts.google.com/o/oauth2/v2/auth');
+                setOauthTokenEndpoint('https://oauth2.googleapis.com/token');
+                setOauthScopes(
+                  'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose',
+                );
+              }
+            }}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: useOAuth }}
+            disabled={Platform.OS !== 'ios'}
+          >
+            <Text style={styles.reproButtonLabel}>
+              {Platform.OS !== 'ios'
+                ? 'OAuth 2.0 requires Verity for iOS'
+                : useOAuth
+                  ? 'OAuth 2.0 enabled'
+                  : 'Use OAuth 2.0'}
+            </Text>
+          </Pressable>
         </View>
+        {useOAuth ? (
+          <>
+            {[
+              ['OAuth client ID', oauthClientId, setOauthClientId, 'Client ID'],
+              [
+                'OAuth client secret (optional)',
+                oauthClientSecret,
+                setOauthClientSecret,
+                'Client secret',
+              ],
+              [
+                'Authorization endpoint',
+                oauthAuthorizationEndpoint,
+                setOauthAuthorizationEndpoint,
+                'https://accounts.example.com/oauth/authorize',
+              ],
+              [
+                'Token endpoint',
+                oauthTokenEndpoint,
+                setOauthTokenEndpoint,
+                'https://accounts.example.com/oauth/token',
+              ],
+              ['OAuth scopes (space-separated)', oauthScopes, setOauthScopes, 'openid profile'],
+            ].map(([label, value, setter, placeholder]) => (
+              <View style={styles.pathContent} key={label as string}>
+                <Text style={styles.pathLabel}>{label as string}</Text>
+                <TextInput
+                  style={styles.pathInput}
+                  value={value as string}
+                  onChangeText={setter as (next: string) => void}
+                  placeholder={placeholder as string}
+                  placeholderTextColor={theme.colors.textFaint}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry={(label as string).includes('secret')}
+                />
+              </View>
+            ))}
+          </>
+        ) : (
+          <View style={styles.pathContent}>
+            <Text style={styles.pathLabel}>Authorization header (optional)</Text>
+            <TextInput
+              style={styles.pathInput}
+              value={authorization}
+              onChangeText={setAuthorization}
+              placeholder="Bearer …"
+              placeholderTextColor={theme.colors.textFaint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+          </View>
+        )}
         {error ? <Text style={styles.fieldError}>{error}</Text> : null}
         <Pressable
           style={({ pressed }) => [
@@ -1148,7 +1287,16 @@ function McpConnectionsSection({ client }: { client: VerityClient }) {
             pressed ? styles.pressed : null,
           ]}
           onPress={add}
-          disabled={busy || name.trim() === '' || url.trim() === ''}
+          disabled={
+            busy ||
+            name.trim() === '' ||
+            url.trim() === '' ||
+            (useOAuth &&
+              (oauthClientId.trim() === '' ||
+                oauthAuthorizationEndpoint.trim() === '' ||
+                oauthTokenEndpoint.trim() === '' ||
+                oauthScopes.trim() === ''))
+          }
           accessibilityRole="button"
           accessibilityLabel="Add MCP connection"
         >

@@ -92,6 +92,15 @@ export interface HttpMcpConnectionsTable {
   name: string;
   url: string;
   authorization: string | null;
+  auth_type: ColumnType<string, string | undefined, string>;
+  oauth_client_id: string | null;
+  oauth_client_secret: string | null;
+  oauth_authorization_endpoint: string | null;
+  oauth_token_endpoint: string | null;
+  oauth_scopes: string | null;
+  oauth_access_token: string | null;
+  oauth_refresh_token: string | null;
+  oauth_expires_at: ColumnType<Date | null, string | null | undefined, string | null>;
   enabled: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
