@@ -387,34 +387,30 @@ jobs:
       # create a PR in the same run, so collect all three `prs` outputs.
       # renovate: datasource=github-actions depName=actions/setup-node
       - if: >-
-          (steps.release-backend.outputs.prs_created == 'true' && steps.release-backend.outputs.release_created != 'true') ||
-          (steps.release-mobile.outputs.prs_created == 'true' && steps.release-mobile.outputs['apps/mobile--release_created'] != 'true') ||
-          (steps.release-website.outputs.prs_created == 'true' && steps.release-website.outputs['docs/website--release_created'] != 'true')
+          steps.release-backend.outputs.prs_created == 'true' ||
+          steps.release-mobile.outputs.prs_created == 'true' ||
+          steps.release-website.outputs.prs_created == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24.19.0'
 
       - name: Run checks for release PRs
         if: >-
-          (steps.release-backend.outputs.prs_created == 'true' && steps.release-backend.outputs.release_created != 'true') ||
-          (steps.release-mobile.outputs.prs_created == 'true' && steps.release-mobile.outputs['apps/mobile--release_created'] != 'true') ||
-          (steps.release-website.outputs.prs_created == 'true' && steps.release-website.outputs['docs/website--release_created'] != 'true')
+          steps.release-backend.outputs.prs_created == 'true' ||
+          steps.release-mobile.outputs.prs_created == 'true' ||
+          steps.release-website.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           BACKEND_PRS_JSON: ${{ steps.release-backend.outputs.prs }}
           MOBILE_PRS_JSON: ${{ steps.release-mobile.outputs.prs }}
           WEBSITE_PRS_JSON: ${{ steps.release-website.outputs.prs }}
-          BACKEND_RELEASED: ${{ steps.release-backend.outputs.release_created }}
-          MOBILE_RELEASED: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
-          WEBSITE_RELEASED: ${{ steps.release-website.outputs['docs/website--release_created'] }}
         shell: bash
         run: |
           set -euo pipefail
           node -e '
-            const prs = [["backend", "BACKEND_PRS_JSON", "BACKEND_RELEASED"], ["mobile", "MOBILE_PRS_JSON", "MOBILE_RELEASED"], ["website", "WEBSITE_PRS_JSON", "WEBSITE_RELEASED"]]
-              .flatMap(([train, name, released]) => {
-                if (process.env[released] === "true") return [];
+            const prs = [["backend", "BACKEND_PRS_JSON"], ["mobile", "MOBILE_PRS_JSON"], ["website", "WEBSITE_PRS_JSON"]]
+              .flatMap(([train, name]) => {
                 const value = JSON.parse(process.env[name] || "[]");
                 return (Array.isArray(value) ? value : [value]).map((pr) => ({ train, pr }));
               });
@@ -426,8 +422,10 @@ jobs:
           ' | while IFS=$'\t' read -r train branch; do
             pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
             if [[ -z "$pr_number" ]]; then
-              echo "::error::Could not resolve the release PR for $branch." >&2
-              exit 1
+              # The cleanup above may have removed a premature PR. If cleanup
+              # failed it remains open and reaches the normal dispatch below.
+              echo "Generated release PR for $branch is no longer open; skipping its checks."
+              continue
             fi
             echo "Dispatching $train CI for $branch"
             gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"

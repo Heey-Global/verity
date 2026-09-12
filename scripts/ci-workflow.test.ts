@@ -134,9 +134,7 @@ describe('release-please train isolation', () => {
       'gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"',
     );
     for (const train of trains) {
-      expect(dispatch?.run).toContain(
-        `["${train}", "${train.toUpperCase()}_PRS_JSON", "${train.toUpperCase()}_RELEASED"]`,
-      );
+      expect(dispatch?.run).toContain(`["${train}", "${train.toUpperCase()}_PRS_JSON"]`);
     }
   });
 
@@ -150,8 +148,9 @@ describe('release-please train isolation', () => {
     expect(cleanup?.run).toContain('.parents[0].sha');
     expect(cleanup?.run).toContain('parent" != "$release_sha');
     expect(cleanup?.run).toContain('gh pr close "$pr_number" --delete-branch');
-    expect(dispatch?.if).toContain("release_created != 'true'");
-    expect(dispatch?.run).toContain('process.env[released] === "true"');
+    expect(dispatch?.if).not.toContain("release_created != 'true'");
+    expect(dispatch?.run).toContain('release PR for $branch is no longer open');
+    expect(dispatch?.run).toContain('continue');
   });
 
   it('binds publication to the trains in the immutable push diff', async () => {
