@@ -540,6 +540,10 @@ export function withControlPlaneAgentCredentials(
   };
 }
 import { DockerProjectRuntime } from './project-runtime.js';
+import {
+  DEFAULT_SANDBOX_IMAGE_FALLBACK,
+  DEFAULT_TOOLKIT_FEATURE_FALLBACK,
+} from './sandbox-artifacts.js';
 import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
@@ -1615,8 +1619,13 @@ export function devcontainerBuildOptionsForDockerBaseUrl(dockerBaseUrl: string):
   };
 }
 
-const SANDBOX_TOOLKIT_FEATURE_REPO = 'ghcr.io/heey-global/verity/verity-sandbox-toolkit';
-const DEFAULT_SANDBOX_TOOLKIT_FEATURE_REF = `${SANDBOX_TOOLKIT_FEATURE_REPO}:1.14.1`;
+// Reached when neither `VERITY_SANDBOX_TOOLKIT_FEATURE_REF` nor a caller-supplied
+// ref names one — `main.ts` always resolves one, so this is the embedder default.
+// It named 1.14.1, one train older than the 1.14.9 the other fallback named and
+// just as gone: the reset deleted the toolkit Feature package outright, so every
+// tag of it 404s. Shared with the rest rather than re-derived here, which is how
+// this one came to lag the other by eight patch versions unnoticed.
+const DEFAULT_SANDBOX_TOOLKIT_FEATURE_REF = DEFAULT_TOOLKIT_FEATURE_FALLBACK;
 
 function rejectLatestImageRef(ref: string, label: string): string {
   const trimmed = ref.trim();
@@ -2982,9 +2991,13 @@ export async function buildEmbeddedServer(
   let stopRunnerSupervisorReconciler = (): Promise<void> => Promise.resolve();
   let refreshProjectToken: ((project: ProjectRecord) => Promise<void>) | undefined;
   let projectWorktrees: ReturnType<typeof createProjectWorktreeFactory> | undefined;
-  const defaultProjectImageSource =
-    config.defaultProjectImage ??
-    'ghcr.io/heey-global/verity/verity-sandbox@sha256:7445ec4d7aa770cb66d238621be6b4f2fc617cdc29db2142c8825f831f84fcfc';
+  // `main.ts` always passes a resolver, so this is what an embedder that omits
+  // one gets. Shared with the last-resort fallback there rather than repeated:
+  // the two must name the same artifact, and the pair they replace drifted onto
+  // a sandbox image that no longer exists. Note this path is the ref VERBATIM —
+  // no resolver sits behind it to prefer a digest it resolved earlier, so an
+  // embedder that wants the stronger pin passes its own digest.
+  const defaultProjectImageSource = config.defaultProjectImage ?? DEFAULT_SANDBOX_IMAGE_FALLBACK;
   const defaultProjectImage: ProjectImageRefSource =
     typeof defaultProjectImageSource === 'function'
       ? // Forward `forceRefresh` so the provision/recreate path can pin the CURRENT

@@ -435,15 +435,20 @@ describe('the repo devcontainer and this module agree', () => {
   });
 
   it('tracks the fleet sandbox image rather than pinning its own base', () => {
-    // Both halves are read from main.ts, repository AND channel tag. Hard-coding
+    // Both halves are read from the sources, repository AND channel tag. Hard-coding
     // `:latest` here would leave the tag free to move in one place only: this
     // repo would quietly build on a channel the rest of the fleet had left, and
     // an assertion naming the constant would be the thing that said otherwise.
     // A digest pin in the Dockerfile fails this for the same reason.
-    const main = read('packages/server/src/main.ts');
-    const repo = /const SANDBOX_IMAGE_REPO = '([^']+)'/u.exec(main)?.[1];
+    // The two halves live in different files: the repository is shared with the
+    // embedded composition root, the channel tag is `main.ts`-only. Both are
+    // asserted defined below, so this reads as "constant moved" rather than
+    // silently comparing the Dockerfile against an empty string.
+    const repo = /const SANDBOX_IMAGE_REPO = '([^']+)'/u.exec(
+      read('packages/server/src/sandbox-artifacts.ts'),
+    )?.[1];
     const tag = /const DEFAULT_SANDBOX_IMAGE_TAG = `\$\{SANDBOX_IMAGE_REPO\}:([^`]+)`/u.exec(
-      main,
+      read('packages/server/src/main.ts'),
     )?.[1];
     expect(repo).toBeDefined();
     expect(tag).toBeDefined();

@@ -126,6 +126,12 @@ import {
   resolveAgentGatewayUnsealKey,
 } from './agent-gateway-unseal-key.js';
 import { resolveProjectRelayImage } from './project-relay-image.js';
+import {
+  DEFAULT_SANDBOX_IMAGE_FALLBACK,
+  DEFAULT_TOOLKIT_FEATURE_FALLBACK,
+  SANDBOX_IMAGE_REPO,
+  TOOLKIT_FEATURE_REPO,
+} from './sandbox-artifacts.js';
 import { UPLINK_CONTROL_URL } from './uplink-control-client.js';
 import { createDevicePairingManager } from './device-pairing.js';
 
@@ -133,14 +139,9 @@ import { createDevicePairingManager } from './device-pairing.js';
  *  listener. Container-internal only, never on `ports:` — no host conflict, so it
  *  is a constant, not operator config. */
 const DEFAULT_INTERNAL_PORT = 8083;
-const SANDBOX_IMAGE_REPO = 'ghcr.io/heey-global/verity/verity-sandbox';
-const TOOLKIT_FEATURE_REPO = 'ghcr.io/heey-global/verity/verity-sandbox-toolkit';
 const PREVIEW_CONNECTOR_IMAGE_REPO = 'ghcr.io/heey-global/verity/verity-preview-connector';
 const DEFAULT_SANDBOX_IMAGE_TAG = `${SANDBOX_IMAGE_REPO}:latest`;
-const DEFAULT_SANDBOX_IMAGE_FALLBACK =
-  'ghcr.io/heey-global/verity/verity-sandbox@sha256:7445ec4d7aa770cb66d238621be6b4f2fc617cdc29db2142c8825f831f84fcfc';
 const DEFAULT_TOOLKIT_FEATURE_TAG = `${TOOLKIT_FEATURE_REPO}:latest`;
-const DEFAULT_TOOLKIT_FEATURE_FALLBACK = `${TOOLKIT_FEATURE_REPO}:1.14.9`;
 
 function splitList(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
@@ -773,12 +774,13 @@ async function main(): Promise<void> {
   const sandboxImageTag = releasePinnedRef(SANDBOX_IMAGE_REPO, 'v') ?? DEFAULT_SANDBOX_IMAGE_TAG;
   const toolkitFeatureTag =
     releasePinnedRef(TOOLKIT_FEATURE_REPO, '') ?? DEFAULT_TOOLKIT_FEATURE_TAG;
-  // The fallbacks stay on artifacts that are known to EXIST, and deliberately do
-  // not follow the pin. A pinned tag is only ever unresolvable when its release
-  // job did not produce it — `release.yml` gates the server publish on both
-  // siblings so that should not happen, but if it ever does, repeating the same
-  // missing tag as the fallback would turn one failed publish into a deployment
-  // that cannot provision at all. An existing image from another release still
+  // The fallbacks stay on artifacts that are known to EXIST once the train has
+  // cut its first release, and deliberately do not follow the pin. A pinned tag
+  // is only ever unresolvable when its release job did not produce it —
+  // `release.yml` gates the server publish on both siblings so that should not
+  // happen, but if it ever does, repeating the same missing tag as the fallback
+  // would turn one failed publish into a deployment that cannot provision at
+  // all. An existing image from another release still
   // runs; its toolkit mismatch is caught by the boundary attestation and named
   // in the startup drift report, which is a loud failure rather than a silent
   // one. And it is reached only on a cold start during a registry outage:

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as nodeHttp from 'node:http';
 import { tmpdir } from 'node:os';
@@ -874,6 +874,68 @@ describe('acceptedToolkits (ADR 0006 D9)', () => {
     for (const label of listed) expect(accepted).toContain(label);
     expect(accepted).toHaveLength(listed.length + 1);
   });
+
+  // Both files this guard reads live at the repository root, and both are located
+  // from this file rather than the working directory: a describe-scope ENOENT
+  // fails collection of every test here, and the guard is worthless if a
+  // package-scoped run turns "the floor is fine" into "the file was not found".
+  const repoRootFile = (name: string): string => join(import.meta.dirname, '../../..', name);
+
+  // The first version the reset backend train cuts; absent once the bootstrap is
+  // over and `initial-version` is removed from the release config.
+  const FIRST_RELEASE_VERSION = (
+    JSON.parse(readFileSync(repoRootFile('release-please-config.backend.json'), 'utf8')) as {
+      packages: Record<string, { 'initial-version'?: string } | undefined>;
+    }
+  ).packages['.']?.['initial-version'];
+
+  // The failure this guards is silent by construction: a floor above the versions
+  // the train publishes drops every reconstructed entry inside the reader's
+  // `continue`, so the ledger keeps being rewritten, the file keeps looking
+  // populated, and attestation quietly accepts nothing but the bundled toolkit.
+  // The version reset walked straight into it — a 9.0.0 floor against a 0.x train
+  // rejects every release that train will ever cut. Bounded by `initial-version`
+  // rather than the manifest because the manifest is release-managed and the
+  // changed-area detector treats it as inert; the bound retires with the
+  // bootstrap, which is also when a floor above the first release stops meaning
+  // "accepts nothing".
+  // Skipped rather than returned early when the bootstrap is over, so the day the
+  // bound stops applying is reported instead of passing as if it still held.
+  it.skipIf(FIRST_RELEASE_VERSION === undefined)(
+    'keeps the ledger floor at or below the first version the backend train cuts',
+    async () => {
+      // Plain release triples on both sides: this train cuts no prereleases, and
+      // the reader's own comparison is numeric too. A prerelease on either side
+      // fails here rather than being ordered wrongly and passing.
+      const parse = (value: unknown): readonly number[] => {
+        expect(value).toMatch(/^\d+\.\d+\.\d+$/u);
+        return String(value)
+          .split('.')
+          .map((part) => Number(part));
+      };
+      const shipped = JSON.parse(
+        await readFile(
+          repoRootFile('features/verity-sandbox-toolkit/published-hashes.json'),
+          'utf8',
+        ),
+      ) as { minimumVersion?: unknown };
+      const floor = parse(shipped.minimumVersion);
+      const first = parse(FIRST_RELEASE_VERSION);
+      const atOrBelow = (left: readonly number[], right: readonly number[]): boolean => {
+        for (let part = 0; part < 3; part += 1) {
+          const a = left[part] ?? 0;
+          const b = right[part] ?? 0;
+          if (a !== b) return a < b;
+        }
+        return true;
+      };
+      expect(
+        atOrBelow(floor, first),
+        `ledger floor ${String(shipped.minimumVersion)} is above ${FIRST_RELEASE_VERSION}, ` +
+          'the first version this train publishes — every reconstructed entry would be dropped',
+      ).toBe(true);
+    },
+  );
 });
 
 describe('evaluateRunnerBoundaryEvidence refusals on unreadable identity files', () => {
