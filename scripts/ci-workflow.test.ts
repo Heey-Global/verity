@@ -148,9 +148,14 @@ describe('release-please train isolation', () => {
     expect(cleanup?.run).toContain('.parents[0].sha');
     expect(cleanup?.run).toContain('parent" != "$release_sha');
     expect(cleanup?.run).toContain('gh pr close "$pr_number" --delete-branch');
+    expect(cleanup?.run).toContain('>> "$removed_file"');
+    expect(cleanup?.run).toContain('>> "$GITHUB_OUTPUT"');
     expect(dispatch?.if).not.toContain("release_created != 'true'");
-    expect(dispatch?.run).toContain('release PR for $branch is no longer open');
-    expect(dispatch?.run).toContain('continue');
+    expect(dispatch?.env?.REMOVED_RELEASE_BRANCHES).toBe(
+      '${{ steps.remove-premature-prs.outputs.branches }}',
+    );
+    expect(dispatch?.run).toContain('grep -Fxq "$branch" <<< "$REMOVED_RELEASE_BRANCHES"');
+    expect(dispatch?.run).toContain('Could not resolve the release PR for $branch');
   });
 
   it('binds publication to the trains in the immutable push diff', async () => {
