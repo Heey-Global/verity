@@ -399,6 +399,15 @@ export interface HttpMcpConnectionRecord {
   url: string;
   /** Decrypted only at the trusted store boundary; public APIs must project this out. */
   authorization: string | null;
+  authType?: 'none' | 'static' | 'oauth';
+  oauthClientId?: string | null;
+  oauthClientSecret?: string | null;
+  oauthAuthorizationEndpoint?: string | null;
+  oauthTokenEndpoint?: string | null;
+  oauthScopes?: string | null;
+  oauthAccessToken?: string | null;
+  oauthRefreshToken?: string | null;
+  oauthExpiresAt?: Date | null;
   enabled: boolean;
 }
 
@@ -5773,6 +5782,15 @@ export class EventStore implements EventSink {
         name: record.name,
         url: record.url,
         authorization: this.encryptSecret(record.authorization),
+        auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
+        oauth_client_id: record.oauthClientId ?? null,
+        oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
+        oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
+        oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
+        oauth_scopes: record.oauthScopes ?? null,
+        oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
+        oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
+        oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
         enabled: record.enabled,
       })
       .onConflict((conflict) =>
@@ -5780,6 +5798,15 @@ export class EventStore implements EventSink {
           name: record.name,
           url: record.url,
           authorization: this.encryptSecret(record.authorization),
+          auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
+          oauth_client_id: record.oauthClientId ?? null,
+          oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
+          oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
+          oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
+          oauth_scopes: record.oauthScopes ?? null,
+          oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
+          oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
+          oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
           enabled: record.enabled,
         }),
       )
@@ -5798,8 +5825,35 @@ export class EventStore implements EventSink {
       name: row.name,
       url: row.url,
       authorization: this.decryptSecret(row.authorization),
+      authType: row.auth_type as NonNullable<HttpMcpConnectionRecord['authType']>,
+      oauthClientId: row.oauth_client_id,
+      oauthClientSecret: this.decryptSecret(row.oauth_client_secret),
+      oauthAuthorizationEndpoint: row.oauth_authorization_endpoint,
+      oauthTokenEndpoint: row.oauth_token_endpoint,
+      oauthScopes: row.oauth_scopes,
+      oauthAccessToken: this.decryptSecret(row.oauth_access_token),
+      oauthRefreshToken: this.decryptSecret(row.oauth_refresh_token),
+      oauthExpiresAt: row.oauth_expires_at,
       enabled: row.enabled,
     }));
+  }
+
+  /** Persist freshly issued OAuth tokens without resurrecting a connection that
+   * was deleted while the provider request was in flight. */
+  async updateHttpMcpOAuthTokens(
+    id: string,
+    tokens: { accessToken: string; refreshToken: string | null; expiresAt: Date | null },
+  ): Promise<boolean> {
+    const result = await this.db
+      .updateTable('http_mcp_connections')
+      .set({
+        oauth_access_token: this.encryptSecret(tokens.accessToken),
+        oauth_refresh_token: this.encryptSecret(tokens.refreshToken),
+        oauth_expires_at: tokens.expiresAt?.toISOString() ?? null,
+      })
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return (result.numUpdatedRows ?? 0n) > 0n;
   }
 
   async deleteHttpMcpConnection(id: string): Promise<boolean> {

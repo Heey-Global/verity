@@ -2775,6 +2775,39 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('http_mcp_connections').execute();
     },
   },
+  '0095_http_mcp_oauth': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('http_mcp_connections')
+        .addColumn('auth_type', 'text', (c) => c.notNull().defaultTo('none'))
+        .addColumn('oauth_client_id', 'text')
+        .addColumn('oauth_client_secret', 'text')
+        .addColumn('oauth_authorization_endpoint', 'text')
+        .addColumn('oauth_token_endpoint', 'text')
+        .addColumn('oauth_scopes', 'text')
+        .addColumn('oauth_access_token', 'text')
+        .addColumn('oauth_refresh_token', 'text')
+        .addColumn('oauth_expires_at', 'timestamptz')
+        .execute();
+      await sql`UPDATE "http_mcp_connections" SET "auth_type" = 'static' WHERE "authorization" IS NOT NULL`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('http_mcp_connections')
+        .dropColumn('oauth_expires_at')
+        .dropColumn('oauth_refresh_token')
+        .dropColumn('oauth_access_token')
+        .dropColumn('oauth_scopes')
+        .dropColumn('oauth_token_endpoint')
+        .dropColumn('oauth_authorization_endpoint')
+        .dropColumn('oauth_client_secret')
+        .dropColumn('oauth_client_id')
+        .dropColumn('auth_type')
+        .execute();
+    },
+  },
   '0093_opencode_settings': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema

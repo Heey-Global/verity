@@ -39,9 +39,44 @@ describe('EventStore — HTTP MCP connections', () => {
         name: 'Work Gmail',
         url: 'https://proxy.example.test/gmail',
         authorization: null,
+        authType: 'none',
+        oauthClientId: null,
+        oauthClientSecret: null,
+        oauthAuthorizationEndpoint: null,
+        oauthTokenEndpoint: null,
+        oauthScopes: null,
+        oauthAccessToken: null,
+        oauthRefreshToken: null,
+        oauthExpiresAt: null,
         enabled: false,
       },
     ]);
+  });
+
+  it('persists OAuth credentials and tokens at the trusted store boundary', async () => {
+    await ctx.store.upsertHttpMcpConnection({
+      id: 'gmail-oauth',
+      name: 'OAuth Gmail',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      authorization: null,
+      authType: 'oauth',
+      oauthClientId: 'public-client-id',
+      oauthClientSecret: 'client-secret',
+      oauthAuthorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+      oauthTokenEndpoint: 'https://oauth2.googleapis.com/token',
+      oauthScopes: 'gmail.readonly gmail.compose',
+      oauthAccessToken: 'access-token',
+      oauthRefreshToken: 'refresh-token',
+      oauthExpiresAt: new Date('2030-01-01T00:00:00.000Z'),
+      enabled: true,
+    });
+    expect(
+      (await ctx.store.listHttpMcpConnections()).find((item) => item.id === 'gmail-oauth'),
+    ).toMatchObject({
+      oauthClientSecret: 'client-secret',
+      oauthAccessToken: 'access-token',
+      oauthRefreshToken: 'refresh-token',
+    });
   });
 
   it('persists project bindings and cascades them with either parent', async () => {

@@ -715,6 +715,12 @@ const httpMcpConnectionSchema = z.object({
   url: z.string(),
   enabled: z.boolean(),
   authorizationConfigured: z.boolean(),
+  authType: z.enum(['none', 'static', 'oauth']).default('none'),
+  oauthConnected: z.boolean().default(false),
+  oauthClientId: z.string().nullable().default(null),
+  oauthAuthorizationEndpoint: z.string().nullable().default(null),
+  oauthTokenEndpoint: z.string().nullable().default(null),
+  oauthScopes: z.string().nullable().default(null),
 });
 export type HttpMcpConnection = z.infer<typeof httpMcpConnectionSchema>;
 const projectMcpBindingSchema = z.object({
@@ -2332,6 +2338,12 @@ export class VerityClient {
     url: string;
     enabled?: boolean;
     authorization?: string | null;
+    authType?: 'none' | 'static' | 'oauth';
+    oauthClientId?: string | null;
+    oauthClientSecret?: string | null;
+    oauthAuthorizationEndpoint?: string | null;
+    oauthTokenEndpoint?: string | null;
+    oauthScopes?: string | null;
   }): Promise<HttpMcpConnection> {
     const res = await this.request('/mcp-connections', {
       method: 'POST',
@@ -2339,6 +2351,17 @@ export class VerityClient {
       body: JSON.stringify(input),
     });
     return z.object({ connection: httpMcpConnectionSchema }).parse(await res.json()).connection;
+  }
+
+  async completeHttpMcpOAuth(
+    connectionId: string,
+    input: { code: string; codeVerifier: string; redirectUri: string },
+  ): Promise<void> {
+    await this.request(`/mcp-connections/${encodeURIComponent(connectionId)}/oauth/complete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
   }
 
   async deleteHttpMcpConnection(connectionId: string): Promise<void> {

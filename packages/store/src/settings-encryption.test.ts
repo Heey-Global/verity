@@ -62,6 +62,38 @@ describe('EventStore — secret encryption at rest (ADR 0002 D3)', () => {
   const sshSecret = 'ssh-private-key-fixture-value';
   const appSecret = 'app-private-key-fixture-value';
 
+  it('encrypts remote MCP OAuth credentials and tokens', async () => {
+    await store.upsertHttpMcpConnection({
+      id: 'oauth-mcp',
+      name: 'OAuth MCP',
+      url: 'https://mcp.example.test',
+      authorization: null,
+      authType: 'oauth',
+      oauthClientId: 'public-client-id',
+      oauthClientSecret: 'oauth-client-secret-fixture',
+      oauthAuthorizationEndpoint: 'https://accounts.example.test/authorize',
+      oauthTokenEndpoint: 'https://accounts.example.test/token',
+      oauthScopes: 'mail.read',
+      oauthAccessToken: 'oauth-access-token-fixture',
+      oauthRefreshToken: 'oauth-refresh-token-fixture',
+      oauthExpiresAt: new Date('2030-01-01T00:00:00.000Z'),
+      enabled: true,
+    });
+    const row = await raw.db
+      .selectFrom('http_mcp_connections')
+      .select(['oauth_client_secret', 'oauth_access_token', 'oauth_refresh_token'])
+      .where('id', '=', 'oauth-mcp')
+      .executeTakeFirstOrThrow();
+    expect(row.oauth_client_secret).not.toContain('oauth-client-secret-fixture');
+    expect(row.oauth_access_token).not.toContain('oauth-access-token-fixture');
+    expect(row.oauth_refresh_token).not.toContain('oauth-refresh-token-fixture');
+    expect((await store.listHttpMcpConnections())[0]).toMatchObject({
+      oauthClientSecret: 'oauth-client-secret-fixture',
+      oauthAccessToken: 'oauth-access-token-fixture',
+      oauthRefreshToken: 'oauth-refresh-token-fixture',
+    });
+  });
+
   it('encrypts the SSH private key + GitHub App private key, but not non-secret fields', async () => {
     const record = await store.updateVeritySettings({
       gitSshPrivateKey: sshSecret,
