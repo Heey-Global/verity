@@ -745,7 +745,7 @@ describe('createGitHubPrService', () => {
     });
   });
 
-  it('merges a PR through the GitHub merge endpoint', async () => {
+  it('squash-merges a PR through the GitHub merge endpoint', async () => {
     const { fetch, calls } = fakeFetch(ok({ merged: true }));
     const svc = createGitHubPrService({ repoDir: '/r', token: 'tok', git: githubRemote, fetch });
 
@@ -754,7 +754,7 @@ describe('createGitHubPrService', () => {
       'https://api.github.com/repos/Example-Org/Example-Repo/pulls/119/merge',
     );
     expect(calls[0]?.method).toBe('PUT');
-    expect(calls[0]?.body).toBe(JSON.stringify({ merge_method: 'merge' }));
+    expect(calls[0]?.body).toBe(JSON.stringify({ merge_method: 'squash' }));
   });
 
   it('sends the approved head SHA as an atomic merge precondition', async () => {
@@ -763,7 +763,7 @@ describe('createGitHubPrService', () => {
     const headSha = 'a'.repeat(40);
 
     expect(await svc.mergePr(119, headSha)).toBe(true);
-    expect(calls[0]?.body).toBe(JSON.stringify({ merge_method: 'merge', sha: headSha }));
+    expect(calls[0]?.body).toBe(JSON.stringify({ merge_method: 'squash', sha: headSha }));
   });
 
   it('uses an async token provider for merging when no sync token exists', async () => {

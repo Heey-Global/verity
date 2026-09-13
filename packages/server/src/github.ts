@@ -865,7 +865,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           headers: githubHeaders(token),
           signal: AbortSignal.timeout(timeoutMs),
           body: JSON.stringify({
-            merge_method: 'merge',
+            merge_method: 'squash',
             ...(expectedHeadSha !== undefined ? { sha: expectedHeadSha } : {}),
           }),
         });
