@@ -214,6 +214,78 @@ describe('createGitHubAppProjectTokenMint', () => {
     }
   });
 
+  it('retries transient GitHub 5xx responses with bounded backoff', async () => {
+    const { dir, privateKeyPath } = writePrivateKey();
+    try {
+      let cancellations = 0;
+      const abandoned = (): HttpResponse => ({
+        ...fail(500),
+        body: new ReadableStream({
+          cancel: () => {
+            cancellations += 1;
+          },
+        }),
+      });
+      const responses = [abandoned(), abandoned(), ok({ token: 'ghs_recovered' })];
+      const delays: number[] = [];
+      const fetch: HttpFetch = () => Promise.resolve(responses.shift()!);
+      const mint = createGitHubAppProjectTokenMint({
+        appId: '123',
+        privateKeyPath,
+        defaultInstallationId: '456',
+        fetch,
+        retryDelaysMs: [10, 20],
+        sleep: (delayMs) => {
+          delays.push(delayMs);
+          return Promise.resolve();
+        },
+      });
+
+      await expect(mint({ owner: 'Example-Org', repo: 'sample-app' })).resolves.toBe(
+        'ghs_recovered',
+      );
+      expect(delays).toEqual([10, 20]);
+      expect(cancellations).toBe(2);
+      expect(responses).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops retrying after the configured 5xx attempts are exhausted', async () => {
+    const { dir, privateKeyPath } = writePrivateKey();
+    try {
+      let calls = 0;
+      let cancellations = 0;
+      const mint = createGitHubAppProjectTokenMint({
+        appId: '123',
+        privateKeyPath,
+        defaultInstallationId: '456',
+        fetch: () => {
+          calls += 1;
+          return Promise.resolve({
+            ...fail(500),
+            body: new ReadableStream({
+              cancel: () => {
+                cancellations += 1;
+              },
+            }),
+          });
+        },
+        retryDelaysMs: [0, 0],
+        sleep: () => Promise.resolve(),
+      });
+
+      await expect(mint({ owner: 'Example-Org', repo: 'sample-app' })).rejects.toThrow(
+        'GitHub App token mint failed: HTTP 500',
+      );
+      expect(calls).toBe(3);
+      expect(cancellations).toBe(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('returns undefined when GitHub responds without a token field', async () => {
     const { dir, privateKeyPath } = writePrivateKey();
     try {
@@ -377,6 +449,37 @@ describe('createCachedProjectTokenMint', () => {
     await expect(cached(R)).resolves.toBeUndefined(); // a throw must not propagate
     await expect(cached(R)).resolves.toBe('ghs_after_recovery'); // failure was not cached
     expect(mints).toBe(2);
+  });
+
+  it('shares successful tokens with strict callers but preserves their mint errors', async () => {
+    let mints = 0;
+    const cached = createCachedProjectTokenMint(() => {
+      mints += 1;
+      if (mints === 1) return Promise.reject(new Error('GitHub App token mint failed: HTTP 500'));
+      return Promise.resolve('ghs_recovered');
+    });
+
+    await expect(cached.strict(R)).rejects.toThrow('GitHub App token mint failed: HTTP 500');
+    await expect(cached.strict(R)).resolves.toBe('ghs_recovered');
+    await expect(cached(R)).resolves.toBe('ghs_recovered');
+    expect(mints).toBe(2);
+  });
+
+  it('lets concurrent strict and non-strict callers interpret one rejected mint independently', async () => {
+    let reject!: (cause: Error) => void;
+    const cached = createCachedProjectTokenMint(
+      () =>
+        new Promise<string>((_resolve, rejectPromise) => {
+          reject = rejectPromise;
+        }),
+    );
+
+    const strict = cached.strict(R);
+    const forgiving = cached(R);
+    reject(new Error('GitHub App token mint failed: HTTP 500'));
+
+    await expect(strict).rejects.toThrow('GitHub App token mint failed: HTTP 500');
+    await expect(forgiving).resolves.toBeUndefined();
   });
 
   it('single-flights concurrent callers for the same key into one mint', async () => {

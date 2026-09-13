@@ -3045,8 +3045,11 @@ export async function buildEmbeddedServer(
     const tokenSource: GitHubTokenSource =
       typeof fallbackGitHubToken === 'function' ? fallbackGitHubToken : () => fallbackGitHubToken;
     const ghTokenPath = config.ghTokenFilePath ?? join(process.env.HOME ?? '/root', '.gh-token');
+    // Turn preparation calls this before every message. Reuse the same ~50-minute
+    // token as the sandbox broker so a chat does not mint once per turn; authority
+    // changes still invalidate the cache immediately.
     refreshProjectToken = (project: ProjectRecord): Promise<void> =>
-      refreshProjectGitHubToken(project, projectTokenMint);
+      refreshProjectGitHubToken(project, cachedProjectTokenMint.strict);
     // Per-project session worktree factory (see {@link createProjectWorktreeFactory}):
     // its `refreshBase` fetch authenticates with the SAME project-scoped token the
     // mint issues for `refreshProjectToken`. Guarded by the same mint + docker/
@@ -5079,10 +5082,10 @@ function bundledFeatureIdentity(dir: string): string {
 
 /**
  * "Refresh" a project's GitHub token. With the on-demand token broker there is no
- * per-project token FILE to rewrite — the sandbox mints a fresh repo-scoped token
- * on every git/gh call via its capability. This just re-mints server-side (warming
- * any mint cache and surfacing an App-not-configured failure to the caller); it
- * never writes into the clone dir, so no token lands in the sandbox's /work.
+ * per-project token FILE to rewrite — the sandbox obtains a repo-scoped token on
+ * demand via its capability. This warms the supplied mint's cache (when present)
+ * and surfaces failures to the caller; it never writes into the clone dir, so no
+ * token lands in the sandbox's /work.
  */
 export async function refreshProjectGitHubToken(
   project: ProjectRecord,

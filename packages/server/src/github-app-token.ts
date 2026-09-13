@@ -65,6 +65,9 @@ export interface GitHubAppProjectTokenMintOptions {
   readFile?: ((path: string) => string) | undefined;
   now?: (() => number) | undefined;
   timeoutMs?: number | undefined;
+  /** Backoff before retrying transient GitHub 5xx responses. Empty disables retries. */
+  retryDelaysMs?: readonly number[] | undefined;
+  sleep?: ((delayMs: number) => Promise<void>) | undefined;
 }
 
 /** `kind` is OPTIONAL because two callers hold only a repo coordinate, not a
@@ -76,6 +79,11 @@ export type GitHubProjectTokenMint = (
 ) => Promise<string | undefined>;
 
 export type GitHubInstallationTokenMint = () => Promise<string | undefined>;
+
+export interface CachedGitHubProjectTokenMint extends GitHubProjectTokenMint {
+  /** Reuse cached successes, but preserve mint failures for callers that must fail closed. */
+  strict: GitHubProjectTokenMint;
+}
 
 export const PROJECT_GITHUB_TOKEN_PERMISSIONS = {
   contents: 'write',
@@ -148,6 +156,13 @@ async function mintGitHubAppInstallationToken(
   const readFile = opts.readFile ?? ((path: string): string => readFileSync(path, 'utf8'));
   const now = opts.now ?? ((): number => Date.now());
   const timeoutMs = opts.timeoutMs ?? 15_000;
+  const retryDelaysMs = opts.retryDelaysMs ?? [250, 1_000];
+  const sleep =
+    opts.sleep ??
+    ((delayMs: number): Promise<void> =>
+      new Promise((resolve) => {
+        setTimeout(resolve, delayMs);
+      }));
   const apiBaseUrl = opts.apiBaseUrl ?? 'https://api.github.com';
 
   // Prefer the app-configured (DB) creds; fall back to the deployment file.
@@ -155,7 +170,8 @@ async function mintGitHubAppInstallationToken(
   const creds = (await opts.resolveCreds?.()) ?? staticGitHubAppCreds(opts, readFile);
   if (creds === undefined) return undefined;
   const jwt = createGitHubAppJwt(creds.appId, creds.privateKey, now());
-  const res = await doFetch(tokenEndpoint(apiBaseUrl, creds.installationId), {
+  const url = tokenEndpoint(apiBaseUrl, creds.installationId);
+  const init = {
     method: 'POST',
     headers: {
       Accept: 'application/vnd.github+json',
@@ -165,10 +181,19 @@ async function mintGitHubAppInstallationToken(
       'X-GitHub-Api-Version': '2022-11-28',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    throw new Error(`GitHub App token mint failed: HTTP ${String(res.status)}`);
+  } as const;
+  let res;
+  for (let attempt = 0; ; attempt += 1) {
+    res = await doFetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    if (res.ok) break;
+    // Failed responses are never read. Release Undici's connection before either
+    // retrying or throwing instead of leaving their bodies attached to the pool.
+    await res.body?.cancel().catch(() => undefined);
+    const delayMs = retryDelaysMs[attempt];
+    if (res.status < 500 || res.status >= 600 || delayMs === undefined) {
+      throw new Error(`GitHub App token mint failed: HTTP ${String(res.status)}`);
+    }
+    await sleep(delayMs);
   }
   const payload = (await res.json()) as GitHubAppTokenResponse;
   return typeof payload.token === 'string' && payload.token.length > 0 ? payload.token : undefined;
@@ -231,15 +256,15 @@ export function createGitHubAppInstallationTokenMint(
  * 1h installation-token life). An undefined result — AND a thrown mint (the mint throws on
  * any GitHub non-2xx: a 422 when the requested permission subset exceeds the installation
  * grant, a transient 5xx, an expired/revoked key) — degrades to undefined and is NOT
- * cached, so the next call retries. Swallowing the throw keeps the consumers' documented
- * "never throws" contract intact.
+ * cached, so the next call retries. The default callable swallows the throw to keep the
+ * reuse consumers' documented "never throws" contract intact; `.strict` shares the same
+ * cache and single-flight but propagates failures for turn preparation.
  *
  * Single-flight: concurrent callers for the SAME key share one in-flight mint rather than
  * each firing their own (no thundering herd at startup or a TTL boundary).
  *
- * NOT for the provisioner / worktree paths: those write the token into a project's
- * `.gh-token` file that must stay valid for ~1h, so they need a FRESH mint each time and
- * keep using the raw {@link GitHubProjectTokenMint}.
+ * NOT for actual provisioner / worktree fetches: those need a fresh token for the
+ * server-side Git operation and keep using the raw {@link GitHubProjectTokenMint}.
  */
 export function createCachedProjectTokenMint(
   mint: GitHubProjectTokenMint,
@@ -248,17 +273,21 @@ export function createCachedProjectTokenMint(
     now?: (() => number) | undefined;
     authorityKey?: (() => Promise<string | undefined>) | undefined;
   } = {},
-): GitHubProjectTokenMint {
+): CachedGitHubProjectTokenMint {
   const ttlMs = opts.ttlMs ?? 50 * 60_000;
   const now = opts.now ?? ((): number => Date.now());
   const cache = new Map<string, { token: string; at: number }>();
   const inflight = new Map<string, Promise<string | undefined>>();
-  return async (project): Promise<string | undefined> => {
+  const get = async (
+    project: Parameters<GitHubProjectTokenMint>[0],
+    strict: boolean,
+  ): Promise<string | undefined> => {
     let authority: string | undefined;
     try {
       authority = opts.authorityKey === undefined ? '' : await opts.authorityKey();
-    } catch {
+    } catch (cause) {
       cache.clear();
+      if (strict) throw cause;
       return undefined;
     }
     if (authority === undefined) {
@@ -269,21 +298,28 @@ export function createCachedProjectTokenMint(
     const hit = cache.get(key);
     if (hit !== undefined && now() - hit.at < ttlMs) return Promise.resolve(hit.token);
     const existing = inflight.get(key);
-    if (existing !== undefined) return existing;
-    const pending = (async (): Promise<string | undefined> => {
-      try {
-        const token = await mint(project);
-        if (token !== undefined) cache.set(key, { token, at: now() });
-        return token;
-      } catch {
-        return undefined; // never cached → the next call retries
-      } finally {
-        inflight.delete(key);
-      }
-    })();
-    inflight.set(key, pending);
-    return pending;
+    const pending =
+      existing ??
+      (async (): Promise<string | undefined> => {
+        try {
+          const token = await mint(project);
+          if (token !== undefined) cache.set(key, { token, at: now() });
+          return token;
+        } finally {
+          inflight.delete(key);
+        }
+      })();
+    if (existing === undefined) inflight.set(key, pending);
+    try {
+      return await pending;
+    } catch (cause) {
+      if (strict) throw cause;
+      return undefined; // never cached → the next call retries
+    }
   };
+  const cached = (project: Parameters<GitHubProjectTokenMint>[0]) => get(project, false);
+  cached.strict = (project: Parameters<GitHubProjectTokenMint>[0]) => get(project, true);
+  return cached;
 }
 
 export function createCachedInstallationTokenMint(
