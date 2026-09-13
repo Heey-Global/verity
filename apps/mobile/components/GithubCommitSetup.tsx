@@ -33,12 +33,14 @@ export function GithubCommitSetup({
   const [email, setEmail] = useState('');
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [copied, setCopied] = useState(false);
+  const [githubOpened, setGithubOpened] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const authorReady = name.trim().length > 0 && email.trim().length > 0;
 
   useEffect(() => {
-    onCompletionChange(copied || confirmed || phase.kind === 'configured');
-  }, [confirmed, copied, onCompletionChange, phase.kind]);
+    onCompletionChange(confirmed || phase.kind === 'configured');
+  }, [confirmed, onCompletionChange, phase.kind]);
 
   const loadAuthor = useCallback(() => {
     return client.getVeritySettings().then((settings) => {
@@ -52,6 +54,8 @@ export function GithubCommitSetup({
     (identity?: { gitUserName: string; gitUserEmail: string }) => {
       setPhase({ kind: 'generating' });
       setCopied(false);
+      setGithubOpened(false);
+      setHandoffError(null);
       setConfirmed(false);
       void client
         .generateSigningKey(identity)
@@ -126,7 +130,19 @@ export function GithubCommitSetup({
   };
 
   const copy = (publicKey: string) => {
-    void Clipboard.setStringAsync(publicKey).then(() => setCopied(true));
+    setHandoffError(null);
+    void Clipboard.setStringAsync(publicKey)
+      .then(() => setCopied(true))
+      .catch(() => setHandoffError('Could not copy the key. Select it manually, then continue.'));
+  };
+
+  const openGithub = () => {
+    setHandoffError(null);
+    void Linking.openURL(GITHUB_SIGNING_KEY_URL)
+      .then(() => setGithubOpened(true))
+      .catch(() =>
+        setHandoffError('Could not open GitHub. Open GitHub signing key settings manually.'),
+      );
   };
 
   if (phase.kind === 'loading' || phase.kind === 'generating') {
@@ -225,53 +241,107 @@ export function GithubCommitSetup({
       {phase.kind === 'ready' ? (
         <>
           <View style={styles.divider} />
-          <Text style={styles.sectionTitle}>Verified commits</Text>
-          <Text style={styles.description}>
-            Add this public key to the same GitHub account as a Signing Key.
-          </Text>
-          <Pressable
-            style={styles.keyBox}
-            onPress={() => copy(phase.publicKey)}
-            accessibilityRole="button"
-            accessibilityLabel="Signing public key. Double tap to copy"
-          >
-            <Text style={styles.keyText} selectable>
-              {phase.publicKey}
+          <View style={styles.verificationIntro}>
+            <Text style={styles.sectionTitle}>Finish commit verification</Text>
+            <Text style={styles.description}>
+              Verity signs every commit it creates with this key. Adding the public key to GitHub
+              lets GitHub mark those commits as Verified, so you and your team can trust where they
+              came from.
             </Text>
-          </Pressable>
-          <View style={styles.actions}>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={() => copy(phase.publicKey)}
-              accessibilityRole="button"
-              accessibilityLabel="Copy signing public key"
-            >
-              <Text style={styles.secondaryButtonLabel}>{copied ? 'Copied ✓' : 'Copy key'}</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={() => void Linking.openURL(GITHUB_SIGNING_KEY_URL)}
-              accessibilityRole="link"
-              accessibilityLabel="Open GitHub signing key settings"
-            >
-              <Text style={styles.secondaryButtonLabel}>Open GitHub ↗</Text>
-            </Pressable>
+            <Text style={styles.requiredLabel}>Required before you continue</Text>
           </View>
-          <Pressable
-            style={styles.checkboxRow}
-            onPress={() => setConfirmed((value) => !value)}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: confirmed }}
-            accessibilityLabel="I added the signing key to GitHub"
-          >
-            <View style={[styles.checkbox, confirmed ? styles.checkboxChecked : null]}>
-              <Text style={styles.checkboxGlyph}>{confirmed ? '✓' : ''}</Text>
+
+          <View style={styles.guidedStep}>
+            <View style={[styles.stepBadge, copied ? styles.stepBadgeDone : null]}>
+              <Text style={styles.stepBadgeLabel}>{copied ? '✓' : '1'}</Text>
             </View>
-            <Text style={styles.checkboxLabel}>I added the signing key to GitHub</Text>
-          </Pressable>
-          <Text style={styles.hint}>
-            Next becomes available after copying the key or confirming that it is already added.
-          </Text>
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Copy your public signing key</Text>
+              <Text style={styles.description}>Only the public key is shared with GitHub.</Text>
+              <Pressable
+                style={styles.keyBox}
+                onPress={() => copy(phase.publicKey)}
+                accessibilityRole="button"
+                accessibilityLabel="Signing public key. Double tap to copy"
+              >
+                <Text style={styles.keyText} selectable>
+                  {phase.publicKey}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={copied ? styles.retryButton : styles.primaryButton}
+                onPress={() => copy(phase.publicKey)}
+                accessibilityRole="button"
+                accessibilityLabel="Copy signing public key"
+              >
+                <Text style={copied ? styles.retryButtonLabel : styles.primaryButtonLabel}>
+                  {copied ? 'Copy again' : 'Copy signing key'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.stepConnector} />
+
+          <View style={styles.guidedStep}>
+            <View style={[styles.stepBadge, githubOpened ? styles.stepBadgeDone : null]}>
+              <Text style={styles.stepBadgeLabel}>{githubOpened ? '✓' : '2'}</Text>
+            </View>
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Add it to GitHub</Text>
+              <Text style={styles.description}>
+                In GitHub, choose “Signing Key” as the key type, paste the key, and save it. Then
+                return to Verity.
+              </Text>
+              <Pressable
+                style={copied && !githubOpened ? styles.primaryButton : styles.secondaryButton}
+                onPress={openGithub}
+                accessibilityRole="link"
+                accessibilityLabel="Open GitHub signing key settings"
+              >
+                <Text
+                  style={
+                    copied && !githubOpened
+                      ? styles.primaryButtonLabel
+                      : styles.secondaryButtonLabel
+                  }
+                >
+                  {githubOpened ? 'Open GitHub again ↗' : 'Open GitHub ↗'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.stepConnector} />
+
+          <View style={styles.guidedStep}>
+            <View style={[styles.stepBadge, confirmed ? styles.stepBadgeDone : null]}>
+              <Text style={styles.stepBadgeLabel}>{confirmed ? '✓' : '3'}</Text>
+            </View>
+            <View style={styles.stepContent}>
+              <Text style={styles.stepTitle}>Confirm it is saved</Text>
+              <Text style={styles.description}>
+                Next stays locked until you confirm the signing key is on your GitHub account.
+              </Text>
+              <Pressable
+                style={[styles.checkboxRow, confirmed ? styles.confirmedRow : null]}
+                onPress={() => setConfirmed((value) => !value)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: confirmed }}
+                accessibilityLabel="I added the signing key to GitHub"
+              >
+                <View style={[styles.checkbox, confirmed ? styles.checkboxChecked : null]}>
+                  <Text style={styles.checkboxGlyph}>{confirmed ? '✓' : ''}</Text>
+                </View>
+                <Text style={styles.checkboxLabel}>I added the signing key to GitHub</Text>
+              </Pressable>
+            </View>
+          </View>
+          {handoffError ? (
+            <Text style={styles.error} accessibilityRole="alert">
+              {handoffError}
+            </Text>
+          ) : null}
         </>
       ) : null}
     </View>
@@ -349,7 +419,40 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
   },
   secondaryButtonLabel: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
-  checkboxRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  verificationIntro: { gap: theme.spacing.sm },
+  requiredLabel: { color: theme.colors.primary, fontSize: theme.text.xs, fontWeight: '800' },
+  guidedStep: { flexDirection: 'row', gap: theme.spacing.md },
+  stepBadge: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 15,
+    backgroundColor: theme.colors.primary,
+  },
+  stepBadgeDone: { backgroundColor: theme.colors.tone.done },
+  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '800' },
+  stepContent: { flex: 1, gap: theme.spacing.sm },
+  stepTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '800' },
+  stepConnector: {
+    width: 2,
+    height: theme.spacing.md,
+    marginLeft: 14,
+    backgroundColor: theme.colors.border,
+  },
+  retryButton: { minHeight: 36, alignItems: 'flex-start', justifyContent: 'center' },
+  retryButtonLabel: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '700' },
+  checkboxRow: {
+    minHeight: 52,
+    padding: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  confirmedRow: { borderColor: theme.colors.tone.done },
   checkbox: {
     width: 24,
     height: 24,
