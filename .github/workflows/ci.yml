@@ -107,6 +107,7 @@ jobs:
 
           # Scope generated PR `synchronize` events through the checked classifier.
           release_scoped=false
+          release_base=''
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             detected_train="$(.github/scripts/ci-release-pr-scope "$PR_AUTHOR" "$PR_HEAD" "$PR_NUMBER")"
             if [ -n "$detected_train" ]; then
@@ -121,10 +122,15 @@ jobs:
                 exit 1
               fi
               pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR}" --jq \
-                '[.user.login, .base.ref, .head.ref, .head.sha] | join("|")')"
-              expected="github-actions[bot]|main|${GITHUB_REF_NAME}|${GITHUB_SHA}"
-              if [ "$pr" != "$expected" ]; then
+                '[.user.login, .base.ref, .head.ref, .head.sha, .base.sha] | join("|")')"
+              expected="github-actions[bot]|main|${GITHUB_REF_NAME}|${GITHUB_SHA}|"
+              if [[ "$pr" != "$expected"* ]]; then
                 echo "::error::PR ${RELEASE_PR} is not the Release Please PR for this ref" >&2
+                exit 1
+              fi
+              release_base="${pr##*|}"
+              if [[ ! "$release_base" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::PR ${RELEASE_PR} has no immutable base SHA" >&2
                 exit 1
               fi
 
@@ -164,16 +170,7 @@ jobs:
                 # A generated backend release PR changes only version metadata.
                 # Let the release-only verifier below inherit the green base. If
                 # that proof fails, leave it unscoped so normal path routing runs.
-                if [ "${{ github.event_name }}" != "pull_request" ]; then
-                  lint=true
-                  typecheck=true
-                  test=true
-                  installer=true
-                  server_image=true
-                  release_scoped=true
-                else
-                  release_scoped=false
-                fi
+                release_scoped=false
                 ;;
               mobile)
                 # mobile-app builds @verity/mobile before checking the Expo app.
@@ -214,6 +211,13 @@ jobs:
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             # Release Please opens the same metadata-only commit as a PR first.
             before='${{ github.event.pull_request.base.sha }}'
+            git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+            [ "${RELEASE_TRAIN:-full}" = "backend" ]; then
+            # GITHUB_TOKEN-created PRs do not emit pull_request events. The
+            # API-verified immutable base lets this metadata-only dispatch inherit
+            # the exact green tree Release Please used.
+            before="$release_base"
             git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
           fi
           if [ -n "$before" ]; then
