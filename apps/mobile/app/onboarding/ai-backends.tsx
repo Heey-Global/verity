@@ -1,10 +1,11 @@
 import { VerityApiError, type OnboardingStatus } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AgentLoginPanel } from '../../components/AgentLoginPanel';
+import { OpenCodeSetup } from '../../components/OpenCodeSetup';
 import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold';
 import { createVerityClient } from '../../lib/client';
 
@@ -24,13 +25,13 @@ export default function OnboardingAiBackends() {
     return (
       <OnboardingStepScaffold
         stepId="ai-backends"
-        title="Agent logins"
+        title="AI providers"
         back={BACK}
         next={{ href: NEXT_HREF, label: 'Next', disabled: true }}
       >
         <View style={styles.card}>
           <Text style={styles.intro}>
-            No server is configured yet. Connect a Verity server before choosing an agent login.
+            No server is configured yet. Connect a Verity server before choosing an AI provider.
           </Text>
         </View>
       </OnboardingStepScaffold>
@@ -46,13 +47,18 @@ function AiBackendsStep({
 }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<
-    Pick<OnboardingStatus, 'claudeConfigured' | 'codexConfigured'>
+    Pick<OnboardingStatus, 'claudeConfigured' | 'codexConfigured'> & {
+      opencodeConfigured: boolean;
+    }
   >({
     claudeConfigured: false,
     codexConfigured: false,
+    opencodeConfigured: false,
   });
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [activeLogin, setActiveLogin] = useState(false);
+  const [activeOpenCode, setActiveOpenCode] = useState(false);
+  const activeSetup = activeLogin || activeOpenCode;
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +73,7 @@ function AiBackendsStep({
         setStatus({
           claudeConfigured: next.claudeConfigured,
           codexConfigured: next.codexConfigured,
+          opencodeConfigured: false,
         });
         setPhase({ kind: 'editing' });
       })
@@ -87,18 +94,22 @@ function AiBackendsStep({
     claude: status.claudeConfigured,
     codex: status.codexConfigured,
   };
+  const setOpenCodeConfigured = useCallback((opencodeConfigured: boolean) => {
+    setStatus((current) => ({ ...current, opencodeConfigured }));
+  }, []);
   return (
     <OnboardingStepScaffold
       stepId="ai-backends"
-      title="Agent logins"
-      back={activeLogin ? null : BACK}
+      title="AI providers"
+      back={activeSetup ? null : BACK}
       next={
-        activeLogin
+        activeSetup
           ? null
           : {
               href: NEXT_HREF,
               label: 'Next',
-              disabled: !status.claudeConfigured && !status.codexConfigured,
+              disabled:
+                !status.claudeConfigured && !status.codexConfigured && !status.opencodeConfigured,
             }
       }
     >
@@ -113,20 +124,28 @@ function AiBackendsStep({
       ) : null}
 
       {phase.kind === 'editing' ? (
-        <AgentLoginPanel
-          client={client}
-          configured={configured}
-          onActiveChange={setActiveLogin}
-          onConfiguredChange={(provider, nextConfigured) => {
-            setStatus((current) => ({
-              ...current,
-              ...(provider === 'claude'
-                ? { claudeConfigured: nextConfigured }
-                : { codexConfigured: nextConfigured }),
-            }));
-          }}
-          onSealed={() => router.replace(unlockRoute())}
-        />
+        <>
+          <AgentLoginPanel
+            client={client}
+            configured={configured}
+            onActiveChange={setActiveLogin}
+            onConfiguredChange={(provider, nextConfigured) => {
+              setStatus((current) => ({
+                ...current,
+                ...(provider === 'claude'
+                  ? { claudeConfigured: nextConfigured }
+                  : { codexConfigured: nextConfigured }),
+              }));
+            }}
+            onSealed={() => router.replace(unlockRoute())}
+          />
+          <OpenCodeSetup
+            client={client}
+            onConfiguredChange={setOpenCodeConfigured}
+            onActiveChange={setActiveOpenCode}
+            onSealed={() => router.replace(unlockRoute())}
+          />
+        </>
       ) : null}
     </OnboardingStepScaffold>
   );

@@ -102,7 +102,11 @@ import GithubManifestCallback from '../app/github/app/callback';
 import OnboardingAiBackends from '../app/onboarding/ai-backends';
 
 function fakeClient(overrides: Partial<VerityClient>): VerityClient {
-  return overrides as unknown as VerityClient;
+  return {
+    getVeritySettings: jest.fn().mockResolvedValue({}),
+    updateVeritySettings: jest.fn().mockResolvedValue({}),
+    ...overrides,
+  } as unknown as VerityClient;
 }
 
 function status(overrides: Partial<OnboardingStatus> = {}): OnboardingStatus {
@@ -1088,11 +1092,8 @@ describe('onboarding agent logins step', () => {
     fireEvent.press(screen.getByLabelText('Open Codex login page'));
     expect(openURL).toHaveBeenCalledWith('https://auth.openai.com/codex/device');
     expect(screen.getByLabelText('Open Codex login again')).toBeOnTheScreen();
-    expect(
-      screen.getByText(
-        '3. Finish signing in there, then return to Verity. We will connect automatically.',
-      ),
-    ).toBeOnTheScreen();
+    expect(screen.getByText('Finish there, then return to Verity')).toBeOnTheScreen();
+    expect(screen.getByText('We will detect the completed login automatically.')).toBeOnTheScreen();
   });
 
   it('does not expose a Claude login link before the server marks the URL ready', async () => {
@@ -1200,5 +1201,91 @@ describe('onboarding agent logins step', () => {
     await screen.findByLabelText('Next');
     expect(screen.queryByLabelText('Skip — set up later')).toBeNull();
     expect(screen.getByLabelText('Next')).toHaveProp('accessibilityState', { disabled: true });
+  });
+
+  it('accepts a configured OpenCode provider as the first agent connection', async () => {
+    const updateVeritySettings = jest.fn().mockResolvedValue({});
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        getVeritySettings: jest.fn().mockResolvedValue({
+          opencodeApiKeyConfigured: false,
+          opencodeBaseUrl: null,
+          opencodeModels: null,
+        }),
+        updateVeritySettings,
+      }),
+    );
+
+    render(<OnboardingAiBackends />);
+    fireEvent.press(await screen.findByLabelText('Configure OpenCode'));
+    expect(screen.queryByLabelText('Next')).toBeNull();
+
+    fireEvent.changeText(
+      screen.getByLabelText('OpenCode API base URL'),
+      'https://api.example.com/v1',
+    );
+    fireEvent.changeText(screen.getByLabelText('OpenCode API key'), 'provider-secret');
+    fireEvent.changeText(
+      screen.getByLabelText('OpenCode models'),
+      'provider/model-a\nprovider/model-b',
+    );
+    fireEvent.press(screen.getByLabelText('Save OpenCode'));
+
+    await waitFor(() =>
+      expect(updateVeritySettings).toHaveBeenCalledWith({
+        opencodeBaseUrl: 'https://api.example.com/v1',
+        opencodeApiKey: 'provider-secret',
+        opencodeModels: 'provider/model-a\nprovider/model-b',
+      }),
+    );
+    expect(await screen.findByLabelText('Next')).toBeEnabled();
+  });
+
+  it('hides wizard navigation while editing OpenCode even when another provider is ready', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status({ claudeConfigured: true })),
+        getVeritySettings: jest.fn().mockResolvedValue({}),
+      }),
+    );
+
+    render(<OnboardingAiBackends />);
+    expect(await screen.findByLabelText('Next')).toBeEnabled();
+    expect(screen.getByLabelText('Back')).toBeOnTheScreen();
+
+    fireEvent.press(await screen.findByLabelText('Configure OpenCode'));
+    expect(screen.queryByLabelText('Next')).toBeNull();
+    expect(screen.queryByLabelText('Back')).toBeNull();
+
+    fireEvent.press(screen.getByLabelText('Cancel OpenCode setup'));
+    expect(await screen.findByLabelText('Next')).toBeEnabled();
+    expect(screen.getByLabelText('Back')).toBeOnTheScreen();
+  });
+
+  it('requires a fresh API key when an existing OpenCode endpoint changes', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
+        getVeritySettings: jest.fn().mockResolvedValue({
+          opencodeApiKeyConfigured: true,
+          opencodeBaseUrl: 'https://old.example.com/v1',
+          opencodeModels: 'provider/model-a',
+        }),
+      }),
+    );
+
+    render(<OnboardingAiBackends />);
+    fireEvent.press(await screen.findByLabelText('Edit OpenCode'));
+    expect(screen.getByLabelText('Save OpenCode')).toBeEnabled();
+
+    fireEvent.changeText(
+      screen.getByLabelText('OpenCode API base URL'),
+      'https://new.example.com/v1',
+    );
+    expect(screen.getByLabelText('Save OpenCode')).toBeDisabled();
+
+    fireEvent.changeText(screen.getByLabelText('OpenCode API key'), 'replacement-secret');
+    expect(screen.getByLabelText('Save OpenCode')).toBeEnabled();
   });
 });

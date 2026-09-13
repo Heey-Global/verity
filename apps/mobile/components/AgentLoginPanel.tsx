@@ -5,7 +5,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -292,11 +292,11 @@ export function AgentLoginPanel({
       {showGuidance ? (
         <View style={styles.guidance}>
           <Text style={styles.guidanceTitle} accessibilityRole="header">
-            Connect Claude or Codex
+            Choose an agent connection
           </Text>
           <Text style={styles.guidanceStep}>
-            Connect at least one agent subscription. Verity starts the login on this server, stores
-            the resulting credential encrypted, and uses it only for agent sessions.
+            Connect at least one provider. You can add another later; Verity stores each resulting
+            credential encrypted and uses it only for agent sessions.
           </Text>
         </View>
       ) : null}
@@ -393,9 +393,6 @@ function ProviderCard({
   const openLoginLabel = state.openedLoginPage
     ? 'Open ' + title + ' login again'
     : 'Open ' + title + ' login page';
-  const codePrompt = login?.userCode
-    ? '3. Return to Verity and wait for confirmation.'
-    : '2. Paste the code Claude shows after sign-in.';
   const primaryButtonVisible = !ready && !loginBoxVisible;
   const codeStepActive =
     login?.needsCode === true &&
@@ -474,10 +471,11 @@ function ProviderCard({
       {loginBoxVisible ? (
         <View style={styles.loginBox}>
           {login.userCode ? (
-            <>
-              <Text style={[styles.footnote, !state.deviceCodeCopied ? styles.stepActive : null]}>
-                1. Copy your one-time {title} code.
-              </Text>
+            <LoginStep
+              number={1}
+              title={`Copy your one-time ${title} code`}
+              state={state.deviceCodeCopied ? 'done' : 'active'}
+            >
               <View style={styles.codeRow}>
                 <Text style={styles.code} selectable>
                   {login.userCode}
@@ -500,25 +498,29 @@ function ProviderCard({
                       : 'Copy code'}
                 </Text>
               </Pressable>
-            </>
+            </LoginStep>
           ) : null}
           {canOpenLoginPage ? (
-            <>
-              {returnedCodeFlow ? (
-                <Text style={[styles.footnote, !state.openedLoginPage ? styles.stepActive : null]}>
-                  1. Sign in to {title} in your browser.
-                </Text>
-              ) : null}
-              {deviceCodeFlow ? (
-                <Text
-                  style={[
-                    styles.footnote,
-                    state.deviceCodeCopied && !state.openedLoginPage ? styles.stepActive : null,
-                  ]}
-                >
-                  2. Open {title} and paste the code on its login page.
-                </Text>
-              ) : null}
+            <LoginStep
+              number={deviceCodeFlow ? 2 : 1}
+              title={
+                deviceCodeFlow
+                  ? `Open ${title} and paste the code`
+                  : `Sign in to ${title} in your browser`
+              }
+              description={
+                deviceCodeFlow
+                  ? `Paste the copied code on the ${title} login page.`
+                  : `Return to Verity with the code ${title} shows after sign-in.`
+              }
+              state={
+                state.openedLoginPage
+                  ? 'done'
+                  : !deviceCodeFlow || state.deviceCodeCopied
+                    ? 'active'
+                    : 'pending'
+              }
+            >
               <Pressable
                 onPress={() => {
                   onOpenLoginPage();
@@ -543,22 +545,34 @@ function ProviderCard({
                   {openLoginLabel}
                 </Text>
               </Pressable>
-              {deviceCodeFlow && state.openedLoginPage ? (
-                <Text style={styles.stepActive}>
-                  3. Finish signing in there, then return to Verity. We will connect automatically.
-                </Text>
+            </LoginStep>
+          ) : null}
+          {deviceCodeFlow ? (
+            <LoginStep
+              number={3}
+              title="Finish there, then return to Verity"
+              description="We will detect the completed login automatically."
+              state={state.openedLoginPage ? 'active' : 'pending'}
+            >
+              {state.openedLoginPage ? (
+                <View style={styles.waitingRow}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <Text style={styles.waitingText}>Waiting for sign-in…</Text>
+                </View>
               ) : null}
-            </>
+            </LoginStep>
           ) : null}
           {login.needsCode && login.status !== 'complete' ? (
-            <View style={styles.field}>
-              <Text style={[styles.footnote, codeStepActive ? styles.stepActive : null]}>
-                {returnedCodeFlow
-                  ? state.openedLoginPage
-                    ? `2. Back in Verity? Paste the code ${title} showed you.`
-                    : `2. Return here with the code ${title} shows after sign-in.`
-                  : codePrompt}
-              </Text>
+            <LoginStep
+              number={2}
+              title={
+                state.openedLoginPage
+                  ? `Paste the code ${title} showed you`
+                  : `Return with your ${title} code`
+              }
+              description="Paste is fastest, or enter the code manually."
+              state={codeStepActive ? 'active' : 'pending'}
+            >
               {returnedCodeFlow && state.openedLoginPage ? (
                 <Pressable
                   style={({ pressed }) => [styles.pasteButton, pressed ? styles.pressed : null]}
@@ -593,7 +607,7 @@ function ProviderCard({
               >
                 <Text style={styles.secondaryButtonLabel}>Connect {title}</Text>
               </Pressable>
-            </View>
+            </LoginStep>
           ) : null}
         </View>
       ) : null}
@@ -603,6 +617,45 @@ function ProviderCard({
           {state.error ?? login?.message}
         </Text>
       ) : null}
+    </View>
+  );
+}
+
+function LoginStep({
+  number,
+  title,
+  description,
+  state,
+  children,
+}: {
+  number: number;
+  title: string;
+  description?: string;
+  state: 'pending' | 'active' | 'done';
+  children?: ReactNode;
+}) {
+  return (
+    <View style={[styles.loginStep, state === 'active' ? styles.loginStepActive : null]}>
+      <View
+        style={[
+          styles.stepBadge,
+          state === 'active' ? styles.stepBadgeActive : null,
+          state === 'done' ? styles.stepBadgeDone : null,
+        ]}
+      >
+        <Text
+          style={[styles.stepBadgeLabel, state === 'pending' ? styles.stepBadgeLabelMuted : null]}
+        >
+          {state === 'done' ? '✓' : number}
+        </Text>
+      </View>
+      <View style={styles.stepBody}>
+        <Text style={[styles.stepTitle, state === 'pending' ? styles.stepTitlePending : null]}>
+          {title}
+        </Text>
+        {description ? <Text style={styles.stepDescription}>{description}</Text> : null}
+        {children}
+      </View>
     </View>
   );
 }
@@ -720,20 +773,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   loginBox: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.background,
+    paddingTop: theme.spacing.xs,
   },
   linkButton: {
     alignSelf: 'flex-start',
     paddingVertical: theme.spacing.xs,
   },
   linkLabel: {
-    color: theme.colors.accent,
+    color: theme.colors.textMuted,
     fontSize: theme.text.sm,
-    fontWeight: '900',
+    fontWeight: '700',
   },
   codeRow: {
     minHeight: 50,
@@ -753,9 +802,6 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '900',
     letterSpacing: 0,
   },
-  field: {
-    gap: theme.spacing.xs,
-  },
   input: {
     minHeight: 48,
     padding: theme.spacing.md,
@@ -766,15 +812,49 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.background,
     fontSize: theme.text.sm,
   },
-  footnote: {
-    color: theme.colors.textFaint,
+  loginStep: {
+    flexDirection: 'row',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  loginStepActive: {
+    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.surface,
+  },
+  stepBadge: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  stepBadgeActive: {
+    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.primary,
+  },
+  stepBadgeDone: {
+    borderColor: theme.colors.tone.done,
+    backgroundColor: theme.colors.tone.done,
+  },
+  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '900' },
+  stepBadgeLabelMuted: { color: theme.colors.textFaint },
+  stepBody: { flex: 1, gap: theme.spacing.sm },
+  stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '900' },
+  stepTitlePending: { color: theme.colors.textFaint },
+  stepDescription: {
+    color: theme.colors.textMuted,
     fontSize: theme.text.xs,
-    lineHeight: 17 * theme.fontScale,
+    lineHeight: 18 * theme.fontScale,
   },
-  stepActive: {
-    color: theme.colors.accent,
-    fontWeight: '900',
-  },
+  waitingRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  waitingText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '700' },
   error: {
     color: theme.colors.tone.danger,
     fontSize: theme.text.sm,
