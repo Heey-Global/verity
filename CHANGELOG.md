@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/Heey-Global/verity/compare/v0.2.0...v0.2.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **server:** release GitHub token cache fix ([#242](https://github.com/Heey-Global/verity/issues/242)) ([e0f8185](https://github.com/Heey-Global/verity/commit/e0f81851952eeaa36d3ffe654966037840fd5e16))
+
 ## [0.2.0](https://github.com/Heey-Global/verity/compare/v0.1.1...v0.2.0) (2026-09-13)
 
 
