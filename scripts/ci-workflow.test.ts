@@ -3239,7 +3239,7 @@ describe('changed-area detector', () => {
           `if [[ "$*" == *'/pulls/${event.releasePr ?? '119'}/files'* ]]; then\n` +
           `  ${list(generatedFiles)}\n` +
           `elif [[ "$*" == *'/pulls/${event.releasePr ?? '119'}'* ]]; then\n` +
-          `  printf '%s\\n' ${JSON.stringify(`${releaseAuthor}|main|release-branch|release-sha`)}\n` +
+          `  printf '%s\\n' ${JSON.stringify(`${releaseAuthor}|main|release-branch|release-sha|0000000000000000000000000000000000000002`)}\n` +
           'else\n' +
           (baseVerdict === null
             ? '  echo "gh: api unreachable" >&2\n  exit 1\n'
@@ -3834,15 +3834,11 @@ describe('changed-area detector', () => {
 
   it('scopes generated release PR dispatches to their train', async () => {
     expect(
-      await run({ name: 'workflow_dispatch', releaseTrain: 'backend', releasePr: '119' }, []),
-    ).toEqual({
-      ...all('false'),
-      lint: 'true',
-      typecheck: 'true',
-      test: 'true',
-      installer: 'true',
-      server_image: 'true',
-    });
+      await run(
+        { name: 'workflow_dispatch', releaseTrain: 'backend', releasePr: '119' },
+        releaseManaged,
+      ),
+    ).toEqual(all('false'));
     expect(
       await run({ name: 'workflow_dispatch', releaseTrain: 'mobile', releasePr: '119' }, []),
     ).toEqual({
@@ -3855,6 +3851,16 @@ describe('changed-area detector', () => {
     expect(
       await run({ name: 'workflow_dispatch', releaseTrain: 'mobile-ota', releasePr: '119' }, []),
     ).toEqual(all('false'));
+  });
+
+  it('fails broad when a backend release dispatch cannot inherit a green base', async () => {
+    expect(
+      await run(
+        { name: 'workflow_dispatch', releaseTrain: 'backend', releasePr: '119' },
+        releaseManaged,
+        { baseVerdict: 'completed/failure' },
+      ),
+    ).toEqual(all('true'));
   });
 
   it('does not run backend checks for a generated OTA promotion PR', async () => {
