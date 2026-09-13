@@ -396,14 +396,13 @@ jobs:
                   test=true
                   mobile_app=true
                   ;;
-                # App configuration is consumed by release and native-build tests,
-                # so edits must run the root suite as well as the mobile checks.
-                # Keep this narrower than the whole app to avoid running the full
-                # suite for an unrelated screen edit.
+                # App configuration is consumed by release and native-build tests.
+                # The mobile-app job runs the focused workflow contract alongside
+                # Jest, while verity-mobile-native-verify compiles the generated
+                # iOS project. Do not route this into the unrelated backend shards.
                 apps/mobile/app.config.ts)
                   lint=true
                   typecheck=true
-                  test=true
                   mobile_app=true
                   ;;
                 # Release workflow tests guard the App Store destination in this
@@ -1132,6 +1131,10 @@ jobs:
       - run: npm run -w @verity/mobile build
       - run: npm run -w @verity/mobile-app typecheck
       - run: npm run -w @verity/mobile-app test
+      # app.config.ts is also an input to release/OTA workflows. This focused
+      # contract belongs with the full mobile install instead of making every
+      # config edit run the unrelated Server/Store/Session shards.
+      - run: npx vitest run scripts/ci-workflow.test.ts --maxWorkers=1
 
   server-image:
     needs: changes
