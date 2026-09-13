@@ -6,17 +6,17 @@
 [![Signed releases](https://img.shields.io/badge/releases-cosign%20signed-0b7285)](SECURITY.md#verifying-a-release)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Run coding agents in a secure, isolated environment—without locking your
-workflow to a single AI provider.**
+**Run a fleet of coding agents on your own server—and steer it from your
+phone.**
 
-Verity is a self-hosted platform for running coding agents across your
-development projects. Use Claude Code, Codex, or open-source models through
-OpenCode while agents work in isolated project sandboxes and parallel Git
-worktrees and session history stays on your server.
+Use Verity on iPhone, iPad, or Mac through the iPad app to start multiple
+agents, see which sessions need attention, follow tool activity, answer
+permission requests, and keep work moving away from your desk.
 
-Use Verity on iPhone, iPad, or Mac through the iPad app to start multiple agents,
-see which sessions need attention, follow tool activity, answer permission
-requests, and keep work moving away from your desk.
+Agents work in isolated project sandboxes and parallel Git worktrees, session
+history stays on your server, and the runtime is not tied to a single AI
+provider: Claude Code, Codex, and open-source models through OpenCode are all
+supported.
 
 ![Verity app](docs/website/site/assets/hero-product-verity-v5.png)
 
@@ -27,16 +27,33 @@ requests, and keep work moving away from your desk.
 > [known limitations](SECURITY.md#known-limitations) and the
 > [open-source readiness tracker](docs/open-source-readiness.md) before deploying.
 
+## What Verity is not
+
+- **Not an editor.** Verity does not replace your IDE. There is no completion
+  and no inline edit loop.
+- **Not a prototype builder.** Agents work on your existing repositories and
+  your existing Git workflow, not on generated starter applications.
+- **Not a hosted service.** A local installation does not require a paid
+  service from us.
+
 ## What Verity provides
+
+Fleet:
 
 - Persistent coding-agent sessions across your projects
 - Concurrent agents with an isolated branch and worktree for every session
-- Support for Claude Code, Codex, and compatible OpenCode providers
 - An attention queue, live tool activity, and permission prompts
 - Voice input, file attachments, and access to project files
-- Visibility into agent branches, pull requests, and CI status
+
+Isolation and credentials:
+
 - Per-project container isolation on your own Docker host
 - Brokered Claude and Codex credentials kept outside project sandboxes
+
+Workflow and deployment:
+
+- Support for Claude Code, Codex, and compatible OpenCode providers
+- Visibility into agent branches, pull requests, and CI status
 - A self-contained deployment with PostgreSQL included
 
 ## Install
