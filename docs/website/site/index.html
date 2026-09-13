@@ -3,31 +3,31 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Verity — Secure control plane for AI coding agents</title>
+    <title>Verity — Run your coding agent fleet from your phone</title>
     <meta
       name="description"
-      content="Run Claude Code and Codex with brokered credentials, or connect open-source models through OpenCode. Keep work isolated with worktrees and review gates."
+      content="Start Claude Code and Codex agents on your own server from iPhone or iPad. Every session gets its own sandbox and branch, and provider credentials stay behind a broker."
     />
     <meta name="author" content="Heey GmbH" />
     <meta name="publisher" content="Heey GmbH" />
     <meta name="robots" content="index, follow" />
     <meta
       property="og:title"
-      content="Verity — Secure control plane for AI coding agents"
+      content="Verity — Run your coding agent fleet from your phone"
     />
     <meta
       property="og:description"
-      content="Parallel coding agents with isolated worktrees and brokered Claude and Codex credentials."
+      content="Self-hosted coding agents with isolated worktrees and brokered Claude and Codex credentials, steered from iPhone and iPad."
     />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary" />
     <meta
       name="twitter:title"
-      content="Verity — Secure control plane for AI coding agents"
+      content="Verity — Run your coding agent fleet from your phone"
     />
     <meta
       name="twitter:description"
-      content="Parallel coding agents with isolated worktrees, review gates, and brokered Claude and Codex credentials."
+      content="Self-hosted coding agents with isolated worktrees, review gates, and brokered Claude and Codex credentials, steered from iPhone and iPad."
     />
     <link rel="icon" type="image/png" href="assets/verity-favicon.png" />
     <link rel="apple-touch-icon" href="assets/verity-favicon.png" />
@@ -610,12 +610,13 @@
       <section class="hero">
         <div class="wrap">
           <div class="hero-copy">
-            <span class="eyebrow">Secure control plane for coding agents</span>
-            <h1>Run your coding agents <span>from one place.</span></h1>
+            <span class="eyebrow">Self-hosted fleet of coding agents</span>
+            <h1>Run your agent fleet <span>from your phone.</span></h1>
             <p class="sub">
-              Claude Code and Codex, plus open-source models through OpenCode —
-              running in isolated project sandboxes and parallel worktrees,
-              with your history on your server.
+              Claude Code and Codex behind a credential broker, plus
+              open-source models through OpenCode. All on your own server, each
+              session in its own sandbox and worktree, with your history on
+              your server.
             </p>
             <a class="button hero-cta" href="#waitlist">Early access details</a>
             <p class="signup-note">iPhone · iPad · Mac via the iPad app today</p>
@@ -635,12 +636,15 @@
       <section class="proof" aria-label="Core product benefits">
         <div class="wrap proof-grid">
           <div class="proof-item">
-            <h3>Parallel without collisions</h3>
-            <p>Every session gets its own branch and clean worktree.</p>
+            <h3>Brokered Claude and Codex credentials stay outside</h3>
+            <p>
+              Claude and Codex tokens, signing keys, and infrastructure access
+              stay brokered outside the sandbox.
+            </p>
           </div>
           <div class="proof-item">
-            <h3>Claude and Codex credentials stay outside</h3>
-            <p>Signing keys and infrastructure access stay brokered outside.</p>
+            <h3>Parallel without collisions</h3>
+            <p>Every session gets its own branch and clean worktree.</p>
           </div>
           <div class="proof-item">
             <h3>Your infrastructure. Isolated execution.</h3>
@@ -666,19 +670,6 @@
           <div class="story-grid">
             <article class="story">
               <span class="story-number">01</span>
-              <h3>Run the fleet in parallel.</h3>
-              <p>
-                Start several agents on the same repository. Isolated worktrees
-                keep their branches clean and their changes apart.
-              </p>
-              <div class="capabilities">
-                <span class="capability">Worktrees</span>
-                <span class="capability">Attention queue</span>
-              </div>
-            </article>
-
-            <article class="story">
-              <span class="story-number">02</span>
               <h3>Review and ship safely.</h3>
               <p>
                 Every agent branch passes secret scanning and an isolated code
@@ -689,6 +680,21 @@
                 <span class="capability">Gitleaks secret scan</span>
                 <span class="capability">Isolated code review</span>
                 <span class="capability">PR + CI gates</span>
+              </div>
+            </article>
+
+            <article class="story">
+              <span class="story-number">02</span>
+              <h3>Run the fleet from anywhere.</h3>
+              <p>
+                Start several agents on the same repository from your phone.
+                Isolated worktrees keep their branches clean and their changes
+                apart; the attention queue shows which session needs you.
+              </p>
+              <div class="capabilities">
+                <span class="capability">Worktrees</span>
+                <span class="capability">Attention queue</span>
+                <span class="capability">Voice input</span>
               </div>
             </article>
 
@@ -718,15 +724,15 @@
             <span class="eyebrow">Secure by design · Supply-chain protection</span>
             <h2>Keep Claude and Codex credentials outside agent runtimes.</h2>
             <p>
-              Run Verity on a Linux workstation, dedicated server, or private
-              cloud. The self-hosted server currently requires an x86_64/amd64
-              Linux host; ARM64, macOS, and Windows hosts are not supported.
               Isolated project containers and external credential boundaries
               reduce the blast radius of software supply-chain attacks. Claude
               and Codex provider requests cross a brokered gateway; signing and
               infrastructure actions are brokered outside the project runtime.
               OpenCode is supported separately and is not covered by this
-              credential-isolation claim.
+              credential-isolation claim. Run Verity on a Linux workstation,
+              dedicated server, or private cloud; the self-hosted server
+              currently requires an x86_64/amd64 Linux host, and ARM64, macOS,
+              and Windows hosts are not supported.
             </p>
             <div class="security-promise">
               On brokered Claude and Codex paths, a compromised dependency may
@@ -738,6 +744,38 @@
             <div><span>✓</span> Commit signing key stays outside</div>
             <div><span>✓</span> Git push and infrastructure access are brokered</div>
             <div><span>✓</span> Secret-manager and database credentials stay server-side</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="proof" aria-label="Product scope">
+        <div class="wrap">
+          <div class="section-head">
+            <span class="eyebrow">Scope</span>
+            <h2>What Verity is not.</h2>
+          </div>
+        </div>
+        <div class="wrap proof-grid">
+          <div class="proof-item">
+            <h3>Not an editor</h3>
+            <p>
+              Verity does not replace your IDE. There is no completion and no
+              inline edit loop.
+            </p>
+          </div>
+          <div class="proof-item">
+            <h3>Not a prototype builder</h3>
+            <p>
+              Agents work on your existing repositories and your existing Git
+              workflow, not on generated starter applications.
+            </p>
+          </div>
+          <div class="proof-item">
+            <h3>Not a hosted service</h3>
+            <p>
+              Verity runs on your own host. A local installation does not
+              require a paid service from us.
+            </p>
           </div>
         </div>
       </section>
