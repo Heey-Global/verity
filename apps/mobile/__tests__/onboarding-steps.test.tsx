@@ -823,7 +823,7 @@ describe('onboarding github one-page setup', () => {
     );
   });
 
-  it('shows author and signing key on the same page and unlocks Next after copy', async () => {
+  it('explains the signing handoff and unlocks Next only after explicit confirmation', async () => {
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
         fetchOnboardingStatus: jest
@@ -842,11 +842,53 @@ describe('onboarding github one-page setup', () => {
     expect(await screen.findByText('GitHub connected')).toBeOnTheScreen();
     expect(screen.getByDisplayValue('Holger')).toBeOnTheScreen();
     expect(screen.getByDisplayValue('holger@example.test')).toBeOnTheScreen();
+    expect(screen.getByText('Finish commit verification')).toBeOnTheScreen();
+    expect(screen.getByText('Required before you continue')).toBeOnTheScreen();
+    expect(screen.getByText('Copy your public signing key')).toBeOnTheScreen();
+    expect(screen.getByText('Add it to GitHub')).toBeOnTheScreen();
+    expect(screen.getByText('Confirm it is saved')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Next')).toBeNull();
 
     fireEvent.press(screen.getByLabelText('Copy signing public key'));
     await waitFor(() => expect(mockSetStringAsync).toHaveBeenCalledWith(PUBLIC_KEY));
+    expect(screen.queryByLabelText('Next')).toBeNull();
+
+    fireEvent.press(screen.getByLabelText('Open GitHub signing key settings'));
+    await waitFor(() =>
+      expect(openURL).toHaveBeenCalledWith('https://github.com/settings/ssh/new'),
+    );
+    expect(screen.queryByLabelText('Next')).toBeNull();
+
+    fireEvent.press(screen.getByLabelText('I added the signing key to GitHub'));
     expect(await screen.findByLabelText('Next')).toBeOnTheScreen();
+  });
+
+  it('keeps the signing handoff recoverable when copy or GitHub launch fails', async () => {
+    mockSetStringAsync.mockRejectedValueOnce(new Error('clipboard unavailable'));
+    openURL.mockRejectedValueOnce(new Error('browser unavailable'));
+    mockCreateVerityClient.mockReturnValue(
+      fakeClient({
+        fetchOnboardingStatus: jest
+          .fn()
+          .mockResolvedValue(status({ githubAppConfigured: true, nextStep: 'github' })),
+        getVeritySettings: jest.fn().mockResolvedValue({
+          gitUserName: 'Holger',
+          gitUserEmail: 'holger@example.test',
+        }),
+        getSigningKey: jest.fn().mockResolvedValue({ configured: true, publicKey: PUBLIC_KEY }),
+      }),
+    );
+
+    render(<OnboardingGithub />);
+    expect(await screen.findByText('Finish commit verification')).toBeOnTheScreen();
+
+    fireEvent.press(screen.getByLabelText('Copy signing public key'));
+    expect(await screen.findByText(/Could not copy the key/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Next')).toBeNull();
+
+    fireEvent.press(screen.getByLabelText('Open GitHub signing key settings'));
+    expect(await screen.findByText(/Could not open GitHub/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Next')).toBeNull();
   });
 
   it('treats an already-configured key with no readable public key as done, not a dead end', async () => {
