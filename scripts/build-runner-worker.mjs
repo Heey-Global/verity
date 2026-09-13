@@ -18,11 +18,33 @@ const bundleAliases = {
 const check = process.argv.includes('--check');
 const buildTarget = check ? `${outfile}.check` : outfile;
 
-/** @param {string} path */
+/**
+ * Strip the install layout out of the module labels esbuild writes.
+ *
+ * esbuild names every bundled module by the path it was read from, and npm
+ * decides per install whether a dependency lands hoisted at the repository root
+ * or nested under `packages/<name>/node_modules`. That is a property of install
+ * history, not of the sources: the same tree labels zod `../../node_modules/zod`
+ * after one install and `packages/session/node_modules/zod` after another. The
+ * alias above already pins which copy is bundled, so the code either way is the
+ * same code — only its label moves, and `--check` would report a bundle that is
+ * byte-identical everywhere it matters as out of date. The labels are inert:
+ * `__commonJS` reaches its callback through `__getOwnPropNames(cb)[0]`, never by
+ * name, so rewriting the key changes nothing that runs.
+ *
+ * Both shapes carry the label — the `// path` comment above each module and the
+ * quoted key beneath it — and normalizing only the comment leaves the key to
+ * fail the comparison on its own. Everything up to the first `node_modules/` is
+ * the path to the install root and goes; a second one further along is a real
+ * dependency of a dependency and stays.
+ *
+ * @param {string} path
+ */
 async function normalizeBundleComments(path) {
   const bundled = await readFile(path, 'utf8');
   const normalized = bundled
-    .replace(/^\/\/ (?:\.\.\/)+node_modules\//gm, '// node_modules/')
+    .replace(/^\/\/ [^"\s]*?node_modules\//gm, '// node_modules/')
+    .replace(/^(\s*)"[^"\s]*?node_modules\/([^"]*)"\(/gm, '$1"node_modules/$2"(')
     .replace(/[ \t]+$/gm, '');
   if (normalized !== bundled) await writeFile(path, normalized);
 }
