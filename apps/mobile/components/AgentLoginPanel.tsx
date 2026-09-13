@@ -13,6 +13,7 @@ type LoginState = {
   login: AgentLogin | null;
   code: string;
   copied: boolean;
+  deviceCodeCopied: boolean;
   openedLoginPage: boolean;
   busy: boolean;
   error: string | null;
@@ -26,7 +27,15 @@ export type AgentLoginConfiguredState = {
 const PROVIDERS: readonly AgentLoginProvider[] = ['claude', 'codex'];
 
 function emptyLoginState(): LoginState {
-  return { login: null, code: '', copied: false, openedLoginPage: false, busy: false, error: null };
+  return {
+    login: null,
+    code: '',
+    copied: false,
+    deviceCodeCopied: false,
+    openedLoginPage: false,
+    busy: false,
+    error: null,
+  };
 }
 
 function isSealedError(caught: unknown): boolean {
@@ -164,6 +173,7 @@ export function AgentLoginPanel({
         busy: true,
         error: null,
         copied: false,
+        deviceCodeCopied: false,
         openedLoginPage: false,
       });
       void client
@@ -251,11 +261,30 @@ export function AgentLoginPanel({
   };
 
   const copyCode = (provider: AgentLoginProvider, code: string) => {
-    void Clipboard.setStringAsync(code).then(() => {
-      patchProvider(provider, { copied: true });
-      const timer = setTimeout(() => patchProvider(provider, { copied: false }), 700);
-      if (typeof timer === 'object' && 'unref' in timer) timer.unref();
-    });
+    void Clipboard.setStringAsync(code)
+      .then(() => {
+        patchProvider(provider, { copied: true, deviceCodeCopied: true, error: null });
+        const timer = setTimeout(() => patchProvider(provider, { copied: false }), 700);
+        if (typeof timer === 'object' && 'unref' in timer) timer.unref();
+      })
+      .catch(() =>
+        patchProvider(provider, {
+          error: 'Could not copy the code. Select it manually, then continue to the login page.',
+        }),
+      );
+  };
+
+  const pasteCode = (provider: AgentLoginProvider) => {
+    void Clipboard.getStringAsync()
+      .then((value) => {
+        const code = value.trim();
+        if (code.length === 0) {
+          patchProvider(provider, { error: 'The clipboard does not contain a login code.' });
+          return;
+        }
+        patchProvider(provider, { code, error: null });
+      })
+      .catch(() => patchProvider(provider, { error: 'Could not read the clipboard.' }));
   };
 
   return (
@@ -280,6 +309,7 @@ export function AgentLoginPanel({
         onStart={() => start('claude')}
         onDisconnect={() => disconnect('claude')}
         onCopyCode={(code) => copyCode('claude', code)}
+        onPasteCode={() => pasteCode('claude')}
         onChangeCode={(code) => patchProvider('claude', { code })}
         onOpenLoginPage={() => patchProvider('claude', { openedLoginPage: true })}
         onSubmitCode={() => submitCode('claude')}
@@ -293,6 +323,7 @@ export function AgentLoginPanel({
         onStart={() => start('codex')}
         onDisconnect={() => disconnect('codex')}
         onCopyCode={(code) => copyCode('codex', code)}
+        onPasteCode={() => pasteCode('codex')}
         onChangeCode={(code) => patchProvider('codex', { code })}
         onOpenLoginPage={() => patchProvider('codex', { openedLoginPage: true })}
         onSubmitCode={() => submitCode('codex')}
@@ -310,6 +341,7 @@ function ProviderCard({
   onStart,
   onDisconnect,
   onCopyCode,
+  onPasteCode,
   onChangeCode,
   onOpenLoginPage,
   onSubmitCode,
@@ -322,6 +354,7 @@ function ProviderCard({
   onStart: () => void;
   onDisconnect: () => void;
   onCopyCode: (code: string) => void;
+  onPasteCode: () => void;
   onChangeCode: (code: string) => void;
   onOpenLoginPage: () => void;
   onSubmitCode: () => void;
@@ -355,7 +388,11 @@ function ProviderCard({
     login !== null &&
     login.status !== 'failed' &&
     (canOpenLoginPage || login.userCode !== null || (login.needsCode && login.status === 'ready'));
-  const openLoginLabel = login?.userCode ? '2. Open login page' : '1. Open login page';
+  const returnedCodeFlow = login?.needsCode === true && login.userCode === null;
+  const deviceCodeFlow = login?.userCode !== null && login?.userCode !== undefined;
+  const openLoginLabel = state.openedLoginPage
+    ? 'Open ' + title + ' login again'
+    : 'Open ' + title + ' login page';
   const codePrompt = login?.userCode
     ? '3. Return to Verity and wait for confirmation.'
     : '2. Paste the code Claude shows after sign-in.';
@@ -428,7 +465,7 @@ function ProviderCard({
           accessibilityLabel={buttonLabel}
         >
           {isPreparing || isWaitingForCompletion ? (
-            <ActivityIndicator size="small" color={theme.colors.background} />
+            <ActivityIndicator size="small" color={theme.colors.onPrimary} />
           ) : null}
           <Text style={styles.primaryButtonLabel}>{buttonLabel}</Text>
         </Pressable>
@@ -438,44 +475,105 @@ function ProviderCard({
         <View style={styles.loginBox}>
           {login.userCode ? (
             <>
-              <Text style={styles.stepActive}>1. Copy this device code.</Text>
+              <Text style={[styles.footnote, !state.deviceCodeCopied ? styles.stepActive : null]}>
+                1. Copy your one-time {title} code.
+              </Text>
               <View style={styles.codeRow}>
-                <Text style={styles.code}>{login.userCode}</Text>
-                <Pressable
-                  onPress={() => onCopyCode(login.userCode ?? '')}
-                  accessibilityRole="button"
-                  accessibilityLabel={'Copy ' + title + ' code'}
-                  hitSlop={8}
-                  style={({ pressed }) => [styles.copyChip, pressed ? styles.pressed : null]}
-                >
-                  <Text style={styles.copyLabel}>{state.copied ? 'Copied' : 'Copy'}</Text>
-                </Pressable>
+                <Text style={styles.code} selectable>
+                  {login.userCode}
+                </Text>
               </View>
+              <Pressable
+                onPress={() => onCopyCode(login.userCode ?? '')}
+                accessibilityRole="button"
+                accessibilityLabel={'Copy ' + title + ' code'}
+                style={({ pressed }) => [
+                  state.deviceCodeCopied ? styles.linkButton : styles.primaryButton,
+                  pressed ? styles.pressed : null,
+                ]}
+              >
+                <Text style={state.deviceCodeCopied ? styles.linkLabel : styles.primaryButtonLabel}>
+                  {state.copied
+                    ? 'Copied'
+                    : state.deviceCodeCopied
+                      ? 'Copy code again'
+                      : 'Copy code'}
+                </Text>
+              </Pressable>
             </>
           ) : null}
           {canOpenLoginPage ? (
-            <Pressable
-              onPress={() => {
-                onOpenLoginPage();
-                void Linking.openURL(login.verificationUri ?? '');
-              }}
-              accessibilityRole="link"
-              accessibilityLabel={'Open ' + title + ' login page'}
-              style={({ pressed }) => [styles.linkButton, pressed ? styles.pressed : null]}
-            >
-              <Text style={styles.linkLabel}>{openLoginLabel}</Text>
-            </Pressable>
+            <>
+              {returnedCodeFlow ? (
+                <Text style={[styles.footnote, !state.openedLoginPage ? styles.stepActive : null]}>
+                  1. Sign in to {title} in your browser.
+                </Text>
+              ) : null}
+              {deviceCodeFlow ? (
+                <Text
+                  style={[
+                    styles.footnote,
+                    state.deviceCodeCopied && !state.openedLoginPage ? styles.stepActive : null,
+                  ]}
+                >
+                  2. Open {title} and paste the code on its login page.
+                </Text>
+              ) : null}
+              <Pressable
+                onPress={() => {
+                  onOpenLoginPage();
+                  void Linking.openURL(login.verificationUri ?? '');
+                }}
+                accessibilityRole={state.openedLoginPage ? 'link' : 'button'}
+                accessibilityLabel={openLoginLabel}
+                style={({ pressed }) => [
+                  !state.openedLoginPage && (!deviceCodeFlow || state.deviceCodeCopied)
+                    ? styles.primaryButton
+                    : styles.linkButton,
+                  pressed ? styles.pressed : null,
+                ]}
+              >
+                <Text
+                  style={
+                    !state.openedLoginPage && (!deviceCodeFlow || state.deviceCodeCopied)
+                      ? styles.primaryButtonLabel
+                      : styles.linkLabel
+                  }
+                >
+                  {openLoginLabel}
+                </Text>
+              </Pressable>
+              {deviceCodeFlow && state.openedLoginPage ? (
+                <Text style={styles.stepActive}>
+                  3. Finish signing in there, then return to Verity. We will connect automatically.
+                </Text>
+              ) : null}
+            </>
           ) : null}
           {login.needsCode && login.status !== 'complete' ? (
             <View style={styles.field}>
               <Text style={[styles.footnote, codeStepActive ? styles.stepActive : null]}>
-                {codePrompt}
+                {returnedCodeFlow
+                  ? state.openedLoginPage
+                    ? `2. Back in Verity? Paste the code ${title} showed you.`
+                    : `2. Return here with the code ${title} shows after sign-in.`
+                  : codePrompt}
               </Text>
+              {returnedCodeFlow && state.openedLoginPage ? (
+                <Pressable
+                  style={({ pressed }) => [styles.pasteButton, pressed ? styles.pressed : null]}
+                  onPress={onPasteCode}
+                  accessibilityRole="button"
+                  accessibilityLabel={'Paste ' + title + ' code from clipboard'}
+                >
+                  <Text style={styles.pasteButtonLabel}>Paste from clipboard</Text>
+                </Pressable>
+              ) : null}
               <TextInput
                 style={styles.input}
                 value={state.code}
                 onChangeText={onChangeCode}
-                placeholder="Paste Claude code..."
+                placeholder={`${title} code`}
                 placeholderTextColor={theme.colors.textFaint}
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -493,7 +591,7 @@ function ProviderCard({
                 accessibilityRole="button"
                 accessibilityLabel="Submit Claude code"
               >
-                <Text style={styles.secondaryButtonLabel}>Submit code</Text>
+                <Text style={styles.secondaryButtonLabel}>Connect {title}</Text>
               </Pressable>
             </View>
           ) : null}
@@ -579,7 +677,7 @@ const styles = StyleSheet.create((theme) => ({
   primaryButton: {
     minHeight: 48,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -587,20 +685,33 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '900',
   },
   submitButton: {
     minHeight: 42,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
   },
+  pasteButton: {
+    minHeight: 42,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+  },
+  pasteButtonLabel: {
+    color: theme.colors.onPrimary,
+    fontSize: theme.text.sm,
+    fontWeight: '900',
+  },
   secondaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.sm,
     fontWeight: '900',
   },
@@ -641,18 +752,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.lg,
     fontWeight: '900',
     letterSpacing: 0,
-  },
-  copyChip: {
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 5,
-  },
-  copyLabel: {
-    color: theme.colors.accent,
-    fontSize: theme.text.xs,
-    fontWeight: '900',
   },
   field: {
     gap: theme.spacing.xs,
