@@ -29,6 +29,8 @@
 
 # What gets built, signed, published, and deployed.
 /deploy/                      @h-teske
+/.release/                    @h-teske
+/.release-please-manifest.*.json @h-teske
 /release-please-config.*.json @h-teske
 /snapshot-policy.json         @h-teske
 

@@ -22,6 +22,8 @@ The full expectations live in CONTRIBUTING.md; this template is the short form.
 - [ ] Documentation updated if this moves a trust boundary, deployment
       requirement, migration or recovery path
 - [ ] Screenshots for visual changes, a short recording for interaction changes
+- [ ] Added one append-only release intent under `.release/backend/intents/`
+      for a Server product release, or `.release/none/intents/` otherwise
 
 <!-- Nothing in this pull request contains credentials, customer data,
      production logs or private repository content. Suspected vulnerabilities

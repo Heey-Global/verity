@@ -887,7 +887,7 @@ describe('acceptedToolkits (ADR 0006 D9)', () => {
     JSON.parse(readFileSync(repoRootFile('release-please-config.backend.json'), 'utf8')) as {
       packages: Record<string, { 'initial-version'?: string } | undefined>;
     }
-  ).packages['.']?.['initial-version'];
+  ).packages['.release/backend']?.['initial-version'];
 
   // The failure this guards is silent by construction: a floor above the versions
   // the train publishes drops every reconstructed entry inside the reader's

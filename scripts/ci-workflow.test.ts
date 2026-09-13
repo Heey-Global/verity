@@ -125,6 +125,17 @@ describe('release-please train isolation', () => {
     expect(existsSync('.release-please-manifest.json')).toBe(false);
   });
 
+  it('reads backend action outputs from the non-root intent component', () => {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { outputs?: Record<string, string>; steps?: WorkflowStep[] }>;
+    };
+    const job = release.jobs['release-please'];
+    for (const output of ['release_created', 'major', 'minor', 'patch', 'sha']) {
+      expect(JSON.stringify(job), output).toContain(`.release/backend--${output}`);
+    }
+    expect(JSON.stringify(job)).not.toMatch(/release-backend\.outputs\.(release_created|sha)/u);
+  });
+
   it('dispatches each generated PR with its owning train', () => {
     const dispatch = workflowReleaseJob().steps?.find(
       (step) => step.name === 'Run checks for release PRs',
@@ -142,7 +153,7 @@ describe('release-please train isolation', () => {
     const steps = workflowReleaseJob().steps ?? [];
     const cleanup = steps.find((step) => step.name === 'Remove premature next release PRs');
     const dispatch = steps.find((step) => step.name === 'Run checks for release PRs');
-    expect(cleanup?.if).toContain("release_created == 'true'");
+    expect(cleanup?.if).toMatch(/release_created'?\]?(?: |\.)*== 'true'/u);
     expect(cleanup?.if).toContain("prs_created == 'true'");
     expect(cleanup?.run).toContain('release-please--branches--main--components--${component}');
     expect(cleanup?.run).toContain('.parents[0].sha');
@@ -310,16 +321,27 @@ fi
         ['.release-please-manifest.', train, '.json'].join('');
       const releaseFiles = (train: (typeof trains)[number]): string[] => {
         const config = JSON.parse(readFileSync(`release-please-config.${train}.json`, 'utf8')) as {
-          packages: Record<string, { 'extra-files'?: Array<{ path: string } | string> }>;
+          packages: Record<
+            string,
+            {
+              'changelog-path'?: string;
+              'version-file'?: string;
+              'extra-files'?: Array<{ path: string } | string>;
+            }
+          >;
         };
         const [packagePath, packageConfig] = Object.entries(config.packages)[0] ?? [];
         expect(packagePath).toBeDefined();
         const underPackage = (file: string): string =>
-          packagePath === '.' ? file : `${packagePath}/${file}`;
+          file.startsWith('/')
+            ? file.slice(1)
+            : packagePath === '.'
+              ? file
+              : `${packagePath}/${file}`;
         return [
           manifest(train),
-          underPackage(['CHANGE', 'LOG.md'].join('')),
-          underPackage(['version', '.txt'].join('')),
+          underPackage(packageConfig?.['changelog-path'] ?? ['CHANGE', 'LOG.md'].join('')),
+          underPackage(packageConfig?.['version-file'] ?? ['version', '.txt'].join('')),
           ...(packageConfig?.['extra-files'] ?? []).map((file) =>
             underPackage(typeof file === 'string' ? file : file.path),
           ),
@@ -553,9 +575,8 @@ describe('Verity website publication smoke', () => {
   it('is a train of its own, tagged the way the cluster pins it', () => {
     // The publish job reads `website-*` outputs and tags `v${VERSION}`; both are
     // downstream of four properties in one file, none of which fails loudly.
-    // Drop the root exclusion and a website change ships on the backend train,
-    // moving a version the cluster does not track; drop the component from the
-    // tag and release-please claims plain `vX.Y.Z`, which is the backend's.
+    // A root backend component would collect website commits as well; the
+    // explicit intent directory keeps those histories disjoint by construction.
     const config = JSON.parse(readFileSync('release-please-config.website.json', 'utf8')) as {
       packages: Record<
         string,
@@ -565,7 +586,8 @@ describe('Verity website publication smoke', () => {
           'initial-version'?: string;
           'include-component-in-tag'?: boolean;
           'tag-separator'?: string;
-          'exclude-paths'?: string[];
+          'version-file'?: string;
+          'changelog-path'?: string;
         }
       >;
     };
@@ -575,31 +597,21 @@ describe('Verity website publication smoke', () => {
       readFileSync('release-please-config.backend.json', 'utf8'),
     ) as typeof config;
     expect(path, 'the website has no package in the release config').toBeDefined();
-    expect(backendConfig.packages['.']?.['exclude-paths'] ?? []).toContain(path);
-    const backendExclusions = backendConfig.packages['.']?.['exclude-paths'] ?? [];
-    expect(backendExclusions).toContain('.github/**');
-    // A workflow-only fix commonly changes its guard in the same commit. Tests
-    // are not shipped Server artifacts and must not turn that into a release.
-    expect(backendExclusions).toContain('**/*.test.*');
-    const infrastructureMatcher = ignore().add(
-      backendExclusions.filter((pattern) => pattern === '.github/**' || pattern === '**/*.test.*'),
-    );
-    const isInfrastructureOnly = (path: string) => infrastructureMatcher.ignores(path);
-    expect(isInfrastructureOnly('.github/workflows/release.yml')).toBe(true);
-    expect(isInfrastructureOnly('scripts/ci-workflow.test.ts')).toBe(true);
-    expect(isInfrastructureOnly('deploy/bin/verity-install.test.mjs')).toBe(true);
-    expect(isInfrastructureOnly('apps/mobile/__tests__/onboarding.test.tsx')).toBe(true);
-    expect(isInfrastructureOnly('packages/server/src/server.ts')).toBe(false);
-    expect(
-      ['.github/workflows/release.yml', 'packages/server/src/server.ts'].every(
-        isInfrastructureOnly,
-      ),
-    ).toBe(false);
-    expect(backendConfig.packages['.']?.['package-name']).toBe('server');
-    expect(backendConfig.packages['.']?.['pull-request-title-pattern']).toBe(
+    const backendPath = '.release/backend';
+    const backend = backendConfig.packages[backendPath];
+    expect(backendConfig.packages['.']).toBeUndefined();
+    expect(path?.startsWith(`${backendPath}/`) || backendPath.startsWith(`${path}/`)).toBe(false);
+    // These are Release Please's documented root-relative form, not filesystem
+    // absolutes: BaseStrategy.addPath strips the leading slash before joining
+    // the component path. Losing it silently creates private release metadata
+    // under `.release/backend` while every publisher keeps reading the root.
+    expect(backend?.['version-file']).toBe(`/${['version', '.txt'].join('')}`);
+    expect(backend?.['changelog-path']).toBe(`/${['CHANGE', 'LOG.md'].join('')}`);
+    expect(backend?.['package-name']).toBe('server');
+    expect(backend?.['pull-request-title-pattern']).toBe(
       'chore${scope}: release server ${version}',
     );
-    expect(backendConfig.packages['.']?.['include-component-in-tag']).toBe(false);
+    expect(backend?.['include-component-in-tag']).toBe(false);
     expect(website?.['include-component-in-tag']).toBe(true);
     expect(website?.['tag-separator']).toBe('-');
     // The first release has no manifest entry to read a version from, so this
@@ -1409,7 +1421,7 @@ describe('self-update release gate', () => {
     const backendRelease = JSON.parse(
       readFileSync('release-please-config.backend.json', 'utf8'),
     ) as { packages: Record<string, { 'initial-version'?: string } | undefined> };
-    const bootstrapVersion = backendRelease.packages['.']?.['initial-version'];
+    const bootstrapVersion = backendRelease.packages['.release/backend']?.['initial-version'];
     // Both sides are optional lookups, so a bare equality is also satisfied by
     // both being absent — which is either the bootstrap correctly retired or a
     // key typed wrong on one side, and those must not read alike. Retirement is
@@ -3097,16 +3109,21 @@ describe('changed-area detector', () => {
     expect(existsSync(classifier ?? '')).toBe(true);
 
     const backend = JSON.parse(readFileSync('release-please-config.backend.json', 'utf8')) as {
-      packages: { '.': { 'exclude-paths': string[] } };
+      packages: Record<string, unknown>;
     };
-    const backendExcluded = ignore().add(backend.packages['.']['exclude-paths']);
-    expect(backendExcluded.ignores(classifier ?? '')).toBe(true);
+    expect(Object.keys(backend.packages)).toEqual(['.release/backend']);
+    expect(classifier?.startsWith('.release/backend/')).toBe(false);
     // GitHub wraps interpolated `run` blocks in one expression with a hard
     // 21,000-character ceiling. Crossing it creates a zero-job failure with no
     // logs, so keep enough room that a useful comment cannot silently break CI.
     expect(detect?.run?.length).toBeLessThan(20_500);
     expect(detect?.run).toContain('&event=push&');
     expect(workflow.concurrency?.group).toContain('${{ github.event_name }}');
+    const intent = workflow.jobs.changes.steps.find(
+      (step) => step.name === 'Validate explicit release intent',
+    );
+    expect(intent?.if).toBe("github.event_name == 'pull_request'");
+    expect(intent?.run).toContain('.github/scripts/validate-release-intent');
   });
 
   it('offers the full manual run and every isolated release train', () => {

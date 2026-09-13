@@ -1244,7 +1244,7 @@ describe('the last-resort fallbacks the composition roots hand this resolver', (
     JSON.parse(readFileSync(repoRootFile('release-please-config.backend.json'), 'utf8')) as {
       packages: Record<string, { 'initial-version'?: string } | undefined>;
     }
-  ).packages['.']?.['initial-version'];
+  ).packages['.release/backend']?.['initial-version'];
 
   // The failure is silent for as long as the registry stays up: the fallback is
   // reached only on a cold start that cannot resolve the published tag, so one

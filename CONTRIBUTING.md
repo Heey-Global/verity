@@ -37,6 +37,8 @@ machine.
   request metadata.
 - Use a Conventional Commit title, such as `fix(server): reject stale tokens`
   or `feat(mobile): show update recovery state`.
+- Add exactly one append-only release intent: `.release/backend/intents/<slug>.md`
+  for a Server product release, or `.release/none/intents/<slug>.md` otherwise.
 - Add or update tests for behavior changes.
 - Fix a shared problem at the layer all affected paths pass through.
 - Keep one concern per pull request.
