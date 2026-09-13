@@ -701,7 +701,11 @@ describe('server test CI', () => {
 
 describe('mobile native patch CI', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
-    jobs: { 'mobile-app': { steps: WorkflowStep[] } };
+    jobs: {
+      'mobile-app': { steps: WorkflowStep[] };
+      'contract-test': { steps: WorkflowStep[] };
+      'ci-checks': { needs?: string[]; steps: WorkflowStep[] };
+    };
   };
   const steps = workflow.jobs['mobile-app'].steps;
 
@@ -724,10 +728,14 @@ describe('mobile native patch CI', () => {
   });
 
   it('checks release and OTA contracts without pulling mobile config into backend shards', () => {
-    const contract = steps.find((step) =>
-      step.run?.includes('vitest run scripts/ci-workflow.test.ts'),
+    const contract = workflow.jobs['contract-test'].steps.find((step) =>
+      step.run?.includes('vitest run scripts'),
     );
     expect(contract?.run).toContain('--maxWorkers=1');
+    expect(workflow.jobs['ci-checks'].needs).toContain('contract-test');
+    expect(workflow.jobs['ci-checks'].steps.map((step) => step.run ?? '').join('\n')).toContain(
+      'require_when_changed contract-test',
+    );
   });
 });
 
@@ -1095,6 +1103,11 @@ describe('coverage CI', () => {
     jobs: { coverage: WorkflowJob };
   };
   const job = workflow.jobs.coverage;
+
+  it('is independently gated by the nightly coverage output', () => {
+    expect(job.needs).toBe('changes');
+    expect(job.if).toBe("needs.changes.outputs.coverage == 'true'");
+  });
 
   it('runs the instrumented suite against the shared PostgreSQL', () => {
     // Coverage runs all 223 files in ONE process pool, so it is the job that
@@ -3047,7 +3060,9 @@ describe('manual server image smoke', () => {
  */
 describe('changed-area detector', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    concurrency?: { group?: string; 'cancel-in-progress'?: boolean };
     on: {
+      schedule?: { cron?: string }[];
       workflow_dispatch?: {
         inputs?: Record<string, { default?: string; options?: string[] }>;
       };
@@ -3066,6 +3081,8 @@ describe('changed-area detector', () => {
     'lint',
     'typecheck',
     'test',
+    'contract_test',
+    'coverage',
     'installer',
     'mobile',
     'mobile_app',
@@ -3088,12 +3105,22 @@ describe('changed-area detector', () => {
     // 21,000-character ceiling. Crossing it creates a zero-job failure with no
     // logs, so keep enough room that a useful comment cannot silently break CI.
     expect(detect?.run?.length).toBeLessThan(20_500);
+    expect(detect?.run).toContain('&event=push&');
+    expect(workflow.concurrency?.group).toContain('${{ github.event_name }}');
   });
 
   it('offers the full manual run and every isolated release train', () => {
     const input = workflow.on.workflow_dispatch?.inputs?.['release-train'];
     expect(input?.default).toBe('full');
     expect(input?.options).toEqual(['full', 'backend', 'mobile', 'website', 'mobile-ota']);
+  });
+
+  it('reserves repository-wide coverage for the nightly schedule', async () => {
+    expect(workflow.on.schedule).toEqual([{ cron: '17 2 * * *' }]);
+    expect(await run({ name: 'schedule' }, [])).toEqual({
+      ...all('false'),
+      coverage: 'true',
+    });
   });
 
   // The step's own list, not a copy of it: a test that restated these paths would
@@ -3184,6 +3211,9 @@ describe('changed-area detector', () => {
     } = options;
     const generatedFiles = releaseFiles ?? releaseScopedFiles[event.releaseTrain ?? 'backend'];
     const kept = changed.filter((file) => !deleted.includes(file));
+    const inventory = [...added, ...deleted].filter(
+      (file) => file.startsWith('packages/') || file.startsWith('scripts/'),
+    );
     const dir = await mkdtemp(join(tmpdir(), 'ci-detect-'));
     try {
       await writeFile(
@@ -3217,7 +3247,11 @@ describe('changed-area detector', () => {
           // argument, and `=AD` does not start with one.
           '  diff)\n' +
           '    if [[ "$*" == *--diff-filter=AD* ]]; then\n' +
-          `      ${list([...added, ...deleted])}\n` +
+          '      if [[ "$*" == *"-- packages scripts"* ]]; then\n' +
+          `        ${list(inventory)}\n` +
+          '      else\n' +
+          `        ${list([...added, ...deleted])}\n` +
+          '      fi\n' +
           '    elif [[ "$*" == *--diff-filter=d* ]]; then\n' +
           `      ${list(kept)}\n` +
           // The arm table's own diff. Rename detection is git's default, so the
@@ -3380,10 +3414,10 @@ describe('changed-area detector', () => {
       // files. First match wins in that `case`, so an arm added ahead of the ones
       // these land in would leave the routing intact and the checking dead.
       expect(
-        outputs.test,
+        outputs.test === 'true' || outputs.contract_test === 'true',
         `changing ${file} alone can break the backported native patches, but runs ` +
           'no suite that checks them',
-      ).toBe('true');
+      ).toBe(true);
     }
   }, 30_000);
 
@@ -3620,7 +3654,7 @@ describe('changed-area detector', () => {
     ).toEqual(all('true'));
   });
 
-  it('runs everything when those paths were deleted rather than written', async () => {
+  it('routes deleted release metadata through its focused contract checks', async () => {
     // `git diff --name-only` reports a removal exactly like an edit, so on paths
     // alone a commit deleting the changelog reads as release-please's output. It
     // is not one, and nothing about the previous green run describes that tree.
@@ -3628,7 +3662,7 @@ describe('changed-area detector', () => {
       await run({ name: 'push', before: 'abc' }, releaseManaged, {
         deleted: [releaseManaged[0] as string],
       }),
-    ).toEqual(all('true'));
+    ).toEqual({ ...all('false'), lint: 'true', typecheck: 'true', contract_test: 'true' });
   });
 
   /**
@@ -3639,7 +3673,7 @@ describe('changed-area detector', () => {
    * allowlisted, and with no deletion for the guard above to find. Whether
    * `--no-renames` is on the diffs is the whole difference, and only git can say.
    */
-  it('runs everything when source was renamed onto a release-managed path', async () => {
+  it('does not inherit when source was renamed onto a release-managed path', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ci-detect-repo-'));
     try {
       // The global config is cut out rather than overridden: it carries this
@@ -3706,7 +3740,7 @@ describe('changed-area detector', () => {
             .filter(Boolean)
             .map((line) => line.split('=') as [string, string]),
         ),
-      ).toEqual(all('true'));
+      ).toEqual({ ...all('false'), lint: 'true', typecheck: 'true', contract_test: 'true' });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -3739,18 +3773,38 @@ describe('changed-area detector', () => {
     ).toEqual(all('true'));
   });
 
-  it('runs everything when a release commit carries anything else', async () => {
+  it('routes every changed area when a release commit carries source', async () => {
     expect(
       await run({ name: 'push', before: 'abc' }, [...releaseManaged, 'packages/server/src/app.ts']),
-    ).toEqual(all('true'));
+    ).toEqual({
+      ...all('false'),
+      lint: 'true',
+      typecheck: 'true',
+      test: 'true',
+      contract_test: 'true',
+      server_image: 'true',
+    });
   });
 
-  // Not the pull request path filter: see the note in the step. A pull request
-  // diff cannot see what only the merged tree shows, so main stays unconditional.
-  it('runs everything on an ordinary push to main', async () => {
+  it('routes an ordinary push to main by its changed paths', async () => {
     expect(await run({ name: 'push', before: 'abc' }, ['docs/adr/0008-self-update.md'])).toEqual(
-      all('true'),
+      all('false'),
     );
+  });
+
+  it('uses the same area routing after a server change reaches main', async () => {
+    const changed = ['packages/server/src/app.ts'];
+    const expected = await run({ name: 'pull_request', baseRef: 'main' }, changed);
+    expect(await run({ name: 'push', before: 'abc' }, changed)).toEqual(expected);
+    expect(expected.coverage).toBe('false');
+  });
+
+  it('fails broad on main when the previous commit is not green', async () => {
+    expect(
+      await run({ name: 'push', before: 'abc' }, ['docs/adr/0008-self-update.md'], {
+        baseVerdict: 'completed/failure',
+      }),
+    ).toEqual(all('true'));
   });
 
   it('runs everything when the diff is empty, rather than reading it as inert', async () => {
@@ -3818,20 +3872,31 @@ describe('changed-area detector', () => {
         {
           name: 'pull_request',
           baseRef: 'main',
+          baseSha: 'abc',
           releaseTrain: 'backend',
           releasePr: '195',
           prHead: 'release-please--branches--main--components--server',
         },
         [['CHANGE', 'LOG.md'].join('')],
       ),
-    ).toEqual({
-      ...all('false'),
-      lint: 'true',
-      typecheck: 'true',
-      test: 'true',
-      installer: 'true',
-      server_image: 'true',
-    });
+    ).toEqual(all('false'));
+  });
+
+  it('does not inherit a backend release PR from a failed base', async () => {
+    expect(
+      await run(
+        {
+          name: 'pull_request',
+          baseRef: 'main',
+          baseSha: 'abc',
+          releaseTrain: 'backend',
+          releasePr: '195',
+          prHead: 'release-please--branches--main--components--server',
+        },
+        [['CHANGE', 'LOG.md'].join('')],
+        { baseVerdict: 'completed/failure' },
+      ),
+    ).toEqual(all('true'));
   });
 
   it('fails broad when a Release Please branch contains a foreign file', async () => {
@@ -3854,6 +3919,7 @@ describe('changed-area detector', () => {
       lint: 'true',
       typecheck: 'true',
       test: 'true',
+      contract_test: 'true',
       mobile_app: 'true',
       server_image: 'true',
     });
@@ -3870,7 +3936,7 @@ describe('changed-area detector', () => {
       ...all('false'),
       lint: 'true',
       typecheck: 'true',
-      test: 'true',
+      contract_test: 'true',
       mobile_app: 'true',
     };
 
@@ -3886,7 +3952,7 @@ describe('changed-area detector', () => {
       run(event, ['apps/mobile/ota-promotion.json', 'packages/server/src/app.ts'], {
         releaseFiles: ['apps/mobile/ota-promotion.json', 'packages/server/src/app.ts'],
       }),
-    ).resolves.toEqual({ ...ordinaryPromotionChecks, server_image: 'true' });
+    ).resolves.toEqual({ ...ordinaryPromotionChecks, test: 'true', server_image: 'true' });
   });
 
   it('rejects scoped dispatches that are not the generated Release Please PR', async () => {
@@ -3978,7 +4044,7 @@ describe('changed-area detector', () => {
       // Not everything: without a verdict to inherit the files stop being inert and
       // fall through the ordinary path table, exactly as they did before the skip
       // reached pull requests.
-    ).toEqual({ ...all('false'), lint: 'true', typecheck: 'true', test: 'true' });
+    ).toEqual(all('true'));
   });
 
   it('still runs everything when a pull request touches source beside those paths', async () => {
@@ -3992,6 +4058,7 @@ describe('changed-area detector', () => {
       lint: 'true',
       typecheck: 'true',
       test: 'true',
+      contract_test: 'true',
       server_image: 'true',
     });
   });
@@ -4045,22 +4112,22 @@ describe('changed-area detector', () => {
     ).toEqual(all('false'));
   });
 
-  /** Editing documentation runs nothing, but changing the tracked tree shape runs the suite. */
-  it('runs the test job when a path appears or disappears under an inert arm', async () => {
+  /** Documentation stays inert even when its tracked tree shape changes. */
+  it('limits the inventory guard to packages and scripts', async () => {
     const doc = 'docs/adr/0000-not-a-real-adr.md';
     const event = { name: 'pull_request', baseRef: 'main' };
-    // Only `test`: routing and coverage assertions need the new tree shape, while
-    // the expensive jobs still read nothing this document can change.
-    expect(await run(event, [doc], { added: [doc] })).toEqual({ ...all('false'), test: 'true' });
-    expect(await run(event, [doc], { deleted: [doc] })).toEqual({ ...all('false'), test: 'true' });
+    expect(await run(event, [doc], { added: [doc] })).toEqual(all('false'));
+    expect(await run(event, [doc], { deleted: [doc] })).toEqual(all('false'));
     // The case `--no-renames` is on the diff for. With rename detection the move
     // would report the destination alone; the source leaving is the half that makes
     // the inventory stale, and both halves land under the arm that runs nothing.
     const moved = 'docs/adr/0000-moved.md';
-    expect(await run(event, [doc, moved], { deleted: [doc], added: [moved] })).toEqual({
-      ...all('false'),
-      test: 'true',
-    });
+    expect(await run(event, [doc, moved], { deleted: [doc], added: [moved] })).toEqual(
+      all('false'),
+    );
+
+    const source = 'packages/server/src/new-route.ts';
+    expect(await run(event, [source], { added: [source] })).toMatchObject({ test: 'true' });
   });
 
   /**
@@ -4100,6 +4167,7 @@ describe('changed-area detector', () => {
       ...all('false'),
       lint: 'true',
       typecheck: 'true',
+      contract_test: 'true',
       mobile_app: 'true',
     });
     // Deliberately a path the repository does not track. The net below requires
@@ -4199,9 +4267,18 @@ describe('changed-area detector', () => {
 
     for (const file of named) {
       const outputs = await run({ name: 'pull_request', baseRef: 'main' }, [file]);
+      const packageSuiteReadsRuntimeArtifact =
+        /^(deploy\/|agent-seed\/|features\/verity-sandbox-toolkit\/|\.dockerignore$|\.github\/workflows\/(?:ci|self-update)\.yml$)/.test(
+          file,
+        ) &&
+        suiteSources.some(([suite, code]) => suite.startsWith('packages/') && mentions(code, file));
       expect(
-        outputs.test === 'true' || nativePullRequestFiles.ignores(file),
-        `a suite reads ${file}, but changing it alone reaches neither the root test job nor ` +
+        packageSuiteReadsRuntimeArtifact
+          ? outputs.test === 'true'
+          : outputs.test === 'true' ||
+              outputs.contract_test === 'true' ||
+              nativePullRequestFiles.ignores(file),
+        `a suite reads ${file}, but changing it alone reaches neither a test job nor ` +
           'the native verification workflow — route it to one of them, or stop reading it',
       ).toBe(true);
     }
