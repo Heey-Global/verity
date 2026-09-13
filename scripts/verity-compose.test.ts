@@ -163,6 +163,15 @@ describe('deploy/bin/verity-compose', () => {
     expect(overlay.services['verity-updater']?.environment).toEqual(expected);
   });
 
+  it('leaves the shared data roots writable after the Runner init mounts them first', () => {
+    const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
+      services: Record<string, { command?: string[] }>;
+    };
+    expect(overlay.services['verity-control-runner-init']?.command?.join(' ')).toContain(
+      'chown 1000:1000 /data /data/workspaces /data/sessions',
+    );
+  });
+
   /**
    * The control-plane Runner is the one container with TWO worktree trees: its
    * `verity-control` clone at /work, and the shared namespace the Server actually

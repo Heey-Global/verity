@@ -186,7 +186,7 @@ valid_project_name() {
 }
 
 select_pairing_host() {
-  local configured="${VERITY_PAIRING_HOST:-}" ips choice default_choice=1 index=1 ip
+  local configured="${VERITY_PAIRING_HOST:-}" ips choice default_choice=1 index=1 custom_choice ip
   [ -z "$configured" ] || { printf '%s' "$configured"; return; }
   ips="$(hostname -I 2>/dev/null || true)"
   # curl | bash consumes stdin, so an interactive install must talk to the terminal
@@ -198,12 +198,12 @@ select_pairing_host() {
     printf '  %s) %s%s\n' "$index" "$ip" "$([ "$index" = 1 ] && printf ' (recommended)' || true)" >/dev/tty
     index=$((index + 1))
   done
-  [ "$index" -gt 1 ] || default_choice=c
-  printf '  c) Enter an IP address or DNS name\n' >/dev/tty
+  custom_choice="$index"
+  printf '  %s) Enter an IP address or DNS name\n' "$custom_choice" >/dev/tty
   printf 'Selection [%s]: ' "$default_choice" >/dev/tty
   IFS= read -r choice </dev/tty || choice=''
   choice="${choice:-$default_choice}"
-  if [ "$choice" = c ] || [ "$choice" = C ]; then
+  if [ "$choice" = "$custom_choice" ]; then
     printf 'IP address or DNS name: ' >/dev/tty
     IFS= read -r configured </dev/tty || configured=''
     [ -n "$configured" ] || die 'the pairing address cannot be empty'

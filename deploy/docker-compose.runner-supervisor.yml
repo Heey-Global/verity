@@ -57,6 +57,7 @@ services:
     command:
       - >-
         mkdir -p /data/workspaces/verity-control /data/sessions &&
+        chown 1000:1000 /data /data/workspaces /data/sessions &&
         chown -R 1000:1000 /data/workspaces/verity-control &&
         chown 1000:$${VERITY_RUNNER_RUNTIME_GID} /runner && chmod 0170 /runner &&
         chown 0:$${VERITY_RUNNER_RUNTIME_GID} /identity && chmod 2770 /identity
