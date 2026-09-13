@@ -12,6 +12,9 @@ interface RenovateConfig {
   npmrc?: string;
   npmrcMerge?: boolean;
   enabledManagers?: string[];
+  schedule?: string[];
+  prHourlyLimit?: number;
+  prConcurrentLimit?: number;
   customManagers: Array<{
     description?: string;
     matchStrings?: string[];
@@ -26,6 +29,8 @@ interface RenovateConfig {
     matchManagers?: string[];
     matchPackageNames?: string[];
     semanticCommitType?: string;
+    prHourlyLimit?: number;
+    prConcurrentLimit?: number;
   }>;
   dockerfile?: { managerFilePatterns?: string[]; fileMatch?: string[] };
 }
@@ -37,6 +42,113 @@ describe('Renovate generated dependency artifacts', () => {
     };
 
     expect(manifest.packageManager).toMatch(/^npm@\d+\.\d+\.\d+$/);
+  });
+});
+
+/**
+ * Does `schedule` confine PR creation to a window? Renovate accepts cron, the
+ * literal `at any time`, and prose (`before 4am on monday`), so this decides
+ * only the one question the limits are coupled to, and it decides it by proving
+ * the NEGATIVE: anything it cannot show to be unrestricted counts as restricted.
+ * An unrecognised or future schedule form therefore tightens the guard instead
+ * of silently switching it off, which is the failure mode a parser would have.
+ *
+ * Entries are OR-ed, as Renovate ORs them — it runs when ANY entry matches — so
+ * one unrestricted entry makes the whole list unrestricted. Being stricter here
+ * would be the safe direction for the guard and the wrong direction for a file
+ * that people read to learn what the schedule does.
+ */
+function restrictsPrCreation(schedule: string[] | string | undefined): boolean {
+  // Renovate takes a bare string here as well as an array. Without this, one
+  // would reach `.some` and fail the suite with a TypeError pointing at this
+  // helper rather than at the config that is actually being judged.
+  const entries = typeof schedule === 'string' ? [schedule] : schedule;
+  if (entries === undefined || entries.length === 0) {
+    return false;
+  }
+
+  return !entries.some((entry) => {
+    const normalized = entry.trim().toLowerCase();
+    if (normalized === 'at any time') {
+      return true;
+    }
+    // Every field wildcarded is the only cron that restricts nothing. Checking
+    // all five rather than the hours alone is the point: `* * * * 1` opens 24
+    // hours and still only fires on Mondays, and weekly is exactly what this
+    // repository's schedule used to be and what it would regress to.
+    const fields = normalized.split(/\s+/);
+    return fields.length === 5 && fields.every((field) => field === '*');
+  });
+}
+
+describe('Renovate queue throughput', () => {
+  it.each([
+    { schedule: ['* 1-5 * * *'], restricted: true, form: 'the nightly window in use' },
+    { schedule: ['* * * * 1'], restricted: true, form: 'weekly, 24h of hours' },
+    { schedule: ['before 4am on monday'], restricted: true, form: 'prose' },
+    { schedule: ['* 1-5 * * *', 'at any time'], restricted: false, form: 'OR-ed with anytime' },
+    { schedule: ['* * * * *'], restricted: false, form: 'all wildcards' },
+    { schedule: ['at any time'], restricted: false, form: 'explicit anytime' },
+    { schedule: [], restricted: false, form: 'empty' },
+    { schedule: undefined, restricted: false, form: 'absent' },
+  ])('reads $form as restricted=$restricted', ({ schedule, restricted }) => {
+    expect(restrictsPrCreation(schedule)).toBe(restricted);
+  });
+
+  it('keeps the schedule as the only throttle on the queue', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+
+    // Read off the schedule rather than restated. Both directions are asserted
+    // rather than one skipped: a skip would be the quiet outcome in exactly the
+    // case that needs a decision, and it is invisible in most CI summaries.
+    if (!restrictsPrCreation(config.schedule)) {
+      expect.fail(
+        'the schedule no longer confines PR creation, so the argument for uncapped limits is gone — restore a window or decide, in renovate.json, what throttles the queue instead',
+      );
+    }
+
+    // The silent failure this guards: Renovate keeps opening PRs, the dashboard
+    // keeps showing a queue, and a whole update class never reaches a PR at all.
+    // `sortBranches` (lib/workers/repository/process/sort.ts) orders by
+    // prPriority, then exactly pin > digest > patch > minor > major >
+    // lockFileMaintenance — no `pinDigest` entry, so that class sorts first of
+    // all on `indexOf === -1`. This repository pins digests everywhere, so a
+    // per-run budget is spent on digest and patch branches before any `minor`
+    // branch is considered, every run, forever. That is how the `agent CLIs`
+    // group went twelve days without a single PR while claude-code fell 26
+    // releases behind. Nothing about the symptom points at a rate limit.
+    //
+    // Exactly 0, not merely "generous": every one of Renovate's limits truncates
+    // the front of that one sorted queue, so any finite budget — including
+    // `branchConcurrentLimit`, which unmerged majors fill and hold — only moves
+    // the starvation line instead of removing it. Runner load has to be paced by
+    // making PRs cheaper or fewer, not by capping how many may exist.
+    expect(
+      config.prHourlyLimit,
+      'an hourly budget inside a nightly window starves minor and major updates permanently',
+    ).toBe(0);
+    expect(
+      config.prConcurrentLimit,
+      'a bounded open-PR pool starves the same way once unmerged majors fill it',
+    ).toBe(0);
+  });
+
+  it('does not let a packageRule reintroduce a limit the top level dropped', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+
+    // The assertion above reads the top level only, and has to: the first-party
+    // `ghcr.io/heey-global/*` rule carries `schedule: ["at any time"]` on purpose,
+    // so requiring the same coupling per rule would fail on an intended exemption.
+    // Renovate accepts both limits INSIDE packageRules though, and one placed
+    // there would restore the starvation for whatever it matches while the
+    // top-level values — and therefore the check above — stay untouched and green.
+    const withLimits = config.packageRules
+      .filter((rule) => rule.prHourlyLimit !== undefined || rule.prConcurrentLimit !== undefined)
+      .map((rule) => rule.groupName ?? rule.description?.slice(0, 40) ?? 'unnamed rule');
+
+    expect(withLimits, 'a packageRule caps the queue the top level deliberately uncapped').toEqual(
+      [],
+    );
   });
 });
 
