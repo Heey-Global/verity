@@ -2,6 +2,7 @@ import { type AgentLogin, type VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 import { AgentLoginPanel } from './AgentLoginPanel';
+import { lightTheme } from '../theme/tokens';
 
 const waitingLogin = {
   sessionId: '22222222-2222-4222-8222-222222222222',
@@ -15,6 +16,18 @@ const waitingLogin = {
 } as AgentLogin;
 
 describe('AgentLoginPanel polling', () => {
+  it('uses the primary blue for agent login actions', () => {
+    const client = {} as VerityClient;
+    render(<AgentLoginPanel client={client} configured={{ claude: false, codex: false }} />);
+
+    expect(screen.getByLabelText('Connect Claude')).toHaveStyle({
+      backgroundColor: lightTheme.colors.primary,
+    });
+    expect(screen.getByLabelText('Connect Codex')).toHaveStyle({
+      backgroundColor: lightTheme.colors.primary,
+    });
+  });
+
   it('does not overlap polls for the same login session', async () => {
     jest.useFakeTimers();
     let resolvePoll!: (login: AgentLogin) => void;

@@ -89,8 +89,10 @@ jest.mock('expo-web-browser', () => ({
 // `expo-clipboard` has no jsdom backend — mock it so the copy button's effect is
 // observable without a native module.
 const mockSetStringAsync = jest.fn<Promise<boolean>, [string]>().mockResolvedValue(true);
+const mockGetStringAsync = jest.fn<Promise<string>, []>().mockResolvedValue('');
 jest.mock('expo-clipboard', () => ({
   setStringAsync: (value: string) => mockSetStringAsync(value),
+  getStringAsync: () => mockGetStringAsync(),
 }));
 
 import OnboardingMasterPassword from '../app/onboarding/master-password';
@@ -1026,11 +1028,29 @@ describe('onboarding agent logins step', () => {
     expect(await screen.findByText('UXAB-12345')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Codex login file')).toBeNull();
 
-    fireEvent.press(screen.getByLabelText('Open Codex login page'));
-    expect(openURL).toHaveBeenCalledWith('https://auth.openai.com/codex/device');
+    expect(screen.getByLabelText('Open Codex login page')).toBeEnabled();
+    mockSetStringAsync.mockRejectedValueOnce(new Error('clipboard unavailable'));
+    fireEvent.press(screen.getByLabelText('Copy Codex code'));
+    expect(
+      await screen.findByText(
+        'Could not copy the code. Select it manually, then continue to the login page.',
+      ),
+    ).toBeOnTheScreen();
+    expect(screen.getByLabelText('Open Codex login page')).toBeEnabled();
 
     fireEvent.press(screen.getByLabelText('Copy Codex code'));
     await waitFor(() => expect(mockSetStringAsync).toHaveBeenCalledWith('UXAB-12345'));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 750)));
+    expect(screen.getByLabelText('Open Codex login page')).toBeEnabled();
+
+    fireEvent.press(screen.getByLabelText('Open Codex login page'));
+    expect(openURL).toHaveBeenCalledWith('https://auth.openai.com/codex/device');
+    expect(screen.getByLabelText('Open Codex login again')).toBeOnTheScreen();
+    expect(
+      screen.getByText(
+        '3. Finish signing in there, then return to Verity. We will connect automatically.',
+      ),
+    ).toBeOnTheScreen();
   });
 
   it('does not expose a Claude login link before the server marks the URL ready', async () => {
@@ -1094,13 +1114,19 @@ describe('onboarding agent logins step', () => {
     fireEvent.press(await screen.findByLabelText('Connect Claude'));
     await waitFor(() => expect(startAgentLogin).toHaveBeenCalledWith('claude'));
     await waitFor(() => expect(screen.queryByLabelText('Next')).toBeNull());
-    fireEvent.changeText(await screen.findByLabelText('Claude returned code'), '  claude-code  ');
+    fireEvent.press(await screen.findByLabelText('Open Claude login page'));
+    expect(await screen.findByLabelText('Open Claude login again')).toBeOnTheScreen();
+    mockGetStringAsync.mockResolvedValueOnce('  claude-code  ');
+    fireEvent.press(screen.getByLabelText('Paste Claude code from clipboard'));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Claude returned code')).toHaveProp('value', 'claude-code'),
+    );
     fireEvent.press(screen.getByLabelText('Submit Claude code'));
 
     await waitFor(() =>
       expect(submitAgentLoginCode).toHaveBeenCalledWith(
         '22222222-2222-4222-8222-222222222222',
-        '  claude-code  ',
+        'claude-code',
       ),
     );
     expect(await screen.findByText('Claude connected.')).toBeOnTheScreen();
