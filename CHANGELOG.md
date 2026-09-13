@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/Heey-Global/verity/compare/v0.1.1...v0.2.0) (2026-09-13)
+
+
+### Features
+
+* **mcp:** support OAuth connections ([#225](https://github.com/Heey-Global/verity/issues/225)) ([181b277](https://github.com/Heey-Global/verity/commit/181b277eb33371270388e3bc7def4bb417c79821))
+
+
+### Bug Fixes
+
+* **deps:** update dependency react-native-qrcode-svg to v6.3.24 ([#232](https://github.com/Heey-Global/verity/issues/232)) ([0770303](https://github.com/Heey-Global/verity/commit/0770303c19e3cfbc8e35bf75655c843d6437d71d))
+
 ## [0.1.1](https://github.com/Heey-Global/verity/compare/v0.1.0...v0.1.1) (2026-09-12)
 
 
