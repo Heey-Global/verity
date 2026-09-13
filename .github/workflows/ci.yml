@@ -1,6 +1,8 @@
 name: verity-ci
 
 on:
+  schedule:
+    - cron: '17 2 * * *'
   workflow_dispatch:
     inputs:
       release-train:
@@ -37,7 +39,7 @@ concurrency:
   # as failure and stamps a false red X on the merge commit (seen with #465, cancelled
   # 3s later by #464's merge). `github.head_ref` is empty on push, so the fallback picks
   # the SHA there.
-  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -55,6 +57,8 @@ jobs:
       lint: ${{ steps.detect.outputs.lint }}
       typecheck: ${{ steps.detect.outputs.typecheck }}
       test: ${{ steps.detect.outputs.test }}
+      contract_test: ${{ steps.detect.outputs.contract_test }}
+      coverage: ${{ steps.detect.outputs.coverage }}
       installer: ${{ steps.detect.outputs.installer }}
       mobile: ${{ steps.detect.outputs.mobile }}
       mobile_app: ${{ steps.detect.outputs.mobile_app }}
@@ -81,11 +85,18 @@ jobs:
           lint=false
           typecheck=false
           test=false
+          contract_test=false
+          coverage=false
           installer=false
           mobile=false
           mobile_app=false
           server_image=false
           agent_seed_drift=false
+
+          run_all() {
+            lint=true; typecheck=true; test=true; contract_test=true; coverage=true
+            installer=true; mobile=true; mobile_app=true; server_image=true; agent_seed_drift=true
+          }
 
           # Scope generated PR `synchronize` events through the checked classifier.
           release_scoped=false
@@ -143,12 +154,19 @@ jobs:
               full)
                 ;;
               backend)
-                lint=true
-                typecheck=true
-                test=true
-                installer=true
-                server_image=true
-                release_scoped=true
+                # A generated backend release PR changes only version metadata.
+                # Let the release-only verifier below inherit the green base. If
+                # that proof fails, leave it unscoped so normal path routing runs.
+                if [ "${{ github.event_name }}" != "pull_request" ]; then
+                  lint=true
+                  typecheck=true
+                  test=true
+                  installer=true
+                  server_image=true
+                  release_scoped=true
+                else
+                  release_scoped=false
+                fi
                 ;;
               mobile)
                 # mobile-app builds @verity/mobile before checking the Expo app.
@@ -172,35 +190,11 @@ jobs:
             esac
           fi
 
-          # The `case` table below is a PRE-merge gate and stays one, even though it
-          # no longer has the hole it was written around: an unnamed path used to
-          # match nothing and therefore run nothing, and now falls through to a
-          # catch-all that runs the broad jobs.
-          #
-          # What keeps main unconditional is not that hole but what a pull request
-          # diff structurally cannot see. It is measured against the base, so two
-          # branches that each pass alone and break together produce no diff that
-          # names the breakage — only the merged tree does, and this is the only
-          # event that tests it.
-          #
-          # The one push that provably needs nothing is a release-please commit. It
-          # changes exactly the three files below and nothing else — no source, no
-          # workflow, no fixture — so every input a job reads is the one its base
-          # was tested with, and no test in the repo reads any of them (asserted in
-          # scripts/ci-workflow.test.ts). Running the full matrix on it means a
-          # complete Server image build plus the Docker smoke chain on the shared
-          # dev-server, and the only result it can produce is the base's.
-          #
-          # Which is why the base's result is read rather than assumed: inheriting
-          # it is the whole mechanism, and there is nothing to inherit until it
-          # exists and is green.
-          #
-          # What the paths are is checked; what is in them is not, deliberately.
-          # Nothing this workflow runs reads their contents — that is the same
-          # assertion the skip rests on — so there is no verdict for a content
-          # check to protect. A corrupt manifest breaks release.yml, which this
-          # detector does not gate and which runs on the push regardless.
+          # Release metadata can inherit only a completed green base. Every other
+          # PR or main push is routed from its actual diff below.
           release_only=false
+          inheritance_failed=false
+          base_green=false
           before=''
           if [ "${{ github.event_name }}" = "push" ]; then
             # `github.event.before` covers a push carrying more than one commit;
@@ -211,14 +205,7 @@ jobs:
               before="$(git rev-parse --verify --quiet 'HEAD^' || true)"
             fi
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            # The same commit, one step earlier. release-please opens its output as
-            # a PR before it lands, carrying exactly those three files against the
-            # same base — so the argument the push path already makes holds here
-            # unchanged, and the base is a commit on main whose verdict this
-            # inherits the same way. Without this the release PR pays a full Server
-            # image build and the Docker chain on the shared dev-server to test a
-            # version bump, and the merge commit then skips it on the very same
-            # reasoning minutes later.
+            # Release Please opens the same metadata-only commit as a PR first.
             before='${{ github.event.pull_request.base.sha }}'
             git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
           fi
@@ -258,41 +245,41 @@ jobs:
                 esac
               done
             fi
-            if [ "$release_only" = "true" ]; then
-              # The skip inherits a verdict, so there has to be one. A base run
-              # that is still going has reported nothing yet, and one that went
-              # red reported a break this tree still carries — inheriting either
-              # would put a green check on a commit no job examined. Back-to-back
-              # merges are exactly when the base is still running, which is why
-              # this is asked rather than assumed.
-              #
-              # Only a completed success skips. An unreadable answer is not one,
-              # so an API outage costs a redundant run and never a false green.
-              # The call is inside this branch: an ordinary push never makes it.
-              runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${before}&per_page=1"
+            if [ "$release_only" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+              # Main routing and release inheritance both depend on the exact
+              # base having completed successfully. Anything else fails broad.
+              runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${before}&event=push&per_page=1"
               verdict="$(gh api "$runs" --jq \
                 '(.workflow_runs[0] // {}) | "\(.status // "missing")/\(.conclusion // "none")"' \
                 2>/dev/null || echo 'unreadable/none')"
-              if [ "$verdict" != "completed/success" ]; then
+              if [ "$verdict" = "completed/success" ]; then
+                base_green=true
+              elif [ "$release_only" = "true" ]; then
                 echo "::notice::base $before reports '$verdict', not a completed success — running everything"
                 release_only=false
+                inheritance_failed=true
               fi
             fi
           fi
 
-          if [ "$release_scoped" = "true" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # The expensive repository-wide threshold belongs to one predictable
+            # integration run, not every merge. It runs without first repeating
+            # the same suite in the uninstrumented shard job.
+            coverage=true
+          elif [ "$release_scoped" = "true" ]; then
             echo "::notice::running checks scoped to the ${RELEASE_TRAIN} release train"
           elif [ "$release_only" = "true" ]; then
             echo "::notice::release-please commit — no source file changed, every job skipped"
-          elif [ "${{ github.event_name }}" != "pull_request" ]; then
-            lint=true
-            typecheck=true
-            test=true
-            installer=true
-            mobile=true
-            mobile_app=true
-            server_image=true
-            agent_seed_drift=true
+          elif [ "$inheritance_failed" = "true" ] || \
+            { [ "${{ github.event_name }}" = "push" ] && [ "$base_green" != "true" ]; }; then
+            run_all
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
+            { [ "${{ github.event_name }}" = "push" ] && [ -z "$before" ]; }; then
+            # A full manual run deliberately exercises every gate. A push whose
+            # base cannot be resolved must also fail broad instead of treating an
+            # unreadable diff as an empty one.
+            run_all
           else
             # NOT `--depth=1`. A shallow fetch grafts the base branch's tip as a
             # parentless commit, and `...` then has nothing to compute a merge base
@@ -311,36 +298,27 @@ jobs:
             #
             # `fetch-depth: 0` makes the ancestry explicit rather than relying on
             # whichever shallow boundary checkout would otherwise choose.
-            git fetch --no-tags --prune origin "${{ github.base_ref }}"
-            base="origin/${{ github.base_ref }}"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              git fetch --no-tags --prune origin "${{ github.base_ref }}"
+              base="origin/${{ github.base_ref }}"
+              diff_range="$base...HEAD"
+            else
+              base="$before"
+              diff_range="$base..HEAD"
+            fi
             # `--no-renames` so a move reports both halves. With git's default
             # rename detection a file moved OUT of a heavyweight area reports only
             # where it landed, so `packages/server/src/x.ts` → `docs/x.md` reads as
             # a documentation edit and never runs `server_image` — the job that
             # would have noticed the source leaving. The cost is one extra path per
             # move; the arms below are cheap to reach and false greens are not.
-            mapfile -t changed < <(git diff --no-renames --name-only "$base"...HEAD)
+            mapfile -t changed < <(git diff --no-renames --name-only "$diff_range")
+            if [ "${{ github.event_name }}" = "push" ] && [ "${#changed[@]}" -eq 0 ]; then
+              run_all
+            fi
 
-            # Asked about the SET of tracked paths before the table is asked about
-            # their contents. A file appearing or disappearing must run the suite so
-            # coverage and workflow-routing assertions see the new tree shape,
-            # including under arms below that deliberately run nothing for edits.
-            #
-            # `--no-renames` so a move reports both halves: rename detection would
-            # collapse it to the destination alone, and a file leaving an arm is the
-            # half that makes the inventory stale. Editing prose still runs nothing.
-            #
-            # Only this branch needs it. The one above runs every job for any push
-            # that is not release-please's, and that skip is itself restricted to
-            # edits of three existing files — a commit that adds or deletes anything
-            # either names an unallowlisted path or shows a deletion, and fails the
-            # `--diff-filter=d` count check either way.
-            #
-            # A command substitution rather than `mapfile < <(...)`: a process
-            # substitution discards git's exit status, so a failed diff would read as
-            # "nothing appeared" and skip a guard whose whole job is to fail closed.
-            # `set -e` aborts the step on the assignment instead.
-            inventory="$(git diff --no-renames --name-only --diff-filter=AD "$base"...HEAD)"
+            # Only packages/ and scripts/ participate in root-suite inventories.
+            inventory="$(git diff --no-renames --name-only --diff-filter=AD "$diff_range" -- packages scripts)"
             if [ -n "$inventory" ]; then
               test=true
             fi
@@ -356,6 +334,11 @@ jobs:
                   mobile_app=true
                   server_image=true
                   agent_seed_drift=true
+                  ;;
+                .github/workflows/self-update.yml)
+                  lint=true
+                  typecheck=true
+                  test=true
                   ;;
                 # Swift sources and their native TLS harness are compiled by
                 # verity-mobile-native-verify on macOS. Root TypeScript, backend,
@@ -393,7 +376,7 @@ jobs:
                 apps/mobile/package.json)
                   lint=true
                   typecheck=true
-                  test=true
+                  contract_test=true
                   mobile_app=true
                   ;;
                 # App configuration is consumed by release and native-build tests.
@@ -403,6 +386,7 @@ jobs:
                 apps/mobile/app.config.ts)
                   lint=true
                   typecheck=true
+                  contract_test=true
                   mobile_app=true
                   ;;
                 # Release workflow tests guard the App Store destination in this
@@ -410,7 +394,7 @@ jobs:
                 apps/mobile/eas.json)
                   lint=true
                   typecheck=true
-                  test=true
+                  contract_test=true
                   mobile_app=true
                   ;;
                 # The workflow contract suite validates this approval boundary.
@@ -418,7 +402,7 @@ jobs:
                 apps/mobile/ota-promotion.json)
                   lint=true
                   typecheck=true
-                  test=true
+                  contract_test=true
                   mobile_app=true
                   ;;
                 apps/mobile/*)
@@ -473,11 +457,11 @@ jobs:
                   ;;
                 docs/website/Dockerfile|docs/website/nginx.conf)
                   lint=true
-                  test=true
+                  contract_test=true
                   ;;
                 docs/website/site/install.sh)
                   lint=true
-                  test=true
+                  contract_test=true
                   installer=true
                   # The public bootstrap executes the payload baked into the
                   # Server image. A PR that changes it must rebuild and inspect
@@ -486,7 +470,7 @@ jobs:
                   ;;
                 docs/website/site/install.test.mjs)
                   lint=true
-                  test=true
+                  contract_test=true
                   installer=true
                   ;;
                 # Same reason for `test`: verity-git-guard.test.ts executes
@@ -522,7 +506,7 @@ jobs:
                 *)
                   lint=true
                   typecheck=true
-                  test=true
+                  contract_test=true
                   ;;
               esac
             done
@@ -532,6 +516,8 @@ jobs:
             echo "lint=$lint"
             echo "typecheck=$typecheck"
             echo "test=$test"
+            echo "contract_test=$contract_test"
+            echo "coverage=$coverage"
             echo "installer=$installer"
             echo "mobile=$mobile"
             echo "mobile_app=$mobile_app"
@@ -539,7 +525,7 @@ jobs:
             echo "agent_seed_drift=$agent_seed_drift"
           } >> "$GITHUB_OUTPUT"
 
-          printf 'lint=%s typecheck=%s test=%s installer=%s mobile=%s mobile_app=%s server_image=%s agent_seed_drift=%s\n' "$lint" "$typecheck" "$test" "$installer" "$mobile" "$mobile_app" "$server_image" "$agent_seed_drift"
+          printf 'lint=%s typecheck=%s test=%s contract_test=%s coverage=%s installer=%s mobile=%s mobile_app=%s server_image=%s agent_seed_drift=%s\n' "$lint" "$typecheck" "$test" "$contract_test" "$coverage" "$installer" "$mobile" "$mobile_app" "$server_image" "$agent_seed_drift"
 
   # Security classification and secret scanning cover the whole publishable tree,
   # including prose-only changes for which the expensive code jobs stay inert.
@@ -806,12 +792,11 @@ jobs:
         with:
           path: .cache/vitest
           key: ${{ runner.os }}-vitest-${{ hashFiles('package-lock.json', 'vitest.config.ts') }}
-      # The full suite runs (sharded) on every PR and on push to main. Tests here
+      # The full suite runs when a PR or routed main push changes runtime inputs.
       # deliberately are NOT scoped to the diff: this suite drives child processes
       # and reads fixtures/resources by path, so `vitest --changed` (module-graph
       # only) would silently omit affected tests. The PR speed-up comes from NOT
-      # re-running the whole suite a second time for coverage — see the `coverage`
-      # job, which now runs on push to main only.
+      # re-running it under instrumentation — see the nightly `coverage` job.
       # Four fresh Vitest processes run one at a time. Separate processes retain
       # the RSS reset that sharding exists for, while one job avoids paying four
       # times for checkout, Node setup, npm ci, cache restore and PostgreSQL.
@@ -855,6 +840,25 @@ jobs:
         run: |
           docker rm -f "verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}" \
             >/dev/null 2>&1 || true
+
+  # Repository script contracts validate declarative inputs and workflow wiring
+  # without booting the Server/Store test matrix or PostgreSQL.
+  contract-test:
+    needs: changes
+    if: needs.changes.outputs.contract_test == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.19.0'
+      - run: npm ci --workspace @verity/server --include-workspace-root --ignore-scripts
+      - name: Run repository contract suites
+        run: |
+          npx vitest run scripts --maxWorkers=1
+          node --test deploy/bin/verity-agent-gateway-cutover-check.test.mjs
 
   # deploy/bin/verity-install.test.mjs drives the real installer under `unshare -r`,
   # because every decision that script makes is a read of host state only uid 0 can
@@ -997,18 +1001,14 @@ jobs:
         run: docker rm -f "$VERITY_RUNNER_RACE_POSTGRES" >/dev/null 2>&1 || true
 
   coverage:
-    needs: [changes, test]
+    needs: changes
     # Coverage runs the WHOLE suite with instrumentation (required for the
     # repo-wide threshold gate in vitest.config.ts) — the single slowest check,
     # and on a PR it just re-runs what the `test` job already ran. So it runs on
-    # push to main only (and manual dispatch). TRADE-OFF: the coverage floor is
-    # enforced POST-MERGE on main, not as a pre-merge PR gate — a regression is
-    # caught on the main run (and blocks the release gate) rather than blocking
-    # the PR that introduced it. This is an intentional speed decision; to make
-    # coverage pre-merge again without the double-run, collect per-shard coverage
-    # in the `test` job and merge the blobs (needs the vitest blob-merge to be
-    # reliable — see the note in the `coverage` step below).
-    if: needs.changes.outputs.test == 'true' && github.event_name != 'pull_request'
+    # nightly. Pull requests and routed main pushes already run the relevant
+    # uninstrumented tests; repeating the whole repository after every merge was
+    # the slowest job in the pipeline and did not improve path-specific feedback.
+    if: needs.changes.outputs.coverage == 'true'
     runs-on: ubuntu-24.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1131,10 +1131,6 @@ jobs:
       - run: npm run -w @verity/mobile build
       - run: npm run -w @verity/mobile-app typecheck
       - run: npm run -w @verity/mobile-app test
-      # app.config.ts is also an input to release/OTA workflows. This focused
-      # contract belongs with the full mobile install instead of making every
-      # config edit run the unrelated Server/Store/Session shards.
-      - run: npx vitest run scripts/ci-workflow.test.ts --maxWorkers=1
 
   server-image:
     needs: changes
@@ -1504,6 +1500,7 @@ jobs:
         knip,
         typecheck,
         test,
+        contract-test,
         installer,
         runner-postgres-race,
         coverage,
@@ -1551,9 +1548,10 @@ jobs:
           require_when_changed agent-seed-drift "${{ needs.agent-seed-drift.result }}" "${{ needs.changes.outputs.agent_seed_drift }}"
           require_when_changed typecheck "${{ needs.typecheck.result }}" "${{ needs.changes.outputs.typecheck }}"
           require_when_changed test "${{ needs.test.result }}" "${{ needs.changes.outputs.test }}"
+          require_when_changed contract-test "${{ needs.contract-test.result }}" "${{ needs.changes.outputs.contract_test }}"
           require_when_changed installer "${{ needs.installer.result }}" "${{ needs.changes.outputs.installer }}"
           require_when_changed runner-postgres-race "${{ needs.runner-postgres-race.result }}" "${{ needs.changes.outputs.test }}"
-          require_when_changed coverage "${{ needs.coverage.result }}" "${{ github.event_name != 'pull_request' && needs.changes.outputs.test == 'true' }}"
+          require_when_changed coverage "${{ needs.coverage.result }}" "${{ needs.changes.outputs.coverage }}"
           require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.changes.outputs.mobile }}"
           require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.changes.outputs.mobile_app }}"
           require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.changes.outputs.server_image }}"
