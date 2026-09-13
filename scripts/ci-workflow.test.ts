@@ -722,6 +722,13 @@ describe('mobile native patch CI', () => {
     expect(patch, 'nothing else in CI runs the native patches').toBeGreaterThan(install);
     expect(build, 'this job builds the mobile data layer').toBeGreaterThan(patch);
   });
+
+  it('checks release and OTA contracts without pulling mobile config into backend shards', () => {
+    const contract = steps.find((step) =>
+      step.run?.includes('vitest run scripts/ci-workflow.test.ts'),
+    );
+    expect(contract?.run).toContain('--maxWorkers=1');
+  });
 });
 
 describe('native iOS compile gate', () => {
@@ -4086,14 +4093,13 @@ describe('changed-area detector', () => {
    * mention rule with `apps/mobile/*` would pass the first expectation and fail this
    * one, which is exactly the trade being pinned.
    */
-  it('runs the mobile jobs and the suite for open client source', async () => {
+  it('runs focused mobile checks for open client source', async () => {
     expect(
       await run({ name: 'pull_request', baseRef: 'main' }, ['apps/mobile/app.config.ts']),
     ).toEqual({
       ...all('false'),
       lint: 'true',
       typecheck: 'true',
-      test: 'true',
       mobile_app: 'true',
     });
     // Deliberately a path the repository does not track. The net below requires
