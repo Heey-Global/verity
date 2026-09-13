@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.29.0](https://github.com/Heey-Global/verity/compare/mobile-v1.28.0...mobile-v1.29.0) (2026-09-13)
+
+
+### Features
+
+* **mcp:** support OAuth connections ([#225](https://github.com/Heey-Global/verity/issues/225)) ([181b277](https://github.com/Heey-Global/verity/commit/181b277eb33371270388e3bc7def4bb417c79821))
+
+
+### Bug Fixes
+
+* **deps:** update dependency react-native-qrcode-svg to v6.3.24 ([#232](https://github.com/Heey-Global/verity/issues/232)) ([0770303](https://github.com/Heey-Global/verity/commit/0770303c19e3cfbc8e35bf75655c843d6437d71d))
+* **mobile:** authorize GitHub HTTPS callbacks ([#227](https://github.com/Heey-Global/verity/issues/227)) ([ae00382](https://github.com/Heey-Global/verity/commit/ae003829defb4ddfb2b7fc389eed13ddc9c7e963))
+* **mobile:** let the GitHub authorization sheet actually present ([#223](https://github.com/Heey-Global/verity/issues/223)) ([03d96f3](https://github.com/Heey-Global/verity/commit/03d96f32b1ad3d4434dc0c5175d91d556dc23f06))
+
 ## [1.28.0](https://github.com/Heey-Global/verity/compare/mobile-v1.27.0...mobile-v1.28.0) (2026-09-12)
 
 
