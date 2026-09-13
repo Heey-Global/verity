@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/Heey-Global/verity/compare/website-v1.3.5...website-v1.4.0) (2026-09-13)
+
+
+### Features
+
+* **mcp:** support OAuth connections ([#225](https://github.com/Heey-Global/verity/issues/225)) ([181b277](https://github.com/Heey-Global/verity/commit/181b277eb33371270388e3bc7def4bb417c79821))
+
+
+### Bug Fixes
+
+* **mobile:** authorize GitHub HTTPS callbacks ([#227](https://github.com/Heey-Global/verity/issues/227)) ([ae00382](https://github.com/Heey-Global/verity/commit/ae003829defb4ddfb2b7fc389eed13ddc9c7e963))
+
 ## [1.3.5](https://github.com/Heey-Global/verity/compare/website-v1.3.4...website-v1.3.5) (2026-09-12)
 
 
