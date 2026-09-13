@@ -564,6 +564,11 @@ describe('managed control-plane Runner ownership', () => {
     expect(prepare.command?.join(' ')).toContain('chmod 2770 /identity');
     expect(prepare.command?.join(' ')).toContain('chown 0:1101 /identity');
     expect(prepare.command?.join(' ')).toContain('chmod 0170 /runner');
+    // The init container wins the first mount of verity-data. Without repairing
+    // these parents, the uid-1000 Server cannot create its first project clone.
+    expect(prepare.command?.join(' ')).toContain(
+      'chown 1000:1000 /data /data/workspaces /data/sessions',
+    );
     // Setgid governs only new files, so material published before it existed — and
     // the debris of publishes that failed half-way — is repaired explicitly.
     expect(prepare.command?.join(' ')).toContain('chown :1101');

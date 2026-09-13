@@ -215,6 +215,11 @@ function prepareSpec(
       [
         'set -eu',
         'mkdir -p /data/workspaces/verity-control /data/sessions',
+        // This init container is the first process to mount `verity-data`, so Docker
+        // initializes the volume from its `/data` path (root-owned), not from the
+        // Server image's node-owned `/srv/verity`. The Server must be able to create
+        // project clones and session worktrees beside the control-plane checkout.
+        'chown 1000:1000 /data /data/workspaces /data/sessions',
         'chown -R 1000:1000 /data/workspaces/verity-control',
         `chown 1000:${runtimeGid} /runner`,
         'chmod 0170 /runner',

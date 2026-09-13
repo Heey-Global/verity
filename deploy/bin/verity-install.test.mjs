@@ -104,6 +104,9 @@ function makeHost({ docker = [], state = {}, removeStatus = 0, inspectPresentOnc
     { mode: 0o755 },
   );
   writeFileSync(join(checkout, 'deploy', 'docker-compose.yml'), 'services: {}\n');
+  writeFileSync(join(stubDir, 'hostname'), "#!/bin/sh\nprintf '%s\\n' '10.0.0.10 192.168.1.20'\n", {
+    mode: 0o755,
+  });
 
   // Records the handover instead of performing it, so a test can assert on exactly
   // the variables verity-compose would have been given.
@@ -176,6 +179,25 @@ function run(host, args = [], env = {}) {
     stderr: result.stderr ?? '',
     output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
   };
+}
+
+function runInteractive(host, input) {
+  const result = spawnSync(
+    'script',
+    ['-qec', `unshare -r ${shellQuote(join(host.binDir, 'verity-install'))}`, '/dev/null'],
+    {
+      encoding: 'utf8',
+      input,
+      env: {
+        PATH: `${host.stubDir}:${process.env.PATH}`,
+        HOME: host.root,
+        VERITY_STATE_DIR: host.stateDir,
+        VERITY_SERVER_UID: '0',
+        VERITY_SERVER_GID: '0',
+      },
+    },
+  );
+  return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
 
 function handoverEnv(host) {
@@ -332,6 +354,23 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
     const result = run(host, [], { VERITY_PAIRING_HOST: 'verity.home.example' });
     assert.equal(result.status, 0, result.output);
+    const pairingEnv = Object.fromEntries(
+      readFileSync(host.pairingHandoff, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => line.split('=', 2)),
+    );
+    assert.equal(pairingEnv.VERITY_PAIRING_HOST, 'verity.home.example');
+  });
+
+  test('numbers the custom pairing address after detected addresses', () => {
+    const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
+    const result = runInteractive(host, '3\nverity.home.example\n');
+    assert.equal(result.status, 0, result.output);
+    assert.match(
+      result.output,
+      /1\) 10\.0\.0\.10 \(recommended\)[\s\S]*2\) 192\.168\.1\.20[\s\S]*3\) Enter an IP address or DNS name/,
+    );
     const pairingEnv = Object.fromEntries(
       readFileSync(host.pairingHandoff, 'utf8')
         .trim()
