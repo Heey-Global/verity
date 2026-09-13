@@ -107,7 +107,7 @@ if (!isRecord(ledger) || !isRecord(manifest)) {
   throw new Error('toolkit ledger and release manifest must be JSON objects');
 }
 const minimumVersion = ledger.minimumVersion;
-const currentVersion = manifest['.'];
+const currentVersion = manifest['.release/backend'];
 if (parseVersion(minimumVersion) === undefined || parseVersion(currentVersion) === undefined) {
   throw new Error('toolkit ledger and release manifest require plain semantic versions');
 }

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+base="${1:?base SHA is required}"
+head="${2:?head SHA is required}"
+author="${3:-}"
+
+# Generated dependency and release PRs cannot author intent fragments. They are
+# deliberately release-neutral unless a human follow-up adds product changes.
+if [[ "$author" == *'[bot]' ]]; then
+  exit 0
+fi
+
+mapfile -t intent_changes < <(
+  git diff --no-renames --name-status "$base...$head" -- \
+    '.release/backend/intents' '.release/none/intents'
+)
+
+if [[ "${#intent_changes[@]}" -ne 1 ]]; then
+  echo "::error::Every pull request must add exactly one release intent: backend for a Server product release, or none." >&2
+  exit 1
+fi
+
+IFS=$'\t' read -r status file <<<"${intent_changes[0]}"
+if [[ "$status" != A ]]; then
+  echo "::error::Release intents are append-only; $file has status $status." >&2
+  exit 1
+fi
+if [[ ! "$file" =~ ^\.release/(backend|none)/intents/[a-z0-9][a-z0-9-]*\.md$ ]]; then
+  echo "::error::Release intent names must be lowercase kebab-case Markdown files: $file" >&2
+  exit 1
+fi
+if [[ ! -s "$file" ]]; then
+  echo "::error::Release intent $file must explain the decision." >&2
+  exit 1
+fi

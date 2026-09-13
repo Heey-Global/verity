@@ -4,6 +4,36 @@ Verity uses release-please to collect conventional commits into deliberately
 merged release pull requests. Backend artifacts and native mobile builds have
 separate release PRs; Mobile OTA patches continue to publish automatically.
 
+## Backend release intent
+
+The backend is a product release group spanning several workspaces, deployment
+files, images, and the sandbox toolkit. It is not the repository root and is not
+one npm package. Each pull request therefore declares explicitly whether it
+belongs to that release train:
+
+- Add one unique, lowercase kebab-case Markdown file under
+  `.release/backend/intents/` when the change must appear in the next Server
+  release.
+- Add the file under `.release/none/intents/` when the change must not create a
+  Server release.
+
+Intent files are append-only audit records. Their content explains the decision;
+the pull request's Conventional Commit title remains the authoritative changelog
+entry and determines the semantic version bump. Release Please watches only the
+backend intent directory, while continuing to write the public `CHANGELOG.md`
+and `version.txt` at the repository root. Shared files such as `package-lock.json`
+therefore belong to a Server release only when the pull request says so, instead
+of being assigned accidentally by directory position.
+
+Pull requests are squash-merged so the product changes, intent, authoritative
+title, and version bump become one commit. Merge commits could be parsed twice;
+rebase merges could separate the intent from the title it classifies. The
+release workflow checks the repository setting before invoking Release Please.
+
+Generated bot pull requests are exempt because they cannot add a reviewed human
+release decision. A product change from such a pull request needs a human
+follow-up intent before it can enter the backend train.
+
 ## Release-PR checks without a PAT
 
 release-please intentionally uses only the repository `GITHUB_TOKEN`. Pull
@@ -41,7 +71,9 @@ is not a new site — but it means the image a `website-vX.Y.Z` publishes can ha
 been smoked by a script that never appeared in its changelog.
 
 Backend, mobile, and website each have their own release-please config and
-manifest. Their release PRs therefore update disjoint files: merging one train
+manifest. The backend component is rooted at `.release/backend`, while its
+generated changelog and version stay at the repository root for compatibility.
+Their release PRs therefore update disjoint managed files: merging one train
 cannot make either of the other two conflict merely because its version moved.
 The three action invocations still run in one serialized release job so tag and
 artifact publication retain the existing ordering and permissions.

@@ -68,9 +68,9 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
-      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs.release_created }}
-      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs.major, steps.release-backend.outputs.minor, steps.release-backend.outputs.patch) }}
-      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs.sha }}
+      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs['.release/backend--release_created'] }}
+      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['.release/backend--major'], steps.release-backend.outputs['.release/backend--minor'], steps.release-backend.outputs['.release/backend--patch']) }}
+      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs['.release/backend--sha'] }}
       mobile-release-created: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
       mobile-version: ${{ steps.release-mobile.outputs['apps/mobile--major'] }}.${{ steps.release-mobile.outputs['apps/mobile--minor'] }}.${{ steps.release-mobile.outputs['apps/mobile--patch'] }}
       mobile-sha: ${{ steps.release-mobile.outputs['apps/mobile--sha'] }}
@@ -110,10 +110,11 @@ jobs:
           set -euo pipefail
           merge_policy="$(gh api "repos/${GITHUB_REPOSITORY}" \
             --jq '[.allow_merge_commit, .allow_squash_merge, .allow_rebase_merge] | @tsv')"
-          # Verity deliberately offers both linear-history choices while banning
-          # the merge wrapper that Release Please can parse a second time.
-          if [[ "$merge_policy" != $'false\ttrue\ttrue' ]]; then
-            echo "::error::Under Settings > General > Pull Requests, disable merge commits and enable squash and rebase merging. Merge wrappers make Release Please emit a second changelog entry for conventional commits."
+          # An explicit release intent and its product change must reach main as
+          # one commit. A rebase merge can separate them, leaving Release Please
+          # with only the intent commit and the wrong title/version bump.
+          if [[ "$merge_policy" != $'false\ttrue\tfalse' ]]; then
+            echo "::error::Under Settings > General > Pull Requests, enable squash merging only. Merge commits can be parsed twice, while rebase merges separate product changes from their release intent."
             exit 1
           fi
 
@@ -268,14 +269,14 @@ jobs:
       - name: Remove premature next release PRs
         id: remove-premature-prs
         if: >-
-          (steps.release-backend.outputs.release_created == 'true' && steps.release-backend.outputs.prs_created == 'true') ||
+          (steps.release-backend.outputs['.release/backend--release_created'] == 'true' && steps.release-backend.outputs.prs_created == 'true') ||
           (steps.release-mobile.outputs['apps/mobile--release_created'] == 'true' && steps.release-mobile.outputs.prs_created == 'true') ||
           (steps.release-website.outputs['docs/website--release_created'] == 'true' && steps.release-website.outputs.prs_created == 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          BACKEND_RELEASED: ${{ steps.release-backend.outputs.release_created }}
-          BACKEND_SHA: ${{ steps.release-backend.outputs.sha }}
+          BACKEND_RELEASED: ${{ steps.release-backend.outputs['.release/backend--release_created'] }}
+          BACKEND_SHA: ${{ steps.release-backend.outputs['.release/backend--sha'] }}
           BACKEND_PRS: ${{ steps.release-backend.outputs.prs }}
           MOBILE_RELEASED: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
           MOBILE_SHA: ${{ steps.release-mobile.outputs['apps/mobile--sha'] }}
