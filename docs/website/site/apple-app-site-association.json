@@ -9,5 +9,8 @@
         ]
       }
     ]
+  },
+  "webcredentials": {
+    "apps": ["__APPLE_TEAM_ID__.build.verity.app"]
   }
 }
