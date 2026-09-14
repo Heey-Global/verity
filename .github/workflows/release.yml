@@ -246,7 +246,7 @@ jobs:
       # tag as an ordinary Git ref first; Release Please then attaches the
       # release to the existing, verified tag. On-time release runs retain the
       # normal draft-without-a-tag lifecycle.
-      - name: Pre-tag delayed release commits
+      - name: Require tags for delayed release commits
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -303,9 +303,11 @@ jobs:
               return 0
             fi
 
-            git tag "$tag" "$release_sha"
-            git push origin "refs/tags/${tag}"
-            echo "Pre-tagged delayed $component release PR #$pr: $tag -> $release_sha"
+            echo "::error::Delayed $component release PR #$pr needs $tag at $release_sha, but the workflow token cannot create a tag whose tree contains older workflow files." >&2
+            echo "Create and push the validated tag from an authorized checkout, then re-run this workflow:" >&2
+            echo "  git tag $tag $release_sha" >&2
+            echo "  git push origin refs/tags/$tag" >&2
+            exit 1
           }
 
           pretag_delayed_release "$BACKEND_SELECTED" server \
