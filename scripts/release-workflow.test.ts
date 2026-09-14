@@ -329,9 +329,11 @@ describe('release merge policy', () => {
     expect(select?.run).toContain('selecting the default trains');
   });
 
-  it('pre-tags only delayed release commits whose workflow tree changed', () => {
+  it('requires a manual tag only for delayed commits whose workflow tree changed', () => {
     const steps = workflow.jobs['release-please'].steps;
-    const pretagIndex = steps.findIndex((step) => step.name === 'Pre-tag delayed release commits');
+    const pretagIndex = steps.findIndex(
+      (step) => step.name === 'Require tags for delayed release commits',
+    );
     const pretag = steps[pretagIndex];
     const firstReleasePleaseIndex = steps.findIndex((step) =>
       step.uses?.startsWith('googleapis/release-please-action@'),
@@ -348,7 +350,10 @@ describe('release merge policy', () => {
     );
     expect(pretag?.run).toContain('git show-ref --verify --quiet "refs/tags/${tag}"');
     expect(pretag?.run).toContain('[[ "$tagged_sha" != "$release_sha" ]]');
-    expect(pretag?.run).toContain('git push origin "refs/tags/${tag}"');
+    expect(pretag?.run).not.toContain('git push origin "refs/tags/${tag}"');
+    expect(pretag?.run).toContain('the workflow token cannot create a tag');
+    expect(pretag?.run).toContain('git tag $tag $release_sha');
+    expect(pretag?.run).toContain('git push origin refs/tags/$tag');
     expect(pretag?.run).toContain("'.release/backend' v");
     expect(pretag?.run).toContain("'apps/mobile' mobile-v");
     expect(pretag?.run).toContain("'docs/website' website-v");
@@ -540,10 +545,9 @@ describe('release toolkit trust ledger', () => {
 
 describe('release immutability lifecycle', () => {
   it('creates every release as a draft, never published directly', () => {
-    // Organization-enforced release immutability rejects a direct non-draft
-    // create from the integration token with HTTP 403 — on release day, not
-    // in CI. This pins every creation path to the draft-then-publish
-    // lifecycle so a new train or workflow cannot silently reintroduce one.
+    // Immutable releases must stay mutable until their artifacts and evidence
+    // are complete. Pin every creation path to draft-then-publish so a new
+    // train or workflow cannot silently bypass that lifecycle.
     for (const train of ['backend', 'mobile', 'website']) {
       const config = JSON.parse(readFileSync(`release-please-config.${train}.json`, 'utf8')) as {
         packages: Record<string, { draft?: boolean }>;
@@ -557,6 +561,12 @@ describe('release immutability lifecycle', () => {
       const flat = source.replace(/\\\n\s*/gu, ' ');
       for (const [command] of flat.matchAll(/gh release create[^\n]*/gu)) {
         expect(command, `${file} must create releases as drafts`).toContain('--draft');
+        // Existing tags determine the release commit. Repeating it as --target
+        // makes GitHub authorize a protected ref update and can 403 when the
+        // tagged tree contains older workflow files.
+        expect(command, `${file} must not retarget an existing release tag`).not.toContain(
+          '--target',
+        );
       }
     }
   });

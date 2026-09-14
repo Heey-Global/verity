@@ -119,11 +119,10 @@ jobs:
           tag="${{ steps.candidate.outputs.tag }}"
           title="Mobile ${{ steps.candidate.outputs.version }} (OTA)"
           notes="Promoted the tested EAS branch ${{ steps.candidate.outputs.branch }} to the TestFlight channel."
-          # Release immutability is enforced by the organization: the
-          # integration token may create a draft and publish it, but a direct
-          # non-draft create — and any edit of an already published release —
-          # is rejected with HTTP 403. The candidate step already verified the
-          # reserved tag, so no implicit ref creation happens on either path.
+          # The candidate step already verified that the reserved tag points at
+          # the approved commit. Do not pass --target here: GitHub authorizes
+          # that redundant field like a ref update, which the workflow token
+          # cannot perform when the tagged tree contains older workflow files.
           if state="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)"; then
             if [[ "$state" == false ]]; then
               echo "$tag is already recorded as a published release; nothing to update."
@@ -132,7 +131,6 @@ jobs:
           else
             gh release create "$tag" \
               --draft \
-              --target "${{ steps.candidate.outputs.commit }}" \
               --title "$title" \
               --notes "$notes" \
               --latest=false
