@@ -14,6 +14,8 @@ import { VerityApiError } from '@verity/mobile';
 import type { VerityClient, OnboardingStatus } from '@verity/mobile';
 import { fireEvent, render, screen } from '@testing-library/react-native';
 
+jest.mock('expo-application', () => ({ nativeApplicationVersion: '1.30.0' }));
+
 const mockReplace = jest.fn<void, [string]>();
 const mockPush = jest.fn<void, [string]>();
 const mockBack = jest.fn<void, []>();
@@ -111,6 +113,7 @@ describe('onboarding wizard shell — step screen', () => {
     // Welcome is preflight before any server/secret setup, not a numbered wizard step.
     expect(screen.queryByLabelText(/Step \d+ of \d+/)).toBeNull();
     expect(screen.getByText('Secure development. Your choice of AI.')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Version 1.30.0, bundle dev')).toBeOnTheScreen();
     expect(screen.getByText(/Claude Code, Codex, and open-source models/)).toBeOnTheScreen();
     expect(screen.getByText(/isolated project sandboxes/)).toBeOnTheScreen();
     expect(screen.getByText(/Switch AI providers/)).toBeOnTheScreen();

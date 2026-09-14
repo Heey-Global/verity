@@ -167,9 +167,11 @@ describe('deploy/bin/verity-compose', () => {
     const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
       services: Record<string, { command?: string[] }>;
     };
-    expect(overlay.services['verity-control-runner-init']?.command?.join(' ')).toContain(
-      'chown 1000:1000 /data /data/workspaces /data/sessions',
+    const command = overlay.services['verity-control-runner-init']?.command?.join(' ');
+    expect(command).toContain(
+      'chown 1000:1000 /data /data/workspaces /data/sessions /data/runners',
     );
+    expect(command).toContain('chmod 0750 /data/runners');
   });
 
   /**

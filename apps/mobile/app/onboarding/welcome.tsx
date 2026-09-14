@@ -1,14 +1,19 @@
 // Preflight welcome. No server is selected yet, so this is deliberately not
 // part of the numbered setup wizard.
+import * as Application from 'expo-application';
 import { type Href, router } from 'expo-router';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
+
 const NEXT = '/onboarding/server-url' as Href;
 
 export default function OnboardingWelcome() {
   const insets = useSafeAreaInsets();
+  const version = runningReleaseVersion(Application.nativeApplicationVersion);
+  const build = describeBuild();
   return (
     <View style={styles.root}>
       <ScrollView
@@ -16,6 +21,12 @@ export default function OnboardingWelcome() {
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.eyebrow}>Verity</Text>
+        <Text
+          style={styles.version}
+          accessibilityLabel={`Version ${version}, bundle ${build.text}`}
+        >
+          Version {version} · Bundle {build.text}
+        </Text>
         <Text style={styles.title} accessibilityRole="header">
           Secure development. Your choice of AI.
         </Text>
@@ -38,9 +49,7 @@ export default function OnboardingWelcome() {
           <Text style={styles.item}>
             2. Scan the installer QR code to pair this device securely.
           </Text>
-          <Text style={styles.item}>
-            3. Connect your preferred AI providers and add your first project.
-          </Text>
+          <Text style={styles.item}>3. Connect your preferred AI provider, then open Verity.</Text>
         </View>
       </ScrollView>
 
@@ -76,6 +85,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     fontWeight: '800',
     textTransform: 'uppercase',
+  },
+  version: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
   },
   title: {
     color: theme.colors.text,
