@@ -48,7 +48,7 @@ separately by `TRADEMARKS.md`.
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 1 |
 | ISC | 61 |
-| MIT | 935 |
+| MIT | 942 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -159,6 +159,8 @@ separately by `TRADEMARKS.md`.
 | @babel/traverse | MIT | [source](https://www.npmjs.com/package/%40babel%2Ftraverse) |
 | @babel/types | MIT | [source](https://www.npmjs.com/package/%40babel%2Ftypes) |
 | @bcoe/v8-coverage | MIT | [source](https://www.npmjs.com/package/%40bcoe%2Fv8-coverage) |
+| @cacheable/memory | MIT | [source](https://www.npmjs.com/package/%40cacheable%2Fmemory) |
+| @cacheable/utils | MIT | [source](https://www.npmjs.com/package/%40cacheable%2Futils) |
 | @devcontainers/cli | MIT | [source](https://www.npmjs.com/package/%40devcontainers%2Fcli) |
 | @egjs/hammerjs | MIT | [source](https://www.npmjs.com/package/%40egjs%2Fhammerjs) |
 | @electric-sql/pglite | Apache-2.0 | [source](https://www.npmjs.com/package/%40electric-sql%2Fpglite) |
@@ -275,6 +277,8 @@ separately by `TRADEMARKS.md`.
 | @jridgewell/source-map | MIT | [source](https://www.npmjs.com/package/%40jridgewell%2Fsource-map) |
 | @jridgewell/sourcemap-codec | MIT | [source](https://www.npmjs.com/package/%40jridgewell%2Fsourcemap-codec) |
 | @jridgewell/trace-mapping | MIT | [source](https://www.npmjs.com/package/%40jridgewell%2Ftrace-mapping) |
+| @keyv/bigmap | MIT | [source](https://www.npmjs.com/package/%40keyv%2Fbigmap) |
+| @keyv/serialize | MIT | [source](https://www.npmjs.com/package/%40keyv%2Fserialize) |
 | @lukeed/ms | MIT | [source](https://www.npmjs.com/package/%40lukeed%2Fms) |
 | @modelcontextprotocol/sdk | MIT | [source](https://www.npmjs.com/package/%40modelcontextprotocol%2Fsdk) |
 | @napi-rs/wasm-runtime | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fwasm-runtime) |
@@ -499,6 +503,7 @@ separately by `TRADEMARKS.md`.
 | bundle-name | MIT | [source](https://www.npmjs.com/package/bundle-name) |
 | bytes | MIT | [source](https://www.npmjs.com/package/bytes) |
 | cacache | ISC | [source](https://www.npmjs.com/package/cacache) |
+| cacheable | MIT | [source](https://www.npmjs.com/package/cacheable) |
 | call-bind-apply-helpers | MIT | [source](https://www.npmjs.com/package/call-bind-apply-helpers) |
 | call-bound | MIT | [source](https://www.npmjs.com/package/call-bound) |
 | callsites | MIT | [source](https://www.npmjs.com/package/callsites) |
@@ -709,12 +714,14 @@ separately by `TRADEMARKS.md`.
 | has-flag | MIT | [source](https://www.npmjs.com/package/has-flag) |
 | has-symbols | MIT | [source](https://www.npmjs.com/package/has-symbols) |
 | has-tostringtag | MIT | [source](https://www.npmjs.com/package/has-tostringtag) |
+| hashery | MIT | [source](https://www.npmjs.com/package/hashery) |
 | hasown | MIT | [source](https://www.npmjs.com/package/hasown) |
 | hermes-compiler | MIT | [source](https://www.npmjs.com/package/hermes-compiler) |
 | hermes-estree | MIT | [source](https://www.npmjs.com/package/hermes-estree) |
 | hermes-parser | MIT | [source](https://www.npmjs.com/package/hermes-parser) |
 | hoist-non-react-statics | BSD-3-Clause | [source](https://www.npmjs.com/package/hoist-non-react-statics) |
 | hono | MIT | [source](https://www.npmjs.com/package/hono) |
+| hookified | MIT | [source](https://www.npmjs.com/package/hookified) |
 | hosted-git-info | ISC | [source](https://www.npmjs.com/package/hosted-git-info) |
 | html-encoding-sniffer | MIT | [source](https://www.npmjs.com/package/html-encoding-sniffer) |
 | html-escaper | MIT | [source](https://www.npmjs.com/package/html-escaper) |
@@ -792,7 +799,6 @@ separately by `TRADEMARKS.md`.
 | jsc-safe-url | 0BSD | [source](https://www.npmjs.com/package/jsc-safe-url) |
 | jsdom | MIT | [source](https://www.npmjs.com/package/jsdom) |
 | jsesc | MIT | [source](https://www.npmjs.com/package/jsesc) |
-| json-buffer | MIT | [source](https://www.npmjs.com/package/json-buffer) |
 | json-parse-even-better-errors | MIT | [source](https://www.npmjs.com/package/json-parse-even-better-errors) |
 | json-schema-ref-resolver | MIT | [source](https://www.npmjs.com/package/json-schema-ref-resolver) |
 | json-schema-to-ts | MIT | [source](https://www.npmjs.com/package/json-schema-to-ts) |
@@ -959,6 +965,7 @@ separately by `TRADEMARKS.md`.
 | psl | MIT | [source](https://www.npmjs.com/package/psl) |
 | punycode | MIT | [source](https://www.npmjs.com/package/punycode) |
 | pure-rand | MIT | [source](https://www.npmjs.com/package/pure-rand) |
+| qified | MIT | [source](https://www.npmjs.com/package/qified) |
 | qrcode | MIT | [source](https://www.npmjs.com/package/qrcode) |
 | qs | BSD-3-Clause | [source](https://www.npmjs.com/package/qs) |
 | query-string | MIT | [source](https://www.npmjs.com/package/query-string) |
