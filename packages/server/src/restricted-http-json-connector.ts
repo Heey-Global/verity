@@ -363,7 +363,7 @@ export function createNodeRestrictedHttpJsonTransport(options?: {
  * claims came from Doppler — and mints a bearer token on top of them. All of it
  * is credential material that an upstream could echo, so all of it is redacted.
  */
-export type RedactedCredential = { value: string; alias: string };
+type RedactedCredential = { value: string; alias: string };
 
 /** One searchable form of one credential, and the marker that replaces it. */
 type RedactionNeedle = { needle: string; marker: string; caseInsensitive: boolean };

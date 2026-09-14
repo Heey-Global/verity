@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@fastify/rate-limit": "11.2.0",
-    "@fastify/websocket": "11.2.0",
+    "@fastify/websocket": "11.3.0",
     "@verity/events": "*",
     "@verity/secret-contracts": "*",
     "@verity/session": "*",
@@ -30,7 +30,7 @@
     "qrcode": "1.5.4",
     "sigstore": "5.0.0",
     "ws": "8.21.3",
-    "zod": "4.4.3"
+    "zod": "4.6.2"
   },
   "devDependencies": {
     "@types/qrcode": "1.5.6",

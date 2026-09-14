@@ -48,6 +48,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:bb6b03d81066993293a10feda7250e8e1cc034035fe9b61cfceededa7c8bf04d AS worker-base
 WORKDIR /app
 COPY --from=deps --chown=65532:65532 /app/node_modules ./node_modules
+COPY --from=deps --chown=65532:65532 /app/packages ./packages
 COPY --from=builder --chown=65532:65532 /app/packages/secret-contracts/dist ./packages/secret-contracts/dist
 COPY --from=builder --chown=65532:65532 /app/packages/secret-contracts/package.json ./packages/secret-contracts/package.json
 COPY --from=builder --chown=65532:65532 /app/packages/server/dist ./packages/server/dist

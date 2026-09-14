@@ -4,6 +4,11 @@ import { createInterface } from 'node:readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+if (process.argv.slice(2).join(' ') === 'auth status --json') {
+  process.stdout.write(`${JSON.stringify({ loggedIn: false })}\n`);
+  process.exit(0);
+}
+
 const mcpConfigIndex = process.argv.indexOf('--mcp-config');
 const rawMcpConfig = mcpConfigIndex < 0 ? undefined : process.argv[mcpConfigIndex + 1];
 if (rawMcpConfig === undefined) throw new Error('Claude ACP did not pass --mcp-config');
@@ -152,11 +157,29 @@ for await (const line of input) {
           agents: [],
           output_style: 'default',
           available_output_styles: ['default'],
-          models: [{ value: 'fixture', displayName: 'Fixture', description: 'E2E fixture' }],
+          models: [
+            {
+              value: 'fixture',
+              displayName: 'Fixture',
+              description: 'E2E fixture',
+              supportsAutoMode: true,
+            },
+          ],
           account: { apiKeySource: 'none', apiProvider: 'firstParty' },
         },
         pending_permission_requests: [],
         pending_user_dialog_requests: [],
+      },
+    });
+    continue;
+  }
+  if (frame.type === 'control_request' && frame.request?.subtype === 'set_permission_mode') {
+    emit({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id,
+        response: {},
       },
     });
     continue;

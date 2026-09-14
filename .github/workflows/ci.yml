@@ -256,17 +256,39 @@ jobs:
                 esac
               done
             fi
+            verdict_base="$before"
+            if [ "$release_only" = "true" ] && [ "${{ github.event_name }}" = "push" ]; then
+              # Back-to-back release merges form a metadata-only chain. The
+              # immediately preceding release's CI may still be running, although
+              # both trees contain the same source. Walk through that chain and
+              # inherit the last source-bearing commit instead of racing its run.
+              while parent="$(git rev-parse --verify --quiet "${verdict_base}^" || true)" && \
+                [ -n "$parent" ]; do
+                mapfile -t prior < <(git diff --no-renames --name-only "$parent" "$verdict_base")
+                mapfile -t prior_kept < <(git diff --no-renames --name-only --diff-filter=d "$parent" "$verdict_base")
+                [ "${#prior[@]}" -gt 0 ] && [ "${#prior[@]}" -eq "${#prior_kept[@]}" ] || break
+                prior_release=true
+                for file in "${prior[@]}"; do
+                  case "$file" in
+                    CHANGELOG.md|version.txt|.release-please-manifest.backend.json|.release-please-manifest.mobile.json|.release-please-manifest.website.json|docs/website/CHANGELOG.md|docs/website/version.txt) ;;
+                    *) prior_release=false; break ;;
+                  esac
+                done
+                [ "$prior_release" = "true" ] || break
+                verdict_base="$parent"
+              done
+            fi
             if [ "$release_only" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
               # Main routing and release inheritance both depend on the exact
               # base having completed successfully. Anything else fails broad.
-              runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${before}&event=push&per_page=1"
+              runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${verdict_base}&event=push&per_page=1"
               verdict="$(gh api "$runs" --jq \
                 '(.workflow_runs[0] // {}) | "\(.status // "missing")/\(.conclusion // "none")"' \
                 2>/dev/null || echo 'unreadable/none')"
               if [ "$verdict" = "completed/success" ]; then
                 base_green=true
               elif [ "$release_only" = "true" ]; then
-                echo "::notice::base $before reports '$verdict', not a completed success — running everything"
+                echo "::notice::base $verdict_base reports '$verdict', not a completed success — running everything"
                 release_only=false
                 inheritance_failed=true
               fi

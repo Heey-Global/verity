@@ -161,7 +161,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 repo='ghcr.io/heey-global/verity/verity-server'
-registry_image='registry:2.8.3@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278'
+registry_image='registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
 postgres_image='postgres:18-alpine'
 # The adoption job the restart stage re-runs refuses any root whose basename is
 # not `managed-deployment`, so the throwaway root carries the production name

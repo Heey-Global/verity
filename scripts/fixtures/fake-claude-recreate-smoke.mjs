@@ -5,6 +5,27 @@ import { dirname, join } from 'node:path';
 
 const worktree = process.env.VERITY_LIVE_SMOKE_WORKTREE ?? '/work';
 const claudeHome = process.env.CLAUDE_CONFIG_DIR;
+const forbiddenEnvironment = ['ANTHROPIC_API_KEY', 'DOPPLER_TOKEN', 'GITHUB_TOKEN'].filter(
+  (name) => process.env[name] !== undefined,
+);
+const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+const expectedPlaceholder = 'verity-claude-egress-placeholder-v1';
+if (
+  forbiddenEnvironment.length > 0 ||
+  (oauthToken !== undefined && oauthToken !== expectedPlaceholder)
+) {
+  throw new Error(
+    `unsafe agent environment: ${JSON.stringify({
+      forbiddenEnvironment,
+      oauthToken: oauthToken === undefined ? 'absent' : 'unexpected',
+    })}`,
+  );
+}
+
+if (process.argv.slice(2).join(' ') === 'auth status --json') {
+  process.stdout.write(`${JSON.stringify({ loggedIn: false })}\n`);
+  process.exit(0);
+}
 if (claudeHome === undefined) throw new Error('missing CLAUDE_CONFIG_DIR');
 
 /** @param {string} name @returns {string | undefined} */
@@ -55,23 +76,6 @@ const resumedLine = JSON.stringify({
   uuid: '00000000-0000-4000-8000-000000000016',
   timestamp: '2026-08-13T00:00:01.000Z',
 });
-
-const forbiddenEnvironment = ['ANTHROPIC_API_KEY', 'DOPPLER_TOKEN', 'GITHUB_TOKEN'].filter(
-  (name) => process.env[name] !== undefined,
-);
-const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-const expectedPlaceholder = 'verity-claude-egress-placeholder-v1';
-if (
-  forbiddenEnvironment.length > 0 ||
-  (oauthToken !== undefined && oauthToken !== expectedPlaceholder)
-) {
-  throw new Error(
-    `unsafe agent environment: ${JSON.stringify({
-      forbiddenEnvironment,
-      oauthToken: oauthToken === undefined ? 'absent' : 'unexpected',
-    })}`,
-  );
-}
 
 await mkdir(dirname(transcriptFile), { recursive: true });
 if (resumed) {
@@ -163,12 +167,27 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
                   value: 'smoke',
                   displayName: 'Smoke',
                   description: 'Deterministic recreate-smoke model',
+                  supportsAutoMode: true,
                 },
               ],
               account: { apiKeySource: 'oauth', apiProvider: 'firstParty' },
             },
             pending_permission_requests: [],
             pending_user_dialog_requests: [],
+          },
+        });
+      } else if (
+        frame.type === 'control_request' &&
+        typeof frame.request_id === 'string' &&
+        isRecord(request) &&
+        request.subtype === 'set_permission_mode'
+      ) {
+        emit({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: frame.request_id,
+            response: {},
           },
         });
       } else if (

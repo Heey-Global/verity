@@ -18,12 +18,12 @@
     },
     "claudeCodeVersion": {
       "type": "string",
-      "default": "2.1.241",
+      "default": "2.1.268",
       "description": "Exact @anthropic-ai/claude-code npm version to pin."
     },
     "claudeAcpVersion": {
       "type": "string",
-      "default": "0.70.0",
+      "default": "0.76.0",
       "description": "Exact @agentclientprotocol/claude-agent-acp npm version to pin."
     },
     "installCodex": {
@@ -33,12 +33,12 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.149.0",
+      "default": "0.154.0",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {
       "type": "string",
-      "default": "1.6.2",
+      "default": "1.11.0",
       "description": "Exact @agentclientprotocol/codex-acp npm version to pin."
     },
     "installOpencode": {
@@ -48,7 +48,7 @@
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "1.18.21",
+      "default": "1.18.30",
       "description": "Exact opencode-ai npm version to pin."
     },
     "installPi": {
@@ -63,7 +63,7 @@
     },
     "piVersion": {
       "type": "string",
-      "default": "0.84.2",
+      "default": "0.85.1",
       "description": "Exact @earendil-works/pi-coding-agent npm version to pin."
     },
     "runnerUid": {
@@ -78,7 +78,7 @@
     },
     "ghVersion": {
       "type": "string",
-      "default": "2.98.0",
+      "default": "2.100.0",
       "description": "Exact cli/cli (GitHub CLI) release version to pin (no leading v)."
     },
     "dopplerVersion": {

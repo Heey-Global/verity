@@ -12,10 +12,11 @@ name: verity-sandbox
 # running containers are re-provisioned, then it's retired.
 #
 # Strategy (mirrors the retired dev-server dev-base.yml):
-#   1. PR: build amd64 + smoke-test, no push.
-#   2. main: build amd64 + smoke-test, push both paths to ghcr.io.
-# amd64-only — the fleet runs on amd64; the build context is the repo root so the
-# Dockerfile's `COPY features/verity-sandbox-toolkit` resolves.
+#   1. PR: build amd64 and arm64 natively + smoke-test, no push.
+#   2. follow-up: publish both architectures under one OCI index from release.yml.
+# This gate proves arm64 compatibility before that follow-up makes a public
+# artifact available. Heey's current fleet remains amd64. The build context is
+# the repo root so the Dockerfile's `COPY features/verity-sandbox-toolkit` resolves.
 #
 # Tags pushed (main only):
 #   :v<semver>    — v-prefixed toolkit version, e.g. v1.11.0.
@@ -102,8 +103,17 @@ env:
   IMAGE_NAME_NEW: heey-global/verity/verity-sandbox
 
 jobs:
-  smoke-test:
-    runs-on: ubuntu-24.04
+  architecture-smoke:
+    name: smoke-test (${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # Bounded below the janitor's cache grace period — see the note on
     # ci.yml's `server-image` job.
     timeout-minutes: 45
@@ -180,7 +190,7 @@ jobs:
             exit 1
           fi
 
-      - name: Build amd64 and load Docker image
+      - name: Build ${{ matrix.architecture }} and load Docker image
         # renovate: datasource=github-actions depName=docker/build-push-action
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -189,13 +199,13 @@ jobs:
           # Repo root so `COPY features/verity-sandbox-toolkit` (the shared Feature) resolves.
           context: .
           file: deploy/verity-sandbox.Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.architecture }}
           tags: ${{ env.SMOKE_IMAGE }}
           load: true
           # `scope`, the pull_request write gate and `ignore-error`: see the note
           # on the `Build Verity server image` step in ci.yml. The scope name
           # follows the Dockerfile, so this job reads exactly what release.yml's
-          # `publish-sandbox` wrote — and this image is the largest in the repo,
+          # `build-sandbox` wrote — and this image is the largest in the repo,
           # so it is the one that most needs its own namespace.
           #
           # This workflow only ever runs on pull_request and workflow_dispatch, so
@@ -654,3 +664,14 @@ jobs:
             || true
           df -h "$RUNNER_TEMP" || true
           docker system df || true
+
+  # Preserve the original required-check name while the work runs as a matrix.
+  smoke-test:
+    if: ${{ always() }}
+    needs: architecture-smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every architecture smoke to pass
+        env:
+          ARCHITECTURE_SMOKE_RESULT: ${{ needs.architecture-smoke.result }}
+        run: test "$ARCHITECTURE_SMOKE_RESULT" = success

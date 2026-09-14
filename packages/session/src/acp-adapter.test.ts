@@ -82,6 +82,31 @@ describe('AcpEventAdapter', () => {
     ).toEqual([{ t: 'skill', text: 'Skill body' }]);
   });
 
+  it('maps native ACP compaction updates once and ignores retained-summary chunks', () => {
+    const adapter = new AcpEventAdapter();
+    expect(
+      adapter.consume({
+        sessionUpdate: 'compaction_update',
+        compactionId: 'compact-1',
+        status: 'in_progress',
+      }),
+    ).toEqual([{ t: 'compaction', boundary: true }]);
+    expect(
+      adapter.consume({
+        sessionUpdate: 'compaction_summary_chunk',
+        compactionId: 'compact-1',
+        content: { type: 'text', text: 'retained context' },
+      }),
+    ).toEqual([]);
+    expect(
+      adapter.consume({
+        sessionUpdate: 'compaction_update',
+        compactionId: 'compact-1',
+        status: 'completed',
+      }),
+    ).toEqual([]);
+  });
+
   it.each([
     ['five_hour', 'five_hour', undefined],
     ['weekly', 'weekly', undefined],

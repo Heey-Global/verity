@@ -215,9 +215,9 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # renovate: datasource=npm depName=@devcontainers/cli
 RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.241
+RUN npm install -g @anthropic-ai/claude-code@2.1.268
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.70.0
+RUN npm install -g @agentclientprotocol/claude-agent-acp@0.76.0
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —
@@ -231,9 +231,9 @@ RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.m
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
 # renovate: datasource=npm depName=@openai/codex
-RUN npm install -g @openai/codex@0.149.0
+RUN npm install -g @openai/codex@0.154.0
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-RUN npm install -g @agentclientprotocol/codex-acp@1.6.2
+RUN npm install -g @agentclientprotocol/codex-acp@1.11.0
 
 # Bundle the shared `verity-sandbox-toolkit` devcontainer Feature (R3.1/#299) so
 # project devcontainer builds can inject it via `--additional-features`. The
@@ -266,6 +266,10 @@ WORKDIR /app
 # Pruned production node_modules (root-hoisted + per-workspace) and the compiled
 # output. Ownership set to the non-root node user baked into the base image.
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+# npm nests incompatible workspace dependency versions below /app/packages.
+# Copy that pruned tree as well; the compiled artifacts below then fill in the
+# package bodies without dropping their production-only nested dependencies.
+COPY --from=deps --chown=node:node /app/packages ./packages
 COPY --from=builder --chown=node:node /app/packages/events/dist ./packages/events/dist
 COPY --from=builder --chown=node:node /app/packages/events/package.json ./packages/events/package.json
 COPY --from=builder --chown=node:node /app/packages/secret-contracts/dist ./packages/secret-contracts/dist

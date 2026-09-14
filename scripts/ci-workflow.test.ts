@@ -1099,7 +1099,7 @@ describe('specialized smoke workflow overhead', () => {
       permissions: Record<string, string>;
       jobs: Record<string, WorkflowJob>;
     };
-    const steps = sandbox.jobs['smoke-test']?.steps ?? [];
+    const steps = sandbox.jobs['architecture-smoke']?.steps ?? [];
     expect(
       steps.some(
         (step) =>
@@ -1749,6 +1749,11 @@ describe('GitHub-hosted runner boundary', () => {
     uses?: string;
     env?: Record<string, string>;
     steps?: WorkflowStep[];
+    if?: string;
+    needs?: string | string[];
+    strategy?: {
+      matrix?: { include?: Array<Record<string, string>> };
+    };
   };
   const jobs = readdirSync('.github/workflows')
     .filter((file) => file.endsWith('.yml'))
@@ -1771,12 +1776,45 @@ describe('GitHub-hosted runner boundary', () => {
   });
 
   it('runs every concrete job on an approved ephemeral GitHub-hosted runner', () => {
-    const hostedImages = new Set(['ubuntu-24.04', 'macos-26']);
+    const hostedImages = new Set(['ubuntu-24.04', 'ubuntu-24.04-arm', 'macos-26']);
     const offenders = jobs
       .filter(declaresRunner)
-      .filter(({ job }) => typeof job['runs-on'] !== 'string' || !hostedImages.has(job['runs-on']))
+      .filter(({ job }) => {
+        if (typeof job['runs-on'] !== 'string') return true;
+        if (hostedImages.has(job['runs-on'])) return false;
+        if (job['runs-on'] !== '${{ matrix.runner }}') return true;
+        const includes = job.strategy?.matrix?.include ?? [];
+        return (
+          includes.length === 0 ||
+          includes.some(({ runner }) => runner === undefined || !hostedImages.has(runner))
+        );
+      })
       .map(({ id }) => id);
     expect(offenders).toEqual([]);
+  });
+
+  it('pairs each native runtime-image build with its matching hosted runner', () => {
+    for (const file of ['verity-sandbox.yml', 'project-relay.yml']) {
+      const workflow = parse(readFileSync(join('.github/workflows', file), 'utf8')) as {
+        jobs: Record<string, Job>;
+      };
+      const job = workflow.jobs['architecture-smoke'];
+      expect(job?.['runs-on']).toBe('${{ matrix.runner }}');
+      expect(job?.strategy?.matrix?.include).toEqual([
+        { architecture: 'amd64', runner: 'ubuntu-24.04' },
+        { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+      ]);
+      const build = job?.steps?.find((step) => step.uses?.startsWith('docker/build-push-action@'));
+      expect(build?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
+      expect(build?.with?.load).toBe(true);
+
+      const gate = workflow.jobs['smoke-test'];
+      expect(gate?.needs).toBe('architecture-smoke');
+      expect(gate?.if).toBe('${{ always() }}');
+      expect(gate?.['runs-on']).toBe('ubuntu-24.04');
+      expect(gate?.steps).toHaveLength(1);
+      expect(gate?.steps?.[0]?.run).toContain('ARCHITECTURE_SMOKE_RESULT');
+    }
   });
 
   it('reclaims only known hosted-image SDKs before disk-heavy builds', () => {
@@ -1791,7 +1829,7 @@ describe('GitHub-hosted runner boundary', () => {
     const sandbox = parse(readFileSync('.github/workflows/verity-sandbox.yml', 'utf8')) as {
       jobs: Record<string, Job>;
     };
-    const sandboxReclaim = (sandbox.jobs['smoke-test']?.steps ?? []).find(
+    const sandboxReclaim = (sandbox.jobs['architecture-smoke']?.steps ?? []).find(
       (step) => step.uses === './.github/actions/reclaim-runner-disk',
     );
     expect(sandboxReclaim?.with?.['minimum-free-gib']).toBe('25');
@@ -1799,7 +1837,7 @@ describe('GitHub-hosted runner boundary', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, Job>;
     };
-    const releaseReclaim = (release.jobs['publish-sandbox']?.steps ?? []).find(
+    const releaseReclaim = (release.jobs['build-sandbox']?.steps ?? []).find(
       (step) => step.uses === './.github/actions/reclaim-runner-disk',
     );
     expect(releaseReclaim?.with?.['minimum-free-gib']).toBe('25');
@@ -1837,8 +1875,8 @@ describe('GitHub-hosted runner boundary', () => {
     const sandbox = parse(readFileSync('.github/workflows/verity-sandbox.yml', 'utf8')) as {
       jobs: Record<string, Job>;
     };
-    const build = (sandbox.jobs['smoke-test']?.steps ?? []).find(
-      (step) => step.name === 'Build amd64 and load Docker image',
+    const build = (sandbox.jobs['architecture-smoke']?.steps ?? []).find((step) =>
+      step.uses?.startsWith('docker/build-push-action@'),
     );
     expect(build?.with?.load).toBe(true);
     expect(build?.with?.outputs).toBeUndefined();
@@ -2914,9 +2952,9 @@ describe('server image CI smoke', () => {
 describe('sandbox smoke isolation', () => {
   const raw = readFileSync('.github/workflows/verity-sandbox.yml', 'utf8');
   const workflow = parse(raw) as {
-    jobs: { 'smoke-test': { env?: Record<string, string>; steps: WorkflowStep[] } };
+    jobs: { 'architecture-smoke': { env?: Record<string, string>; steps: WorkflowStep[] } };
   };
-  const job = workflow.jobs['smoke-test'];
+  const job = workflow.jobs['architecture-smoke'];
   // Everything after `steps:` — the comment above the job explains the failure
   // mode using the old literal names, so it must not count as a usage.
   const steps = raw.slice(raw.indexOf('    steps:'));
@@ -2958,14 +2996,14 @@ describe('sandbox smoke isolation', () => {
 describe('Claude ACP sandbox smoke', () => {
   const workflow = parse(readFileSync('.github/workflows/verity-sandbox.yml', 'utf8')) as {
     jobs: {
-      'smoke-test': {
+      'architecture-smoke': {
         steps: WorkflowStep[];
       };
     };
   };
   const source = readFileSync('packages/server/src/runner-claude-live-server.ts', 'utf8');
   const script = readFileSync('scripts/test-runner-claude-live-container.sh', 'utf8');
-  const smoke = workflow.jobs['smoke-test'].steps.find((step) =>
+  const smoke = workflow.jobs['architecture-smoke'].steps.find((step) =>
     step.run?.includes('test-runner-claude-live-container.sh'),
   );
 
@@ -3025,6 +3063,18 @@ describe('Claude ACP sandbox smoke', () => {
       await waitForStdout('"type":"control_response"');
       expect(stdout).toContain('"response":{"subtype":"success","request_id":"initialize-smoke"');
       expect(stdout).toContain('"models":[{"value":"smoke"');
+      await expect(access(join(worktree, 'before'))).rejects.toThrow();
+      child.stdin.write(
+        `${JSON.stringify({
+          type: 'control_request',
+          request_id: 'permission-mode-smoke',
+          request: { subtype: 'set_permission_mode', mode: 'acceptEdits' },
+        })}\n`,
+      );
+      await waitForStdout('"request_id":"permission-mode-smoke"');
+      expect(stdout).toContain(
+        '"response":{"subtype":"success","request_id":"permission-mode-smoke","response":{}}',
+      );
       await expect(access(join(worktree, 'before'))).rejects.toThrow();
       const exited = once(child, 'exit', { signal: AbortSignal.timeout(5_000) });
       child.stdin.end(`${JSON.stringify({ type: 'user', message: 'smoke' })}\n`);
@@ -3213,6 +3263,8 @@ describe('changed-area detector', () => {
       added?: string[];
       renamedFrom?: string[];
       baseVerdict?: string | null;
+      previousReleaseFiles?: string[];
+      previousReleaseVerdict?: string;
       releaseAuthor?: string;
       releaseFiles?: string[];
     } = {},
@@ -3234,6 +3286,8 @@ describe('changed-area detector', () => {
       // What the base commit's own CI run reports. `null` is an API that would
       // not answer at all, which is not a verdict and must not be read as one.
       baseVerdict = 'completed/success',
+      previousReleaseFiles = [],
+      previousReleaseVerdict = 'completed/success',
       releaseAuthor = 'github-actions[bot]',
       releaseFiles,
     } = options;
@@ -3254,7 +3308,9 @@ describe('changed-area detector', () => {
           'else\n' +
           (baseVerdict === null
             ? '  echo "gh: api unreachable" >&2\n  exit 1\n'
-            : `  printf '%s\\n' ${JSON.stringify(baseVerdict)}\n`) +
+            : previousReleaseFiles.length
+              ? `  if [[ "$*" == *'head_sha=0000000000000000000000000000000000000003'* ]]; then printf '%s\\n' ${JSON.stringify(previousReleaseVerdict)}; else printf '%s\\n' ${JSON.stringify(baseVerdict)}; fi\n`
+              : `  printf '%s\\n' ${JSON.stringify(baseVerdict)}\n`) +
           'fi\n',
         { mode: 0o755 },
       );
@@ -3265,7 +3321,10 @@ describe('changed-area detector', () => {
           `  cat-file) exit ${beforeReachable ? '0' : '1'} ;;\n` +
           // Whatever the step falls back to must still resolve to a commit, or the
           // fallback would look indistinguishable from having no base at all.
-          `  rev-parse) ${headHasParent ? "printf '%s\\n' 0000000000000000000000000000000000000001" : 'exit 1'} ;;\n` +
+          '  rev-parse)\n' +
+          `    if [[ "$*" == *'HEAD^'* ]]; then ${headHasParent ? "printf '%s\\n' 0000000000000000000000000000000000000001" : 'exit 1'};\n` +
+          `    elif [[ "$*" == *'abc^'* ]] && [[ ${previousReleaseFiles.length} -gt 0 ]]; then printf '%s\\n' 0000000000000000000000000000000000000003;\n` +
+          '    else exit 1; fi ;;\n' +
           // `--diff-filter=d` is the same diff without the deletions, which is how
           // the step tells an edit from a removal — `--name-only` alone shows both
           // the same way.
@@ -3274,7 +3333,8 @@ describe('changed-area detector', () => {
           // first, though the two patterns cannot both match: `=d` is the filter
           // argument, and `=AD` does not start with one.
           '  diff)\n' +
-          '    if [[ "$*" == *--diff-filter=AD* ]]; then\n' +
+          `    if [[ "$*" == *'0000000000000000000000000000000000000003 abc'* ]]; then ${list(previousReleaseFiles)};\n` +
+          '    elif [[ "$*" == *--diff-filter=AD* ]]; then\n' +
           '      if [[ "$*" == *"-- packages scripts"* ]]; then\n' +
           `        ${list(inventory)}\n` +
           '      else\n' +
@@ -3791,6 +3851,19 @@ describe('changed-area detector', () => {
     expect(
       await run({ name: 'push', before: 'abc' }, releaseManaged, { baseVerdict: verdict }),
     ).toEqual(all('true'));
+  });
+
+  it('inherits across a preceding release whose own CI is still running', async () => {
+    // Release Please can merge two trains seconds apart. The second tree has the
+    // same source as the last non-release commit, so the first release's pending
+    // run must not turn the second one into an unrelated full backend run.
+    expect(
+      await run({ name: 'push', before: 'abc' }, releaseManaged, {
+        baseVerdict: 'in_progress/none',
+        previousReleaseFiles: releaseManaged.filter((file) => !file.includes('/')),
+        previousReleaseVerdict: 'completed/success',
+      }),
+    ).toEqual(all('false'));
   });
 
   it('runs everything when the base verdict cannot be read', async () => {

@@ -5819,7 +5819,7 @@ describe('GET /models (#143)', () => {
   it('pins the curated Claude model list and the spawn default (the single source of record)', () => {
     expect(CLAUDE_MODELS).toEqual([
       'claude-opus-5',
-      'claude-fable-5',
+      'claude-fable-5-1',
       'claude-sonnet-5',
       'claude-haiku-4-5-20251001',
     ]);

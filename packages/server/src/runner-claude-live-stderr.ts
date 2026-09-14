@@ -20,9 +20,25 @@ const ADAPTER_QUERY_LINE =
   // run. A credential hiding in a path, a query string or userinfo therefore
   // fails the gate instead of riding along inside the one tolerated line.
   /^\[session\/query\] sessionId=[\w.-]+ resume=[\w.-]+ apiType=[\w.-]+ baseUrl=(?:[\w.-]+|https?:\/\/[\w.-]+(?::\d+)?\/?)$/u;
+const ADAPTER_CREATE_LINE =
+  /^\[session\/create\] sessionId=[\w.-]+ phase=[a-z-]+ durationMs=\d+ totalMs=\d+$/u;
+const ADAPTER_LOAD_LINE =
+  /^\[session\/load\] sessionId=[\w.-]+ phase=(?:session-ready|replay) durationMs=\d+ totalMs=\d+$/u;
+const ADAPTER_MODELS_LINE =
+  /^\[session\/models\] sessionId=[\w.-]+ phase=read-transcript durationMs=\d+ totalMs=\d+ messages=\d+ model=[\w.-]+$/u;
+const ADAPTER_REPLAY_LINE =
+  /^\[session\/replay\] sessionId=[\w.-]+ phase=(?:read durationMs=\d+|publish durationMs=\d+ totalMs=\d+) messages=\d+$/u;
 
 export function unexpectedStderrLines(stderr: string): string[] {
   return stderr
     .split('\n')
-    .filter((line) => line.trim().length > 0 && !ADAPTER_QUERY_LINE.test(line));
+    .filter(
+      (line) =>
+        line.trim().length > 0 &&
+        !ADAPTER_QUERY_LINE.test(line) &&
+        !ADAPTER_CREATE_LINE.test(line) &&
+        !ADAPTER_LOAD_LINE.test(line) &&
+        !ADAPTER_MODELS_LINE.test(line) &&
+        !ADAPTER_REPLAY_LINE.test(line),
+    );
 }
