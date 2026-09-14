@@ -3240,6 +3240,8 @@ describe('changed-area detector', () => {
       added?: string[];
       renamedFrom?: string[];
       baseVerdict?: string | null;
+      previousReleaseFiles?: string[];
+      previousReleaseVerdict?: string;
       releaseAuthor?: string;
       releaseFiles?: string[];
     } = {},
@@ -3261,6 +3263,8 @@ describe('changed-area detector', () => {
       // What the base commit's own CI run reports. `null` is an API that would
       // not answer at all, which is not a verdict and must not be read as one.
       baseVerdict = 'completed/success',
+      previousReleaseFiles = [],
+      previousReleaseVerdict = 'completed/success',
       releaseAuthor = 'github-actions[bot]',
       releaseFiles,
     } = options;
@@ -3281,7 +3285,9 @@ describe('changed-area detector', () => {
           'else\n' +
           (baseVerdict === null
             ? '  echo "gh: api unreachable" >&2\n  exit 1\n'
-            : `  printf '%s\\n' ${JSON.stringify(baseVerdict)}\n`) +
+            : previousReleaseFiles.length
+              ? `  if [[ "$*" == *'head_sha=0000000000000000000000000000000000000003'* ]]; then printf '%s\\n' ${JSON.stringify(previousReleaseVerdict)}; else printf '%s\\n' ${JSON.stringify(baseVerdict)}; fi\n`
+              : `  printf '%s\\n' ${JSON.stringify(baseVerdict)}\n`) +
           'fi\n',
         { mode: 0o755 },
       );
@@ -3292,7 +3298,10 @@ describe('changed-area detector', () => {
           `  cat-file) exit ${beforeReachable ? '0' : '1'} ;;\n` +
           // Whatever the step falls back to must still resolve to a commit, or the
           // fallback would look indistinguishable from having no base at all.
-          `  rev-parse) ${headHasParent ? "printf '%s\\n' 0000000000000000000000000000000000000001" : 'exit 1'} ;;\n` +
+          '  rev-parse)\n' +
+          `    if [[ "$*" == *'HEAD^'* ]]; then ${headHasParent ? "printf '%s\\n' 0000000000000000000000000000000000000001" : 'exit 1'};\n` +
+          `    elif [[ "$*" == *'abc^'* ]] && [[ ${previousReleaseFiles.length} -gt 0 ]]; then printf '%s\\n' 0000000000000000000000000000000000000003;\n` +
+          '    else exit 1; fi ;;\n' +
           // `--diff-filter=d` is the same diff without the deletions, which is how
           // the step tells an edit from a removal — `--name-only` alone shows both
           // the same way.
@@ -3301,7 +3310,8 @@ describe('changed-area detector', () => {
           // first, though the two patterns cannot both match: `=d` is the filter
           // argument, and `=AD` does not start with one.
           '  diff)\n' +
-          '    if [[ "$*" == *--diff-filter=AD* ]]; then\n' +
+          `    if [[ "$*" == *'0000000000000000000000000000000000000003 abc'* ]]; then ${list(previousReleaseFiles)};\n` +
+          '    elif [[ "$*" == *--diff-filter=AD* ]]; then\n' +
           '      if [[ "$*" == *"-- packages scripts"* ]]; then\n' +
           `        ${list(inventory)}\n` +
           '      else\n' +
@@ -3818,6 +3828,19 @@ describe('changed-area detector', () => {
     expect(
       await run({ name: 'push', before: 'abc' }, releaseManaged, { baseVerdict: verdict }),
     ).toEqual(all('true'));
+  });
+
+  it('inherits across a preceding release whose own CI is still running', async () => {
+    // Release Please can merge two trains seconds apart. The second tree has the
+    // same source as the last non-release commit, so the first release's pending
+    // run must not turn the second one into an unrelated full backend run.
+    expect(
+      await run({ name: 'push', before: 'abc' }, releaseManaged, {
+        baseVerdict: 'in_progress/none',
+        previousReleaseFiles: releaseManaged.filter((file) => !file.includes('/')),
+        previousReleaseVerdict: 'completed/success',
+      }),
+    ).toEqual(all('false'));
   });
 
   it('runs everything when the base verdict cannot be read', async () => {
