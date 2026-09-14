@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/Heey-Global/verity/compare/v0.3.1...v0.4.0) (2026-09-14)
+
+
+### Features
+
+* **release:** publish arm64 release channel ([#322](https://github.com/Heey-Global/verity/issues/322)) ([ad34d7a](https://github.com/Heey-Global/verity/commit/ad34d7a6a023c44f0c5948232d1f21c95165d33d))
+
+
+### Bug Fixes
+
+* **installer:** correct first-install setup ([#249](https://github.com/Heey-Global/verity/issues/249)) ([2888c1b](https://github.com/Heey-Global/verity/commit/2888c1b7480f7cc60644a07f34af553eaf4d79b4))
+* **server:** release GitHub token cache fix ([#242](https://github.com/Heey-Global/verity/issues/242)) ([e0f8185](https://github.com/Heey-Global/verity/commit/e0f81851952eeaa36d3ffe654966037840fd5e16))
+* **server:** release runner permission repair ([#330](https://github.com/Heey-Global/verity/issues/330)) ([1283539](https://github.com/Heey-Global/verity/commit/1283539c3af3d63998e0537d991bb537f2b0e459))
+
 ## [0.3.1](https://github.com/Heey-Global/verity/compare/v0.3.0...v0.3.1) (2026-09-14)
 
 
