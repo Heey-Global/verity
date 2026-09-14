@@ -57,7 +57,7 @@
   },
   "devDependencies": {
     "@react-native/jest-preset": "0.87.1",
-    "@testing-library/react-native": "13.3.3",
+    "@testing-library/react-native": "14.0.1",
     "@types/jest": "29.5.14",
     "@types/react": "19.3.0",
     "babel-preset-expo": "~57.0.0",
