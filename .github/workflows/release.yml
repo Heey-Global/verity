@@ -416,7 +416,7 @@ jobs:
           steps.release-backend.outputs.prs_created == 'true' ||
           steps.release-mobile.outputs.prs_created == 'true' ||
           steps.release-website.outputs.prs_created == 'true'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
 
@@ -569,7 +569,7 @@ jobs:
 
       # The release job must not depend on the ambient Node.js installation.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
 
@@ -842,7 +842,7 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
 
@@ -980,7 +980,7 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
 
@@ -1410,7 +1410,7 @@ jobs:
       # The relay smoke harness uses host-side Node; provision it explicitly on
       # runner Docker daemons before validating the exact release image.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24.21.0'
 
