@@ -1,5 +1,5 @@
 # renovate: datasource=docker depName=nginxinc/nginx-unprivileged
-FROM nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:2ddec616f1cb58bcac057aa388f28cb81e35137641ef4226d321714499329bd1
 
 ARG REQUIRE_APPLE_ASSOCIATION=false
 
