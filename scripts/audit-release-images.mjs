@@ -98,6 +98,8 @@ export const RELEASE_IMAGES = [
 
 /** The Server is called out in the report: it is the one a deployment cannot skip. */
 export const SERVER_IMAGE = 'heey-global/verity/verity-server';
+export const RELEASE_CHANNELS = ['channel-stable-amd64', 'channel-stable-arm64'];
+export const RELEASE_CHANNEL_ACTIVATION_VERSION = [0, 3, 0];
 
 /**
  * How many `vX.Y.Z` releases back to audit, newest first.
@@ -269,12 +271,20 @@ export function findGaps({ releases, catalogues }) {
 }
 
 /**
- * @param {{ gaps: Gap[], emptyImages: string[], audited: Release[], inFlight: Release[] }} result
+ * @param {{ gaps: Gap[], emptyImages: string[], missingChannels?: string[],
+ *   audited: Release[], inFlight: Release[], graceMs?: number }} result
  * @returns {string} Markdown for the step summary and the log. The run's exit
  *   code says THAT something is wrong; this says which release and which image,
  *   so the run page answers the question without a re-run.
  */
-export function formatReport({ gaps, emptyImages, audited, inFlight, graceMs = DEFAULT_GRACE_MS }) {
+export function formatReport({
+  gaps,
+  emptyImages,
+  missingChannels = [],
+  audited,
+  inFlight,
+  graceMs = DEFAULT_GRACE_MS,
+}) {
   const short = (/** @type {string} */ image) => image.replace(/^.*\//, '');
   const lines = [];
   if (emptyImages.length > 0) {
@@ -285,6 +295,9 @@ export function formatReport({ gaps, emptyImages, audited, inFlight, graceMs = D
       '`scripts/audit-release-images.mjs` names a repository the registry does not have.',
       '',
     );
+  }
+  if (missingChannels.length > 0) {
+    lines.push(`**Missing signed Server release channels: ${missingChannels.join(', ')}.**`, '');
   }
   if (gaps.length > 0) {
     lines.push(
@@ -305,7 +318,7 @@ export function formatReport({ gaps, emptyImages, audited, inFlight, graceMs = D
     }
     lines.push('');
   }
-  if (gaps.length === 0 && emptyImages.length === 0) {
+  if (gaps.length === 0 && emptyImages.length === 0 && missingChannels.length === 0) {
     lines.push(
       `All ${audited.length} audited release${audited.length === 1 ? '' : 's'} have every image published.`,
       '',
@@ -370,7 +383,8 @@ async function httpGet(url, { headers = {}, fetchImpl = fetch, attempts = 3 } = 
  * pattern; whitespace and field order are not a wire format.
  *
  * @param {{ repository: string, token: string, registry?: string,
- *   fetchImpl?: typeof fetch, actor?: string, maxPages?: number }} options
+ *   fetchImpl?: typeof fetch, actor?: string, maxPages?: number,
+ *   versionTagsOnly?: boolean }} options
  * @returns {Promise<Set<string>>}
  */
 export async function fetchTagCatalogue({
@@ -380,6 +394,7 @@ export async function fetchTagCatalogue({
   fetchImpl = fetch,
   actor = 'github-actions',
   maxPages = 50,
+  versionTagsOnly = true,
 }) {
   const auth = Buffer.from(`${actor}:${token}`).toString('base64');
   const tokenResponse = await httpGet(
@@ -416,7 +431,7 @@ export async function fetchTagCatalogue({
       throw new Error(`ghcr.io answered ${repository}'s tag catalogue with something else`);
     }
     for (const tag of listed ?? []) {
-      if (typeof tag === 'string' && VERSION_TAG.test(tag)) tags.add(tag);
+      if (typeof tag === 'string' && (!versionTagsOnly || VERSION_TAG.test(tag))) tags.add(tag);
     }
     // `Link` is a header, not JSON, so it is read as text — but only for the
     // `<…>` in a line that also says `rel="next"`, where getting it wrong costs a
@@ -475,7 +490,7 @@ export async function fetchReleases({
  * @param {{ repository: string, token: string, now?: number, window?: number,
  *   graceMs?: number, apiUrl?: string, registry?: string, actor?: string,
  *   fetchImpl?: typeof fetch, images?: string[] }} options
- * @returns {Promise<{ ok: boolean, gaps: Gap[], emptyImages: string[], report: string }>}
+ * @returns {Promise<{ ok: boolean, gaps: Gap[], emptyImages: string[], missingChannels: string[], report: string }>}
  */
 export async function run({
   repository,
@@ -500,11 +515,29 @@ export async function run({
     );
   }
   const { gaps, emptyImages } = findGaps({ releases: audited, catalogues });
+  const channelsRequired = audited.some((release) => {
+    const version = parseVersionTag(release.tag_name);
+    return version !== null && compareVersions(version, RELEASE_CHANNEL_ACTIVATION_VERSION) >= 0;
+  });
+  /** @type {string[]} */
+  let missingChannels = [];
+  if (channelsRequired) {
+    const serverTags = await fetchTagCatalogue({
+      repository: SERVER_IMAGE,
+      token,
+      registry,
+      fetchImpl,
+      actor,
+      versionTagsOnly: false,
+    });
+    missingChannels = RELEASE_CHANNELS.filter((channel) => !serverTags.has(channel));
+  }
   return {
-    ok: gaps.length === 0 && emptyImages.length === 0,
+    ok: gaps.length === 0 && emptyImages.length === 0 && missingChannels.length === 0,
     gaps,
     emptyImages,
-    report: formatReport({ gaps, emptyImages, audited, inFlight, graceMs }),
+    missingChannels,
+    report: formatReport({ gaps, emptyImages, missingChannels, audited, inFlight, graceMs }),
   };
 }
 
@@ -555,6 +588,9 @@ async function main() {
     }
     for (const image of result.emptyImages) {
       console.error(`::error::ghcr.io publishes no released tag for ${image}`);
+    }
+    for (const channel of result.missingChannels) {
+      console.error(`::error::ghcr.io publishes no Server release channel ${channel}`);
     }
     process.exit(1);
   }
