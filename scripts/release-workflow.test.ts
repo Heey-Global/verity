@@ -45,6 +45,14 @@ interface ReleaseWorkflow {
       steps: WorkflowStep[];
     };
     'publish-server': {
+      outputs?: Record<string, string>;
+      needs?: string[];
+      permissions?: Record<string, string>;
+      steps: WorkflowStep[];
+    };
+    'publish-server-channels': {
+      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
+      env?: Record<string, string>;
       needs?: string[];
       permissions?: Record<string, string>;
       steps: WorkflowStep[];
@@ -404,15 +412,15 @@ describe('website release recovery', () => {
 describe('signed GitHub release evidence', () => {
   const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
   const server = workflow.jobs['publish-server'];
+  const channels = workflow.jobs['publish-server-channels'];
   const evidence = workflow.jobs['publish-server-release-evidence'];
 
   it('passes the verified channel payload to a narrow release writer', () => {
-    const upload = server.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    const upload = channels.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
     expect(upload?.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/);
-    expect(upload?.with?.path).toContain('.release-channel.sigstore.json');
-    expect(upload?.with?.path).toContain('.intoto.jsonl');
+    expect(upload?.with?.path).toContain('.${{ matrix.architecture }}.*');
 
-    expect(evidence.needs).toEqual(['release-please', 'publish-server']);
+    expect(evidence.needs).toEqual(['release-please', 'publish-server-channels']);
     expect(evidence.permissions).toEqual({ actions: 'read', contents: 'write' });
     expect(evidence.env?.GH_REPO).toBe('${{ github.repository }}');
     const download = evidence.steps.find((step) =>
@@ -424,6 +432,7 @@ describe('signed GitHub release evidence', () => {
     );
     expect(publish?.run).toContain('jq -e');
     expect(publish?.run).toContain('gh release upload');
+    expect(publish?.run).toContain('for architecture in amd64 arm64');
     expect(publish?.run).toContain('.release-channel.sigstore.json');
     expect(publish?.run).toContain('.intoto.jsonl');
   });
@@ -441,12 +450,35 @@ describe('signed GitHub release evidence', () => {
       'subject-digest': '${{ steps.build.outputs.digest }}',
       'push-to-registry': true,
     });
-    const channel = server.steps.find((step) => step.name === 'Publish the signed release channel');
+    const channel = channels.steps.find(
+      (step) => step.name === 'Publish signed architecture release channel',
+    );
     expect(channel?.run).toContain('cosign verify-attestation');
     expect(channel?.run).toContain('predicate_type=https://slsa.dev/provenance/v1');
     expect(channel?.run).toContain('--type "$predicate_type"');
     expect(channel?.run).toContain('--predicate-type "$predicate_type"');
     expect(channel?.run).not.toContain('--type slsaprovenance');
+  });
+
+  it('publishes and records a native channel for every Server architecture', () => {
+    expect(channels.strategy?.matrix?.include).toEqual([
+      { architecture: 'amd64', runner: 'ubuntu-24.04' },
+      { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+    ]);
+    expect(channels.env?.SERVER_DIGEST).toBe('${{ needs.publish-server.outputs.digest }}');
+    expect(server.outputs?.digest).toBe('${{ steps.build.outputs.digest }}');
+    const publish = channels.steps.find(
+      (step) => step.name === 'Publish signed architecture release channel',
+    );
+    expect(publish?.run).toContain('imagetools inspect --raw');
+    expect(publish?.run).toContain('.platform.architecture == $architecture');
+    expect(publish?.run).toContain('--platform "linux/${ARCHITECTURE}"');
+    expect(publish?.run).toContain('VERITY_RELEASE_ARCHITECTURE="$ARCHITECTURE"');
+    expect(publish?.run).toContain('channel-stable-${ARCHITECTURE}');
+    expect(publish?.run).toContain('.${ARCHITECTURE}.release-channel.json');
+    expect(publish?.run).toContain('cd "$workdir"');
+    expect(publish?.run).toContain('channel.json:application/json');
+    expect(publish?.run).not.toContain('"$workdir/channel.json":application/json');
   });
 
   it('keeps the release mutable until its evidence and artifacts are complete', () => {

@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error -- plain .mjs helper, no types
 import {
   DEFAULT_GRACE_MS,
+  RELEASE_CHANNEL_ACTIVATION_VERSION,
+  RELEASE_CHANNELS,
   RELEASE_IMAGES,
   SERVER_IMAGE,
   fetchTagCatalogue,
@@ -48,6 +50,10 @@ function catalogues(entries: Record<string, string[]>) {
 }
 
 describe('release audit scope', () => {
+  it('requires one stable Server channel per released architecture', () => {
+    expect(RELEASE_CHANNELS).toEqual(['channel-stable-amd64', 'channel-stable-arm64']);
+    expect(RELEASE_CHANNEL_ACTIVATION_VERSION).toEqual([0, 3, 0]);
+  });
   it('judges the newest releases by version, not by the order the API listed them', () => {
     // GitHub returns releases newest-first by creation, and `mobile-v*` releases
     // are interleaved with the backend ones — so "the first ten entries" and "the
@@ -451,7 +457,10 @@ describe('release audit against the registry', () => {
         return { status: 200, body: [release('v13.2.15', 11), release('v13.2.14', 17)] };
       }
       if (url.pathname === '/token') return { status: 200, body: { token: 'pull-token' } };
-      return { status: 200, body: { tags: ['v13.2.14', 'v13.2.15'] } };
+      return {
+        status: 200,
+        body: { tags: ['v13.2.14', 'v13.2.15', ...RELEASE_CHANNELS] },
+      };
     });
 
     const result = await run({
@@ -465,6 +474,30 @@ describe('release audit against the registry', () => {
     expect(result.ok).toBe(true);
     expect(result.gaps).toEqual([]);
     expect(result.report).toContain('All 2 audited releases have every image published.');
+  });
+
+  it('reports a missing architecture channel after the activation release', async () => {
+    const base = await serve((url) => {
+      if (url.pathname === '/repos/heey-global/verity/releases') {
+        return { status: 200, body: [release('v13.2.15', 11)] };
+      }
+      if (url.pathname === '/token') return { status: 200, body: { token: 'pull-token' } };
+      const tags = ['v13.2.15'];
+      if (url.pathname.includes('/verity-server/')) tags.push('channel-stable-amd64');
+      return { status: 200, body: { tags } };
+    });
+
+    const result = await run({
+      repository: 'heey-global/verity',
+      token: 't',
+      now: NOW,
+      apiUrl: base,
+      registry: base,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.missingChannels).toEqual(['channel-stable-arm64']);
+    expect(result.report).toContain('channel-stable-arm64');
   });
 
   it.each([
@@ -484,7 +517,7 @@ describe('release audit against the registry', () => {
           return { status: 200, body: [release('v13.2.14', 11), release('v13.2.13', 17)] };
         }
         if (url.pathname === '/token') return { status: 200, body: { token: 'pull-token' } };
-        return { status: 200, body: { tags } };
+        return { status: 200, body: { tags: [...tags, ...RELEASE_CHANNELS] } };
       });
       const summary = join(await mkdtemp(join(tmpdir(), 'audit-')), 'summary.md');
       await writeFile(summary, '');

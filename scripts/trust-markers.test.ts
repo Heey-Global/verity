@@ -203,7 +203,7 @@ describe('release verification instructions', () => {
     // the pull command the verify command below it cannot be run at all.
     expect(SECURITY).toContain(`oras pull ${OFFICIAL_SERVER_IMAGE}:channel-stable-amd64`);
     const publish = readFileSync('.github/workflows/release.yml', 'utf8');
-    expect(publish, 'the channel tag moved').toContain('channel-stable-amd64');
+    expect(publish, 'the channel tag moved').toContain('channel-stable-${ARCHITECTURE}');
   });
 
   it('documents verification of the Server provenance the release publishes', () => {
