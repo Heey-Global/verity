@@ -237,6 +237,82 @@ jobs:
             echo "website=$website"
           } >> "$GITHUB_OUTPUT"
 
+      # GitHub's Releases API creates a missing tag as part of the release. If
+      # a delayed run targets a release commit behind HEAD and workflow files
+      # changed in between, that implicit ref creation requires workflows:write
+      # — a permission GITHUB_TOKEN cannot receive. Create only that recovery
+      # tag as an ordinary Git ref first; Release Please then attaches the
+      # release to the existing, verified tag. On-time release runs retain the
+      # normal draft-without-a-tag lifecycle.
+      - name: Pre-tag delayed release commits
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          BACKEND_SELECTED: ${{ steps.release-trains.outputs.backend }}
+          MOBILE_SELECTED: ${{ steps.release-trains.outputs.mobile }}
+          WEBSITE_SELECTED: ${{ steps.release-trains.outputs.website }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pretag_delayed_release() {
+            local selected="$1" component="$2" manifest="$3" path="$4" prefix="$5"
+            [[ "$selected" == true ]] || return 0
+
+            local prs count pr author release_sha version tag
+            prs="$(gh pr list --state merged --base main \
+              --head "release-please--branches--main--components--${component}" \
+              --label 'autorelease: pending' --limit 2 \
+              --json number,author,mergeCommit)"
+            count="$(jq 'length' <<<"$prs")"
+            [[ "$count" != 0 ]] || return 0
+            if [[ "$count" != 1 ]]; then
+              echo "::error::Found $count pending $component release PRs; refusing to guess a tag target." >&2
+              exit 1
+            fi
+
+            pr="$(jq -r '.[0].number' <<<"$prs")"
+            author="$(jq -r '.[0].author.login' <<<"$prs")"
+            release_sha="$(jq -r '.[0].mergeCommit.oid' <<<"$prs")"
+            if [[ "$author" != 'app/github-actions' && "$author" != 'github-actions' ]] ||
+              [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Pending $component release PR #$pr has an unexpected author or merge commit." >&2
+              exit 1
+            fi
+            git merge-base --is-ancestor "$release_sha" "$HEAD_SHA" || {
+              echo "::error::Pending $component release PR #$pr is not an ancestor of this push." >&2
+              exit 1
+            }
+
+            # HEAD needs no workaround. A delayed target needs one only when
+            # its workflow tree differs, which is the scope GitHub protects.
+            [[ "$release_sha" != "$HEAD_SHA" ]] || return 0
+            git diff --quiet "$release_sha" "$HEAD_SHA" -- .github/workflows && return 0
+
+            version="$(jq -er --arg path "$path" '.[$path] | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$manifest")"
+            tag="${prefix}${version}"
+            if git show-ref --verify --quiet "refs/tags/${tag}"; then
+              tagged_sha="$(git rev-parse "${tag}^{commit}")"
+              if [[ "$tagged_sha" != "$release_sha" ]]; then
+                echo "::error::$tag points to $tagged_sha, not pending release commit $release_sha." >&2
+                exit 1
+              fi
+              return 0
+            fi
+
+            git tag "$tag" "$release_sha"
+            git push origin "refs/tags/${tag}"
+            echo "Pre-tagged delayed $component release PR #$pr: $tag -> $release_sha"
+          }
+
+          pretag_delayed_release "$BACKEND_SELECTED" server \
+            .release-please-manifest.backend.json '.release/backend' v
+          pretag_delayed_release "$MOBILE_SELECTED" mobile \
+            .release-please-manifest.mobile.json 'apps/mobile' mobile-v
+          pretag_delayed_release "$WEBSITE_SELECTED" website \
+            .release-please-manifest.website.json 'docs/website' website-v
+
       - name: Open backend release PR or create release
         id: release-backend
         if: github.event_name == 'push' && steps.release-trains.outputs.backend == 'true'

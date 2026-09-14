@@ -218,6 +218,31 @@ describe('release merge policy', () => {
     expect(guardIndex).toBeGreaterThanOrEqual(0);
     expect(firstReleasePleaseIndex).toBeGreaterThan(guardIndex);
   });
+
+  it('pre-tags only delayed release commits whose workflow tree changed', () => {
+    const steps = workflow.jobs['release-please'].steps;
+    const pretagIndex = steps.findIndex((step) => step.name === 'Pre-tag delayed release commits');
+    const pretag = steps[pretagIndex];
+    const firstReleasePleaseIndex = steps.findIndex((step) =>
+      step.uses?.startsWith('googleapis/release-please-action@'),
+    );
+
+    expect(pretagIndex).toBeGreaterThan(-1);
+    expect(pretagIndex).toBeLessThan(firstReleasePleaseIndex);
+    expect(pretag?.env?.GH_TOKEN).toBe('${{ secrets.GITHUB_TOKEN }}');
+    expect(pretag?.run).toContain("--label 'autorelease: pending'");
+    expect(pretag?.run).toContain('git merge-base --is-ancestor');
+    expect(pretag?.run).toContain('[[ "$release_sha" != "$HEAD_SHA" ]] || return 0');
+    expect(pretag?.run).toContain(
+      'git diff --quiet "$release_sha" "$HEAD_SHA" -- .github/workflows && return 0',
+    );
+    expect(pretag?.run).toContain('git show-ref --verify --quiet "refs/tags/${tag}"');
+    expect(pretag?.run).toContain('[[ "$tagged_sha" != "$release_sha" ]]');
+    expect(pretag?.run).toContain('git push origin "refs/tags/${tag}"');
+    expect(pretag?.run).toContain("'.release/backend' v");
+    expect(pretag?.run).toContain("'apps/mobile' mobile-v");
+    expect(pretag?.run).toContain("'docs/website' website-v");
+  });
 });
 
 describe('website release recovery', () => {
