@@ -304,6 +304,23 @@ describe('release merge policy', () => {
     expect(firstReleasePleaseIndex).toBeGreaterThan(guardIndex);
   });
 
+  it('keeps an empty push diff from failing train selection', () => {
+    const steps = workflow.jobs['release-please'].steps;
+    const selectIndex = steps.findIndex(
+      (step) => step.name === 'Select release trains for this push',
+    );
+    expect(selectIndex).toBeGreaterThan(-1);
+    const select = steps[selectIndex];
+    // The break this guards: a squash merge whose content already landed on
+    // main pushes an empty tree diff. Failing there paints every duplicate
+    // merge red and skips the delayed-release catch-up that runs after
+    // selection, so the selector must fall through to the default trains.
+    expect(select?.run).toContain('Could not resolve the immutable push diff');
+    expect(select?.run).not.toContain('refusing to select a train');
+    expect(select?.run).toContain('::notice::Empty push diff');
+    expect(select?.run).toContain('selecting the default trains');
+  });
+
   it('pre-tags only delayed release commits whose workflow tree changed', () => {
     const steps = workflow.jobs['release-please'].steps;
     const pretagIndex = steps.findIndex((step) => step.name === 'Pre-tag delayed release commits');

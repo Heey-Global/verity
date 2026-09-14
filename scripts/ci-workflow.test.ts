@@ -393,7 +393,10 @@ fi
       expect(foreignMobileFile).toBeDefined();
       expect(() => run([...rows('backend'), `M\t${foreignMobileFile as string}`])).toThrow();
       expect(() => run([`D\t${manifest('mobile')}`])).toThrow();
-      expect(() => run([])).toThrow();
+      // An empty tree diff (a squash merge whose content already landed on
+      // main) is a valid push shape: it selects the always-on trains so the
+      // delayed-release catch-up still runs, instead of failing the run.
+      expect(run([])).toEqual({ backend: 'true', mobile: 'false', website: 'true' });
       expect(() => run(['M\tpackages/server/src/app.ts'], { failDiff: true })).toThrow();
       expect(() => run(['M\tapps/mobile/app/index.tsx'], { failNativeDiff: true })).toThrow();
       expect(() => run(['M\tapps/mobile/app/index.tsx'], { failNativeLock: true })).toThrow();
