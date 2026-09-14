@@ -231,7 +231,7 @@ RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.m
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
 # renovate: datasource=npm depName=@openai/codex
-RUN npm install -g @openai/codex@0.149.0
+RUN npm install -g @openai/codex@0.154.0
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 RUN npm install -g @agentclientprotocol/codex-acp@1.6.2
 

@@ -1386,7 +1386,7 @@ export interface ServerDeps {
  */
 export const CLAUDE_MODELS = [
   'claude-opus-5',
-  'claude-fable-5',
+  'claude-fable-5-1',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ] as const;
