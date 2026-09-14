@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/Heey-Global/verity/compare/v0.3.0...v0.3.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **server:** release runner permission repair ([#330](https://github.com/Heey-Global/verity/issues/330)) ([1283539](https://github.com/Heey-Global/verity/commit/1283539c3af3d63998e0537d991bb537f2b0e459))
+
 ## [0.3.0](https://github.com/Heey-Global/verity/compare/v0.2.2...v0.3.0) (2026-09-14)
 
 
