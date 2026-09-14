@@ -629,6 +629,62 @@ describe('global auth gate (onRequest)', () => {
     }
   });
 
+  it('rate-limits invalid unlock bootstraps after a correct password', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    let initializationBootstrap = true;
+    const pairing = {
+      consumeBootstrap(token: string): boolean {
+        if (token !== 'initialization-bootstrap' || !initializationBootstrap) return false;
+        initializationBootstrap = false;
+        return true;
+      },
+    } as unknown as DevicePairingManager;
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      devicePairing: pairing,
+    });
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/secret/init',
+            headers: { 'x-verity-pairing': 'initialization-bootstrap' },
+            payload: { password: PASSWORD },
+          })
+        ).statusCode,
+      ).toBe(200);
+      cipher.seal();
+
+      for (let i = 0; i < 5; i++) {
+        expect(
+          (
+            await app.inject({
+              method: 'POST',
+              url: '/secret/unlock',
+              headers: { 'x-verity-pairing': 'invalid-bootstrap' },
+              payload: { password: PASSWORD },
+            })
+          ).statusCode,
+        ).toBe(401);
+      }
+      const locked = await app.inject({
+        method: 'POST',
+        url: '/secret/unlock',
+        headers: { 'x-verity-pairing': 'invalid-bootstrap' },
+        payload: { password: PASSWORD },
+      });
+      expect(locked.statusCode).toBe(429);
+      expect(locked.headers['retry-after']).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
   it('keeps managed-gateway unlock throttles separate per authenticated client', async () => {
     const cipher = createSealableSecretCipher();
     const store = new EventStore(ctx.db, cipher);

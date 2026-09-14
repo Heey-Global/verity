@@ -215,6 +215,7 @@ export function registerSecretLifecycleRoutes(
         deps.authRegistry?.verify(bearerToken(request.headers.authorization)) === true;
       const bootstrap = request.headers['x-verity-pairing'];
       if (!existingDevice && !deps.devicePairing.consumeBootstrap(bootstrap as string)) {
+        unlockThrottle.recordFailure(throttleIdentity);
         reply.code(401);
         return { error: 'valid device pairing is required' };
       }
