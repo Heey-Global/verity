@@ -91,7 +91,9 @@
       "matchPackageNames": [
         "@expo/vector-icons",
         "@react-native-async-storage/async-storage",
+        "@react-native/jest-preset",
         "@shopify/flash-list",
+        "babel-preset-expo",
         "expo",
         "expo-application",
         "expo-auth-session",
@@ -116,15 +118,20 @@
         "expo-web-browser",
         "jest-expo",
         "react-native",
+        "react-native-edge-to-edge",
         "react-native-gesture-handler",
         "react-native-keyboard-controller",
+        "react-native-nitro-modules",
+        "react-native-qrcode-svg",
         "react-native-reanimated",
         "react-native-safe-area-context",
         "react-native-screens",
         "react-native-svg",
+        "react-native-uitextview",
+        "react-native-unistyles",
         "react-native-worklets"
       ],
-      "matchFileNames": ["apps/mobile/package.json"],
+      "matchFileNames": ["apps/mobile/package.json", "package.json"],
       "enabled": false
     },
     {

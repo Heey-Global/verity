@@ -206,23 +206,21 @@ describe('Renovate Expo native compatibility', () => {
       devDependencies?: Record<string, string>;
       overrides?: Record<string, string>;
     };
-    const bundledNativeModules = JSON.parse(
-      readFileSync('node_modules/expo/bundledNativeModules.json', 'utf8'),
-    ) as Record<string, string>;
     const mobileDependencies = {
       ...(mobileManifest.dependencies ?? {}),
       ...(mobileManifest.devDependencies ?? {}),
     };
-    const expectedMobile = [
-      ...new Set([
-        'expo',
-        ...Object.keys(mobileDependencies).filter(
-          (dependency) =>
-            (dependency in bundledNativeModules || dependency.startsWith('expo-')) &&
-            !['react', 'react-dom', 'react-test-renderer'].includes(dependency),
-        ),
-      ]),
-    ].sort();
+    const configuredMobile = rule?.matchPackageNames ?? [];
+    const sdkCoupledPackages = Object.keys(mobileDependencies).filter(
+      (dependency) =>
+        dependency === 'expo' ||
+        dependency.startsWith('expo-') ||
+        dependency.startsWith('@expo/') ||
+        dependency === 'babel-preset-expo' ||
+        dependency === 'react-native' ||
+        dependency.startsWith('react-native-') ||
+        dependency.startsWith('@react-native/'),
+    );
     const expectedMetro = [
       ...new Set(
         [
@@ -234,8 +232,18 @@ describe('Renovate Expo native compatibility', () => {
     ].sort();
 
     expect(rule?.enabled).toBe(false);
-    expect(rule?.matchFileNames).toEqual(['apps/mobile/package.json']);
-    expect(rule?.matchPackageNames?.toSorted()).toEqual(expectedMobile);
+    expect(rule?.matchFileNames).toEqual(['apps/mobile/package.json', 'package.json']);
+    // The server-only CI installs deliberately omit the mobile workspace. Keep
+    // this guard anchored in tracked manifests so a clean partial install cannot
+    // silently turn policy validation into a dependency on leftover node_modules.
+    expect(configuredMobile).toEqual(expect.arrayContaining(sdkCoupledPackages));
+    expect(configuredMobile.filter((dependency) => !(dependency in mobileDependencies))).toEqual(
+      [],
+    );
+    expect(configuredMobile).toContain('react-native');
+    expect(
+      rootManifest.dependencies?.['react-native'] ?? rootManifest.devDependencies?.['react-native'],
+    ).toBeDefined();
     const testToolRule = config.packageRules.find((candidate) =>
       candidate.description?.startsWith('Keep major mobile-test-tool upgrades aligned'),
     );
