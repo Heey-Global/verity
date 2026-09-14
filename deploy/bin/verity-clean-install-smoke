@@ -46,6 +46,9 @@ custom_networks="$(
 [[ -z "$custom_networks" ]] || refuse 'the disposable daemon already contains custom networks'
 docker --host "$DOCKER_HOST" image inspect "$image" >/dev/null 2>&1 ||
   refuse "the image '$image' is not loaded in the isolated daemon"
+export VERITY_GVISOR_SMOKE_IMAGE="$(
+  docker --host "$DOCKER_HOST" image inspect --format '{{.Id}}' "$image"
+)"
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 compose="$repo_root/deploy/bin/verity-compose"

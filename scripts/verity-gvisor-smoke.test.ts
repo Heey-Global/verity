@@ -119,6 +119,18 @@ describeSmoke('deploy/bin/verity-gvisor-smoke', () => {
     expect(readFileSync(test.calls, 'utf8')).not.toContain('create ');
   });
 
+  it('uses an already-loaded content-addressed image without pulling it', async () => {
+    const test = harness();
+    const imageId = `sha256:${digest}`;
+    await execFileAsync('deploy/bin/verity-gvisor-smoke', {
+      env: { ...test.env, VERITY_GVISOR_SMOKE_IMAGE: imageId },
+    });
+
+    const calls = readFileSync(test.calls, 'utf8');
+    expect(calls).toContain(`image inspect ${imageId}`);
+    expect(calls).not.toContain(`pull ${imageId}`);
+  });
+
   it('force-removes the container when the runsc workload fails', async () => {
     const test = harness('exit 17');
     await expect(
