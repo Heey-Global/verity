@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/Heey-Global/verity/compare/v0.2.1...v0.2.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* **installer:** correct first-install setup ([#249](https://github.com/Heey-Global/verity/issues/249)) ([2888c1b](https://github.com/Heey-Global/verity/commit/2888c1b7480f7cc60644a07f34af553eaf4d79b4))
+
 ## [0.2.1](https://github.com/Heey-Global/verity/compare/v0.2.0...v0.2.1) (2026-09-13)
 
 
