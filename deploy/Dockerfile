@@ -213,7 +213,7 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # manager matches one dependency per instruction; combining these pins silently
 # hides every package after the first one from dependency updates.
 # renovate: datasource=npm depName=@devcontainers/cli
-RUN npm install -g @devcontainers/cli@0.88.0
+RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 RUN npm install -g @anthropic-ai/claude-code@2.1.241
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
