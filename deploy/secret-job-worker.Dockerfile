@@ -2,7 +2,7 @@
 # adapter at /usr/local/bin/verity-secret-job-pilot; the server pins the resulting image by digest.
 
 # renovate: datasource=docker depName=node
-FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS builder
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS builder
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/events/package.json packages/events/
@@ -28,7 +28,7 @@ COPY features features
 RUN npm run build
 
 # renovate: datasource=docker depName=node
-FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS deps
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/events/package.json packages/events/
@@ -45,7 +45,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 
 # Shell-less, non-root runtime. No network tools, package manager, writable worktree, or credentials.
 # renovate: datasource=docker depName=gcr.io/distroless/nodejs24-debian13
-FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:7781e8b4fccf59240bd539af6738cccf8dad4be303165c3a1fa065c48699b937 AS worker-base
+FROM gcr.io/distroless/nodejs24-debian13:nonroot@sha256:bb6b03d81066993293a10feda7250e8e1cc034035fe9b61cfceededa7c8bf04d AS worker-base
 WORKDIR /app
 COPY --from=deps --chown=65532:65532 /app/node_modules ./node_modules
 COPY --from=builder --chown=65532:65532 /app/packages/secret-contracts/dist ./packages/secret-contracts/dist

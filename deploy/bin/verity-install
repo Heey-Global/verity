@@ -669,13 +669,19 @@ if [ "$opt_reinstall" = 1 ]; then
       for _ in {1..30}; do
         containers_gone=1
         for container_id in "${reinstall_container_ids[@]}"; do
-          if inspect_result="$(docker inspect "$container_id" 2>&1)"; then
+          # Do not infer absence from `docker inspect`'s human-readable error.
+          # Docker releases have emitted both `Error: No such object` and an empty
+          # JSON array followed by lowercase `error: no such object`. A successful
+          # filtered listing gives us the same answer without parsing either form.
+          if ! matching_container="$(docker ps -aq --no-trunc --filter "id=$container_id" 2>&1)"; then
+            die "could not verify removal of Verity container $container_id: $matching_container; no volumes or state files were deleted"
+          fi
+          # `docker ps -q` may have supplied a short id while `--no-trunc`
+          # deliberately returns the full one. Any match from the id filter means
+          # the selected container is still present; an empty result means gone.
+          if [ -n "$matching_container" ]; then
             containers_gone=0
             break
-          fi
-          if ! grep -Eq '^(Error: No such object:|Error response from daemon: No such container:)' \
-            <<<"$inspect_result"; then
-            die "could not verify removal of Verity container $container_id: $inspect_result; no volumes or state files were deleted"
           fi
         done
         [ "$containers_gone" = 0 ] || break

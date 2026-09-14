@@ -416,9 +416,9 @@ jobs:
           steps.release-backend.outputs.prs_created == 'true' ||
           steps.release-mobile.outputs.prs_created == 'true' ||
           steps.release-website.outputs.prs_created == 'true'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Run checks for release PRs
         if: >-
@@ -569,9 +569,9 @@ jobs:
 
       # The release job must not depend on the ambient Node.js installation.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Require App Store Connect credentials
         env:
@@ -842,9 +842,9 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Build attested script sandbox artifacts
         run: scripts/build-script-sandbox-prebuilts.sh
@@ -887,7 +887,7 @@ jobs:
       # `docker buildx imagetools create` on the toolkit channel tags, which
       # talks to the registry and has no local cache to keep.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -980,9 +980,9 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       # The Server image is the runtime trust root. Assemble the ledger again in
       # this job's checkout so the Docker build context contains the same complete
@@ -996,7 +996,7 @@ jobs:
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1092,7 +1092,7 @@ jobs:
       # it never synthesizes provenance from mutable tags.
       # renovate: datasource=github-actions depName=actions/attest
       - name: Attest Server image provenance
-        uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4 # v4.0.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -1312,7 +1312,7 @@ jobs:
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1410,15 +1410,15 @@ jobs:
       # The relay smoke harness uses host-side Node; provision it explicitly on
       # runner Docker daemons before validating the exact release image.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       # Default ephemeral builder, on purpose — see the note on the setup-buildx
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1568,7 +1568,7 @@ jobs:
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1717,7 +1717,7 @@ jobs:
           fi
 
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
