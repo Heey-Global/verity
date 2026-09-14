@@ -16,7 +16,7 @@
   ],
   "overrides": {
     "metro": "0.84.5",
-    "metro-config": "0.84.5",
+    "metro-config": "0.87.0",
     "metro-transform-worker": "0.84.5",
     "xcode@3.0.1": {
       "uuid": "11.1.1"
@@ -55,7 +55,7 @@
     "ignore": "7.0.9",
     "knip": "6.33.0",
     "metro": "0.84.5",
-    "metro-config": "0.84.5",
+    "metro-config": "0.87.0",
     "metro-transform-worker": "0.84.5",
     "pg-connection-string": "2.14.0",
     "prettier": "3.9.6",
