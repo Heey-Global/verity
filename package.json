@@ -53,7 +53,7 @@
     "esbuild": "0.28.2",
     "eslint": "10.8.1",
     "ignore": "7.0.9",
-    "knip": "6.33.0",
+    "knip": "6.35.1",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
