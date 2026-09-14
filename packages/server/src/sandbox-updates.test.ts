@@ -909,6 +909,7 @@ describe('createSandboxUpdateChecker.statusAll', () => {
             return Response.json({
               manifests: [
                 { digest: 'sha256:amd64', platform: { os: 'linux', architecture: 'amd64' } },
+                { digest: 'sha256:arm64', platform: { os: 'linux', architecture: 'arm64' } },
               ],
             });
           }

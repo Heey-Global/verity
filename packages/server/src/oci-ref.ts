@@ -260,6 +260,7 @@ export function resolveWithTimeout<T>(resolver: () => Promise<T>, timeoutMs: num
 export async function resolvePublicOciImageVersion(
   ref: string,
   signal?: AbortSignal,
+  hostArchitecture: NodeJS.Architecture = process.arch,
 ): Promise<string | undefined> {
   const { registry, repo, reference } = splitImageReference(ref);
   const accept = [
@@ -273,11 +274,21 @@ export async function resolvePublicOciImageVersion(
     throw new Error(`registry manifest request failed for ${ref}: HTTP ${response.status}`);
   let manifest = (await response.json()) as OciManifest;
   if (Array.isArray(manifest.manifests)) {
-    const imageManifest =
-      manifest.manifests.find(
-        (entry) => entry.platform?.os === 'linux' && entry.platform.architecture === 'amd64',
-      ) ?? manifest.manifests[0];
-    if (imageManifest === undefined) throw new Error(`registry image index was empty for ${ref}`);
+    if (manifest.manifests.length === 0) {
+      throw new Error(`registry image index was empty for ${ref}`);
+    }
+    const architecture = hostArchitecture === 'x64' ? 'amd64' : hostArchitecture;
+    if (architecture !== 'amd64' && architecture !== 'arm64') {
+      throw new Error(
+        `unsupported host architecture for OCI image resolution: ${hostArchitecture}`,
+      );
+    }
+    const imageManifest = manifest.manifests.find(
+      (entry) => entry.platform?.os === 'linux' && entry.platform.architecture === architecture,
+    );
+    if (imageManifest === undefined) {
+      throw new Error(`registry image index had no linux/${architecture} manifest for ${ref}`);
+    }
     response = await registryFetch(
       registry,
       repo,
