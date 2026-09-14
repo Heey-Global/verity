@@ -23,6 +23,23 @@ describe('live smoke stderr', () => {
     ]);
   });
 
+  it('tolerates bounded session replay timings', () => {
+    const timings = [
+      '[session/models] sessionId=session-1 phase=read-transcript durationMs=2 totalMs=2 messages=1 model=unknown',
+      '[session/load] sessionId=session-1 phase=session-ready durationMs=50 totalMs=50',
+      '[session/replay] sessionId=session-1 phase=read durationMs=0 messages=1',
+      '[session/replay] sessionId=session-1 phase=publish durationMs=1 totalMs=1 messages=1',
+      '[session/load] sessionId=session-1 phase=replay durationMs=1 totalMs=52',
+    ];
+    expect(unexpectedStderrLines(timings.join('\n'))).toEqual([]);
+    expect(unexpectedStderrLines(`${timings[0]!} token=secret`)).toEqual([
+      `${timings[0]!} token=secret`,
+    ]);
+    expect(unexpectedStderrLines(timings[2]!.replace('messages=1', 'messages=many'))).toEqual([
+      timings[2]!.replace('messages=1', 'messages=many'),
+    ]);
+  });
+
   it('still reports anything that is not that line', () => {
     // The point of the check: a crash, a warning, or a leaked credential in the
     // agent's stderr must fail the gate exactly as an empty-string assertion did.
