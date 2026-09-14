@@ -4274,13 +4274,6 @@ export async function buildEmbeddedServer(
             refreshIdentity: refreshControlPlaneRunnerIdentity,
             awaitIdentity: awaitControlPlaneRunnerIdentity,
           });
-        const supervisorProjectId = session.projectId ?? undefined;
-        const supervisorAvailable =
-          supervisorProjectId !== undefined &&
-          config.dataVolumeRoot !== undefined &&
-          existsSync(
-            join(config.dataVolumeRoot, 'runners', supervisorProjectId, 'supervisor.sock'),
-          );
         // Keep Claude ACP selected even when the pre-preparation socket snapshot is
         // absent: serializeProjectTurnPreparation below may recreate the Sandbox and
         // restore its supervisor. The runner performs the authoritative reachability
