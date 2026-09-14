@@ -49,6 +49,14 @@ on:
         required: false
         default: false
         type: boolean
+      website-version:
+        description: Existing website release version to recover (X.Y.Z)
+        required: false
+        type: string
+      website-ref:
+        description: Commit, branch, or tag backing the existing website release
+        required: false
+        type: string
 
 concurrency:
   group: release-${{ github.ref }}
@@ -78,9 +86,9 @@ jobs:
       # The website is its own release train (`website-vX.Y.Z`), so it has no
       # maintenance arm to fall back to: `steps.maintenance` recovers a backend
       # version and says nothing about this package.
-      website-release-created: ${{ steps.release-website.outputs['docs/website--release_created'] }}
-      website-version: ${{ steps.release-website.outputs['docs/website--major'] }}.${{ steps.release-website.outputs['docs/website--minor'] }}.${{ steps.release-website.outputs['docs/website--patch'] }}
-      website-sha: ${{ steps.release-website.outputs['docs/website--sha'] }}
+      website-release-created: ${{ steps.website-recovery.outputs.release_created || steps.release-website.outputs['docs/website--release_created'] }}
+      website-version: ${{ steps.website-recovery.outputs.version || format('{0}.{1}.{2}', steps.release-website.outputs['docs/website--major'], steps.release-website.outputs['docs/website--minor'], steps.release-website.outputs['docs/website--patch']) }}
+      website-sha: ${{ steps.website-recovery.outputs.sha || steps.release-website.outputs['docs/website--sha'] }}
     steps:
       - name: Repair workspace ownership
         working-directory: /
@@ -405,6 +413,55 @@ jobs:
             echo 'release_created=true'
             echo "version=$VERSION"
             echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # Recovery is deliberately narrower than normal release creation. The
+      # GitHub Actions integration may be refused by the Releases API even with
+      # `contents: write`; a human can publish the missing GitHub release, then
+      # this path verifies its immutable tag/source binding before rebuilding
+      # and promoting the website image through the ordinary publish job.
+      - name: Validate existing website release for recovery
+        id: website-recovery
+        if: github.event_name == 'workflow_dispatch' && inputs['website-version'] != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.website-version }}
+          SOURCE_REF: ${{ inputs.website-ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Website version must match X.Y.Z, got '$VERSION'." >&2
+            exit 1
+          fi
+          if [[ -z "$SOURCE_REF" ]]; then
+            echo '::error::website-ref is required with website-version.' >&2
+            exit 1
+          fi
+          tag="website-v${VERSION}"
+          is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
+          if [[ "$is_draft" != 'false' ]]; then
+            echo "::error::$tag must be a published GitHub release before recovery." >&2
+            exit 1
+          fi
+          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_REF}" --jq '.sha')"
+          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+          release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+          if [[ "$tag_type" == 'tag' ]]; then
+            release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${release_sha}" --jq '.object.sha')"
+          elif [[ "$tag_type" != 'commit' ]]; then
+            echo "::error::$tag resolves to unsupported object type $tag_type." >&2
+            exit 1
+          fi
+          if [[ "$source_sha" != "$release_sha" ]]; then
+            echo "::error::$tag resolves to $release_sha but website-ref resolves to $source_sha." >&2
+            exit 1
+          fi
+          {
+            echo 'release_created=true'
+            echo "version=$VERSION"
+            echo "sha=$source_sha"
           } >> "$GITHUB_OUTPUT"
 
       # Pull requests created with GITHUB_TOKEN intentionally do not emit another
@@ -1757,7 +1814,7 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.website-release-created == 'true'
     permissions:
-      contents: read
+      contents: write
       packages: write
     env:
       REGISTRY: ghcr.io
@@ -1954,6 +2011,23 @@ jobs:
             echo
             echo "\`$version_target\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Release immutability is enforced by the organization. Release Please
+      # must therefore create a draft, which stays mutable while the image is
+      # built and verified. Publish it only after the immutable image tag is in
+      # place. Manual recovery starts from an already published release and
+      # deliberately skips this transition.
+      - name: Publish verified website release
+        if: inputs['website-version'] == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: website-v${{ needs.release-please.outputs.website-version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+          gh release edit "$TAG" --draft=false --latest=false
 
   finalize-backend-release:
     needs:

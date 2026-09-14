@@ -220,6 +220,77 @@ describe('release merge policy', () => {
   });
 });
 
+describe('website release recovery', () => {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+    on: { workflow_dispatch?: { inputs?: Record<string, { type?: string }> } };
+    jobs: {
+      'release-please': {
+        outputs?: Record<string, string>;
+        steps: WorkflowStep[];
+      };
+      'publish-website': {
+        if?: string;
+        env?: Record<string, string>;
+        permissions?: Record<string, string>;
+        steps: WorkflowStep[];
+      };
+    };
+  };
+
+  it('accepts an explicit version and source ref only for manual recovery', () => {
+    expect(workflow.on.workflow_dispatch?.inputs?.['website-version']?.type).toBe('string');
+    expect(workflow.on.workflow_dispatch?.inputs?.['website-ref']?.type).toBe('string');
+    const step = workflow.jobs['release-please'].steps.find(
+      (candidate) => candidate.id === 'website-recovery',
+    );
+    expect(step?.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(step?.if).toContain("inputs['website-version'] != ''");
+    expect(step?.run).toContain('website-ref is required with website-version');
+  });
+
+  it('requires an existing published release bound to the requested source', () => {
+    const step = workflow.jobs['release-please'].steps.find(
+      (candidate) => candidate.id === 'website-recovery',
+    );
+    expect(step?.run).toContain('gh release view "$tag" --json isDraft');
+    expect(step?.run).toContain('[[ "$is_draft" != \'false\' ]]');
+    expect(step?.run).toContain('git/ref/tags/${tag}');
+    expect(step?.run).toContain('if [[ "$source_sha" != "$release_sha" ]]');
+  });
+
+  it('feeds the verified recovery outputs into the ordinary website publisher', () => {
+    const outputs = workflow.jobs['release-please'].outputs ?? {};
+    expect(outputs['website-release-created']).toContain(
+      'steps.website-recovery.outputs.release_created',
+    );
+    expect(outputs['website-version']).toContain('steps.website-recovery.outputs.version');
+    expect(outputs['website-sha']).toContain('steps.website-recovery.outputs.sha');
+    expect(workflow.jobs['publish-website'].if).toBe(
+      "needs.release-please.outputs.website-release-created == 'true'",
+    );
+    expect(workflow.jobs['publish-website'].env?.VERSION).toBe(
+      '${{ needs.release-please.outputs.website-version }}',
+    );
+  });
+
+  it('keeps automatic website releases as drafts until the image is verified', () => {
+    const config = JSON.parse(readFileSync('release-please-config.website.json', 'utf8')) as {
+      packages: Record<string, { draft?: boolean }>;
+    };
+    expect(config.packages['docs/website']?.draft).toBe(true);
+
+    const website = workflow.jobs['publish-website'];
+    expect(website.permissions?.contents).toBe('write');
+    const publish = website.steps.find((step) => step.name === 'Publish verified website release');
+    expect(publish?.if).toContain("inputs['website-version'] == ''");
+    expect(publish?.run).toContain('--json isDraft');
+    expect(publish?.run).toContain('--draft=false');
+    const promoteIndex = website.steps.findIndex((step) => step.name === 'Promote tested digest');
+    const publishIndex = website.steps.indexOf(publish as WorkflowStep);
+    expect(publishIndex).toBeGreaterThan(promoteIndex);
+  });
+});
+
 describe('signed GitHub release evidence', () => {
   const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
   const server = workflow.jobs['publish-server'];
