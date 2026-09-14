@@ -246,6 +246,7 @@ describe('AcpCodexBackend', () => {
       },
     });
     const initialize = write(fake.writes, 'initialize');
+    expect(initialize).toHaveProperty('params.clientCapabilities.session.compaction', {});
     expect(initialize).not.toHaveProperty('params.clientCapabilities.fs');
     expect(initialize).not.toHaveProperty('params.clientCapabilities.terminal');
     // Claude's `claudeCode` session options must not leak into the Codex adapter.
