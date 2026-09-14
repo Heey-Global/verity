@@ -127,11 +127,11 @@ docker run --rm -v "$runtime_volume:/runtime:ro" busybox:1.37 \
 
 docker run --name "$server_b" "${server_args[@]}" reattach \
   || fail "reattach Server exited non-zero"
-invocations="$(docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \
-  sh -c 'wc -l </work/claude-invocations.jsonl')" \
+turn_invocations="$(docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \
+  grep -c '"--output-format"' /work/claude-invocations.jsonl)" \
   || fail "could not read claude-invocations.jsonl"
-test "$invocations" -eq 1 \
-  || fail "expected exactly one claude invocation, got: $invocations"
+test "$turn_invocations" -eq 1 \
+  || fail "expected exactly one Claude turn process, got: $turn_invocations"
 docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \
   grep -q '"credentialBoundary":"no-credentials"' /work/claude-invocations.jsonl \
   || fail "Claude process did not attest the credential-free boundary"

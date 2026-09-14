@@ -37,6 +37,11 @@ await appendFile(
   })}\n`,
 );
 
+if (process.argv.slice(2).join(' ') === 'auth status --json') {
+  process.stdout.write(`${JSON.stringify({ loggedIn: false })}\n`);
+  process.exit(0);
+}
+
 const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 const isRecord = (value) => typeof value === 'object' && value !== null;
