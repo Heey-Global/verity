@@ -887,7 +887,7 @@ jobs:
       # `docker buildx imagetools create` on the toolkit channel tags, which
       # talks to the registry and has no local cache to keep.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -996,7 +996,7 @@ jobs:
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1312,7 +1312,7 @@ jobs:
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1418,7 +1418,7 @@ jobs:
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1568,7 +1568,7 @@ jobs:
       # step in `publish-toolkit` above for why the release jobs do not use the
       # persistent `verity-ci-bounded-v1` builder the PR image jobs share.
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
@@ -1717,7 +1717,7 @@ jobs:
           fi
 
       # renovate: datasource=github-actions depName=docker/setup-buildx-action
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           driver-opts: |
             memory=6g
