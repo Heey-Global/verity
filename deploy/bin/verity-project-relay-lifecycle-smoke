@@ -11,7 +11,7 @@ harness_volume="verity-relay-harness-${suffix}"
 harness="verity-relay-harness-${suffix}"
 probe_image='node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'
 # renovate: datasource=docker depName=registry versioning=docker
-registry_image='registry:2.8.3@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278'
+registry_image='registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
 registry_ref=''
 digest_ref=''
 
