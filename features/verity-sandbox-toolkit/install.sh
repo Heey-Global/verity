@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.241}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.268}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.70.0}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.76.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.98.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -46,13 +46,13 @@ DOPPLER_VERSION="${DOPPLERVERSION:-3.76.5}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.149.0}"
+CODEX_VERSION="${CODEXVERSION:-0.154.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-1.6.2}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-1.11.0}"
 # renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.18.21}"
+OPENCODE_VERSION="${OPENCODEVERSION:-1.18.30}"
 # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
-PI_VERSION="${PIVERSION:-0.84.2}"
+PI_VERSION="${PIVERSION:-0.85.1}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
