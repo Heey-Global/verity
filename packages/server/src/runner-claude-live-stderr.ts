@@ -20,9 +20,14 @@ const ADAPTER_QUERY_LINE =
   // run. A credential hiding in a path, a query string or userinfo therefore
   // fails the gate instead of riding along inside the one tolerated line.
   /^\[session\/query\] sessionId=[\w.-]+ resume=[\w.-]+ apiType=[\w.-]+ baseUrl=(?:[\w.-]+|https?:\/\/[\w.-]+(?::\d+)?\/?)$/u;
+const ADAPTER_CREATE_LINE =
+  /^\[session\/create\] sessionId=[\w.-]+ phase=[a-z-]+ durationMs=\d+ totalMs=\d+$/u;
 
 export function unexpectedStderrLines(stderr: string): string[] {
   return stderr
     .split('\n')
-    .filter((line) => line.trim().length > 0 && !ADAPTER_QUERY_LINE.test(line));
+    .filter(
+      (line) =>
+        line.trim().length > 0 && !ADAPTER_QUERY_LINE.test(line) && !ADAPTER_CREATE_LINE.test(line),
+    );
 }

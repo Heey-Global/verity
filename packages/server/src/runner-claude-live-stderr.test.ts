@@ -13,6 +13,16 @@ describe('live smoke stderr', () => {
     expect(unexpectedStderrLines('')).toEqual([]);
   });
 
+  it('tolerates bounded session creation timings', () => {
+    const timing =
+      '[session/create] sessionId=session-1 phase=prepare-query durationMs=8 totalMs=24';
+    expect(unexpectedStderrLines(timing)).toEqual([]);
+    expect(unexpectedStderrLines(`${timing} token=secret`)).toEqual([`${timing} token=secret`]);
+    expect(unexpectedStderrLines(timing.replace('durationMs=8', 'durationMs=fast'))).toEqual([
+      timing.replace('durationMs=8', 'durationMs=fast'),
+    ]);
+  });
+
   it('still reports anything that is not that line', () => {
     // The point of the check: a crash, a warning, or a leaked credential in the
     // agent's stderr must fail the gate exactly as an empty-string assertion did.

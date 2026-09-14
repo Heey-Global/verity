@@ -3053,6 +3053,18 @@ describe('Claude ACP sandbox smoke', () => {
       expect(stdout).toContain('"response":{"subtype":"success","request_id":"initialize-smoke"');
       expect(stdout).toContain('"models":[{"value":"smoke"');
       await expect(access(join(worktree, 'before'))).rejects.toThrow();
+      child.stdin.write(
+        `${JSON.stringify({
+          type: 'control_request',
+          request_id: 'permission-mode-smoke',
+          request: { subtype: 'set_permission_mode', mode: 'acceptEdits' },
+        })}\n`,
+      );
+      await waitForStdout('"request_id":"permission-mode-smoke"');
+      expect(stdout).toContain(
+        '"response":{"subtype":"success","request_id":"permission-mode-smoke","response":{}}',
+      );
+      await expect(access(join(worktree, 'before'))).rejects.toThrow();
       const exited = once(child, 'exit', { signal: AbortSignal.timeout(5_000) });
       child.stdin.end(`${JSON.stringify({ type: 'user', message: 'smoke' })}\n`);
       const [code] = (await exited) as [number | null];
