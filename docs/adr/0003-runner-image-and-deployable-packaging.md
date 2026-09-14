@@ -2,6 +2,14 @@
 
 **Status:** Proposed · **Date:** 2026-07-01
 
+> **Security amendment:** [ADR 0017](0017-docker-policy-gateway.md) supersedes
+> R2's characterization of the generic Docker socket proxy as a hardened
+> boundary. Because Verity requires container creation and exec, coarse endpoint
+> filtering does not prevent Server-to-host escalation; it is also incompatible
+> with the later Secret Job Unix-attach invariant. The mounted socket remains the
+> supported reference topology until the resource-aware Policy Gateway is
+> implemented and passes its migration gates.
+
 > **Terminology corrected by [ADR 0005](0005-naming-and-layering.md).** This ADR's
 > "Runner Image" (the control-plane deployable) is now the **Server image**
 > (`verity-server`), and the "Verity base image" is the **Sandbox image**
@@ -100,10 +108,12 @@ docker run -d \
   stated honestly:** a container with the host socket can do anything to the host
   Docker — it is effectively host-root-equivalent. Acceptable for a
   single-operator self-hosted control-plane; the operator owns the trust.
-- **Hardening = opt-in socket-proxy sidecar.** A reference `docker-compose.yml`
-  wires `tecnativa/docker-socket-proxy` (scoped API surface) + Verity, for
-  operators who want the boundary. `VERITY_DOCKER_BASE_URL` already selects the
-  proxy; the default (no proxy) selects the mounted socket.
+- **Historical proxy experiment (superseded by ADR 0017).** The original
+  reference sketch wired `tecnativa/docker-socket-proxy` and selected it through
+  `VERITY_DOCKER_BASE_URL`. Endpoint filtering was later found insufficient as
+  a host boundary because Verity needs container creation and exec, and its HTTP
+  transport conflicts with Secret Job attach. Do not treat this as hardening;
+  ADR 0017 owns the replacement design.
 
 *Implementation note:* the `DockerClient` today only exercises the proxy HTTP
 URL; the `unix://` socket path exists but is untested. Making the mounted-socket
@@ -141,8 +151,9 @@ Mechanics — a `resolve-or-build` step runs before `createContainer`:
   keeps rebuilds cheap.
 - **Build with the official `@devcontainers/cli`** (`devcontainer build`), not a
   home-grown parser — full-spec support (features, lifecycle) for free; Verity
-  only tags + caches the result. `DockerClient` gains a build path (the
-  socket-proxy already permits `BUILD`, so no proxy change).
+  only tags + caches the result. `DockerClient` gains a build path. ADR 0017
+  requires the future Policy Gateway to validate build context and entitlements
+  rather than globally permitting the Docker build endpoint.
 - **Scope:** Phase 1 supports the `image` / `build.dockerfile` case (the
   "extra tools" need); `forwardPorts` maps to the dev-server port; `features` /
   `postCreateCommand` follow; VS-Code-only `customizations` are ignored.

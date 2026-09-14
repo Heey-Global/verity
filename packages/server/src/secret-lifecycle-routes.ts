@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   createKeyVerifier,
@@ -63,6 +63,24 @@ export function registerSecretLifecycleRoutes(
 ): void {
   const unlockThrottle = createUnlockThrottle();
   const mintDeviceToken = createDeviceTokenMinter(deps.authRegistry);
+  // scrypt runs off the event loop, but every invocation still occupies a
+  // libuv worker and about 64 MB. Serialize pre-auth derivations so a concurrent
+  // burst cannot queue work faster than the failure throttle can observe it.
+  let passwordDerivationInFlight = false;
+
+  const acquirePasswordDerivation = (): (() => void) | undefined => {
+    if (passwordDerivationInFlight) return undefined;
+    passwordDerivationInFlight = true;
+    return () => {
+      passwordDerivationInFlight = false;
+    };
+  };
+
+  const rejectBusyDerivation = (reply: FastifyReply) => {
+    reply.header('retry-after', '1');
+    reply.code(429);
+    return { error: 'password verification is busy — try again later' };
+  };
 
   app.get('/secret/status', async (): Promise<{ status: SecretStatus }> => ({
     status: await deps.readStatus(),
@@ -76,22 +94,42 @@ export function registerSecretLifecycleRoutes(
       reply.code(409);
       return { error: 'secret store is not managed by this deployment' };
     }
-    const { password, deviceLabel } = secretInitBody.parse(request.body);
-    if (deps.devicePairing !== undefined) {
-      const bootstrap = request.headers['x-verity-pairing'];
-      if (typeof bootstrap !== 'string' || !deps.devicePairing.consumeBootstrap(bootstrap)) {
-        reply.code(401);
-        return { error: 'valid device pairing is required' };
-      }
+    // Initialization shares the unlock throttle: this route is pre-auth, and
+    // without it the scrypt derivation below is an unauthenticated CPU and
+    // memory sink (~100 ms, ~64 MB per call) wherever pairing is not wired.
+    const throttleIdentity = deps.unlockClientIdentity?.(request) ?? request.ip;
+    const gate = unlockThrottle.check(throttleIdentity);
+    if (!gate.allowed) {
+      if (gate.retryAfterMs !== undefined)
+        reply.header('retry-after', String(Math.ceil(gate.retryAfterMs / 1000)));
+      reply.code(429);
+      return { error: 'too many attempts — try again later' };
     }
+    const { password, deviceLabel } = secretInitBody.parse(request.body);
     // Re-initializing an open store would derive a different key than the one
     // its existing secrets use; re-keying is a separate operation.
     if (!cipher.isSealed()) {
       reply.code(409);
       return { error: 'secret store is already unlocked' };
     }
+    const releaseDerivation = acquirePasswordDerivation();
+    if (releaseDerivation === undefined) return rejectBusyDerivation(reply);
+    if (deps.devicePairing !== undefined) {
+      const bootstrap = request.headers['x-verity-pairing'];
+      if (typeof bootstrap !== 'string' || !deps.devicePairing.consumeBootstrap(bootstrap)) {
+        releaseDerivation();
+        unlockThrottle.recordFailure(throttleIdentity);
+        reply.code(401);
+        return { error: 'valid device pairing is required' };
+      }
+    }
     const salt = generateSalt();
-    const key = deriveKeyFromPassword(password, salt);
+    let key: string;
+    try {
+      key = await deriveKeyFromPassword(password, salt);
+    } finally {
+      releaseDerivation();
+    }
     const won = await deps.store.insertSecretKeyMetaIfAbsent({
       salt,
       verifier: createKeyVerifier(key),
@@ -99,6 +137,7 @@ export function registerSecretLifecycleRoutes(
     // The atomic insert closes the first-run race: the loser must never unlock
     // the store using its divergent key.
     if (!won) {
+      unlockThrottle.recordFailure(throttleIdentity);
       reply.code(409);
       return { error: 'a master password is already set — use /secret/unlock' };
     }
@@ -119,6 +158,7 @@ export function registerSecretLifecycleRoutes(
     // Mint only after every deferred authority is active; otherwise a failed
     // activation could orphan a valid device token.
     const auth = await mintDeviceToken(deviceLabel);
+    unlockThrottle.recordSuccess(throttleIdentity);
     deps.recoverQueuedTurns('secret-init');
     return { status: 'unlocked' as const, ...auth };
   });
@@ -155,7 +195,14 @@ export function registerSecretLifecycleRoutes(
       reply.code(409);
       return { error: 'no master password set — use /secret/init' };
     }
-    const key = deriveKeyFromPassword(password, meta.salt);
+    const releaseDerivation = acquirePasswordDerivation();
+    if (releaseDerivation === undefined) return rejectBusyDerivation(reply);
+    let key: string;
+    try {
+      key = await deriveKeyFromPassword(password, meta.salt);
+    } finally {
+      releaseDerivation();
+    }
     if (!keyMatchesVerifier(key, meta.verifier)) {
       unlockThrottle.recordFailure(throttleIdentity);
       reply.code(401);

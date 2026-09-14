@@ -26,9 +26,13 @@ services:
     cpus: ${VERITY_SERVER_CPUS:-4}
     pids_limit: ${VERITY_SERVER_PIDS_LIMIT:-512}
     ports:
-      # Published on all host interfaces so the mobile app can connect. The API
-      # must stay on a trusted LAN or sit behind TLS/VPN because its application
-      # credentials otherwise cross that network in cleartext.
+      # Published on all host interfaces so the mobile app can connect. TLS is
+      # terminated in-process (VERITY_TLS_MODE: direct below) with the local
+      # identity the installer provisions, and the app pins its certificate —
+      # transport is NOT cleartext in this reference deployment. Restricting who
+      # can reach the port at all (VPN, or a host firewall scoped to your
+      # clients) is still recommended; see "Hardening an internet-reachable
+      # host" in deploy/README.md.
       - '${VERITY_API_HOST_PORT:-8082}:8082'
     # REMOVING A NAME FROM THIS BLOCK IS A COMPATIBILITY CHANGE, not a cleanup.
     # `managed-bootstrap` seals these names into the deployment spec as env SOURCES,
@@ -330,8 +334,9 @@ services:
     volumes:
       # Docker socket (the R2 default). Trade-off, stated honestly: a container
       # with the host socket is effectively host-root-equivalent. Acceptable for
-      # a single-operator self-hosted control-plane; harden with the socket-proxy
-      # sidecar below if you want a scoped boundary.
+      # a single-user self-hosted control-plane as a temporary trust decision.
+      # ADR 0017 defines the resource-aware gateway required to remove it; the
+      # historical generic proxy sketch below is not that boundary.
       - ${VERITY_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
 
       # Named data volume (M16). The server clones + materializes secrets under
@@ -730,14 +735,32 @@ services:
       # a different fixed target for atomic publication.
       - ${VERITY_AGENT_SEED_HOST_PATH:-/opt/agent-seed}:/opt/agent-seed:ro
 
-  # OPT-IN HARDENING: docker-socket-proxy sidecar (ADR 0003 R2).
+  # HISTORICAL DESIGN SKETCH — DO NOT ENABLE AS A SECURITY BOUNDARY.
   # ---------------------------------------------------------------------------
-  # For operators who want a scoped Docker API surface instead of the raw socket.
-  # To enable:
+  # ADR 0017 supersedes ADR 0003 R2's generic socket-proxy hardening claim.
+  # Verity needs containers/create and exec, so an endpoint allowlist cannot
+  # reject hostile mounts, privileged container specs, or access to unrelated
+  # containers. Its HTTP transport also breaks the Secret Job Unix-attach
+  # invariant. The supported deployment keeps the raw socket until ADR 0017's
+  # resource-aware Unix-socket Policy Gateway and migration tests are built.
+  #
+  # INCOMPATIBLE WITH SECRET JOBS: the secret-worker lifecycle channel attaches
+  # over the mounted unix socket by design (a networkless worker must not gain a
+  # remotely reachable daemon surface), and the Server refuses to boot when
+  # Secret Jobs are configured with a non-unix VERITY_DOCKER_BASE_URL
+  # ("Secret Jobs require a unix Docker socket for authenticated attach",
+  # packages/server/src/embedded.ts). Enable this sidecar only on deployments
+  # that do not use brokered secrets — on one that does, the flip is an outage.
+  # Even without Secret Jobs it must not be represented as protection against
+  # Server-to-host escalation.
+  #
+  # Historical wiring (unsupported; retained only to document the superseded
+  # experiment):
   #   1. Uncomment this service.
-  #   2. On the `verity` service: REMOVE the `/var/run/docker.sock` bind-mount and
-  #      the `group_add` block (the proxy owns the socket, not the runner), and
-  #      set:
+  #   2. On the `verity` service: REMOVE the `/var/run/docker.sock` bind-mount
+  #      and the `${VERITY_DOCKER_SOCKET_GID}` line from `group_add` (the proxy
+  #      owns the socket, not the runner; the relay and runtime GID lines must
+  #      stay — they gate key material, not the socket), and set:
   #        VERITY_DOCKER_BASE_URL: http://docker-socket-proxy:2375
   #   3. Add `docker-socket-proxy` to the verity service's `depends_on`.
   # The proxy narrows the Docker API surface: only the verbs enabled below are
@@ -756,6 +779,10 @@ services:
   #     IMAGES: 1
   #     POST: 1
   #     BUILD: 1
+  #     # Sandbox provisioning creates a user-defined bridge per project relay
+  #     # (POST /networks/create, packages/server/src/docker.ts). Without this
+  #     # the proxy 404s that call and every project provision fails.
+  #     NETWORKS: 1
   #     # Host-disk GC (VERITY_DOCKER_GC, on by default) needs to enumerate and
   #     # delete volumes, and to DELETE superseded devcontainer images. The proxy
   #     # denies DELETE and the /volumes surface unless both are enabled — without

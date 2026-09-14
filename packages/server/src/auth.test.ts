@@ -12,7 +12,7 @@ import {
   type AuthTokenStore,
 } from './auth.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
-import { createDevicePairingManager } from './device-pairing.js';
+import { createDevicePairingManager, type DevicePairingManager } from './device-pairing.js';
 import { buildServer } from './server.js';
 
 const conductor = {} as unknown as Conductor;
@@ -504,6 +504,123 @@ describe('global auth gate (onRequest)', () => {
         method: 'POST',
         url: '/secret/unlock',
         payload: { password: 'definitely-wrong' },
+      });
+      expect(locked.statusCode).toBe(429);
+      expect(locked.headers['retry-after']).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('admits only one concurrent pre-auth password derivation', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    const registry = await createAuthTokenRegistry(store, { enabled: false });
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      authRegistry: registry,
+    });
+    try {
+      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+      cipher.seal();
+
+      // A check-then-record throttle alone lets every request in this burst
+      // queue a scrypt before the first wrong password records its failure.
+      const responses = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          app.inject({
+            method: 'POST',
+            url: '/secret/unlock',
+            payload: { password: 'definitely-wrong' },
+          }),
+        ),
+      );
+
+      expect(responses.filter((response) => response.statusCode === 401)).toHaveLength(1);
+      expect(responses.filter((response) => response.statusCode === 429)).toHaveLength(5);
+      for (const busy of responses.filter((response) => response.statusCode === 429)) {
+        expect(busy.headers['retry-after']).toBe('1');
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not consume a pairing bootstrap when password derivation is busy', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    const bootstraps = new Set(['first-bootstrap', 'retryable-bootstrap']);
+    const pairing = {
+      consumeBootstrap(token: string): boolean {
+        if (!bootstraps.has(token)) return false;
+        bootstraps.delete(token);
+        return true;
+      },
+    } as unknown as DevicePairingManager;
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      devicePairing: pairing,
+    });
+    try {
+      const first = app.inject({
+        method: 'POST',
+        url: '/secret/init',
+        headers: { 'x-verity-pairing': 'first-bootstrap' },
+        payload: { password: PASSWORD },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const busy = await app.inject({
+        method: 'POST',
+        url: '/secret/init',
+        headers: { 'x-verity-pairing': 'retryable-bootstrap' },
+        payload: { password: PASSWORD },
+      });
+
+      expect(busy.statusCode).toBe(429);
+      expect(bootstraps.has('retryable-bootstrap')).toBe(true);
+      expect((await first).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rate-limits /secret/init after repeated rejected attempts from one IP', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    const registry = await createAuthTokenRegistry(store, { enabled: false });
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+      authRegistry: registry,
+    });
+    try {
+      // Initialization is pre-auth and each attempt that reaches the scrypt
+      // derivation burns ~100 ms of CPU and ~64 MB. The silent failure this
+      // guards: a throttle wired only to /secret/unlock leaves init as an
+      // unauthenticated derivation sink on any deployment without pairing.
+      await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+      cipher.seal(); // back to sealed so re-init reaches the derivation path
+
+      for (let i = 0; i < 5; i++) {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/secret/init',
+          payload: { password: PASSWORD },
+        });
+        expect(res.statusCode).toBe(409); // password already set — a recorded failure
+      }
+      const locked = await app.inject({
+        method: 'POST',
+        url: '/secret/init',
+        payload: { password: PASSWORD },
       });
       expect(locked.statusCode).toBe(429);
       expect(locked.headers['retry-after']).toBeDefined();

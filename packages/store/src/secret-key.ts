@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync } from 'node:crypto';
+import { randomBytes, scrypt } from 'node:crypto';
 import { createSecretCipher } from './crypto.js';
 
 /**
@@ -30,16 +30,24 @@ export function generateSalt(): string {
   return randomBytes(SALT_LEN).toString('base64');
 }
 
-/** Derive the raw 32-byte key (hex) from a password + stored salt. */
-export function deriveKeyFromPassword(password: string, saltB64: string): string {
+/** Derive the raw 32-byte key (hex) from a password + stored salt. Runs on the
+ *  libuv threadpool: unlock and init are reachable pre-auth, so a synchronous
+ *  derivation would let a request spray stall the whole event loop ~100 ms at a
+ *  time. */
+export function deriveKeyFromPassword(password: string, saltB64: string): Promise<string> {
   const salt = Buffer.from(saltB64, 'base64');
-  const key = scryptSync(password, salt, KEY_LEN, {
-    N: SCRYPT_N,
-    r: SCRYPT_R,
-    p: SCRYPT_P,
-    maxmem: SCRYPT_MAXMEM,
+  return new Promise((resolve, reject) => {
+    scrypt(
+      password,
+      salt,
+      KEY_LEN,
+      { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: SCRYPT_MAXMEM },
+      (error, key) => {
+        if (error) reject(error);
+        else resolve(key.toString('hex'));
+      },
+    );
   });
-  return key.toString('hex');
 }
 
 /** Build the verifier token to persist when a password is first set. */

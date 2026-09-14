@@ -103,9 +103,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   // The master-password lifecycle is the on-ramp that MINTS the operator token,
   // so it cannot itself require one. Until `/secret/init` runs the store is
-  // uninitialized and the gate is open, which is the documented first-run
-  // trust-on-first-use residual: the deployment must sit behind a trusted
-  // network on first boot. See SECURITY.md.
+  // uninitialized and the gate is open. On the direct-server path that window
+  // is closed structurally: boot refuses to come up without pairing material
+  // (pairing-env.ts), so init always demands the QR bootstrap. The residual
+  // trust-on-first-use is embedded/managed topologies that wire no pairing —
+  // there the deployment must sit behind a trusted network on first boot. See
+  // SECURITY.md.
   declare('POST', '/secret/init', 'onboarding', 'master password (sets the first one)'),
   declare('POST', '/secret/unlock', 'onboarding', 'master password'),
   declare('GET', '/pair/identity', 'device-pairing', 'pairing code issued out of band'),

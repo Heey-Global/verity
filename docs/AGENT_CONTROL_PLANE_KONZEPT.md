@@ -10,6 +10,14 @@ Dev-Flotte steuert — Multi-Projekt, Multi-Agent, Handoff-Koordination, Idea-In
 Dispatch, plus eine **austauschbare** LLM-Runtime-Schicht für Resilienz/Exit-Option.
 Ersetzt langfristig die Steuerung über die Claude-App und Concierges file-basiertes Handoff.
 
+> **Aktualisierung der Docker-Sicherheitsgrenze:** Die Aussagen in diesem frühen
+> Entwurf zum generischen `docker-socket-proxy` sind durch
+> [ADR 0017](adr/0017-docker-policy-gateway.md) überholt. Eine reine
+> Endpoint-Allowlist kontrolliert weder Container-Spezifikationen noch
+> Ressourcenbesitz und ist deshalb keine ausreichende Grenze gegen
+> Server-zu-Host-Eskalation. ADR 0017 definiert stattdessen einen
+> ressourcenbewussten Policy Gateway mit lokalem Unix-Socket.
+
 > **Leitentscheidungen:** (1) Claude-first, aber von Tag 1 **austauschbar** gebaut (kanonisches
 > Event-Modell + Adapter-Seam; OpenCode → LLMBase später, flippbar). (2) Resilienz kommt aus der
 > austauschbaren Runtime, nicht aus einem Provider-Abo. (3) Der Großteil der Schichten wird

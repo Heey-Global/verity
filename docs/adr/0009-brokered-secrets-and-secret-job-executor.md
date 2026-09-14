@@ -2,6 +2,11 @@
 
 **Status:** Proposed · **Date:** 2026-07-17
 
+> **Docker boundary:** [ADR 0017](0017-docker-policy-gateway.md) preserves this
+> ADR's local Unix-socket authenticated attach invariant while defining the
+> resource-aware Docker policy required to remove the raw host socket from the
+> Server. A generic HTTP socket proxy is not compatible with this design.
+
 ## Context
 
 Verity currently materializes project Doppler credentials into parts of the project runtime so

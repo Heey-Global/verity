@@ -37,8 +37,9 @@ The registration deliberately fixes these arguments:
 - `--network=none`
 
 Verity's `createDockerGvisorRuntimeVerifier` reads Docker `GET /info` and requires the exact runtime
-name, versioned path, and ordered arguments before a secret job can launch. The reference
-`docker-socket-proxy` already enables its read-only `INFO` endpoint.
+name, versioned path, and ordered arguments before a secret job can launch. The future Docker
+Policy Gateway must admit this read-only operation; see ADR 0017. The historical generic proxy
+sketch is not a supported security boundary.
 
 Updating gVisor requires changing the release and both checksums together, rolling the host asset,
 reloading Docker, and updating the expected verifier path. Never point the runtime registration at

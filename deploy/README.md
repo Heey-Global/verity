@@ -457,6 +457,48 @@ Bare Docker or custom orchestrator deployments must grant the same `CAP_CHOWN`
 and supplementary GID to the Server but must not grant the group to project-agent
 users.
 
+## Hardening an internet-reachable host
+
+The reference deployment is designed for a trusted network segment. Everything
+below is what changes when the host is reachable from the public internet.
+
+**The API port (8082) is the defensible surface.** Transport is TLS terminated
+in-process with a certificate the app pins, every route not on the explicit
+pre-auth list requires a per-device bearer token, and `/secret/unlock` and
+`/secret/init` are throttled. A direct server also refuses to boot without
+pairing material, so the first-run window in which no master password exists
+cannot be claimed by an unauthenticated caller. Exposing 8082 is survivable —
+but fewer reachable ports is still fewer, so prefer a VPN (WireGuard,
+Tailscale) or a host firewall that admits only your devices' addresses when
+your setup allows it.
+
+**The Dev Server ranges must not be public.** Host ports `3000–3099` and
+`8000–8099` publish project Dev Servers as raw, unauthenticated HTTP — no
+bearer, no TLS. Anything an agent starts there is reachable by whoever can
+reach the port, and agents act on repository content you may not fully trust.
+On an internet-facing host, keep both ranges firewalled to your own clients or
+VPN; do not follow the remote-preview note in
+[Ports & environment reference](#ports--environment-reference) with a
+public-internet allow rule.
+
+**Do not expose anything else.** PostgreSQL and the Claude/Codex egress
+gateways (9443/9444) are intentionally unpublished; nothing outside the Compose
+network should ever reach them.
+
+**First-run onboarding still belongs on a trusted network.** The boot-time
+pairing requirement stops takeover, but the QR pairing payload itself (TLS pin,
+bootstrap code) is a secret — scan it where nobody can shoulder-surf a
+screenshot of your terminal.
+
+**The Docker socket is not yet isolated.** Do not enable the historical generic
+`docker-socket-proxy` example as a security boundary: Verity needs container
+creation and exec, so coarse endpoint filtering still permits host-impacting
+requests, and its HTTP transport is incompatible with Brokered Secret Jobs.
+[ADR 0017](../docs/adr/0017-docker-policy-gateway.md) specifies the
+resource-aware Unix-socket Policy Gateway and the end-to-end gates required
+before the reference deployment can switch to it. Until then, treat a Server
+compromise as a host compromise and keep API exposure correspondingly narrow.
+
 ## Claude egress credential boundary
 
 The reference Compose starts Verity's project-scoped Claude egress path in two
@@ -582,10 +624,10 @@ gateway service, run the smoke again, and complete one normal Claude project tur
 across a Server replacement. That final account-backed turn remains the
 installation-specific gate.
 
-**Want a hardened boundary?** The compose file ships a commented, opt-in
-`tecnativa/docker-socket-proxy` sidecar that exposes only the scoped Docker API
-verbs Verity needs. Follow the inline steps in `docker-compose.yml` to enable it
-and switch `VERITY_DOCKER_BASE_URL` to `http://docker-socket-proxy:2375`.
+**Docker boundary status:** the generic socket-proxy sketch is not a supported
+hardening boundary. See
+[ADR 0017](../docs/adr/0017-docker-policy-gateway.md) for the resource-aware
+gateway design and the tests required before it can replace the raw socket.
 
 ## Project-relay readiness check
 
@@ -703,7 +745,11 @@ Verity reserves host ports `3000–3099` and `8000–8099` for project Dev Serve
 The global database-backed registry assigns the lowest free port across both ranges
 and all projects; ports are not caller-selectable. Deleting a Dev Server or project
 releases its lease for reuse. Ensure both ranges are available on the Docker host
-and allowed by any host firewall when remote preview access is required.
+and allowed by any host firewall when remote preview access is required — but
+only for clients you trust: these ports serve project Dev Servers without TLS or
+authentication, so on an internet-reachable host keep them restricted to your
+VPN or client addresses (see
+[Hardening an internet-reachable host](#hardening-an-internet-reachable-host)).
 
 | Variable                               | Default                                                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | -------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
