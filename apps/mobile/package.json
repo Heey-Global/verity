@@ -56,7 +56,7 @@
     "react-native-worklets": "0.10.4"
   },
   "devDependencies": {
-    "@react-native/jest-preset": "0.86.3",
+    "@react-native/jest-preset": "0.87.1",
     "@testing-library/react-native": "13.3.3",
     "@types/jest": "29.5.14",
     "@types/react": "19.3.0",
