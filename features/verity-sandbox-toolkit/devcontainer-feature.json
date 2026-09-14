@@ -78,7 +78,7 @@
     },
     "ghVersion": {
       "type": "string",
-      "default": "2.98.0",
+      "default": "2.100.0",
       "description": "Exact cli/cli (GitHub CLI) release version to pin (no leading v)."
     },
     "dopplerVersion": {

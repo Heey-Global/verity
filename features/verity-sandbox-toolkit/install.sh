@@ -40,7 +40,7 @@ CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.241}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.70.0}"
 # renovate: datasource=github-releases depName=cli/cli
-GH_VERSION="${GHVERSION:-2.98.0}"
+GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
 DOPPLER_VERSION="${DOPPLERVERSION:-3.76.5}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
