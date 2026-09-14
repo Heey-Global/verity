@@ -14,7 +14,7 @@ const SCRIPT = fileURLToPath(
   ),
 );
 
-/** Exact 0.66.0 seams, reduced to the statements the build-time patch owns. */
+/** Exact 0.76.0 seams, reduced to the statements the build-time patch owns. */
 const PINNED_ADAPTER = `sessionUpdate: "usage_update",
                                         used: lastAssistantTotalUsage,
                                         size: session.contextWindowSize,
@@ -23,9 +23,10 @@ const PINNED_ADAPTER = `sessionUpdate: "usage_update",
                                 break;
                             }
                             case "local_command_output":
-                            case "hook_response":
-                            case "files_persisted":
                             case "task_progress":
+                                await asyncTasks.taskProgress({
+                                    task_id: message.task_id,
+                                });
                                 break;
                             case "task_started":
                                 // For subagent tasks
@@ -36,7 +37,8 @@ const PINNED_ADAPTER = `sessionUpdate: "usage_update",
                                 doNotification();
                                 break;
                             case "task_updated":
-                                // terminal-status task_updated patch
+                                await asyncTasks.taskUpdated(message.task_id, message.patch);
+                                // terminal-status task_updated patch and a (deduplicated)
                                 if (message.patch.status === "completed") {
                                     session.liveBackgroundTasks.delete(message.task_id);
                                 }

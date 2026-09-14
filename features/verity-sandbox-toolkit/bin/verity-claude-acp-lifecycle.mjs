@@ -76,14 +76,9 @@ source = replaceOnce(
 
 source = replaceOnce(
   source,
-  `                            case "hook_response":
-                            case "files_persisted":
-                            case "task_progress":
-                                break;`,
-  `                            case "hook_response":
-                            case "files_persisted":
-                                break;
-                            case "task_progress":
+  `                            case "task_progress":
+                                await asyncTasks.taskProgress({`,
+  `                            case "task_progress":
                                 await sendUpdate({
                                     sessionId: message.session_id,
                                     update: {
@@ -95,7 +90,7 @@ source = replaceOnce(
                                         } } },
                                     },
                                 });
-                                break;`,
+                                await asyncTasks.taskProgress({`,
   'task_progress',
 );
 
@@ -143,8 +138,10 @@ source = replaceOnce(
 source = replaceOnce(
   source,
   `                            case "task_updated":
+                                await asyncTasks.taskUpdated(message.task_id, message.patch);
                                 // terminal-status task_updated patch`,
-  `                            case "task_updated": {
+  `                            case "task_updated":
+                                await asyncTasks.taskUpdated(message.task_id, message.patch);
                                 const status = message.patch.status;
                                 const terminal = status === "completed" || status === "failed" ||
                                     status === "error" || status === "cancelled" || status === "canceled" ||
@@ -163,17 +160,6 @@ source = replaceOnce(
                                 });
                                 // terminal-status task_updated patch`,
   'task_updated start',
-);
-source = replaceOnce(
-  source,
-  `                                }
-                                break;
-                            case "worker_shutting_down":`,
-  `                                }
-                                break;
-                            }
-                            case "worker_shutting_down":`,
-  'task_updated end',
 );
 
 source = replaceOnce(
