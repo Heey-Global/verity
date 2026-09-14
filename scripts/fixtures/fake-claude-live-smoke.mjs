@@ -114,6 +114,20 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
             pending_user_dialog_requests: [],
           },
         });
+      } else if (
+        frame.type === 'control_request' &&
+        typeof frame.request_id === 'string' &&
+        isRecord(request) &&
+        request.subtype === 'set_permission_mode'
+      ) {
+        emit({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: frame.request_id,
+            response: {},
+          },
+        });
       } else if (frame.type === 'user') {
         receivedUserPrompt = true;
         break;
