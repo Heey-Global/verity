@@ -723,7 +723,8 @@ Only deploy-level, non-per-project mounts (the read-only agent-seed toolkit,
 
 ## Data & persistence
 
-Everything still comes up with a single `docker compose up -d`: the compose file
+Everything still comes up with a single `deploy/bin/verity-compose up -d`: the guarded wrapper
+always layers the required Runner supervisor topology over the base Compose file. It
 runs the control-plane database as an internal `postgres` service alongside the
 server, with **no manual password setup and no manual DB steps**. No speech-to-text
 service is started. Configure an OpenAI-compatible transcription provider, model,

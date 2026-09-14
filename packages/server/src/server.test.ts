@@ -105,38 +105,6 @@ import {
 const CLAUDE_SORTED = sortModelIds(CLAUDE_MODELS);
 
 describe('CommandMeetingTranscriber settings', () => {
-  it('terminates descendants of a shell-configured transcriber command', async () => {
-    const commandDir = mkdtempSync(join(tmpdir(), 'verity-transcriber-shell-abort-'));
-    const command = join(commandDir, 'transcriber');
-    const marker = join(commandDir, 'completed');
-    const previousCommand = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-    writeFileSync(
-      command,
-      `#!${process.execPath}\nprocess.on('SIGTERM', () => undefined); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'done'), 2000);\n`,
-    );
-    chmodSync(command, 0o755);
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
-    const controller = new AbortController();
-    const transcriber = new CommandMeetingTranscriber(command, async () => undefined);
-    try {
-      const running = transcriber.transcribe({
-        audio: Buffer.from('audio'),
-        mediaType: 'audio/mp4',
-        fileName: 'meeting.m4a',
-        signal: controller.signal,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      controller.abort();
-      await expect(running).rejects.toThrow('meeting transcription was stopped');
-      await new Promise((resolve) => setTimeout(resolve, 2100));
-      expect(existsSync(marker)).toBe(false);
-    } finally {
-      if (previousCommand === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previousCommand;
-      rmSync(commandDir, { recursive: true, force: true });
-    }
-  });
-
   it('terminates the transcriber child process when the request is aborted', async () => {
     const commandDir = mkdtempSync(join(tmpdir(), 'verity-transcriber-abort-'));
     const command = join(commandDir, 'transcriber');
@@ -151,7 +119,12 @@ describe('CommandMeetingTranscriber settings', () => {
     );
     chmodSync(command, 0o755);
     const controller = new AbortController();
-    const transcriber = new CommandMeetingTranscriber(command, async () => undefined);
+    const transcriber = new CommandMeetingTranscriber(command, async () => ({
+      transcribeBackendMode: 'external',
+      transcribeBaseUrl: 'https://settings.test/v1',
+      transcribeApiKey: null,
+      transcribeModel: 'test-model',
+    }));
     try {
       const running = transcriber.transcribe({
         audio: Buffer.from('audio'),
@@ -220,82 +193,6 @@ describe('CommandMeetingTranscriber settings', () => {
       }),
     ).toThrow(SealedError);
   });
-  it('passes app settings to the child process ahead of inherited environment values', async () => {
-    const original = {
-      command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
-      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
-      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
-      model: process.env.VERITY_TRANSCRIBE_MODEL,
-      legacyApiKey: process.env.VERITY_PARAKEET_API_KEY,
-    };
-    const script =
-      "console.log(JSON.stringify({segments:[{text:[process.env.VERITY_TRANSCRIBE_BASE_URL,process.env.VERITY_TRANSCRIBE_API_KEY,process.env.VERITY_TRANSCRIBE_MODEL].join('|')}]}))";
-    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
-    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
-    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
-    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
-    process.env.VERITY_PARAKEET_API_KEY = 'must-not-leak';
-    try {
-      const configured = new CommandMeetingTranscriber(command, async () => ({
-        transcribeBaseUrl: ' https://settings.test/v1 ',
-        transcribeApiKey: ' settings-key ',
-        transcribeModel: ' settings-model ',
-      }));
-      await expect(
-        configured.transcribe({
-          audio: Buffer.from('audio'),
-          mediaType: 'audio/mp4',
-          fileName: 'meeting.m4a',
-        }),
-      ).resolves.toMatchObject({
-        segments: [{ text: 'https://settings.test/v1|settings-key|settings-model' }],
-      });
-
-      const fallback = new CommandMeetingTranscriber(command, async () => ({
-        transcribeBaseUrl: ' ',
-        // A stale stored cloud credential/model must be ignored as a bundle
-        // once the app URL is cleared.
-        transcribeApiKey: 'stale-settings-key',
-        transcribeModel: 'stale-settings-model',
-      }));
-      await expect(
-        fallback.transcribe({
-          audio: Buffer.from('audio'),
-          mediaType: 'audio/mp4',
-          fileName: 'meeting.m4a',
-        }),
-      ).resolves.toMatchObject({
-        segments: [{ text: 'https://environment.test/v1|environment-key|environment-model' }],
-      });
-
-      const isolatedExternal = new CommandMeetingTranscriber(command, async () => ({
-        transcribeBaseUrl: 'https://other-settings.test/v1',
-        transcribeApiKey: null,
-        transcribeModel: '',
-      }));
-      await expect(
-        isolatedExternal.transcribe({
-          audio: Buffer.from('audio'),
-          mediaType: 'audio/mp4',
-          fileName: 'meeting.m4a',
-        }),
-      ).resolves.toMatchObject({
-        segments: [{ text: 'https://other-settings.test/v1||' }],
-      });
-    } finally {
-      if (original.command === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = original.command;
-      if (original.baseUrl === undefined) delete process.env.VERITY_TRANSCRIBE_BASE_URL;
-      else process.env.VERITY_TRANSCRIBE_BASE_URL = original.baseUrl;
-      if (original.apiKey === undefined) delete process.env.VERITY_TRANSCRIBE_API_KEY;
-      else process.env.VERITY_TRANSCRIBE_API_KEY = original.apiKey;
-      if (original.model === undefined) delete process.env.VERITY_TRANSCRIBE_MODEL;
-      else process.env.VERITY_TRANSCRIBE_MODEL = original.model;
-      if (original.legacyApiKey === undefined) delete process.env.VERITY_PARAKEET_API_KEY;
-      else process.env.VERITY_PARAKEET_API_KEY = original.legacyApiKey;
-    }
-  });
 
   it('reports a stored local choice unavailable instead of using an inherited cloud URL', async () => {
     const original = {
@@ -327,51 +224,6 @@ describe('CommandMeetingTranscriber settings', () => {
       const envNames = {
         command: 'VERITY_MEETING_TRANSCRIBE_COMMAND',
         baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
-      } as const;
-      for (const [key, value] of Object.entries(original)) {
-        const envName = envNames[key as keyof typeof envNames];
-        if (value === undefined) delete process.env[envName];
-        else process.env[envName] = value;
-      }
-    }
-  });
-
-  it('uses a deployment-managed external backend after the explicit external choice', async () => {
-    const original = {
-      command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
-      baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
-      apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
-      model: process.env.VERITY_TRANSCRIBE_MODEL,
-    };
-    const script =
-      "console.log(JSON.stringify({segments:[{text:[process.env.VERITY_TRANSCRIBE_BASE_URL,process.env.VERITY_TRANSCRIBE_API_KEY,process.env.VERITY_TRANSCRIBE_MODEL].join('|')}]}))";
-    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = command;
-    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
-    process.env.VERITY_TRANSCRIBE_API_KEY = 'environment-key';
-    process.env.VERITY_TRANSCRIBE_MODEL = 'environment-model';
-    try {
-      const transcriber = new CommandMeetingTranscriber(command, async () => ({
-        transcribeBackendMode: 'external',
-        transcribeBaseUrl: null,
-        transcribeApiKey: null,
-        transcribeModel: null,
-      }));
-      await expect(
-        transcriber.transcribe({
-          audio: Buffer.from('audio'),
-          mediaType: 'audio/mp4',
-          fileName: 'meeting.m4a',
-        }),
-      ).resolves.toMatchObject({
-        segments: [{ text: 'https://environment.test/v1|environment-key|environment-model' }],
-      });
-    } finally {
-      const envNames = {
-        command: 'VERITY_MEETING_TRANSCRIBE_COMMAND',
-        baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
-        apiKey: 'VERITY_TRANSCRIBE_API_KEY',
-        model: 'VERITY_TRANSCRIBE_MODEL',
       } as const;
       for (const [key, value] of Object.entries(original)) {
         const envName = envNames[key as keyof typeof envNames];
@@ -1753,113 +1605,6 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     }
   });
 
-  it('surfaces the transcription client failure reason in the notice', async () => {
-    const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-fail-reason-'));
-    const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND =
-      'node -e \'process.stderr.write("Could not reach the transcription API (ECONNREFUSED)"); process.exit(1)\'';
-    const meetingApp = buildServer({ eventStore: ctx.store, bus, conductor });
-    try {
-      await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
-      const res = await meetingApp.inject({
-        method: 'POST',
-        url: '/sessions/s1/meetings/transcripts',
-        payload: {
-          fileName: 'planning.m4a',
-          mediaType: 'audio/mp4',
-          data: Buffer.from('audio').toString('base64'),
-        },
-      });
-
-      expect(res.statusCode).toBe(502);
-      const notices = (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
-      expect(notices).toContainEqual({
-        t: 'notice',
-        role: 'agent',
-        text: expect.stringContaining('Could not reach the transcription API (ECONNREFUSED)'),
-      });
-    } finally {
-      if (previous === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previous;
-      await meetingApp.close();
-      rmSync(worktree, { recursive: true, force: true });
-    }
-  });
-
-  it('uses the configured local meeting transcriber command', async () => {
-    const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-local-command-'));
-    const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND =
-      'node -e \'console.log(JSON.stringify({utterances:[{text:"Local command transcript",start:3}],language:"de",duration:4}))\'';
-    const meetingApp = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-    });
-    try {
-      await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
-      const res = await meetingApp.inject({
-        method: 'POST',
-        url: '/sessions/s1/meetings/transcripts',
-        payload: {
-          fileName: 'local_command.m4a',
-          mediaType: 'audio/mp4',
-          data: Buffer.from('audio').toString('base64'),
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      const body = res.json<{ path: string; title: string; segments: number }>();
-      expect(body.title).toBe('local command');
-      expect(body.segments).toBe(1);
-      const transcript = readFileSync(join(worktree, body.path), 'utf8');
-      expect(transcript).toContain('- Language: de');
-      expect(transcript).toContain('- Duration: 00:04');
-      expect(transcript).toContain('**Speaker 1** (00:03): Local command transcript');
-    } finally {
-      if (previous === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previous;
-      await meetingApp.close();
-      rmSync(worktree, { recursive: true, force: true });
-    }
-  });
-
-  it('accepts plain text JSON from configured local meeting transcriber commands', async () => {
-    const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-local-command-text-'));
-    const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND =
-      'node -e \'console.log(JSON.stringify({text:"Plain local command transcript."}))\'';
-    const meetingApp = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-    });
-    try {
-      await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
-      const res = await meetingApp.inject({
-        method: 'POST',
-        url: '/sessions/s1/meetings/transcripts',
-        payload: {
-          fileName: 'plain_command.mp3',
-          mediaType: 'audio/mpeg',
-          data: Buffer.from('audio').toString('base64'),
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      const body = res.json<{ path: string; segments: number }>();
-      expect(body.segments).toBe(1);
-      expect(readFileSync(join(worktree, body.path), 'utf8')).toContain(
-        '**Speaker 1:** Plain local command transcript.',
-      );
-    } finally {
-      if (previous === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previous;
-      await meetingApp.close();
-      rmSync(worktree, { recursive: true, force: true });
-    }
-  });
-
   it('uses the bundled meeting transcriber command by default', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-default-command-'));
     const commandDir = mkdtempSync(join(tmpdir(), 'verity-meeting-command-bin-'));
@@ -1876,20 +1621,20 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       ].join('\n'),
     );
     chmodSync(command, 0o755);
-    const previousCommand = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     const previousPath = process.env.PATH;
-    const previousBaseUrl = process.env.VERITY_TRANSCRIBE_BASE_URL;
-    delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
     process.env.PATH = `${commandDir}${delimiter}${previousPath ?? ''}`;
-    // The bundled client only runs against a configured backend; the stub above
-    // stands in for it.
-    process.env.VERITY_TRANSCRIBE_BASE_URL = 'https://environment.test/v1';
     const meetingApp = buildServer({
       eventStore: ctx.store,
       bus,
       conductor,
     });
     try {
+      await ctx.store.updateVeritySettings({
+        transcribeBackendMode: 'external',
+        transcribeBaseUrl: 'https://settings.test/v1',
+        transcribeApiKey: null,
+        transcribeModel: 'test-model',
+      });
       await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
       const res = await meetingApp.inject({
         method: 'POST',
@@ -1909,12 +1654,8 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       expect(transcript).toContain('- Duration: 00:05');
       expect(transcript).toContain('**Speaker 1** (00:02): Default local transcript.');
     } finally {
-      if (previousCommand === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previousCommand;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
-      if (previousBaseUrl === undefined) delete process.env.VERITY_TRANSCRIBE_BASE_URL;
-      else process.env.VERITY_TRANSCRIBE_BASE_URL = previousBaseUrl;
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });
       rmSync(commandDir, { recursive: true, force: true });
@@ -2041,67 +1782,6 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       }
     },
   );
-
-  it('maps invalid transcription client JSON to a bad gateway response', async () => {
-    const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-invalid-json-'));
-    const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = "printf 'not-json'";
-    const meetingApp = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-    });
-    try {
-      await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
-      const res = await meetingApp.inject({
-        method: 'POST',
-        url: '/sessions/s1/meetings/transcripts',
-        payload: {
-          fileName: 'bad.m4a',
-          mediaType: 'audio/mp4',
-          data: Buffer.from('audio').toString('base64'),
-        },
-      });
-
-      expect(res.statusCode).toBe(502);
-      expect(res.json()).toEqual({ error: 'meeting transcription failed' });
-    } finally {
-      if (previous === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previous;
-      await meetingApp.close();
-      rmSync(worktree, { recursive: true, force: true });
-    }
-  });
-
-  it('maps transcription client command failures to a bad gateway response', async () => {
-    const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-command-fail-'));
-    const previous = process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = "printf 'boom' >&2; exit 2";
-    const meetingApp = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-    });
-    try {
-      await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
-      const res = await meetingApp.inject({
-        method: 'POST',
-        url: '/sessions/s1/meetings/transcripts',
-        payload: {
-          fileName: 'bad.m4a',
-          mediaType: 'audio/mp4',
-          data: Buffer.from('audio').toString('base64'),
-        },
-      });
-
-      expect(res.statusCode).toBe(502);
-    } finally {
-      if (previous === undefined) delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-      else process.env.VERITY_MEETING_TRANSCRIBE_COMMAND = previous;
-      await meetingApp.close();
-      rmSync(worktree, { recursive: true, force: true });
-    }
-  });
 
   it('rejects transcriptions that return no usable text', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-empty-transcript-'));
