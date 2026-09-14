@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -504,4 +504,28 @@ describe('release toolkit trust ledger', () => {
       expect(assemble?.run).toBe('node scripts/update-toolkit-ledger.mjs');
     },
   );
+});
+
+describe('release immutability lifecycle', () => {
+  it('creates every release as a draft, never published directly', () => {
+    // Organization-enforced release immutability rejects a direct non-draft
+    // create from the integration token with HTTP 403 — on release day, not
+    // in CI. This pins every creation path to the draft-then-publish
+    // lifecycle so a new train or workflow cannot silently reintroduce one.
+    for (const train of ['backend', 'mobile', 'website']) {
+      const config = JSON.parse(readFileSync(`release-please-config.${train}.json`, 'utf8')) as {
+        packages: Record<string, { draft?: boolean }>;
+      };
+      for (const [path, pkg] of Object.entries(config.packages)) {
+        expect(pkg.draft, `${train}:${path} must create draft releases`).toBe(true);
+      }
+    }
+    for (const file of readdirSync('.github/workflows')) {
+      const source = readFileSync(`.github/workflows/${file}`, 'utf8');
+      const flat = source.replace(/\\\n\s*/gu, ' ');
+      for (const [command] of flat.matchAll(/gh release create[^\n]*/gu)) {
+        expect(command, `${file} must create releases as drafts`).toContain('--draft');
+      }
+    }
+  });
 });

@@ -1061,6 +1061,12 @@ fi
     expect(source).toContain('refusing to move TestFlight backwards');
     expect(source).toContain('gh release create');
     expect(source).toContain('gh release edit');
+    // Release immutability: the integration token may only create a draft and
+    // publish it — a direct non-draft create 403s, and a published release
+    // cannot be edited, so a re-run must recognize the recorded state.
+    expect(source).toContain('--draft \\');
+    expect(source).toContain('gh release edit "$tag" --draft=false');
+    expect(source).toContain('already recorded as a published release');
     expect(source).not.toContain('eas-cli@21.0.1 update');
     // EAS loads app.config.ts for channel edits; without installed config
     // plugins, promotion fails before it can move the channel.
