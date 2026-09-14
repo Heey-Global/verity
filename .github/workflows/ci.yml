@@ -1398,6 +1398,7 @@ jobs:
             -e VERITY_AGENT_GATEWAY_URL=https://verity-agent-gateway:9443 \
             -e VERITY_CLAUDE_EGRESS_GATEWAY_URL=https://verity:9443 \
             -e VERITY_CLAUDE_CONNECTOR_PORT=47821 \
+            -e VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR=/tmp/verity-control-plane-identity \
             -e DATABASE_URL="postgres://verity@$VERITY_CI_POSTGRES:5432/verity" \
             "$VERITY_CI_IMAGE"
           for _ in $(seq 1 30); do

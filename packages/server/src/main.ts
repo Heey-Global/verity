@@ -717,6 +717,14 @@ async function main(): Promise<void> {
   // Default to loopback (audit C1 defense-in-depth): the control plane is only
   // reachable from the same host unless the operator explicitly opts into a
   // routable interface via HOST (e.g. HOST=0.0.0.0, or a specific LAN IP). The
+  const controlPlaneRunnerIdentityDir =
+    process.env.VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR?.trim();
+  if (!controlPlaneRunnerIdentityDir) {
+    throw new Error(
+      'the required Runner supervisor topology is missing; start Verity through verity-compose or verity-install',
+    );
+  }
+
   // bearer-token gate is the real protection; this default just prevents an
   // accidental open bind. For multi-device access, front the loopback server
   // with a TLS reverse proxy, or set HOST to a network interface on a trusted
@@ -1101,8 +1109,7 @@ async function main(): Promise<void> {
         process.env.VERITY_CONTROL_PLANE_RUNNER === 'true',
       // Unset sweeps; `dry`/`off` are the opt-outs. A typo throws — see the parser.
       transcriptSweep: 'on',
-      controlPlaneRunnerIdentityDir:
-        process.env.VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR?.trim() || undefined,
+      controlPlaneRunnerIdentityDir,
       runnerRuntimeGid,
       // An explicit deployment-wide image override is arbitrary code and cannot
       // inherit the managed Verity sandbox's dedicated-UID boundary assertion.
