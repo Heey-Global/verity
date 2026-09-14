@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/Heey-Global/verity/compare/website-v1.4.0...website-v1.4.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged docker tag to v1.31 ([#285](https://github.com/Heey-Global/verity/issues/285)) ([a36a64f](https://github.com/Heey-Global/verity/commit/a36a64fd0cdab1bf0789dff3c0e5b0af87917da1))
+
 ## [1.4.0](https://github.com/Heey-Global/verity/compare/website-v1.3.5...website-v1.4.0) (2026-09-13)
 
 

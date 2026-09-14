@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.30.0](https://github.com/Heey-Global/verity/compare/mobile-v1.29.0...mobile-v1.30.0) (2026-09-14)
+
+
+### Bug Fixes
+
+* **deps:** update dependency expo-speech-recognition to v57 ([#300](https://github.com/Heey-Global/verity/issues/300)) ([e3c9e59](https://github.com/Heey-Global/verity/commit/e3c9e598f092830d4d1595475ca6346982b0a634))
+* **deps:** update dependency react-native-keyboard-controller to v1.22.4 ([#276](https://github.com/Heey-Global/verity/issues/276)) ([7778ae5](https://github.com/Heey-Global/verity/commit/7778ae579f70dd23de209d2a422b240332f0fe7b))
+* **deps:** update dependency react-native-nitro-modules to v0.37.1 ([#277](https://github.com/Heey-Global/verity/issues/277)) ([e78d89e](https://github.com/Heey-Global/verity/commit/e78d89e4d3cb2ebc03c76d7214ba4e7b804aef64))
+* **deps:** update dependency react-native-screens to ~4.27.0 ([#280](https://github.com/Heey-Global/verity/issues/280)) ([8c27519](https://github.com/Heey-Global/verity/commit/8c27519baa4a1bcbbf3bd8fdf3e6b731614b9b7d))
+* **deps:** update dependency react-native-uitextview to v2.7.1 ([#281](https://github.com/Heey-Global/verity/issues/281)) ([29e0c19](https://github.com/Heey-Global/verity/commit/29e0c196ce9e1e2f8f9e36f9e5490fcc00a0ba4c))
+* **deps:** update dependency react-native-unistyles to v3.3.0 ([#282](https://github.com/Heey-Global/verity/issues/282)) ([9292149](https://github.com/Heey-Global/verity/commit/929214976bea4e68bcbc7adc408024ecdf216a56))
+* **mobile:** clarify signing key setup ([#250](https://github.com/Heey-Global/verity/issues/250)) ([d5b9a1a](https://github.com/Heey-Global/verity/commit/d5b9a1a6696877d056d279b3f68bcb2c3743c7fc))
+* **mobile:** guide agent login handoff ([#247](https://github.com/Heey-Global/verity/issues/247)) ([649a1cd](https://github.com/Heey-Global/verity/commit/649a1cd5b1af1f3c99aaba4460651db8aec67d61))
+* **mobile:** improve AI provider guidance ([#253](https://github.com/Heey-Global/verity/issues/253)) ([4333f12](https://github.com/Heey-Global/verity/commit/4333f12a8ea38dfe7231e4c596d24854db2be523))
+
 ## [1.29.0](https://github.com/Heey-Global/verity/compare/mobile-v1.28.0...mobile-v1.29.0) (2026-09-13)
 
 

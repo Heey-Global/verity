@@ -51,7 +51,7 @@
     "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "5.0.0",
     "esbuild": "0.28.2",
-    "eslint": "10.8.1",
+    "eslint": "10.10.0",
     "ignore": "7.0.9",
     "knip": "6.35.1",
     "metro": "0.84.5",
@@ -63,7 +63,7 @@
     "react-native": "0.86.3",
     "semver": "7.8.5",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.67.0",
+    "typescript-eslint": "8.70.0",
     "uuid": "14.0.2",
     "vitest": "5.0.0",
     "xcode": "3.0.1"

@@ -25303,21 +25303,6 @@ var zAgentCapabilities = z6.object({
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
 var zAuthMethodId = z6.string();
-var zAuthEnvVar = z6.object({
-  name: z6.string(),
-  label: defaultOnError(z6.string().nullish(), () => void 0),
-  secret: defaultOnError(z6.boolean().optional().default(true), () => true),
-  optional: defaultOnError(z6.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
-});
-var zAuthMethodEnvVar = z6.object({
-  id: zAuthMethodId,
-  name: z6.string(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  vars: requiredDefaultOnError(vecSkipError(zAuthEnvVar), () => []),
-  link: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
-});
 var zAuthMethodTerminal = z6.object({
   id: zAuthMethodId,
   name: z6.string(),
@@ -25333,9 +25318,6 @@ var zAuthMethodAgent = z6.object({
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
 var zAuthMethod = z6.union([
-  zAuthMethodEnvVar.and(z6.object({
-    type: z6.literal("env_var")
-  })),
   zAuthMethodTerminal.and(z6.object({
     type: z6.literal("terminal")
   })),
@@ -25786,6 +25768,26 @@ var zUsageUpdate = z6.object({
   cost: defaultOnError(zCost.nullish(), () => void 0),
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
+var zCompactionId = z6.string();
+var zCompactionStatus = z6.union([
+  z6.literal("in_progress"),
+  z6.literal("completed"),
+  z6.literal("failed"),
+  z6.literal("cancelled"),
+  z6.string()
+]);
+var zCompactionUpdate = z6.object({
+  compactionId: zCompactionId,
+  status: zCompactionStatus,
+  summary: defaultOnError(vecSkipError(zContentBlock).nullish(), () => void 0),
+  error: defaultOnError(z6.string().nullish(), () => void 0),
+  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+});
+var zCompactionSummaryChunk = z6.object({
+  compactionId: zCompactionId,
+  content: zContentBlock,
+  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+});
 var zSessionUpdate = z6.union([
   zContentChunk.and(z6.object({
     sessionUpdate: z6.literal("user_message_chunk")
@@ -25825,6 +25827,12 @@ var zSessionUpdate = z6.union([
   })),
   zUsageUpdate.and(z6.object({
     sessionUpdate: z6.literal("usage_update")
+  })),
+  zCompactionUpdate.and(z6.object({
+    sessionUpdate: z6.literal("compaction_update")
+  })),
+  zCompactionSummaryChunk.and(z6.object({
+    sessionUpdate: z6.literal("compaction_summary_chunk")
   }))
 ]);
 var zSessionNotification = z6.object({
@@ -25857,6 +25865,7 @@ var zFileSystemCapabilities = z6.object({
   writeTextFile: defaultOnError(z6.boolean().optional().default(false), () => false),
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
+var zCompactionCapabilities = z6.record(z6.string(), z6.unknown());
 var zBooleanConfigOptionCapabilities = z6.object({
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
@@ -25865,6 +25874,7 @@ var zSessionConfigOptionsCapabilities = z6.object({
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
 var zClientSessionCapabilities = z6.object({
+  compaction: defaultOnError(zCompactionCapabilities.nullish(), () => void 0),
   configOptions: defaultOnError(zSessionConfigOptionsCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
 });
@@ -26543,6 +26553,7 @@ var RequestResponder = class {
     });
   }
 };
+var requestBatchSizes = /* @__PURE__ */ new WeakMap();
 var HandlerRegistration = class {
   disposeHandler;
   active = true;
@@ -26893,9 +26904,6 @@ var Connection = class {
           if (done) {
             break;
           }
-          if (!message) {
-            continue;
-          }
           this.receiveWireMessage(message);
         }
       } finally {
@@ -26919,19 +26927,16 @@ var Connection = class {
       this.receiveBatch(message);
       return;
     }
-    if (!isRecord(message)) {
-      console.error("Invalid message", { message });
+    if (!isRequestMessage(message) && !isNotificationMessage(message) && !isResponseShapedMessage(message)) {
+      void this.sendWireMessage(protocolErrorResponse(RequestError.invalidRequest(message))).catch(() => {
+      });
       return;
     }
     this.receiveMessage(message);
   }
   receiveBatch(batch) {
     if (batch.length === 0) {
-      void this.sendWireMessage({
-        jsonrpc: "2.0",
-        id: null,
-        error: RequestError.invalidRequest(batch).toErrorResponse()
-      }).catch(() => {
+      void this.sendWireMessage(protocolErrorResponse(RequestError.invalidRequest(batch))).catch(() => {
       });
       return;
     }
@@ -26961,15 +26966,11 @@ var Connection = class {
         continue;
       }
       if (!isRequestMessage(message) && !isNotificationMessage(message)) {
-        void collectResponse({
-          jsonrpc: "2.0",
-          id: null,
-          error: RequestError.invalidRequest(message).toErrorResponse()
-        }).catch(() => {
+        void collectResponse(protocolErrorResponse(RequestError.invalidRequest(message))).catch(() => {
         });
         continue;
       }
-      const processing = this.receiveMessage(message, isRequestMessage(message) ? collectResponse : void 0);
+      const processing = this.receiveMessage(message, isRequestMessage(message) ? collectResponse : void 0, batch.length);
       if (isNotificationMessage(message)) {
         void processing.finally(() => {
           remainingNotifications -= 1;
@@ -26978,7 +26979,7 @@ var Connection = class {
       }
     }
   }
-  receiveMessage(message, sendResponse) {
+  receiveMessage(message, sendResponse, batchSize) {
     if (this.abortController.signal.aborted) {
       return Promise.resolve();
     }
@@ -26990,7 +26991,7 @@ var Connection = class {
       if (!("id" in message)) {
         this.handleProtocolNotification(message);
       }
-      return this.processIncomingMessage(this.toIncomingMessage(message, sendResponse)).catch((error) => this.close(error));
+      return this.processIncomingMessage(this.toIncomingMessage(message, sendResponse, batchSize)).catch((error) => this.close(error));
     } else if ("id" in message) {
       this.handleResponse(message);
     } else {
@@ -27040,7 +27041,7 @@ var Connection = class {
       }
     }
   }
-  toIncomingMessage(message, sendResponse) {
+  toIncomingMessage(message, sendResponse, batchSize) {
     if ("id" in message) {
       const abortController = new AbortController();
       this.incomingRequests.set(message.id, abortController);
@@ -27049,20 +27050,24 @@ var Connection = class {
           this.incomingRequests.delete(message.id);
         }
       };
+      const responder = new RequestResponder(message.id, (result2) => {
+        const response = {
+          jsonrpc: "2.0",
+          id: message.id,
+          ...result2
+        };
+        return sendResponse ? sendResponse(response) : this.sendWireMessage(response);
+      }, abortController.signal, finishRequest);
+      if (batchSize !== void 0) {
+        requestBatchSizes.set(responder, batchSize);
+      }
       return {
         kind: "request",
         method: message.method,
         params: message.params,
         raw: message,
         signal: abortController.signal,
-        responder: new RequestResponder(message.id, (result2) => {
-          const response = {
-            jsonrpc: "2.0",
-            id: message.id,
-            ...result2
-          };
-          return sendResponse ? sendResponse(response) : this.sendWireMessage(response);
-        }, abortController.signal, finishRequest)
+        responder
       };
     }
     return {
@@ -27284,6 +27289,13 @@ var RequestError = class _RequestError extends Error {
     };
   }
 };
+function protocolErrorResponse(error) {
+  return {
+    jsonrpc: "2.0",
+    id: null,
+    error: error.toErrorResponse()
+  };
+}
 
 // node_modules/@agentclientprotocol/sdk/dist/line-buffer.js
 var newline = 10;
@@ -27344,22 +27356,40 @@ function ndJsonStream(output, input) {
   const textDecoder = new TextDecoder();
   let cancelled = false;
   let inputReader;
+  let outputWrite = Promise.resolve();
+  const writeJson = (message) => {
+    const content = JSON.stringify(message) + "\n";
+    const write = outputWrite.then(async () => {
+      const writer = output.getWriter();
+      try {
+        await writer.write(textEncoder.encode(content));
+      } finally {
+        writer.releaseLock();
+      }
+    });
+    outputWrite = write.catch(() => {
+    });
+    return write;
+  };
   const readable = new ReadableStream({
     async start(controller) {
       const lines = new LineBuffer();
-      const enqueueLine = (lineBytes) => {
+      const enqueueLine = async (lineBytes) => {
         const trimmedLine = textDecoder.decode(lineBytes).trim();
-        if (trimmedLine) {
-          try {
-            const message = JSON.parse(trimmedLine);
-            if (isRecord(message) || Array.isArray(message)) {
-              controller.enqueue(message);
-            } else {
-              console.warn("Skipping JSON line that is not an object:", trimmedLine);
-            }
-          } catch (err) {
-            console.error("Failed to parse JSON message:", trimmedLine, err);
-          }
+        if (!trimmedLine) {
+          return;
+        }
+        let message;
+        try {
+          message = JSON.parse(trimmedLine);
+        } catch {
+          await writeJson(protocolErrorResponse(RequestError.parseError()));
+          return;
+        }
+        if (isRecord(message) || Array.isArray(message)) {
+          controller.enqueue(message);
+        } else {
+          await writeJson(protocolErrorResponse(RequestError.invalidRequest(message)));
         }
       };
       const reader = input.getReader();
@@ -27377,7 +27407,7 @@ function ndJsonStream(output, input) {
             continue;
           }
           for (const line of lines.push(value)) {
-            enqueueLine(line);
+            await enqueueLine(line);
             if (cancelled) {
               return;
             }
@@ -27388,7 +27418,7 @@ function ndJsonStream(output, input) {
         }
         const lastLine = lines.flush();
         if (lastLine) {
-          enqueueLine(lastLine);
+          await enqueueLine(lastLine);
         }
       } catch (err) {
         if (cancelled) {
@@ -27413,14 +27443,8 @@ function ndJsonStream(output, input) {
     }
   });
   const writable = new WritableStream({
-    async write(message) {
-      const content = JSON.stringify(message) + "\n";
-      const writer = output.getWriter();
-      try {
-        await writer.write(textEncoder.encode(content));
-      } finally {
-        writer.releaseLock();
-      }
+    write(message) {
+      return writeJson(message);
     }
   });
   return { readable, writable };
@@ -28012,11 +28036,11 @@ var clientRequestSpecs = {
   releaseTerminal: requestSpec(CLIENT_METHODS.terminal_release, zReleaseTerminalRequest, emptyObjectResponse),
   waitForTerminalExit: requestSpec(CLIENT_METHODS.terminal_wait_for_exit, zWaitForTerminalExitRequest),
   killTerminal: requestSpec(CLIENT_METHODS.terminal_kill, zKillTerminalRequest, emptyObjectResponse),
-  unstable_createElicitation: requestSpec(CLIENT_METHODS.elicitation_create, zCreateElicitationRequest)
+  createElicitation: requestSpec(CLIENT_METHODS.elicitation_create, zCreateElicitationRequest)
 };
 var clientNotificationSpecs = {
   sessionUpdate: notificationSpec(CLIENT_METHODS.session_update, zSessionNotification),
-  unstable_completeElicitation: notificationSpec(CLIENT_METHODS.elicitation_complete, zCompleteElicitationNotification)
+  completeElicitation: notificationSpec(CLIENT_METHODS.elicitation_complete, zCompleteElicitationNotification)
 };
 var agentRequestSpecsByMethod = specsByMethod(agentRequestSpecs);
 var agentNotificationSpecsByMethod = specsByMethod(agentNotificationSpecs);
@@ -28595,6 +28619,13 @@ var AcpEventAdapter = class {
           ...lifecycle,
           ...this.metaNamespace === CLAUDE_ACP_META ? claudeRateLimit(update) : []
         ];
+      case "compaction_update":
+        return [
+          ...lifecycle,
+          ...this.lifecycle.consume({ type: "compaction", id: update.compactionId })
+        ];
+      case "compaction_summary_chunk":
+        return lifecycle;
       case "user_message_chunk":
         return lifecycle;
     }
@@ -29426,7 +29457,12 @@ async function runAcpTurn(opts, profile) {
     }).connectWith(processStream(child), async (agent) => {
       const initialized = await agent.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
-        ...profile.clientCapabilitiesMeta !== void 0 ? { clientCapabilities: { _meta: profile.clientCapabilitiesMeta } } : { clientCapabilities: {} }
+        ...profile.clientCapabilitiesMeta !== void 0 ? {
+          clientCapabilities: {
+            session: { compaction: {} },
+            _meta: profile.clientCapabilitiesMeta
+          }
+        } : { clientCapabilities: { session: { compaction: {} } } }
       });
       const gateway = opts.mcpGateway;
       const agentSpeaksHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http === true;
