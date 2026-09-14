@@ -40,7 +40,7 @@ CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.241}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.70.0}"
 # renovate: datasource=github-releases depName=cli/cli
-GH_VERSION="${GHVERSION:-2.98.0}"
+GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
 DOPPLER_VERSION="${DOPPLERVERSION:-3.76.5}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
@@ -146,13 +146,13 @@ fi
 case "$ARCH" in
   amd64)
     GH_ARCH=amd64; DOPPLER_ARCH=amd64; GITLEAKS_ARCH=x64
-    GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
+    GH_SHA256=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
     DOPPLER_SHA256=1b2f412d984920d665daf233ab6c15b364df9339b5c5b5224d5e8ee4e0a70154
     GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     ;;
   arm64)
     GH_ARCH=arm64; DOPPLER_ARCH=arm64; GITLEAKS_ARCH=arm64
-    GH_SHA256=cf689084f3a3618f7eae4a2420d335d74626d65f5e594b9828d125d69f800d86
+    GH_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961
     DOPPLER_SHA256=567f051c4c334b79a37ee44c9373671c451dd8a4945ed49288a8f3fd0b73ec89
     GITLEAKS_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
     ;;
