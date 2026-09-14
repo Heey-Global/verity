@@ -28,6 +28,7 @@ interface RenovateConfig {
     matchFileNames?: string[];
     matchManagers?: string[];
     matchPackageNames?: string[];
+    matchUpdateTypes?: string[];
     semanticCommitType?: string;
     prHourlyLimit?: number;
     prConcurrentLimit?: number;
@@ -158,6 +159,103 @@ describe('Renovate version ranges', () => {
 
     expect(config.extends ?? []).toContain(':preserveSemverRanges');
     expect(config.rangeStrategy).not.toBe('pin');
+  });
+});
+
+describe('Renovate compiler compatibility', () => {
+  it('leaves TypeScript majors for an explicit toolchain migration', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+    const rule = config.packageRules.find((candidate) =>
+      candidate.description?.startsWith('Do not open an isolated TypeScript major'),
+    );
+
+    expect(rule).toMatchObject({
+      enabled: false,
+      matchPackageNames: ['typescript'],
+      matchUpdateTypes: ['major'],
+    });
+  });
+});
+
+describe('Renovate checksummed release assets', () => {
+  it('does not separate the GitHub CLI version from its architecture checksums', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+    const rule = config.packageRules.find((candidate) =>
+      candidate.description?.startsWith('Do not update the GitHub CLI version'),
+    );
+
+    expect(rule).toMatchObject({ enabled: false, matchPackageNames: ['cli/cli'] });
+  });
+});
+
+describe('Renovate Expo native compatibility', () => {
+  it('does not upgrade Expo-governed native packages independently', () => {
+    const config = JSON.parse(readFileSync('renovate.json', 'utf8')) as RenovateConfig;
+    const rule = config.packageRules.find((candidate) =>
+      candidate.description?.startsWith('Never bump Expo-governed native packages'),
+    );
+    const metroRule = config.packageRules.find((candidate) =>
+      candidate.description?.startsWith('Never bump Metro independently'),
+    );
+    const mobileManifest = JSON.parse(readFileSync('apps/mobile/package.json', 'utf8')) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const rootManifest = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      overrides?: Record<string, string>;
+    };
+    const mobileDependencies = {
+      ...(mobileManifest.dependencies ?? {}),
+      ...(mobileManifest.devDependencies ?? {}),
+    };
+    const configuredMobile = rule?.matchPackageNames ?? [];
+    const sdkCoupledPackages = Object.keys(mobileDependencies).filter(
+      (dependency) =>
+        dependency === 'expo' ||
+        dependency.startsWith('expo-') ||
+        dependency.startsWith('@expo/') ||
+        dependency === 'babel-preset-expo' ||
+        dependency === 'react-native' ||
+        dependency.startsWith('react-native-') ||
+        dependency.startsWith('@react-native/'),
+    );
+    const expectedMetro = [
+      ...new Set(
+        [
+          ...Object.keys(rootManifest.dependencies ?? {}),
+          ...Object.keys(rootManifest.devDependencies ?? {}),
+          ...Object.keys(rootManifest.overrides ?? {}),
+        ].filter((dependency) => dependency.startsWith('metro')),
+      ),
+    ].sort();
+
+    expect(rule?.enabled).toBe(false);
+    expect(rule?.matchFileNames).toEqual(['apps/mobile/package.json', 'package.json']);
+    // The server-only CI installs deliberately omit the mobile workspace. Keep
+    // this guard anchored in tracked manifests so a clean partial install cannot
+    // silently turn policy validation into a dependency on leftover node_modules.
+    expect(configuredMobile).toEqual(expect.arrayContaining(sdkCoupledPackages));
+    expect(configuredMobile.filter((dependency) => !(dependency in mobileDependencies))).toEqual(
+      [],
+    );
+    expect(configuredMobile).toContain('react-native');
+    expect(
+      rootManifest.dependencies?.['react-native'] ?? rootManifest.devDependencies?.['react-native'],
+    ).toBeDefined();
+    const testToolRule = config.packageRules.find((candidate) =>
+      candidate.description?.startsWith('Keep major mobile-test-tool upgrades aligned'),
+    );
+    expect(testToolRule).toMatchObject({
+      enabled: false,
+      matchFileNames: ['apps/mobile/package.json'],
+      matchPackageNames: ['jest', '@types/jest', '@testing-library/react-native'],
+      matchUpdateTypes: ['major'],
+    });
+    expect(metroRule?.enabled).toBe(false);
+    expect(metroRule?.matchFileNames).toEqual(['package.json']);
+    expect(metroRule?.matchPackageNames?.toSorted()).toEqual(expectedMetro);
   });
 });
 
