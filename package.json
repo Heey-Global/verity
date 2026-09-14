@@ -15,7 +15,7 @@
     "apps/*"
   ],
   "overrides": {
-    "metro": "0.84.5",
+    "metro": "0.87.0",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
     "xcode@3.0.1": {
@@ -54,7 +54,7 @@
     "eslint": "10.8.1",
     "ignore": "7.0.9",
     "knip": "6.33.0",
-    "metro": "0.84.5",
+    "metro": "0.87.0",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
     "pg-connection-string": "2.14.0",
