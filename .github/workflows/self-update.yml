@@ -596,7 +596,7 @@ jobs:
       # docker/build-push-action normally wires in. Export the short-lived Actions
       # runtime token and URLs explicitly before using the `type=gha` backend.
       # renovate: datasource=github-actions depName=crazy-max/ghaction-github-runtime
-      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
 
       # The image build and the host harness have no dependency on one another and
       # used to run concurrently, which was the right trade on a dedicated VM.
