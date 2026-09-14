@@ -9,7 +9,7 @@ import { OpenCodeSetup } from '../../components/OpenCodeSetup';
 import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold';
 import { createVerityClient } from '../../lib/client';
 
-const NEXT_HREF = '/onboarding/first-project';
+const NEXT_HREF = '/';
 const BACK = '/onboarding/doppler';
 const CURRENT_HREF = '/onboarding/ai-backends';
 
@@ -107,7 +107,7 @@ function AiBackendsStep({
           ? null
           : {
               href: NEXT_HREF,
-              label: 'Next',
+              label: 'Open Verity',
               disabled:
                 !status.claudeConfigured && !status.codexConfigured && !status.opencodeConfigured,
             }

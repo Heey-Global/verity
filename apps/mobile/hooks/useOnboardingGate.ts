@@ -4,7 +4,12 @@
 // NOT hard-lock the app behind an un-enterable gate — a broken gate blocking the
 // whole app is worse than a missed redirect — so an error logs and lets the
 // operator through to the normal app.
-import { isPristineOnboardingStatus, resumeStep, type OnboardingStatus } from '@verity/mobile';
+import {
+  isCoreOnboardingComplete,
+  isPristineOnboardingStatus,
+  resumeStep,
+  type OnboardingStatus,
+} from '@verity/mobile';
 import { useGlobalSearchParams, usePathname, useSegments } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { AppState } from 'react-native';
@@ -17,7 +22,7 @@ export type OnboardingGateState = { status: 'checking' } | { status: 'done'; red
 const SERVER_SECRET_CHECK_INTERVAL_MS = 15_000;
 
 function onboardingRoute(status: OnboardingStatus): string {
-  if (status.complete) return '/';
+  if (isCoreOnboardingComplete(status)) return '/';
   if (isPristineOnboardingStatus(status)) return '/onboarding/welcome';
   return `/onboarding/${resumeStep(status)}`;
 }
@@ -107,14 +112,17 @@ export function useOnboardingGate(): OnboardingGateState {
           }
           setState({
             status: 'done',
-            redirectTo: unlockRoute(status.complete ? currentReturnTo() : onboardingRoute(status), {
-              serverSecret: false,
-            }),
+            redirectTo: unlockRoute(
+              isCoreOnboardingComplete(status) ? currentReturnTo() : onboardingRoute(status),
+              {
+                serverSecret: false,
+              },
+            ),
           });
           return;
         }
 
-        if (!inOnboarding && !inGithubConnect && !status.complete) {
+        if (!inOnboarding && !inGithubConnect && !isCoreOnboardingComplete(status)) {
           setState({ status: 'done', redirectTo: onboardingRoute(status) });
           return;
         }

@@ -42,7 +42,7 @@ export async function reconcileProjectContainerStates(
 export const CONTAINER_STOPPED_REASON = 'Sandbox container stopped — Repair to restart it.';
 export const CONTAINER_MISSING_REASON = 'Sandbox container is missing — Repair to recreate it.';
 export const STALE_PROVISIONING_REASON =
-  'Project setup did not finish and no Sandbox container is running — Repair to retry it.';
+  'Project setup did not finish and no Sandbox container is running. Use Repair to retry it.';
 /** Docker keeps a crash-looping container in `restarting`, which can report
  *  `Running: true`. Naming it separately is what tells the
  *  operator the sandbox is failing to come up rather than sitting stopped. */

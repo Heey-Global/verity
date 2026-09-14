@@ -264,4 +264,23 @@ describe('onboarding connection entry', () => {
     );
     expect(mockReplace).toHaveBeenCalledWith('/');
   });
+
+  it('opens the app when an older server only considers the missing project incomplete', async () => {
+    mockParams = { reconfigure: '1' };
+    mockVerifyEndpoint.mockResolvedValue(
+      status({
+        masterPasswordSet: true,
+        githubAppConfigured: true,
+        signingKeyConfigured: true,
+        hasProject: false,
+        complete: false,
+        nextStep: 'first-project',
+      }),
+    );
+    render(<OnboardingServerUrl />);
+    fireEvent.changeText(screen.getByLabelText('Server address'), 'https://verity.example.test');
+    fireEvent.press(screen.getByLabelText('Test connection'));
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/'));
+  });
 });

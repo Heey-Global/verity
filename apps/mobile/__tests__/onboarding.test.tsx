@@ -130,8 +130,8 @@ describe('onboarding wizard shell — step screen', () => {
       ),
     );
     render(<OnboardingGithub />);
-    // GitHub is step 4 of 9 and can go back to the master-password step.
-    expect(screen.getByLabelText('Step 2 of 6')).toBeOnTheScreen();
+    // GitHub is step 2 of 4 and can go back to the master-password step.
+    expect(screen.getByLabelText('Step 2 of 4')).toBeOnTheScreen();
     mockCanGoBack.mockReturnValue(true);
     fireEvent.press(screen.getByLabelText('Back'));
     expect(mockBack).not.toHaveBeenCalled();

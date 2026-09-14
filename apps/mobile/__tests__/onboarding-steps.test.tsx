@@ -206,7 +206,7 @@ describe('device authorization unlock route', () => {
     expect(mockUnlockAuthTokenWithBiometrics).not.toHaveBeenCalled();
     expect(await screen.findByLabelText('Master password')).toBeOnTheScreen();
     expect(screen.getByText('Device authorization')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Step 1 of 6')).toBeNull();
+    expect(screen.queryByLabelText('Step 1 of 4')).toBeNull();
   });
   it('tries biometric token unlock first for normal app re-entry and returns home when it succeeds', async () => {
     mockUnlockAuthTokenWithBiometrics.mockResolvedValue(true);
@@ -348,7 +348,7 @@ describe('onboarding master-password step', () => {
 
     expect(await screen.findByText('Unlock Verity')).toBeOnTheScreen();
     expect(screen.getByText('Device authorization')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Step 1 of 6')).toBeNull();
+    expect(screen.queryByLabelText('Step 1 of 4')).toBeNull();
     expect(screen.queryByText('Secrets are unlocked for this device.')).toBeNull();
 
     fireEvent.changeText(screen.getByLabelText('Master password'), 'correct-pw');
@@ -379,7 +379,7 @@ describe('onboarding master-password step', () => {
     fireEvent.press(screen.getByLabelText('Unlock secret store'));
 
     expect(await screen.findByText('Use Face ID or Touch ID?')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Step 1 of 6')).toBeNull();
+    expect(screen.queryByLabelText('Step 1 of 4')).toBeNull();
 
     fireEvent.press(screen.getByLabelText('Use Face ID'));
 
@@ -1198,9 +1198,11 @@ describe('onboarding agent logins step', () => {
 
     render(<OnboardingAiBackends />);
 
-    await screen.findByLabelText('Next');
+    await screen.findByLabelText('Open Verity');
     expect(screen.queryByLabelText('Skip — set up later')).toBeNull();
-    expect(screen.getByLabelText('Next')).toHaveProp('accessibilityState', { disabled: true });
+    expect(screen.getByLabelText('Open Verity')).toHaveProp('accessibilityState', {
+      disabled: true,
+    });
   });
 
   it('accepts a configured OpenCode provider as the first agent connection', async () => {
@@ -1219,7 +1221,7 @@ describe('onboarding agent logins step', () => {
 
     render(<OnboardingAiBackends />);
     fireEvent.press(await screen.findByLabelText('Configure OpenCode'));
-    expect(screen.queryByLabelText('Next')).toBeNull();
+    expect(screen.queryByLabelText('Open Verity')).toBeNull();
 
     fireEvent.changeText(
       screen.getByLabelText('OpenCode API base URL'),
@@ -1239,7 +1241,7 @@ describe('onboarding agent logins step', () => {
         opencodeModels: 'provider/model-a\nprovider/model-b',
       }),
     );
-    expect(await screen.findByLabelText('Next')).toBeEnabled();
+    expect(await screen.findByLabelText('Open Verity')).toBeEnabled();
   });
 
   it('hides wizard navigation while editing OpenCode even when another provider is ready', async () => {
@@ -1251,15 +1253,15 @@ describe('onboarding agent logins step', () => {
     );
 
     render(<OnboardingAiBackends />);
-    expect(await screen.findByLabelText('Next')).toBeEnabled();
+    expect(await screen.findByLabelText('Open Verity')).toBeEnabled();
     expect(screen.getByLabelText('Back')).toBeOnTheScreen();
 
     fireEvent.press(await screen.findByLabelText('Configure OpenCode'));
-    expect(screen.queryByLabelText('Next')).toBeNull();
+    expect(screen.queryByLabelText('Open Verity')).toBeNull();
     expect(screen.queryByLabelText('Back')).toBeNull();
 
     fireEvent.press(screen.getByLabelText('Cancel OpenCode setup'));
-    expect(await screen.findByLabelText('Next')).toBeEnabled();
+    expect(await screen.findByLabelText('Open Verity')).toBeEnabled();
     expect(screen.getByLabelText('Back')).toBeOnTheScreen();
   });
 

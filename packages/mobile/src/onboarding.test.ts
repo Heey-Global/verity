@@ -4,6 +4,7 @@ import type { OnboardingStatus } from './api.js';
 import {
   ONBOARDING_STEPS,
   ONBOARDING_STEP_IDS,
+  isCoreOnboardingComplete,
   normalizeServerUrl,
   resumeStep,
   stepProgress,
@@ -29,14 +30,7 @@ function status(overrides: Partial<OnboardingStatus> = {}): OnboardingStatus {
 
 describe('ONBOARDING_STEPS', () => {
   it('lists only the setup wizard steps in order', () => {
-    expect(ONBOARDING_STEP_IDS).toEqual([
-      'master-password',
-      'github',
-      'doppler',
-      'ai-backends',
-      'first-project',
-      'done',
-    ]);
+    expect(ONBOARDING_STEP_IDS).toEqual(['master-password', 'github', 'doppler', 'ai-backends']);
   });
 
   it('keeps welcome + server-url out of the numbered setup wizard', () => {
@@ -44,11 +38,11 @@ describe('ONBOARDING_STEPS', () => {
     expect(ONBOARDING_STEP_IDS).not.toContain('server-url' as StepId);
   });
 
-  it('marks credential/project steps required and optional setup steps optional', () => {
+  it('keeps project creation out of the credential wizard', () => {
     const required = ONBOARDING_STEPS.filter((step) => step.required).map((step) => step.id);
-    expect(required).toEqual(['master-password', 'github', 'first-project']);
+    expect(required).toEqual(['master-password', 'github']);
     const optional = ONBOARDING_STEPS.filter((step) => !step.required).map((step) => step.id);
-    expect(optional).toEqual(['doppler', 'ai-backends', 'done']);
+    expect(optional).toEqual(['doppler', 'ai-backends']);
   });
 });
 
@@ -58,7 +52,7 @@ describe('resumeStep', () => {
   });
 
   it('returns done when setup is complete', () => {
-    expect(resumeStep(status({ complete: true, nextStep: null }))).toBe('done');
+    expect(resumeStep(status({ complete: true, nextStep: null }))).toBe('ai-backends');
   });
 
   it('jumps to the first incomplete required step once something is set', () => {
@@ -93,7 +87,7 @@ describe('resumeStep', () => {
           nextStep: 'first-project',
         }),
       ),
-    ).toBe('first-project');
+    ).toBe('ai-backends');
   });
 
   it('falls back to master-password if the server omits nextStep while not complete', () => {
@@ -106,20 +100,36 @@ describe('resumeStep', () => {
 
 describe('stepProgress', () => {
   it('reports a 1-based index and the total step count', () => {
-    expect(stepProgress('master-password')).toEqual({ index: 1, total: 6 });
-    expect(stepProgress('github')).toEqual({ index: 2, total: 6 });
-    expect(stepProgress('ai-backends')).toEqual({ index: 4, total: 6 });
-    expect(stepProgress('done')).toEqual({ index: 6, total: 6 });
+    expect(stepProgress('master-password')).toEqual({ index: 1, total: 4 });
+    expect(stepProgress('github')).toEqual({ index: 2, total: 4 });
+    expect(stepProgress('ai-backends')).toEqual({ index: 4, total: 4 });
   });
 
   it('is consistent with the ordered id list for every step', () => {
     for (const [i, id] of ONBOARDING_STEP_IDS.entries()) {
-      expect(stepProgress(id)).toEqual({ index: i + 1, total: 6 });
+      expect(stepProgress(id)).toEqual({ index: i + 1, total: 4 });
     }
   });
 
   it('throws on an unknown step id', () => {
     expect(() => stepProgress('nope' as StepId)).toThrow(/unknown onboarding step/);
+  });
+});
+
+describe('isCoreOnboardingComplete', () => {
+  it('does not require a project, including with an older server status', () => {
+    expect(
+      isCoreOnboardingComplete(
+        status({
+          masterPasswordSet: true,
+          githubAppConfigured: true,
+          signingKeyConfigured: true,
+          hasProject: false,
+          complete: false,
+          nextStep: 'first-project',
+        }),
+      ),
+    ).toBe(true);
   });
 });
 

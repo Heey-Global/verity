@@ -9,8 +9,7 @@ import type { OnboardingStatus } from './api.js';
  *  welcome and server connection screens are preflight: only after the app reaches
  *  a Verity server can it know whether to unlock an existing install or start this
  *  setup wizard. */
-export type StepId =
-  'master-password' | 'github' | 'doppler' | 'ai-backends' | 'first-project' | 'done';
+export type StepId = 'master-password' | 'github' | 'doppler' | 'ai-backends';
 
 export interface OnboardingStepDef {
   id: StepId;
@@ -32,8 +31,6 @@ export const ONBOARDING_STEPS: readonly OnboardingStepDef[] = [
   { id: 'github', title: 'GitHub', required: true },
   { id: 'doppler', title: 'Doppler (optional)', required: false },
   { id: 'ai-backends', title: 'Agent logins (optional)', required: false },
-  { id: 'first-project', title: 'First project', required: true },
-  { id: 'done', title: 'All set', required: false },
 ] as const;
 
 /** The step ids in order — handy for navigation without re-mapping the defs. */
@@ -68,13 +65,26 @@ export function isPristineOnboardingStatus(status: OnboardingStatus): boolean {
  *
  */
 export function resumeStep(status: OnboardingStatus): StepId {
-  if (status.complete) return 'done';
+  if (status.complete) return 'ai-backends';
   // Pristine: nothing configured at all → start at the first setup gate. Welcome
   // and server selection have already happened in preflight.
   if (isPristineOnboardingStatus(status)) return 'master-password';
   // Mid-flow: jump straight to the first incomplete required step. `nextStep` is
   // non-null here (not complete), but fall back defensively to `master-password`.
-  return status.nextStep ?? 'master-password';
+  // Older servers can still report the former project-creation gate. Projects
+  // now belong to the app's empty state, so never route back into that step.
+  return status.nextStep === 'first-project'
+    ? 'ai-backends'
+    : (status.nextStep ?? 'master-password');
+}
+
+/** Credential setup is complete even when an older server still includes the
+ * removed first-project step in its `complete` calculation. */
+export function isCoreOnboardingComplete(status: OnboardingStatus): boolean {
+  return (
+    status.complete ||
+    (status.masterPasswordSet && status.githubAppConfigured && status.signingKeyConfigured)
+  );
 }
 
 /**
