@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/Heey-Global/verity/compare/website-v1.4.1...website-v1.5.0) (2026-09-14)
+
+
+### Features
+
+* **deploy:** enable arm64 hosts ([#332](https://github.com/Heey-Global/verity/issues/332)) ([eb92547](https://github.com/Heey-Global/verity/commit/eb9254752fbfd70e10832c0ba8c8640b159d4797))
+
 ## [1.4.1](https://github.com/Heey-Global/verity/compare/website-v1.4.0...website-v1.4.1) (2026-09-14)
 
 
