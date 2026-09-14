@@ -22,6 +22,18 @@ interface ReleaseWorkflow {
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
       steps: WorkflowStep[];
     };
+    'build-server': {
+      if?: string;
+      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
+      steps: WorkflowStep[];
+    };
+    'prepare-server-build-context': {
+      steps: WorkflowStep[];
+    };
+    'build-preview-images': {
+      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
+      steps: WorkflowStep[];
+    };
     'publish-project-relay': {
       outputs?: Record<string, string>;
       steps: WorkflowStep[];
@@ -41,6 +53,10 @@ interface ReleaseWorkflow {
       env?: Record<string, string>;
       needs?: string[];
       permissions?: Record<string, string>;
+      steps: WorkflowStep[];
+    };
+    'publish-preview-images': {
+      needs?: string[];
       steps: WorkflowStep[];
     };
     'finalize-backend-release': {
@@ -91,6 +107,7 @@ describe('release relay digest output', () => {
 
   it('bakes the release-matched relay digest into the Server image', () => {
     const server = workflow.jobs['publish-server'];
+    const buildServer = workflow.jobs['build-server'];
     // The relay digest is baked in as a build arg, so that dependency is
     // structural. The sandbox image and toolkit Feature are not baked in, but a
     // released Server resolves BOTH at its OWN version instead of `:latest` —
@@ -105,6 +122,7 @@ describe('release relay digest output', () => {
       'publish-project-relay',
       'publish-sandbox',
       'publish-toolkit',
+      'build-server',
     ]);
     // …and every one of them runs under the same condition, so the added
     // dependencies only order jobs that were going to run anyway.
@@ -112,7 +130,7 @@ describe('release relay digest output', () => {
       expect(workflow.jobs[name]?.if).toBe(server.if);
     }
 
-    const build = server.steps.find((step) => step.name === 'Build + push (linux/amd64)');
+    const build = buildServer.steps.find((step) => step.name?.startsWith('Build + push'));
     expect(build?.with?.['build-args']).toContain(
       'VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.publish-project-relay.outputs.image }}',
     );
@@ -132,14 +150,14 @@ describe('release relay digest output', () => {
     // reaches an installed host exactly once, at bootstrap, and its database is
     // never patched again — which is precisely the state this test exists to
     // stop the release workflow from silently returning to.
-    const server = workflow.jobs['publish-server'];
+    const server = workflow.jobs['build-server'];
     const resolve = server.steps.find((step) => step.name === 'Resolve the bundled PostgreSQL pin');
     expect(resolve?.id).toBe('postgres');
     // Read out of the compose file, so the line Renovate bumps stays the one
     // source of truth and cannot drift from what a fresh install bootstraps.
     expect(resolve?.run).toContain('deploy/docker-compose.yml');
 
-    const build = server.steps.find((step) => step.name === 'Build + push (linux/amd64)');
+    const build = server.steps.find((step) => step.name?.startsWith('Build + push'));
     expect(build?.with?.['build-args']).toContain(
       'VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}',
     );
@@ -195,6 +213,73 @@ describe('multi-architecture runtime image publication', () => {
     );
     expect(relay?.run).toContain('${image}:sha-${short_sha}-amd64');
     expect(relay?.run).toContain('${image}:sha-${short_sha}-arm64');
+  });
+
+  it('builds the Server natively and signs the merged index digest', () => {
+    const prepare = workflow.jobs['prepare-server-build-context'];
+    const compile = prepare.steps.find(
+      (step) => step.name === 'Build attested script sandbox artifacts',
+    );
+    expect(compile?.run).toBe('scripts/build-script-sandbox-prebuilts.sh');
+    const upload = prepare.steps.find(
+      (step) => step.name === 'Upload trusted Server build context',
+    );
+    expect(upload?.with?.path).toContain('prebuilt/linux-amd64/verity-script-sandbox');
+    expect(upload?.with?.path).toContain('prebuilt/linux-arm64/verity-script-sandbox');
+
+    const build = workflow.jobs['build-server'];
+    expect(build.strategy?.matrix?.include).toEqual(matrix);
+    const push = build.steps.find((step) => step.name?.startsWith('Build + push'));
+    expect(push?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
+    expect(push?.with?.tags).toBe('${{ steps.tags.outputs.tag }}');
+    const tag = build.steps.find((step) => step.name === 'Compute architecture tag');
+    expect(tag?.run).toContain('sha-${short_sha}-${{ matrix.architecture }}');
+    expect(
+      build.steps.find((step) => step.name === 'Build attested script sandbox artifacts'),
+    ).toBeUndefined();
+    const download = build.steps.find(
+      (step) => step.name === 'Download trusted Server build context',
+    );
+    expect(download?.with?.path).toBe('features/verity-sandbox-toolkit');
+
+    const server = workflow.jobs['publish-server'];
+    expect(server.needs).toContain('build-server');
+    const publish = server.steps.find(
+      (step) => step.name === 'Publish multi-architecture Server index',
+    );
+    expect(publish?.run).toContain('${image}:sha-${short_sha}-amd64');
+    expect(publish?.run).toContain('${image}:sha-${short_sha}-arm64');
+    expect(publish?.run).toContain('echo "digest=$digest"');
+    const attest = server.steps.find((step) => step.name === 'Attest Server image provenance');
+    expect(attest?.with?.['subject-digest']).toBe('${{ steps.build.outputs.digest }}');
+    const sign = server.steps.find((step) => step.name === 'Sign the Server image');
+    expect(sign?.env?.SERVER_DIGEST).toBe('${{ steps.build.outputs.digest }}');
+  });
+
+  it('publishes preview indexes only after all native component builds finish', () => {
+    const build = workflow.jobs['build-preview-images'];
+    expect(build.strategy?.matrix?.include).toHaveLength(4);
+    expect(
+      build.strategy?.matrix?.include?.map(({ component, architecture }) => ({
+        component,
+        architecture,
+      })),
+    ).toEqual([
+      { component: 'edge', architecture: 'amd64' },
+      { component: 'edge', architecture: 'arm64' },
+      { component: 'connector', architecture: 'amd64' },
+      { component: 'connector', architecture: 'arm64' },
+    ]);
+    const push = build.steps.find((step) => step.name === 'Build and publish');
+    expect(push?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
+
+    const publish = workflow.jobs['publish-preview-images'];
+    expect(publish.needs).toContain('build-preview-images');
+    const index = publish.steps.find(
+      (step) => step.name === 'Publish multi-architecture preview index',
+    );
+    expect(index?.run).toContain('${image}:sha-${short_sha}-amd64');
+    expect(index?.run).toContain('${image}:sha-${short_sha}-arm64');
   });
 });
 
@@ -382,7 +467,7 @@ describe('signed GitHub release evidence', () => {
 describe('release toolkit trust ledger', () => {
   const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
 
-  it.each(['publish-toolkit', 'publish-server'] as const)(
+  it.each(['publish-toolkit', 'prepare-server-build-context'] as const)(
     'assembles release boundary hashes in the trusted %s job',
     (jobName) => {
       const steps = workflow.jobs[jobName].steps;
