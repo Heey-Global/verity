@@ -46,7 +46,7 @@ DOPPLER_VERSION="${DOPPLERVERSION:-3.76.5}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.149.0}"
+CODEX_VERSION="${CODEXVERSION:-0.154.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-1.6.2}"
 # renovate: datasource=npm depName=opencode-ai
