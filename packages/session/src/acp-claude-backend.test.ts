@@ -657,6 +657,7 @@ describe('AcpClaudeBackend', () => {
     expect(initialize).toMatchObject({
       params: {
         clientCapabilities: {
+          session: { compaction: {} },
           _meta: { 'subagent-transcript': true },
         },
       },

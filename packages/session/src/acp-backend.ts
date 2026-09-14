@@ -697,8 +697,13 @@ export async function runAcpTurn(
         const initialized = await agent.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
           ...(profile.clientCapabilitiesMeta !== undefined
-            ? { clientCapabilities: { _meta: profile.clientCapabilitiesMeta } }
-            : { clientCapabilities: {} }),
+            ? {
+                clientCapabilities: {
+                  session: { compaction: {} },
+                  _meta: profile.clientCapabilitiesMeta,
+                },
+              }
+            : { clientCapabilities: { session: { compaction: {} } } }),
         });
         // ADR 0014 D1: an ACP agent has no attested native tool channel, so the
         // brokered Verity tools are offered to it as an HTTP MCP server on the

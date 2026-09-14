@@ -262,6 +262,15 @@ export class AcpEventAdapter {
           ...lifecycle,
           ...(this.metaNamespace === CLAUDE_ACP_META ? claudeRateLimit(update) : []),
         ];
+      case 'compaction_update':
+        return [
+          ...lifecycle,
+          ...this.lifecycle.consume({ type: 'compaction', id: update.compactionId }),
+        ];
+      case 'compaction_summary_chunk':
+        // Retained summaries do not yet have a canonical transcript event. The
+        // preceding compaction_update already fixed and emitted the boundary.
+        return lifecycle;
       case 'user_message_chunk':
         return lifecycle;
     }
