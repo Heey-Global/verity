@@ -4,7 +4,6 @@
 // just the process glue (excluded from coverage — validated by running it).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -133,7 +132,7 @@ import {
   TOOLKIT_FEATURE_REPO,
 } from './sandbox-artifacts.js';
 import { UPLINK_CONTROL_URL } from './uplink-control-client.js';
-import { createDevicePairingManager } from './device-pairing.js';
+import { devicePairingFromEnv, serverStartupRequiresPairing } from './pairing-env.js';
 
 /** Fixed internal port for the non-published `/internal/*` (signing-broker)
  *  listener. Container-internal only, never on `ports:` — no host conflict, so it
@@ -474,6 +473,7 @@ function managedClientIdentitySecret(key: Buffer): Buffer {
 
 async function main(): Promise<void> {
   const directServerMode = process.argv[2] === 'direct-server';
+  const managedDeployment = Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim());
   if (process.argv[2] === 'managed-gateway') {
     const tls = await tlsFromEnvironment();
     const gateway = await startManagedGateway({
@@ -924,74 +924,13 @@ async function main(): Promise<void> {
     }
   };
 
-  const pairingIdentityPath = process.env.VERITY_PAIRING_IDENTITY_KEY_PATH;
-  const pairingCodePath = process.env.VERITY_PAIRING_CODE_PATH;
-  const pairingExpiresAt = process.env.VERITY_PAIRING_EXPIRES_AT;
-  const pairingExpiresAtPath = process.env.VERITY_PAIRING_EXPIRES_AT_PATH;
-  if (pairingExpiresAt && pairingExpiresAtPath) {
-    throw new Error(
-      'VERITY_PAIRING_EXPIRES_AT and VERITY_PAIRING_EXPIRES_AT_PATH are mutually exclusive',
-    );
-  }
-  const resolvedPairingExpiresAt = pairingExpiresAtPath
-    ? (await readFile(pairingExpiresAtPath, 'utf8')).trim()
-    : pairingExpiresAt;
-  const pairingParts = [pairingIdentityPath, pairingCodePath, resolvedPairingExpiresAt].filter(
-    (value) => value !== undefined && value !== '',
-  );
-  if (pairingParts.length !== 0 && pairingParts.length !== 3) {
-    throw new Error(
-      'VERITY_PAIRING_IDENTITY_KEY_PATH, VERITY_PAIRING_CODE_PATH and one pairing expiry source must be configured together',
-    );
-  }
-  const devicePairing =
-    pairingParts.length === 3
-      ? createDevicePairingManager({
-          privateKeyPem: await readFile(pairingIdentityPath!, 'utf8'),
-          loadPairingMaterial: () => ({
-            pairingCode: readFileSync(pairingCodePath!, 'utf8').trim(),
-            expiresAt: pairingExpiresAtPath
-              ? readFileSync(pairingExpiresAtPath, 'utf8').trim()
-              : resolvedPairingExpiresAt!,
-          }),
-          loadConsumedCodeHash: () => {
-            const hashes = new Set<string>();
-            try {
-              for (const hash of readFileSync(join(verityRoot, '.pairing-code-consumed'), 'utf8')
-                .split(/\r?\n/)
-                .map((value) => value.trim())
-                .filter(Boolean)) {
-                hashes.add(hash);
-              }
-            } catch (error: unknown) {
-              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-            }
-            try {
-              for (const hash of readdirSync(join(verityRoot, '.pairing-code-consumed.d'))) {
-                hashes.add(hash);
-              }
-            } catch (error: unknown) {
-              if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-            }
-            return [...hashes];
-          },
-          storeConsumedCodeHash: (hash) => {
-            const directory = join(verityRoot, '.pairing-code-consumed.d');
-            mkdirSync(directory, { recursive: true, mode: 0o700 });
-            try {
-              const fd = openSync(join(directory, hash), 'wx', 0o600);
-              closeSync(fd);
-              return true;
-            } catch (error: unknown) {
-              if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-              throw error;
-            }
-          },
-        })
-      : undefined;
+  const devicePairing = await devicePairingFromEnv({
+    env: process.env,
+    pairingRequired: serverStartupRequiresPairing(process.argv, process.env),
+    verityRoot,
+  });
   // In managed mode the public Gateway terminates TLS; its backend remains on
   // the private Compose network over HTTP. Direct deployments terminate here.
-  const managedDeployment = Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim());
   const configuredTlsMode = process.env.VERITY_TLS_MODE?.trim();
   const tlsMode = configuredTlsMode === '' ? undefined : configuredTlsMode;
   if (tlsMode !== undefined && tlsMode !== 'direct' && tlsMode !== 'backend') {

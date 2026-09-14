@@ -147,7 +147,11 @@ gap is the open release-readiness gate the security model above names.
 - Brokered secrets are approval-gated only on explicitly supported backend and
   transport paths. A recognized protocol label alone does not imply support.
 - Self-hosted deployments are responsible for TLS termination, host hardening,
-  firewall policy, database availability, and physical access to the host.
+  firewall policy, database availability, and physical access to the host. For
+  an internet-reachable host, start from
+  [the hardening guidance in the deployment guide](deploy/README.md#hardening-an-internet-reachable-host)
+  — in particular, the project Dev Server port ranges are unauthenticated and
+  must not be publicly reachable.
 
 These limitations are security boundaries and operational facts, not a promise
 that the list is exhaustive. Deployment-specific review remains necessary.

@@ -2452,7 +2452,7 @@ describe('buildEmbeddedServer', () => {
       const db = createEmbeddedDb(dataDir);
       const meta = await new EventStore(db).getSecretKeyMeta();
       await db.destroy();
-      const handedOver = deriveKeyFromPassword('correct horse battery staple', meta!.salt);
+      const handedOver = await deriveKeyFromPassword('correct horse battery staple', meta!.salt);
 
       server = await buildTestEmbeddedServer({ dataDir, adoptedSecretKeyMaterial: handedOver });
       expect((await server.app.inject({ method: 'GET', url: '/secret/status' })).json()).toEqual({
@@ -2464,7 +2464,7 @@ describe('buildEmbeddedServer', () => {
       // secrets the operator's password can never reproduce.
       server = await buildTestEmbeddedServer({
         dataDir,
-        adoptedSecretKeyMaterial: deriveKeyFromPassword('another password', meta!.salt),
+        adoptedSecretKeyMaterial: await deriveKeyFromPassword('another password', meta!.salt),
       });
       expect((await server.app.inject({ method: 'GET', url: '/secret/status' })).json()).toEqual({
         status: 'sealed',

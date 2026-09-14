@@ -135,9 +135,10 @@ export function createDevicePairingManager(options: {
       if (expected === undefined || now().getTime() >= bootstrapExpiry) return false;
       const supplied = digest(`${PAIRING_DOMAIN}.bootstrap`, token);
       const valid = supplied.length === expected.length && timingSafeEqual(supplied, expected);
-      // Only the successful presentation consumes the capability. Invalid guesses are handled by
-      // the route's per-client rate limit and cannot let an unauthenticated peer burn another
-      // device's valid token. Clear synchronously before returning to preserve replay safety.
+      // Only the successful presentation consumes the capability, so an unauthenticated peer
+      // cannot burn another device's valid token by guessing; guess volume is bounded by the
+      // unlock throttle on the two routes that present bootstraps (/secret/init and
+      // /secret/unlock). Clear synchronously before returning to preserve replay safety.
       if (valid) bootstrapHash = undefined;
       return valid;
     },

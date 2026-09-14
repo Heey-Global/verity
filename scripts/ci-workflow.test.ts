@@ -2859,6 +2859,17 @@ describe('server image CI smoke', () => {
       'VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ env.VERITY_CI_RELAY_IMAGE }}',
     );
     expect(smoke?.run).toContain('--group-add 65532');
+    expect(smoke?.run).toContain('./deploy/bin/verity-pairing-material');
+    expect(smoke?.run).toContain(
+      '--mount "type=bind,src=$pairing_dir,dst=/run/verity-pairing,readonly"',
+    );
+    expect(smoke?.run).toContain(
+      '-e VERITY_PAIRING_IDENTITY_KEY_PATH=/run/verity-pairing/pairing-identity.pem',
+    );
+    expect(smoke?.run).toContain('-e VERITY_PAIRING_CODE_PATH=/run/verity-pairing/pairing-code');
+    expect(smoke?.run).toContain(
+      '-e VERITY_PAIRING_EXPIRES_AT_PATH=/run/verity-pairing/pairing-expires-at',
+    );
     expect(smoke?.run).toContain('-e VERITY_DOCKER_BASE_URL=unix:///var/run/docker.sock');
     expect(smoke?.run).toContain('-e VERITY_DATA_VOLUME=verity-data');
     expect(smoke?.run).toContain('-e VERITY_PROJECT_RELAY_IMAGE="$VERITY_CI_RELAY_IMAGE"');

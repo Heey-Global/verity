@@ -114,9 +114,25 @@ jobs:
             fi
             sleep 1
           done
+          pairing_dir="$(mktemp -d)"
+          VERITY_STATE_DIR="$pairing_dir" VERITY_PAIRING_HOST=127.0.0.1 \
+            ./deploy/bin/verity-pairing-material >/dev/null
+          chmod 0755 "$pairing_dir"
+          chmod 0644 "$pairing_dir/pairing-identity.pem" \
+            "$pairing_dir/pairing-code" "$pairing_dir/pairing-expires-at"
+          cleanup() {
+            docker rm -f verity-server-smoke verity-postgres-smoke >/dev/null 2>&1 || true
+            docker network rm verity-smoke-net >/dev/null 2>&1 || true
+            rm -rf "$pairing_dir"
+          }
+          trap cleanup EXIT
           docker run -d --name verity-server-smoke --network verity-smoke-net \
             --group-add 65532 \
+            --mount "type=bind,src=$pairing_dir,dst=/run/verity-pairing,readonly" \
             -e HOST=0.0.0.0 \
+            -e VERITY_PAIRING_IDENTITY_KEY_PATH=/run/verity-pairing/pairing-identity.pem \
+            -e VERITY_PAIRING_CODE_PATH=/run/verity-pairing/pairing-code \
+            -e VERITY_PAIRING_EXPIRES_AT_PATH=/run/verity-pairing/pairing-expires-at \
             -e VERITY_REPO_DIR= \
             -e VERITY_DOCKER_BASE_URL=unix:///var/run/docker.sock \
             -e VERITY_DATA_VOLUME=verity-data \
@@ -128,11 +144,6 @@ jobs:
             -e VERITY_CLAUDE_CONNECTOR_PORT=47821 \
             -e DATABASE_URL=postgres://verity@verity-postgres-smoke:5432/verity \
             verity-server:smoke
-          cleanup() {
-            docker rm -f verity-server-smoke verity-postgres-smoke >/dev/null 2>&1 || true
-            docker network rm verity-smoke-net >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
 
           for _ in $(seq 1 30); do
             if docker exec verity-server-smoke node -e \

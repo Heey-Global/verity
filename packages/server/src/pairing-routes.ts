@@ -1,7 +1,8 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { bearerToken, type AuthTokenRegistry } from './auth.js';
 import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
+import { createUnlockThrottle } from './unlock-throttle.js';
 
 export interface PairingRouteDeps {
   devicePairing?: DevicePairingManager | undefined;
@@ -21,6 +22,17 @@ const deviceParams = z.object({ id: z.string().min(1).max(128) });
 
 /** Installer pairing and signed Server-identity challenge routes. */
 export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDeps): void {
+  // Redemption and enrollment take pre-auth guesses at one-shot codes. The
+  // codes are 256-bit and compared timing-safely, so guessing cannot succeed —
+  // this throttle exists so that property never silently becomes the only
+  // defence (e.g. a future shorter human-typable code format).
+  const pairingThrottle = createUnlockThrottle();
+  const rejectThrottled = (reply: FastifyReply, retryAfterMs: number | undefined): unknown => {
+    if (retryAfterMs !== undefined)
+      reply.header('retry-after', String(Math.ceil(retryAfterMs / 1000)));
+    reply.code(429);
+    return { error: 'too many attempts — try again later' };
+  };
   // Register both routes even when pairing is not wired. The lockout declaration
   // depends on these paths always existing so another device can obtain a bearer.
   app.get('/pair/identity', (request, reply) => {
@@ -45,10 +57,15 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
       reply.code(404);
       return { error: 'not found' };
     }
+    const gate = pairingThrottle.check(request.ip);
+    if (!gate.allowed) return rejectThrottled(reply, gate.retryAfterMs);
     try {
-      return deps.devicePairing.redeem(pairingRedeemBody.parse(request.body).code);
+      const redeemed = deps.devicePairing.redeem(pairingRedeemBody.parse(request.body).code);
+      pairingThrottle.recordSuccess(request.ip);
+      return redeemed;
     } catch (error) {
       if (error instanceof DevicePairingRejectedError) {
+        pairingThrottle.recordFailure(request.ip);
         reply.code(401);
         return { error: error.message };
       }
@@ -62,13 +79,17 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     if (registry === undefined || pairing === undefined) {
       return reply.code(404).send({ error: 'not found' });
     }
+    const gate = pairingThrottle.check(request.ip);
+    if (!gate.allowed) return rejectThrottled(reply, gate.retryAfterMs);
     const { code, enrollmentId, deviceLabel } = pairingEnrollBody.parse(request.body);
     const credential = pairing.enrollmentCredential(code, enrollmentId);
     if (registry.resolveId(credential.token) === credential.id) {
+      pairingThrottle.recordSuccess(request.ip);
       return { token: credential.token, tokenId: credential.id };
     }
     const invitation = pairing.claimInvitation(code);
     if (invitation === undefined) {
+      pairingThrottle.recordFailure(request.ip);
       return reply.code(401).send({ error: 'invalid or expired pairing invitation' });
     }
     try {
@@ -77,6 +98,7 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
         credential.id,
         deviceLabel ?? null,
       );
+      pairingThrottle.recordSuccess(request.ip);
       return { token: enrolled.token, tokenId: enrolled.id };
     } catch (error) {
       invitation.release();

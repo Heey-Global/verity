@@ -44,28 +44,43 @@ describe('createSealableSecretCipher', () => {
 });
 
 describe('master-password key derivation', () => {
-  it('derives a stable 32-byte key for the same password + salt', () => {
+  it('derives a stable 32-byte key for the same password + salt', async () => {
     const salt = generateSalt();
-    const a = deriveKeyFromPassword('correct horse battery staple', salt);
-    const b = deriveKeyFromPassword('correct horse battery staple', salt);
+    const a = await deriveKeyFromPassword('correct horse battery staple', salt);
+    const b = await deriveKeyFromPassword('correct horse battery staple', salt);
     expect(a).toBe(b);
     expect(Buffer.from(a, 'hex').length).toBe(32);
   });
 
-  it('derives different keys for a different salt or password', () => {
+  it('derives different keys for a different salt or password', async () => {
     const salt1 = generateSalt();
     const salt2 = generateSalt();
-    expect(deriveKeyFromPassword('pw', salt1)).not.toBe(deriveKeyFromPassword('pw', salt2));
-    expect(deriveKeyFromPassword('pw-a', salt1)).not.toBe(deriveKeyFromPassword('pw-b', salt1));
+    expect(await deriveKeyFromPassword('pw', salt1)).not.toBe(
+      await deriveKeyFromPassword('pw', salt2),
+    );
+    expect(await deriveKeyFromPassword('pw-a', salt1)).not.toBe(
+      await deriveKeyFromPassword('pw-b', salt1),
+    );
   });
 
-  it('verifier accepts the right password and rejects the wrong one', () => {
+  it('still derives the key every existing installation encrypted under', async () => {
+    // Fixed vector (scrypt N=2^16, r=8, p=1). The silent failure this guards:
+    // any drift in the cost parameters or output encoding derives a DIFFERENT
+    // key from the SAME password, which strands every already-encrypted secret
+    // with no error message pointing at the cause — the store just reports a
+    // wrong password forever.
+    expect(
+      await deriveKeyFromPassword('correct horse battery staple', 'AAECAwQFBgcICQoLDA0ODw=='),
+    ).toBe('d5ad1942d9f1d281e19f8f318fc7ce439fa2135020b010a580f810c8a041451c');
+  });
+
+  it('verifier accepts the right password and rejects the wrong one', async () => {
     const salt = generateSalt();
-    const key = deriveKeyFromPassword('right-password', salt);
+    const key = await deriveKeyFromPassword('right-password', salt);
     const verifier = createKeyVerifier(key);
 
     expect(keyMatchesVerifier(key, verifier)).toBe(true);
-    const wrong = deriveKeyFromPassword('wrong-password', salt);
+    const wrong = await deriveKeyFromPassword('wrong-password', salt);
     expect(keyMatchesVerifier(wrong, verifier)).toBe(false);
   });
 });

@@ -101,7 +101,7 @@ describe('managed Compose ownership topology', () => {
 
     const anchor = envKeys(slice('    environment: &verity-server-environment', '\n  verity-'));
     const bootstrapBlock = slice('\n  managed-bootstrap:', '\n  verity-managed-gateway:');
-    const updaterBlock = slice('\n  verity-updater:', '\n  # OPT-IN HARDENING:');
+    const updaterBlock = slice('\n  verity-updater:', '\n  # HISTORICAL DESIGN SKETCH');
     const bootstrap = envKeys(bootstrapBlock);
     const updater = envKeys(updaterBlock);
 
