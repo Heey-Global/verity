@@ -85,7 +85,7 @@ jobs:
           # `scope`, the pull_request write gate and `ignore-error`: see the note
           # on the `Build Verity server image` step in ci.yml. The scope name
           # follows the Dockerfile, so this job reads exactly what release.yml's
-          # `publish-project-relay` wrote.
+          # `build-project-relay` wrote.
           #
           # This workflow only ever runs on pull_request and workflow_dispatch, so
           # the gate means the entry is written by releases and manual runs. That

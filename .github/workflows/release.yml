@@ -1264,10 +1264,18 @@ jobs:
           jq -e --arg version "$VERSION" '.version == $version' "$payload" >/dev/null
           gh release upload "v${VERSION}" "$payload" "$bundle" "$provenance" --clobber
 
-  publish-sandbox:
+  build-sandbox:
     needs: [release-please, self-update-gate]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # Bounded below the janitor's cache grace period — see the note on
     # ci.yml's `server-image` job.
     timeout-minutes: 45
@@ -1328,33 +1336,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tags
+      - name: Compute temporary architecture tags
         id: tags
         shell: bash
         run: |
           set -euo pipefail
           SHORT_SHA=$(git rev-parse --short=12 HEAD)
-          IMAGE_VERSION="v${VERSION}"
-          # Dual-publish to the legacy path AND the new namespaced path (#475).
           {
             echo "tags<<EOF"
-            echo "${REGISTRY}/${IMAGE_NAME}:${IMAGE_VERSION}"
-            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
-            echo "${REGISTRY}/${IMAGE_NAME}:latest"
-            echo "${REGISTRY}/${IMAGE_NAME_NEW}:${IMAGE_VERSION}"
-            echo "${REGISTRY}/${IMAGE_NAME_NEW}:sha-${SHORT_SHA}"
-            echo "${REGISTRY}/${IMAGE_NAME_NEW}:latest"
+            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}-${{ matrix.architecture }}"
+            echo "${REGISTRY}/${IMAGE_NAME_NEW}:sha-${SHORT_SHA}-${{ matrix.architecture }}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build + push (linux/amd64)
+      - name: Build + push (linux/${{ matrix.architecture }})
         # renovate: datasource=github-actions depName=docker/build-push-action
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           # Repo root so `COPY features/verity-sandbox-toolkit` resolves.
           context: .
           file: deploy/verity-sandbox.Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.architecture }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
@@ -1368,12 +1370,65 @@ jobs:
           cache-from: type=gha,scope=verity-sandbox
           cache-to: type=gha,mode=max,scope=verity-sandbox,ignore-error=true
 
-  publish-project-relay:
+  publish-sandbox:
+    needs: [release-please, self-update-gate, build-sandbox]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: heey-global/verity-sandbox
+      IMAGE_NAME_NEW: heey-global/verity/verity-sandbox
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+      SOURCE_REVISION: ${{ needs.release-please.outputs.backend-sha }}
+    steps:
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-architecture sandbox indexes
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="${SOURCE_REVISION:0:12}"
+          docker buildx imagetools create \
+            -t "${REGISTRY}/${IMAGE_NAME}:v${VERSION}" \
+            -t "${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}" \
+            -t "${REGISTRY}/${IMAGE_NAME}:latest" \
+            "${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}-amd64" \
+            "${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}-arm64"
+          docker buildx imagetools create \
+            -t "${REGISTRY}/${IMAGE_NAME_NEW}:v${VERSION}" \
+            -t "${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}" \
+            -t "${REGISTRY}/${IMAGE_NAME_NEW}:latest" \
+            "${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}-amd64" \
+            "${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}-arm64"
+
+  build-project-relay:
     needs: [release-please, self-update-gate]
     if: needs.release-please.outputs.backend-release-created == 'true'
-    outputs:
-      image: ${{ steps.relay-reference.outputs.image }}
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # Bounded below the janitor's cache grace period — see the note on
     # ci.yml's `server-image` job.
     timeout-minutes: 45
@@ -1432,7 +1487,7 @@ jobs:
         with:
           context: .
           file: deploy/project-relay.Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.architecture }}
           load: true
           tags: verity-project-relay:release-smoke
           # Same Dockerfile as the push step below and as project-relay.yml, so
@@ -1456,7 +1511,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tags
+      - name: Compute temporary architecture tag
         id: tags
         shell: bash
         run: |
@@ -1464,20 +1519,17 @@ jobs:
           SHORT_SHA=$(git rev-parse --short=12 HEAD)
           {
             echo "tags<<EOF"
-            echo "${REGISTRY}/${IMAGE_NAME}:v${VERSION}"
-            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
-            echo "${REGISTRY}/${IMAGE_NAME}:latest"
+            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}-${{ matrix.architecture }}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build + push (linux/amd64)
-        id: push-relay
+      - name: Build + push (linux/${{ matrix.architecture }})
         # renovate: datasource=github-actions depName=docker/build-push-action
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/project-relay.Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.architecture }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
@@ -1490,14 +1542,60 @@ jobs:
           cache-from: type=gha,scope=verity-project-relay
           cache-to: type=gha,mode=max,scope=verity-project-relay,ignore-error=true
 
-      - name: Record digest-pinned relay reference
-        id: relay-reference
-        env:
-          RELAY_DIGEST: ${{ steps.push-relay.outputs.digest }}
+  publish-project-relay:
+    needs: [release-please, self-update-gate, build-project-relay]
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    outputs:
+      image: ${{ steps.relay-reference.outputs.image }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: heey-global/verity/verity-project-relay
+      VERSION: ${{ needs.release-please.outputs.backend-version }}
+      SOURCE_REVISION: ${{ needs.release-please.outputs.backend-sha }}
+    steps:
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-architecture relay index
+        shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELAY_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
-          reference="${REGISTRY}/${IMAGE_NAME}@${RELAY_DIGEST}"
+          short_sha="${SOURCE_REVISION:0:12}"
+          image="${REGISTRY}/${IMAGE_NAME}"
+          docker buildx imagetools create \
+            -t "${image}:v${VERSION}" \
+            -t "${image}:sha-${short_sha}" \
+            -t "${image}:latest" \
+            "${image}:sha-${short_sha}-amd64" \
+            "${image}:sha-${short_sha}-arm64"
+
+      - name: Record digest-pinned relay reference
+        id: relay-reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME}"
+          relay_digest="$(docker buildx imagetools inspect "${image}:v${VERSION}" --format '{{ .Manifest.Digest }}')"
+          [[ "$relay_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          reference="${image}@${relay_digest}"
           echo "image=$reference" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$reference" > verity-project-relay-image.txt
           {
