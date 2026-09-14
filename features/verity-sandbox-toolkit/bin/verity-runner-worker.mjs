@@ -17397,6 +17397,52 @@ function removeAtIndex(text, start, count) {
 function endsWithCommaOrNewline(text) {
   return /[,\n][ \t\r]*$/.test(text);
 }
+var namedHtmlEntities = {
+  "&quot;": '"',
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&apos;": "'"
+};
+var maxHtmlEntityLength = 12;
+function matchHtmlEntity(fragment) {
+  if (fragment.charAt(0) !== "&") {
+    return null;
+  }
+  const semicolon = fragment.indexOf(";");
+  if (semicolon === -1) {
+    return null;
+  }
+  const entity = fragment.substring(0, semicolon + 1);
+  const named = namedHtmlEntities[entity];
+  if (named !== void 0) {
+    return {
+      char: named,
+      length: entity.length
+    };
+  }
+  if (fragment.charAt(1) === "#") {
+    const body = fragment.substring(2, semicolon);
+    const hex = body.charAt(0) === "x" || body.charAt(0) === "X";
+    const digits = hex ? body.substring(1) : body;
+    if (digits.length > 0) {
+      const code = Number.parseInt(digits, hex ? 16 : 10);
+      if (!Number.isNaN(code) && code >= 0 && code <= 1114111) {
+        return {
+          char: String.fromCodePoint(code),
+          length: entity.length
+        };
+      }
+    }
+  }
+  return null;
+}
+function isDoubleQuoteEntity(match) {
+  return match !== null && match.char === '"';
+}
+function isSingleQuoteEntity(match) {
+  return match !== null && match.char === "'";
+}
 function countOccurrences(text, char) {
   let count = 0;
   for (let i = 0; i < text.length; i++) {
@@ -17694,17 +17740,21 @@ ${output}
   function parseString() {
     let stopAtDelimiter = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : false;
     let stopAtIndex = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : -1;
-    let skipEscapeChars = text[i] === "\\";
+    const skipEscapeChars = text[i] === "\\";
     if (skipEscapeChars) {
       i++;
-      skipEscapeChars = true;
+      if (!isQuote(text[i])) {
+        throwUnexpectedCharacter();
+      }
     }
-    if (isQuote(text[i])) {
+    const openEntity = text[i] === "&" ? matchHtmlEntity(text.slice(i, i + maxHtmlEntityLength)) : null;
+    const openedByEntity = isDoubleQuoteEntity(openEntity) || isSingleQuoteEntity(openEntity);
+    if (isQuote(text[i]) || openedByEntity) {
       const isEndQuote = isDoubleQuote(text[i]) ? isDoubleQuote : isSingleQuote(text[i]) ? isSingleQuote : isSingleQuoteLike(text[i]) ? isSingleQuoteLike : isDoubleQuoteLike;
       const iBefore = i;
       const oBefore = output.length;
       let str = '"';
-      i++;
+      i += openedByEntity && openEntity ? openEntity.length : 1;
       while (true) {
         if (i >= text.length) {
           const iPrev = prevNonWhitespaceIndex(i - 1);
@@ -17722,11 +17772,13 @@ ${output}
           output += str;
           return true;
         }
-        if (isEndQuote(text[i])) {
+        const entity = openedByEntity && text[i] === "&" ? matchHtmlEntity(text.slice(i, i + maxHtmlEntityLength)) : null;
+        const isEnd = entity && openEntity ? entity.char === openEntity.char : isEndQuote(text[i]);
+        if (isEnd) {
           const iQuote = i;
           const oQuote = str.length;
           str += '"';
-          i++;
+          i += entity ? entity.length : 1;
           output += str;
           parseWhitespaceAndSkipComments(false);
           if (stopAtDelimiter || i >= text.length || isDelimiter(text[i]) && // only count the brackets inside the string when actually needed,
@@ -17734,6 +17786,9 @@ ${output}
           !isInsideUnclosedBracket(str, text[i]) || isQuote(text[i]) && !nextQuoteIsEndQuote(i) || isDigit(text[i])) {
             parseConcatenatedString();
             return true;
+          }
+          if (text[i] === "\\") {
+            throwUnexpectedCharacter();
           }
           const iPrevChar = prevNonWhitespaceIndex(iQuote - 1);
           const prevChar = text.charAt(iPrevChar);
@@ -17748,7 +17803,7 @@ ${output}
             return parseString(true);
           }
           output = output.substring(0, oBefore);
-          i = iQuote + 1;
+          i = iQuote + (entity ? entity.length : 1);
           str = `${str.substring(0, oQuote)}\\${str.substring(oQuote)}`;
         } else if (stopAtDelimiter && isUnquotedStringDelimiter(text[i])) {
           if (text[i - 1] === ":" && regexUrlStart.test(text.substring(iBefore + 1, i + 2))) {
@@ -17761,6 +17816,16 @@ ${output}
           output += str;
           parseConcatenatedString();
           return true;
+        } else if (entity) {
+          const char = entity.char;
+          if (char === '"') {
+            str += '\\"';
+          } else if (isControlCharacter(char)) {
+            str += controlCharacters[char];
+          } else {
+            str += char;
+          }
+          i += entity.length;
         } else if (text[i] === "\\") {
           const char = text.charAt(i + 1);
           const escapeChar = escapeCharacters[char];
