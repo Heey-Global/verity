@@ -148,7 +148,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # Deliberately no `cache: npm`; preserve the Actions cache budget for
           # BuildKit layers used by this much larger image build.
 

@@ -31,7 +31,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       # EAS resolves the Expo app config before editing a channel. Install the
       # locked workspace so config plugins such as expo-router are available.
