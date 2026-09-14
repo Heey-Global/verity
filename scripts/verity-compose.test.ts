@@ -172,6 +172,9 @@ describe('deploy/bin/verity-compose', () => {
       'chown 1000:1000 /data /data/workspaces /data/sessions /data/runners',
     );
     expect(command).toContain('chmod 0750 /data/runners');
+    expect(command).toContain('git -C /data/workspaces/verity-control rev-parse --verify HEAD');
+    expect(command).toContain('commit --allow-empty');
+    expect(command?.match(/setpriv[^;]+\bgit\b/gu)).toHaveLength(3);
   });
 
   /**

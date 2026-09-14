@@ -10,7 +10,7 @@ import type { SignedReleaseChannel } from './release-channel.js';
 export const OFFICIAL_SOURCE_REPOSITORY = 'https://github.com/Heey-Global/verity';
 /** Immutable numeric repository id. Survives a rename; a new repository that
  *  takes over the old name does not inherit it. */
-export const OFFICIAL_SOURCE_REPOSITORY_ID = '1274346177';
+export const OFFICIAL_SOURCE_REPOSITORY_ID = '1350074667';
 export const OFFICIAL_SOURCE_REF = 'refs/heads/main';
 export const OFFICIAL_RELEASE_WORKFLOW_IDENTITY = `${OFFICIAL_SOURCE_REPOSITORY}/.github/workflows/release.yml@${OFFICIAL_SOURCE_REF}`;
 export const OFFICIAL_CERTIFICATE_ISSUER = 'https://token.actions.githubusercontent.com';

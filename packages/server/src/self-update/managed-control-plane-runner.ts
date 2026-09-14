@@ -221,6 +221,11 @@ function prepareSpec(
         // project clones and session worktrees beside the control-plane checkout.
         'chown 1000:1000 /data /data/workspaces /data/sessions',
         'chown -R 1000:1000 /data/workspaces/verity-control',
+        // Control sessions use real git worktrees even though they have no
+        // product repository. Run every Git command as its uid-1000 owner: an
+        // interrupted, owner-writable repo may contain hooks and must never get
+        // a root execution opportunity during reconciliation.
+        "if ! setpriv --reuid=1000 --regid=1000 --clear-groups git -C /data/workspaces/verity-control rev-parse --verify HEAD >/dev/null 2>&1; then [ -d /data/workspaces/verity-control/.git ] || setpriv --reuid=1000 --regid=1000 --clear-groups git init -b main /data/workspaces/verity-control; setpriv --reuid=1000 --regid=1000 --clear-groups git -C /data/workspaces/verity-control -c user.name=Verity -c user.email=verity@localhost -c commit.gpgsign=false commit --allow-empty -m 'chore: initialize Verity Control'; fi",
         `chown 1000:${runtimeGid} /runner`,
         'chmod 0170 /runner',
         `chown 0:${runtimeGid} /identity`,

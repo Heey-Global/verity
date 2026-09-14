@@ -564,6 +564,13 @@ describe('managed control-plane Runner ownership', () => {
     expect(prepare.command?.join(' ')).toContain('chmod 2770 /identity');
     expect(prepare.command?.join(' ')).toContain('chown 0:1101 /identity');
     expect(prepare.command?.join(' ')).toContain('chmod 0170 /runner');
+    // An empty directory looks ready to the volume mount but `git worktree add`
+    // fails every Control session until it has a committed HEAD.
+    expect(prepare.command?.join(' ')).toContain(
+      'git -C /data/workspaces/verity-control rev-parse --verify HEAD',
+    );
+    expect(prepare.command?.join(' ')).toContain('commit --allow-empty');
+    expect(prepare.command?.join(' ').match(/setpriv[^;]+\bgit\b/gu)).toHaveLength(3);
     // The init container wins the first mount of verity-data. Without repairing
     // these parents, the uid-1000 Server cannot create its first project clone.
     expect(prepare.command?.join(' ')).toContain(
