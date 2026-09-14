@@ -11,6 +11,10 @@ describe('modelDisplayName', () => {
   it('title-cases a bare Claude id and fuses the version parts', () => {
     expect(modelDisplayName('claude-opus-4-8')).toBe('Claude Opus 4.8');
     expect(modelDisplayName('claude-sonnet-5')).toBe('Claude Sonnet 5');
+    // A shipped CLAUDE_MODELS id whose version carries a minor part. Losing the
+    // fusion renders it "Claude Fable 5 1" in every model surface — a label that
+    // still looks deliberate, so nothing but this line would report it.
+    expect(modelDisplayName('claude-fable-5-1')).toBe('Claude Fable 5.1');
   });
 
   it('drops an 8-digit date stamp from a dated Claude id', () => {

@@ -48,7 +48,7 @@ separately by `TRADEMARKS.md`.
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 1 |
 | ISC | 61 |
-| MIT | 942 |
+| MIT | 937 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -391,7 +391,6 @@ separately by `TRADEMARKS.md`.
 | @sinonjs/commons | BSD-3-Clause | [source](https://www.npmjs.com/package/%40sinonjs%2Fcommons) |
 | @sinonjs/fake-timers | BSD-3-Clause | [source](https://www.npmjs.com/package/%40sinonjs%2Ffake-timers) |
 | @stablelib/base64 | MIT | [source](https://www.npmjs.com/package/%40stablelib%2Fbase64) |
-| @standard-schema/spec | MIT | [source](https://www.npmjs.com/package/%40standard-schema%2Fspec) |
 | @testing-library/react-native | MIT | [source](https://www.npmjs.com/package/%40testing-library%2Freact-native) |
 | @tootallnate/once | MIT | [source](https://www.npmjs.com/package/%40tootallnate%2Fonce) |
 | @tufjs/canonical-json | MIT | [source](https://www.npmjs.com/package/%40tufjs%2Fcanonical-json) |
@@ -437,13 +436,10 @@ separately by `TRADEMARKS.md`.
 | @typescript-eslint/visitor-keys | MIT | [source](https://www.npmjs.com/package/%40typescript-eslint%2Fvisitor-keys) |
 | @ungap/structured-clone | ISC | [source](https://www.npmjs.com/package/%40ungap%2Fstructured-clone) |
 | @vitest/coverage-v8 | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fcoverage-v8) |
-| @vitest/expect | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fexpect) |
+| @vitest/istanbul-lib-coverage | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fistanbul-lib-coverage) |
+| @vitest/istanbul-lib-report | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fistanbul-lib-report) |
 | @vitest/mocker | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fmocker) |
-| @vitest/pretty-format | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fpretty-format) |
-| @vitest/runner | MIT | [source](https://www.npmjs.com/package/%40vitest%2Frunner) |
-| @vitest/snapshot | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fsnapshot) |
 | @vitest/spy | MIT | [source](https://www.npmjs.com/package/%40vitest%2Fspy) |
-| @vitest/utils | MIT | [source](https://www.npmjs.com/package/%40vitest%2Futils) |
 | @xmldom/xmldom | MIT | [source](https://www.npmjs.com/package/%40xmldom%2Fxmldom) |
 | abab | BSD-3-Clause | [source](https://www.npmjs.com/package/abab) |
 | abort-controller | MIT | [source](https://www.npmjs.com/package/abort-controller) |
@@ -924,7 +920,6 @@ separately by `TRADEMARKS.md`.
 | path-parse | MIT | [source](https://www.npmjs.com/package/path-parse) |
 | path-scurry | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/path-scurry) |
 | path-to-regexp | MIT | [source](https://www.npmjs.com/package/path-to-regexp) |
-| pathe | MIT | [source](https://www.npmjs.com/package/pathe) |
 | pg-cloudflare | MIT | [source](https://www.npmjs.com/package/pg-cloudflare) |
 | pg-connection-string | MIT | [source](https://www.npmjs.com/package/pg-connection-string) |
 | pg-int8 | ISC | [source](https://www.npmjs.com/package/pg-int8) |

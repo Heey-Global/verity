@@ -916,7 +916,11 @@ describe('resolvePublicOciImageVersion', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(
-      resolvePublicOciImageVersion('ghcr.io/heey-global/verity/verity-sandbox@sha256:index'),
+      resolvePublicOciImageVersion(
+        'ghcr.io/heey-global/verity/verity-sandbox@sha256:index',
+        undefined,
+        'x64',
+      ),
     ).resolves.toBe('v1.18.0');
     expect(
       fetchMock.mock.calls.map(([url]) =>
@@ -929,7 +933,7 @@ describe('resolvePublicOciImageVersion', () => {
     ]);
   });
 
-  it('falls back to the first index entry when no linux/amd64 platform is listed', async () => {
+  it('selects the image manifest for the host architecture', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -952,10 +956,57 @@ describe('resolvePublicOciImageVersion', () => {
       );
     vi.stubGlobal('fetch', fetchMock);
 
-    // The label is reported trimmed, so a padded value still compares equal to
-    // the version the Server was built with.
-    await expect(resolvePublicOciImageVersion('ghcr.io/o/r:latest')).resolves.toBe('1.18.0');
+    // Pass arm64 explicitly so this guard exercises the cross-architecture path
+    // even when the test suite itself runs on an x64 host.
+    await expect(
+      resolvePublicOciImageVersion('ghcr.io/o/r:latest', undefined, 'arm64'),
+    ).resolves.toBe('1.18.0');
     expect(requestedUrls(fetchMock)[1]).toBe('https://ghcr.io/v2/o/r/manifests/sha256:arm');
+  });
+
+  it('rejects an index that has no image manifest for the host architecture', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            manifests: [
+              { digest: 'sha256:arm', platform: { os: 'linux', architecture: 'arm64' } },
+              {
+                digest: 'sha256:attestation',
+                platform: { os: 'unknown', architecture: 'unknown' },
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+
+    await expect(
+      resolvePublicOciImageVersion('ghcr.io/o/r:latest', undefined, 'x64'),
+    ).rejects.toThrow('registry image index had no linux/amd64 manifest for ghcr.io/o/r:latest');
+  });
+
+  it('rejects unsupported host architectures instead of guessing an index entry', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            manifests: [
+              {
+                digest: 'sha256:attestation',
+                platform: { os: 'unknown', architecture: 'unknown' },
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+
+    await expect(
+      resolvePublicOciImageVersion('ghcr.io/o/r:latest', undefined, 'riscv64'),
+    ).rejects.toThrow('unsupported host architecture for OCI image resolution: riscv64');
   });
 
   it('reports no version rather than a blank one when the label is absent or empty', async () => {
@@ -1012,7 +1063,9 @@ describe('resolvePublicOciImageVersion', () => {
       const fetchMock = vi.fn<typeof fetch>();
       for (const response of fetches) fetchMock.mockResolvedValueOnce(response);
       vi.stubGlobal('fetch', fetchMock);
-      await expect(resolvePublicOciImageVersion('ghcr.io/o/r:latest')).rejects.toThrow(message);
+      await expect(
+        resolvePublicOciImageVersion('ghcr.io/o/r:latest', undefined, 'x64'),
+      ).rejects.toThrow(message);
     }
   });
 
@@ -1168,7 +1221,10 @@ describe('createCachedImageVersionResolver', () => {
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            manifests: [{ digest: 'sha256:m', platform: { os: 'linux', architecture: 'amd64' } }],
+            manifests: [
+              { digest: 'sha256:amd64', platform: { os: 'linux', architecture: 'amd64' } },
+              { digest: 'sha256:arm64', platform: { os: 'linux', architecture: 'arm64' } },
+            ],
           }),
         ),
       )

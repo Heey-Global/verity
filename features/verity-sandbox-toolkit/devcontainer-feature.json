@@ -33,7 +33,7 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.149.0",
+      "default": "0.154.0",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {
@@ -78,7 +78,7 @@
     },
     "ghVersion": {
       "type": "string",
-      "default": "2.98.0",
+      "default": "2.100.0",
       "description": "Exact cli/cli (GitHub CLI) release version to pin (no leading v)."
     },
     "dopplerVersion": {
