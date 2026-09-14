@@ -148,10 +148,12 @@ jobs:
             echo "::error::Could not resolve the immutable push diff ${BEFORE}...${HEAD_SHA}." >&2
             exit 1
           }
-          [[ -n "$diff" ]] || {
-            echo '::error::The release push diff is empty; refusing to select a train.' >&2
-            exit 1
-          }
+          if [[ -z "$diff" ]]; then
+            # A valid push shape (squash merge whose content already landed),
+            # not a resolution failure — that case exited above. Fall through
+            # to the always-on trains so delayed-release catch-up still runs.
+            echo "::notice::Empty push diff ${BEFORE}...${HEAD_SHA}: duplicate content; selecting the default trains."
+          fi
 
           backend=false
           mobile=false
