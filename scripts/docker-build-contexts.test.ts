@@ -2,6 +2,19 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('selective Docker build contexts', () => {
+  it('ships production dependencies nested below workspace packages', () => {
+    for (const dockerfilePath of ['deploy/Dockerfile', 'deploy/secret-job-worker.Dockerfile']) {
+      const dockerfile = readFileSync(dockerfilePath, 'utf8');
+
+      // npm can move a runtime dependency out of the root tree when two
+      // workspaces require incompatible versions. Copying only /app/node_modules
+      // then builds successfully but leaves the shipped image unable to start.
+      expect(dockerfile).toMatch(
+        /COPY --from=deps[^\n]* \/app\/node_modules \.\/node_modules\n(?:#[^\n]*\n)*COPY --from=deps[^\n]* \/app\/packages \.\/packages/,
+      );
+    }
+  });
+
   it('includes every root TypeScript project in builders that run the root build', () => {
     const rootConfig = JSON.parse(readFileSync('tsconfig.json', 'utf8')) as {
       references: Array<{ path: string }>;

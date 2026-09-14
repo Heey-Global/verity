@@ -266,6 +266,10 @@ WORKDIR /app
 # Pruned production node_modules (root-hoisted + per-workspace) and the compiled
 # output. Ownership set to the non-root node user baked into the base image.
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+# npm nests incompatible workspace dependency versions below /app/packages.
+# Copy that pruned tree as well; the compiled artifacts below then fill in the
+# package bodies without dropping their production-only nested dependencies.
+COPY --from=deps --chown=node:node /app/packages ./packages
 COPY --from=builder --chown=node:node /app/packages/events/dist ./packages/events/dist
 COPY --from=builder --chown=node:node /app/packages/events/package.json ./packages/events/package.json
 COPY --from=builder --chown=node:node /app/packages/secret-contracts/dist ./packages/secret-contracts/dist
