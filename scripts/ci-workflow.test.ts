@@ -1099,7 +1099,7 @@ describe('specialized smoke workflow overhead', () => {
       permissions: Record<string, string>;
       jobs: Record<string, WorkflowJob>;
     };
-    const steps = sandbox.jobs['smoke-test']?.steps ?? [];
+    const steps = sandbox.jobs['architecture-smoke']?.steps ?? [];
     expect(
       steps.some(
         (step) =>
@@ -1749,6 +1749,11 @@ describe('GitHub-hosted runner boundary', () => {
     uses?: string;
     env?: Record<string, string>;
     steps?: WorkflowStep[];
+    if?: string;
+    needs?: string | string[];
+    strategy?: {
+      matrix?: { include?: Array<Record<string, string>> };
+    };
   };
   const jobs = readdirSync('.github/workflows')
     .filter((file) => file.endsWith('.yml'))
@@ -1771,12 +1776,45 @@ describe('GitHub-hosted runner boundary', () => {
   });
 
   it('runs every concrete job on an approved ephemeral GitHub-hosted runner', () => {
-    const hostedImages = new Set(['ubuntu-24.04', 'macos-26']);
+    const hostedImages = new Set(['ubuntu-24.04', 'ubuntu-24.04-arm', 'macos-26']);
     const offenders = jobs
       .filter(declaresRunner)
-      .filter(({ job }) => typeof job['runs-on'] !== 'string' || !hostedImages.has(job['runs-on']))
+      .filter(({ job }) => {
+        if (typeof job['runs-on'] !== 'string') return true;
+        if (hostedImages.has(job['runs-on'])) return false;
+        if (job['runs-on'] !== '${{ matrix.runner }}') return true;
+        const includes = job.strategy?.matrix?.include ?? [];
+        return (
+          includes.length === 0 ||
+          includes.some(({ runner }) => runner === undefined || !hostedImages.has(runner))
+        );
+      })
       .map(({ id }) => id);
     expect(offenders).toEqual([]);
+  });
+
+  it('pairs each native runtime-image build with its matching hosted runner', () => {
+    for (const file of ['verity-sandbox.yml', 'project-relay.yml']) {
+      const workflow = parse(readFileSync(join('.github/workflows', file), 'utf8')) as {
+        jobs: Record<string, Job>;
+      };
+      const job = workflow.jobs['architecture-smoke'];
+      expect(job?.['runs-on']).toBe('${{ matrix.runner }}');
+      expect(job?.strategy?.matrix?.include).toEqual([
+        { architecture: 'amd64', runner: 'ubuntu-24.04' },
+        { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+      ]);
+      const build = job?.steps?.find((step) => step.uses?.startsWith('docker/build-push-action@'));
+      expect(build?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
+      expect(build?.with?.load).toBe(true);
+
+      const gate = workflow.jobs['smoke-test'];
+      expect(gate?.needs).toBe('architecture-smoke');
+      expect(gate?.if).toBe('${{ always() }}');
+      expect(gate?.['runs-on']).toBe('ubuntu-24.04');
+      expect(gate?.steps).toHaveLength(1);
+      expect(gate?.steps?.[0]?.run).toContain('ARCHITECTURE_SMOKE_RESULT');
+    }
   });
 
   it('reclaims only known hosted-image SDKs before disk-heavy builds', () => {
@@ -1791,7 +1829,7 @@ describe('GitHub-hosted runner boundary', () => {
     const sandbox = parse(readFileSync('.github/workflows/verity-sandbox.yml', 'utf8')) as {
       jobs: Record<string, Job>;
     };
-    const sandboxReclaim = (sandbox.jobs['smoke-test']?.steps ?? []).find(
+    const sandboxReclaim = (sandbox.jobs['architecture-smoke']?.steps ?? []).find(
       (step) => step.uses === './.github/actions/reclaim-runner-disk',
     );
     expect(sandboxReclaim?.with?.['minimum-free-gib']).toBe('25');
@@ -1837,8 +1875,8 @@ describe('GitHub-hosted runner boundary', () => {
     const sandbox = parse(readFileSync('.github/workflows/verity-sandbox.yml', 'utf8')) as {
       jobs: Record<string, Job>;
     };
-    const build = (sandbox.jobs['smoke-test']?.steps ?? []).find(
-      (step) => step.name === 'Build amd64 and load Docker image',
+    const build = (sandbox.jobs['architecture-smoke']?.steps ?? []).find((step) =>
+      step.uses?.startsWith('docker/build-push-action@'),
     );
     expect(build?.with?.load).toBe(true);
     expect(build?.with?.outputs).toBeUndefined();
@@ -2903,9 +2941,9 @@ describe('server image CI smoke', () => {
 describe('sandbox smoke isolation', () => {
   const raw = readFileSync('.github/workflows/verity-sandbox.yml', 'utf8');
   const workflow = parse(raw) as {
-    jobs: { 'smoke-test': { env?: Record<string, string>; steps: WorkflowStep[] } };
+    jobs: { 'architecture-smoke': { env?: Record<string, string>; steps: WorkflowStep[] } };
   };
-  const job = workflow.jobs['smoke-test'];
+  const job = workflow.jobs['architecture-smoke'];
   // Everything after `steps:` — the comment above the job explains the failure
   // mode using the old literal names, so it must not count as a usage.
   const steps = raw.slice(raw.indexOf('    steps:'));
@@ -2947,14 +2985,14 @@ describe('sandbox smoke isolation', () => {
 describe('Claude ACP sandbox smoke', () => {
   const workflow = parse(readFileSync('.github/workflows/verity-sandbox.yml', 'utf8')) as {
     jobs: {
-      'smoke-test': {
+      'architecture-smoke': {
         steps: WorkflowStep[];
       };
     };
   };
   const source = readFileSync('packages/server/src/runner-claude-live-server.ts', 'utf8');
   const script = readFileSync('scripts/test-runner-claude-live-container.sh', 'utf8');
-  const smoke = workflow.jobs['smoke-test'].steps.find((step) =>
+  const smoke = workflow.jobs['architecture-smoke'].steps.find((step) =>
     step.run?.includes('test-runner-claude-live-container.sh'),
   );
 
