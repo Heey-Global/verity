@@ -44,6 +44,9 @@ fail() {
   echo "--- claude-invocations.jsonl:" >&2
   docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \
     sh -c 'cat /work/claude-invocations.jsonl' >&2 || true
+  echo "--- claude-stdin.jsonl:" >&2
+  docker exec "$sandbox" \
+    sh -c 'cat /work/claude-stdin.jsonl' >&2 || true
   exit 1
 }
 

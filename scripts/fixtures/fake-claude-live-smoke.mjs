@@ -6,6 +6,7 @@ import { setTimeout } from 'node:timers/promises';
 const worktree = process.env.VERITY_LIVE_SMOKE_WORKTREE ?? '/work';
 const continuePath = `${worktree}/continue`;
 const invocationPath = `${worktree}/claude-invocations.jsonl`;
+const stdinPath = `${worktree}/claude-stdin.jsonl`;
 const sessionId = 'claude-live-container-session';
 
 const forbiddenEnvironment = ['ANTHROPIC_API_KEY', 'DOPPLER_TOKEN', 'GITHUB_TOKEN'].filter(
@@ -76,6 +77,7 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
       const line = bufferedInput.slice(0, newline).trim();
       bufferedInput = bufferedInput.slice(newline + 1);
       if (line.length === 0) continue;
+      await appendFile(stdinPath, `${line}\n`);
       const frame = /** @type {unknown} */ (JSON.parse(line));
       if (!isRecord(frame)) continue;
       const request = frame.request;
