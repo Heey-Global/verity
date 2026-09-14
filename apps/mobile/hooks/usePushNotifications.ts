@@ -38,7 +38,7 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
     // Where the update can actually be started — the same destination the header
     // dot points at, so the announcement and the chrome lead to one place.
     const navigateToSettings = (): void => {
-      router.push('/settings');
+      router.push('/settings/maintenance');
     };
 
     // Retry until it sticks: a launch while offline (or a transient /healthz blip)

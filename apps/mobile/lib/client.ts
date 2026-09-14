@@ -4,6 +4,7 @@ import { fetch as expoFetch } from 'expo/fetch';
 import { clearAuthToken, getAuthToken } from './authToken';
 import { createPinnedFetch } from './pinnedTransport';
 import { getServerProfile, hydrateServerProfile } from './serverProfile';
+import { resetVeritySettingsStore } from './settingsStore';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
 // RUNTIME-configurable + persisted on the device: the operator enters it in the
@@ -27,6 +28,7 @@ let configuredBaseUrl = false;
  * the control-plane origin only.
  */
 export async function hydrateVerityBaseUrl(): Promise<void> {
+  resetVeritySettingsStore();
   currentBaseUrl = null;
   configuredBaseUrl = false;
   try {
@@ -72,6 +74,7 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
   if (normalized === null) {
     throw new Error('Server URL must not be empty.');
   }
+  if (normalized !== currentBaseUrl) resetVeritySettingsStore();
   currentBaseUrl = normalized;
   configuredBaseUrl = true;
   await AsyncStorage.setItem(STORAGE_KEY, normalized);
