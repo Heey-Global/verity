@@ -548,7 +548,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - name: Install pinned Gitleaks
         shell: bash
@@ -587,7 +587,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # ESLint covers every Node package but deliberately ignores the Expo app
       # (see eslint.config.js). Install that exact workspace set plus the root
@@ -730,7 +730,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Knip analyzes the whole monorepo, so install every workspace. Its parser
       # has a platform-specific optional binding, which rules out the lint lane's
@@ -749,7 +749,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # Deliberately no `cache: npm`: the archive is roughly 2 GB and duplicates
           # the lockfile-derived install across parallel jobs. Keep the repository's
           # limited Actions cache available for the smaller targeted tool caches and
@@ -782,7 +782,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Root Vitest explicitly excludes packages/mobile and the Expo app. Install
       # only the Server dependency closure plus root test tooling; the Expo graph
@@ -864,7 +864,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
       - run: npm ci --workspace @verity/server --include-workspace-root --ignore-scripts
       - name: Run repository contract suites
         run: |
@@ -966,7 +966,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci --workspace @verity/server --include-workspace-root
       # Only the PostgreSQL-gated suites run here, and the sole reason they need
@@ -1027,7 +1027,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Coverage exercises the same root Vitest package set as the sharded test
       # jobs, so it needs the Server closure and root tooling, not Mobile/Expo.
@@ -1090,7 +1090,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
       # The full mobile dependency closure grows the shared npm cache to roughly
       # 1.8 GB. Restoring and extracting it immediately before the full `npm ci`
       # has repeatedly pushed the GitHub-hosted runner into an external SIGTERM.
@@ -1121,7 +1121,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci
       # renovate: datasource=github-actions depName=actions/cache

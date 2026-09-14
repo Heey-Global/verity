@@ -45,7 +45,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       # The persistent shared builder — see the note on the setup-buildx step in
       # ci.yml's `server-image` job. Same pull_request shape as the sandbox build:

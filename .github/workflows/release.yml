@@ -418,7 +418,7 @@ jobs:
           steps.release-website.outputs.prs_created == 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Run checks for release PRs
         if: >-
@@ -571,7 +571,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Require App Store Connect credentials
         env:
@@ -844,7 +844,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Build attested script sandbox artifacts
         run: scripts/build-script-sandbox-prebuilts.sh
@@ -982,7 +982,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       # The Server image is the runtime trust root. Assemble the ledger again in
       # this job's checkout so the Docker build context contains the same complete
@@ -1412,7 +1412,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       # Default ephemeral builder, on purpose — see the note on the setup-buildx
       # step in `publish-toolkit` above for why the release jobs do not use the
