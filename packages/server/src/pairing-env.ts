@@ -9,6 +9,7 @@ export function serverStartupRequiresPairing(
   env: Record<string, string | undefined>,
 ): boolean {
   if (argv[2] === 'managed-gateway') return false;
+  if (argv[2] === 'direct-server') return true;
   return !env['VERITY_MANAGED_DEPLOYMENT_ID']?.trim();
 }
 

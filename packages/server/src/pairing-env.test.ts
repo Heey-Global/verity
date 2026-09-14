@@ -37,6 +37,11 @@ afterEach(() => {
 describe('devicePairingFromEnv', () => {
   it('requires pairing for both the explicit and package-start public CLI paths', () => {
     expect(serverStartupRequiresPairing(['node', 'dist/main.js', 'direct-server'], {})).toBe(true);
+    expect(
+      serverStartupRequiresPairing(['node', 'dist/main.js', 'direct-server'], {
+        VERITY_MANAGED_DEPLOYMENT_ID: 'stale-deployment-id',
+      }),
+    ).toBe(true);
     expect(serverStartupRequiresPairing(['node', 'dist/main.js'], {})).toBe(true);
     expect(
       serverStartupRequiresPairing(['node', 'dist/main.js'], {
