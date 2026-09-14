@@ -108,6 +108,7 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
                   value: 'smoke',
                   displayName: 'Smoke',
                   description: 'Deterministic live-smoke model',
+                  supportsAutoMode: true,
                 },
               ],
               account: {
