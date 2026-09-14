@@ -62,7 +62,7 @@ function run(bin, ...args) {
 }
 
 test('preflight reports every detected problem before exiting', () => {
-  const bin = host({ architecture: 'aarch64' });
+  const bin = host({ architecture: 'riscv64' });
   rmSync(join(bin, 'docker'));
   rmSync(join(bin, 'tar'));
   rmSync(join(bin, 'flock'));
@@ -71,7 +71,7 @@ test('preflight reports every detected problem before exiting', () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /preflight failed \(4 issues\)/);
-  assert.match(result.stderr, /amd64\/x86_64 is required \(found aarch64\)/);
+  assert.match(result.stderr, /amd64 or arm64 is required \(found riscv64\)/);
   assert.match(result.stderr, /tar is required/);
   assert.match(result.stderr, /flock is required/);
   assert.match(result.stderr, /Docker 25 or newer is required/);
@@ -83,6 +83,13 @@ test('successful preflight exits before pulling an image', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /\[1\/4\] checking host prerequisites/);
+  assert.match(result.stdout, /preflight passed/);
+});
+
+test('arm64 preflight exits before pulling an image', () => {
+  const result = run(host({ architecture: 'aarch64' }), '--preflight');
+
+  assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /preflight passed/);
 });
 

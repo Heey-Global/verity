@@ -63,7 +63,13 @@ after(() => {
  * `docker` is answered from a table keyed by a substring of the argv, so a fixture
  * only has to describe the queries it cares about; anything unmatched answers empty.
  */
-function makeHost({ docker = [], state = {}, removeStatus = 0, containerPresentOnce = '' } = {}) {
+function makeHost({
+  architecture = 'x86_64',
+  docker = [],
+  state = {},
+  removeStatus = 0,
+  containerPresentOnce = '',
+} = {}) {
   // Canonical, because the installer refuses a state directory whose path is not:
   // a symlinked TMPDIR would otherwise fail every case here for the wrong reason.
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'verity-install-')));
@@ -104,6 +110,9 @@ function makeHost({ docker = [], state = {}, removeStatus = 0, containerPresentO
     { mode: 0o755 },
   );
   writeFileSync(join(checkout, 'deploy', 'docker-compose.yml'), 'services: {}\n');
+  writeFileSync(join(stubDir, 'uname'), `#!/bin/sh\nprintf '%s\\n' ${shellQuote(architecture)}\n`, {
+    mode: 0o755,
+  });
   writeFileSync(join(stubDir, 'hostname'), "#!/bin/sh\nprintf '%s\\n' '10.0.0.10 192.168.1.20'\n", {
     mode: 0o755,
   });
@@ -115,7 +124,7 @@ function makeHost({ docker = [], state = {}, removeStatus = 0, containerPresentO
     join(binDir, 'verity-compose'),
     `#!/usr/bin/env bash\n{\n` +
       `  printf 'argv=%s\\n' "$*"\n` +
-      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
+      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
       `    printf '%s=%s\\n' "$v" "\${!v-}"\n` +
       `  done\n} > ${JSON.stringify(handover)}\n`,
     { mode: 0o755 },
@@ -291,6 +300,23 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.match(result.output, /nothing was changed/);
     assert.throws(() => stateFile(host, 'deployment-id'));
     assert.throws(() => readFileSync(host.handover));
+  });
+
+  test('accepts an arm64 host while keeping Brokered Secret jobs unavailable', () => {
+    const host = makeHost({
+      architecture: 'aarch64',
+      docker: [{ match: 'image inspect', out: DIGEST_A }],
+    });
+    const supported = run(host, ['--check']);
+    assert.equal(supported.status, 0, supported.output);
+
+    const installed = run(host);
+    assert.equal(installed.status, 0, installed.output);
+    assert.equal(handoverEnv(host).VERITY_HOST_ARCHITECTURE, 'arm64');
+
+    const brokeredSecrets = run(host, ['--check'], { VERITY_GVISOR_REQUIRED: '1' });
+    assert.equal(brokeredSecrets.status, 1);
+    assert.match(brokeredSecrets.stderr, /Brokered Secret jobs.*not supported on arm64/);
   });
 
   test('first install generates state and hands it to the migration', () => {

@@ -289,6 +289,38 @@ describe('multi-architecture runtime image publication', () => {
     expect(index?.run).toContain('${image}:sha-${short_sha}-amd64');
     expect(index?.run).toContain('${image}:sha-${short_sha}-arm64');
   });
+
+  it('keeps every host entry point aligned with the published Server architectures', () => {
+    const published = new Set(
+      workflow.jobs['build-server'].strategy?.matrix?.include?.map(({ architecture }) =>
+        String(architecture),
+      ),
+    );
+    const nodeSource = readFileSync('packages/server/src/main.ts', 'utf8');
+    const nodeArchitectures = new Set(
+      [...nodeSource.matchAll(/^\s+case '[^']+':\n\s+return '([^']+)';$/gmu)].map(
+        ([, architecture]) => architecture,
+      ),
+    );
+    const shellArchitectures = (path: string) => {
+      const source = readFileSync(path, 'utf8');
+      return new Set(
+        [
+          ...source.matchAll(
+            /^\s+[^)]*\) (?:host_architecture|VERITY_HOST_ARCHITECTURE)=([^ ;]+) ;;$/gmu,
+          ),
+        ].map(([, architecture]) => architecture),
+      );
+    };
+
+    expect(nodeArchitectures).toEqual(published);
+    expect(shellArchitectures('deploy/bin/verity-install')).toEqual(published);
+    expect(shellArchitectures('docs/website/site/install.sh')).toEqual(published);
+    expect(shellArchitectures('deploy/bin/verity-compose')).toEqual(published);
+    expect(readFileSync('deploy/bin/verity-compose', 'utf8')).toContain(
+      `${[...published].join('|')}) ;;`,
+    );
+  });
 });
 
 describe('release merge policy', () => {

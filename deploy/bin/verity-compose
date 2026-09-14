@@ -181,17 +181,18 @@ if [ "${1:-}" = "managed-up" ]; then
   if [ -z "${VERITY_HOST_ARCHITECTURE:-}" ]; then
     case "$(uname -m)" in
       x86_64|amd64) VERITY_HOST_ARCHITECTURE=amd64 ;;
+      aarch64|arm64) VERITY_HOST_ARCHITECTURE=arm64 ;;
       *)
-        printf '%s\n' 'verity-compose: this release currently publishes amd64 images only' >&2
+        printf '%s\n' 'verity-compose: this release publishes amd64 and arm64 images only' >&2
         exit 64
         ;;
     esac
     export VERITY_HOST_ARCHITECTURE
   fi
   case "$VERITY_HOST_ARCHITECTURE" in
-    amd64) ;;
+    amd64|arm64) ;;
     *)
-      printf '%s\n' 'verity-compose: VERITY_HOST_ARCHITECTURE must be amd64 for this release' >&2
+      printf '%s\n' 'verity-compose: VERITY_HOST_ARCHITECTURE must be amd64 or arm64 for this release' >&2
       exit 64
       ;;
   esac
