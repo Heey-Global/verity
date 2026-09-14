@@ -15,10 +15,10 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 /**
  * The ordered required-then-optional onboarding steps the status endpoint reasons
- * about. `nextStep` is the first INCOMPLETE required step in this order; Doppler is
- * optional and never blocks `complete`.
+ * about. `nextStep` is the first INCOMPLETE required credential step; projects and
+ * Doppler are created/configured from inside the app and never block `complete`.
  */
-type OnboardingStep = 'master-password' | 'github' | 'first-project';
+type OnboardingStep = 'master-password' | 'github';
 
 export interface OnboardingStatus {
   /** The at-rest cipher is sealed (no key loaded). Mirrors `/secret/status`. */
@@ -29,7 +29,7 @@ export interface OnboardingStatus {
   githubAppConfigured: boolean;
   /** A commit-signing key is present: inline SSH key OR a key path (presence only). */
   signingKeyConfigured: boolean;
-  /** At least one project row exists (hidden included — the bootstrap check). */
+  /** At least one prepared project exists (informational; projects do not gate setup). */
   hasProject: boolean;
   /** An account-level Doppler Service Account token is present (presence only).
    *  INFORMATIONAL — Doppler is optional, so this NEVER gates `complete` or
@@ -85,7 +85,7 @@ async function computeOnboardingStatus(
   const claudeConfigured = present(settings?.claudeCodeOauthCredentialsJson);
   const codexConfigured = present(settings?.codexAuthJson);
 
-  const complete = masterPasswordSet && githubAppConfigured && signingKeyConfigured && hasProject;
+  const complete = masterPasswordSet && githubAppConfigured && signingKeyConfigured;
 
   // First incomplete REQUIRED step, in fixed order. Doppler is optional and never
   // appears here (so it never blocks `complete` or drives `nextStep`).
@@ -93,9 +93,7 @@ async function computeOnboardingStatus(
     ? 'master-password'
     : !githubAppConfigured || !signingKeyConfigured
       ? 'github'
-      : !hasProject
-        ? 'first-project'
-        : null;
+      : null;
 
   return {
     sealed,

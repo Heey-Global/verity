@@ -668,11 +668,21 @@ function SessionList({ client }: { client: VerityClient }) {
             <View style={styles.emptyOverview}>
               {projectsLoading ? <ActivityIndicator /> : null}
               <Text style={styles.emptyTitle}>
-                {projectsLoading ? 'Loading projects' : 'No projects yet'}
+                {projectsLoading ? 'Loading projects' : 'Welcome to Verity'}
               </Text>
               <Text style={styles.emptySubtitle}>
-                Tap + to add a repository and see its sessions here.
+                Add an existing GitHub repository or create an empty project to get started.
               </Text>
+              {!projectsLoading ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Add your first project"
+                  onPress={() => router.push('/new-project')}
+                  style={({ pressed }) => [styles.emptyAction, pressed ? styles.rowPressed : null]}
+                >
+                  <Text style={styles.emptyActionLabel}>Add your first project</Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : null
         }
@@ -2330,6 +2340,20 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'center',
     maxWidth: 300,
     lineHeight: 20 * theme.fontScale,
+  },
+  emptyAction: {
+    marginTop: theme.spacing.sm,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.primary,
+  },
+  emptyActionLabel: {
+    color: theme.colors.onPrimary,
+    fontSize: theme.text.sm,
+    fontWeight: '700',
   },
   retry: {
     marginTop: theme.spacing.md,

@@ -396,6 +396,7 @@ export {
 export {
   ONBOARDING_STEPS,
   ONBOARDING_STEP_IDS,
+  isCoreOnboardingComplete,
   isPristineOnboardingStatus,
   resumeStep,
   stepProgress,

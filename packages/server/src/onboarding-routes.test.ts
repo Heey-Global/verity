@@ -133,7 +133,7 @@ describe('GET /onboarding/status', () => {
     }
   });
 
-  it('advances nextStep as each required step is completed, ending null when complete', async () => {
+  it('completes after credential setup without requiring a project', async () => {
     const cipher = createSealableSecretCipher();
     const app = buildWithCipher(cipher);
     try {
@@ -160,7 +160,7 @@ describe('GET /onboarding/status', () => {
       expect(status.githubAppConfigured).toBe(true);
       expect(status.nextStep).toBe('github');
 
-      // 3. Configure a signing key (inline SSH key) → nextStep = first-project.
+      // 3. Configure a signing key (inline SSH key) → setup is complete.
       await app.inject({
         method: 'PATCH',
         url: '/settings',
@@ -168,10 +168,11 @@ describe('GET /onboarding/status', () => {
       });
       status = await getStatus(app, token);
       expect(status.signingKeyConfigured).toBe(true);
-      expect(status.nextStep).toBe('first-project');
-      expect(status.complete).toBe(false);
+      expect(status.hasProject).toBe(false);
+      expect(status.nextStep).toBeNull();
+      expect(status.complete).toBe(true);
 
-      // 4. Add and prepare a project → complete, nextStep null. Doppler is NOT required.
+      // Adding a project later remains informational and does not change the gate.
       await app.inject({ method: 'POST', url: '/projects', payload: { repo: 'octo/repo' } });
       const project = await ctx.store.getProjectByOwnerRepo('octo', 'repo');
       expect(project).toMatchObject({ state: 'absent' });

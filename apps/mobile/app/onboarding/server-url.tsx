@@ -1,7 +1,12 @@
 // The first-run entry point explains how to install Verity, then pairs through the
 // installer's QR or copyable pairing code. Manual addresses remain a recovery
 // control for an already-paired server, where its pinned identity can be verified.
-import { normalizeServerUrl, resumeStep, type OnboardingStatus } from '@verity/mobile';
+import {
+  isCoreOnboardingComplete,
+  normalizeServerUrl,
+  resumeStep,
+  type OnboardingStatus,
+} from '@verity/mobile';
 import * as Application from 'expo-application';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -29,7 +34,7 @@ import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairing
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
 
 function onboardingRoute(status: OnboardingStatus): string {
-  return status.complete ? '/' : `/onboarding/${resumeStep(status)}`;
+  return isCoreOnboardingComplete(status) ? '/' : `/onboarding/${resumeStep(status)}`;
 }
 
 function unlockRoute(returnTo: string): string {
