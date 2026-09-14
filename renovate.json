@@ -36,6 +36,17 @@
       "groupName": "lint & type tooling"
     },
     {
+      "description": "Do not open an isolated TypeScript major. TypeScript 7 changes the compiler distribution and currently leaves Renovate's npm lockfile inconsistent; migrate it deliberately with the build and lint toolchain instead of publishing a permanently red dependency PR.",
+      "matchPackageNames": ["typescript"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Do not update the GitHub CLI version without its pinned release-asset checksums. Renovate can change the version in both Feature inputs but the github-releases datasource cannot update the architecture-specific tarball SHA-256 values in install.sh, producing a guaranteed installer failure. Bump the version and both official checksums together in a reviewed change.",
+      "matchPackageNames": ["cli/cli"],
+      "enabled": false
+    },
+    {
       "description": "Group Vitest packages together",
       "matchPackageNames": ["vitest", "@vitest/coverage-v8"],
       "groupName": "vitest"
@@ -73,6 +84,67 @@
     {
       "description": "Never bump React independently. `react`, `react-dom`, and `react-test-renderer` (apps/mobile) are dictated by the Expo SDK / react-native version: React must EXACTLY match react-native's embedded `react-native-renderer` (NOT a separate npm package) or the app crashes at boot with 'Incompatible React versions'. PR #723 did exactly this — bumped react to 19.2.7 while RN 0.85.3 ships renderer 19.2.3. These move ONLY when the Expo SDK / react-native is bumped (via `expo install`), never on their own.",
       "matchPackageNames": ["react", "react-dom", "react-test-renderer"],
+      "enabled": false
+    },
+    {
+      "description": "Never bump Expo-governed native packages independently. Expo Go and the generated native projects carry the native implementations selected by the installed Expo SDK; a newer JavaScript package can pass typecheck while calling an ABI the shipped native module does not implement. React Native dictates the Metro toolchain in turn. Move these packages only as part of an Expo SDK upgrade via `expo install`, which selects a compatible set and makes the required native rebuild explicit.",
+      "matchPackageNames": [
+        "@expo/vector-icons",
+        "@react-native-async-storage/async-storage",
+        "@react-native/jest-preset",
+        "@shopify/flash-list",
+        "babel-preset-expo",
+        "expo",
+        "expo-application",
+        "expo-auth-session",
+        "expo-camera",
+        "expo-clipboard",
+        "expo-crypto",
+        "expo-dev-client",
+        "expo-document-picker",
+        "expo-haptics",
+        "expo-image",
+        "expo-image-manipulator",
+        "expo-image-picker",
+        "expo-local-authentication",
+        "expo-localization",
+        "expo-notifications",
+        "expo-router",
+        "expo-secure-store",
+        "expo-sharing",
+        "expo-speech-recognition",
+        "expo-splash-screen",
+        "expo-updates",
+        "expo-web-browser",
+        "jest-expo",
+        "react-native",
+        "react-native-edge-to-edge",
+        "react-native-gesture-handler",
+        "react-native-keyboard-controller",
+        "react-native-nitro-modules",
+        "react-native-qrcode-svg",
+        "react-native-reanimated",
+        "react-native-safe-area-context",
+        "react-native-screens",
+        "react-native-svg",
+        "react-native-uitextview",
+        "react-native-unistyles",
+        "react-native-worklets"
+      ],
+      "matchFileNames": ["apps/mobile/package.json", "package.json"],
+      "enabled": false
+    },
+    {
+      "description": "Keep major mobile-test-tool upgrades aligned with the Expo Jest preset. Patch and minor updates remain enabled; a new major of Jest, its types, or React Native Testing Library needs one deliberate compatibility change after the installed `jest-expo` stack supports it.",
+      "matchPackageNames": ["jest", "@types/jest", "@testing-library/react-native"],
+      "matchFileNames": ["apps/mobile/package.json"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Never bump Metro independently. The Metro toolchain is selected by React Native, which is selected by the Expo SDK; mismatched Metro packages can break bundling before application tests start. Move these pins only with the deliberate Expo SDK upgrade.",
+      "matchPackageNames": ["metro", "metro-config", "metro-transform-worker"],
+      "matchFileNames": ["package.json"],
       "enabled": false
     }
   ],

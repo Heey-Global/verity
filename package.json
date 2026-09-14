@@ -46,14 +46,14 @@
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@openai/codex": "0.149.0",
+    "@openai/codex": "0.154.0",
     "@types/node": "24.13.4",
     "@types/semver": "7.8.0",
-    "@vitest/coverage-v8": "4.1.11",
+    "@vitest/coverage-v8": "5.0.0",
     "esbuild": "0.28.2",
     "eslint": "10.8.1",
     "ignore": "7.0.9",
-    "knip": "6.33.0",
+    "knip": "6.35.1",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
@@ -65,7 +65,7 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.67.0",
     "uuid": "14.0.2",
-    "vitest": "4.1.11",
+    "vitest": "5.0.0",
     "xcode": "3.0.1"
   }
 }

@@ -63,7 +63,7 @@ after(() => {
  * `docker` is answered from a table keyed by a substring of the argv, so a fixture
  * only has to describe the queries it cares about; anything unmatched answers empty.
  */
-function makeHost({ docker = [], state = {}, removeStatus = 0, inspectPresentOnce = '' } = {}) {
+function makeHost({ docker = [], state = {}, removeStatus = 0, containerPresentOnce = '' } = {}) {
   // Canonical, because the installer refuses a state directory whose path is not:
   // a symlinked TMPDIR would otherwise fail every case here for the wrong reason.
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'verity-install-')));
@@ -137,11 +137,11 @@ function makeHost({ docker = [], state = {}, removeStatus = 0, inspectPresentOnc
     `#!/usr/bin/env bash\nargv="$*"\nprintf '%s\\n' "$argv" >>${JSON.stringify(dockerLog)}\n` +
       `containers_removed=${JSON.stringify(join(root, 'containers-removed'))}\n` +
       `volume_removed=${JSON.stringify(join(root, 'volume-removed'))}\n` +
-      `inspect_seen=${JSON.stringify(join(root, 'inspect-seen'))}\n` +
+      `container_seen=${JSON.stringify(join(root, 'container-seen'))}\n` +
       `if [[ $argv == rm\\ -f\\ -v* ]]; then ${removeStatus === 0 ? 'touch "$containers_removed"; ' : ''}exit ${removeStatus}; fi\n` +
-      (inspectPresentOnce === ''
+      (containerPresentOnce === ''
         ? ''
-        : `if [[ $argv == inspect\\ ${shellQuote(inspectPresentOnce)} ]] && [ ! -e "$inspect_seen" ]; then touch "$inspect_seen"; exit 0; fi\n`) +
+        : `if [[ $argv == ps\\ -aq\\ --no-trunc\\ --filter\\ id=${shellQuote(containerPresentOnce)} ]] && [ ! -e "$container_seen" ]; then printf '%s\\n' ${shellQuote(containerPresentOnce.padEnd(64, '0'))}; touch "$container_seen"; exit 0; fi\n`) +
       `if [[ $argv == volume\\ rm*verity-managed-deployment* ]]; then touch "$volume_removed"; exit 0; fi\n` +
       `if [ -e "$containers_removed" ] && { [[ $argv == ps*name=^/verity-managed-server* ]] || [[ $argv == ps\\ -a*label=com.docker.compose.project* ]]; }; then exit 0; fi\n` +
       `if [ -e "$volume_removed" ] && [[ $argv == volume\\ ls* ]]; then exit 0; fi\n` +
@@ -480,9 +480,8 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
   test('--reinstall waits for a container whose removal is already in progress', () => {
     const host = makeHost({
       removeStatus: 1,
-      inspectPresentOnce: 'abcdef123456',
+      containerPresentOnce: 'abcdef123456',
       docker: [
-        { match: 'inspect abcdef123456', out: 'Error: No such object: abcdef123456', status: 1 },
         { match: 'inspect --format {{.Id}}', out: 'abcdef123456' },
         ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
       ],
@@ -493,14 +492,22 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
 
     assert.equal(result.status, 0, result.output);
     assert.match(result.output, /Existing installation removed; starting a fresh install/);
-    assert.equal(readFileSync(host.dockerLog, 'utf8').match(/inspect abcdef123456/g)?.length, 2);
+    assert.equal(
+      readFileSync(host.dockerLog, 'utf8').match(/ps -aq --no-trunc --filter id=abcdef123456/g)
+        ?.length,
+      2,
+    );
   });
 
   test('--reinstall keeps data when container removal cannot be verified', () => {
     const host = makeHost({
       removeStatus: 1,
       docker: [
-        { match: 'inspect abcdef123456', out: 'Cannot connect to the Docker daemon', status: 1 },
+        {
+          match: 'ps -aq --no-trunc --filter id=abcdef123456',
+          out: 'Cannot connect to the Docker daemon',
+          status: 1,
+        },
         { match: 'inspect --format {{.Id}}', out: 'abcdef123456' },
         ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
       ],
