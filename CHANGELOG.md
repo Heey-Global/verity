@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Heey-Global/verity/compare/v0.2.2...v0.3.0) (2026-09-14)
+
+
+### Features
+
+* **release:** publish arm64 release channel ([#322](https://github.com/Heey-Global/verity/issues/322)) ([ad34d7a](https://github.com/Heey-Global/verity/commit/ad34d7a6a023c44f0c5948232d1f21c95165d33d))
+
 ## [0.2.2](https://github.com/Heey-Global/verity/compare/v0.2.1...v0.2.2) (2026-09-14)
 
 
