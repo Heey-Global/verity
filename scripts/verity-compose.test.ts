@@ -168,7 +168,7 @@ describe('deploy/bin/verity-compose', () => {
       services: Record<string, { command?: string[] }>;
     };
     expect(overlay.services['verity-control-runner-init']?.command?.join(' ')).toContain(
-      'chown 1000:1000 /data /data/workspaces /data/sessions',
+      'chown 1000:1000 /data /data/workspaces /data/sessions /data/runners',
     );
   });
 
