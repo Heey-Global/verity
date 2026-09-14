@@ -245,8 +245,9 @@ docker compose version >/dev/null 2>&1 \
   || die 'the Docker Compose v2 plugin is required — `docker compose version` failed. Install docker-compose-plugin; the standalone docker-compose binary is not used.'
 
 case "$(uname -m)" in
-  x86_64|amd64) ;;
-  *) die "unsupported architecture $(uname -m) — this release currently publishes amd64 images only" ;;
+  x86_64|amd64) host_architecture=amd64 ;;
+  aarch64|arm64) host_architecture=arm64 ;;
+  *) die "unsupported architecture $(uname -m) — this release publishes amd64 and arm64 images" ;;
 esac
 
 # ── docker helpers ─────────────────────────────────────────────────────────
@@ -819,6 +820,9 @@ if [ -n "${VERITY_GVISOR_REQUIRED:-}" ]; then
 else
   gvisor_required="${persisted_gvisor:-0}"
 fi
+if [ "$host_architecture" = arm64 ] && [ "$gvisor_required" = 1 ]; then
+  die 'Brokered Secret jobs and VERITY_GVISOR_REQUIRED=1 are not supported on arm64 hosts'
+fi
 
 # ── Server image ───────────────────────────────────────────────────────────
 if [ -n "$opt_image" ]; then
@@ -978,6 +982,7 @@ VERITY_MANAGED_DEPLOYMENT_ID="$deployment_id" \
 VERITY_UPDATER_TOKEN_HOST_PATH="$TOKEN_PATH" \
 VERITY_RUNNER_SUPERVISOR="$runner_supervisor" \
 VERITY_GVISOR_REQUIRED="$gvisor_required" \
+VERITY_HOST_ARCHITECTURE="$host_architecture" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \
 VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM="$opt_advance_unpaired_from" \

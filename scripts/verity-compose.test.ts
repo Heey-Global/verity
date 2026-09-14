@@ -592,46 +592,49 @@ describe('deploy/bin/verity-compose', () => {
     expect(() => readFileSync(calls, 'utf8')).toThrow();
   });
 
-  it('bootstraps authority before switching to managed ownership', async () => {
-    tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
-    const bin = join(tempRoot, 'bin');
-    const calls = join(tempRoot, 'calls.txt');
-    const token = join(tempRoot, 'updater-token');
-    mkdirSync(bin);
-    writeFileSync(token, 'a'.repeat(64), { mode: 0o600 });
-    writeFileSync(
-      join(bin, 'stat'),
-      `#!/bin/sh\ncase "$2:$3" in\n  %a:'${token}') printf 600 ;;\n  %a:*) printf 755 ;;\n  %u:*) printf 0 ;;\n  *) exec /usr/bin/stat "$@" ;;\nesac\n`,
-      { mode: 0o755 },
-    );
-    writeFileSync(join(bin, 'docker'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
-      mode: 0o755,
-    });
+  it.each(['amd64', 'arm64'])(
+    'bootstraps authority before switching to managed ownership on %s',
+    async (architecture) => {
+      tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
+      const bin = join(tempRoot, 'bin');
+      const calls = join(tempRoot, 'calls.txt');
+      const token = join(tempRoot, 'updater-token');
+      mkdirSync(bin);
+      writeFileSync(token, 'a'.repeat(64), { mode: 0o600 });
+      writeFileSync(
+        join(bin, 'stat'),
+        `#!/bin/sh\ncase "$2:$3" in\n  %a:'${token}') printf 600 ;;\n  %a:*) printf 755 ;;\n  %u:*) printf 0 ;;\n  *) exec /usr/bin/stat "$@" ;;\nesac\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(join(bin, 'docker'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n`, {
+        mode: 0o755,
+      });
 
-    await execFileAsync('deploy/bin/verity-compose', ['managed-up'], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        VERITY_SERVER_IMAGE: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
-        VERITY_MANAGED_DEPLOYMENT_ID: 'managed-test-1',
-        VERITY_UPDATER_TOKEN_HOST_PATH: token,
-        VERITY_HOST_ARCHITECTURE: 'amd64',
-        VERITY_HOST_CLONE_ROOT: join(tempRoot, 'workspaces'),
-        VERITY_SECRET_MATERIALIZATION_ROOT: join(tempRoot, 'secrets'),
-      },
-    });
+      await execFileAsync('deploy/bin/verity-compose', ['managed-up'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          VERITY_SERVER_IMAGE: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+          VERITY_MANAGED_DEPLOYMENT_ID: 'managed-test-1',
+          VERITY_UPDATER_TOKEN_HOST_PATH: token,
+          VERITY_HOST_ARCHITECTURE: architecture,
+          VERITY_HOST_CLONE_ROOT: join(tempRoot, 'workspaces'),
+          VERITY_SECRET_MATERIALIZATION_ROOT: join(tempRoot, 'secrets'),
+        },
+      });
 
-    const invocations = readFileSync(calls, 'utf8').trim().split('\n');
-    expect(invocations).toHaveLength(5);
-    expect(invocations[0]).toContain('--profile managed-migration run --rm managed-bootstrap');
-    expect(invocations[1]).toContain('ps -a --filter name=^/verity-managed-server ');
-    expect(invocations[2]).toContain('stop verity');
-    expect(invocations[3]).toContain(
-      'docker-compose.managed.yml --profile managed up -d --remove-orphans',
-    );
-    expect(invocations[4]).toContain('exec -T verity-managed-gateway node -e');
-  });
+      const invocations = readFileSync(calls, 'utf8').trim().split('\n');
+      expect(invocations).toHaveLength(5);
+      expect(invocations[0]).toContain('--profile managed-migration run --rm managed-bootstrap');
+      expect(invocations[1]).toContain('ps -a --filter name=^/verity-managed-server ');
+      expect(invocations[2]).toContain('stop verity');
+      expect(invocations[3]).toContain(
+        'docker-compose.managed.yml --profile managed up -d --remove-orphans',
+      );
+      expect(invocations[4]).toContain('exec -T verity-managed-gateway node -e');
+    },
+  );
 
   it('does not touch Compose when managed-up inputs are unsafe', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));

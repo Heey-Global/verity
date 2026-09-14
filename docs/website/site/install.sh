@@ -89,8 +89,9 @@ run_preflight() {
   [ "$(uname -s 2>/dev/null || true)" = Linux ] ||
     preflight_error 'a Linux host is required'
   case "$(uname -m 2>/dev/null || true)" in
-    x86_64|amd64) ;;
-    *) preflight_error "amd64/x86_64 is required (found $(uname -m 2>/dev/null || printf unknown))" ;;
+    x86_64|amd64) host_architecture=amd64 ;;
+    aarch64|arm64) host_architecture=arm64 ;;
+    *) preflight_error "amd64 or arm64 is required (found $(uname -m 2>/dev/null || printf unknown))" ;;
   esac
 
   for tool in tar flock openssl; do

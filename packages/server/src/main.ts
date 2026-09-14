@@ -178,22 +178,22 @@ function dockerGcPolicyFromEnv(): Partial<DockerGcPolicy> {
   };
 }
 
-/** The release architecture this host can actually run, or null if Verity
- *  publishes no images for it. */
 /**
  * The architecture whose channel this host may consult.
  *
- * Deliberately narrower than the {@link ReleaseArchitecture} union: the release
- * workflow builds and publishes `linux/amd64` only, so `channel-stable-arm64`
- * does not exist yet. Returning `'arm64'` here would make an ARM host chase a
- * missing tag and report the channel as `unreachable` — a transient-sounding
- * error for a permanent condition. Reporting no architecture at all leaves
- * `/server/updates` at `unsupported`, which is what "no release is published
- * for this host" actually means. Widen this the moment the workflow publishes a
- * second channel.
+ * Keep this mapping aligned with the native Server build matrix. Unknown Node
+ * architectures remain unsupported rather than consulting a channel whose
+ * image the host cannot run.
  */
 function hostReleaseArchitecture(): ReleaseArchitecture | null {
-  return process.arch === 'x64' ? 'amd64' : null;
+  switch (process.arch) {
+    case 'x64':
+      return 'amd64';
+    case 'arm64':
+      return 'arm64';
+    default:
+      return null;
+  }
 }
 
 /**
