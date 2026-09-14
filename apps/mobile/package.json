@@ -45,7 +45,7 @@
     "react-native-edge-to-edge": "1.8.1",
     "react-native-gesture-handler": "~2.32.0",
     "react-native-keyboard-controller": "1.22.4",
-    "react-native-nitro-modules": "0.32.2",
+    "react-native-nitro-modules": "0.37.1",
     "react-native-qrcode-svg": "6.3.24",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "5.7.0",
