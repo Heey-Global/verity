@@ -539,6 +539,26 @@ export function withControlPlaneAgentCredentials(
       : {}),
   };
 }
+
+/** Repair the dedicated Runner's identity before using its socket as the
+ * availability signal. On a fresh managed install, unlock and the Updater's
+ * volume preparation can race; the first identity publish may therefore fail
+ * before the directory has its final group/mode. The turn is the next safe
+ * retry point, but only if publishing happens before the socket check. */
+export async function prepareControlPlaneRunnerForTurn(options: {
+  enabled: boolean;
+  dataVolumeRoot?: string | undefined;
+  refreshIdentity?: (() => Promise<void>) | undefined;
+  awaitIdentity?: (() => Promise<void>) | undefined;
+  socketExists?: ((path: string) => boolean) | undefined;
+}): Promise<boolean> {
+  if (!options.enabled || options.dataVolumeRoot === undefined) return false;
+  await options.refreshIdentity?.();
+  await options.awaitIdentity?.();
+  return (options.socketExists ?? existsSync)(
+    join(options.dataVolumeRoot, 'runners', CONTROL_PLANE_RUNNER_PROJECT_ID, 'supervisor.sock'),
+  );
+}
 import { DockerProjectRuntime } from './project-runtime.js';
 import {
   DEFAULT_SANDBOX_IMAGE_FALLBACK,
@@ -4247,12 +4267,14 @@ export async function buildEmbeddedServer(
           runnerSupervisorBackend: selected.runnerSupervisorBackend,
         });
         if (transportRefusal !== undefined) throw new Error(transportRefusal);
-        const supervisorProjectId =
-          session.projectId ??
-          (config.controlPlaneRunner === true &&
-          isRunnerSupervisorBackend(selected.runnerSupervisorBackend)
-            ? CONTROL_PLANE_RUNNER_PROJECT_ID
-            : undefined);
+        const prepareControlPlaneRunner = (): Promise<boolean> =>
+          prepareControlPlaneRunnerForTurn({
+            enabled: config.controlPlaneRunner === true,
+            dataVolumeRoot: config.dataVolumeRoot,
+            refreshIdentity: refreshControlPlaneRunnerIdentity,
+            awaitIdentity: awaitControlPlaneRunnerIdentity,
+          });
+        const supervisorProjectId = session.projectId ?? undefined;
         const supervisorAvailable =
           supervisorProjectId !== undefined &&
           config.dataVolumeRoot !== undefined &&
@@ -4271,24 +4293,20 @@ export async function buildEmbeddedServer(
             throw new Error('OpenCode turns require a project sandbox.');
           }
           if (isCodexSession) {
-            if (config.controlPlaneRunner !== true || !supervisorAvailable) {
+            if (!(await prepareControlPlaneRunner())) {
               throw new Error(
                 'Codex control-plane turns require the dedicated control-plane runner.',
               );
             }
-            await refreshControlPlaneRunnerIdentity?.();
-            await awaitControlPlaneRunnerIdentity?.();
             await synchronizeAgentGatewayForTurn();
             return sessionSelected;
           }
           if (isClaudeSession) {
-            if (config.controlPlaneRunner !== true || !supervisorAvailable) {
+            if (!(await prepareControlPlaneRunner())) {
               throw new Error(
                 'Claude ACP control-plane turns require the dedicated control-plane runner.',
               );
             }
-            await refreshControlPlaneRunnerIdentity?.();
-            await awaitControlPlaneRunnerIdentity?.();
             await synchronizeAgentGatewayForTurn();
             return sessionSelected;
           }
@@ -4309,46 +4327,20 @@ export async function buildEmbeddedServer(
         }
         if (project.kind === 'control_plane') {
           if (isCodexSession) {
-            const controlPlaneSupervisorAvailable =
-              config.controlPlaneRunner === true &&
-              config.dataVolumeRoot !== undefined &&
-              existsSync(
-                join(
-                  config.dataVolumeRoot,
-                  'runners',
-                  CONTROL_PLANE_RUNNER_PROJECT_ID,
-                  'supervisor.sock',
-                ),
-              );
-            if (!controlPlaneSupervisorAvailable) {
+            if (!(await prepareControlPlaneRunner())) {
               throw new Error(
                 'Codex control-plane turns require the dedicated control-plane runner.',
               );
             }
-            await refreshControlPlaneRunnerIdentity?.();
-            await awaitControlPlaneRunnerIdentity?.();
             await synchronizeAgentGatewayForTurn();
             return sessionSelected;
           }
           if (isClaudeSession) {
-            const controlPlaneSupervisorAvailable =
-              config.controlPlaneRunner === true &&
-              config.dataVolumeRoot !== undefined &&
-              existsSync(
-                join(
-                  config.dataVolumeRoot,
-                  'runners',
-                  CONTROL_PLANE_RUNNER_PROJECT_ID,
-                  'supervisor.sock',
-                ),
-              );
-            if (!controlPlaneSupervisorAvailable) {
+            if (!(await prepareControlPlaneRunner())) {
               throw new Error(
                 'Claude ACP control-plane turns require the dedicated control-plane runner.',
               );
             }
-            await refreshControlPlaneRunnerIdentity?.();
-            await awaitControlPlaneRunnerIdentity?.();
             await synchronizeAgentGatewayForTurn();
             return sessionSelected;
           }
