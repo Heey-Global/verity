@@ -4,6 +4,7 @@ Brokered Secret jobs use Docker's `runsc` runtime. The runtime belongs to the Do
 Verity server or project-sandbox image.
 
 `versions.env` pins the upstream release and SHA-512 checksum for both supported architectures.
+The CI smoke runs natively on amd64 and arm64; it does not use emulation for this security boundary.
 `install-runsc-host.sh` downloads that exact artifact, verifies it, installs it at the versioned
 path `/opt/verity/runsc/<release>/runsc`, merges the `runsc` registration into
 `/etc/docker/daemon.json`, and reloads Docker. Run it through the host's normal image/Ansible/cloud-

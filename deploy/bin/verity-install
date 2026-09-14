@@ -820,10 +820,6 @@ if [ -n "${VERITY_GVISOR_REQUIRED:-}" ]; then
 else
   gvisor_required="${persisted_gvisor:-0}"
 fi
-if [ "$host_architecture" = arm64 ] && [ "$gvisor_required" = 1 ]; then
-  die 'Brokered Secret jobs and VERITY_GVISOR_REQUIRED=1 are not supported on arm64 hosts'
-fi
-
 # ── Server image ───────────────────────────────────────────────────────────
 if [ -n "$opt_image" ]; then
   server_image="$opt_image"

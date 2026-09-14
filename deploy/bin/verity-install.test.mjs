@@ -302,7 +302,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.throws(() => readFileSync(host.handover));
   });
 
-  test('accepts an arm64 host while keeping Brokered Secret jobs unavailable', () => {
+  test('accepts an arm64 host with Brokered Secret jobs enabled', () => {
     const host = makeHost({
       architecture: 'aarch64',
       docker: [{ match: 'image inspect', out: DIGEST_A }],
@@ -314,9 +314,15 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(installed.status, 0, installed.output);
     assert.equal(handoverEnv(host).VERITY_HOST_ARCHITECTURE, 'arm64');
 
-    const brokeredSecrets = run(host, ['--check'], { VERITY_GVISOR_REQUIRED: '1' });
-    assert.equal(brokeredSecrets.status, 1);
-    assert.match(brokeredSecrets.stderr, /Brokered Secret jobs.*not supported on arm64/);
+    const brokeredSecretsHost = makeHost({
+      architecture: 'aarch64',
+      docker: [{ match: 'image inspect', out: DIGEST_A }],
+    });
+    const brokeredSecrets = run(brokeredSecretsHost, [], { VERITY_GVISOR_REQUIRED: '1' });
+    assert.equal(brokeredSecrets.status, 0, brokeredSecrets.output);
+    const env = handoverEnv(brokeredSecretsHost);
+    assert.equal(env.VERITY_HOST_ARCHITECTURE, 'arm64');
+    assert.equal(env.VERITY_GVISOR_REQUIRED, '1');
   });
 
   test('first install generates state and hands it to the migration', () => {
