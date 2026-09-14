@@ -58,8 +58,18 @@ services:
       - >-
         mkdir -p /data/workspaces/verity-control /data/sessions /data/runners &&
         chown 1000:1000 /data /data/workspaces /data/sessions /data/runners &&
-        chmod 0750 /data/runners &&
         chown -R 1000:1000 /data/workspaces/verity-control &&
+        if ! setpriv --reuid=1000 --regid=1000 --clear-groups
+          git -C /data/workspaces/verity-control rev-parse --verify HEAD >/dev/null 2>&1; then
+          [ -d /data/workspaces/verity-control/.git ] ||
+          setpriv --reuid=1000 --regid=1000 --clear-groups
+          git init -b main /data/workspaces/verity-control;
+          setpriv --reuid=1000 --regid=1000 --clear-groups
+          git -C /data/workspaces/verity-control
+          -c user.name=Verity -c user.email=verity@localhost -c commit.gpgsign=false
+          commit --allow-empty -m 'chore: initialize Verity Control';
+        fi &&
+        chmod 0750 /data/runners &&
         chown 1000:$${VERITY_RUNNER_RUNTIME_GID} /runner && chmod 0170 /runner &&
         chown 0:$${VERITY_RUNNER_RUNTIME_GID} /identity && chmod 2770 /identity
     environment:

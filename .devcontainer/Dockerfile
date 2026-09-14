@@ -90,17 +90,17 @@ RUN set -eux; \
 
 USER dev
 
-# Breeze provisions this repo by injecting its own sandbox toolkit Feature on
+# Verity provisions this repo by injecting its own sandbox toolkit Feature on
 # top of this image. That Feature reserves UID/GID 1101 for the supervisor
-# identity and refuses to install when 1101 is held under a different name —
-# which it is here, because the base image already created it as
-# verity-runner/verity-runtime. Rename in place: the numeric IDs, the primary
+# identity and refuses to install when 1101 is held under a different name.
+# Normalize older base images in place to the canonical Feature names; current
+# bases already use them, so this is a no-op. The numeric IDs, the primary
 # group and every file ownership stay exactly as they were, so the ADR 0006 D1
 # guarantee (the agent user never holds these IDs) is untouched.
 USER root
 RUN set -eu; \
     g="$(getent group 1101 | cut -d: -f1)"; \
-    if [ -n "$g" ] && [ "$g" != breeze-runtime ]; then groupmod -n breeze-runtime "$g"; fi; \
+    if [ -n "$g" ] && [ "$g" != verity-runtime ]; then groupmod -n verity-runtime "$g"; fi; \
     u="$(getent passwd 1101 | cut -d: -f1)"; \
-    if [ -n "$u" ] && [ "$u" != breeze-runner ]; then usermod -l breeze-runner "$u"; fi
+    if [ -n "$u" ] && [ "$u" != verity-runner ]; then usermod -l verity-runner "$u"; fi
 USER dev

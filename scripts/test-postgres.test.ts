@@ -434,6 +434,16 @@ describe('the repo devcontainer and this module agree', () => {
     expect(dockerfile.trimEnd().endsWith('USER dev')).toBe(true);
   });
 
+  it('normalizes reserved identities to the names accepted by the injected toolkit', () => {
+    const installer = read('features/verity-sandbox-toolkit/install.sh');
+    const runtimeGroup = /groupadd --gid "\$RUNTIME_GID" ([\w-]+)/u.exec(installer)?.[1];
+    const runnerUser = /--shell \/usr\/sbin\/nologin ([\w-]+)/u.exec(installer)?.[1];
+    expect(runtimeGroup).toBeDefined();
+    expect(runnerUser).toBeDefined();
+    expect(dockerfile).toContain(`groupmod -n ${runtimeGroup ?? ''}`);
+    expect(dockerfile).toContain(`usermod -l ${runnerUser ?? ''}`);
+  });
+
   it('tracks the fleet sandbox image rather than pinning its own base', () => {
     // Both halves are read from the sources, repository AND channel tag. Hard-coding
     // `:latest` here would leave the tag free to move in one place only: this

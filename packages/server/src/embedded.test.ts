@@ -70,12 +70,53 @@ import {
   createProjectTurnPreparationSerializer,
   startClaudeCredentialSync,
   withControlPlaneAgentCredentials,
+  prepareControlPlaneRunnerForTurn,
 } from './embedded.js';
 import { buildTestEmbeddedServer } from './testing.js';
 import {
   startAgentGatewayControlServer,
   type AgentGatewayConfiguration,
 } from './agent-gateway-control.js';
+
+describe('control-plane Runner turn repair', () => {
+  it('publishes and awaits identity before checking the supervisor socket', async () => {
+    const order: string[] = [];
+    const available = await prepareControlPlaneRunnerForTurn({
+      enabled: true,
+      dataVolumeRoot: '/srv/verity',
+      refreshIdentity: async () => {
+        order.push('publish');
+      },
+      awaitIdentity: async () => {
+        order.push('acknowledge');
+      },
+      socketExists: (path) => {
+        order.push(`socket:${path}`);
+        return true;
+      },
+    });
+
+    expect(available).toBe(true);
+    expect(order).toEqual([
+      'publish',
+      'acknowledge',
+      'socket:/srv/verity/runners/verity-control/supervisor.sock',
+    ]);
+  });
+
+  it('does not publish identity when the dedicated Runner is disabled', async () => {
+    const refreshIdentity = vi.fn(async () => undefined);
+
+    await expect(
+      prepareControlPlaneRunnerForTurn({
+        enabled: false,
+        dataVolumeRoot: '/srv/verity',
+        refreshIdentity,
+      }),
+    ).resolves.toBe(false);
+    expect(refreshIdentity).not.toHaveBeenCalled();
+  });
+});
 
 describe('project turn preparation admission', () => {
   const backend: Backend = {
