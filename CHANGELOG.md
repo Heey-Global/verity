@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/Heey-Global/verity/compare/v0.4.0...v0.4.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **setup:** repair fresh managed installation ([#338](https://github.com/Heey-Global/verity/issues/338)) ([191e181](https://github.com/Heey-Global/verity/commit/191e1817fba58f23ce3b01e610d8ad79e8b137b1))
+
 ## [0.4.0](https://github.com/Heey-Global/verity/compare/v0.3.1...v0.4.0) (2026-09-14)
 
 
