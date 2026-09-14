@@ -659,7 +659,7 @@ jobs:
       # the entry rolling forward. Each snapshot is 232 KB and the janitor evicts
       # them LRU, so the extra entries are not worth economising on.
       # renovate: datasource=github-actions depName=actions/cache
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/prettier
           key: ${{ runner.os }}-prettier-${{ hashFiles('package-lock.json') }}-${{ github.run_id }}
@@ -799,7 +799,7 @@ jobs:
       # resolved dependency versions, so a stale transform can survive and skew
       # results. Exact-key hits still warm normal (non-dep-changing) PRs.
       # renovate: datasource=github-actions depName=actions/cache
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/vitest
           key: ${{ runner.os }}-vitest-${{ hashFiles('package-lock.json', 'vitest.config.ts') }}
@@ -1041,7 +1041,7 @@ jobs:
       # resolved dependency versions, so a stale transform can survive and skew
       # results. Exact-key hits still warm normal (non-dep-changing) PRs.
       # renovate: datasource=github-actions depName=actions/cache
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/vitest
           key: ${{ runner.os }}-vitest-${{ hashFiles('package-lock.json', 'vitest.config.ts') }}
@@ -1100,7 +1100,7 @@ jobs:
       # pins package-lock.json so each dependency set stays isolated instead of
       # inheriting another set's transforms on a Renovate update.
       # renovate: datasource=github-actions depName=actions/cache
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/mobile/.cache/vitest
           key: ${{ runner.os }}-vitest-mobile-${{ hashFiles('package-lock.json', 'packages/mobile/vitest.config.ts') }}
@@ -1125,7 +1125,7 @@ jobs:
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci
       # renovate: datasource=github-actions depName=actions/cache
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/mobile/.cache/jest
           key: ${{ runner.os }}-jest-mobile-app-${{ hashFiles('package-lock.json', 'apps/mobile/jest.config.js') }}
