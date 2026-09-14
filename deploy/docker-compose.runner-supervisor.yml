@@ -1,8 +1,6 @@
-# Opt-in overlay for the ADR 0006 Stage 3 Runner supervisor preview.
-#
-# Layer this on top of the base compose ONLY when you also set
-# VERITY_RUNNER_SUPERVISOR=1 — it grants the Server the two extra privileges the
-# supervisor path needs, which the base install deliberately does not carry:
+# Required overlay for the Runner supervisor. The guarded Compose wrapper always
+# layers it over the base file. It grants the Server the extra privilege the
+# supervisor path needs:
 #
 #   - CAP_CHOWN: lets the non-root Server process hand a freshly-created
 #     1101:1101,0770 runtime directory to the dedicated Runner UID/GID before the

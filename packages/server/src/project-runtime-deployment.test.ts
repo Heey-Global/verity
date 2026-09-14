@@ -21,21 +21,12 @@ function verityEnvironment(compose: string): Map<string, string> {
   );
 }
 
-function renderRuntimeSetting(value: string, configured?: string): string {
-  return value.replace(
-    /^\$\{VERITY_ENABLE_PROJECT_RUNTIME:-([^}]*)\}$/,
-    (_match, fallback: string) => (configured ? configured : fallback),
-  );
-}
-
 describe('project runtime deployment', () => {
-  it('enables the Dev Server runtime by default while preserving an explicit opt-out', async () => {
+  it('has no deployment switch for the always-on Dev Server runtime', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
-    const configured = verityEnvironment(compose).get('VERITY_ENABLE_PROJECT_RUNTIME');
-
-    if (!configured) throw new Error('VERITY_ENABLE_PROJECT_RUNTIME not configured');
-    expect(renderRuntimeSetting(configured)).toBe('1');
-    expect(renderRuntimeSetting(configured, '')).toBe('1');
-    expect(renderRuntimeSetting(configured, '0')).toBe('0');
+    expect(verityEnvironment(compose).has('VERITY_ENABLE_PROJECT_RUNTIME')).toBe(false);
+    expect(await readFile('packages/server/src/main.ts', 'utf8')).toContain(
+      'enableProjectRuntime: true',
+    );
   });
 });

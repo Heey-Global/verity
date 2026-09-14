@@ -21,11 +21,10 @@ deploy/bin/verity-gvisor-smoke
 ```
 
 The smoke image is digest-pinned in `versions.env`; `VERITY_GVISOR_SMOKE_IMAGE` may override it only
-with another full digest. To make this a deployment gate, enable the opt-in preflight on every
-Compose invocation:
+with another full digest. The preflight is a mandatory deployment gate on every Compose invocation:
 
 ```sh
-VERITY_GVISOR_REQUIRED=1 ./deploy/bin/verity-compose up -d
+./deploy/bin/verity-compose up -d
 ```
 
 The wrapper runs the smoke before changing the Compose stack. Missing/mismatched registration,

@@ -39,22 +39,37 @@ if [ -z "${VERITY_POSTGRES_PASSWORD:-}" ]; then
 fi
 
 compose_base() {
-  if [ "${VERITY_RUNNER_SUPERVISOR:-1}" = "0" ]; then
-    docker compose -f "$base_compose" "$@"
-  else
-    docker compose -f "$base_compose" -f "$supervisor_compose" "$@"
-  fi
+  docker compose -f "$base_compose" -f "$supervisor_compose" "$@"
 }
 
 compose_managed() {
-  if [ "${VERITY_RUNNER_SUPERVISOR:-1}" = "0" ]; then
-    docker compose -f "$base_compose" -f "$managed_compose" "$@"
-  else
-    docker compose -f "$base_compose" -f "$supervisor_compose" -f "$managed_compose" "$@"
-  fi
+  docker compose -f "$base_compose" -f "$supervisor_compose" -f "$managed_compose" "$@"
 }
 
-if [ "${VERITY_GVISOR_REQUIRED:-0}" = "1" ]; then
+# Teardown must remain available when a broken runtime is the thing being repaired.
+# Every command that can create or start a workload still fails closed on the live smoke.
+requires_gvisor_smoke=1
+compose_command=''
+skip_option_value=0
+for compose_arg in "$@"; do
+  if [ "$skip_option_value" = 1 ]; then
+    skip_option_value=0
+    continue
+  fi
+  case "$compose_arg" in
+    -f|-p|--file|--project-name|--profile|--env-file|--project-directory|--parallel|--ansi|--progress)
+      skip_option_value=1 ;;
+    --file=*|--project-name=*|--profile=*|--env-file=*|--project-directory=*|--parallel=*|--ansi=*|--progress=*|-f?*|-p?*|--compatibility|--dry-run)
+      ;;
+    -*) ;;
+    *) compose_command="$compose_arg"; break ;;
+  esac
+done
+case "$compose_command" in
+  down|stop|rm|kill|config|version|ps|logs|images|events|port|top)
+    requires_gvisor_smoke=0 ;;
+esac
+if [ "$requires_gvisor_smoke" = 1 ]; then
   "$script_dir/verity-gvisor-smoke"
 fi
 
@@ -396,7 +411,4 @@ for compose_arg in "$@"; do
     *) break ;;
   esac
 done
-if [ "${VERITY_RUNNER_SUPERVISOR:-1}" = "0" ]; then
-  exec docker compose -f "$base_compose" "$@"
-fi
 exec docker compose -f "$base_compose" -f "$supervisor_compose" "$@"

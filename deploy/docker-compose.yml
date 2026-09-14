@@ -136,9 +136,8 @@ services:
       # Docker access via the mounted host socket (ADR 0003 R2 default). Verity
       # spawns project containers as siblings on the host daemon through this.
       VERITY_DOCKER_BASE_URL: unix:///var/run/docker.sock
-      # The host preflight and in-server readiness use the same opt-in. Runtime drift after startup
+      # The host preflight and in-server readiness are mandatory. Runtime drift after startup
       # changes /healthz to 503 degraded; readiness never treats another runtime as equivalent.
-      VERITY_SECRET_JOB_RUNTIME_REQUIRED: ${VERITY_GVISOR_REQUIRED:-0}
 
       # Single data root, backed by the named `verity-data` volume mounted below.
       # Verity derives its on-disk subdirs from this:
@@ -156,12 +155,7 @@ services:
       # host-path knowledge to keep consistent. MUST match the volume name below.
       VERITY_DATA_VOLUME: verity-data
 
-      # Startup sweep of backend transcripts under <root>/runners whose session the
-      # database no longer knows (see deploy/README.md). Forwarded rather than left to
-      # the code default because it is the operator's only way to stop a delete they
-      # suspect is wrong — `dry` reports and touches nothing, `off` skips it — and an
-      # escape hatch the reference deployment does not pass through is not one.
-      VERITY_TRANSCRIPT_SWEEP: ${VERITY_TRANSCRIPT_SWEEP:-on}
+      # Startup cleanup of orphaned backend transcripts is always enabled.
 
       # Host-disk garbage collection. Verity keeps several append-only Docker
       # caches, and without a collector a long-lived runner fills its disk:
@@ -187,8 +181,6 @@ services:
       # dangling `buildx_buildkit_builder-*_state` volumes. Named volumes —
       # `verity-data`, `verity-db` — can never match.
       #
-      # Set to 0 only if an external janitor owns this host's Docker disk.
-      VERITY_DOCKER_GC: ${VERITY_DOCKER_GC:-1}
       # Devcontainer image generations kept per repo (default 2 — above 1 so an
       # in-flight provision that resolved the previous hash still hits a warm
       # cache). Under disk pressure this drops to 1 automatically.
@@ -202,13 +194,9 @@ services:
       # generation per repo and drop the volume grace period (default 40 GB).
       # VERITY_DOCKER_GC_LOW_DISK_GB: '40'
 
-      # Claude is ACP-only. The guarded installer and verity-compose include the
-      # supervisor overlay by default; setting this to 0 intentionally disables
-      # Claude rather than selecting the retired native transport.
-      # Raw use of this base file stays fail-closed at 0 because it lacks the
-      # required overlay privileges and volumes. The guarded wrapper supplies the
-      # overlay, whose service override sets this to 1.
-      VERITY_RUNNER_SUPERVISOR: ${VERITY_RUNNER_SUPERVISOR:-0}
+      # Claude is ACP-only. The guarded installer and verity-compose always include
+      # the required supervisor overlay and capability seal.
+      VERITY_RUNNER_SUPERVISOR: '0'
       # Control-plane database — a real PostgreSQL running as the `postgres`
       # service below. Postgres is now the ONLY runtime database (pglite has been
       # removed from the runtime); the server fails fast without this. The
@@ -249,7 +237,6 @@ services:
       # Enable the Docker-backed Dev Server start/stop/status API used by the
       # project Dev Servers tab. Set to 0 only when this deployment intentionally
       # disables process control inside project containers.
-      VERITY_ENABLE_PROJECT_RUNTIME: ${VERITY_ENABLE_PROJECT_RUNTIME:-1}
       # Same model for the injected devcontainer Feature: empty means resolve
       # ghcr.io/heey-global/verity/verity-sandbox-toolkit at this server's release
       # version to a digest at provisioning/recreate/update time (`:latest` on
@@ -289,47 +276,9 @@ services:
       VERITY_AGENT_GATEWAY_CLAUDE_PORT: '9443'
       VERITY_CODEX_EGRESS_GATEWAY_URL: ${VERITY_CODEX_EGRESS_GATEWAY_URL:-https://verity-agent-gateway:9444}
 
-      # Meeting transcription backend. Verity ships no bundled speech-to-text
-      # service, so transcription is off until these point at an OpenAI-compatible
-      # transcription API. The request shape is the standard one, so any such
-      # provider works without a code path of its own:
-      #
-      #   VERITY_TRANSCRIBE_BASE_URL=https://api.example.com/v1
-      #   VERITY_TRANSCRIBE_API_KEY=<token>
-      #   VERITY_TRANSCRIBE_MODEL=<provider's model id>
-      #
-      # State the trade plainly: every second of meeting audio leaves this host to
-      # be transcribed. Left unset, Verity reports meeting transcription as not
-      # configured instead of accepting a recording it cannot process.
-      VERITY_TRANSCRIBE_BASE_URL: ${VERITY_TRANSCRIBE_BASE_URL:-}
-      VERITY_TRANSCRIBE_API_KEY: ${VERITY_TRANSCRIBE_API_KEY:-}
-      VERITY_TRANSCRIBE_MODEL: ${VERITY_TRANSCRIBE_MODEL:-whisper-1}
-      VERITY_TRANSCRIBE_RESPONSE_FORMAT: ${VERITY_TRANSCRIBE_RESPONSE_FORMAT:-verbose_json}
-      VERITY_TRANSCRIBE_LANGUAGE: ${VERITY_TRANSCRIBE_LANGUAGE:-}
-      VERITY_TRANSCRIBE_TIMEOUT_MS: ${VERITY_TRANSCRIBE_TIMEOUT_MS:-14400000}
-      # Largest upload the backend accepts. This is a quality setting, not just a
-      # guardrail: with windowing disabled, anything above this ceiling is
-      # re-encoded to 24 kbps mono to fit — which destroyed most of the
-      # recognizable speech on real meeting audio. Raise it to match the backend
-      # (DeepInfra accepts at least 64 MB, measured) before turning windowing off,
-      # or the client will quietly compress instead of erroring.
-      VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES: ${VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES:-25000000}
-      # Survive a backend that is briefly unreachable — a provider restart, a DNS
-      # blip — after Verity is already running. Connection-only, never inference.
-      VERITY_TRANSCRIBE_RETRIES: ${VERITY_TRANSCRIBE_RETRIES:-${VERITY_PARAKEET_RETRIES:-12}}
-      # Do not resubmit hours of inference after a real HTTP failure. The larger
-      # retry budget above is only for requests that never received a response.
-      VERITY_TRANSCRIBE_HTTP_RETRIES: ${VERITY_TRANSCRIBE_HTTP_RETRIES:-${VERITY_PARAKEET_HTTP_RETRIES:-0}}
-      VERITY_TRANSCRIBE_RETRY_DELAY_MS: ${VERITY_TRANSCRIBE_RETRY_DELAY_MS:-${VERITY_PARAKEET_RETRY_DELAY_MS:-5000}}
-      # Bound what a single request asks the backend to transcribe, so a
-      # multi-hour recording is not one hours-long upload. OpenAI Whisper models
-      # reject single-pass inputs above 400 seconds; with the default five-second
-      # context on both sides, a 300-second core tops out at 310s. Backends that
-      # segment long audio themselves (Whisper-class) can set this to 0 — raise
-      # VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES to fit the whole recording first.
-      VERITY_MEETING_CHUNK_SECONDS: ${VERITY_MEETING_CHUNK_SECONDS:-300}
-      # Preserve recognition context for words that cross a chunk boundary.
-      VERITY_MEETING_CHUNK_OVERLAP_SECONDS: ${VERITY_MEETING_CHUNK_OVERLAP_SECONDS:-5}
+      # Meeting transcription provider credentials and model selection come only
+      # from encrypted Verity Settings. The bundled client owns fixed retry,
+      # timeout, response-format, and chunking policy.
 
     volumes:
       # Docker socket (the R2 default). Trade-off, stated honestly: a container
@@ -365,7 +314,7 @@ services:
       # and every project sandbox creation/repair fails with it.
       - '${VERITY_RUNNER_RUNTIME_GID:-1101}'
 
-    # NOTE: the opt-in Runner supervisor (VERITY_RUNNER_SUPERVISOR=1, ADR 0006)
+    # NOTE: the required Runner supervisor overlay (ADR 0006)
     # needs the Server to additionally hold CAP_CHOWN: it hands a freshly created
     # runtime directory to the Runner UID, and changing an owning UID always requires
     # the capability. That capability is NOT
@@ -783,11 +732,10 @@ services:
   #     # (POST /networks/create, packages/server/src/docker.ts). Without this
   #     # the proxy 404s that call and every project provision fails.
   #     NETWORKS: 1
-  #     # Host-disk GC (VERITY_DOCKER_GC, on by default) needs to enumerate and
+  #     # Mandatory host-disk GC needs to enumerate and
   #     # delete volumes, and to DELETE superseded devcontainer images. The proxy
   #     # denies DELETE and the /volumes surface unless both are enabled — without
   #     # them the GC logs a skipped resource each pass and the disk still fills.
-  #     # Drop both only together with VERITY_DOCKER_GC: 0.
   #     VOLUMES: 1
   #     DELETE: 1
   #     # EXEC is REQUIRED by Verity's exec-based runtime (it runs the agent inside

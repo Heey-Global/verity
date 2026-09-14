@@ -2977,7 +2977,7 @@ describe('server image CI smoke', () => {
     expect(harness).toContain('ps --all --quiet');
     expect(harness).toContain('volume ls --quiet');
     expect(harness).toContain('custom_networks');
-    expect(harness).toContain('export VERITY_RUNNER_SUPERVISOR=1');
+    expect(harness).not.toContain('VERITY_RUNNER_SUPERVISOR');
     expect(harness).toContain('export VERITY_POSTGRES_PASSWORD="$(openssl rand -hex 32)"');
     expect(harness).toContain('"$compose" up --detach');
     expect(harness).toContain('wait_for_service verity');

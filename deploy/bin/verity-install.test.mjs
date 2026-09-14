@@ -248,7 +248,7 @@ const composeProject = (project = 'verity', service = 'verity-managed-gateway') 
   out: `${service}\t${project}`,
 });
 
-const runningServer = (name, id, caps = '[]', image = DIGEST_A) => [
+const runningServer = (name, id, caps = '["CHOWN"]', image = DIGEST_A) => [
   ...managedPs([{ name, id }]),
   composeProject(),
   { match: `inspect --format {{.Config.Image}}`, out: image },
@@ -322,7 +322,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(brokeredSecrets.status, 0, brokeredSecrets.output);
     const env = handoverEnv(brokeredSecretsHost);
     assert.equal(env.VERITY_HOST_ARCHITECTURE, 'arm64');
-    assert.equal(env.VERITY_GVISOR_REQUIRED, '1');
+    assert.equal(env.VERITY_GVISOR_REQUIRED, '');
   });
 
   test('first install generates state and hands it to the migration', () => {
@@ -349,7 +349,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.match(stateFile(host, 'updater-token'), /^[a-f0-9]{64}$/);
     assert.equal(readFileSync(join(host.stateDir, 'updater-token'), 'utf8').length, 64);
     assert.equal(stateFile(host, 'compose-project'), 'verity');
-    assert.equal(stateFile(host, 'runner-supervisor'), '1');
+    assert.throws(() => stateFile(host, 'runner-supervisor'));
     assert.match(stateFile(host, 'postgres-password'), /^[a-f0-9]{64}$/);
     assert.equal(statSync(join(host.stateDir, 'postgres-password')).mode & 0o777, 0o600);
 
@@ -412,18 +412,17 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(pairingEnv.VERITY_PAIRING_HOST, 'verity.home.example');
   });
 
-  test('fresh installs seal the ACP Runner supervisor by default', () => {
+  test('fresh installs always seal the ACP Runner supervisor', () => {
     const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
     const result = run(host, []);
     assert.equal(result.status, 0, result.output);
-    assert.equal(stateFile(host, 'runner-supervisor'), '1');
+    assert.throws(() => stateFile(host, 'runner-supervisor'));
     assert.equal(handoverEnv(host).VERITY_RUNNER_SUPERVISOR, '1');
   });
 
-  test('normalises a non-numeric supervisor flag before sealing', () => {
+  test('ignores the retired supervisor environment switch', () => {
     const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
     assert.equal(run(host, [], { VERITY_RUNNER_SUPERVISOR: 'true' }).status, 0);
-    // managed-bootstrap seals CHOWN on the literal '1' only.
     assert.equal(handoverEnv(host).VERITY_RUNNER_SUPERVISOR, '1');
   });
 
@@ -448,9 +447,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(env.COMPOSE_PROJECT_NAME, 'deploy');
     // The finding this covers: a no-argument rerun used to reset the supervisor to 0.
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
-    // Same failure mode, different flag: dropping this one silently turns off the
-    // brokered-secret runtime requirement, and the migration never objects.
-    assert.equal(env.VERITY_GVISOR_REQUIRED, '1');
+    assert.equal(env.VERITY_GVISOR_REQUIRED, '');
     assert.equal(stateFile(host, 'updater-token'), 'f'.repeat(64));
   });
 
@@ -497,7 +494,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const host = makeHost({
       docker: [
         { match: 'network ls --format {{.Name}}', status: 70 },
-        ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+        ...runningServer('verity-managed-server', 'host-abc', '["CHOWN"]', DIGEST_A),
       ],
       state: { 'deployment-id': 'host-abc\n', 'compose-project': 'verity\n' },
     });
@@ -515,7 +512,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       containerPresentOnce: 'abcdef123456',
       docker: [
         { match: 'inspect --format {{.Id}}', out: 'abcdef123456' },
-        ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+        ...runningServer('verity-managed-server', 'host-abc', '["CHOWN"]', DIGEST_A),
       ],
       state: { 'deployment-id': 'host-abc\n', 'compose-project': 'verity\n' },
     });
@@ -556,7 +553,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
 
   test('--reinstall refuses a non-interactive data deletion without --yes', () => {
     const host = makeHost({
-      docker: runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+      docker: runningServer('verity-managed-server', 'host-abc', '["CHOWN"]', DIGEST_A),
       state: { 'deployment-id': 'host-abc\n', 'compose-project': 'verity\n' },
     });
 
@@ -569,7 +566,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
 
   test('hands an explicitly verified unpaired image advance to managed bootstrap', () => {
     const host = makeHost({
-      docker: runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+      docker: runningServer('verity-managed-server', 'host-abc', '["CHOWN"]', DIGEST_A),
       state: {
         'deployment-id': 'host-abc\n',
         'compose-project': 'verity\n',
@@ -587,7 +584,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const host = makeHost({
       docker: [
         { match: 'image inspect --format {{join .RepoDigests', out: DIGEST_B },
-        ...runningServer('verity-managed-server', 'host-abc', '[]', DIGEST_A),
+        ...runningServer('verity-managed-server', 'host-abc', '["CHOWN"]', DIGEST_A),
       ],
       state: {
         'deployment-id': 'host-abc\n',
@@ -654,18 +651,11 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.match(result.stderr, /could not ask Docker for the Compose PostgreSQL container/);
   });
 
-  test('persists the gVisor requirement and reports a change to it', () => {
+  test('ignores the retired gVisor environment switch', () => {
     const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
     assert.equal(run(host, [], { VERITY_GVISOR_REQUIRED: 'yes' }).status, 0);
-    assert.equal(stateFile(host, 'gvisor-required'), '1');
-    assert.equal(handoverEnv(host).VERITY_GVISOR_REQUIRED, '1');
-
-    // Reversible, unlike the sealed supervisor capability — but never silently.
-    // --image because the deployment is sealed now and no container is left to read
-    // the digest off; see the refusal covered below.
-    const off = run(host, ['--image', DIGEST_A], { VERITY_GVISOR_REQUIRED: '0' });
-    assert.match(off.output, /gVisor requirement changes from 1 to 0/);
-    assert.equal(stateFile(host, 'gvisor-required'), '0');
+    assert.throws(() => stateFile(host, 'gvisor-required'));
+    assert.equal(handoverEnv(host).VERITY_GVISOR_REQUIRED, '');
   });
 
   test('recovers identity and image from a stopped Server when state is gone', () => {
@@ -674,7 +664,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         ...managedPs([{ name: 'verity-managed-server-g2', id: 'sealed-id', running: false }]),
         composeProject(),
         { match: 'inspect --format {{.Config.Image}}', out: DIGEST_B },
-        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '[]' },
+        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '["CHOWN"]' },
         { match: 'volume ls --quiet', out: 'verity-managed-deployment' },
       ],
     });
@@ -786,7 +776,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         ...managedPs([{ name: 'verity-managed-server-g3', id: 'sealed-id' }]),
         composeProject('prod', 'verity-updater'),
         { match: 'inspect --format {{.Config.Image}}', out: DIGEST_A },
-        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '[]' },
+        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '["CHOWN"]' },
         { match: 'volume ls --quiet', out: 'verity-managed-deployment' },
       ],
     });
@@ -824,7 +814,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         ...managedPs([{ name: 'verity-managed-server-g3', id: 'sealed-id' }]),
         composeProject('prod', 'verity-updater'),
         { match: 'inspect --format {{.Config.Image}}', out: DIGEST_A },
-        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '[]' },
+        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '["CHOWN"]' },
         { match: 'volume ls --quiet', out: 'verity-managed-deployment' },
       ],
     });
@@ -845,7 +835,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
       docker: [
         ...managedPs([{ name: 'verity-managed-server-g3', id: 'sealed-id' }]),
         { match: 'inspect --format {{.Config.Image}}', out: DIGEST_A },
-        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '[]' },
+        { match: 'inspect --format {{json .HostConfig.CapAdd}}', out: '["CHOWN"]' },
         { match: 'volume ls --quiet', out: 'verity-managed-deployment' },
       ],
     });
@@ -881,10 +871,10 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     });
     const result = run(host, [], { VERITY_RUNNER_SUPERVISOR: '1' });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /cannot be turned on/);
+    assert.match(result.stderr, /required Runner supervisor capability/);
   });
 
-  test('allows re-enabling the supervisor when the seal carries CHOWN', () => {
+  test('uses the supervisor when the seal carries CHOWN', () => {
     const host = makeHost({
       docker: runningServer('verity-managed-server-g4', 'host-abc', '["CHOWN"]'),
       state: { 'deployment-id': 'host-abc\n', 'runner-supervisor': '0\n' },
@@ -892,7 +882,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const result = run(host, [], { VERITY_RUNNER_SUPERVISOR: '1' });
     assert.equal(result.status, 0, result.output);
     assert.equal(handoverEnv(host).VERITY_RUNNER_SUPERVISOR, '1');
-    assert.equal(stateFile(host, 'runner-supervisor'), '1');
+    assert.equal(stateFile(host, 'runner-supervisor'), '0');
   });
 
   test('stops on a Docker query that errors instead of reading it as a fresh host', () => {

@@ -11,12 +11,25 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { SHARED_SESSION_ROOT } from '../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { desiredSpec } from '../packages/server/src/self-update/managed-control-plane-runner.js';
 
-const execFileAsync = promisify(execFile);
+const rawExecFileAsync = promisify(execFile);
+const wrapperPath = join('deploy/bin', `.verity-compose-test-${process.pid}`);
+writeFileSync(
+  wrapperPath,
+  readFileSync('deploy/bin/verity-compose', 'utf8').replace(
+    '"$script_dir/verity-gvisor-smoke"',
+    ': # gVisor itself has dedicated tests; other wrapper tests isolate their subject.',
+  ),
+  { mode: 0o755 },
+);
+const execFileAsync: typeof rawExecFileAsync = (file, args, options) =>
+  rawExecFileAsync(file === 'deploy/bin/verity-compose' ? wrapperPath : file, args, options);
+
+afterAll(() => rmSync(wrapperPath, { force: true }));
 
 /** The two spellings Compose accepts for a service volume: the
  *  `source:target[:mode]` short string — which is also how a BIND is written —
@@ -505,7 +518,7 @@ describe('deploy/bin/verity-compose', () => {
     );
   });
 
-  it('uses only the base file when Claude supervision is explicitly disabled', async () => {
+  it('ignores the retired switch and always uses the Runner supervisor overlay', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
     const bin = join(tempRoot, 'bin');
     const capture = join(tempRoot, 'docker.args');
@@ -526,11 +539,19 @@ describe('deploy/bin/verity-compose', () => {
     });
 
     expect(readFileSync(capture, 'utf8').trim()).toBe(
-      ['compose', '-f', join(process.cwd(), 'deploy/docker-compose.yml'), 'up', '-d'].join('\n'),
+      [
+        'compose',
+        '-f',
+        join(process.cwd(), 'deploy/docker-compose.yml'),
+        '-f',
+        join(process.cwd(), 'deploy/docker-compose.runner-supervisor.yml'),
+        'up',
+        '-d',
+      ].join('\n'),
     );
   });
 
-  it('runs the gVisor preflight before Compose when explicitly required', async () => {
+  it('runs the mandatory gVisor preflight before starting workloads', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
     const deployBin = join(tempRoot, 'deploy', 'bin');
     const calls = join(tempRoot, 'calls.txt');
@@ -548,10 +569,12 @@ describe('deploy/bin/verity-compose', () => {
       mode: 0o755,
     });
 
-    await execFileAsync(join(deployBin, 'verity-compose'), ['version'], {
+    await execFileAsync(join(deployBin, 'verity-compose'), ['up'], {
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ''}`,
+        NODE_ENV: 'test',
+        VERITY_TEST_GVISOR_SMOKE_BIN: join(deployBin, 'verity-gvisor-smoke'),
         VERITY_GVISOR_REQUIRED: '1',
         VERITY_HOST_CLONE_ROOT: join(tempRoot, 'workspaces'),
         VERITY_SECRET_MATERIALIZATION_ROOT: join(tempRoot, 'secrets'),
@@ -561,7 +584,7 @@ describe('deploy/bin/verity-compose', () => {
     expect(readFileSync(calls, 'utf8').trim().split('\n')).toEqual(['smoke', 'compose']);
   });
 
-  it('does not invoke Compose when the required gVisor preflight fails', async () => {
+  it('does not let a global Compose option bypass a failing gVisor preflight', async () => {
     tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
     const deployBin = join(tempRoot, 'deploy', 'bin');
     const calls = join(tempRoot, 'calls.txt');
@@ -581,10 +604,12 @@ describe('deploy/bin/verity-compose', () => {
     });
 
     await expect(
-      execFileAsync(join(deployBin, 'verity-compose'), ['up'], {
+      execFileAsync(join(deployBin, 'verity-compose'), ['-f', 'override.yml', 'up'], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
+          NODE_ENV: 'test',
+          VERITY_TEST_GVISOR_SMOKE_BIN: join(deployBin, 'verity-gvisor-smoke'),
           VERITY_GVISOR_REQUIRED: '1',
         },
       }),

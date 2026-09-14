@@ -49,7 +49,6 @@ import {
   parsePort,
   parsePushEnabled,
   parseTasksProjectNumber,
-  parseTranscriptSweep,
   createProjectAwareGitHubTokenSource,
   refreshProjectGitHubToken,
   createProjectWorktreeFactory,
@@ -420,44 +419,6 @@ describe('candidateRunnerProjectIds', () => {
         controlPlaneRunner: true,
       }),
     ).toEqual(['proj-1']);
-  });
-});
-
-describe('parseTranscriptSweep', () => {
-  it('sweeps unless a deployment says otherwise', () => {
-    expect(parseTranscriptSweep(undefined)).toBe('on');
-    expect(parseTranscriptSweep('')).toBe('on');
-    expect(parseTranscriptSweep('  ')).toBe('on');
-    expect(parseTranscriptSweep(' ON ')).toBe('on');
-  });
-
-  it.each([
-    ['dry', 'dry'],
-    [' Dry ', 'dry'],
-    ['off', 'off'],
-    ['OFF', 'off'],
-  ])('reads %j as %j', (value, expected) => {
-    expect(parseTranscriptSweep(value)).toBe(expected);
-  });
-
-  it.each([
-    ['0', 'off'],
-    ['false', 'off'],
-    ['FALSE', 'off'],
-    ['1', 'on'],
-    ['true', 'on'],
-  ])('takes the boolean spelling %j as %j', (value, expected) => {
-    // Same env file as VERITY_PUSH_ENABLED, which teaches 1/true/on and 0/false/off.
-    // Someone shutting the sweep off in a hurry writes what that one taught them, and a
-    // boot that crash-loops on `false` is the same accident the throw below prevents.
-    expect(parseTranscriptSweep(value)).toBe(expected);
-  });
-
-  it('rejects a typo rather than sweeping anyway', () => {
-    // This variable is only ever set to STOP the sweep from deleting something. Falling
-    // back to `on` would defeat the single purpose it has.
-    expect(() => parseTranscriptSweep('of')).toThrow(/VERITY_TRANSCRIPT_SWEEP/);
-    expect(() => parseTranscriptSweep('no')).toThrow(/VERITY_TRANSCRIPT_SWEEP/);
   });
 });
 

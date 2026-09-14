@@ -23,8 +23,6 @@ STATE_DIR="${VERITY_STATE_DIR:-/etc/verity}"
 TOKEN_PATH="$STATE_DIR/updater-token"
 ID_PATH="$STATE_DIR/deployment-id"
 PROJECT_PATH="$STATE_DIR/compose-project"
-SUPERVISOR_PATH="$STATE_DIR/runner-supervisor"
-GVISOR_PATH="$STATE_DIR/gvisor-required"
 POSTGRES_PASSWORD_PATH="$STATE_DIR/postgres-password"
 LOCK_PATH="$STATE_DIR/.verity-install.lock"
 MANAGED_CONTAINER_PREFIX='verity-managed-server'
@@ -43,6 +41,9 @@ opt_update=0
 opt_reinstall=0
 opt_yes=0
 original_args=("$@")
+
+# Retired deployment switches must not leak through to the managed handoff.
+unset VERITY_GVISOR_REQUIRED VERITY_RUNNER_SUPERVISOR
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
   # Match the AMOLED Verity UI palette in true-colour terminals.
@@ -107,19 +108,6 @@ Options:
                        --reinstall.
   -h, --help           Show this help.
 
-Environment:
-  sudo resets the environment, so set these through it rather than in front of it:
-  sudo env VERITY_RUNNER_SUPERVISOR=0 deploy/bin/verity-install
-
-  VERITY_RUNNER_SUPERVISOR   Defaults to 1 because Claude is ACP-only. Set 0 only
-                             to install without Claude support. The capability is
-                             sealed into the deployment spec on first install; a
-                             later run cannot add it without reinstalling. The value
-                             is persisted and reused.
-  VERITY_GVISOR_REQUIRED     1 to require the pinned gVisor runtime (brokered
-                             secrets); verity-compose verifies it before migrating.
-                             Persisted and reused like the flag above, so a later
-                             run needs it only to change the setting.
 EOF
 }
 
@@ -722,8 +710,8 @@ if [ "$opt_reinstall" = 1 ]; then
   # The directory may be an explicitly chosen shared directory. Remove only the
   # files Verity owns, never the directory or unknown neighbours.
   rm -f -- \
-    "$TOKEN_PATH" "$ID_PATH" "$PROJECT_PATH" "$SUPERVISOR_PATH" \
-    "$GVISOR_PATH" "$POSTGRES_PASSWORD_PATH" \
+    "$TOKEN_PATH" "$ID_PATH" "$PROJECT_PATH" "$STATE_DIR/runner-supervisor" \
+    "$STATE_DIR/gvisor-required" "$POSTGRES_PASSWORD_PATH" \
     "$STATE_DIR/pairing-identity.pem" "$STATE_DIR/tls-key.pem" \
     "$STATE_DIR/tls-cert.pem" "$STATE_DIR/tls-ca-key.pem" \
     "$STATE_DIR/tls-ca-cert.pem" "$STATE_DIR/pairing-code" \
@@ -742,27 +730,6 @@ if [ "$opt_reinstall" = 1 ]; then
 fi
 
 # ── Runner supervisor ──────────────────────────────────────────────────────
-# managed-bootstrap matches the literal string '1' and nothing else when it decides
-# whether to seal CAP_CHOWN into the spec, while the Server treats 'true' as enabled
-# too. Normalising here keeps a host from running the supervisor path against a spec
-# that never got the capability — a mismatch the seal makes permanent.
-normalise_flag() {
-  case "$2" in
-    1|true|TRUE|True|yes|on) printf 1 ;;
-    0|false|FALSE|False|no|off|'') printf 0 ;;
-    *) die "$1 must be 1 or 0 (got '$2')" ;;
-  esac
-}
-
-# Two different things wear this flag's name and they must not be conflated. The
-# CHOWN capability is sealed once, at bootstrap, and is permanent. The runtime
-# setting docker-compose.yml passes to the Server on every `up` is just a value, and
-# switching it off must stay reversible — so the refusal below is keyed on the sealed
-# capability, never on the last runtime value chosen.
-persisted_supervisor=''
-supervisor_state="$(read_state "$SUPERVISOR_PATH")"
-if [ -n "$supervisor_state" ]; then persisted_supervisor="$(normalise_flag VERITY_RUNNER_SUPERVISOR "$supervisor_state")"; fi
-
 # The sealed spec is readable off the Server the Updater created from it:
 # managed-bootstrap adds CHOWN for this flag and for nothing else
 # (managed-bootstrap.ts:142). That also answers the question for a deployment
@@ -778,47 +745,8 @@ if [ -n "$managed_ref" ]; then
   esac
 fi
 
-# A no-argument re-run must carry the installed value forward rather than switching
-# the supervisor behind the operator's back. Fresh installs default to ACP-only
-# Claude and therefore seal the supervisor capability unless explicitly disabled.
-if [ -n "${VERITY_RUNNER_SUPERVISOR:-}" ]; then
-  runner_supervisor="$(normalise_flag VERITY_RUNNER_SUPERVISOR "$VERITY_RUNNER_SUPERVISOR")"
-  if [ "$first_install" = 0 ] && [ "$runner_supervisor" = 1 ] && [ "$sealed_supervisor" = 0 ]; then
-    die "VERITY_RUNNER_SUPERVISOR=1 cannot be turned on for this deployment: $managed_ref runs from a sealed spec that carries no CHOWN capability, and re-running this does not add it. Enabling it needs the $MANAGED_DEPLOYMENT_VOLUME volume discarded and the deployment installed again."
-  fi
-  if [ "$first_install" = 0 ] && [ "$runner_supervisor" = 1 ] && [ -z "$sealed_supervisor" ]; then
-    note 'no running managed Server to read the sealed capability from — if this deployment was sealed without CHOWN, the supervisor stays inert no matter what this flag says'
-  fi
-  if [ -n "$persisted_supervisor" ] && [ "$runner_supervisor" != "$persisted_supervisor" ]; then
-    note "runner supervisor changes from $persisted_supervisor to $runner_supervisor for this and every later run"
-  fi
-elif [ -n "$persisted_supervisor" ]; then
-  runner_supervisor="$persisted_supervisor"
-elif [ -n "$sealed_supervisor" ]; then
-  runner_supervisor="$sealed_supervisor"
-  note "adopting runner supervisor = $runner_supervisor from the sealed spec of $managed_ref"
-else
-  runner_supervisor=1
-fi
-
-# ── brokered-secret runtime ────────────────────────────────────────────────
-# Nothing seals this one: docker-compose.yml:105 turns it into
-# VERITY_SECRET_JOB_RUNTIME_REQUIRED on every `up`, and verity-compose:14 runs the
-# gVisor smoke before it migrates. So it stays reversible — but it still has to be
-# carried forward, because the documented no-argument re-run would otherwise fall
-# back to the 0 default and quietly drop runtime enforcement on a host that was
-# installed with it, without the migration ever objecting.
-persisted_gvisor=''
-gvisor_state="$(read_state "$GVISOR_PATH")"
-if [ -n "$gvisor_state" ]; then persisted_gvisor="$(normalise_flag VERITY_GVISOR_REQUIRED "$gvisor_state")"; fi
-
-if [ -n "${VERITY_GVISOR_REQUIRED:-}" ]; then
-  gvisor_required="$(normalise_flag VERITY_GVISOR_REQUIRED "$VERITY_GVISOR_REQUIRED")"
-  if [ -n "$persisted_gvisor" ] && [ "$gvisor_required" != "$persisted_gvisor" ]; then
-    note "gVisor requirement changes from $persisted_gvisor to $gvisor_required for this and every later run"
-  fi
-else
-  gvisor_required="${persisted_gvisor:-0}"
+if [ "$first_install" = 0 ] && [ "$sealed_supervisor" = 0 ]; then
+  die "$managed_ref was installed without the required Runner supervisor capability; reinstall this deployment to use the supported topology"
 fi
 # ── Server image ───────────────────────────────────────────────────────────
 if [ -n "$opt_image" ]; then
@@ -894,16 +822,11 @@ if [ "$opt_check" = 1 ]; then
     field 'Deployment ID' "$deployment_id (new)"
   fi
   field 'Compose project' "$compose_project"
-  field 'Runner supervisor' "$runner_supervisor"
-  field 'gVisor required' "$gvisor_required"
   field 'Control token' "$TOKEN_PATH"
 fi
 
-if [ "$first_install" = 1 ] && [ "$runner_supervisor" = 1 ]; then
+if [ "$first_install" = 1 ]; then
   note 'the Runner supervisor capability is sealed on this first install and cannot be added later'
-fi
-if [ "$first_install" = 1 ] && [ "$runner_supervisor" = 0 ]; then
-  note 'installing WITHOUT Claude support — ACP-only Claude requires the Runner supervisor, and enabling it later needs the managed-deployment volume discarded. Remove VERITY_RUNNER_SUPERVISOR=0 unless this deployment intentionally disables Claude.'
 fi
 
 if [ "$opt_check" = 1 ]; then
@@ -953,8 +876,6 @@ grep -qE '^[a-f0-9]{64}$' "$TOKEN_PATH" \
 
 printf '%s\n' "$deployment_id" | write_state "$ID_PATH" 0644
 printf '%s\n' "$compose_project" | write_state "$PROJECT_PATH" 0644
-printf '%s\n' "$runner_supervisor" | write_state "$SUPERVISOR_PATH" 0644
-printf '%s\n' "$gvisor_required" | write_state "$GVISOR_PATH" 0644
 printf '%s\n' "$postgres_password" | write_state "$POSTGRES_PASSWORD_PATH" 0600
 
 # Stable server identity and TLS keys live beside the installer state. Each run
@@ -976,8 +897,7 @@ cd "$repo_root"
 VERITY_SERVER_IMAGE="$server_image" \
 VERITY_MANAGED_DEPLOYMENT_ID="$deployment_id" \
 VERITY_UPDATER_TOKEN_HOST_PATH="$TOKEN_PATH" \
-VERITY_RUNNER_SUPERVISOR="$runner_supervisor" \
-VERITY_GVISOR_REQUIRED="$gvisor_required" \
+VERITY_RUNNER_SUPERVISOR=1 \
 VERITY_HOST_ARCHITECTURE="$host_architecture" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \

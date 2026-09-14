@@ -381,7 +381,7 @@ describe('CommandMeetingTranscriber settings', () => {
     }
   });
 
-  it('runs a deployment-supplied transcriber command after the explicit external choice', async () => {
+  it('ignores a deployment-supplied transcriber command', async () => {
     const original = {
       command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
       baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
@@ -403,10 +403,8 @@ describe('CommandMeetingTranscriber settings', () => {
       transcribeModel: null,
     });
     try {
-      // `external` is the only choice the app still offers, so this is where
-      // such a deployment inevitably lands. The command carries its own
-      // configuration; demanding a URL and model it never reads rejected every
-      // upload.
+      // A deployment variable must not restore the retired arbitrary-command
+      // path. Only encrypted Settings can make transcription ready.
       const withCommand = new CommandMeetingTranscriber(command, externalWithoutEndpoint);
       await expect(
         withCommand.transcribe({
@@ -414,7 +412,7 @@ describe('CommandMeetingTranscriber settings', () => {
           mediaType: 'audio/mp4',
           fileName: 'meeting.m4a',
         }),
-      ).resolves.toMatchObject({ segments: [{ text: 'custom-command-transcript' }] });
+      ).rejects.toThrow('External meeting transcription is not configured');
 
       // The inverse still fails closed: no command and no endpoint means the
       // recording has nowhere to go, and saying so beats uploading it first.
@@ -4981,7 +4979,7 @@ describe('GET/PATCH /settings', () => {
     expect(response.body).not.toContain('never-return-this-token');
   });
 
-  it('reports a deployment-managed remote backend as ready for first-use selection', async () => {
+  it('ignores deployment-managed transcription credentials', async () => {
     const original = {
       baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
       apiKey: process.env.VERITY_TRANSCRIBE_API_KEY,
@@ -5000,18 +4998,15 @@ describe('GET/PATCH /settings', () => {
       const response = await app.inject({ method: 'GET', url: '/settings/transcription' });
       expect(response.json()).toEqual({
         transcribeBackendMode: null,
-        transcribeBaseUrl: 'https://environment.test/v1',
-        transcribeModel: 'environment-model',
-        transcribeApiKeyConfigured: true,
+        transcribeBaseUrl: null,
+        transcribeModel: null,
+        transcribeApiKeyConfigured: false,
         transcribeLocalAvailable: false,
-        transcribeExternalConfigured: true,
+        transcribeExternalConfigured: false,
       });
       expect(response.body).not.toContain('environment-key');
-      // The app cannot see the deployment's environment, so the public settings
-      // record has to tell it that this backend is ready — otherwise the
-      // Settings screen calls a working endpoint unconfigured.
       const publicSettings = await app.inject({ method: 'GET', url: '/settings' });
-      expect(publicSettings.json().settings.transcribeExternalConfigured).toBe(true);
+      expect(publicSettings.json().settings.transcribeExternalConfigured).toBe(false);
     } finally {
       const envNames = {
         baseUrl: 'VERITY_TRANSCRIBE_BASE_URL',
@@ -5109,7 +5104,7 @@ describe('GET/PATCH /settings', () => {
     }
   });
 
-  it('reports a deployment-supplied transcriber command as a configured backend', async () => {
+  it('does not report a deployment-supplied transcriber command as configured', async () => {
     const original = {
       command: process.env.VERITY_MEETING_TRANSCRIBE_COMMAND,
       baseUrl: process.env.VERITY_TRANSCRIBE_BASE_URL,
@@ -5125,20 +5120,16 @@ describe('GET/PATCH /settings', () => {
         transcribeApiKey: null,
         transcribeModel: null,
       });
-      // Such a deployment has no URL or model to show, and transcribes anyway.
-      // Both readers have to say so, or the Settings pill reads "Add URL and
-      // model" and the upload flow bounces the operator back to Settings for a
-      // setup that is already complete.
       const publicSettings = await app.inject({ method: 'GET', url: '/settings' });
-      expect(publicSettings.json().settings.transcribeExternalConfigured).toBe(true);
+      expect(publicSettings.json().settings.transcribeExternalConfigured).toBe(false);
       const status = await app.inject({ method: 'GET', url: '/settings/transcription' });
       expect(status.json()).toMatchObject({
         transcribeBaseUrl: null,
         transcribeModel: null,
-        transcribeExternalConfigured: true,
+        transcribeExternalConfigured: false,
       });
 
-      // Take the command away and the same deployment is genuinely unconfigured.
+      // Removing an already ignored variable cannot change readiness.
       delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
       const withoutCommand = await app.inject({ method: 'GET', url: '/settings' });
       expect(withoutCommand.json().settings.transcribeExternalConfigured).toBe(false);
@@ -5190,14 +5181,13 @@ describe('GET/PATCH /settings', () => {
       await ctx.store.updateVeritySettings({ transcribeModel: null });
       expect(await externalConfigured()).toBe(false);
 
-      // Stored URL naming the deployment's own endpoint: its model does apply.
+      // A matching deployment URL still cannot supply a missing stored model.
       await ctx.store.updateVeritySettings({ transcribeBaseUrl: 'https://environment.test/v1' });
-      expect(await externalConfigured()).toBe(true);
+      expect(await externalConfigured()).toBe(false);
 
-      // Nothing stored at all: the deployment's backend is what a recording
-      // reaches, and the app has no other way to learn that.
+      // Nothing stored at all remains unconfigured regardless of the environment.
       await ctx.store.updateVeritySettings({ transcribeBaseUrl: null });
-      expect(await externalConfigured()).toBe(true);
+      expect(await externalConfigured()).toBe(false);
 
       // Neither side configures one.
       delete process.env.VERITY_TRANSCRIBE_BASE_URL;
