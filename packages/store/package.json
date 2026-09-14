@@ -22,7 +22,7 @@
   "dependencies": {
     "@verity/events": "*",
     "kysely": "0.29.5",
-    "pg": "8.22.0"
+    "pg": "8.23.0"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
