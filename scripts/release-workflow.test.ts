@@ -14,11 +14,22 @@ interface WorkflowStep {
 
 interface ReleaseWorkflow {
   jobs: {
+    'build-project-relay': {
+      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
+      steps: WorkflowStep[];
+    };
+    'build-sandbox': {
+      strategy?: { matrix?: { include?: Array<Record<string, string>> } };
+      steps: WorkflowStep[];
+    };
     'publish-project-relay': {
       outputs?: Record<string, string>;
       steps: WorkflowStep[];
     };
     'publish-toolkit': {
+      steps: WorkflowStep[];
+    };
+    'publish-sandbox': {
       steps: WorkflowStep[];
     };
     'publish-server': {
@@ -44,12 +55,21 @@ describe('release relay digest output', () => {
   const steps = workflow.jobs['publish-project-relay'].steps;
 
   it('captures and validates the pushed OCI digest', () => {
-    const push = steps.find((step) => step.id === 'push-relay');
+    const build = workflow.jobs['build-project-relay'];
+    expect(build.strategy?.matrix?.include).toEqual([
+      { architecture: 'amd64', runner: 'ubuntu-24.04' },
+      { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+    ]);
+    const push = build.steps.find((step) => step.name?.startsWith('Build + push'));
     expect(push?.uses).toContain('docker/build-push-action@');
+    expect(push?.with?.platforms).toBe('linux/${{ matrix.architecture }}');
 
+    const publish = steps.find((step) => step.name === 'Publish multi-architecture relay index');
+    expect(publish?.run).toContain('sha-${short_sha}-amd64');
+    expect(publish?.run).toContain('sha-${short_sha}-arm64');
     const record = steps.find((step) => step.name === 'Record digest-pinned relay reference');
-    expect(record?.env?.RELAY_DIGEST).toBe('${{ steps.push-relay.outputs.digest }}');
     expect(record?.run).toContain('^sha256:[a-f0-9]{64}$');
+    expect(record?.run).toContain('imagetools inspect');
     expect(record?.run).toContain('verity-project-relay-image.txt');
     expect(record?.run).toContain('Bundled into the matching');
     expect(record?.run).toContain('GITHUB_OUTPUT');
@@ -139,6 +159,42 @@ describe('release relay digest output', () => {
     const compose = readFileSync('deploy/docker-compose.yml', 'utf8');
     const pins = compose.match(/^\s*image:\s*postgres:\S+@sha256:[0-9a-f]{64}\s*$/gm);
     expect(pins).toHaveLength(1);
+  });
+});
+
+describe('multi-architecture runtime image publication', () => {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
+  const matrix = [
+    { architecture: 'amd64', runner: 'ubuntu-24.04' },
+    { architecture: 'arm64', runner: 'ubuntu-24.04-arm' },
+  ];
+
+  it('builds each architecture natively before assigning shared release tags', () => {
+    for (const name of ['build-sandbox', 'build-project-relay'] as const) {
+      const job = workflow.jobs[name];
+      expect(job.strategy?.matrix?.include).toEqual(matrix);
+      const builds = job.steps.filter((step) => step.uses?.startsWith('docker/build-push-action@'));
+      expect(builds.length).toBeGreaterThan(0);
+      for (const build of builds) {
+        expect(build.with?.platforms).toBe('linux/${{ matrix.architecture }}');
+      }
+    }
+  });
+
+  it('merges both architecture artifacts into each public image tag', () => {
+    const sandbox = workflow.jobs['publish-sandbox'].steps.find(
+      (step) => step.name === 'Publish multi-architecture sandbox indexes',
+    );
+    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}-amd64');
+    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}-arm64');
+    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}-amd64');
+    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}-arm64');
+
+    const relay = workflow.jobs['publish-project-relay'].steps.find(
+      (step) => step.name === 'Publish multi-architecture relay index',
+    );
+    expect(relay?.run).toContain('${image}:sha-${short_sha}-amd64');
+    expect(relay?.run).toContain('${image}:sha-${short_sha}-arm64');
   });
 });
 

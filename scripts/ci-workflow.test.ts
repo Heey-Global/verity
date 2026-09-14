@@ -1837,7 +1837,7 @@ describe('GitHub-hosted runner boundary', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, Job>;
     };
-    const releaseReclaim = (release.jobs['publish-sandbox']?.steps ?? []).find(
+    const releaseReclaim = (release.jobs['build-sandbox']?.steps ?? []).find(
       (step) => step.uses === './.github/actions/reclaim-runner-disk',
     );
     expect(releaseReclaim?.with?.['minimum-free-gib']).toBe('25');

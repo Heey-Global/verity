@@ -205,7 +205,7 @@ jobs:
           # `scope`, the pull_request write gate and `ignore-error`: see the note
           # on the `Build Verity server image` step in ci.yml. The scope name
           # follows the Dockerfile, so this job reads exactly what release.yml's
-          # `publish-sandbox` wrote — and this image is the largest in the repo,
+          # `build-sandbox` wrote — and this image is the largest in the repo,
           # so it is the one that most needs its own namespace.
           #
           # This workflow only ever runs on pull_request and workflow_dispatch, so
