@@ -254,6 +254,13 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
   turn is tool-less: it can emit text (including the proposal fence) but receives no shell,
   filesystem, MCP, observation or mutation tools. A backend that cannot enforce that profile
   cannot run Learning Loops.
+
+  Before each reaction, the Conductor destroys any backend context previously associated with
+  the durable loop session and starts a fresh context under that tool-less profile. Only the
+  persisted transcript and current realm/project memory may be replayed; credentials, tool
+  grants, MCP descriptors and process state are not inherited. The context is torn down when
+  the turn settles. Failure to confirm either teardown or restricted initialization fails the
+  run closed without dispatching.
 - **No use of the session-observation tools.** They are approval-gated per call and
   explicitly non-pollable. The server executor uses the digest service or nothing.
 - **No cross-realm read**, by construction (D3) rather than by instruction.

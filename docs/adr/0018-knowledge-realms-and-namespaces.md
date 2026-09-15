@@ -249,6 +249,8 @@ realm_allowed_runtimes(realm_id, runtime)  PRIMARY KEY (realm_id, runtime)
 
 No rows for a realm means unrestricted. `runtime` is validated against the server's canonical
 backend identifiers at write time; unknown values are rejected rather than ignored.
+The relation and shared validator are mandatory in the first realm migration; realms do not
+ship with model-selection paths that bypass them.
 
 enforced by one shared realm-aware model validator used by every creation, dispatch,
 existing-session model change, per-turn override, handoff and Agent Loop reaction path
@@ -334,7 +336,6 @@ has a durable intent record even across a database failure that occurs after for
 
 - Whether the `control_plane` project (`schema.ts:139`) starts in the seeded default realm or
   gets a dedicated realm during migration.
-- Whether `allowed_runtimes` ships in phase 1 or follows the namespace work.
 - How allowlist drift is presented when an upstream renames a tool. The fail-closed behavior
   is fixed: an unknown name remains unavailable until the operator reviews and updates the
   namespace. Phase 1 may ship `read` only and defer write namespaces.
