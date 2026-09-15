@@ -2143,6 +2143,18 @@ describe('live cutover smoke daemon guard', () => {
     );
   });
 
+  it('opens the Updater handoff boundary before unlocking the restored Server', () => {
+    const smoke = readFileSync(script, 'utf8');
+    const rollback = smoke.slice(smoke.indexOf('the rolled-back generation must come back sealed'));
+    const prepare = rollback.indexOf('self-update-live-smoke.js prepare');
+    const relay = rollback.indexOf('self-update-live-smoke.js handoff-relay');
+    const unlock = rollback.indexOf('secret_password "$server" unlock');
+
+    expect(prepare).toBeGreaterThan(-1);
+    expect(relay).toBeGreaterThan(prepare);
+    expect(unlock).toBeGreaterThan(relay);
+  });
+
   // A complete argument list, so a refusal below is the guard's and not the usage
   // message's: image, previous image, and the tag the previous release was cut
   // from. `HEAD` stands in for that tag because the only thing the script asks of
