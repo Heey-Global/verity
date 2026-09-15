@@ -184,8 +184,10 @@ runtimes it should have. A realm may additionally declare an allowed runtime set
 realms.allowed_runtimes  TEXT NULL   -- NULL = no restriction
 ```
 
-enforced where the model is resolved (`server.ts:4659`, `server.ts:7307`). This is a
-**configuration guard**, not a containment boundary: it stops an operator from
+enforced by one shared realm-aware model validator used by every creation, dispatch,
+existing-session model change, per-turn override, handoff and Agent Loop reaction path
+(including `server.ts:4659`, `:7049`, `:7307`, `:7674`). No caller may resolve or persist a
+model without it. This is a **configuration guard**, not a containment boundary: it stops an operator from
 accidentally opening a private-realm session on a runtime they did not intend, and it is
 worth having for that reason alone. It must not be documented as preventing a model that
 already has a context from reading what is in it.
@@ -193,18 +195,20 @@ already has a context from reading what is in it.
 ### D7 — Every namespace call is recorded against its realm
 
 The proxy sees every call already. It appends a row to a dedicated
-`knowledge_namespace_audit` table containing `{ realmId, namespaceId, projectId, sessionId,
-turnId, connectionId, method, targetName, namespaceMode, outcome, denialReason }`, where
-`targetName` is the validated tool or resource identifier when the method has one. Rows form a per-realm
-hash chain using the same sequence/previous-hash/event-hash shape as the Brokered Secrets
+`knowledge_namespace_audit` event table containing `{ requestId, phase, realmId, namespaceId,
+projectId, sessionId, turnId, connectionId, method, targetName, namespaceMode, outcome,
+denialReason }`. `phase` is `request` or `outcome`; an outcome event links to its request by
+`requestId`, and only outcome events carry `outcome`/`denialReason`. `targetName` is the
+validated tool or resource identifier when the method has one. Events form a per-realm hash
+chain using the same sequence/previous-hash/event-hash shape as the Brokered Secrets
 audit trail and are retained for a documented, operator-configurable period (default 180
 days). Without this, "did a session in the business realm read my private notes" has no
 durable answer, and a separation nobody can verify is a separation nobody should trust.
 
 Auditing is fail-closed before side effects: the proxy must append a hash-chained request
-record before forwarding and refuses the call if that write fails. It appends a separate
-outcome record afterward. If the outcome write fails after the upstream already answered,
-the durable request remains visibly unresolved (`outcome: 'unknown'`) and a retry worker may
+event before forwarding and refuses the call if that write fails. It appends a linked outcome
+event afterward. If the outcome write fails after the upstream already answered, the durable
+request has no linked outcome and is therefore reported as `unknown`; a retry worker may
 append the result later; it is never silently treated as success. Thus every forwarded access
 has a durable intent record even across a database failure that occurs after forwarding.
 

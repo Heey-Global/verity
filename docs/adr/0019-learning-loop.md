@@ -194,10 +194,11 @@ operator tap. The tap appends the approved text to `project_settings.memory` or
 `realms.memory`, where ADR 0018 D5's two-part injection puts it into every future context of
 the scope.
 
-The verified proposal row records its evidence realm and, for a project target, the target
-project id. Approval runs transactionally and re-resolves that project's current non-null
-realm. If it no longer equals the evidence realm, the proposal is marked stale and no memory
-is written; the loop must produce evidence in the new realm before it can be approved.
+The verified proposal row records its evidence realm and target kind/id. Approval runs
+transactionally. A realm target must equal the evidence realm. For a project target, the
+server re-resolves the project's current non-null realm and requires the same equality. A
+mismatch marks the proposal stale and writes no memory; the loop must produce evidence in the
+target's realm before approval.
 
 This is consistent with ADR 0018 D5's restriction that only the operator writes realm
 memory, and the ADR should not leave that to be rediscovered: the **tap is the operator
@@ -260,9 +261,9 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
 
 ## Scope / open questions
 
-- Which structural keys the digest aggregates on. Tool name plus denial reason is the obvious
-  first set; whether error kind and risk class add signal is an empirical question for the
-  first window of real data.
+- Which admissible structural keys the digest aggregates on. Tool name, risk class, behavior
+  and scope are the first set; whether safe secret-target identifiers add signal is an
+  empirical question for the first window of real data.
 - Hold-out window size and the pass criterion for D5 — the numbers matter more than the
   mechanism and should come from measurement, not from this document.
 - How the UI chooses a host project and guides rehosting when no project in a realm is an
