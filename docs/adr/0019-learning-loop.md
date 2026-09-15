@@ -129,11 +129,14 @@ least 3, and the response contains at most 100 candidates, three exemplars per c
 those bounds and records truncation in the response; the script cannot widen them.
 
 Each candidate carries an opaque, authenticated `candidateEvidence` id. At digest computation
-the server persists an immutable evidence row bound to the loop run, realm, structural
-predicate, train/hold-out windows and server-computed metrics, retained for 30 days. A
-proposal must echo the id; at proposal-event ingestion the server loads the row, verifies the
-run and realm, derives the displayed fields from it, and persists a verification receipt with
-the proposal. A later operator tap references that immutable proposal row. This keeps raw
+the server persists an immutable evidence row bound to the loop, run, realm, host session,
+dispatched reaction turn, structural predicate, train/hold-out windows and server-computed
+metrics, retained for 30 days. A proposal must echo the id; at proposal-event ingestion the
+server resolves the emitting session/turn from trusted event context, requires every binding
+to match, and atomically consumes the evidence id under a unique constraint so it cannot be
+replayed. It then derives the displayed fields from the evidence row and persists a
+verification receipt with the proposal. A later operator tap references that immutable
+proposal row. This keeps raw
 source transcripts out of the evidence store, permits delayed unattended ingestion within the
 documented retention window, and avoids trusting a rewritten prompt or recomputing against
 later data. The bounded, redacted digest attached to the reaction prompt is ordinary prompt
