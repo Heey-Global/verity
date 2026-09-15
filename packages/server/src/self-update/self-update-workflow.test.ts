@@ -783,11 +783,15 @@ describe('self-update workflow image', () => {
    *     that fails a release.
    */
   describe('reclaiming leaked isolated-daemon state', () => {
-    /** Runs the janitor with `docker ps`/`volume ls` answering `listed`. */
+    /**
+     * Runs the janitor with `docker ps`/`volume ls` answering `listed`. With
+     * `rmFails`, every removal reports failure, which is how a container a sibling
+     * run has adopted in the meantime reaches this step.
+     */
     const runJanitor = async (
-      listed: { containers?: string[]; volumes?: string[] } = {},
+      listed: { containers?: string[]; volumes?: string[]; rmFails?: boolean } = {},
     ): Promise<{ code: number; out: string; removed: string[] }> => {
-      const { containers = [], volumes = [] } = listed;
+      const { containers = [], volumes = [], rmFails = false } = listed;
       const dir = await mkdtemp(join(tmpdir(), 'self-update-janitor-'));
       const calls = join(dir, 'docker-calls');
       try {
@@ -800,6 +804,7 @@ describe('self-update workflow image', () => {
             `case "$*" in\n` +
             `  *'ps --all'*) ${emit(containers)}; exit 0;;\n` +
             `  *'volume ls'*) ${emit(volumes)}; exit 0;;\n` +
+            `  *'rm --force'*|*'volume rm'*|*'image rm'*) exit ${rmFails ? 1 : 0};;\n` +
             `esac\n` +
             `exit 0\n`,
           { mode: 0o755 },
@@ -808,14 +813,14 @@ describe('self-update workflow image', () => {
         const logged = (await readFile(calls, 'utf8').catch(() => '')).split('\n').filter(Boolean);
         return {
           ...result,
-          removed: logged.filter((call) => /rm --force|volume rm/.test(call)),
+          removed: logged.filter((call) => /rm --force|volume rm|image rm/.test(call)),
         };
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
     };
 
-    it('removes a day-old daemon container and the volume it was holding', async () => {
+    it('removes a day-old daemon container, its image and the volume it held', async () => {
       const { code, out, removed } = await runJanitor({
         containers: ['verity-self-update-dind-42-1 3 days ago'],
         // Dangling only once the container above is gone, which is the whole
@@ -824,10 +829,14 @@ describe('self-update workflow image', () => {
       });
 
       expect(code, out).toBe(0);
-      expect(removed).toHaveLength(2);
+      expect(removed).toHaveLength(3);
       expect(removed[0]).toContain('rm --force');
       expect(removed[0]).toContain('verity-self-update-dind-42-1');
-      expect(removed[1]).toContain('volume rm verity-self-update-dind-42-1-data');
+      // The image is the run's own per-run build, named from the container rather
+      // than looked up — and removed after it, because while the container exists it
+      // holds the image and this would report a success it did not have.
+      expect(removed[1]).toContain('image rm verity-self-update-dind:ci-42-1');
+      expect(removed[2]).toContain('volume rm verity-self-update-dind-42-1-data');
     });
 
     it('leaves a concurrent run’s daemon alone however leaked it looks', async () => {
@@ -873,6 +882,46 @@ describe('self-update workflow image', () => {
       expect(removed).toEqual([]);
       expect(out).toContain("Not removing 'verity-data'");
       expect(out).toContain("Not removing 'verity-updater-control'");
+    });
+
+    /**
+     * The image is named from a container this step has already decided is both
+     * ours and dead, so it inherits the name and age guards above rather than
+     * repeating them — which is the point: a lookup of its own would have to glob
+     * (`images --filter reference=` cannot be anchored) and would have to date the
+     * image config rather than this run, and a cache-hit build re-tags an existing
+     * ID. The failure that leaves is silent: untagging a LIVE sibling's image
+     * sends its `docker run` to Docker Hub for a name nobody ever pushed. These
+     * cases exist to keep the derivation from drifting back into a lookup.
+     */
+    it('reclaims no image for a container it refused to remove', async () => {
+      const { code, out, removed } = await runJanitor({
+        containers: [
+          'verity-data 3 days ago',
+          'verity-self-update-dind-main-1 3 days ago',
+          'verity-self-update-dind-77-1 5 minutes ago',
+        ],
+      });
+
+      expect(code, out).toBe(0);
+      expect(removed).toEqual([]);
+      expect(out).toContain('Reclaimed 0 leaked isolated-daemon container(s) and 0 image(s)');
+    });
+
+    /**
+     * `docker rm` failing is how this step learns the container is not actually
+     * gone — most plausibly because a sibling run just adopted it. Removing its
+     * image anyway would untag a daemon that is still serving a cutover.
+     */
+    it('reclaims no image when the container removal itself failed', async () => {
+      const { code, out, removed } = await runJanitor({
+        containers: ['verity-self-update-dind-42-1 3 days ago'],
+        rmFails: true,
+      });
+
+      expect(code, out).toBe(0);
+      expect(removed).toEqual([expect.stringContaining('rm --force')]);
+      expect(out).toContain('Reclaimed 0 leaked isolated-daemon container(s) and 0 image(s)');
     });
   });
 

@@ -405,6 +405,26 @@ interface FrontDoor {
   readonly body: string;
 }
 
+/** A 503 from the backend is a serving, degraded Verity Server. Maintenance is
+ * the Gateway's own 503 and is distinguished by the body it writes itself. */
+function isGatewayMaintenance(answer: FrontDoor | undefined): boolean {
+  return (
+    answer !== undefined && answer.status === 503 && answer.body.includes('server maintenance')
+  );
+}
+
+/** The same structured readiness answer the Updater accepts. A degraded Server
+ * is serving through the Gateway even though HTTP represents that state as 503. */
+function isServingFrontDoor(answer: FrontDoor | undefined): boolean {
+  if (answer === undefined || (answer.status !== 200 && answer.status !== 503)) return false;
+  try {
+    const body = JSON.parse(answer.body) as { status?: unknown; version?: unknown };
+    return typeof body.version === 'string' && (body.status === 'ok' || body.status === 'degraded');
+  } catch {
+    return false;
+  }
+}
+
 /** One look at the front door. A Gateway that is closing, switching or gone is a
  *  status or a transport error; both are "not serving" to a client. */
 async function frontDoor(): Promise<FrontDoor | undefined> {
@@ -674,7 +694,7 @@ async function runCatchupClient(token: string, deadlineAt: number): Promise<void
     report('ack-before', {});
 
     const refused = await waitForFrontDoor(
-      (seen) => seen !== undefined && seen.status === 503,
+      isGatewayMaintenance,
       deadlineAt,
       'the Gateway never entered maintenance',
     );
@@ -716,7 +736,7 @@ async function runCatchupClient(token: string, deadlineAt: number): Promise<void
     report('stream-released', { code: closed.code, afterMaintenanceMs: Date.now() - refusedAt });
 
     await waitForFrontDoor(
-      (seen) => seen !== undefined && seen.status === 200,
+      isServingFrontDoor,
       deadlineAt,
       'the Gateway never served again after the switch',
     );
@@ -820,7 +840,7 @@ async function main(): Promise<void> {
   // the deployment refusing new work while it changes generation, and it is the
   // first thing a client can see of an update it was never told about.
   const refused = await waitForFrontDoor(
-    (seen) => seen !== undefined && seen.status === 503,
+    isGatewayMaintenance,
     deadlineAt,
     'the Gateway never entered maintenance',
   );
@@ -840,7 +860,7 @@ async function main(): Promise<void> {
   // taken away — the failure this whole maintenance window exists to prevent.
   const late = await frontDoor();
   expect(
-    late !== undefined && late.status === 503,
+    isGatewayMaintenance(late),
     `the Gateway routed a new request during maintenance (${String(late?.status)})`,
   );
 
@@ -917,7 +937,7 @@ async function main(): Promise<void> {
   // The front door is the whole point of the exercise: same host, same port, same
   // token, a different generation behind it.
   await waitForFrontDoor(
-    (seen) => seen !== undefined && seen.status === 200,
+    isServingFrontDoor,
     deadlineAt,
     'the Gateway never served again after the switch',
   );

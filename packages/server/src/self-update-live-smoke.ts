@@ -1040,6 +1040,7 @@ async function startHandoffRelay(managedRoot: string): Promise<void> {
         });
         console.log('${HANDOFF_RELAY_READY}');
         let published = '';
+        let publishedHandoff = '';
         const tick = async () => {
           try {
             const state = JSON.parse(await readFile(process.env.VERITY_SMOKE_STANDBY_STATE, 'utf8'));
@@ -1072,8 +1073,71 @@ async function startHandoffRelay(managedRoot: string): Promise<void> {
             ' ' + (exchange.requested(operationId) ?? '-') +
             ' ' + (exchange.acknowledged(operationId) ?? '-');
           if (line !== published) { published = line; console.log(line); }
+          // Caught on its own rather than left to the journal refresh's handler
+          // above: this line is a diagnostic, and the refresh is what the
+          // deployment depends on. A read that throws here — the socket busy,
+          // the route answering anything but 200 — would otherwise leave the
+          // loop, reach the outer catch and take the relay down with it, and a
+          // relay that exits stops publishing journals to every peer at once.
+          //
+          // Raced as well as caught, because the catch only covers the half of this
+          // that fails. A read that HANGS never reaches it, and the refresh above
+          // runs once per tick — so a stalled diagnostic stops the next refresh from
+          // ever starting, which is the same outage by a slower route.
+          //
+          // The bound is deliberately close to the 200ms tick rather than generous.
+          // This read sits IN FRONT of the next refresh, so whatever it waits is
+          // added to the interval the deployment actually depends on; a second-scale
+          // timeout would turn a merely slow socket into a five-fold slower relay,
+          // which is the outage again in small print. Reporting a slow read as
+          // unreadable costs nothing — the line is a diagnostic either way.
+          let handoffLine;
+          let timer;
+          try {
+            const handoff = await Promise.race([
+              updater.readUpdaterHandoff({
+                socketPath: process.env.VERITY_SMOKE_RELAY_SOCKET,
+                token: process.env.VERITY_SMOKE_RELAY_TOKEN,
+              }),
+              new Promise((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error('handoff read timed out')), 500);
+                timer.unref();
+              }),
+            ]);
+            handoffLine = handoff === null
+              ? 'handoff-state none'
+              : 'handoff-state ' + handoff.binding.operationId +
+                ' sender=' + String(handoff.senderIdentityPublicKey !== undefined) +
+                ' offer=' + String(handoff.offer !== undefined);
+          } catch (error) {
+            // String(error), not error.code ?? error.message: a rejection value of
+            // null or undefined makes that property access throw INSIDE the catch,
+            // which leaves the loop and takes the relay down — the exact outcome this
+            // catch exists to prevent. (No backticks in here: this whole relay script
+            // is a template literal.)
+            handoffLine = 'handoff-state unreadable ' + String(error);
+          } finally {
+            // When the read wins, cancel the still-pending timeout instead of leaving
+            // one timer behind per tick. It is unref'd and cannot hold the process
+            // open, but retaining it serves no purpose.
+            if (timer !== undefined) clearTimeout(timer);
+          }
+          if (handoffLine !== publishedHandoff) {
+            publishedHandoff = handoffLine;
+            console.log(handoffLine);
+          }
         };
-        setInterval(() => void tick(), 200);
+        // Do not schedule a second refresh while the first one is still between
+        // reading the state file and atomically replacing the journal. Two async
+        // interval callbacks can otherwise complete out of order: the newer one
+        // installs generation N, then the older one puts N-1 back. Handoff peers
+        // observe the binding disappear and recreate their ephemeral material;
+        // enough churn exhausts the outgoing Server's bounded seal budget.
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        for (;;) {
+          await tick();
+          await sleep(200);
+        }
       })().catch((error) => { console.error(error); process.exit(1); })`,
     ],
     env: [

@@ -48,6 +48,9 @@ jobs:
     timeout-minutes: 90
     env:
       VERITY_SMOKE_DIND: verity-self-update-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      # Run-scoped like the tags below, and for the same reason: this is a tag on
+      # the SHARED host daemon, and two commits run this job concurrently by design.
+      VERITY_SMOKE_DIND_IMAGE: verity-self-update-dind:ci-${{ github.run_id }}-${{ github.run_attempt }}
       VERITY_SMOKE_IMAGE: verity-server:self-update-${{ github.run_id }}-${{ github.run_attempt }}
       # Namespaced per run like the two above, which it was not while this job owned
       # a whole VM. It is a tag on the SHARED host daemon now: two main commits run
@@ -74,11 +77,21 @@ jobs:
 
       - name: Stage the workflow-owned live smoke harness
         run: |
-          mkdir -p "$RUNNER_TEMP/verity-self-update-harness"
+          mkdir -p "$RUNNER_TEMP/verity-self-update-harness/gvisor-context"
           install -m 0755 deploy/bin/verity-self-update-live-smoke \
             "$RUNNER_TEMP/verity-self-update-harness/verity-self-update-live-smoke"
           install -m 0644 packages/server/src/self-update-live-smoke.ts \
             "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke.ts"
+          install -m 0644 packages/server/src/self-update-live-smoke-client.ts \
+            "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke-client.ts"
+          # The isolated daemon's own image, staged for the same reason as the two
+          # above and one more. Its build is the only one in this job that runs on
+          # the SHARED host daemon, and its output is then started `--privileged`
+          # there — so the instructions have to belong to the workflow revision, not
+          # to the candidate. The candidate's gVisor pins are validated and copied
+          # into this isolated context later; no candidate file is executed here.
+          install -m 0644 deploy/gvisor-ci.Dockerfile \
+            "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/Dockerfile"
 
       # Replace the workflow checkout only after its local setup action and live
       # smoke harness have been staged. Product source belongs to the exact
@@ -96,6 +109,8 @@ jobs:
             deploy/bin/verity-self-update-live-smoke
           install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke.ts" \
             packages/server/src/self-update-live-smoke.ts
+          install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke-client.ts" \
+            packages/server/src/self-update-live-smoke-client.ts
 
       # Deliberately at the START of the job, not only in the teardown. The
       # teardown removes THIS run's volume, and it is an `if: always()` step — but
@@ -135,13 +150,28 @@ jobs:
           # whatever the clock skew. Nothing here needs the sweep to be prompt — a
           # leak sitting for a day costs a container slot, and a sweep that killed a
           # live sibling's daemon would fail a release.
+          #
+          # The daemon's IMAGE is reclaimed from here too, and deliberately only from
+          # here. It used to be a pull of a public dind tag, shared by every run and
+          # worth keeping; it is a per-run build now, so a leak is a whole image on
+          # this disk and nothing else would ever take it back. Every other way of
+          # finding it is unsafe: `images --filter reference=` cannot be anchored, and
+          # `{{.CreatedSince}}` is the image config's date rather than this run's — a
+          # cache-hit build re-tags an existing ID, so a LIVE sibling's fresh tag can
+          # read "3 days ago", and untagging it sends its `docker run` to Docker Hub
+          # for a name that was never pushed. Deriving the tag from a container this
+          # step has already decided is dead inherits both guards intact, at the cost
+          # of the one case it cannot see: a run killed between its build and its
+          # `docker run`, a window of seconds against a 90-minute job.
           stale=0
+          untagged=0
           while read -r container age; do
             [[ -n "$container" ]] || continue
-            if [[ ! "$container" =~ ^verity-self-update-dind-[0-9]+-[0-9]+$ ]]; then
+            if [[ ! "$container" =~ ^verity-self-update-dind-([0-9]+)-([0-9]+)$ ]]; then
               echo "::warning::Not removing '$container': the name filter returned something outside the run-scoped pattern." >&2
               continue
             fi
+            tag="verity-self-update-dind:ci-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
             case "$age" in
               *day*|*week*|*month*|*year*) ;;
               *) continue ;;
@@ -149,10 +179,16 @@ jobs:
             if docker --host unix:///var/run/docker.sock rm --force --volumes=false "$container" >/dev/null 2>&1; then
               stale=$((stale + 1))
               echo "Reclaimed leaked daemon container $container (created $age)"
+              # After the container, never before: while it exists it holds the image,
+              # and this would be a no-op that reported success.
+              if docker --host unix:///var/run/docker.sock image rm "$tag" >/dev/null 2>&1; then
+                untagged=$((untagged + 1))
+                echo "Reclaimed leaked daemon image $tag"
+              fi
             fi
           done < <(docker --host unix:///var/run/docker.sock ps --all \
             --filter 'name=^verity-self-update-dind-[0-9]+-[0-9]+$' --format '{{.Names}} {{.RunningFor}}')
-          echo "Reclaimed $stale leaked isolated-daemon container(s)"
+          echo "Reclaimed $stale leaked isolated-daemon container(s) and $untagged image(s)"
 
           # Scoped twice, because the failure mode of getting this wrong is not a
           # slow job. An unscoped `docker volume prune` on this host removes
@@ -498,6 +534,46 @@ jobs:
       - name: Start the isolated Docker daemon
         run: |
           set -euo pipefail
+          # A stock dind image is no longer a daemon a Verity generation can run on.
+          # Since the Secret Job runtime became mandatory, `/healthz` attests the
+          # daemon's registered `runsc` on every call and answers a degraded 503 when
+          # it is absent — permanently, because nothing in the container can register
+          # it after the fact. The Updater's readiness probe tolerates that 503 by
+          # design (a degraded generation must not trigger a rollback), so the cutover
+          # would commit and only the smoke's own "is it serving?" gate would fail,
+          # in a way that says nothing about the candidate.
+          #
+          # `deploy/gvisor-ci.Dockerfile` is the same image the Secret Job live smoke
+          # runs on. It is read from the staged WORKFLOW revision — this build is the
+          # one host-daemon build in the job and its output runs `--privileged` there.
+          # Its context is isolated from the CANDIDATE checkout as well: the candidate
+          # chooses the three pins below, but none of its text is executed by the
+          # Dockerfile.
+          #
+          # Extracted, never sourced. `deploy/gvisor/versions.env` comes from the
+          # CANDIDATE checkout, and `.` would run it as shell in this workflow-owned
+          # step — on the host socket, and able to overwrite `$socket_path` on its way
+          # to `$GITHUB_ENV`. The shape check is the second half: the value is
+          # interpolated into a path compared below, so it has to be one path segment
+          # and nothing else. Both run before the build, so a malformed pin costs a
+          # second rather than a full image build.
+          runsc_release="$(sed -n 's/^RUNSC_RELEASE=//p' deploy/gvisor/versions.env | head -n 1)"
+          runsc_sha512_x86_64="$(sed -n 's/^RUNSC_SHA512_X86_64=//p' deploy/gvisor/versions.env | head -n 1)"
+          runsc_sha512_aarch64="$(sed -n 's/^RUNSC_SHA512_AARCH64=//p' deploy/gvisor/versions.env | head -n 1)"
+          if [[ ! "$runsc_release" =~ ^[A-Za-z0-9._-]+$ ]] \
+            || [[ ! "$runsc_sha512_x86_64" =~ ^[a-f0-9]{128}$ ]] \
+            || [[ ! "$runsc_sha512_aarch64" =~ ^[a-f0-9]{128}$ ]]; then
+            echo "deploy/gvisor/versions.env contains an unusable runtime pin." >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor"
+          printf 'RUNSC_RELEASE=%s\nRUNSC_SHA512_X86_64=%s\nRUNSC_SHA512_AARCH64=%s\n' \
+            "$runsc_release" "$runsc_sha512_x86_64" "$runsc_sha512_aarch64" \
+            >"$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor/versions.env"
+          docker build \
+            --file "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/Dockerfile" \
+            --tag "$VERITY_SMOKE_DIND_IMAGE" \
+            "$RUNNER_TEMP/verity-self-update-harness/gvisor-context"
           socket_dir="$RUNNER_TEMP/$VERITY_SMOKE_DIND"
           socket_path="$socket_dir/docker.sock"
           # `$socket_dir` is bind-mounted into the daemon below, and that mount is
@@ -533,24 +609,59 @@ jobs:
           # daemon must stay throwaway: inside it, ghcr.io is no longer ghcr.io.
           # Everything the smoke pulls beyond the Server image comes from Docker
           # Hub, so nothing else in this daemon needs the real host.
-          # renovate: datasource=docker depName=docker
+          #
+          # The base image's own pin lives in `deploy/gvisor-ci.Dockerfile`, which is
+          # where Renovate tracks it now.
           docker run --detach --privileged \
             --name "$VERITY_SMOKE_DIND" \
             --add-host ghcr.io:127.0.0.1 \
             --volume "$socket_dir:/run/verity-dind" \
             --mount "type=volume,src=$VERITY_SMOKE_DIND-data,dst=/var/lib/docker" \
             --env DOCKER_TLS_CERTDIR= \
-            docker:29.7.1-dind@sha256:66fd272fc375aad4c8fa06351c414e15bffe8cb015c171e1b8a8efe36a72cc1e \
+            "$VERITY_SMOKE_DIND_IMAGE" \
             --host=unix:///var/run/docker.sock \
             --host=unix:///run/verity-dind/docker.sock \
             --insecure-registry ghcr.io
-          for attempt in $(seq 1 60); do
+          attempts=60
+          for attempt in $(seq 1 "$attempts"); do
             if docker exec "$VERITY_SMOKE_DIND" docker info >/dev/null 2>&1; then
+              # The same registration `/healthz` attests, read the way the Server
+              # reads it — `deploy/bin/verity-gvisor-smoke` and `docker.ts` both take
+              # `.path` off this same object — and asserted here, where a mismatch is
+              # still a statement about the DAEMON. Left to the smoke it surfaces
+              # ninety seconds into a cutover as "committed generation never became
+              # healthy", which reads as a verdict on the candidate and is not one.
+              #
+              # `{{json .Runtimes.runsc}}` and not `{{index .Runtimes "runsc" "path"}}`:
+              # `index` walks maps, and the value here is a struct, so the second form
+              # is a template error rather than an empty string — indistinguishable,
+              # under the `2>/dev/null` below, from a daemon that has no runsc at all.
+              registered="$(docker exec "$VERITY_SMOKE_DIND" \
+                docker info --format '{{json .Runtimes.runsc}}' 2>/dev/null \
+                | jq --raw-output '.path // ""' 2>/dev/null || true)"
+              if [[ -z "$registered" ]]; then
+                # A read that failed, not a verdict yet. This `docker exec` can lose a
+                # second the same way the `docker info` guarding it can, and this is
+                # the retry loop that exists for exactly that. Only the last attempt
+                # is allowed to conclude the runtime is absent.
+                if [[ "$attempt" -lt "$attempts" ]]; then
+                  sleep 0.25
+                  continue
+                fi
+                echo "The isolated daemon reports no runsc runtime at all. A Verity" >&2
+                echo "generation cannot become ready on it." >&2
+                exit 1
+              fi
+              if [[ "$registered" != "/opt/verity/runsc/$runsc_release/runsc" ]]; then
+                echo "The isolated daemon registered runsc at '$registered', not at the" >&2
+                echo "path this candidate pins. A Verity generation cannot become ready on it." >&2
+                exit 1
+              fi
               docker exec "$VERITY_SMOKE_DIND" chmod 0666 /run/verity-dind/docker.sock
               printf 'DOCKER_HOST=unix://%s\n' "$socket_path" >>"$GITHUB_ENV"
               exit 0
             fi
-            if [[ "$attempt" -eq 60 ]]; then
+            if [[ "$attempt" -eq "$attempts" ]]; then
               # Named, not ambient. `$DOCKER_HOST` is written to $GITHUB_ENV a few
               # lines up, which takes effect in the NEXT step — so bare `docker` is
               # the runner's own socket here and only here. Spelling that out is what
@@ -711,6 +822,18 @@ jobs:
           docker --host unix:///var/run/docker.sock exec "$VERITY_SMOKE_DIND" \
             rm -f /run/verity-dind/docker.sock >/dev/null 2>&1 || true
           docker --host unix:///var/run/docker.sock rm -f "$VERITY_SMOKE_DIND" >/dev/null 2>&1 || true
+          # Immediately after the container and before anything else, because the
+          # start-of-job reclaimer derives this tag FROM that container: once the
+          # container is gone and the image is not, nothing can name it again. The
+          # order costs nothing — the image is only removable once the container
+          # holding it is gone — and it shrinks the unreclaimable window to the gap
+          # between two adjacent commands.
+          #
+          # Run-scoped, so this drops exactly the tag this run's daemon step built —
+          # the same reasoning that lets `$VERITY_SMOKE_PREVIOUS_IMAGE` be removed
+          # while `$previous` deliberately stays.
+          docker --host unix:///var/run/docker.sock image rm -f "$VERITY_SMOKE_DIND_IMAGE" \
+            >/dev/null 2>&1 || true
           docker --host unix:///var/run/docker.sock volume rm -f "$VERITY_SMOKE_DIND-data" \
             >/dev/null 2>&1 || true
           rm -rf "$RUNNER_TEMP/$VERITY_SMOKE_DIND" >/dev/null 2>&1 || true

@@ -15,6 +15,10 @@ import ignore from 'ignore';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
+import {
+  PINNED_RUNSC_PATH,
+  PINNED_RUNSC_RELEASE,
+} from '../packages/server/src/gvisor-runtime-config.js';
 // @ts-expect-error -- plain .mjs helper, no types
 import { RELEASE_IMAGES, SERVER_IMAGE } from './audit-release-images.mjs';
 
@@ -1414,6 +1418,12 @@ describe('self-update release gate', () => {
     );
     expect(steps[restoreIndex]?.run).toContain('deploy/bin/verity-self-update-live-smoke');
     expect(steps[restoreIndex]?.run).toContain('packages/server/src/self-update-live-smoke.ts');
+    expect(steps[stageIndex]?.run).toContain(
+      'install -m 0644 packages/server/src/self-update-live-smoke-client.ts',
+    );
+    expect(steps[restoreIndex]?.run).toContain(
+      'packages/server/src/self-update-live-smoke-client.ts',
+    );
     expect(smoke?.run).toContain('deploy/bin/verity-self-update-live-smoke');
   });
 
@@ -2018,7 +2028,7 @@ describe('GitHub-hosted runner boundary', () => {
   });
 
   it('namespaces every host-daemon tag the cutover smoke creates', () => {
-    // The isolated daemon's names are its own business; these three land in the
+    // The isolated daemon's names are its own business; these four land in the
     // SHARED image store. self-update runs per commit and never cancels a sibling
     // (the concurrency group is per-sha, on purpose), so two runs overlap by design
     // — and a fixed `verity-server:self-update-previous` lets the second retag it
@@ -2028,11 +2038,138 @@ describe('GitHub-hosted runner boundary', () => {
       jobs: Record<string, Job>;
     };
     const env = workflow.jobs['live-smoke']?.env ?? {};
-    for (const name of ['VERITY_SMOKE_DIND', 'VERITY_SMOKE_IMAGE', 'VERITY_SMOKE_PREVIOUS_IMAGE']) {
+    for (const name of [
+      'VERITY_SMOKE_DIND',
+      'VERITY_SMOKE_DIND_IMAGE',
+      'VERITY_SMOKE_IMAGE',
+      'VERITY_SMOKE_PREVIOUS_IMAGE',
+    ]) {
       // Both halves: run_id alone repeats across a re-run of the same run.
       expect(env[name], `${name} is shared with concurrent runs`).toContain('${{ github.run_id }}');
       expect(env[name]).toContain('${{ github.run_attempt }}');
     }
+  });
+
+  it('runs the cutover on a daemon registering the runtime every candidate attests', () => {
+    // The silent failure this guards is a red release gate that says nothing about
+    // the release. `main.ts` asks for the Secret Job runtime unconditionally, so
+    // every candidate's `/healthz` attests the daemon's registered `runsc` on every
+    // call and answers a degraded 503 while it is absent — permanently, since
+    // nothing inside the container can register it afterwards. The Updater's
+    // readiness probe tolerates that 503 ON PURPOSE (a degraded generation must not
+    // trigger a rollback), so the cutover commits and the only thing that fails is
+    // the smoke's own health gate, ninety seconds later, worded as a verdict on the
+    // candidate. A stock dind image is what produces that, and nothing about it
+    // looks wrong.
+    //
+    // Read from `main.ts` rather than assumed: were the requirement ever gated
+    // again, this guard is the thing to revisit, not something to skip past.
+    const main = readFileSync('packages/server/src/main.ts', 'utf8');
+    expect(
+      main,
+      'the Server no longer requires the runtime unconditionally; re-derive this guard',
+    ).toMatch(/secretJobRuntimeRequired:\s*true\b/);
+
+    const workflow = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, Job>;
+    };
+    const steps = workflow.jobs['live-smoke']?.steps ?? [];
+    const daemon = steps.find((step) => step.name === 'Start the isolated Docker daemon');
+    const run = daemon?.run ?? '';
+    expect(run).not.toBe('');
+
+    // Line continuations folded away first, so a reflow of the commands below is
+    // not what any of this reports on.
+    const fold = (source: string): string => source.replace(/[ \t]*\\\n[ \t]*/g, ' ');
+    // The image is read out of the `docker run` that starts the daemon — the token
+    // between the last flag and dockerd's own arguments — rather than matched
+    // anywhere in the step. A build left in place while the run went back to a stock
+    // image is exactly the edit that reintroduces this.
+    const image = /docker run --detach --privileged .*? (\S+) --host=/.exec(fold(run))?.[1];
+    expect(image, 'the cutover daemon does not run the image this step builds').toBe(
+      '"$VERITY_SMOKE_DIND_IMAGE"',
+    );
+    // From the STAGED copy. This is the one build in the job that runs on the shared
+    // host daemon, and what it produces is then started `--privileged` there, so a
+    // `--file deploy/gvisor-ci.Dockerfile` reading the candidate's tree would let a
+    // dispatched ref choose what runs privileged on that host.
+    expect(fold(run)).toContain(
+      'docker build --file "$RUNNER_TEMP/verity-self-update-harness/gvisor-context/Dockerfile" ' +
+        '--tag "$VERITY_SMOKE_DIND_IMAGE" ' +
+        '"$RUNNER_TEMP/verity-self-update-harness/gvisor-context"',
+    );
+    const stage = steps.find((step) => step.name === 'Stage the workflow-owned live smoke harness');
+    expect(fold(stage?.run ?? '')).toContain(
+      'install -m 0644 deploy/gvisor-ci.Dockerfile ' +
+        '"$RUNNER_TEMP/verity-self-update-harness/gvisor-context/Dockerfile"',
+    );
+    expect(fold(run)).toContain(
+      '>"$RUNNER_TEMP/verity-self-update-harness/gvisor-context/deploy/gvisor/versions.env"',
+    );
+    expect(fold(run)).not.toContain('--tag "$VERITY_SMOKE_DIND_IMAGE" .');
+
+    // And it is not handed on until the daemon has answered with the path this
+    // CANDIDATE pins, read out of the candidate's own pin file so a release bump
+    // cannot leave the smoke attesting a stale one. Without this the next way to
+    // lose the runtime — a Dockerfile that stops installing it, a base image that
+    // drops `/etc/docker` — is silent again in the same direction.
+    //
+    // Extracted, never sourced: `versions.env` is a CANDIDATE file, and `.` would
+    // run it as shell in this workflow-owned step, on the host socket, able to
+    // overwrite the socket path this step publishes. That is the same exposure the
+    // staged Dockerfile above exists to close, and it would read as a tidier way
+    // of doing what the `sed` does.
+    expect(
+      run,
+      'the pin file is a candidate artifact and this step runs on the host socket',
+    ).not.toMatch(/^\s*(?:\.|source)\s+deploy\/gvisor\/versions\.env/m);
+    // That `sed` is a SECOND parser for `deploy/gvisor/versions.env`, alongside the
+    // one behind `PINNED_RUNSC_RELEASE`. The two agreeing is what the attestation
+    // rests on, and nothing about a quoted value, an `export` prefix or a duplicate
+    // key (sed keeps the first, shell-sourcing the last) announces itself — the
+    // step would compare against a release the Server never pinned and fail the
+    // candidate for it. So run the workflow's own expression, taken from the
+    // workflow, against the real file.
+    const script = /sed -n '(s\/\^[A-Z_]+=\/\/p)' (\S+)/.exec(run);
+    expect(script, 'the pin is no longer extracted by a sed script; re-derive this guard').not.toBe(
+      null,
+    );
+    const [, expression = '', pinFile = ''] = script ?? [];
+    const key = /^s\/\^([A-Z_]+)=\/\/p$/.exec(expression)?.[1];
+    expect(key).toBe('RUNSC_RELEASE');
+    const extracted = readFileSync(pinFile, 'utf8')
+      .split('\n')
+      .flatMap((line) => (line.startsWith(`${key}=`) ? [line.slice(`${key}=`.length)] : []))[0];
+    expect(extracted, `${pinFile} does not yield the release the Server pins`).toBe(
+      PINNED_RUNSC_RELEASE,
+    );
+    // And what it yields has to survive the step's own shape check, which is the
+    // thing standing between a candidate-supplied value and a path comparison.
+    expect(run).toContain('=~ ^[A-Za-z0-9._-]+$');
+    expect(run.match(/=~ \^\[a-f0-9\]\{128\}\$/g)).toHaveLength(2);
+    expect(extracted).toMatch(/^[A-Za-z0-9._-]+$/);
+
+    const template = PINNED_RUNSC_PATH.replaceAll(PINNED_RUNSC_RELEASE, '$runsc_release');
+    // Guards the substitution itself: were the pinned path to stop containing the
+    // release, this would silently become a literal-path assertion that keeps
+    // passing while the smoke attests a hardcoded release.
+    expect(template, 'PINNED_RUNSC_PATH no longer embeds the release; re-derive this').not.toBe(
+      PINNED_RUNSC_PATH,
+    );
+    expect(run).toContain(template);
+    const registrationRead =
+      "docker info --format '{{json .Runtimes.runsc}}' 2>/dev/null " +
+      '| jq --raw-output \'.path // ""\' 2>/dev/null || true';
+    expect(fold(run)).toContain(registrationRead);
+    expect(fold(run)).not.toContain('docker info --format \'{{index .Runtimes "runsc" "path"}}\'');
+    const attested = fold(run).indexOf(registrationRead);
+    const handedOn = run.indexOf('DOCKER_HOST=unix://');
+    expect(attested).toBeGreaterThan(-1);
+    expect(handedOn).toBeGreaterThan(-1);
+    expect(
+      attested,
+      'DOCKER_HOST is published before the runtime is attested, so the smoke runs anyway',
+    ).toBeLessThan(handedOn);
   });
 
   it('reclaims leaked isolated-daemon state at job start, and only that', () => {
@@ -2075,6 +2212,23 @@ describe('GitHub-hosted runner boundary', () => {
     expect(janitor?.run).toContain("--filter 'name=^verity-self-update-dind-[0-9]+-[0-9]+$'");
     expect(janitor?.run).toMatch(/docker[^\n]*rm --force[^\n]*"\$container"/);
     expect(janitor?.run).toContain('^verity-self-update-dind-[0-9]+-[0-9]+$');
+    // The image half, which only exists because the daemon's image became a per-run
+    // BUILD rather than a shared pull of a public tag. Same leak, same reclaimer:
+    // without it every runner lost mid-job adds a whole image to the host store and
+    // nothing ever takes it back.
+    //
+    // Its tag is DERIVED from a container this step has already passed through both
+    // guards above, never looked up. A lookup of its own would have to glob
+    // (`images --filter reference=` cannot be anchored) and would have to date the
+    // image config rather than this run — and a cache-hit build re-tags an existing
+    // ID, so a LIVE sibling's fresh tag can read "3 days ago". Untagging that sends
+    // its `docker run` to Docker Hub for a name nobody ever pushed, which is a
+    // release failure attributed to the wrong run.
+    expect(janitor?.run).toContain(
+      'tag="verity-self-update-dind:ci-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"',
+    );
+    expect(janitor?.run).toMatch(/docker[^\n]*image rm "\$tag"/);
+
     // Neither scope may fall back to a prefix. Spelled out, because
     // `name=^verity-self-update-dind-` is what a careless narrowing edit leaves
     // behind and it reads as equivalent to the anchored form. Comments stripped:
@@ -2092,6 +2246,14 @@ describe('GitHub-hosted runner boundary', () => {
     // other side of it.
     expect(janitor?.run).toContain('{{.RunningFor}}');
     expect(janitor?.run).toContain('*day*|*week*|*month*|*year*) ;;');
+    // And the image must not acquire an age of its own. `{{.CreatedSince}}` is the
+    // image config's date rather than this run's, so it reads days old for a
+    // cache-hit build a live sibling is using right now — the one shape of this
+    // step that passes every assertion above and still breaks a release.
+    expect(
+      executed,
+      'image age is the config date, not this run; derive the tag instead',
+    ).not.toMatch(/CreatedSince|reference=verity-self-update-dind/);
     expect(executed, 'a minute- or hour-scale age gate can match a live sibling run').not.toMatch(
       /\*(minute|hour|second)\*/,
     );
@@ -2104,6 +2266,38 @@ describe('GitHub-hosted runner boundary', () => {
       steps.findIndex((step) => step === janitor),
       'the reclaim runs after the daemon it is meant to clean up after',
     ).toBeLessThan(steps.findIndex((step) => step.name === 'Start the isolated Docker daemon'));
+  });
+
+  it('drops its own daemon image on the way out, so the janitor stays the exception', () => {
+    // The reclaimer above is the crash path. This is the ordinary one, and without
+    // it every successful run leaves a whole image behind on the host the live
+    // deployment writes to — a leak the janitor only reaches a run later, and only
+    // for runs that also left their container behind. Nothing fails when it is
+    // missing; the disk just fills.
+    const workflow = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
+      jobs: Record<string, Job>;
+    };
+    const steps = workflow.jobs['live-smoke']?.steps ?? [];
+    const teardown = steps.find((step) => step.name === 'Tear down the isolated daemon');
+    expect(teardown?.if).toBe('always()');
+    // The HOST socket, spelled out: by this point `$DOCKER_HOST` names the isolated
+    // daemon, and removing the image there removes nothing that outlives the job.
+    const dropped = (teardown?.run ?? '').search(
+      /docker --host unix:\/\/\/var\/run\/docker\.sock image rm -f "\$VERITY_SMOKE_DIND_IMAGE"/,
+    );
+    expect(dropped).toBeGreaterThan(-1);
+    // Between the container and the volume, and that is not cosmetic. The janitor
+    // names a leaked image from the container it reclaimed, so an image outliving
+    // its container is one nothing can name again. Every command between these two
+    // widens the window in which a lost runner leaves exactly that.
+    const container = (teardown?.run ?? '').search(/rm -f "\$VERITY_SMOKE_DIND"/);
+    const volume = (teardown?.run ?? '').search(/volume rm -f "\$VERITY_SMOKE_DIND-data"/);
+    expect(container).toBeGreaterThan(-1);
+    expect(volume).toBeGreaterThan(-1);
+    expect(dropped, 'an image removed before its container is a no-op').toBeGreaterThan(container);
+    expect(dropped, 'every command in between widens the window that leaks it').toBeLessThan(
+      volume,
+    );
   });
 });
 
@@ -2125,6 +2319,166 @@ describe('GitHub-hosted runner boundary', () => {
 describe('live cutover smoke daemon guard', () => {
   const script = 'deploy/bin/verity-self-update-live-smoke';
   const driver = 'packages/server/src/self-update-live-smoke.ts';
+
+  it('serializes relay journal refreshes so an older generation cannot win last', () => {
+    const source = readFileSync(driver, 'utf8');
+    // Both offsets asserted before they are used: `slice(x, -1)` from a renamed
+    // boundary would widen this to most of the file, where the assertions below
+    // pass against code that is not the relay at all.
+    const start = source.indexOf('async function startHandoffRelay(');
+    const end = source.indexOf('async function relayContainer(');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const relay = source.slice(start, end);
+
+    expect(relay).not.toContain('setInterval(() => void tick()');
+    expect(relay).toMatch(/for \(;;\) \{\s*await tick\(\);\s*await sleep\(200\);\s*\}/);
+  });
+
+  /**
+   * A seal answers a handoff binding, and only a step that publishes a new one
+   * can produce another seal. So every seal barrier has to enclose such a step:
+   * the baseline is read, the binding is published, the wait sees the count move.
+   *
+   * Nothing says so when the barrier straddles the wrong step. `prepare` refreshes
+   * the relay's journal itself, at the end of the command that creates the
+   * candidate, and the outgoing Server answers that binding about a second later —
+   * so a baseline read after it has already counted the seal it was written to
+   * wait for, and `settled_seal_count` will even wait for that seal on purpose
+   * before returning. Everything after that is silent by protocol: the responder
+   * holds the offer's nonce in `answered` and returns `exhausted`, which is logged
+   * at debug and never reaches the run. Sixty seconds later the smoke fails a
+   * handoff it watched succeed — and a refresh stage parked inside the barrier
+   * makes it look enclosed, because republishing a binding the responder has
+   * already answered cannot produce anything.
+   *
+   * Which stages publish a binding is read out of the driver rather than listed
+   * here, so one that starts publishing cannot quietly fall outside the rule.
+   */
+  it('encloses a step that publishes a new handoff binding in every seal barrier', () => {
+    const source = readFileSync(driver, 'utf8');
+    const dispatch = [...source.matchAll(/stage === '([\w-]+)'\)\s*(?:await )?(\w+)\(/g)];
+    expect(dispatch.length).toBeGreaterThan(0);
+
+    const publishes = dispatch
+      .filter(([, , fn]) => {
+        const start = source.indexOf(`async function ${fn}(`);
+        expect(start).toBeGreaterThan(-1);
+        const next = source.indexOf('\nasync function ', start + 1);
+        const body = source.slice(start, next < 0 ? source.length : next);
+        // A generation of its own, handed to the relay: a binding the responder
+        // has never answered. Starting the relay is the other way one appears.
+        return (
+          (/\bawait begin\(/.test(body) && body.includes('publishStandbyState(')) ||
+          body.includes('name: HANDOFF_RELAY_NAME')
+        );
+      })
+      .map(([, stage]) => stage);
+    expect(publishes.length).toBeGreaterThan(0);
+
+    const lines = readFileSync(script, 'utf8').split('\n');
+    const publisher = new RegExp(
+      `self-update-live-smoke\\.js (?:${publishes.join('|')})(?:\\s|$)`,
+      'u',
+    );
+    const barriers = lines.flatMap((line, index) =>
+      /^\s*wait_for_new_seal /.test(line) ? [index] : [],
+    );
+    expect(barriers.length).toBeGreaterThan(0);
+
+    for (const wait of barriers) {
+      const baseline = lines.slice(0, wait).findLastIndex((line) => /^\s*seals=/.test(line));
+      expect(baseline).toBeGreaterThan(-1);
+      const enclosed = lines.slice(baseline + 1, wait).filter((line) => publisher.test(line));
+      expect(
+        enclosed,
+        `the seal barrier at line ${String(wait + 1)} encloses no step that publishes a binding, ` +
+          `so its baseline was read after the seal it waits for`,
+      ).not.toEqual([]);
+    }
+  });
+
+  it('uses the Server readiness contract when waiting for a generation to serve', () => {
+    // A degraded Server is serving by definition in the Updater's readiness probe.
+    // Rejecting that same answer here commits the generation and then reports the
+    // successful cutover as a smoke failure ninety seconds later.
+    const probe = readFileSync('packages/server/src/self-update/readiness-probe.ts', 'utf8');
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const contract =
+      /status !== (\d+) && status !== (\d+)[\s\S]*?record\.status === '([^']+)' \|\| record\.status === '([^']+)'/.exec(
+        probe,
+      );
+    expect(
+      contract,
+      'the production readiness contract moved; re-derive this guard',
+    ).not.toBeNull();
+    const [, firstCode, secondCode, firstStatus, secondStatus] = contract ?? [];
+    const wait = /wait_for_healthy\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    const gateway = /expect_gateway_serving\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    for (const gate of [wait, gateway]) {
+      expect(gate).toContain(`r.status !== ${firstCode} && r.status !== ${secondCode}`);
+      expect(gate).toContain(`b.status !== '${firstStatus}' && b.status !== '${secondStatus}'`);
+      expect(gate).toContain("typeof b.version !== 'string'");
+      expect(gate).not.toContain('r.ok');
+    }
+    expect(wait).toContain("console.error('healthz status=' + r.status + ' body='");
+    expect(gateway).toContain("console.error('gateway healthz status=' + r.status + ' body='");
+    expect(wait).toContain('AbortSignal.timeout(5000)');
+    expect(gateway).toContain('AbortSignal.timeout(5000)');
+
+    const client = readFileSync('packages/server/src/self-update-live-smoke-client.ts', 'utf8');
+    const recovered = /function isServingFrontDoor[\s\S]*?\n\}/.exec(client)?.[0] ?? '';
+    expect(recovered).toContain(
+      `answer.status !== ${firstCode} && answer.status !== ${secondCode}`,
+    );
+    expect(recovered).toContain(
+      `body.status === '${firstStatus}' || body.status === '${secondStatus}'`,
+    );
+    expect(recovered).toContain("typeof body.version === 'string'");
+    expect(client.match(/waitForFrontDoor\(\s*isServingFrontDoor,/g)).toHaveLength(2);
+  });
+
+  it('preserves the client evidence when the Gateway never observes its held work', () => {
+    // `attached` is the client's claim; a zero Gateway count is a disagreement.
+    // Without both sides in the failure log the live-only race costs another run
+    // while revealing no more than the assertion did.
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const holding = /expect_gateway_holding\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    expect(holding).toContain('docker inspect --format \'{{.State.Running}}\' "$client"');
+    expect(holding).toContain('docker logs --tail=120 "$client"');
+    expect(holding).toContain('docker logs --tail=120 verity-managed-gateway');
+    expect(holding).toContain('gateway network={{json .NetworkSettings.Networks}}');
+    expect(holding).toContain('gateway client network={{json .NetworkSettings.Networks}}');
+  });
+
+  it('does not mistake a degraded backend for Gateway maintenance', () => {
+    // Both answers are 503. The body written by the Gateway itself is the only
+    // discriminator; a status-only predicate makes the client tear down its held
+    // work before the drain begins whenever the Server is degraded.
+    const gateway = readFileSync('packages/server/src/self-update/managed-gateway.ts', 'utf8');
+    const client = readFileSync('packages/server/src/self-update-live-smoke-client.ts', 'utf8');
+    const maintenanceBody =
+      /const unavailable[\s\S]*?response\.end\('(\{"error":"[^"]+"\})'\)/.exec(gateway)?.[1];
+    expect(maintenanceBody, 'the Gateway maintenance response moved; re-derive this guard').toBe(
+      '{"error":"server maintenance"}',
+    );
+    const predicate = /function isGatewayMaintenance[\s\S]*?\n\}/.exec(client)?.[0] ?? '';
+    expect(predicate).toContain('answer.status === 503');
+    expect(predicate).toContain(JSON.parse(maintenanceBody ?? '{}').error);
+    expect(predicate).not.toMatch(/answer\.status === 503\s*[;)]/);
+    expect(client.match(/waitForFrontDoor\(\s*isGatewayMaintenance,/g)).toHaveLength(2);
+  });
+
+  it('runs the workflow-owned drain client from the candidate image', () => {
+    // `$previous_digest` contains the old released client and cannot carry fixes
+    // to the workflow-owned acceptance harness. Every generated target digest is
+    // the candidate image with only a label changed, so it is the executable side
+    // of the same staging boundary as the restored TypeScript source.
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const start = /start_client\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    expect(start).toContain('--entrypoint=node "$target_digest"');
+    expect(start).not.toContain('--entrypoint=node "$previous_digest"');
+  });
 
   // The update smoke does not run through Compose. It hand-builds the deployment
   // it then updates, so every variable the Server refuses to start without has to
