@@ -1074,17 +1074,17 @@ expect_secret_status "$server" sealed
 # restored Server must observe the real channel during unlock, not recover from
 # an artificial interval in which the control volume exists but its boundary
 # does not.
-echo '--- stage: prepare the same target again, on top of the sealed rolled-back generation'
-node packages/server/dist/self-update-live-smoke.js prepare
-
 # From here on the run has a control boundary, so every remaining cutover is
 # driven the way ADR 0008 D9 describes: the outgoing Server polls this socket for
 # its directive, and the driver reads its acknowledgement back. The relay stays up
 # for the rest of the run — it stands in for the Updater, which is one process
 # across every operation, not one per operation.
-echo '--- stage: serve the Updater control socket the handoff and directive run over'
+echo '--- stage: serve the Updater control socket before creating the next standby'
 seals="$(seal_count)"
 node packages/server/dist/self-update-live-smoke.js handoff-relay
+
+echo '--- stage: prepare the same target again through the already-serving boundary'
+node packages/server/dist/self-update-live-smoke.js prepare
 
 echo '--- stage: unlock the restored generation with the handoff boundary serving'
 secret_password "$server" unlock
