@@ -1,6 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignore": [
+    "apps/mobile/__tests__/support/settingsHarness.ts",
     "features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs",
     "features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs"
   ],

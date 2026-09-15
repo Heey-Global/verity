@@ -358,6 +358,30 @@ export {
   type SecretUiMode,
 } from './secretSettings.js';
 export {
+  changedSecretSettings,
+  changedTextSettings,
+  draftTextSetting,
+  requiresContainerApply,
+  storedTextSetting,
+  textSettingsDirty,
+  type SecretPasteDraft,
+  type SecretPasteKey,
+  type VerityTextSettingKey,
+  type VerityTextSettingsDraft,
+} from './veritySettingsPatch.js';
+export {
+  commitAuthorReady,
+  githubRepositoryAccessReady,
+  secretStoreManaged,
+  secretStoreReady,
+  settingsChecklist,
+  settingsChecklistHeadline,
+  verifiedCommitsReady,
+  type SettingsChecklist,
+  type SettingsChecklistItem,
+  type SettingsChecklistItemId,
+} from './settingsChecklist.js';
+export {
   configuredProjectSettingsCount,
   projectSettingsDraft,
   projectSettingsPatchFromDraft,

@@ -21,7 +21,7 @@ import {
  * settings screen's params.
  */
 export const ATTENTION_ACTION_ROUTES: Readonly<Record<AttentionAction, Href>> = {
-  'codex-login': '/settings?agentLogin=codex' as Href,
+  'codex-login': '/settings/services?agentLogin=codex' as Href,
 };
 
 /**

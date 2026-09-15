@@ -185,7 +185,24 @@ function HydratedRoot() {
             <Stack.Screen name="project/[id]" options={{ title: 'Project' }} />
             <Stack.Screen name="new" options={{ title: 'New agent' }} />
             <Stack.Screen name="new-project" options={{ title: 'New project' }} />
-            <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+            {/* Settings is a flat stack of sibling routes, not a nested layout:
+                a nested one would draw a second header, and `AppHeader` decides
+                it is on home by `route.name === 'index'`. */}
+            <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
+            <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+            <Stack.Screen
+              name="settings/services/index"
+              options={{ title: 'Connected services' }}
+            />
+            <Stack.Screen
+              name="settings/services/mcp/index"
+              options={{ title: 'MCP connections' }}
+            />
+            <Stack.Screen
+              name="settings/services/mcp/new"
+              options={{ title: 'Add MCP connection' }}
+            />
+            <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
             <Stack.Screen name="devices" options={{ title: 'Devices' }} />
             <Stack.Screen name="workflows" options={{ title: 'Workflows' }} />
             <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />

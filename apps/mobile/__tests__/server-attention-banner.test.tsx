@@ -35,7 +35,7 @@ describe('ServerAttentionBanner', () => {
     fireEvent.press(screen.getByLabelText('Sign in to Codex'));
 
     // Exactly the deep link the settings screen auto-starts a Codex login from.
-    expect(mockNavigate).toHaveBeenCalledWith('/settings?agentLogin=codex');
+    expect(mockNavigate).toHaveBeenCalledWith('/settings/services?agentLogin=codex');
     // And not stacked: the banner outlives the tap, so a second one has to return
     // to that screen rather than pile another copy on the history.
     expect(mockPush).not.toHaveBeenCalled();
@@ -59,7 +59,7 @@ describe('ServerAttentionBanner', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent(/\(\+2 more\)$/);
     fireEvent.press(screen.getByLabelText('Sign in to Codex'));
-    expect(mockNavigate).toHaveBeenCalledWith('/settings?agentLogin=codex');
+    expect(mockNavigate).toHaveBeenCalledWith('/settings/services?agentLogin=codex');
   });
 
   // Most attention signals have no one-tap remedy. Offering a button for them
