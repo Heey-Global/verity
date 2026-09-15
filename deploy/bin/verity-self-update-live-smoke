@@ -171,7 +171,7 @@ managed_root="$managed_parent/managed-deployment"
 mkdir --mode=0700 "$managed_root"
 
 cleanup() {
-  docker rm -f verity-managed-server verity-agent-gateway verity-smoke-registry \
+  docker rm -f verity-managed-server verity-smoke-registry \
     verity-postgres verity-postgres-unmigrated >/dev/null 2>&1 || true
   docker ps -aq --filter 'name=^verity-managed-' --filter 'name=^verity-smoke-' |
     xargs -r docker rm -f >/dev/null 2>&1 || true
@@ -304,28 +304,6 @@ docker run --rm --user 0:0 --network none \
   --mount 'type=volume,src=verity-updater-control,dst=/run/verity-updater/control' \
   --entrypoint=sh "$previous_digest" -c \
   'chown 0:1000 /run/verity-updater/control && chmod 0750 /run/verity-updater/control' >/dev/null
-
-# The Server and Agent Gateway are independently supervised in production. The
-# self-update driver used to mount their shared control volume without starting
-# the gateway, which stopped being a faithful deployment once gateway projection
-# became mandatory: unlock kept retrying a nonexistent socket and the subsequent
-# key handoff never reached the standby. Keep this companion stable across every
-# Server generation, just as Compose does.
-echo '--- isolated daemon: the standalone Agent Gateway beside the deployment'
-docker run --detach --name verity-agent-gateway --network verity-net \
-  --user 1000:1000 --restart=no \
-  --mount 'type=volume,src=verity-agent-gateway-control,dst=/run/verity-agent-gateway' \
-  --tmpfs '/var/lib/verity-agent-gateway:rw,noexec,nosuid,size=16m,uid=1000,gid=1000,mode=0700' \
-  --entrypoint=node "$target_digest" packages/server/dist/agent-gateway-main.js >/dev/null
-for attempt in $(seq 1 60); do
-  if docker exec verity-agent-gateway test -S /run/verity-agent-gateway/control.sock; then break; fi
-  if [[ "$attempt" -eq 60 ]]; then
-    docker logs --tail=120 verity-agent-gateway >&2 || true
-    echo 'the standalone Agent Gateway never opened its control socket' >&2
-    exit 1
-  fi
-  sleep 1
-done
 
 wait_for_postgres() {
   for _ in $(seq 1 60); do
