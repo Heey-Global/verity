@@ -107,13 +107,24 @@ that script invocation. The route consumes the grant and verifies the persisted 
 run and session before resolving the realm. The Sandbox supplies no realm or project id. A
 normal session, another loop, a replay, and a loop whose host was moved all fail closed.
 
-The script fetches the digest once and emits it through the existing Agent Loop stdout
-contract; the reaction turn receives that external-data block and never receives the grant.
+The script fetches the digest once and places it inside the spawn object's existing `prompt`
+string; no second stdout record or implicit channel is introduced. The executor applies
+`appendExternalPromptData` to that explicit prompt exactly as for every Agent Loop. Learning
+Loop spawn stdout is capped at 160 KiB before JSON parsing, leaving framing headroom above the
+digest limit; oversize output fails the run. The reaction turn receives the external-data
+block and never receives the grant.
 
 The request is server-bounded: `windowHours` is at most 720 (30 days), `minOccurrences` is at
 least 3, and the response contains at most 100 candidates, three exemplars per candidate,
 4,000 characters per exemplar, and 128 KiB total serialized data. The server truncates within
 those bounds and records truncation in the response; the script cannot widen them.
+
+Each candidate carries an opaque, authenticated `candidateEvidence` token bound to the loop
+run, realm, structural predicate, train/hold-out windows and server-computed metrics. It
+expires after 24 hours. A proposal must echo that token; the server verifies it and derives
+the displayed predicate and metrics from its authenticated claims rather than model-supplied
+fields. This keeps raw digest output ephemeral without trusting a rewritten prompt or
+recomputing against a later data window.
 
 The route returns **counts keyed on structural fields** — tool name, risk class, denial
 reason, error kind — with at most a handful of exemplars per candidate, each passed through
@@ -220,8 +231,9 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
 ## Consequences
 
 - New surface: one internal route plus its digest query and single-use execution grant, one
-  fenced proposal contract and canonical event, the server-side hold-out evaluation, and a
-  per-realm loop configuration. No new scheduler, session kind, or standing credential.
+  fenced proposal contract and canonical event, authenticated candidate-evidence tokens, the
+  server-side hold-out evaluation, and a per-realm loop configuration. No new scheduler,
+  session kind, or standing credential.
 - Everything inherits ADR 0008's guardrails, including the ones that matter most for an
   unattended job: it cannot stack turns, it pauses itself after five consecutive errors, and
   its raw output is never persisted.

@@ -121,6 +121,12 @@ same set. Connections that cannot provide a stable read-only tool set cannot be 
 `read` namespace. `read_write` is a separate explicit mode, never the fallback when read-only
 enforcement is unavailable.
 
+The method policy is also fail-closed. A `read` namespace permits only MCP lifecycle traffic
+(`initialize`, `notifications/initialized`, `ping`), `tools/list`, and allowlisted
+`tools/call`; it rejects resources, prompts, completion, logging, sampling, elicitation and
+unknown or extension methods. Supporting a read-only resource API later requires another
+explicit method-and-identifier policy, not a broader wildcard.
+
 `project_mcp_bindings` stays as it is for project-specific tools. A shared resolver produces
 the deduplicated union of direct bindings and enabled namespaces for a project. The Conductor
 uses that resolver when building MCP descriptors in `embedded.ts`; descriptors carry the
@@ -180,9 +186,10 @@ already has a context from reading what is in it.
 ### D7 — Every namespace call is recorded against its realm
 
 The proxy sees every call already. It logs `{ realmId, projectId, sessionId, turnId,
-connectionId, method }`. Without this, "did a session in the business realm read my private
-notes" has no answer, and a separation nobody can verify is a separation nobody should
-trust.
+connectionId, method, targetName, namespaceMode, outcome, denialReason }`, where `targetName`
+is the validated tool or resource identifier when the method has one. Without this, "did a
+session in the business realm read my private notes" has no answer, and a separation nobody
+can verify is a separation nobody should trust.
 
 ## Alternatives considered
 
