@@ -1079,19 +1079,48 @@ async function startHandoffRelay(managedRoot: string): Promise<void> {
           // the route answering anything but 200 — would otherwise leave the
           // loop, reach the outer catch and take the relay down with it, and a
           // relay that exits stops publishing journals to every peer at once.
+          //
+          // Raced as well as caught, because the catch only covers the half of this
+          // that fails. A read that HANGS never reaches it, and the refresh above
+          // runs once per tick — so a stalled diagnostic stops the next refresh from
+          // ever starting, which is the same outage by a slower route.
+          //
+          // The bound is deliberately close to the 200ms tick rather than generous.
+          // This read sits IN FRONT of the next refresh, so whatever it waits is
+          // added to the interval the deployment actually depends on; a second-scale
+          // timeout would turn a merely slow socket into a five-fold slower relay,
+          // which is the outage again in small print. Reporting a slow read as
+          // unreadable costs nothing — the line is a diagnostic either way.
           let handoffLine;
+          let timer;
           try {
-            const handoff = await updater.readUpdaterHandoff({
-              socketPath: process.env.VERITY_SMOKE_RELAY_SOCKET,
-              token: process.env.VERITY_SMOKE_RELAY_TOKEN,
-            });
+            const handoff = await Promise.race([
+              updater.readUpdaterHandoff({
+                socketPath: process.env.VERITY_SMOKE_RELAY_SOCKET,
+                token: process.env.VERITY_SMOKE_RELAY_TOKEN,
+              }),
+              new Promise((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error('handoff read timed out')), 500);
+                timer.unref();
+              }),
+            ]);
             handoffLine = handoff === null
               ? 'handoff-state none'
               : 'handoff-state ' + handoff.binding.operationId +
                 ' sender=' + String(handoff.senderIdentityPublicKey !== undefined) +
                 ' offer=' + String(handoff.offer !== undefined);
           } catch (error) {
-            handoffLine = 'handoff-state unreadable ' + String(error.code ?? error.message);
+            // String(error), not error.code ?? error.message: a rejection value of
+            // null or undefined makes that property access throw INSIDE the catch,
+            // which leaves the loop and takes the relay down — the exact outcome this
+            // catch exists to prevent. (No backticks in here: this whole relay script
+            // is a template literal.)
+            handoffLine = 'handoff-state unreadable ' + String(error);
+          } finally {
+            // When the read wins, cancel the still-pending timeout instead of leaving
+            // one timer behind per tick. It is unref'd and cannot hold the process
+            // open, but retaining it serves no purpose.
+            if (timer !== undefined) clearTimeout(timer);
           }
           if (handoffLine !== publishedHandoff) {
             publishedHandoff = handoffLine;
