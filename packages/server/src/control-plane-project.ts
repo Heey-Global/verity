@@ -12,7 +12,7 @@
 export const CONTROL_PLANE_PROJECT_ID = 'verity-control';
 export const CONTROL_PLANE_PROJECT_OWNER = 'verity';
 export const CONTROL_PLANE_PROJECT_REPO = 'control';
-export const CONTROL_PLANE_PROJECT_CONTAINER = 'verity-control';
+const CONTROL_PLANE_PROJECT_CONTAINER = 'verity-control';
 
 /** Persist the built-in project before any subsystem creates a row that
  * references it. The Runner identity starts during server construction, before
