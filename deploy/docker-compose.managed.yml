@@ -46,8 +46,16 @@ services:
     command:
       - >-
         mkdir -p /data/workspaces /data/sessions /data/runners &&
-        chown "$${VERITY_SERVER_UID}:$${VERITY_SERVER_GID}"
-        /data /data/workspaces /data/sessions /data/runners &&
+        for path in /data /data/workspaces /data/sessions /data/runners; do
+          owner="$$(stat -c '%u:%g' "$$path")";
+          expected="$${VERITY_SERVER_UID}:$${VERITY_SERVER_GID}";
+          if [ "$$owner" = '0:0' ]; then
+            chown "$$expected" "$$path";
+          elif [ "$$owner" != "$$expected" ]; then
+            echo "refusing to change $$path ownership from $$owner to $$expected" >&2;
+            exit 1;
+          fi;
+        done &&
         chmod 0750 /data/runners
     environment:
       VERITY_SERVER_UID: ${VERITY_SERVER_UID:-1000}

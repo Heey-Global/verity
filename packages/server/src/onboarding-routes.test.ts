@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildServer } from './server.js';
 import type { OnboardingStatus } from './onboarding-routes.js';
+import { ensureControlPlaneProject } from './control-plane-project.js';
 
 // The onboarding-status route never touches the conductor; a bare stub satisfies it.
 const conductor = {} as unknown as Conductor;
@@ -108,6 +109,23 @@ describe('GET /onboarding/status', () => {
       else process.env.VERITY_GH_DEFAULT_INSTALLATION_ID = prev.installationId;
       if (prev.signingKeyPath === undefined) delete process.env.VERITY_GIT_SSH_PRIVATE_KEY_PATH;
       else process.env.VERITY_GIT_SSH_PRIVATE_KEY_PATH = prev.signingKeyPath;
+    }
+  });
+
+  it('does not count the built-in control-plane project as an onboarded project', async () => {
+    const cipher = createSealableSecretCipher();
+    const store = new EventStore(ctx.db, cipher);
+    await ensureControlPlaneProject(store);
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: cipher,
+    });
+    try {
+      expect((await getStatus(app)).hasProject).toBe(false);
+    } finally {
+      await app.close();
     }
   });
 

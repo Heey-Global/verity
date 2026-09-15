@@ -38,7 +38,9 @@ describe('managed Compose ownership topology', () => {
     expect(overlay).toMatch(/verity-managed-data-init:[\s\S]*?verity-data:\/data/);
     expect(overlay).toContain('VERITY_SERVER_UID: ${VERITY_SERVER_UID:-1000}');
     expect(overlay).toContain('VERITY_SERVER_GID: ${VERITY_SERVER_GID:-1000}');
-    expect(overlay).toContain('chown "$${VERITY_SERVER_UID}:$${VERITY_SERVER_GID}"');
+    expect(overlay).toContain('if [ "$$owner" = \'0:0\' ]');
+    expect(overlay).toContain('chown "$$expected" "$$path"');
+    expect(overlay).toContain('refusing to change $$path ownership from $$owner to $$expected');
     // A `depends_on` re-wiring here would mean the service is still in the
     // managed profile — the exact shape of the bug.
     expect(overlay).not.toMatch(/verity-control-runner:\n\s+depends_on:/);
