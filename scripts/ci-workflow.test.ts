@@ -2143,16 +2143,20 @@ describe('live cutover smoke daemon guard', () => {
     );
   });
 
-  it('opens the Updater handoff boundary before unlocking the restored Server', () => {
+  it('opens the Updater handoff boundary before creating and unlocking the restored Server', () => {
     const smoke = readFileSync(script, 'utf8');
     const rollback = smoke.slice(smoke.indexOf('the rolled-back generation must come back sealed'));
     const prepare = rollback.indexOf('self-update-live-smoke.js prepare');
     const relay = rollback.indexOf('self-update-live-smoke.js handoff-relay');
     const unlock = rollback.indexOf('secret_password "$server" unlock');
 
+    expect(relay).toBeGreaterThan(-1);
     expect(prepare).toBeGreaterThan(-1);
-    expect(relay).toBeGreaterThan(prepare);
-    expect(unlock).toBeGreaterThan(relay);
+    // A standby starts polling during preparation. Creating it before the
+    // boundary exists makes it crash-loop and continually discard its
+    // ephemeral offer, leaving the outgoing Server nothing stable to answer.
+    expect(prepare).toBeGreaterThan(relay);
+    expect(unlock).toBeGreaterThan(prepare);
   });
 
   // A complete argument list, so a refusal below is the guard's and not the usage

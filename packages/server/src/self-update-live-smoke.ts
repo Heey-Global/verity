@@ -571,6 +571,15 @@ async function prepare(managedRoot: string): Promise<void> {
     'resume created a second candidate',
   );
   expect(resumed.generation === started.generation, 'resume moved the generation');
+  // A relay started before preparation deliberately begins on the previous,
+  // closed journal. Refresh it now that the candidate exists. This is the
+  // production ordering: the Updater control boundary is already reachable
+  // before it creates a standby, so that standby never has to crash-loop while
+  // waiting for the handoff mailbox to appear.
+  const relay = (await docker().listContainers!()).find((item) =>
+    item.names?.includes(HANDOFF_RELAY_NAME),
+  );
+  if (relay !== undefined) await publishStandbyState(managedRoot, null);
   process.stdout.write(`prepared generation ${String(journal.generation)} on ${targetDigest}\n`);
 }
 
@@ -940,8 +949,7 @@ const HANDOFF_RELAY_STANDBY = 'standby-state';
  */
 async function startHandoffRelay(managedRoot: string): Promise<void> {
   const journal = await readUpdateJournal(managedRoot);
-  if (journal === null || journal.candidate === null)
-    fail('the handoff relay needs a prepared candidate');
+  if (journal === null) fail('the handoff relay needs an update journal');
   const client = docker();
   const stale = (await client.listContainers!()).find((item) =>
     item.names?.includes(HANDOFF_RELAY_NAME),
@@ -1058,7 +1066,7 @@ async function startHandoffRelay(managedRoot: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   process.stdout.write(
-    `handoff relay serving generation ${String(journal.generation)} on ${UPDATER_CONTROL_SOCKET}\n`,
+    `handoff relay serving from generation ${String(journal.generation)} on ${UPDATER_CONTROL_SOCKET}\n`,
   );
 }
 
