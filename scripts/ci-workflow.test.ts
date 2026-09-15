@@ -2128,10 +2128,14 @@ describe('live cutover smoke daemon guard', () => {
 
   it('serializes relay journal refreshes so an older generation cannot win last', () => {
     const source = readFileSync(driver, 'utf8');
-    const relay = source.slice(
-      source.indexOf('async function startHandoffRelay('),
-      source.indexOf('async function relayContainer('),
-    );
+    // Both offsets asserted before they are used: `slice(x, -1)` from a renamed
+    // boundary would widen this to most of the file, where the assertions below
+    // pass against code that is not the relay at all.
+    const start = source.indexOf('async function startHandoffRelay(');
+    const end = source.indexOf('async function relayContainer(');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const relay = source.slice(start, end);
 
     expect(relay).not.toContain('setInterval(() => void tick()');
     expect(relay).toMatch(/for \(;;\) \{\s*await tick\(\);\s*await sleep\(200\);\s*\}/);

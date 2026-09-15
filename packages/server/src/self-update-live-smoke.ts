@@ -1073,15 +1073,26 @@ async function startHandoffRelay(managedRoot: string): Promise<void> {
             ' ' + (exchange.requested(operationId) ?? '-') +
             ' ' + (exchange.acknowledged(operationId) ?? '-');
           if (line !== published) { published = line; console.log(line); }
-          const handoff = await updater.readUpdaterHandoff({
-            socketPath: process.env.VERITY_SMOKE_RELAY_SOCKET,
-            token: process.env.VERITY_SMOKE_RELAY_TOKEN,
-          });
-          const handoffLine = handoff === null
-            ? 'handoff-state none'
-            : 'handoff-state ' + handoff.binding.operationId +
-              ' sender=' + String(handoff.senderIdentityPublicKey !== undefined) +
-              ' offer=' + String(handoff.offer !== undefined);
+          // Caught on its own rather than left to the journal refresh's handler
+          // above: this line is a diagnostic, and the refresh is what the
+          // deployment depends on. A read that throws here — the socket busy,
+          // the route answering anything but 200 — would otherwise leave the
+          // loop, reach the outer catch and take the relay down with it, and a
+          // relay that exits stops publishing journals to every peer at once.
+          let handoffLine;
+          try {
+            const handoff = await updater.readUpdaterHandoff({
+              socketPath: process.env.VERITY_SMOKE_RELAY_SOCKET,
+              token: process.env.VERITY_SMOKE_RELAY_TOKEN,
+            });
+            handoffLine = handoff === null
+              ? 'handoff-state none'
+              : 'handoff-state ' + handoff.binding.operationId +
+                ' sender=' + String(handoff.senderIdentityPublicKey !== undefined) +
+                ' offer=' + String(handoff.offer !== undefined);
+          } catch (error) {
+            handoffLine = 'handoff-state unreadable ' + String(error.code ?? error.message);
+          }
           if (handoffLine !== publishedHandoff) {
             publishedHandoff = handoffLine;
             console.log(handoffLine);
