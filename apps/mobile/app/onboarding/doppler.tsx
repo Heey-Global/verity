@@ -246,10 +246,10 @@ function DopplerGuidance() {
 const styles = StyleSheet.create((theme) => ({
   guidance: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.lg,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   guidanceTitle: {
@@ -274,11 +274,11 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '700',
   },
   card: {
-    gap: theme.spacing.md,
-    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   intro: {

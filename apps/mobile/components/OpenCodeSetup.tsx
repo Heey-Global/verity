@@ -227,11 +227,11 @@ export function OpenCodeSetup({
 
 const styles = StyleSheet.create((theme) => ({
   card: {
-    gap: theme.spacing.md,
-    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
@@ -250,11 +250,11 @@ const styles = StyleSheet.create((theme) => ({
   pillLabelReady: { color: theme.colors.tone.done },
   setupBlock: {
     flexDirection: 'row',
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.primary,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
   },
   stepBadge: {
     width: 30,

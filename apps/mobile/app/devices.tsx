@@ -189,18 +189,24 @@ export default function DevicesScreen() {
 }
 
 const styles = StyleSheet.create((theme) => ({
-  content: { padding: theme.spacing.lg, gap: theme.spacing.lg },
+  content: {
+    width: '100%',
+    maxWidth: 1040,
+    alignSelf: 'center',
+    padding: theme.spacing.md,
+    gap: theme.spacing.lg,
+  },
   lead: {
     color: theme.colors.textMuted,
     fontSize: theme.text.md,
     lineHeight: 22 * theme.fontScale,
   },
   panel: {
-    padding: theme.spacing.lg,
-    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '800' },
@@ -212,7 +218,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   hint: { color: theme.colors.textMuted, fontSize: theme.text.sm },
   primaryButton: {
-    minHeight: 48,
+    minHeight: 44,
+    minWidth: 184,
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     gap: theme.spacing.sm,
     alignItems: 'center',

@@ -113,6 +113,7 @@ function ServicesSettingsView({
   return (
     <SettingsScaffold
       title="Connected services"
+      detail
       onRetry={() => {
         const hasDirtyFields = text.dirty || secrets.dirty;
         if (text.dirty) text.commit();
@@ -131,9 +132,8 @@ function ServicesSettingsView({
           title="AI backends"
           description="Connect Claude and Codex subscriptions or configure an OpenAI-compatible provider for OpenCode."
         >
-          <SettingsPanel>
-            <Text style={styles.disclosureTitle}>Subscription logins</Text>
-            {writable ? (
+          {writable ? (
+            <View style={styles.panelStack}>
               <AgentLoginPanel
                 client={client}
                 configured={{
@@ -156,7 +156,9 @@ function ServicesSettingsView({
                 allowDisconnect
                 autoStartProvider={autoStartLoginProvider(agentLogin)}
               />
-            ) : (
+            </View>
+          ) : (
+            <SettingsPanel>
               <Text style={styles.reproHint}>
                 {autoStartLoginProvider(agentLogin) === undefined
                   ? 'Unlock the secret store to change these.'
@@ -166,8 +168,8 @@ function ServicesSettingsView({
                     // mounts and auto-starts the moment the store is unlocked.
                     'Unlock the secret store to sign in — the login will start once it is open.'}
               </Text>
-            )}
-          </SettingsPanel>
+            </SettingsPanel>
+          )}
 
           <SettingsPanel>
             <View style={styles.sectionHeaderRow}>

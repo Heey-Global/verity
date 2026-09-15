@@ -143,7 +143,7 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
         oauthScopes.trim() === ''));
 
   return (
-    <SettingsScaffold title="Add MCP connection">
+    <SettingsScaffold title="Add MCP connection" detail>
       <SettingsGroup title="Server">
         <SettingsPanel>
           <View style={styles.pathContent}>

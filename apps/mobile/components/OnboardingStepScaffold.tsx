@@ -35,10 +35,12 @@ export function OnboardingStepScaffold({
       keyboardVerticalOffset={0}
     >
       <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
-        <OnboardingProgress current={index} total={total} />
-        <Text style={styles.title} accessibilityRole="header">
-          {title}
-        </Text>
+        <View style={styles.headerInner}>
+          <OnboardingProgress current={index} total={total} />
+          <Text style={styles.title} accessibilityRole="header">
+            {title}
+          </Text>
+        </View>
       </View>
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}
@@ -48,40 +50,42 @@ export function OnboardingStepScaffold({
         <View style={styles.body}>{children}</View>
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
-        {back ? (
-          <Pressable
-            style={({ pressed }) => [styles.backButton, pressed ? styles.pressed : null]}
-            onPress={() => {
-              router.replace(back);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-          >
-            <Text style={styles.backLabel}>Back</Text>
-          </Pressable>
-        ) : (
-          <View style={styles.footerSpacer} />
-        )}
-        {next ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.nextButton,
-              next.disabled ? styles.nextButtonDisabled : null,
-              pressed ? styles.pressed : null,
-            ]}
-            onPress={() => {
-              if (!next.disabled) router.push(next.href);
-            }}
-            disabled={next.disabled}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: next.disabled === true }}
-            accessibilityLabel={next.label ?? 'Next'}
-          >
-            <Text style={styles.nextLabel}>{next.label ?? 'Next'}</Text>
-          </Pressable>
-        ) : (
-          <View style={styles.footerSpacer} />
-        )}
+        <View style={styles.footerInner}>
+          {back ? (
+            <Pressable
+              style={({ pressed }) => [styles.backButton, pressed ? styles.pressed : null]}
+              onPress={() => {
+                router.replace(back);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+            >
+              <Text style={styles.backLabel}>Back</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.footerSpacer} />
+          )}
+          {next ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.nextButton,
+                next.disabled ? styles.nextButtonDisabled : null,
+                pressed ? styles.pressed : null,
+              ]}
+              onPress={() => {
+                if (!next.disabled) router.push(next.href);
+              }}
+              disabled={next.disabled}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: next.disabled === true }}
+              accessibilityLabel={next.label ?? 'Next'}
+            >
+              <Text style={styles.nextLabel}>{next.label ?? 'Next'}</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.footerSpacer} />
+          )}
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -102,13 +106,21 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.background,
   },
   header: {
-    gap: theme.spacing.lg,
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.md,
     backgroundColor: theme.colors.background,
   },
+  headerInner: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
+    gap: theme.spacing.md,
+  },
   content: {
     flexGrow: 1,
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
   },
@@ -119,14 +131,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   body: {
     flex: 1,
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   note: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.lg,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   noteText: {
@@ -141,15 +153,20 @@ const styles = StyleSheet.create((theme) => ({
     textTransform: 'uppercase',
   },
   footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
+  },
+  footerInner: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
   },
   footerSpacer: {
     minWidth: 88,
