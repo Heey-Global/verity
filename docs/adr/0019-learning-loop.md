@@ -145,6 +145,12 @@ rules; the UI must describe that retention rather than calling the digest epheme
 session's immutable realm provenance and ADR 0018's same-realm observation checks continue to
 protect that transcript after rehosting or a later host-project realm move.
 
+To make the turn binding possible, the executor reserves and durably records the reaction
+turn id before computing the digest, then passes that id to an extended
+`dispatchTurnWhenIdle`. Evidence is finalized only if dispatch accepts that exact reservation;
+a rejection cancels the reservation and deletes its unfinalized evidence. Backends may not
+substitute a different turn id.
+
 The service returns **counts keyed on structural fields** from the durable operator-decision
 sources — tool name, risk class, behavior, scope and safe secret-target identifiers — with at
 most a handful of exemplars per candidate, each passed through

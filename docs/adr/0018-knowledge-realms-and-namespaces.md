@@ -201,10 +201,12 @@ the proxy never has to merge a write policy with a read policy.
 
 ### D5 — Realm memory is read with a scope check; only the operator writes it
 
-`projectMemoryPrompt` (`conductor.ts:5137`) becomes a two-part read — the realm block, then
-the project block — both resolved server-side from `session.projectId`. The session states
-nothing. Both keep the ADR 0008 framing (`operator-curated; may be stale — verify before
-relying on it`), and an empty realm memory emits no header, as today.
+`projectMemoryPrompt` (`conductor.ts:5137`) becomes a two-part read — the realm block resolved
+from immutable `session.realmId`, then the project block resolved from `session.projectId`.
+For a dispatchable session the server also requires the project's current realm to equal the
+snapshot; closed historical sessions cannot initialize a backend. The session states nothing.
+Both blocks keep the ADR 0008 framing (`operator-curated; may be stale — verify before relying
+on it`), and an empty realm memory emits no header, as today.
 
 **Agent writes stay project-scoped.** `verity-memory append` continues to write
 `project_settings.memory` only; realm memory is written by the operator in the UI. ADR
