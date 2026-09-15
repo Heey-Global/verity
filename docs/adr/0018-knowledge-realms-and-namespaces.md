@@ -141,6 +141,14 @@ resolved namespace, caller session and connection; arbitrary session ids fail cl
 events record these as `transport:get` and `transport:delete` with no target name, linked to
 the namespace and upstream session id. They confer no additional JSON-RPC method authority.
 
+Namespace access requires the proxy's trusted per-turn caller identity, not the project-scoped
+container identity. The server mints the existing MCP proxy bearer for a specific
+`{ sessionId, turnId, projectId, sessionRealmId }`; `mcpProxyResolveCaller` validates it and
+supplies those fields to descriptor resolution, transport-session binding and audit. A bearer
+cannot be used after its turn or from a different session. Any backend path that currently
+reaches the proxy with project identity alone must gain this per-turn binding before namespace
+descriptors are enabled; project identity is insufficient and fails closed.
+
 `project_mcp_bindings` stays as it is for project-specific tools. A shared resolver produces
 the deduplicated union of direct bindings and enabled namespaces for a project. The Conductor
 uses that resolver when building MCP descriptors in `embedded.ts`; descriptors carry the
@@ -285,7 +293,8 @@ has a durable intent record even across a database failure that occurs after for
 - Four code seams, all extensions of existing ones: shared descriptor/connection resolution,
   proxy policy enforcement (`server.ts:4518`), the two-part memory read
   (`conductor.ts:5137`), and the model-resolution guard (`server.ts:4659`, `:7307`). No new
-  broker, capability, or transport.
+  broker or transport; namespace enablement requires the existing MCP proxy bearer to carry
+  the per-session/turn caller binding on every backend.
 - The system prompt grows by the realm memory once per fresh backend context — the same
   cadence and cap mechanism as ADR 0008, not per turn. Realm and project memory are each
   capped at 8,000 characters, making their combined injected payload at most 16,000
