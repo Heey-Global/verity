@@ -97,6 +97,12 @@ A database `CHECK` enforces `(kind = 'learning' AND realm_id IS NOT NULL) OR
 (kind = 'standard' AND realm_id IS NULL)`; application validation is not the isolation
 boundary.
 
+The reaction session is dedicated and clean: arming or rehosting a Learning Loop creates a
+new session that was never used for setup, testing or a standard turn. Server authorization
+allows only this loop's restricted reaction dispatches into it; operator prompts, ordinary
+dispatch, handoffs and backend/tool-profile changes are rejected. Its transcript therefore
+contains only earlier tool-less Learning Loop reactions and their bounded digests.
+
 The host project must belong to the loop's realm. Creation and rehosting check that equality
 in the same transaction that writes the loop; every claimed run re-resolves it before session
 creation or digest computation and fails closed on a mismatch. The realm-move guard above
@@ -114,7 +120,10 @@ A server-internal digest service returns:
 
 ```
 computeLearningDigest({ loopId, runId, windowHours, minOccurrences })
-   → { candidates: [ { key, count, projectCount, firstSeen, lastSeen, exemplars[] } ] }
+   → { truncated, candidates: [ {
+         key, predicate, count, projectCount, firstSeen, lastSeen,
+         holdoutMatches, unrelatedMatchRate, exemplars[], candidateEvidence
+       } ] }
 ```
 
 It is not exposed on the internal listener and has no Sandbox capability or credential.
@@ -256,11 +265,11 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
   cannot run Learning Loops.
 
   Before each reaction, the Conductor destroys any backend context previously associated with
-  the durable loop session and starts a fresh context under that tool-less profile. Only the
-  persisted transcript and current realm/project memory may be replayed; credentials, tool
-  grants, MCP descriptors and process state are not inherited. The context is torn down when
-  the turn settles. Failure to confirm either teardown or restricted initialization fails the
-  run closed without dispatching.
+  the dedicated loop session and starts a fresh context under that tool-less profile. Only
+  that restricted session's persisted transcript and current realm/project memory may be
+  replayed; credentials, tool grants, MCP descriptors and process state are not inherited. The
+  context is torn down when the turn settles. Failure to confirm either teardown or restricted
+  initialization fails the run closed without dispatching.
 - **No use of the session-observation tools.** They are approval-gated per call and
   explicitly non-pollable. The server executor uses the digest service or nothing.
 - **No cross-realm read**, by construction (D3) rather than by instruction.
