@@ -88,7 +88,7 @@ import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createDockerClient, type DockerClient } from './docker.js';
+import { createDockerClient, type ContainerInspect, type DockerClient } from './docker.js';
 import {
   MANAGED_SERVER_DEFAULT_RESOURCES,
   sealDeploymentSpec,
@@ -232,6 +232,50 @@ function expect(condition: boolean, message: string): void {
   if (!condition) fail(message);
 }
 
+/** How long a standby is given to prove it is not restarting. */
+const STANDBY_SETTLE_MS = 6_000;
+const STANDBY_SETTLE_INTERVAL_MS = 500;
+
+/**
+ * Inspect the standby once it has had time to fail.
+ *
+ * The sealed spec restarts the Server `unless-stopped`, so a candidate whose
+ * process dies during start-up reports `running: true` almost whenever it is
+ * sampled — Docker has already put it back. Asserting `running` alone therefore
+ * passes on a Server that cannot start at all on this topology, and the run only
+ * notices minutes later in a shape that names nothing: the outgoing Server never
+ * seals its key, because the standby is the party that publishes the handoff
+ * offer and a process exiting on its own configuration never gets that far.
+ * `RestartCount` is the field that separates the two, and it needs a window to
+ * become non-zero — so this waits for one rather than sampling once.
+ *
+ * A daemon that does not report the field at all fails here rather than passing.
+ * Treating absent as zero would put the whole check back to asserting `running`
+ * alone, silently, on exactly the runs where it is least able to say so.
+ */
+async function settledStandby(
+  client: DockerClient,
+  containerId: string,
+): Promise<ContainerInspect> {
+  let inspect = await client.inspectContainer(containerId);
+  const attempts = Math.ceil(STANDBY_SETTLE_MS / STANDBY_SETTLE_INTERVAL_MS);
+  for (let attempt = 0; attempt < attempts && inspect.restartCount === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, STANDBY_SETTLE_INTERVAL_MS));
+    inspect = await client.inspectContainer(containerId);
+  }
+  expect(
+    inspect.restartCount !== undefined,
+    'the Docker daemon did not report RestartCount for the standby candidate, so a ' +
+      'crash-looping candidate cannot be told from a healthy one',
+  );
+  expect(
+    inspect.running && inspect.restartCount === 0,
+    `standby candidate is not holding its generation: running=${String(inspect.running)} ` +
+      `status=${String(inspect.status)} restarts=${String(inspect.restartCount)}`,
+  );
+  return inspect;
+}
+
 function required(name: string): string {
   const value = process.env[name];
   if (value === undefined || value.trim() === '') fail(`${name} is required`);
@@ -261,6 +305,12 @@ function serverEnvironment(databaseUrl: string, deploymentId: string): NodeJS.Pr
     VERITY_AGENT_GATEWAY_URL: 'https://verity-agent-gateway:9443',
     VERITY_CLAUDE_EGRESS_GATEWAY_URL: 'https://verity:9443',
     VERITY_CLAUDE_CONNECTOR_PORT: '47821',
+    // Required since the Runner supervisor overlay stopped being opt-in: `main.ts`
+    // refuses to start without it, before anything else it does. The value only
+    // has to be a non-empty path — the directory itself is stat'ed exclusively
+    // when VERITY_CONTROL_PLANE_RUNNER is on, which this health-only deployment
+    // does not set — so this mirrors what ci.yml's `server-image` smoke passes.
+    VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR: '/tmp/verity-control-plane-identity',
     DATABASE_URL: databaseUrl,
     VERITY_MANAGED_DEPLOYMENT_ID: deploymentId,
     VERITY_CONTROL_PLANE_HOLDER_ID: 'verity',
@@ -294,6 +344,7 @@ function deploymentSpec(
       fromEnv('VERITY_AGENT_GATEWAY_URL'),
       fromEnv('VERITY_CLAUDE_EGRESS_GATEWAY_URL'),
       fromEnv('VERITY_CLAUDE_CONNECTOR_PORT'),
+      fromEnv('VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR'),
       fromEnv('DATABASE_URL'),
       fromEnv('VERITY_MANAGED_DEPLOYMENT_ID'),
       fromEnv('VERITY_CONTROL_PLANE_HOLDER_ID'),
@@ -533,8 +584,7 @@ async function prepare(managedRoot: string): Promise<void> {
   if (journal.candidate === null) fail('preparation reached standby without a candidate');
 
   const client = docker();
-  const candidate = await client.inspectContainer(journal.candidate.containerId);
-  expect(candidate.running, 'standby candidate is not running');
+  const candidate = await settledStandby(client, journal.candidate.containerId);
   expect(candidate.image === targetDigest, `standby runs ${String(candidate.image)}`);
   // It carries the complete production spec but cannot pass the PostgreSQL
   // activation fence while the incumbent is alive.

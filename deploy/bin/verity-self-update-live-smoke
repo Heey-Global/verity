@@ -644,6 +644,24 @@ wait_for_new_seal() {
     if [[ "$attempt" -eq 60 ]]; then
       docker logs --tail=120 verity-smoke-handoff-relay >&2 || true
       docker logs --tail=120 "$server" >&2 || true
+      # The standby too, and never only the pair above. The outgoing Server has
+      # nothing to seal to until the standby publishes its offer, so a run that
+      # dumped only these two showed a Server doing nothing wrong and a relay
+      # holding an empty mailbox — a picture that reads as a handoff bug and sent
+      # three releases into reordering the stages around it.
+      #
+      # The filter is an unanchored substring rather than `name=^verity-…`: the
+      # daemon matches the regex against the internal `/name` (see verity-install),
+      # so an anchored form without the slash selects nothing and this dump would
+      # go on being silently as empty as the one it replaces. The generation shape
+      # is re-checked here instead of trusted to the daemon's matching.
+      for standby in $(docker ps --all --format '{{.Names}}' \
+        --filter 'name=verity-managed-server-g'); do
+        if [[ "$standby" == "$server" ]]; then continue; fi
+        if [[ ! "$standby" =~ ^verity-managed-server-g[1-9][0-9]*$ ]]; then continue; fi
+        echo "--- standby $standby" >&2
+        docker logs --tail=60 "$standby" >&2 || true
+      done
       echo "the outgoing Server never sealed its key again; still $got" >&2
       exit 1
     fi

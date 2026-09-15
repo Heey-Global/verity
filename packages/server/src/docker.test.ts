@@ -1123,6 +1123,47 @@ describe('createDockerClient (#174)', () => {
     });
   });
 
+  it('inspectContainer reads RestartCount beside State, not inside it', async () => {
+    // The crash-loop check in the live update smoke is the only consumer, and it
+    // cannot tell "field absent" from "zero restarts" on its own — an inspect
+    // payload is whatever the daemon sends. Read from the wrong place the field is
+    // simply never populated, the smoke goes back to asserting `running` alone,
+    // and a candidate Docker restarts on every start passes it. Nothing anywhere
+    // goes red. `RestartCount` is a sibling of `State` in the Engine's inspect
+    // response; `State` carries `Restarting`, which is only true inside the brief
+    // window of a restart and is not a count. Both halves are asserted, because
+    // reading the right place and ignoring the wrong one are separate mistakes.
+    const fetch = fakeFetch([
+      {
+        match: /\/containers\/abc\/json/,
+        method: 'GET',
+        resp: res({
+          Id: 'abc',
+          RestartCount: 7,
+          State: { Running: true, Status: 'running', Restarting: false, RestartCount: 99 },
+        }),
+      },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+    await expect(docker.inspectContainer('abc')).resolves.toMatchObject({ restartCount: 7 });
+  });
+
+  it('inspectContainer omits restartCount when the daemon reports none', async () => {
+    // Absent has to stay distinguishable from zero. Defaulting it to 0 here would
+    // hand every caller a restart count it never received, which for the smoke's
+    // crash-loop check is the passing side of the assertion.
+    const fetch = fakeFetch([
+      {
+        match: /\/containers\/abc\/json/,
+        method: 'GET',
+        resp: res({ Id: 'abc', State: { Running: true } }),
+      },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+    const result = await docker.inspectContainer('abc');
+    expect('restartCount' in result).toBe(false);
+  });
+
   it('inspectContainer omits env entirely when the reply carries none', async () => {
     // Relay migration reads env to decide whether a sandbox needs a recreate, and
     // has to tell env that is absent from env it never read (`project-relay-migration.ts`).
