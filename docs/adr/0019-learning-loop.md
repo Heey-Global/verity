@@ -89,9 +89,10 @@ current host project. `agent_loops` gains `kind = 'standard' | 'learning'` and a
 uses one project-owned session as its execution host. Moving that host project to another
 realm or deleting it is rejected while it hosts a Learning Loop; the operator must first
 rehost or delete the loop. Rehosting changes the project/session, never the loop's realm.
-The migration replaces the current cascading `agent_loops.project_id` foreign key with
-`ON DELETE RESTRICT`; the project-deletion transaction reports the hosted loops that must be
-rehosted or explicitly deleted first.
+The existing cascading `agent_loops.project_id` foreign key remains for standard loops. A
+database deletion guard rejects deletion only when a `kind = 'learning'` row names the
+project, closing races independently of the application transaction; the project-deletion
+route reports the hosted loops that must be rehosted or explicitly deleted first.
 
 ### D3 — The read path is a server-computed digest of aggregates, not a transcript feed
 

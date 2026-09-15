@@ -152,7 +152,14 @@ project (`store.ts:5884`) becomes a union-aware invariant. Enabling a namespace 
 project validates the resulting deduplicated union for every affected project and rejects the
 write if any would exceed 16; descriptor construction asserts the same bound fail closed.
 
-Policy provenance is unique rather than composed. `(realm_id, connection_id)` is unique, and
+A realm move is a quiescing operation, not a metadata-only update. The server refuses new
+turns, stops active turns, tears down every backend context for the project, applies the realm
+change and only then permits fresh contexts. If any context cannot be confirmed terminated,
+the move fails without changing membership. This prevents a context containing old-realm
+memory or fetched corpus data from continuing with new-realm namespace authority.
+
+Policy provenance is unique rather than composed. `connection_id` is globally unique in
+`knowledge_namespaces`, and
 enabling a namespace or moving a project is rejected if that connection is already directly
 bound to any affected project. Creating the conflicting direct binding is rejected likewise.
 Thus every reachable connection is authorized by exactly one direct binding or one namespace;
