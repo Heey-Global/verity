@@ -92,27 +92,21 @@ rehost or delete the loop. Rehosting changes the project/session, never the loop
 
 ### D3 — The read path is a server-computed digest of aggregates, not a transcript feed
 
-A new internal broker route returns the digest:
+A server-internal digest service returns:
 
 ```
-POST /internal/realm/learning-digest   { windowHours, minOccurrences }
+computeLearningDigest({ loopId, runId, windowHours, minOccurrences })
    → { candidates: [ { key, count, projectCount, firstSeen, lastSeen, exemplars[] } ] }
 ```
 
-It follows the memory broker's internal-listener placement, but deliberately does **not** use
-the per-container capability as sufficient authority: ordinary sessions in that container
-share it. When the executor starts a claimed Learning Loop run, the server mints a short-lived,
-single-use digest grant bound to `{ loopId, runId, sessionId, realmId }` and provides it only to
-that script invocation. The route consumes the grant and verifies the persisted loop kind,
-run and session before resolving the realm. The Sandbox supplies no realm or project id. A
-normal session, another loop, a replay, and a loop whose host was moved all fail closed.
-
-The script fetches the digest once and places it inside the spawn object's existing `prompt`
-string; no second stdout record or implicit channel is introduced. The executor applies
-`appendExternalPromptData` to that explicit prompt exactly as for every Agent Loop. Learning
-Loop spawn stdout is capped at 160 KiB before JSON parsing, leaving framing headroom above the
-digest limit; oversize output fails the run. The reaction turn receives the external-data
-block and never receives the grant.
+It is not exposed on the internal listener and has no Sandbox capability or credential.
+Ordinary sessions share a project container, so no secret delivered to a loop process there
+would constitute an authorization boundary. Instead, a Learning Loop script can only signal
+the ordinary spawn decision and optional trusted subject prompt. After parsing that bounded
+spawn record, the server-side executor verifies the persisted loop kind, claimed run, session
+and realm, calls the digest service directly, and attaches its result with
+`appendExternalPromptData`. The Sandbox never receives authority to query the corpus or select
+a realm. A normal session, another loop, and a loop whose host moved cannot invoke this path.
 
 The request is server-bounded: `windowHours` is at most 720 (30 days), `minOccurrences` is at
 least 3, and the response contains at most 100 candidates, three exemplars per candidate,
@@ -121,10 +115,11 @@ those bounds and records truncation in the response; the script cannot widen the
 
 Each candidate carries an opaque, authenticated `candidateEvidence` token bound to the loop
 run, realm, structural predicate, train/hold-out windows and server-computed metrics. It
-expires after 24 hours. A proposal must echo that token; the server verifies it and derives
-the displayed predicate and metrics from its authenticated claims rather than model-supplied
-fields. This keeps raw digest output ephemeral without trusting a rewritten prompt or
-recomputing against a later data window.
+expires after 24 hours. A proposal must echo that token. At proposal-event ingestion the
+server verifies it, derives the displayed fields from its authenticated claims, and persists
+a verification receipt with the proposal. A later operator tap references that immutable
+proposal row rather than re-verifying the expired token. This keeps raw digest output
+ephemeral without trusting a rewritten prompt or recomputing against a later data window.
 
 The route returns **counts keyed on structural fields** — tool name, risk class, denial
 reason, error kind — with at most a handful of exemplars per candidate, each passed through
@@ -203,10 +198,12 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
 ### D7 — What a Learning Loop must never do
 
 - **No repository writes.** It proposes text; it does not commit, push, or open a pull
-  request. This is ADR 0008 §7B's read-only script rule, and it applies to the reaction turn
-  here as well.
+  request. The script inherits ADR 0008 §7B's read-only execution. Unlike an ordinary Agent
+  Loop, the Learning Loop reaction turn runs with a dedicated tool-less policy: it can emit
+  text (including the proposal fence) but receives no shell, filesystem, MCP, observation or
+  mutation tools. If a backend cannot enforce that profile, it cannot run Learning Loops.
 - **No use of the session-observation tools.** They are approval-gated per call and
-  explicitly non-pollable. The loop uses the digest route or nothing.
+  explicitly non-pollable. The server executor uses the digest service or nothing.
 - **No cross-realm read**, by construction (D3) rather than by instruction.
 
 ## Alternatives considered
@@ -230,10 +227,10 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
 
 ## Consequences
 
-- New surface: one internal route plus its digest query and single-use execution grant, one
-  fenced proposal contract and canonical event, authenticated candidate-evidence tokens, the
-  server-side hold-out evaluation, and a per-realm loop configuration. No new scheduler,
-  session kind, or standing credential.
+- New surface: one server-internal digest service, one fenced proposal contract and canonical
+  event, authenticated candidate-evidence tokens and verification receipts, the server-side
+  hold-out evaluation, a tool-less reaction profile, and a per-realm loop configuration. No
+  new scheduler, session kind, route, capability, or standing credential.
 - Everything inherits ADR 0008's guardrails, including the ones that matter most for an
   unattended job: it cannot stack turns, it pauses itself after five consecutive errors, and
   its raw output is never persisted.
