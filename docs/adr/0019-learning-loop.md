@@ -64,9 +64,9 @@ It adds no scheduler, no classifier service, and no automatic enforcement.**
 
 The Learning Loop reuses the whole of ADR 0008: the schedule, the executor, the in-container
 timeout, the exit/stdout contract, draft-until-tested, the circuit breaker, idle-only
-dispatch, the run history and the cockpit. It is a nightly loop whose script signals whether
-to act; the server executor computes and attaches the digest, and the reaction turn reasons
-about it.
+dispatch, the run history and the cockpit. It is a nightly loop whose script emits only the
+spawn boolean; the server executor computes and attaches the digest under a fixed
+server-authored task prompt, and the reaction turn reasons about it.
 
 The value of this is operational rather than aesthetic. Everything that makes an unattended
 recurring job safe to run — it cannot stack turns, it pauses itself after five consecutive
@@ -129,13 +129,12 @@ computeLearningDigest({ loopId, runId, windowHours, minOccurrences })
 It is not exposed on the internal listener and has no Sandbox capability or credential.
 Ordinary sessions share a project container, so no secret delivered to a loop process there
 would constitute an authorization boundary. Instead, a Learning Loop script can only signal
-the ordinary spawn decision and optional subject prompt. That prompt remains untrusted script
-output and is wrapped through the existing Agent Loop `appendExternalPromptData` boundary.
-After parsing the bounded spawn record, the server-side executor verifies the persisted loop
-kind, claimed run, session and realm, calls the digest service directly, and attaches its
-result as a separate external-data record. The Sandbox never receives authority to query the
-corpus or select a realm. A normal session, another loop, and a loop whose host moved cannot
-invoke this path.
+the ordinary spawn boolean; `prompt` and other payload fields are rejected for this loop kind.
+After parsing that record, the server-side executor verifies the persisted loop kind, claimed
+run, session and realm, calls the digest service directly, and attaches its result beneath a
+fixed server-authored task as external data. The Sandbox never receives authority to query the
+corpus, supply reaction text or select a realm. A normal session, another loop, and a loop whose
+host moved cannot invoke this path.
 
 The request is server-bounded: `windowHours` is at most 720 (30 days), `minOccurrences` is at
 least 3, and the response contains at most 100 candidates, three exemplars per candidate,
@@ -267,7 +266,8 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
   Before each reaction, the Conductor destroys any backend context previously associated with
   the dedicated loop session and starts a fresh context under that tool-less profile. No prior
   transcript messages are replayed: the context contains only the standard system framing,
-  current realm/project memory, the current bounded digest and subject prompt. Historical
+  operator-written realm memory, the fixed server task and current bounded digest. Agent-writable
+  project memory is deliberately omitted. Historical
   reactions remain operator-visible in the transcript but are not backend input. Credentials,
   tool grants, MCP descriptors and process state are not inherited. The context is torn down
   when the turn settles. Failure to confirm either teardown or restricted initialization
