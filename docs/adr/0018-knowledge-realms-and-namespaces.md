@@ -262,7 +262,9 @@ has a durable intent record even across a database failure that occurs after for
   (`conductor.ts:5137`), and the model-resolution guard (`server.ts:4659`, `:7307`). No new
   broker, capability, or transport.
 - The system prompt grows by the realm memory once per fresh backend context — the same
-  cadence and the same cap mechanism as ADR 0008, not per turn.
+  cadence and cap mechanism as ADR 0008, not per turn. Realm and project memory are each
+  capped at 8,000 characters, making their combined injected payload at most 16,000
+  characters before fixed framing.
 - The private/business separation is exactly as strong as the per-project Sandbox boundary
   operators already rely on. This ADR adds no isolation; it makes an existing boundary
   addressable and prevents knowledge from being wired across it by hand.
@@ -279,8 +281,6 @@ has a durable intent record even across a database failure that occurs after for
 
 - Whether the `control_plane` project (`schema.ts:139`) starts in the seeded default realm or
   gets a dedicated realm during migration.
-- Whether realm memory shares `PROJECT_MEMORY_MAX_CHARS` or takes its own cap; the combined
-  injected size is what actually needs bounding.
 - Whether `allowed_runtimes` ships in phase 1 or follows the namespace work.
 - How allowlist drift is presented when an upstream renames a tool. The fail-closed behavior
   is fixed: an unknown name remains unavailable until the operator reviews and updates the

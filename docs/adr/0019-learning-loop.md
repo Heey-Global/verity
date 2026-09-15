@@ -91,6 +91,11 @@ realm or deleting it is rejected while it hosts a Learning Loop; the operator mu
 rehost or delete the loop. Rehosting changes the project/session, never the loop's realm.
 One partial unique index on `realm_id WHERE kind = 'learning'` enforces the stated one-loop
 cardinality under concurrent creation.
+
+The host project must belong to the loop's realm. Creation and rehosting check that equality
+in the same transaction that writes the loop; every claimed run re-resolves it before session
+creation or digest computation and fails closed on a mismatch. The realm-move guard above
+therefore also prevents moving a current Learning Loop host until it is rehosted.
 The existing cascading `agent_loops.project_id` foreign key remains for standard loops. A
 database deletion guard rejects deletion only when a `kind = 'learning'` row names the
 project, closing races independently of the application transaction; the project-deletion
