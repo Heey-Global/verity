@@ -2392,6 +2392,35 @@ describe('live cutover smoke daemon guard', () => {
     }
   });
 
+  it('uses the Server readiness contract when waiting for a generation to serve', () => {
+    // A degraded Server is serving by definition in the Updater's readiness probe.
+    // Rejecting that same answer here commits the generation and then reports the
+    // successful cutover as a smoke failure ninety seconds later.
+    const probe = readFileSync('packages/server/src/self-update/readiness-probe.ts', 'utf8');
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const contract =
+      /status !== (\d+) && status !== (\d+)[\s\S]*?record\.status === '([^']+)' \|\| record\.status === '([^']+)'/.exec(
+        probe,
+      );
+    expect(
+      contract,
+      'the production readiness contract moved; re-derive this guard',
+    ).not.toBeNull();
+    const [, firstCode, secondCode, firstStatus, secondStatus] = contract ?? [];
+    const wait = /wait_for_healthy\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    const gateway = /expect_gateway_serving\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    for (const gate of [wait, gateway]) {
+      expect(gate).toContain(`r.status !== ${firstCode} && r.status !== ${secondCode}`);
+      expect(gate).toContain(`b.status !== '${firstStatus}' && b.status !== '${secondStatus}'`);
+      expect(gate).toContain("typeof b.version !== 'string'");
+      expect(gate).not.toContain('r.ok');
+    }
+    expect(wait).toContain("console.error('healthz status=' + r.status + ' body='");
+    expect(gateway).toContain("console.error('gateway healthz status=' + r.status + ' body='");
+    expect(wait).toContain('AbortSignal.timeout(5000)');
+    expect(gateway).toContain('AbortSignal.timeout(5000)');
+  });
+
   // The update smoke does not run through Compose. It hand-builds the deployment
   // it then updates, so every variable the Server refuses to start without has to
   // be named twice more — once in the environment the driver resolves against and

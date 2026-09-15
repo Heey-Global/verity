@@ -398,12 +398,16 @@ expect_gateway_serving() {
   for attempt in $(seq 1 30); do
     if docker run --rm --network verity-net --entrypoint=node "$previous_digest" -e \
       "const r = await fetch('http://verity-managed-gateway:8082/healthz');
-       if (!r.ok) process.exit(1);" >/dev/null 2>&1; then
+       const b = await r.json().catch(() => null);
+       if ((r.status !== 200 && r.status !== 503) || b === null || typeof b.version !== 'string' || (b.status !== 'ok' && b.status !== 'degraded')) process.exit(1);" >/dev/null 2>&1; then
       echo 'the Gateway is serving the deployment'
       return 0
     fi
     sleep 1
   done
+  docker run --rm --network verity-net --entrypoint=node "$previous_digest" -e \
+    "const r = await fetch('http://verity-managed-gateway:8082/healthz', { signal: AbortSignal.timeout(5000) }); console.error('gateway healthz status=' + r.status + ' body=' + await r.text());" \
+    >&2 || true
   docker logs --tail=120 verity-managed-gateway >&2 || true
   echo "$message" >&2
   exit 1
@@ -525,11 +529,14 @@ wait_for_healthy() {
   local container="$1" message="$2"
   for attempt in $(seq 1 90); do
     if docker exec "$container" node -e \
-      "const r = await fetch('http://127.0.0.1:8082/healthz'); if (!r.ok) process.exit(1);" \
+      "const r = await fetch('http://127.0.0.1:8082/healthz'); const b = await r.json().catch(() => null); if ((r.status !== 200 && r.status !== 503) || b === null || typeof b.version !== 'string' || (b.status !== 'ok' && b.status !== 'degraded')) process.exit(1);" \
       >/dev/null 2>&1; then
       return 0
     fi
     if [[ "$attempt" -eq 90 ]]; then
+      docker exec "$container" node -e \
+        "const r = await fetch('http://127.0.0.1:8082/healthz', { signal: AbortSignal.timeout(5000) }); console.error('healthz status=' + r.status + ' body=' + await r.text());" \
+        >&2 || true
       docker logs --tail=120 "$container" >&2 || true
       echo "$message" >&2
       exit 1
