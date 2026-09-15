@@ -186,6 +186,11 @@ operator tap. The tap appends the approved text to `project_settings.memory` or
 `realms.memory`, where ADR 0018 D5's two-part injection puts it into every future context of
 the scope.
 
+The verified proposal row records its evidence realm and, for a project target, the target
+project id. Approval runs transactionally and re-resolves that project's current non-null
+realm. If it no longer equals the evidence realm, the proposal is marked stale and no memory
+is written; the loop must produce evidence in the new realm before it can be approved.
+
 This is consistent with ADR 0018 D5's restriction that only the operator writes realm
 memory, and the ADR should not leave that to be rediscovered: the **tap is the operator
 write**. The agent proposes text and the operator commits it, exactly as it proposes a loop

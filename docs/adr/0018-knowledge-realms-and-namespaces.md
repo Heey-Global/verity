@@ -130,8 +130,9 @@ explicit method-and-identifier policy, not a broader wildcard.
 `project_mcp_bindings` stays as it is for project-specific tools. A shared resolver produces
 the deduplicated union of direct bindings and enabled namespaces for a project. The Conductor
 uses that resolver when building MCP descriptors in `embedded.ts`; descriptors carry the
-namespace mode and read allowlist to the proxy. `resolveConnection` in `server.ts:4518` uses
-the same resolver on every call and returns that policy with the upstream connection.
+opaque connection id only, as today. `resolveConnection` in `server.ts:4518` uses the same
+resolver on every call and derives the namespace mode and allowlist from server-side rows.
+No Sandbox-facing descriptor or request field is accepted as policy input.
 
 That location is the whole point of the design. It already re-resolves the binding on
 **every** proxied call, against `identity.projectId` taken from the internal connection
@@ -185,11 +186,14 @@ already has a context from reading what is in it.
 
 ### D7 — Every namespace call is recorded against its realm
 
-The proxy sees every call already. It logs `{ realmId, projectId, sessionId, turnId,
+The proxy sees every call already. It appends a row to a dedicated
+`knowledge_namespace_audit` table containing `{ realmId, projectId, sessionId, turnId,
 connectionId, method, targetName, namespaceMode, outcome, denialReason }`, where `targetName`
-is the validated tool or resource identifier when the method has one. Without this, "did a
-session in the business realm read my private notes" has no answer, and a separation nobody
-can verify is a separation nobody should trust.
+is the validated tool or resource identifier when the method has one. Rows form a per-realm
+hash chain using the same sequence/previous-hash/event-hash shape as the Brokered Secrets
+audit trail and are retained for a documented, operator-configurable period (default 180
+days). Without this, "did a session in the business realm read my private notes" has no
+durable answer, and a separation nobody can verify is a separation nobody should trust.
 
 ## Alternatives considered
 
