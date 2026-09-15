@@ -2124,6 +2124,72 @@ describe('GitHub-hosted runner boundary', () => {
  */
 describe('live cutover smoke daemon guard', () => {
   const script = 'deploy/bin/verity-self-update-live-smoke';
+  const driver = 'packages/server/src/self-update-live-smoke.ts';
+
+  // The update smoke does not run through Compose. It hand-builds the deployment
+  // it then updates, so every variable the Server refuses to start without has to
+  // be named twice more — once in the environment the driver resolves against and
+  // once in the sealed spec that decides what reaches the container.
+  //
+  // Nothing in the run says so when one is missed. The incumbent keeps serving on
+  // the PREVIOUS image, which predates the requirement; only the candidate runs
+  // the image under test, and the sealed spec restarts it `unless-stopped`, so it
+  // crash-loops as a container that is `running` almost whenever it is sampled.
+  // The stage that then reports a failure is the one asserting a candidate never
+  // answers — which is what it is there to prove. The run goes red minutes later
+  // on a handoff that never happened, and stays red for every release until
+  // someone reads the start-up log of a container nothing was dumping.
+  //
+  // Both sides are read out of the sources here rather than restated, because a
+  // restated list is exactly what was already in agreement when this broke.
+  it('gives the hand-built deployment every variable the Server refuses to start without', () => {
+    const main = readFileSync('packages/server/src/main.ts', 'utf8');
+    // A local read from `process.env.NAME` followed by its unconditional falsy
+    // guard. Keep formatting and optional trimming out of the extraction, while
+    // excluding paired-option validation such as "key without certificate" — in
+    // that case neither variable is unconditionally required.
+    const thrownRequirements = [
+      ...main.matchAll(
+        /const\s+(\w+)\s*=\s*process\.env\.([A-Z][A-Z0-9_]*)(?:\?\.trim\(\))?;(?:(?!\b(?:const|let|var)\b)[\s\S])*?if\s*\(\s*!\s*\1\s*\)\s*\{(?:(?!\})[\s\S])*?throw\b/g,
+      ),
+    ].map((match) => match[2]);
+    // `main` validates DATABASE_URL before its async startup boundary and exits
+    // directly. This is the equivalent unconditional empty-value guard in that
+    // synchronous bootstrap path, not a different deployment contract.
+    const exitedRequirements = [
+      ...main.matchAll(
+        /const\s+(\w+)\s*=\s*process\.env\.([A-Z][A-Z0-9_]*);(?:(?!\b(?:const|let|var)\b)[\s\S])*?if\s*\(\s*\1\s*===\s*undefined\s*\|\|\s*\1\.trim\(\)\s*===\s*['"]{2}\s*\)\s*\{(?:(?!\})[\s\S])*?process\.exit\(1\)/g,
+      ),
+    ].map((match) => match[2]);
+    const emptyRequirements = [
+      ...main.matchAll(
+        /const\s+(\w+)\s*=\s*process\.env\.([A-Z][A-Z0-9_]*)\?\.trim\(\);(?:(?!\b(?:const|let|var)\b)[\s\S])*?if\s*\(\s*\1\s*===\s*undefined\s*\|\|\s*\1\.length\s*===\s*0\s*\)\s*\{(?:(?!\})[\s\S])*?throw\b/g,
+      ),
+    ].map((match) => match[2]);
+    const required = [
+      ...new Set([...thrownRequirements, ...exitedRequirements, ...emptyRequirements]),
+    ];
+    // A rewrite that drops the idiom must fail here rather than quietly assert
+    // nothing: an empty set would make every expectation below vacuous.
+    expect(required.length).toBeGreaterThan(0);
+
+    const source = readFileSync(driver, 'utf8');
+    const environmentStart = source.indexOf('function serverEnvironment(');
+    const deploymentStart = source.indexOf('function deploymentSpec(');
+    const dockerStart = source.indexOf('function docker(');
+    expect(environmentStart).toBeGreaterThan(-1);
+    expect(deploymentStart).toBeGreaterThan(environmentStart);
+    expect(dockerStart).toBeGreaterThan(deploymentStart);
+    const resolved = source.slice(environmentStart, deploymentStart);
+    const sealed = source.slice(deploymentStart, dockerStart);
+
+    for (const name of required) {
+      // Anchor on object-property lines so prose in a nearby comment cannot
+      // satisfy the deployment mapping or the sealed source.
+      expect(resolved).toMatch(new RegExp(`^\\s*${name}\\s*:`, 'm'));
+      expect(sealed).toMatch(new RegExp(`^\\s*fromEnv\\(['"]${name}['"]\\),?\\s*$`, 'm'));
+    }
+  });
 
   it('keeps the independently supervised Agent Gateway alive across Server generations', () => {
     const smoke = readFileSync(script, 'utf8');

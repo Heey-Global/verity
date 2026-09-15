@@ -358,6 +358,14 @@ export interface ContainerInspect {
   runtime?: string | undefined;
   /** Docker lifecycle state (`created`, `running`, `exited`, `dead`, ...). */
   status?: string | undefined;
+  /** Top-level `RestartCount` of the inspect payload — how often the restart
+   *  policy has put this container back after it exited. A container under
+   *  `unless-stopped` that dies on every start still reports `running: true` most
+   *  of the time it is sampled, because Docker has already restarted it by then.
+   *  This is the field that tells a healthy container apart from one in a crash
+   *  loop. It is a sibling of `State`, not a member of it — `State` carries
+   *  `Restarting`, which is only true during the brief window of a restart. */
+  restartCount?: number | undefined;
   healthStatus?: string | undefined;
   networkMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
@@ -1617,7 +1625,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       if (!res.ok) throw await toDockerError(res, id);
       const json = (await res.json()) as {
         Id?: unknown;
-        State?: { Running?: unknown; Status?: unknown; Health?: { Status?: unknown } };
+        RestartCount?: unknown;
+        State?: {
+          Running?: unknown;
+          Status?: unknown;
+          Health?: { Status?: unknown };
+        };
         Config?: {
           Image?: unknown;
           Labels?: unknown;
@@ -1691,6 +1704,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           ? { runtime: json.HostConfig.Runtime }
           : {}),
         ...(typeof json.State?.Status === 'string' ? { status: json.State.Status } : {}),
+        ...(typeof json.RestartCount === 'number' ? { restartCount: json.RestartCount } : {}),
         ...(typeof json.State?.Health?.Status === 'string'
           ? { healthStatus: json.State.Health.Status }
           : {}),
