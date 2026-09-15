@@ -1,4 +1,4 @@
-# ADR 0017 — Project Sandbox Sleep and Automatic Wake
+# ADR 0020 — Project Sandbox Sleep and Automatic Wake
 
 **Status:** Proposed · **Date:** 2026-09-15
 
