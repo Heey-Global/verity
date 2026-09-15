@@ -145,6 +145,13 @@ resolved namespace, caller session and connection; arbitrary session ids fail cl
 events record these as `transport:get` and `transport:delete` with no target name, linked to
 the namespace and upstream session id. They confer no additional JSON-RPC method authority.
 
+The proxy applies policy in both directions, including streamed `POST` responses and `GET`
+SSE. Upstream responses must correlate to an outstanding authorized request. Upstream-initiated
+requests (including sampling, elicitation and roots) are rejected, and notifications are
+fail-closed to an explicit protocol list such as `notifications/tools/list_changed`; logging
+messages and unknown extensions are dropped and audited. An upstream stream cannot acquire
+authority that the client request policy denied.
+
 Namespace access requires the proxy's trusted per-turn caller identity, not the project-scoped
 container identity. The server mints the existing MCP proxy bearer for a specific
 `{ sessionId, turnId, projectId, sessionRealmId }`; `mcpProxyResolveCaller` validates it and

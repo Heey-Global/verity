@@ -64,8 +64,9 @@ It adds no scheduler, no classifier service, and no automatic enforcement.**
 
 The Learning Loop reuses the whole of ADR 0008: the schedule, the executor, the in-container
 timeout, the exit/stdout contract, draft-until-tested, the circuit breaker, idle-only
-dispatch, the run history and the cockpit. It is a nightly loop whose script fetches a digest
-and whose reaction turn reasons about it.
+dispatch, the run history and the cockpit. It is a nightly loop whose script signals whether
+to act; the server executor computes and attaches the digest, and the reaction turn reasons
+about it.
 
 The value of this is operational rather than aesthetic. Everything that makes an unattended
 recurring job safe to run — it cannot stack turns, it pauses itself after five consecutive
