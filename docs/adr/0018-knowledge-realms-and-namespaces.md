@@ -135,6 +135,12 @@ The method policy is also fail-closed. A `read` namespace permits only MCP lifec
 unknown or extension methods. Supporting a read-only resource API later requires another
 explicit method-and-identifier policy, not a broader wildcard.
 
+A `read_write` namespace permits the same lifecycle methods, `tools/list`, and `tools/call`
+for the upstream's complete discovered tool set; write authority is deliberately expressed by
+that mode. It still rejects resources, prompts, completion, logging, sampling, elicitation and
+unknown or extension methods. Adding any method to either mode is a policy change, not an
+upstream-driven default.
+
 JSON-RPC batch arrays are rejected for namespace connections in phase 1. Supporting them later
 requires authorizing and pre-auditing every element before forwarding any element; mixed
 partially authorized batches must fail as a unit.
@@ -248,7 +254,11 @@ realm_allowed_runtimes(realm_id, runtime)  PRIMARY KEY (realm_id, runtime)
 ```
 
 No rows for a realm means unrestricted. `runtime` is validated against the server's canonical
-backend identifiers at write time; unknown values are rejected rather than ignored.
+backend identifiers at write time; unknown values are rejected rather than ignored. The shared
+model resolver first resolves aliases/defaults to `{ model, backend }`, then authorizes the
+resolved `backend` against this relation. Callers cannot authorize a model string directly,
+and adding a model or alias cannot introduce a new backend without that backend passing the
+same check.
 The relation and shared validator are mandatory in the first realm migration; realms do not
 ship with model-selection paths that bypass them.
 
