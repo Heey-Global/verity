@@ -441,8 +441,24 @@ expect_gateway_holding() {
       echo "the Gateway is holding $held_streams stream(s) and $held_requests request(s)"
       return 0
     fi
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$client" 2>/dev/null)" != 'true' ]]; then
+      docker inspect --format 'gateway client state: status={{.State.Status}} exit={{.State.ExitCode}} error={{json .State.Error}}' \
+        "$client" >&2 || true
+      docker logs --tail=120 "$client" >&2 || true
+      docker logs --tail=120 verity-managed-gateway >&2 || true
+      echo "the client stopped after reporting attached; Gateway last reported: $status" >&2
+      exit 1
+    fi
     sleep 1
   done
+  docker inspect --format 'gateway client state: status={{.State.Status}} exit={{.State.ExitCode}} error={{json .State.Error}}' \
+    "$client" >&2 || true
+  docker logs --tail=120 "$client" >&2 || true
+  docker inspect --format 'gateway network={{json .NetworkSettings.Networks}}' \
+    verity-managed-gateway >&2 || true
+  docker inspect --format 'gateway client network={{json .NetworkSettings.Networks}}' \
+    "$client" >&2 || true
+  docker logs --tail=120 verity-managed-gateway >&2 || true
   echo "the Gateway never registered the client's connections (last: $status)" >&2
   exit 1
 }

@@ -2421,6 +2421,19 @@ describe('live cutover smoke daemon guard', () => {
     expect(gateway).toContain('AbortSignal.timeout(5000)');
   });
 
+  it('preserves the client evidence when the Gateway never observes its held work', () => {
+    // `attached` is the client's claim; a zero Gateway count is a disagreement.
+    // Without both sides in the failure log the live-only race costs another run
+    // while revealing no more than the assertion did.
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const holding = /expect_gateway_holding\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    expect(holding).toContain('docker inspect --format \'{{.State.Running}}\' "$client"');
+    expect(holding).toContain('docker logs --tail=120 "$client"');
+    expect(holding).toContain('docker logs --tail=120 verity-managed-gateway');
+    expect(holding).toContain('gateway network={{json .NetworkSettings.Networks}}');
+    expect(holding).toContain('gateway client network={{json .NetworkSettings.Networks}}');
+  });
+
   // The update smoke does not run through Compose. It hand-builds the deployment
   // it then updates, so every variable the Server refuses to start without has to
   // be named twice more — once in the environment the driver resolves against and
