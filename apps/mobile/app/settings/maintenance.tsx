@@ -86,6 +86,7 @@ function MaintenanceSettingsView({ client }: { client: VerityClient }) {
   return (
     <SettingsScaffold
       title="Maintenance"
+      detail
       onRetry={() =>
         void retryFailedVeritySettings(client).then((retried) => {
           if (!retried) reload();

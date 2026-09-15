@@ -38,7 +38,16 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     padding: theme.spacing.md,
     gap: theme.spacing.xl,
   },
+  detailContent: {
+    width: '100%',
+    maxWidth: 1040,
+    alignSelf: 'center',
+    gap: theme.spacing.lg,
+  },
   settingsGroup: {
+    gap: theme.spacing.sm,
+  },
+  panelStack: {
     gap: theme.spacing.sm,
   },
   groupHeader: {
@@ -70,7 +79,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   // Generic card panel.
   panel: {
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
     padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
@@ -387,6 +396,8 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   reproButton: {
     minHeight: 44,
+    minWidth: 168,
+    alignSelf: 'flex-start',
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -394,7 +405,8 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.accent,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
   },
   reproButtonLabel: {
     color: theme.colors.accent,
@@ -530,6 +542,8 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   signingKeyActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
     gap: theme.spacing.sm,
     marginTop: theme.spacing.sm,
   },
@@ -537,7 +551,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   // where an undersized target gets mis-tapped.
   signingKeyButton: {
     minHeight: 44,
-    flex: 1,
+    minWidth: 144,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.md,

@@ -81,6 +81,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
   return (
     <SettingsScaffold
       title="GitHub"
+      detail
       onRetry={() => {
         if (author.dirty) {
           author.commit();

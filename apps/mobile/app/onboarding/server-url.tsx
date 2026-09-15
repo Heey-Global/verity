@@ -470,7 +470,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   content: {
     flexGrow: 1,
-    gap: theme.spacing.lg,
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
+    gap: theme.spacing.md,
     justifyContent: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: 160,
@@ -492,18 +495,18 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 22 * theme.fontScale,
   },
   card: {
-    gap: theme.spacing.md,
-    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   infoCard: {
     backgroundColor: theme.colors.surfaceAlt,
   },
   actionCard: {
-    borderColor: theme.colors.accent,
+    borderColor: theme.colors.border,
   },
   stepLabel: {
     color: theme.colors.accent,

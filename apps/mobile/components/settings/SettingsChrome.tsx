@@ -30,11 +30,14 @@ import { settingsStyles as styles } from './settingsStyles';
 export function SettingsScaffold({
   title,
   onRetry,
+  detail = false,
   children,
 }: {
   title: string;
   /** What "Retry" on the error banner should do. Omitted → no retry offered. */
   onRetry?: () => void;
+  /** Detail routes use a calmer reading width on tablets and desktop. */
+  detail?: boolean;
   children: ReactNode;
 }) {
   const { theme } = useUnistyles();
@@ -52,7 +55,11 @@ export function SettingsScaffold({
         </View>
       ) : null}
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[
+          styles.content,
+          detail ? styles.detailContent : null,
+          { paddingBottom: insets.bottom + 24 },
+        ]}
         keyboardShouldPersistTaps="handled"
       >
         {children}

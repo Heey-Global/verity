@@ -54,15 +54,17 @@ export default function OnboardingWelcome() {
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
-        <View style={styles.footerSpacer} />
-        <Pressable
-          style={({ pressed }) => [styles.nextButton, pressed ? styles.pressed : null]}
-          onPress={() => router.push(NEXT)}
-          accessibilityRole="button"
-          accessibilityLabel="Continue"
-        >
-          <Text style={styles.nextLabel}>Continue</Text>
-        </Pressable>
+        <View style={styles.footerInner}>
+          <View style={styles.footerSpacer} />
+          <Pressable
+            style={({ pressed }) => [styles.nextButton, pressed ? styles.pressed : null]}
+            onPress={() => router.push(NEXT)}
+            accessibilityRole="button"
+            accessibilityLabel="Continue"
+          >
+            <Text style={styles.nextLabel}>Continue</Text>
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -75,7 +77,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   content: {
     flexGrow: 1,
-    gap: theme.spacing.lg,
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
+    gap: theme.spacing.md,
     justifyContent: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
@@ -97,10 +102,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   card: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.lg,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   lead: {
@@ -119,15 +124,20 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 20 * theme.fontScale,
   },
   footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
+  },
+  footerInner: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
   },
   footerSpacer: {
     minWidth: 88,

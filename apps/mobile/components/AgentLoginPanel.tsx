@@ -681,11 +681,11 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 20 * theme.fontScale,
   },
   card: {
-    gap: theme.spacing.md,
-    padding: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   labelRow: {
@@ -863,14 +863,16 @@ const styles = StyleSheet.create((theme) => ({
   success: {
     color: theme.colors.tone.done,
     fontSize: theme.text.sm,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   actionRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
     gap: theme.spacing.sm,
   },
   secondaryButton: {
-    flex: 1,
+    minWidth: 136,
     minHeight: 42,
     borderRadius: theme.radius.pill,
     borderWidth: 1,
@@ -881,11 +883,11 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.xs,
   },
   dangerButton: {
-    flex: 1,
+    minWidth: 136,
     minHeight: 42,
     borderRadius: theme.radius.pill,
     borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
+    borderColor: theme.colors.border,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -894,7 +896,7 @@ const styles = StyleSheet.create((theme) => ({
   dangerLabel: {
     color: theme.colors.tone.danger,
     fontSize: theme.text.sm,
-    fontWeight: '900',
+    fontWeight: '700',
   },
   pressed: {
     opacity: 0.72,

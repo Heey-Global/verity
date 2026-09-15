@@ -314,7 +314,13 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
         onCreate={createAgentLoop}
         onChange={setActiveTab}
       />
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.content,
+          activeTab === 'settings' || activeTab === 'memory' ? styles.settingsContent : null,
+          { paddingBottom: insets.bottom + 24 },
+        ]}
+      >
         {project.state !== 'active' && project.state !== 'absent' ? (
           <View style={styles.runtimePanel} accessibilityLabel="Project setup progress">
             <Text style={styles.operationsTitle}>{projectSetupStatus(project).label}</Text>
@@ -3456,6 +3462,12 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing.lg,
     gap: theme.spacing.lg,
   },
+  settingsContent: {
+    width: '100%',
+    maxWidth: 1040,
+    alignSelf: 'center',
+    padding: theme.spacing.md,
+  },
   projectTabs: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3574,7 +3586,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   projectFactRow: {
@@ -3622,7 +3634,7 @@ const styles = StyleSheet.create((theme) => ({
     overflow: 'hidden',
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   settingsLabelRow: {
@@ -3671,7 +3683,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   bindingCurrent: {
@@ -3684,7 +3696,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.lg,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
@@ -3700,7 +3712,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.md,
     borderRadius: theme.radius.lg,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
@@ -3814,13 +3826,13 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
   },
   dangerPanel: {
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
   },
   deleteProjectButton: {
     height: 44,
@@ -3855,7 +3867,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
   },
   runtimeEmptyState: {
