@@ -83,6 +83,13 @@ So a Learning Loop belongs to exactly one realm. It reads only sessions of proje
 realm and may propose only into that realm. Two realms get two loops, with two schedules and
 two run histories. The duplication is the point.
 
+This requires an explicit lifecycle distinction rather than inferring the realm from the
+current host project. `agent_loops` gains `kind = 'standard' | 'learning'` and a nullable
+`realm_id`; a learning row has exactly one `realm_id`, while a standard row has none. It still
+uses one project-owned session as its execution host. Moving that host project to another
+realm or deleting it is rejected while it hosts a Learning Loop; the operator must first
+rehost or delete the loop. Rehosting changes the project/session, never the loop's realm.
+
 ### D3 — The read path is a server-computed digest of aggregates, not a transcript feed
 
 A new internal broker route returns the digest:
@@ -92,11 +99,16 @@ POST /internal/realm/learning-digest   { windowHours, minOccurrences }
    → { candidates: [ { key, count, projectCount, firstSeen, lastSeen, exemplars[] } ] }
 ```
 
-It follows the memory broker exactly (`packages/server/src/project-memory-route.ts`):
-pre-auth allowlisted on the internal listener, authenticated by the per-container capability,
-and **the server resolves capability → project → realm**. The Sandbox names neither its
-project nor its realm, so a Learning Loop container cannot ask for another realm's digest by
-asking differently.
+It follows the memory broker's internal-listener placement, but deliberately does **not** use
+the per-container capability as sufficient authority: ordinary sessions in that container
+share it. When the executor starts a claimed Learning Loop run, the server mints a short-lived,
+single-use digest grant bound to `{ loopId, runId, sessionId, realmId }` and provides it only to
+that script invocation. The route consumes the grant and verifies the persisted loop kind,
+run and session before resolving the realm. The Sandbox supplies no realm or project id. A
+normal session, another loop, a replay, and a loop whose host was moved all fail closed.
+
+The script fetches the digest once and emits it through the existing Agent Loop stdout
+contract; the reaction turn receives that external-data block and never receives the grant.
 
 The route returns **counts keyed on structural fields** — tool name, risk class, denial
 reason, error kind — with at most a handful of exemplars per candidate, each passed through
@@ -149,15 +161,17 @@ section (`:418`–`:422`):
 
 - **Recurrence.** A candidate needs `count ≥ minOccurrences` across the window, configured
   per loop with a floor of 3. This is what stops the loop overfitting to noise.
-- **Hold-out evaluation.** Before proposing a guardrail, the loop must evaluate it against a
-  window of transcripts it did **not** derive it from, and report two numbers: how many past
-  occurrences it would have prevented, and how many unrelated ones it would also have caught.
-  A proposal that cannot show the first, or that shows too much of the second, is not raised.
+- **Hold-out evaluation.** Candidate records include a constrained structural predicate over
+  the admissible fields from D4. The server, not the model, evaluates that predicate against a
+  disjoint hold-out window and returns its match count and unrelated-signal match rate. The
+  proposal event is accepted only when it cites a digest candidate and unchanged predicate
+  whose server-computed metrics pass the configured threshold. No hold-out transcript or
+  message text enters the model context.
 
-The second gate exists because a guardrail can mask a genuine failure symptom instead of
-fixing its cause, which would make the fleet quieter and worse. The concept states that
-operator approval is necessary but not sufficient and asks for a machine pre-filter; this is
-that filter. The operator reviewing a proposal sees both numbers.
+The metrics are evidence that the recurring signal generalizes; they do not claim that
+arbitrary natural-language guardrail text would have prevented an event. The operator sees
+that limitation with both numbers. This narrower gate is implementable without exposing the
+hold-out corpus and still filters one-off symptoms before review.
 
 ### D6 — The rollout target is realm or project memory, through a confirm widget
 
@@ -200,16 +214,15 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
   coarse, this is the next thing to try.
 - **Auto-enforce with an operator veto.** Rejected in D6.
 - **One global Learning Loop.** Rejected in D2.
-- **A dedicated Learning Loop session type.** Rejected for now: a Learning Loop is an Agent
-  Loop with a particular script, and `sessions.kind = 'agent_loop'` already renders and
-  deletes correctly. If the cockpit needs to look different, that is a UI concern before it is
-  a schema one.
+- **A dedicated Learning Loop session type.** Rejected: `sessions.kind = 'agent_loop'` remains
+  sufficient. The discriminator and realm binding live on `agent_loops`, where scheduling,
+  authorization and lifecycle decisions are made.
 
 ## Consequences
 
-- New surface: one internal route plus its digest query, one fenced proposal contract and
-  canonical event, the hold-out evaluation, and a per-realm loop configuration. No new
-  scheduler, no new session kind, no new capability, no new credential.
+- New surface: one internal route plus its digest query and single-use execution grant, one
+  fenced proposal contract and canonical event, the server-side hold-out evaluation, and a
+  per-realm loop configuration. No new scheduler, session kind, or standing credential.
 - Everything inherits ADR 0008's guardrails, including the ones that matter most for an
   unattended job: it cannot stack turns, it pauses itself after five consecutive errors, and
   its raw output is never persisted.
@@ -226,16 +239,14 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
 
 ## Scope / open questions
 
-- Whether `agent_loops` grows a `kind` discriminator or a Learning Loop is an ordinary loop
-  whose script happens to call the digest route. The latter is smaller; the former makes the
-  cockpit and the realm binding explicit.
 - Which structural keys the digest aggregates on. Tool name plus denial reason is the obvious
   first set; whether error kind and risk class add signal is an empirical question for the
   first window of real data.
 - Hold-out window size and the pass criterion for D5 — the numbers matter more than the
   mechanism and should come from measurement, not from this document.
 - Whether to add a durable permission-decision row (D4). Recommended, as a separate change.
-- Where a realm's Learning Loop lives when no project in it is an obvious host.
+- How the UI chooses a host project and guides rehosting when no project in a realm is an
+  obvious long-lived host.
 - Whether proposals should ever target a repository's `AGENTS.md` rather than memory. That is
   a pull request, not a memory write, and belongs in its own ADR if it is wanted.
 - How a guardrail is retired. Memory is operator-curated and prunable, but nothing currently

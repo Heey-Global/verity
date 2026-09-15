@@ -113,6 +113,13 @@ knowledge_namespaces(id, realm_id, connection_id, label, mode, enabled)
    mode: 'read' | 'read_write'
 ```
 
+A `read` namespace also carries a non-empty, operator-reviewed
+`read_tool_allowlist`. The proxy parses MCP `tools/call` requests and rejects a tool whose
+name is not on that allowlist before forwarding it. Discovery responses are filtered to the
+same set. Connections that cannot provide a stable read-only tool set cannot be exposed as a
+`read` namespace. `read_write` is a separate explicit mode, never the fallback when read-only
+enforcement is unavailable.
+
 `project_mcp_bindings` stays as it is for project-specific tools. Namespace resolution is
 **additive** at exactly one place: `resolveConnection` in `server.ts:4518` gains a second
 lookup that joins the caller's project to its realm and accepts a connection reachable
@@ -227,9 +234,9 @@ trust.
 - Whether realm memory shares `PROJECT_MEMORY_MAX_CHARS` or takes its own cap; the combined
   injected size is what actually needs bounding.
 - Whether `allowed_runtimes` ships in phase 1 or follows the namespace work.
-- `mode: 'read_write'` needs a per-tool filter, and MCP tool names are upstream-defined —
-  filtering by name is brittle across upstream versions. Phase 1 may ship `read` only and
-  defer write namespaces until the filter has a stable basis.
+- How allowlist drift is presented when an upstream renames a tool. The fail-closed behavior
+  is fixed: an unknown name remains unavailable until the operator reviews and updates the
+  namespace. Phase 1 may ship `read` only and defer write namespaces.
 - Whether the realm should eventually scope brokered secrets and Doppler bindings, which are
   per-project today. Likely yes, and it would be the first real test of realm as an
   authority boundary rather than a grouping.
