@@ -136,7 +136,9 @@ source transcripts out of the evidence store, permits delayed unattended ingesti
 documented retention window, and avoids trusting a rewritten prompt or recomputing against
 later data. The bounded, redacted digest attached to the reaction prompt is ordinary prompt
 content and remains in that Learning Loop session's transcript under normal session-retention
-rules; the UI must describe that retention rather than calling the digest ephemeral.
+rules; the UI must describe that retention rather than calling the digest ephemeral. The
+session's immutable realm provenance and ADR 0018's same-realm observation checks continue to
+protect that transcript after rehosting or a later host-project realm move.
 
 The service returns **counts keyed on structural fields** from the durable operator-decision
 sources — tool name, risk class, behavior, scope and safe secret-target identifiers — with at

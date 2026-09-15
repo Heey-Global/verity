@@ -160,6 +160,15 @@ seed a backend context or call MCP. If any session cannot be confirmed closed, t
 without changing membership. This prevents old-realm memory, messages or fetched corpus data
 from entering a context that has new-realm namespace authority.
 
+`sessions.realm_id` snapshots the project's non-null realm at session creation and never
+changes. Every agent-mediated cross-project path — session discovery, progress, recent-message
+observation, handoff, dispatch and future transcript tools — resolves the caller session and
+requires its `realm_id` to equal the target session's. Pre-move sessions therefore remain in
+their old realm and are excluded from new-realm agent reads even though their transcripts are
+retained. Direct operator UI/API access may list historical sessions across realms because it
+uses operator authentication rather than a session capability; it must not turn that access
+into content delivered to an agent without the same-realm check.
+
 Policy provenance is unique rather than composed. `connection_id` is globally unique in
 `knowledge_namespaces`, and
 enabling a namespace or moving a project is rejected if that connection is already directly
@@ -255,8 +264,9 @@ has a durable intent record even across a database failure that occurs after for
 
 ## Consequences
 
-- One migration: `realms`, `knowledge_namespaces`, non-null `project_settings.realm_id`, and
-  `realms.allowed_runtimes`, including the seeded default realm and settings backfill.
+- One migration: `realms`, `knowledge_namespaces`, non-null `project_settings.realm_id`,
+  immutable `sessions.realm_id`, and `realms.allowed_runtimes`, including the seeded default
+  realm and settings/session backfill.
 - Four code seams, all extensions of existing ones: shared descriptor/connection resolution,
   proxy policy enforcement (`server.ts:4518`), the two-part memory read
   (`conductor.ts:5137`), and the model-resolution guard (`server.ts:4659`, `:7307`). No new
