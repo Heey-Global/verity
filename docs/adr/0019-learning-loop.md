@@ -121,8 +121,9 @@ a verification receipt with the proposal. A later operator tap references that i
 proposal row rather than re-verifying the expired token. This keeps raw digest output
 ephemeral without trusting a rewritten prompt or recomputing against a later data window.
 
-The route returns **counts keyed on structural fields** — tool name, risk class, denial
-reason, error kind — with at most a handful of exemplars per candidate, each passed through
+The service returns **counts keyed on structural fields** from the durable operator-decision
+sources — tool name, risk class, behavior, scope and safe secret-target identifiers — with at
+most a handful of exemplars per candidate, each passed through
 `redactSessionObservationText`. It does not return transcripts.
 
 Exemplars are projections from the admissible row itself, never joins back to a permission

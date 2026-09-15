@@ -201,6 +201,13 @@ audit trail and are retained for a documented, operator-configurable period (def
 days). Without this, "did a session in the business realm read my private notes" has no
 durable answer, and a separation nobody can verify is a separation nobody should trust.
 
+Auditing is fail-closed before side effects: the proxy must append a hash-chained request
+record before forwarding and refuses the call if that write fails. It appends a separate
+outcome record afterward. If the outcome write fails after the upstream already answered,
+the durable request remains visibly unresolved (`outcome: 'unknown'`) and a retry worker may
+append the result later; it is never silently treated as success. Thus every forwarded access
+has a durable intent record even across a database failure that occurs after forwarding.
+
 ## Alternatives considered
 
 - **A Verity-native knowledge store** (ingest, chunking, embeddings, search, an editor).
