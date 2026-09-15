@@ -152,13 +152,16 @@ project (`store.ts:5884`) becomes a union-aware invariant. Enabling a namespace 
 project validates the resulting deduplicated union for every affected project and rejects the
 write if any would exceed 16; descriptor construction asserts the same bound fail closed.
 
-A realm move is a session-generation boundary, not a metadata-only update. The server refuses
-new turns, stops active turns, permanently closes every existing project session against
-further dispatch/resume, tears down their backend contexts, applies the realm change and only
-then permits newly created sessions. Closed transcripts remain visible as history but cannot
-seed a backend context or call MCP. If any session cannot be confirmed closed, the move fails
-without changing membership. This prevents old-realm memory, messages or fetched corpus data
-from entering a context that has new-realm namespace authority.
+A realm move is a session-generation boundary, not a metadata-only update. Its preflight locks
+the project and validates the target realm, namespace union, direct-binding conflicts and
+hosted Learning Loops before setting `realm_move_pending`, which refuses new turns and
+configuration writes. The server then stops active turns and tears down backend contexts;
+failure clears the pending flag while sessions remain resumable in the unchanged old realm.
+Only after every context is confirmed stopped does one transaction revalidate the locked
+inputs, permanently close the existing sessions and change membership atomically. Closed
+transcripts remain visible as history but cannot seed a backend context or call MCP. This
+prevents a failed move from destroying resumability and prevents old-realm memory, messages or
+fetched corpus data from entering a context with new-realm authority.
 
 `sessions.realm_id` snapshots the project's non-null realm at session creation and never
 changes. Every agent-mediated cross-project path — session discovery, progress, recent-message
@@ -171,8 +174,9 @@ into content delivered to an agent without the same-realm check.
 
 Policy provenance is unique rather than composed. `connection_id` is globally unique in
 `knowledge_namespaces`, and
-enabling a namespace or moving a project is rejected if that connection is already directly
-bound to any affected project. Creating the conflicting direct binding is rejected likewise.
+enabling a namespace is rejected if that connection is directly bound to **any** project,
+regardless of realm. Creating a direct binding is rejected if any namespace globally names
+the connection. Realm moves revalidate these global invariants as part of preflight.
 Thus every reachable connection is authorized by exactly one direct binding or one namespace;
 the proxy never has to merge a write policy with a read policy.
 

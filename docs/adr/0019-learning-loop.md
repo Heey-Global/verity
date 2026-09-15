@@ -95,7 +95,9 @@ cardinality under concurrent creation.
 The host project must belong to the loop's realm. Creation and rehosting check that equality
 in the same transaction that writes the loop; every claimed run re-resolves it before session
 creation or digest computation and fails closed on a mismatch. The realm-move guard above
-therefore also prevents moving a current Learning Loop host until it is rehosted.
+therefore also prevents moving a current Learning Loop host until it is rehosted. That check
+and its row locks are mandatory realm-move preflight steps, before any session is stopped or
+closed.
 The existing cascading `agent_loops.project_id` foreign key remains for standard loops. A
 database deletion guard rejects deletion only when a `kind = 'learning'` row names the
 project, closing races independently of the application transaction; the project-deletion
