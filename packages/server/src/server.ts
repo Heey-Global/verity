@@ -225,7 +225,12 @@ import {
   ControlPlaneSessionToolError,
   createControlPlaneSessionTools,
 } from './session-handoff-tool.js';
-import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
+import {
+  CONTROL_PLANE_PROJECT_ID,
+  CONTROL_PLANE_PROJECT_OWNER,
+  CONTROL_PLANE_PROJECT_REPO,
+  ensureControlPlaneProject,
+} from './control-plane-project.js';
 import {
   LOCAL_PROJECT_OWNER,
   isInstallationPlaceholder,
@@ -1409,9 +1414,6 @@ const MAX_SESSION_DOWNLOAD_BYTES = 50_000_000;
 const MAX_SESSION_UPLOAD_BYTES = 250_000_000;
 export const VERITY_CONTROL_SESSION_NAME = 'Verity Control';
 export const VERITY_CONTROL_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
-const VERITY_CONTROL_PROJECT_OWNER = 'verity';
-const VERITY_CONTROL_PROJECT_REPO = 'control';
-const VERITY_CONTROL_PROJECT_CONTAINER = 'verity-control';
 
 /**
  * What a control-plane turn is told about itself.
@@ -5309,24 +5311,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     true;
 
   const ensureVerityControlProject = async (): Promise<ProjectRecord> => {
-    const project = await deps.eventStore.upsertProject({
-      id: VERITY_CONTROL_PROJECT_ID,
-      kind: 'control_plane',
-      owner: VERITY_CONTROL_PROJECT_OWNER,
-      repo: VERITY_CONTROL_PROJECT_REPO,
-      containerName: VERITY_CONTROL_PROJECT_CONTAINER,
-      state: 'active',
-      overviewVisible: true,
-    });
-    const active =
-      project.state === 'active'
-        ? project
-        : ((await deps.eventStore.updateProjectState(project.id, 'active', null)) ?? project);
-    if (active.setupStatus !== 'complete') {
-      await deps.eventStore.setProjectSetupStatus(project.id, 'complete');
-      return (await deps.eventStore.getProject(project.id)) ?? active;
-    }
-    return active;
+    return ensureControlPlaneProject(deps.eventStore);
   };
 
   const projectsForOverview = async (projects: ProjectRecord[]): Promise<ProjectRecord[]> => {
@@ -7304,8 +7289,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       if (
         parsed !== undefined &&
-        parsed.owner.toLowerCase() === VERITY_CONTROL_PROJECT_OWNER &&
-        parsed.repo.toLowerCase() === VERITY_CONTROL_PROJECT_REPO
+        parsed.owner.toLowerCase() === CONTROL_PLANE_PROJECT_OWNER &&
+        parsed.repo.toLowerCase() === CONTROL_PLANE_PROJECT_REPO
       ) {
         if (!(await advancedModeEnabled())) {
           reply.code(404);

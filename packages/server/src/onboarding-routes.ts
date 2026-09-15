@@ -12,6 +12,7 @@
 // None of these touch `getVeritySettings()` (which decrypts) or any secret value.
 import type { EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 
 /**
  * The ordered required-then-optional onboarding steps the status endpoint reasons
@@ -29,7 +30,7 @@ export interface OnboardingStatus {
   githubAppConfigured: boolean;
   /** A commit-signing key is present: inline SSH key OR a key path (presence only). */
   signingKeyConfigured: boolean;
-  /** At least one prepared project exists (informational; projects do not gate setup). */
+  /** At least one prepared user project exists (informational; projects do not gate setup). */
   hasProject: boolean;
   /** An account-level Doppler Service Account token is present (presence only).
    *  INFORMATIONAL — Doppler is optional, so this NEVER gates `complete` or
@@ -78,7 +79,9 @@ async function computeOnboardingStatus(
     present(settings?.githubAppPrivateKey);
   const signingKeyConfigured =
     present(settings?.gitSshPrivateKey) || present(settings?.gitSshPrivateKeyPath);
-  const hasProject = projects.some((project) => project.state !== 'absent');
+  const hasProject = projects.some(
+    (project) => project.id !== CONTROL_PLANE_PROJECT_ID && project.state !== 'absent',
+  );
   // INFORMATIONAL only (Doppler is optional): presence of the raw (non-decrypted)
   // account token column. Deliberately NOT part of `complete`/`nextStep`.
   const dopplerConfigured = present(settings?.dopplerServiceToken);
