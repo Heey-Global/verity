@@ -1,0 +1,238 @@
+# ADR 0018 — Knowledge Realms and Namespaces
+
+**Status:** Proposed · **Date:** 2026-09-15
+
+## Context
+
+Operators keep durable knowledge outside the repositories an agent works in — an
+Obsidian vault, a wiki, meeting notes, product decisions. They want agents to use it,
+and they want two separations while doing so:
+
+1. **Private and business knowledge must not mix.** A session working on a company
+   repository must not have private notes in its context, and the reverse.
+2. **Which runtime reaches which body of knowledge must be controllable.** The operator
+   phrased this as "which LLM may access what".
+
+### What exists today
+
+- **Per-project agent memory** ([ADR 0008](0008-per-project-agent-memory.md), shipped).
+  A single free-text blob in `project_settings.memory`
+  (`packages/store/src/schema.ts:248`, cap `PROJECT_MEMORY_MAX_CHARS = 8_000`,
+  `packages/store/src/store.ts:572`). The agent appends through
+  `agent-seed/bin/verity-memory` against the capability-authenticated broker
+  (`packages/server/src/project-memory-route.ts`); the Conductor folds it into the
+  runtime system prompt once per fresh backend context
+  (`packages/session/src/conductor.ts:5137`, attached at `:1294` and `:4497`).
+- **HTTP MCP connections with a project binding.** `http_mcp_connections` is **global**
+  (`schema.ts:90`) and `project_mcp_bindings` maps a connection to a project
+  (`schema.ts:107`, cap of 16 enabled per project, `store.ts:5884`). The Conductor
+  rewrites every bound connection into an internal proxy descriptor carrying only the
+  connection id in `X-Verity-MCP-Binding` (`packages/server/src/embedded.ts:1284`,
+  `packages/session/src/runner-mcp-servers.ts`). The proxy resolves the real upstream and
+  its credential **server-side on every call**, from the internal connection identity
+  rather than the request body (`packages/server/src/http-mcp-proxy.ts:188`,
+  `packages/server/src/server.ts:4518`). The Sandbox never holds the credential and never
+  names its own project.
+- **Reference documents in Git.** [ADR 0009](0009-google-drive-sources.md) writes imported
+  documents to `docs/reference/`, versioned and idempotent by name.
+
+### What does not exist
+
+- **Any scope above the project.** `ProjectsTable` (`schema.ts:130`) has no grouping
+  column. ADR 0008 closed with the global tier explicitly out of scope: *"A truly
+  cross-project ('global over all projects') memory … would need a separate channel."*
+  That channel is what this ADR defines.
+- **A model or runtime as an authorization principal.** The model is a project preference
+  (`project_settings.default_model`, `schema.ts:242`) with a per-turn override
+  (`server.ts:7307`). Claude, Codex and OpenCode sessions of one project share one
+  Sandbox, one gh-token capability of one container generation, and one set of MCP
+  bindings. Nothing in the authorization path can currently distinguish them.
+- **A retrieval layer.** Search is full-text over the chat projection only, and the
+  spike (`docs/search-performance-spike.md`) missed its latency targets for broad project
+  and global queries at 20,000 projected messages.
+
+## Decision
+
+**Introduce `realm` as the operator-facing isolation scope above the project, express
+durable external knowledge as `knowledge namespaces` bound to a realm, and keep the
+content itself in external stores reached through the existing MCP gateway. Verity owns
+the boundary and the audit trail; it does not become a knowledge store.**
+
+### D1 — The scope above the project is a realm, and it is not called a workspace
+
+A realm groups projects that may share knowledge. "Private" and "business" are realms.
+A project belongs to exactly one.
+
+The name matters here because `workspace` is already taken in this codebase and means
+something else: the project checkout inside a Sandbox (`workspaceFolder` and
+`workspaceMount` in `packages/server/src/provisioner.ts:243`, `:281`; `workspaceDir` in
+`embedded.ts:4022`). [ADR 0013](0013-component-naming.md) D1 fixed one-name-one-thing for
+components; the same rule is worth keeping for data scopes, and a `workspace_id` that
+denotes a knowledge grouping while `workspaceFolder` denotes a directory is exactly the
+drift ADR 0013 was written against.
+
+### D2 — Realm assignment lives in `project_settings`, not in `projects`
+
+```
+project_settings.realm_id  TEXT NULL REFERENCES realms(id)   -- NULL = the default realm
+```
+
+`ProjectSettingsTable` exists precisely so that "GitHub/project sync can refresh lifecycle
+metadata without touching local runtime preferences" (`schema.ts:219`). Realm assignment
+is such a preference: the installation-sync upsert writes `projects` rows and would have
+to be taught to preserve a column there, which is the kind of thing that is correct on the
+day it is written and silently wrong after the next sync change. A missing
+`project_settings` row therefore resolves to the default realm, which is also the
+migration behaviour for every existing project.
+
+`realms` itself is minimal — `id`, `name`, `memory`, timestamps.
+
+### D3 — Knowledge has three tiers and Verity stores only the first
+
+| Tier | Content | Where it lives | How the agent reaches it |
+| --- | --- | --- | --- |
+| Facts | decisions, conventions, gotchas | `realms.memory` + `project_settings.memory` | injected at context init |
+| Documents | specs, imported reference material | Git, `docs/reference/` (ADR 0009) | ordinary file tools |
+| Corpus | vault, wiki, archive | external store, an MCP connection | on demand through the gateway |
+
+Only the facts tier grows in this ADR. The documents tier is unchanged. The corpus tier is
+configuration: a connection row, a namespace row, and the proxy that already exists.
+
+Verity does not ingest, chunk, embed, index or edit the corpus. The retrieval evidence in
+`docs/search-performance-spike.md` is that even full-text search over the chat projection
+needs a query-plan optimization before it meets its targets; a general document-retrieval
+layer is a product, not a feature, and the repository's product boundary places the
+self-hosted core at running agent fleets. A plain-Markdown wiki read with ordinary tools is
+also what an agent consumes best — the second-brain designs the operator cited work that
+way rather than through a vector index.
+
+### D4 — Namespaces bind a connection to a realm; enforcement stays in the proxy
+
+```
+knowledge_namespaces(id, realm_id, connection_id, label, mode, enabled)
+   mode: 'read' | 'read_write'
+```
+
+`project_mcp_bindings` stays as it is for project-specific tools. Namespace resolution is
+**additive** at exactly one place: `resolveConnection` in `server.ts:4518` gains a second
+lookup that joins the caller's project to its realm and accepts a connection reachable
+through an enabled namespace of that realm.
+
+That location is the whole point of the design. It already re-resolves the binding on
+**every** proxied call, against `identity.projectId` taken from the internal connection
+identity rather than from anything the Sandbox says (`http-mcp-proxy.ts:188`). A namespace
+check placed there inherits that property unchanged: a Sandbox cannot name its own realm
+any more than it can name its own project, and revoking a namespace takes effect on the
+next call rather than on the next session. The existing cap of 16 enabled connections per
+project (`store.ts:5884`) applies to the union of direct bindings and namespace-reachable
+connections, so the descriptor list the Conductor builds stays bounded.
+
+### D5 — Realm memory is read with a scope check; only the operator writes it
+
+`projectMemoryPrompt` (`conductor.ts:5137`) becomes a two-part read — the realm block, then
+the project block — both resolved server-side from `session.projectId`. The session states
+nothing. Both keep the ADR 0008 framing (`operator-curated; may be stale — verify before
+relying on it`), and an empty realm memory emits no header, as today.
+
+**Agent writes stay project-scoped.** `verity-memory append` continues to write
+`project_settings.memory` only; realm memory is written by the operator in the UI. ADR
+0008's Security section already records that agent-written memory is a durable
+influence channel at system-prompt altitude, injected before the operator reviews it. At
+realm altitude that channel would let one compromised turn plant standing text in the
+system prompt of **every sibling project in the realm** — the blast radius ADR 0008 bounded
+by keeping the capability project-bound. Widening the read scope is the feature; widening
+the write scope is not, and they are separable.
+
+### D6 — The model is not an authorization principal; the realm is
+
+"Which LLM may access what" cannot be implemented as a per-model flag inside a project, and
+this ADR states that rather than shipping a control that reads stronger than it is. Within
+one project there is one Sandbox, one capability, one container generation and one set of
+bindings; the backend choice is a per-turn parameter resolved after all of that
+(`server.ts:7307`). Worse, an in-context filter is not a boundary at all: anything injected
+or fetched into a context is readable by the model, and prompt injection defeats filtering
+applied after the fact.
+
+**The decision is that runtime separation is expressed by realm membership** — put the
+private projects in the private realm and give that realm only the namespaces and the
+runtimes it should have. A realm may additionally declare an allowed runtime set:
+
+```
+realms.allowed_runtimes  TEXT NULL   -- NULL = no restriction
+```
+
+enforced where the model is resolved (`server.ts:4659`, `server.ts:7307`). This is a
+**configuration guard**, not a containment boundary: it stops an operator from
+accidentally opening a private-realm session on a runtime they did not intend, and it is
+worth having for that reason alone. It must not be documented as preventing a model that
+already has a context from reading what is in it.
+
+### D7 — Every namespace call is recorded against its realm
+
+The proxy sees every call already. It logs `{ realmId, projectId, sessionId, turnId,
+connectionId, method }`. Without this, "did a session in the business realm read my private
+notes" has no answer, and a separation nobody can verify is a separation nobody should
+trust.
+
+## Alternatives considered
+
+- **A Verity-native knowledge store** (ingest, chunking, embeddings, search, an editor).
+  Rejected: it is a second product beside the control plane, the search spike shows the
+  retrieval work is not incidental, and it competes with tools the operator already runs.
+  The facts tier in D3 is the small part of it that genuinely belongs in Verity, because it
+  is the part that must be in the system prompt.
+- **A per-model ACL inside a project.** Rejected in D6 — there is no principal to attach it
+  to, and it would misrepresent an in-context filter as a boundary.
+- **One shared store with per-document `visibility: private | business` tags.** Rejected: a
+  filter over a shared corpus fails open — a mistagged, newly added or renamed document is
+  visible by default. Separate namespaces fail closed, which is the correct direction for a
+  separation whose failure mode is a private note in a business context.
+- **`project_mcp_bindings` alone, with a naming convention.** Rejected: without a scope
+  there is nothing to enforce, every new project must be wired by hand, and forgetting one
+  is silent.
+- **Realm as a full multi-tenancy boundary** (per-realm keys, per-realm users, separate
+  secret scopes). Deferred. Verity's authentication identifies a device credential, not a
+  user — ADR 0015 records the same gap — so per-realm authority has nothing to hang on yet.
+  This ADR keeps realms as an operator-facing grouping over the isolation Verity already
+  has (the per-project Sandbox), and claims no more than that.
+- **A dedicated realm-write capability for agents.** Deferred with D5; this is the thing to
+  reach for if realm memory turns out to need agent writes.
+
+## Consequences
+
+- One migration: `realms`, `knowledge_namespaces`, `project_settings.realm_id`, and
+  `realms.allowed_runtimes`. Existing projects resolve to the default realm with no row
+  written.
+- Three code seams, all extensions of existing ones: the `resolveConnection` join
+  (`server.ts:4518`), the two-part memory read (`conductor.ts:5137`), and the model-resolution
+  guard (`server.ts:4659`, `:7307`). No new broker, no new capability, no new transport.
+- The system prompt grows by the realm memory once per fresh backend context — the same
+  cadence and the same cap mechanism as ADR 0008, not per turn.
+- The private/business separation is exactly as strong as the per-project Sandbox boundary
+  operators already rely on. This ADR adds no isolation; it makes an existing boundary
+  addressable and prevents knowledge from being wired across it by hand.
+- Realm memory is a wider injection surface than project memory. Restricting writes to the
+  operator (D5) bounds who can place text there; it does not make the text trustworthy, and
+  the prompt framing stays advisory.
+- No retrieval is delivered. An operator who wants semantic search over the corpus gets it
+  from the external store, through the same namespace.
+- UI work: a realm screen, a realm picker in Project Settings, and namespace management
+  beside the existing MCP connection screen (`packages/server/src/http-mcp-connections-route.ts`,
+  `packages/mobile/src/api.ts:2389`).
+
+## Scope / open questions
+
+- Default realm: whether it is a seeded row or an implicit `NULL` sentinel, and whether the
+  `control_plane` project (`schema.ts:139`) gets a realm of its own.
+- Whether realm memory shares `PROJECT_MEMORY_MAX_CHARS` or takes its own cap; the combined
+  injected size is what actually needs bounding.
+- Whether `allowed_runtimes` ships in phase 1 or follows the namespace work.
+- `mode: 'read_write'` needs a per-tool filter, and MCP tool names are upstream-defined —
+  filtering by name is brittle across upstream versions. Phase 1 may ship `read` only and
+  defer write namespaces until the filter has a stable basis.
+- Whether the realm should eventually scope brokered secrets and Doppler bindings, which are
+  per-project today. Likely yes, and it would be the first real test of realm as an
+  authority boundary rather than a grouping.
+- Which external store is validated first (an Obsidian vault behind an MCP server is the
+  assumed shape) and whether its MCP server is something we ship or something the operator
+  runs.
