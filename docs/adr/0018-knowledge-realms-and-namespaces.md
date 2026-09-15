@@ -251,24 +251,25 @@ normalized relation:
 
 ```
 realm_allowed_runtimes(realm_id, runtime)  PRIMARY KEY (realm_id, runtime)
+realms.runtime_unrestricted BOOLEAN NOT NULL DEFAULT false
 ```
 
-No rows for a realm means unrestricted. `runtime` is validated against the server's canonical
-backend identifiers at write time; unknown values are rejected rather than ignored. The shared
-model resolver first resolves aliases/defaults to `{ model, backend }`, then authorizes the
-resolved `backend` against this relation. Callers cannot authorize a model string directly,
-and adding a model or alias cannot introduce a new backend without that backend passing the
-same check.
-The relation and shared validator are mandatory in the first realm migration; realms do not
-ship with model-selection paths that bypass them.
+`runtime_unrestricted = true` explicitly permits every canonical backend. Otherwise the rows
+are the exact allowlist, and zero rows means deny all. The default realm migration deliberately
+sets the flag to true to preserve existing behavior; deleting its rows cannot fail open.
+`runtime` is validated against canonical backend identifiers at write time; unknown values are
+rejected rather than ignored. The shared model resolver first resolves aliases/defaults to
+`{ model, backend }`, then authorizes the resolved `backend`. Callers cannot authorize a model
+string directly, and adding a model or alias cannot introduce a backend without the same check.
 
-enforced by one shared realm-aware model validator used by every creation, dispatch,
-existing-session model change, per-turn override, handoff and Agent Loop reaction path
+The relation and one shared realm-aware validator are mandatory in the first realm migration
+and are used by every creation, dispatch, existing-session model change, per-turn override,
+handoff and Agent Loop reaction path
 (including `server.ts:4659`, `:7049`, `:7307`, `:7674`). No caller may resolve or persist a
-model without it. This is a **configuration guard**, not a containment boundary: it stops an operator from
-accidentally opening a private-realm session on a runtime they did not intend, and it is
-worth having for that reason alone. It must not be documented as preventing a model that
-already has a context from reading what is in it.
+model without it; realms do not ship with bypassing paths. This is a **configuration guard**,
+not a containment boundary: it stops an operator from accidentally opening a private-realm
+session on an unintended runtime. It must not be documented as preventing a model that already
+has a context from reading what is in it.
 
 ### D7 — Every namespace call is recorded against its realm
 
