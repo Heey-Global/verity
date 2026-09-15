@@ -32,8 +32,8 @@ jq --exit-status \
   }
 
 image="${VERITY_GVISOR_SMOKE_IMAGE:-$RUNSC_SMOKE_IMAGE}"
-if [[ ! $image =~ @sha256:[a-f0-9]{64}$ ]]; then
-  echo 'VERITY_GVISOR_SMOKE_IMAGE must be pinned by a full sha256 digest' >&2
+if [[ ! $image =~ @sha256:[a-f0-9]{64}$ && ! $image =~ ^sha256:[a-f0-9]{64}$ ]]; then
+  echo 'VERITY_GVISOR_SMOKE_IMAGE must be pinned by a full sha256 digest or image ID' >&2
   exit 1
 fi
 
@@ -46,7 +46,11 @@ cleanup_best_effort() {
 }
 trap cleanup_best_effort EXIT INT TERM
 
-docker pull "$image" >/dev/null
+if [[ $image == sha256:* ]]; then
+  docker image inspect "$image" >/dev/null
+else
+  docker pull "$image" >/dev/null
+fi
 container_id="$(docker create \
   --name "$container" \
   --runtime runsc \

@@ -1086,6 +1086,47 @@ fi
 });
 
 describe('specialized smoke workflow overhead', () => {
+  it('validates Brokered Secret jobs on every native release architecture', () => {
+    type MatrixWorkflow = {
+      on?: { pull_request?: { paths?: string[] } };
+      jobs: Record<
+        string,
+        {
+          'runs-on'?: string;
+          needs?: string;
+          strategy?: {
+            'fail-fast'?: boolean;
+            matrix?: { include?: Array<Record<string, string>> };
+          };
+        }
+      >;
+    };
+    const parseWorkflow = (file: string) =>
+      parse(readFileSync(join('.github/workflows', file), 'utf8')) as MatrixWorkflow;
+    const nativeReleaseMatrix =
+      parseWorkflow('release.yml').jobs['build-server']?.strategy?.matrix?.include;
+    const secretWorkflow = parseWorkflow('secret-job-worker.yml');
+    const secretJob = secretWorkflow.jobs['architecture-smoke'];
+
+    // A checksum without a native confinement run leaves that architecture's
+    // advertised security boundary silently untested.
+    const checksumArchitectures = [
+      ...readFileSync('deploy/gvisor/versions.env', 'utf8').matchAll(
+        /^RUNSC_SHA512_(X86_64|AARCH64)=/gmu,
+      ),
+    ].map((match) => (match[1] === 'X86_64' ? 'amd64' : 'arm64'));
+    expect(secretJob?.strategy?.matrix?.include).toEqual(nativeReleaseMatrix);
+    expect(secretJob?.strategy?.matrix?.include?.map(({ architecture }) => architecture)).toEqual(
+      checksumArchitectures,
+    );
+    expect(secretJob?.['runs-on']).toBe('${{ matrix.runner }}');
+    expect(secretJob?.strategy?.['fail-fast']).toBe(false);
+    expect(secretWorkflow.jobs['image-smoke']?.needs).toBe('architecture-smoke');
+    expect(secretWorkflow.on?.pull_request?.paths).toEqual(
+      expect.arrayContaining(['deploy/bin/verity-install', 'deploy/bin/verity-install.test.mjs']),
+    );
+  });
+
   it('builds only the Server dependency closure for host-side harnesses', () => {
     for (const file of ['project-relay.yml', 'secret-job-worker.yml']) {
       const workflow = parse(readFileSync(join('.github/workflows', file), 'utf8')) as {
@@ -2936,7 +2977,7 @@ describe('server image CI smoke', () => {
     expect(harness).toContain('ps --all --quiet');
     expect(harness).toContain('volume ls --quiet');
     expect(harness).toContain('custom_networks');
-    expect(harness).toContain('export VERITY_RUNNER_SUPERVISOR=1');
+    expect(harness).not.toContain('VERITY_RUNNER_SUPERVISOR');
     expect(harness).toContain('export VERITY_POSTGRES_PASSWORD="$(openssl rand -hex 32)"');
     expect(harness).toContain('"$compose" up --detach');
     expect(harness).toContain('wait_for_service verity');

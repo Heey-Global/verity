@@ -2,24 +2,9 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 describe('meeting transcription deployment', () => {
-  it('retries a briefly unreachable backend without blocking Verity startup', async () => {
+  it('keeps transcription policy out of deployment configuration', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
-
-    expect(compose).toContain(
-      'VERITY_TRANSCRIBE_RETRIES: ${VERITY_TRANSCRIBE_RETRIES:-${VERITY_PARAKEET_RETRIES:-12}}',
-    );
-    expect(compose).toContain(
-      'VERITY_TRANSCRIBE_HTTP_RETRIES: ${VERITY_TRANSCRIBE_HTTP_RETRIES:-${VERITY_PARAKEET_HTTP_RETRIES:-0}}',
-    );
-    expect(compose).toContain(
-      'VERITY_TRANSCRIBE_RETRY_DELAY_MS: ${VERITY_TRANSCRIBE_RETRY_DELAY_MS:-${VERITY_PARAKEET_RETRY_DELAY_MS:-5000}}',
-    );
-    expect(compose).toContain('VERITY_MEETING_CHUNK_SECONDS: ${VERITY_MEETING_CHUNK_SECONDS:-300}');
-    expect(compose).toContain(
-      'VERITY_MEETING_CHUNK_OVERLAP_SECONDS: ${VERITY_MEETING_CHUNK_OVERLAP_SECONDS:-5}',
-    );
-    // Startup must not wait on transcription at all now that nothing local
-    // provides it.
+    expect(compose).not.toMatch(/^ {6}VERITY_(?:TRANSCRIBE|MEETING)_/m);
     expect(compose).not.toMatch(/verity-transcribe:\n\s+condition:/);
   });
 
@@ -46,31 +31,17 @@ describe('meeting transcription deployment', () => {
       compose.indexOf('environment: &verity-server-environment'),
       compose.indexOf('\n    volumes:'),
     );
-    expect(server).toMatch(/^ {6}VERITY_TRANSCRIBE_BASE_URL:/m);
+    expect(server).not.toMatch(/^ {6}VERITY_TRANSCRIBE_/m);
     expect(server).not.toContain('VERITY_LOCAL_TRANSCRIBE_AVAILABLE');
     expect(server).not.toContain('VERITY_LOCAL_TRANSCRIBE_BASE_URL');
     expect(server).not.toContain('VERITY_LOCAL_TRANSCRIBE_MODEL');
   });
 
-  it('leaves the transcription backend unconfigured unless the deployment sets one', async () => {
+  it('takes provider configuration only from encrypted Settings', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
-
-    // Unset must mean "not configured" — never a fallback to a service this
-    // deployment no longer runs.
-    expect(compose).toContain('VERITY_TRANSCRIBE_BASE_URL: ${VERITY_TRANSCRIBE_BASE_URL:-}');
-    expect(compose).toContain('VERITY_TRANSCRIBE_API_KEY: ${VERITY_TRANSCRIBE_API_KEY:-}');
-    expect(compose).toContain('VERITY_TRANSCRIBE_MODEL: ${VERITY_TRANSCRIBE_MODEL:-whisper-1}');
-    expect(compose).toContain(
-      'VERITY_TRANSCRIBE_RESPONSE_FORMAT: ${VERITY_TRANSCRIBE_RESPONSE_FORMAT:-verbose_json}',
-    );
-    expect(compose).toContain('VERITY_TRANSCRIBE_LANGUAGE: ${VERITY_TRANSCRIBE_LANGUAGE:-}');
-    expect(compose).toContain(
-      'VERITY_TRANSCRIBE_TIMEOUT_MS: ${VERITY_TRANSCRIBE_TIMEOUT_MS:-14400000}',
-    );
-    // Reachable from .env: without it, disabling windowing silently re-encodes
-    // oversized recordings to 24 kbps instead of uploading them intact.
-    expect(compose).toContain(
-      'VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES: ${VERITY_TRANSCRIBE_MAX_UPLOAD_BYTES:-25000000}',
-    );
+    expect(compose).not.toContain('VERITY_TRANSCRIBE_BASE_URL');
+    const server = await readFile('packages/server/src/server.ts', 'utf8');
+    expect(server).not.toContain('process.env.VERITY_TRANSCRIBE_BASE_URL');
+    expect(server).not.toContain('process.env.VERITY_MEETING_TRANSCRIBE_COMMAND');
   });
 });

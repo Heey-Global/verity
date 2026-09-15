@@ -46,6 +46,9 @@ custom_networks="$(
 [[ -z "$custom_networks" ]] || refuse 'the disposable daemon already contains custom networks'
 docker --host "$DOCKER_HOST" image inspect "$image" >/dev/null 2>&1 ||
   refuse "the image '$image' is not loaded in the isolated daemon"
+export VERITY_GVISOR_SMOKE_IMAGE="$(
+  docker --host "$DOCKER_HOST" image inspect --format '{{.Id}}' "$image"
+)"
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 compose="$repo_root/deploy/bin/verity-compose"
@@ -60,8 +63,6 @@ export VERITY_SERVER_IMAGE="$image"
 # explicit empty export also overrides any implicit Compose `.env` source.
 export VERITY_MANAGED_DEPLOYMENT_ID=
 export VERITY_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
-export VERITY_RUNNER_SUPERVISOR=1
-export VERITY_GVISOR_REQUIRED=0
 export VERITY_API_HOST_PORT=0
 export VERITY_DOCKER_SOCKET_PATH="$socket"
 export VERITY_AGENT_SEED_HOST_PATH="$host_state_root/agent-seed"

@@ -1398,11 +1398,12 @@ jobs:
             -e VERITY_AGENT_GATEWAY_URL=https://verity-agent-gateway:9443 \
             -e VERITY_CLAUDE_EGRESS_GATEWAY_URL=https://verity:9443 \
             -e VERITY_CLAUDE_CONNECTOR_PORT=47821 \
+            -e VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR=/tmp/verity-control-plane-identity \
             -e DATABASE_URL="postgres://verity@$VERITY_CI_POSTGRES:5432/verity" \
             "$VERITY_CI_IMAGE"
           for _ in $(seq 1 30); do
             if docker exec "$VERITY_CI_SERVER" node -e \
-              "const r = await fetch('http://127.0.0.1:8082/healthz'); if (!r.ok) process.exit(1);"; then
+              "const r = await fetch('http://127.0.0.1:8082/healthz'); const b = await r.json(); if (!r.ok && !(r.status === 503 && b.secretJobRuntime?.required === true && b.secretJobRuntime?.ready === false)) process.exit(1);"; then
               exit 0
             fi
             sleep 1
@@ -1429,10 +1430,18 @@ jobs:
           set -euo pipefail
           socket_dir="$RUNNER_TEMP/$VERITY_CI_CLEAN_DIND"
           socket_path="$socket_dir/docker.sock"
+          clean_dind_image="verity-gvisor-clean-install:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          . deploy/gvisor/versions.env
+          host_runsc="/opt/verity/runsc/$RUNSC_RELEASE/runsc"
+          installed_host_runsc=0
 
           cleanup_clean_install() {
             docker --host unix:///var/run/docker.sock rm --force "$VERITY_CI_CLEAN_DIND" >/dev/null 2>&1 || true
             docker --host unix:///var/run/docker.sock volume rm "$VERITY_CI_CLEAN_DIND_VOLUME" >/dev/null 2>&1 || true
+            docker --host unix:///var/run/docker.sock image rm --force "$clean_dind_image" >/dev/null 2>&1 || true
+            if [[ "$installed_host_runsc" -eq 1 ]]; then
+              sudo rm -rf "/opt/verity/runsc/$RUNSC_RELEASE"
+            fi
             rm -f "$socket_path"
             rmdir "$socket_dir" 2>/dev/null || true
           }
@@ -1440,8 +1449,8 @@ jobs:
 
           mkdir -p "$socket_dir"
           docker volume create "$VERITY_CI_CLEAN_DIND_VOLUME" >/dev/null
-          # renovate: datasource=docker depName=docker
-          docker run --detach --privileged --name "$VERITY_CI_CLEAN_DIND" --volume "$socket_dir:$socket_dir" --mount "type=volume,src=$VERITY_CI_CLEAN_DIND_VOLUME,dst=/var/lib/docker" --env DOCKER_TLS_CERTDIR= docker:29.7.1-dind@sha256:66fd272fc375aad4c8fa06351c414e15bffe8cb015c171e1b8a8efe36a72cc1e --host=unix:///var/run/docker.sock --host="unix://$socket_path"
+          docker build --file deploy/gvisor-ci.Dockerfile --tag "$clean_dind_image" .
+          docker run --detach --privileged --name "$VERITY_CI_CLEAN_DIND" --volume "$socket_dir:$socket_dir" --mount "type=volume,src=$VERITY_CI_CLEAN_DIND_VOLUME,dst=/var/lib/docker" --env DOCKER_TLS_CERTDIR= "$clean_dind_image" --host=unix:///var/run/docker.sock --host="unix://$socket_path"
 
           for attempt in $(seq 1 60); do
             if docker exec "$VERITY_CI_CLEAN_DIND" docker info >/dev/null 2>&1; then
@@ -1454,6 +1463,14 @@ jobs:
             fi
             sleep 0.25
           done
+
+          if [[ ! -x "$host_runsc" ]]; then
+            runsc_copy="$RUNNER_TEMP/verity-clean-install-runsc"
+            docker cp "$VERITY_CI_CLEAN_DIND:$host_runsc" "$runsc_copy"
+            sudo install -D -o root -g root -m 0755 "$runsc_copy" "$host_runsc"
+            rm -f "$runsc_copy"
+            installed_host_runsc=1
+          fi
 
           isolated="unix://$socket_path"
           docker save "$VERITY_CI_IMAGE" | docker --host "$isolated" load

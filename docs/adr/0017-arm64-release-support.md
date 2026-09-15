@@ -155,13 +155,18 @@ the release workflow actually publishes, so the four sites cannot drift apart
 again. `scripts/release-workflow.test.ts` already reads `release.yml` and
 `deploy/Dockerfile` and is the right home for it.
 
-**D6 — gVisor and Brokered Secret jobs stay amd64-only for now.**
+**D6 — gVisor and Brokered Secret jobs stay amd64-only until native validation exists.**
 `VERITY_GVISOR_REQUIRED` defaults to `0` and is required only for Brokered
 Secret jobs (`deploy/README.md:715`), so arm64 can ship without a validated
 `runsc`. Validating the gVisor boundary on arm64 is real work and the boundary
 is a core product claim; shipping it unvalidated to make a matrix symmetrical
 would be the wrong trade. This creates a functional difference between
 architectures, which D7 makes explicit rather than silent.
+
+This temporary restriction was lifted on 2026-09-14. The dedicated secret-job
+workflow now runs the pinned `runsc` confinement smoke and the live fake-secret
+round trip on native amd64 and arm64 GitHub runners before the installer admits
+`VERITY_GVISOR_REQUIRED=1` on either architecture.
 
 **D7 — Document the difference where an operator chooses a host.**
 `deploy/README.md` must state which architectures exist and which features an
@@ -196,7 +201,7 @@ Each stage is independently mergeable and leaves the tree shippable.
 
 ## Non-goals
 
-- gVisor / `runsc` on arm64, and therefore Brokered Secret jobs on arm64 (D6).
+- Architectures beyond amd64 and arm64 for gVisor / `runsc` and Brokered Secret jobs.
 - Migrating the Heey development fleet to arm64. This ADR is about what Verity
   publishes, not about where Heey runs it.
 - The website image. It is not part of a self-hosted deployment.
@@ -219,9 +224,8 @@ Each stage is independently mergeable and leaves the tree shippable.
   audit that must check both. `release-image-audit.yml` exists precisely because
   a release without its images stays silently broken; that failure mode now has
   twice the surface.
-- arm64 hosts gain self-update and lose Brokered Secret jobs until D6 is
-  revisited. Operators choose a host before they discover this, which is why D7
-  is part of the decision rather than follow-up work.
+- arm64 hosts initially gained self-update without Brokered Secret jobs. The D6
+  follow-up closes that capability gap with native security-boundary validation.
 - The guard test from D5 makes the architecture set a single derived fact rather
   than four independently maintained ones, which is a net reduction in drift
   surface even though it adds a test.

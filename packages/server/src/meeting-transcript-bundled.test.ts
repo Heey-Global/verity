@@ -8,7 +8,7 @@
 // what catches drift in the contract between them: the argv shape the route
 // invokes with (`--json --diarize <path>`), the `VERITY_AUDIO_FILE` env hand-off,
 // and the JSON envelope the route parses back.
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -27,26 +27,25 @@ let bus: InMemoryEventBus;
 let worktree: string;
 const cleanup: (() => Promise<void> | void)[] = [];
 
-// The route reads its transcriber configuration from the process environment, so
-// each test mutates it and restores it here rather than leaking into the suite.
-const ENV_KEYS = [
-  'PATH',
-  'VERITY_MEETING_TRANSCRIBE_COMMAND',
-  'VERITY_TRANSCRIBE_BASE_URL',
-  'VERITY_TRANSCRIBE_RETRIES',
-  'VERITY_MEETING_CHUNK_SECONDS',
-] as const;
+// The route resolves the bundled executable through PATH. The remaining variables
+// are an internal client-test protocol for keeping these fixtures small and fast.
+const ENV_KEYS = ['PATH'] as const;
 let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
-function useBundledTranscriber(transcriptionBaseUrl: string): void {
+async function useBundledTranscriber(transcriptionBaseUrl: string): Promise<void> {
   savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
-  // No VERITY_MEETING_TRANSCRIBE_COMMAND: take the route's default path, which
-  // execs the bare `verity-transcribe-meeting` name off PATH.
-  delete process.env.VERITY_MEETING_TRANSCRIBE_COMMAND;
-  process.env.PATH = `${DEPLOY_BIN}${delimiter}${savedEnv.PATH ?? ''}`;
-  process.env.VERITY_TRANSCRIBE_BASE_URL = transcriptionBaseUrl;
-  process.env.VERITY_TRANSCRIBE_RETRIES = '0';
-  process.env.VERITY_MEETING_CHUNK_SECONDS = '0';
+  const ffprobe = join(worktree, 'ffprobe');
+  writeFileSync(ffprobe, "#!/bin/sh\nprintf '91.5\\n'\n", {
+    mode: 0o755,
+  });
+  const ffmpeg = join(worktree, 'ffmpeg');
+  writeFileSync(ffmpeg, '#!/bin/bash\ncp "$VERITY_AUDIO_FILE" "${!#}"\n', { mode: 0o755 });
+  process.env.PATH = `${worktree}${delimiter}${DEPLOY_BIN}${delimiter}${savedEnv.PATH ?? ''}`;
+  await ctx.store.updateVeritySettings({
+    transcribeBackendMode: 'external',
+    transcribeBaseUrl: transcriptionBaseUrl,
+    transcribeModel: 'whisper-1',
+  });
 }
 
 function listenTranscriptionApi(handler: (req: IncomingMessage, res: ServerResponse) => void) {
@@ -138,7 +137,7 @@ describe('meeting audio via the bundled transcriber', () => {
         );
       });
     });
-    useBundledTranscriber(baseUrl);
+    await useBundledTranscriber(baseUrl);
 
     const res = await uploadAudio(meetingServer());
 
@@ -182,7 +181,7 @@ describe('meeting audio via the bundled transcriber', () => {
         res.end(JSON.stringify({ text: 'Single block of speech.' }));
       });
     });
-    useBundledTranscriber(baseUrl);
+    await useBundledTranscriber(baseUrl);
 
     const res = await uploadAudio(meetingServer());
 
@@ -197,7 +196,7 @@ describe('meeting audio via the bundled transcriber', () => {
   it('tells the operator which backend is unreachable instead of a generic failure', async () => {
     // Port 1 has no listener: the connection is refused immediately, so this
     // asserts the real ECONNREFUSED wording travels script → route → chat notice.
-    useBundledTranscriber('http://127.0.0.1:1/v1');
+    await useBundledTranscriber('http://127.0.0.1:1/v1');
 
     const res = await uploadAudio(meetingServer());
 
@@ -217,7 +216,7 @@ describe('meeting audio via the bundled transcriber', () => {
         res.end('model failed to load');
       });
     });
-    useBundledTranscriber(baseUrl);
+    await useBundledTranscriber(baseUrl);
 
     const res = await uploadAudio(meetingServer());
 

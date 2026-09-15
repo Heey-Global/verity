@@ -16,7 +16,6 @@ import {
   parsePort,
   parsePushEnabled,
   parseTasksProjectNumber,
-  parseTranscriptSweep,
   toolkitFeatureRefIsConfigured,
   type EmbeddedServer,
 } from './embedded.js';
@@ -718,6 +717,14 @@ async function main(): Promise<void> {
   // Default to loopback (audit C1 defense-in-depth): the control plane is only
   // reachable from the same host unless the operator explicitly opts into a
   // routable interface via HOST (e.g. HOST=0.0.0.0, or a specific LAN IP). The
+  const controlPlaneRunnerIdentityDir =
+    process.env.VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR?.trim();
+  if (!controlPlaneRunnerIdentityDir) {
+    throw new Error(
+      'the required Runner supervisor topology is missing; start Verity through verity-compose or verity-install',
+    );
+  }
+
   // bearer-token gate is the real protection; this default just prevents an
   // accidental open bind. For multi-device access, front the loopback server
   // with a TLS reverse proxy, or set HOST to a network interface on a trusted
@@ -1022,9 +1029,7 @@ async function main(): Promise<void> {
         uplinkUrl: UPLINK_CONTROL_URL,
         serverVersion: SERVER_VERSION,
       },
-      secretJobRuntimeRequired:
-        process.env.VERITY_SECRET_JOB_RUNTIME_REQUIRED === '1' ||
-        process.env.VERITY_SECRET_JOB_RUNTIME_REQUIRED === 'true',
+      secretJobRuntimeRequired: true,
       // Optional private-registry auth for base-image pulls (ADR 0003 R6 / #299):
       // base64 JSON {username,password} or an identity token → X-Registry-Auth.
       // Unset for the public ghcr base image (the default). Never logged.
@@ -1037,11 +1042,8 @@ async function main(): Promise<void> {
       // create/chown. Deploy plumbing, not an operator toggle.
       dataVolume,
       dataVolumeRoot: verityRoot,
-      // Host-disk GC (docker-gc.ts). ON unless explicitly disabled: the two caches
-      // it collects are Verity's own and are append-only without it, so "off" is a
-      // slow disk-full, not a safe default. Set VERITY_DOCKER_GC=0 only when an
-      // external janitor owns this host's Docker disk.
-      dockerGc: process.env.VERITY_DOCKER_GC !== '0' && process.env.VERITY_DOCKER_GC !== 'false',
+      // Host-disk GC owns Verity's append-only Docker caches and is mandatory.
+      dockerGc: true,
       dockerGcPolicy: dockerGcPolicyFromEnv(),
       agentSeedHostPath: sandboxAgentSeedHostPath(process.env),
       ghTokenFilePath,
@@ -1097,20 +1099,17 @@ async function main(): Promise<void> {
       ),
       claudeConfigVolume: process.env.VERITY_CLAUDE_CONFIG_VOLUME,
       codexConfigVolume: process.env.VERITY_CODEX_CONFIG_VOLUME,
-      enableProjectRuntime: process.env.VERITY_ENABLE_PROJECT_RUNTIME === '1',
+      enableProjectRuntime: true,
       // Opt-in event-file + control-socket runner transport (ADR 0006 Stage 2.2-prep).
       // Default OFF ⇒ the conductor's in-process loopback dispatch is unchanged.
       runnerTransport: process.env.VERITY_RUNNER_TRANSPORT === '1',
-      runnerSupervisor:
-        process.env.VERITY_RUNNER_SUPERVISOR === '1' ||
-        process.env.VERITY_RUNNER_SUPERVISOR === 'true',
+      runnerSupervisor: true,
       controlPlaneRunner:
         process.env.VERITY_CONTROL_PLANE_RUNNER === '1' ||
         process.env.VERITY_CONTROL_PLANE_RUNNER === 'true',
       // Unset sweeps; `dry`/`off` are the opt-outs. A typo throws — see the parser.
-      transcriptSweep: parseTranscriptSweep(process.env.VERITY_TRANSCRIPT_SWEEP),
-      controlPlaneRunnerIdentityDir:
-        process.env.VERITY_CONTROL_PLANE_RUNNER_IDENTITY_DIR?.trim() || undefined,
+      transcriptSweep: 'on',
+      controlPlaneRunnerIdentityDir,
       runnerRuntimeGid,
       // An explicit deployment-wide image override is arbitrary code and cannot
       // inherit the managed Verity sandbox's dedicated-UID boundary assertion.

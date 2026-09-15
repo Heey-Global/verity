@@ -697,21 +697,15 @@ function configured(value: string | null | undefined): boolean {
   return Boolean(value?.trim());
 }
 
-function transcriptionEnvironment(name: string): string | undefined {
-  return process.env[`VERITY_TRANSCRIBE_${name}`];
-}
-
 /**
  * The remote backend a recording would ACTUALLY be sent to right now.
  *
- * A deployment can point Verity at a transcription backend through the
- * environment while the app's own configuration overrides it, so neither side
- * alone answers "is transcription configured". Unset on both means it is not —
- * there is no bundled backend left to stand in. One function so the answer the
+ * The encrypted app settings are the only transcription configuration. Unset
+ * settings mean there is no backend; there is no deployment fallback or bundled
+ * backend to stand in. One function so the answer the
  * app renders (`GET /settings`, `GET /settings/transcription`) cannot drift from
  * the one the upload path enforces in `runMeetingTranscriptionCommand`: a stored URL
- * takes the whole backend selection with it, and environment credentials are
- * only inherited by a stored URL that names the SAME endpoint.
+ * takes the whole backend selection with it.
  */
 interface EffectiveExternalTranscription {
   readonly baseUrl: string | null;
@@ -720,25 +714,7 @@ interface EffectiveExternalTranscription {
 }
 
 /**
- * True when the deployment supplies its OWN transcriber as a command
- * (`VERITY_MEETING_TRANSCRIBE_COMMAND`) instead of pointing Verity at an
- * OpenAI-compatible endpoint. Such a command carries its whole configuration —
- * Verity hands it the audio file and reads JSON back — so it is a configured
- * backend everywhere: the upload path must not demand a URL and model it would
- * never use, and the app must not report the deployment as unconfigured.
- *
- * One predicate, because those two answers drifted apart once already: the
- * external-mode URL/model check ran BEFORE the command exemption further down,
- * so a custom-command deployment that had chosen `external` — the only choice
- * the app still offers — had every upload rejected.
- */
-function customMeetingTranscribeCommandConfigured(): boolean {
-  return (process.env.VERITY_MEETING_TRANSCRIBE_COMMAND?.trim() ?? '').length > 0;
-}
-
-/**
- * Whether meeting audio has any backend to go to: a deployment-supplied command,
- * or an OpenAI-compatible endpoint complete enough for the upload path (a base
+ * Whether meeting audio has an OpenAI-compatible endpoint complete enough for the upload path (a base
  * URL AND a model; the API key is optional). This is what the app renders as
  * "set up", so it must answer the same question the upload path enforces.
  */
@@ -748,7 +724,6 @@ function externalMeetingTranscriptionConfigured(
     | null
     | undefined,
 ): boolean {
-  if (customMeetingTranscribeCommandConfigured()) return true;
   const effective = effectiveExternalTranscription(settings);
   return effective.baseUrl !== null && effective.model !== null;
 }
@@ -759,21 +734,11 @@ function effectiveExternalTranscription(
     | null
     | undefined,
 ): EffectiveExternalTranscription {
-  const inheritedUrl = transcriptionEnvironment('BASE_URL')?.trim() || null;
   const storedUrl = settings?.transcribeBaseUrl?.trim() || null;
-  const sameInheritedBackend = storedUrl !== null && storedUrl === inheritedUrl;
   return {
-    baseUrl: storedUrl ?? inheritedUrl,
-    model: storedUrl
-      ? settings?.transcribeModel?.trim() ||
-        (sameInheritedBackend ? transcriptionEnvironment('MODEL')?.trim() || null : null)
-      : inheritedUrl !== null
-        ? transcriptionEnvironment('MODEL')?.trim() || null
-        : null,
-    apiKeyConfigured: storedUrl
-      ? configured(settings?.transcribeApiKey) ||
-        (sameInheritedBackend && configured(transcriptionEnvironment('API_KEY')))
-      : inheritedUrl !== null && configured(transcriptionEnvironment('API_KEY')),
+    baseUrl: storedUrl,
+    model: storedUrl ? settings?.transcribeModel?.trim() || null : null,
+    apiKeyConfigured: storedUrl !== null && configured(settings?.transcribeApiKey),
   };
 }
 
@@ -808,10 +773,7 @@ function publicVeritySettings(
     dopplerServiceTokenConfigured: configured(dopplerServiceToken),
     transcribeApiKeyConfigured: configured(transcribeApiKey),
     transcribeLocalAvailable: false,
-    // Whether a backend could run a recording right now. The app cannot derive
-    // this from the stored fields alone: the endpoint may come from the
-    // deployment environment, or the deployment may supply its own transcriber
-    // command and never use an endpoint at all.
+    // Whether the encrypted Settings contain a complete external backend.
     transcribeExternalConfigured: externalMeetingTranscriptionConfigured(settings),
     sandboxAutoUpdateSecurity: false,
     sandboxAutoUpdateNormal: false,
@@ -1904,9 +1866,7 @@ export function meetingTranscriptionSettingsWhileSealed(
 function configuredMeetingTranscriber(
   readSettings: () => Promise<MeetingTranscriptionSettings | undefined>,
 ): MeetingTranscriber {
-  const command =
-    process.env.VERITY_MEETING_TRANSCRIBE_COMMAND?.trim() || DEFAULT_MEETING_TRANSCRIBE_COMMAND;
-  return new CommandMeetingTranscriber(command, readSettings);
+  return new CommandMeetingTranscriber(DEFAULT_MEETING_TRANSCRIBE_COMMAND, readSettings);
 }
 
 function parseMeetingTranscriptSegments(value: unknown): MeetingTranscriptSegment[] {
@@ -2031,37 +1991,15 @@ async function runMeetingTranscriptionCommand(
     return trimmed ? trimmed : undefined;
   };
   const settingsBaseUrl = settingEnv(settings?.transcribeBaseUrl);
-  const inheritedBaseUrl = settingEnv(transcriptionEnvironment('BASE_URL'));
-  const sameBackend = settingsBaseUrl === inheritedBaseUrl;
-  // Read once, up here, so every check below sees it. Both exemptions for a
-  // deployment-supplied command have to agree, and when this was computed just
-  // above the second one the first check rejected the upload before reaching it.
-  const commandFromEnv = customMeetingTranscribeCommandConfigured();
   // Verity bundles no local speech-to-text backend, so a stored `local` choice
   // has nothing left to run against. Report it as unconfigured instead of
   // quietly shipping the recording to whatever remote backend the deployment
   // happens to carry.
   if (settings?.transcribeBackendMode === 'local') throw new MeetingTranscriberUnavailableError();
-  // Treat app configuration as one backend selection. Clearing its URL returns
-  // fully to the environment configuration and must never leak a stale stored
-  // cloud credential to that fallback endpoint.
-  const externalBaseUrl = settingsBaseUrl ?? inheritedBaseUrl;
-  const externalApiKey = settingsBaseUrl
-    ? (settingEnv(settings?.transcribeApiKey) ??
-      (sameBackend ? settingEnv(transcriptionEnvironment('API_KEY')) : undefined))
-    : settingEnv(transcriptionEnvironment('API_KEY'));
-  const externalModel = settingsBaseUrl
-    ? (settingEnv(settings?.transcribeModel) ??
-      (sameBackend ? settingEnv(transcriptionEnvironment('MODEL')) : undefined))
-    : settingEnv(transcriptionEnvironment('MODEL'));
-  // A deployment-supplied command IS the backend and brings its own
-  // configuration, so choosing `external` — the only choice the app still offers
-  // — must not demand an OpenAI URL and model the command never reads.
-  if (
-    !commandFromEnv &&
-    settings?.transcribeBackendMode === 'external' &&
-    (!externalBaseUrl || !externalModel)
-  ) {
+  const externalBaseUrl = settingsBaseUrl;
+  const externalApiKey = settingEnv(settings?.transcribeApiKey);
+  const externalModel = settingEnv(settings?.transcribeModel);
+  if (settings?.transcribeBackendMode === 'external' && (!externalBaseUrl || !externalModel)) {
     throw new MeetingTranscriptionFailedError(
       'External meeting transcription is not configured. Add its URL and model in Settings.',
     );
@@ -2076,26 +2014,27 @@ async function runMeetingTranscriptionCommand(
       : settingsBaseUrl
         ? {
             VERITY_TRANSCRIBE_BASE_URL: settingsBaseUrl,
-            VERITY_TRANSCRIBE_API_KEY:
-              settingEnv(settings?.transcribeApiKey) ??
-              (sameBackend ? (transcriptionEnvironment('API_KEY') ?? '') : ''),
-            VERITY_TRANSCRIBE_MODEL:
-              settingEnv(settings?.transcribeModel) ??
-              (sameBackend ? (transcriptionEnvironment('MODEL') ?? '') : ''),
+            VERITY_TRANSCRIBE_API_KEY: settingEnv(settings?.transcribeApiKey) ?? '',
+            VERITY_TRANSCRIBE_MODEL: settingEnv(settings?.transcribeModel) ?? '',
           }
         : {};
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('VERITY_TRANSCRIBE_') || name.startsWith('VERITY_MEETING_')) {
+      delete env[name];
+    }
+  }
+  Object.assign(env, {
     VERITY_AUDIO_FILE: audioPath,
     VERITY_AUDIO_MEDIA_TYPE: mediaType,
     ...settingsEnv,
-  };
+  });
   // The bundled client only speaks to an OpenAI-compatible endpoint, and there is
   // no local one to fall back to. Without a base URL the meeting would be
   // uploaded and then fail against an empty endpoint, so report it unavailable
   // up front. A deployment-supplied command carries its own configuration and is
   // deliberately exempt.
-  if (!commandFromEnv && !externalBaseUrl) throw new MeetingTranscriberUnavailableError();
+  if (!externalBaseUrl) throw new MeetingTranscriberUnavailableError();
   try {
     const execOpts = {
       env,
@@ -2103,8 +2042,8 @@ async function runMeetingTranscriptionCommand(
       maxBuffer: MEETING_TRANSCRIBER_STDOUT_BYTES + 65_536,
       detached: true,
     };
-    const executable = commandFromEnv ? '/bin/sh' : command;
-    const args = commandFromEnv ? ['-lc', command] : ['--json', '--diarize', audioPath];
+    const executable = command;
+    const args = ['--json', '--diarize', audioPath];
     let child!: ReturnType<typeof execFile>;
     const execution = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
       child = execFile(executable, args, execOpts, (error, stdout, stderr) => {
@@ -6393,8 +6332,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             reason:
               'Meeting transcription is not available on this Verity server: no transcription ' +
               'backend is configured, or the transcriber command was not found. Set the ' +
-              'transcription backend URL, API key and model in Settings (or the ' +
-              'VERITY_TRANSCRIBE_* deployment variables) and redeploy if the command is missing.',
+              'transcription backend URL, API key and model in Settings and redeploy if the ' +
+              'bundled transcriber command is missing.',
           });
           reply.code(503);
           return { error: 'meeting transcription is not configured' };
@@ -6498,13 +6437,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
     },
     stream: async (request, reply, id, query) => {
-      const configuredMaxBytes = Number(
-        process.env.VERITY_MEETING_MAX_UPLOAD_BYTES ?? DEFAULT_MEETING_AUDIO_STREAM_BYTES,
-      );
-      const maxBytes =
-        Number.isSafeInteger(configuredMaxBytes) && configuredMaxBytes > 0
-          ? configuredMaxBytes
-          : DEFAULT_MEETING_AUDIO_STREAM_BYTES;
+      const maxBytes = DEFAULT_MEETING_AUDIO_STREAM_BYTES;
       const uploadTimeoutMs = 30 * 60 * 1000;
       const declaredSize = Number(request.headers['content-length']);
       if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {

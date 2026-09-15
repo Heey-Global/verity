@@ -871,16 +871,7 @@ export interface EmbeddedServerConfig {
   runnerSupervisor?: boolean | undefined;
   /** Route Claude control-plane turns through the dedicated supervisor service. */
   controlPlaneRunner?: boolean | undefined;
-  /**
-   * Escape hatch for the startup sweep of orphaned backend transcripts
-   * (`session-artifact-sweep.ts`), which deletes conversation files. `'on'` (the
-   * default) sweeps; `'dry'` reports what it would remove and touches nothing; `'off'`
-   * skips it entirely. Sourced from `VERITY_TRANSCRIPT_SWEEP`.
-   *
-   * Present because the sweep re-runs on every boot and its failure mode — a false
-   * orphan — is unrecoverable. An operator who suspects one must be able to stop it
-   * from the deployment, not by waiting for a rebuilt image.
-   */
+  /** Internal test seam for startup transcript cleanup; production always uses `on`. */
   transcriptSweep?: 'on' | 'dry' | 'off' | undefined;
   /** Server-side mount of the private identity volume shared only with the
    * dedicated control-plane runner. */
@@ -900,8 +891,7 @@ export interface EmbeddedServer {
   /** The self-update secret-key handoff seam (ADR 0008 D8). */
   secretKeyHandoff: EmbeddedSecretKeyHandoff;
   /**
-   * The STORE-READ phase of the startup transcript sweep. Absent when the deployment has
-   * no data volume or set `VERITY_TRANSCRIPT_SWEEP=off`.
+   * The STORE-READ phase of the startup transcript sweep. Absent without a data volume.
    *
    * Resolves once the sweep has read the live session ids and worktrees, which is
    * everything it wants from the database; the directory walk behind it runs on. The
@@ -1530,32 +1520,6 @@ export function parseDefaultOnFlag(value: string | undefined, name: string): boo
  * deployment false spellings as an explicit opt-out; unset and empty stay on. */
 export function parsePushEnabled(value: string | undefined): boolean {
   return parseDefaultOnFlag(value, 'VERITY_PUSH_ENABLED');
-}
-
-/**
- * Parse the startup transcript sweep mode (`VERITY_TRANSCRIPT_SWEEP`). Unset or empty
- * is `'on'`: the sweep is the thing that keeps deleted sessions' conversations from
- * accumulating, so it has to be the behaviour a deployment gets without asking.
- *
- * A set-but-unrecognised value THROWS rather than falling back to `'on'`. An operator
- * types this variable for exactly one reason — to stop the sweep from deleting
- * something — and a typo that silently kept deleting would defeat the one purpose the
- * switch has.
- *
- * The boolean spellings {@link parsePushEnabled} accepts are taken too, and mean what
- * they say there: this is the same deployment's env file, and someone reaching for an
- * off switch under pressure writes the one the neighbouring variable taught them. Failing
- * a boot over `false` would be the crash-loop version of the same mistake the throw is
- * meant to prevent, so only a value that is neither a mode nor a boolean is rejected.
- */
-export function parseTranscriptSweep(value: string | undefined): 'on' | 'dry' | 'off' {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === undefined || normalized === '' || ['on', '1', 'true'].includes(normalized)) {
-    return 'on';
-  }
-  if (normalized === 'dry') return 'dry';
-  if (['off', '0', 'false'].includes(normalized)) return 'off';
-  throw new Error('invalid VERITY_TRANSCRIPT_SWEEP (expected on, dry, or off)');
 }
 
 /** ACP adapters must only run behind the supervised sandbox boundary. */
