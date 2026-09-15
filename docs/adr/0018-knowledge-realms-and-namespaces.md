@@ -135,6 +135,12 @@ The method policy is also fail-closed. A `read` namespace permits only MCP lifec
 unknown or extension methods. Supporting a read-only resource API later requires another
 explicit method-and-identifier policy, not a broader wildcard.
 
+At the Streamable HTTP layer, `POST` carries only the JSON-RPC methods above. `GET` (SSE) and
+`DELETE` (cleanup) are allowed only for an upstream session id established through that same
+resolved namespace, caller session and connection; arbitrary session ids fail closed. Audit
+events record these as `transport:get` and `transport:delete` with no target name, linked to
+the namespace and upstream session id. They confer no additional JSON-RPC method authority.
+
 `project_mcp_bindings` stays as it is for project-specific tools. A shared resolver produces
 the deduplicated union of direct bindings and enabled namespaces for a project. The Conductor
 uses that resolver when building MCP descriptors in `embedded.ts`; descriptors carry the
@@ -162,6 +168,11 @@ inputs, permanently close the existing sessions and change membership atomically
 transcripts remain visible as history but cannot seed a backend context or call MCP. This
 prevents a failed move from destroying resumability and prevents old-realm memory, messages or
 fetched corpus data from entering a context with new-realm authority.
+
+That final transaction also creates a fresh `kind = 'agent_loop'` session in the target realm
+for every standard Agent Loop and repoints its `session_id`; run history stays attached to the
+loop. Provisioning may occur later through the existing session path. Learning Loops must have
+been rehosted during preflight and are not rebound implicitly.
 
 `sessions.realm_id` snapshots the project's non-null realm at session creation and never
 changes. Every agent-mediated cross-project path — session discovery, progress, recent-message
