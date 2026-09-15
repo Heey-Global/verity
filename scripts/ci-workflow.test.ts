@@ -2425,6 +2425,17 @@ describe('live cutover smoke daemon guard', () => {
     expect(gateway).toContain("console.error('gateway healthz status=' + r.status + ' body='");
     expect(wait).toContain('AbortSignal.timeout(5000)');
     expect(gateway).toContain('AbortSignal.timeout(5000)');
+
+    const client = readFileSync('packages/server/src/self-update-live-smoke-client.ts', 'utf8');
+    const recovered = /function isServingFrontDoor[\s\S]*?\n\}/.exec(client)?.[0] ?? '';
+    expect(recovered).toContain(
+      `answer.status !== ${firstCode} && answer.status !== ${secondCode}`,
+    );
+    expect(recovered).toContain(
+      `body.status === '${firstStatus}' || body.status === '${secondStatus}'`,
+    );
+    expect(recovered).toContain("typeof body.version === 'string'");
+    expect(client.match(/waitForFrontDoor\(\s*isServingFrontDoor,/g)).toHaveLength(2);
   });
 
   it('preserves the client evidence when the Gateway never observes its held work', () => {

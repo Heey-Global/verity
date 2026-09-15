@@ -413,6 +413,18 @@ function isGatewayMaintenance(answer: FrontDoor | undefined): boolean {
   );
 }
 
+/** The same structured readiness answer the Updater accepts. A degraded Server
+ * is serving through the Gateway even though HTTP represents that state as 503. */
+function isServingFrontDoor(answer: FrontDoor | undefined): boolean {
+  if (answer === undefined || (answer.status !== 200 && answer.status !== 503)) return false;
+  try {
+    const body = JSON.parse(answer.body) as { status?: unknown; version?: unknown };
+    return typeof body.version === 'string' && (body.status === 'ok' || body.status === 'degraded');
+  } catch {
+    return false;
+  }
+}
+
 /** One look at the front door. A Gateway that is closing, switching or gone is a
  *  status or a transport error; both are "not serving" to a client. */
 async function frontDoor(): Promise<FrontDoor | undefined> {
@@ -724,7 +736,7 @@ async function runCatchupClient(token: string, deadlineAt: number): Promise<void
     report('stream-released', { code: closed.code, afterMaintenanceMs: Date.now() - refusedAt });
 
     await waitForFrontDoor(
-      (seen) => seen !== undefined && seen.status === 200,
+      isServingFrontDoor,
       deadlineAt,
       'the Gateway never served again after the switch',
     );
@@ -925,7 +937,7 @@ async function main(): Promise<void> {
   // The front door is the whole point of the exercise: same host, same port, same
   // token, a different generation behind it.
   await waitForFrontDoor(
-    (seen) => seen !== undefined && seen.status === 200,
+    isServingFrontDoor,
     deadlineAt,
     'the Gateway never served again after the switch',
   );
