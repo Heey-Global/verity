@@ -102,11 +102,13 @@ computeLearningDigest({ loopId, runId, windowHours, minOccurrences })
 It is not exposed on the internal listener and has no Sandbox capability or credential.
 Ordinary sessions share a project container, so no secret delivered to a loop process there
 would constitute an authorization boundary. Instead, a Learning Loop script can only signal
-the ordinary spawn decision and optional trusted subject prompt. After parsing that bounded
-spawn record, the server-side executor verifies the persisted loop kind, claimed run, session
-and realm, calls the digest service directly, and attaches its result with
-`appendExternalPromptData`. The Sandbox never receives authority to query the corpus or select
-a realm. A normal session, another loop, and a loop whose host moved cannot invoke this path.
+the ordinary spawn decision and optional subject prompt. That prompt remains untrusted script
+output and is wrapped through the existing Agent Loop `appendExternalPromptData` boundary.
+After parsing the bounded spawn record, the server-side executor verifies the persisted loop
+kind, claimed run, session and realm, calls the digest service directly, and attaches its
+result as a separate external-data record. The Sandbox never receives authority to query the
+corpus or select a realm. A normal session, another loop, and a loop whose host moved cannot
+invoke this path.
 
 The request is server-bounded: `windowHours` is at most 720 (30 days), `minOccurrences` is at
 least 3, and the response contains at most 100 candidates, three exemplars per candidate,
