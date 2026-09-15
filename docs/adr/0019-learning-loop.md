@@ -132,8 +132,11 @@ predicate, train/hold-out windows and server-computed metrics, retained for 30 d
 proposal must echo the id; at proposal-event ingestion the server loads the row, verifies the
 run and realm, derives the displayed fields from it, and persists a verification receipt with
 the proposal. A later operator tap references that immutable proposal row. This keeps raw
-digest text ephemeral, permits delayed unattended ingestion within the documented retention
-window, and avoids trusting a rewritten prompt or recomputing against later data.
+source transcripts out of the evidence store, permits delayed unattended ingestion within the
+documented retention window, and avoids trusting a rewritten prompt or recomputing against
+later data. The bounded, redacted digest attached to the reaction prompt is ordinary prompt
+content and remains in that Learning Loop session's transcript under normal session-retention
+rules; the UI must describe that retention rather than calling the digest ephemeral.
 
 The service returns **counts keyed on structural fields** from the durable operator-decision
 sources — tool name, risk class, behavior, scope and safe secret-target identifiers — with at
