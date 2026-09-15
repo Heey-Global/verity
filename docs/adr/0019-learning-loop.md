@@ -125,6 +125,13 @@ The route returns **counts keyed on structural fields** — tool name, risk clas
 reason, error kind — with at most a handful of exemplars per candidate, each passed through
 `redactSessionObservationText`. It does not return transcripts.
 
+Exemplars are projections from the admissible row itself, never joins back to a permission
+request, event payload, message or transcript. An ordinary permission-decision exemplar may
+contain only `{ toolName, riskClass, behavior, scope }`; a secret decision only safe target
+identifiers plus behavior/scope; an explicit feedback exemplar only its dedicated
+operator-authored category and correction fields. Agent-supplied tool input, `updatedInput`,
+free-form denial messages and surrounding session text are excluded at the SQL projection.
+
 Two reasons, and the second is the load-bearing one:
 
 - Recurrence counting is a query PostgreSQL does well and a language model does badly. Doing

@@ -144,6 +144,12 @@ project (`store.ts:5884`) becomes a union-aware invariant. Enabling a namespace 
 project validates the resulting deduplicated union for every affected project and rejects the
 write if any would exceed 16; descriptor construction asserts the same bound fail closed.
 
+Policy provenance is unique rather than composed. `(realm_id, connection_id)` is unique, and
+enabling a namespace or moving a project is rejected if that connection is already directly
+bound to any affected project. Creating the conflicting direct binding is rejected likewise.
+Thus every reachable connection is authorized by exactly one direct binding or one namespace;
+the proxy never has to merge a write policy with a read policy.
+
 ### D5 — Realm memory is read with a scope check; only the operator writes it
 
 `projectMemoryPrompt` (`conductor.ts:5137`) becomes a two-part read — the realm block, then
@@ -187,9 +193,9 @@ already has a context from reading what is in it.
 ### D7 — Every namespace call is recorded against its realm
 
 The proxy sees every call already. It appends a row to a dedicated
-`knowledge_namespace_audit` table containing `{ realmId, projectId, sessionId, turnId,
-connectionId, method, targetName, namespaceMode, outcome, denialReason }`, where `targetName`
-is the validated tool or resource identifier when the method has one. Rows form a per-realm
+`knowledge_namespace_audit` table containing `{ realmId, namespaceId, projectId, sessionId,
+turnId, connectionId, method, targetName, namespaceMode, outcome, denialReason }`, where
+`targetName` is the validated tool or resource identifier when the method has one. Rows form a per-realm
 hash chain using the same sequence/previous-hash/event-hash shape as the Brokered Secrets
 audit trail and are retained for a documented, operator-configurable period (default 180
 days). Without this, "did a session in the business realm read my private notes" has no
