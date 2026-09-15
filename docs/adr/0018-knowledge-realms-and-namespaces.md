@@ -289,9 +289,11 @@ has a durable intent record even across a database failure that occurs after for
 
 ## Consequences
 
-- One migration: `realms`, `knowledge_namespaces`, non-null `project_settings.realm_id`,
-  immutable `sessions.realm_id`, and `realms.allowed_runtimes`, including the seeded default
-  realm and settings/session backfill.
+- One migration: `realms`, `knowledge_namespaces`, `knowledge_namespace_audit`, non-null
+  `project_settings.realm_id`, immutable `sessions.realm_id`, and `realms.allowed_runtimes`,
+  including the seeded default realm and settings/session backfill. Audit appends serialize on
+  a locked per-realm chain-head row before assigning the next sequence and hashes, matching
+  the Brokered Secrets audit's concurrency discipline.
 - Four code seams, all extensions of existing ones: shared descriptor/connection resolution,
   proxy policy enforcement (`server.ts:4518`), the two-part memory read
   (`conductor.ts:5137`), and the model-resolution guard (`server.ts:4659`, `:7307`). No new

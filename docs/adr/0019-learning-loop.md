@@ -242,10 +242,13 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
 ### D7 — What a Learning Loop must never do
 
 - **No repository writes.** It proposes text; it does not commit, push, or open a pull
-  request. The script inherits ADR 0008 §7B's read-only execution. Unlike an ordinary Agent
-  Loop, the Learning Loop reaction turn runs with a dedicated tool-less policy: it can emit
-  text (including the proposal fence) but receives no shell, filesystem, MCP, observation or
-  mutation tools. If a backend cannot enforce that profile, it cannot run Learning Loops.
+  request. Unlike an ordinary Agent Loop, its script runs in a dedicated profile with the
+  checkout mounted read-only, no Git/GitHub credentials, secrets, MCP configuration or network,
+  and only a private writable temporary directory discarded after the run. Failure to create
+  those mount/namespace restrictions fails the run before executing the script. The reaction
+  turn is tool-less: it can emit text (including the proposal fence) but receives no shell,
+  filesystem, MCP, observation or mutation tools. A backend that cannot enforce that profile
+  cannot run Learning Loops.
 - **No use of the session-observation tools.** They are approval-gated per call and
   explicitly non-pollable. The server executor uses the digest service or nothing.
 - **No cross-realm read**, by construction (D3) rather than by instruction.
