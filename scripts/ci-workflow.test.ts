@@ -2137,6 +2137,69 @@ describe('live cutover smoke daemon guard', () => {
     expect(relay).toMatch(/for \(;;\) \{\s*await tick\(\);\s*await sleep\(200\);\s*\}/);
   });
 
+  /**
+   * A seal answers a handoff binding, and only a step that publishes a new one
+   * can produce another seal. So every seal barrier has to enclose such a step:
+   * the baseline is read, the binding is published, the wait sees the count move.
+   *
+   * Nothing says so when the barrier straddles the wrong step. `prepare` refreshes
+   * the relay's journal itself, at the end of the command that creates the
+   * candidate, and the outgoing Server answers that binding about a second later —
+   * so a baseline read after it has already counted the seal it was written to
+   * wait for, and `settled_seal_count` will even wait for that seal on purpose
+   * before returning. Everything after that is silent by protocol: the responder
+   * holds the offer's nonce in `answered` and returns `exhausted`, which is logged
+   * at debug and never reaches the run. Sixty seconds later the smoke fails a
+   * handoff it watched succeed — and a refresh stage parked inside the barrier
+   * makes it look enclosed, because republishing a binding the responder has
+   * already answered cannot produce anything.
+   *
+   * Which stages publish a binding is read out of the driver rather than listed
+   * here, so one that starts publishing cannot quietly fall outside the rule.
+   */
+  it('encloses a step that publishes a new handoff binding in every seal barrier', () => {
+    const source = readFileSync(driver, 'utf8');
+    const dispatch = [...source.matchAll(/stage === '([\w-]+)'\)\s*(?:await )?(\w+)\(/g)];
+    expect(dispatch.length).toBeGreaterThan(0);
+
+    const publishes = dispatch
+      .filter(([, , fn]) => {
+        const start = source.indexOf(`async function ${fn}(`);
+        expect(start).toBeGreaterThan(-1);
+        const next = source.indexOf('\nasync function ', start + 1);
+        const body = source.slice(start, next < 0 ? source.length : next);
+        // A generation of its own, handed to the relay: a binding the responder
+        // has never answered. Starting the relay is the other way one appears.
+        return (
+          (/\bawait begin\(/.test(body) && body.includes('publishStandbyState(')) ||
+          body.includes('name: HANDOFF_RELAY_NAME')
+        );
+      })
+      .map(([, stage]) => stage);
+    expect(publishes.length).toBeGreaterThan(0);
+
+    const lines = readFileSync(script, 'utf8').split('\n');
+    const publisher = new RegExp(
+      `self-update-live-smoke\\.js (?:${publishes.join('|')})(?:\\s|$)`,
+      'u',
+    );
+    const barriers = lines.flatMap((line, index) =>
+      /^\s*wait_for_new_seal /.test(line) ? [index] : [],
+    );
+    expect(barriers.length).toBeGreaterThan(0);
+
+    for (const wait of barriers) {
+      const baseline = lines.slice(0, wait).findLastIndex((line) => /^\s*seals=/.test(line));
+      expect(baseline).toBeGreaterThan(-1);
+      const enclosed = lines.slice(baseline + 1, wait).filter((line) => publisher.test(line));
+      expect(
+        enclosed,
+        `the seal barrier at line ${String(wait + 1)} encloses no step that publishes a binding, ` +
+          `so its baseline was read after the seal it waits for`,
+      ).not.toEqual([]);
+    }
+  });
+
   // The update smoke does not run through Compose. It hand-builds the deployment
   // it then updates, so every variable the Server refuses to start without has to
   // be named twice more — once in the environment the driver resolves against and

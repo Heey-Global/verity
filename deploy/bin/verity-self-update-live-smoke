@@ -1264,12 +1264,17 @@ echo '--- stage: unlock the generation recovered from the database loss'
 secret_password "$server" unlock
 expect_secret_status "$server" unlocked
 
+# Before the preparation, not after it. `prepare` refreshes the relay's journal
+# itself once the candidate exists, so the binding this stage waits on is already
+# published — and answered — by the time that command returns. A baseline taken
+# afterwards settles past exactly the seal it was written to wait for, and the
+# wait then hangs for a further one the protocol has no reason to produce: the
+# offer's nonce is answered, so every later step is `exhausted`, which is silent.
+# That is a green protocol failing a red assertion, and it cost three releases.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare the same target a fifth time, on top of the recovered rollback'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the recovered Server to seal its key for the new candidate'
 wait_for_new_seal "$seals"
@@ -1362,12 +1367,12 @@ expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" "$target_digest" \
 # real one again too — nothing has fetched this digest yet.
 export VERITY_SMOKE_TARGET_DIGEST="$successor_digest"
 
+# Taken before the preparation for the same reason as the fifth generation above:
+# the seal this waits for lands inside `prepare`, not after it.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare a sixth generation, on top of the committed one'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the committed Server to seal its key for the sixth candidate'
 wait_for_new_seal "$seals"
@@ -1398,12 +1403,12 @@ echo 'the standby served again as the same process'
 echo '--- the standby must still hold its key after the switch kill'
 expect_secret_status "$server" unlocked
 
+# Before the preparation, for the same reason as the fifth generation above: the
+# seal this waits for lands inside `prepare`, which refreshes the relay itself.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare a seventh generation, on top of the recovered standby'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the standby to seal its key for the seventh candidate'
 wait_for_new_seal "$seals"
@@ -1434,12 +1439,12 @@ echo 'the standby served again as the same process'
 echo '--- the standby must still hold its key after the observation kill'
 expect_secret_status "$server" unlocked
 
+# Before the preparation, for the same reason as the fifth generation above: the
+# seal this waits for lands inside `prepare`, which refreshes the relay itself.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare an eighth generation, on top of the twice-recovered standby'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the standby to seal its key for the eighth candidate'
 wait_for_new_seal "$seals"
@@ -1476,12 +1481,12 @@ node packages/server/dist/self-update-live-smoke.js companion-handoff
 # the kill matrix did.
 export VERITY_SMOKE_TARGET_DIGEST="$final_digest"
 
+# Before the preparation, for the same reason as the fifth generation above: the
+# seal this waits for lands inside `prepare`, which refreshes the relay itself.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare a ninth generation, on top of the promoted one'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the eighth generation to seal its key for the ninth candidate'
 wait_for_new_seal "$seals"
@@ -1526,12 +1531,12 @@ node packages/server/dist/self-update-live-smoke.js companion-handoff
 # the budget runs out. One cutover drains once, so it takes two to say both.
 export VERITY_SMOKE_TARGET_DIGEST="$drained_digest"
 
+# Before the preparation, for the same reason as the fifth generation above: the
+# seal this waits for lands inside `prepare`, which refreshes the relay itself.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare a tenth generation, for a cutover with clients attached'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the ninth generation to seal its key for the tenth candidate'
 wait_for_new_seal "$seals"
@@ -1565,12 +1570,12 @@ node packages/server/dist/self-update-live-smoke.js companion-handoff
 # not — the drain gives that client its whole window and then disconnects it.
 export VERITY_SMOKE_TARGET_DIGEST="$forced_digest"
 
+# Before the preparation, for the same reason as the fifth generation above: the
+# seal this waits for lands inside `prepare`, which refreshes the relay itself.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare an eleventh generation, for a client that will not let go'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the tenth generation to seal its key for the eleventh candidate'
 wait_for_new_seal "$seals"
@@ -1620,12 +1625,12 @@ node packages/server/dist/self-update-live-smoke.js companion-handoff
 # retryable 503 in the window between them.
 export VERITY_SMOKE_TARGET_DIGEST="$resumed_digest"
 
+# Before the preparation, for the same reason as the fifth generation above: the
+# seal this waits for lands inside `prepare`, which refreshes the relay itself.
+seals="$(settled_seal_count)"
+
 echo '--- stage: prepare a twelfth generation, for a client that reconnects across it'
 node packages/server/dist/self-update-live-smoke.js prepare
-
-seals="$(settled_seal_count)"
-echo '--- stage: refresh the relay journal to the prepared generation'
-node packages/server/dist/self-update-live-smoke.js relay-journal
 
 echo '--- waiting for the eleventh generation to seal its key for the twelfth candidate'
 wait_for_new_seal "$seals"
