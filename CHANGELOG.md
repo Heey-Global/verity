@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/Heey-Global/verity/compare/v0.10.0...v0.10.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **setup:** initialize managed runner state ([#370](https://github.com/Heey-Global/verity/issues/370)) ([35b343a](https://github.com/Heey-Global/verity/commit/35b343a2b3e0860a76af1294005c8714bdf68cf1))
+
 ## [0.10.0](https://github.com/Heey-Global/verity/compare/v0.9.0...v0.10.0) (2026-09-15)
 
 
