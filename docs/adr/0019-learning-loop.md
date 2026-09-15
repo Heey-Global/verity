@@ -265,11 +265,13 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
   cannot run Learning Loops.
 
   Before each reaction, the Conductor destroys any backend context previously associated with
-  the dedicated loop session and starts a fresh context under that tool-less profile. Only
-  that restricted session's persisted transcript and current realm/project memory may be
-  replayed; credentials, tool grants, MCP descriptors and process state are not inherited. The
-  context is torn down when the turn settles. Failure to confirm either teardown or restricted
-  initialization fails the run closed without dispatching.
+  the dedicated loop session and starts a fresh context under that tool-less profile. No prior
+  transcript messages are replayed: the context contains only the standard system framing,
+  current realm/project memory, the current bounded digest and subject prompt. Historical
+  reactions remain operator-visible in the transcript but are not backend input. Credentials,
+  tool grants, MCP descriptors and process state are not inherited. The context is torn down
+  when the turn settles. Failure to confirm either teardown or restricted initialization
+  fails the run closed without dispatching.
 - **No use of the session-observation tools.** They are approval-gated per call and
   explicitly non-pollable. The server executor uses the digest service or nothing.
 - **No cross-realm read**, by construction (D3) rather than by instruction.
