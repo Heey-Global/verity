@@ -12,10 +12,10 @@ import * as ImagePicker from 'expo-image-picker';
 /** An image upload's media type — the 4 types every vision backend accepts. */
 type ImageUploadMediaType = Extract<AttachmentUpload, { kind: 'image' }>['mediaType'];
 
-/** base64-length ceiling per attachment — mirrors the server's
- * MAX_ATTACHMENT_BASE64_LEN (7_000_000 ≈ 5 MB of bytes) so an oversize pick is
- * rejected with a friendly message here instead of a 400 on send. */
-const MAX_ATTACHMENT_BASE64_LEN = 7_000_000;
+/** Base64 ceilings mirrored by the server. Images are recompressed and resized
+ * into the vision-provider allowance; arbitrary files may contain 25 MB of bytes. */
+const MAX_IMAGE_BASE64_LEN = 10_000_000;
+const MAX_FILE_BYTES = 25_000_000;
 const MAX_MEETING_AUDIO_FILE_NAME_LEN = 200;
 const MAX_MEETING_AUDIO_TITLE_LEN = 120;
 
@@ -35,6 +35,11 @@ export interface PickedMeetingAudio {
 export interface PickedSessionFile {
   uri: string;
   fileName: string;
+}
+
+function base64DecodedLength(data: string): number {
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  return Math.floor((data.length * 3) / 4) - padding;
 }
 
 function truncateFileNamePreservingExtension(name: string, maxLength: number): string {
@@ -95,17 +100,17 @@ export async function readDroppedAttachments(
       // `.jpg` name would reach the vision backends mislabeled. Transcode those
       // like the picker path does — the native temporary copy still exists here.
       if (imageType && base64IsHeif(data)) {
-        const converted = await transcodeToJpegBase64(dropped.uri, `"${dropped.fileName}"`);
-        if (converted.length > MAX_ATTACHMENT_BASE64_LEN) {
-          throw new Error(
-            `"${dropped.fileName}" is too large to attach after conversion (max ~5 MB per file).`,
-          );
-        }
+        const converted = await jpegWithinImageLimit(dropped.uri, `"${dropped.fileName}"`);
         uploads.push({ kind: 'image', mediaType: 'image/jpeg', data: converted });
         continue;
       }
-      if (data.length > MAX_ATTACHMENT_BASE64_LEN) {
-        throw new Error(`"${dropped.fileName}" is too large to attach (max ~5 MB per file).`);
+      if (imageType && data.length > MAX_IMAGE_BASE64_LEN) {
+        const converted = await jpegWithinImageLimit(dropped.uri, `"${dropped.fileName}"`);
+        uploads.push({ kind: 'image', mediaType: 'image/jpeg', data: converted });
+        continue;
+      }
+      if (!imageType && base64DecodedLength(data) > MAX_FILE_BYTES) {
+        throw new Error(`"${dropped.fileName}" is too large to attach (max 25 MB per file).`);
       }
       uploads.push(
         imageType
@@ -176,18 +181,29 @@ export function base64IsHeif(data: string): boolean {
   }
 }
 
-/** Re-encode an image file as JPEG base64. `subject` names the image in the
- * failure message, which the caller surfaces via Alert. */
-async function transcodeToJpegBase64(uri: string, subject: string): Promise<string> {
-  const converted = await manipulateAsync(uri, [], {
+/** Re-encode an image and progressively reduce its width until its base64 payload
+ * fits. Starting each resize from the original avoids compounding JPEG artifacts. */
+async function jpegWithinImageLimit(uri: string, subject: string): Promise<string> {
+  let converted = await manipulateAsync(uri, [], {
     base64: true,
     compress: 0.7,
     format: SaveFormat.JPEG,
   });
-  if (typeof converted.base64 !== 'string') {
-    throw new Error(`${subject} could not be converted to JPEG.`);
+  for (let attempt = 0; attempt <= 4; attempt += 1) {
+    if (typeof converted.base64 !== 'string') {
+      throw new Error(`${subject} could not be converted to JPEG.`);
+    }
+    if (converted.base64.length <= MAX_IMAGE_BASE64_LEN) return converted.base64;
+    if (attempt === 4 || !Number.isFinite(converted.width) || converted.width <= 1) break;
+    const ratio = Math.sqrt(MAX_IMAGE_BASE64_LEN / converted.base64.length) * 0.9;
+    const width = Math.max(1, Math.floor(converted.width * Math.min(ratio, 0.85)));
+    converted = await manipulateAsync(uri, [{ resize: { width } }], {
+      base64: true,
+      compress: 0.7,
+      format: SaveFormat.JPEG,
+    });
   }
-  return converted.base64;
+  throw new Error(`${subject} could not be reduced enough to attach.`);
 }
 
 /** Map picked assets to real vision-compatible bytes. Unsupported picker
@@ -206,15 +222,14 @@ async function toImageUploads(
       reportedType === 'image/gif' ||
       reportedType === 'image/webp';
     if (!supported || base64IsHeif(asset.base64)) {
-      const converted = await transcodeToJpegBase64(asset.uri, 'The selected image');
-      if (converted.length > MAX_ATTACHMENT_BASE64_LEN) {
-        throw new Error('The converted image is too large to attach (max ~5 MB).');
-      }
+      const converted = await jpegWithinImageLimit(asset.uri, 'The selected image');
       uploads.push({ kind: 'image', mediaType: 'image/jpeg', data: converted });
       continue;
     }
-    if (asset.base64.length > MAX_ATTACHMENT_BASE64_LEN) {
-      throw new Error('The selected image is too large to attach (max ~5 MB).');
+    if (asset.base64.length > MAX_IMAGE_BASE64_LEN) {
+      const converted = await jpegWithinImageLimit(asset.uri, 'The selected image');
+      uploads.push({ kind: 'image', mediaType: 'image/jpeg', data: converted });
+      continue;
     }
     uploads.push({
       kind: 'image',
@@ -271,8 +286,8 @@ export async function pickFiles(remaining: number): Promise<AttachmentUpload[]> 
     const file = new FsFile(asset.uri);
     try {
       const data = await file.base64();
-      if (data.length > MAX_ATTACHMENT_BASE64_LEN) {
-        throw new Error(`"${asset.name}" is too large to attach (max ~5 MB per file).`);
+      if (base64DecodedLength(data) > MAX_FILE_BYTES) {
+        throw new Error(`"${asset.name}" is too large to attach (max 25 MB per file).`);
       }
       uploads.push({
         kind: 'file',

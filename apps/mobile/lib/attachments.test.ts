@@ -146,6 +146,74 @@ describe('dragged attachments', () => {
     expect(mockManipulateAsync).not.toHaveBeenCalled();
   });
 
+  it('automatically downsizes an image that exceeds the inline image limit', async () => {
+    mockLaunchImageLibraryAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: 'file:///large.png',
+          mimeType: 'image/png',
+          base64: 'x'.repeat(10_000_001),
+        },
+      ],
+    });
+    mockManipulateAsync
+      .mockResolvedValueOnce({
+        uri: 'file:///compressed.jpg',
+        width: 4000,
+        height: 3000,
+        base64: 'x'.repeat(10_000_001),
+      })
+      .mockResolvedValueOnce({
+        uri: 'file:///resized.jpg',
+        width: 3000,
+        height: 2250,
+        base64: 'anBlZw==',
+      });
+
+    await expect(pickImagesFromLibrary(1)).resolves.toEqual([
+      { kind: 'image', mediaType: 'image/jpeg', data: 'anBlZw==' },
+    ]);
+    expect(mockManipulateAsync).toHaveBeenNthCalledWith(
+      2,
+      'file:///large.png',
+      [{ resize: { width: expect.any(Number) } }],
+      expect.objectContaining({ base64: true, format: 'jpeg' }),
+    );
+  });
+
+  it('accepts an image when only the final resize attempt reaches the limit', async () => {
+    mockLaunchImageLibraryAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: 'file:///very-large.png',
+          mimeType: 'image/png',
+          base64: 'x'.repeat(10_000_001),
+        },
+      ],
+    });
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      mockManipulateAsync.mockResolvedValueOnce({
+        uri: `file:///attempt-${attempt}.jpg`,
+        width: 4000 - attempt * 500,
+        height: 3000 - attempt * 375,
+        base64: 'x'.repeat(10_000_001),
+      });
+    }
+    mockManipulateAsync.mockResolvedValueOnce({
+      uri: 'file:///attempt-4.jpg',
+      width: 2000,
+      height: 1500,
+      base64: 'ZmluYWw=',
+    });
+
+    await expect(pickImagesFromLibrary(1)).resolves.toEqual([
+      { kind: 'image', mediaType: 'image/jpeg', data: 'ZmluYWw=' },
+    ]);
+    expect(mockManipulateAsync).toHaveBeenCalledTimes(5);
+  });
+
   it('recognizes vision-compatible images by MIME type or extension', () => {
     expect(droppedImageMediaType('image/png', 'capture')).toBe('image/png');
     expect(droppedImageMediaType('application/octet-stream', 'capture.JPEG')).toBe('image/jpeg');
@@ -268,8 +336,8 @@ describe('dragged attachments', () => {
     expect(mockDelete).toHaveBeenCalledWith('file:///tmp/later.txt');
   });
 
-  it('removes the whole batch when one dropped file exceeds the JS safety limit', async () => {
-    mockFileData.set('file:///tmp/oversize.pdf', 'x'.repeat(7_000_001));
+  it('removes the whole batch when one dropped file exceeds the 25 MB limit', async () => {
+    mockFileData.set('file:///tmp/oversize.pdf', 'x'.repeat(33_333_337));
     mockFileData.set('file:///tmp/later.txt', 'bGF0ZXI=');
 
     await expect(
