@@ -275,8 +275,10 @@ has a context from reading what is in it.
 
 The proxy sees every call already. It appends a row to a dedicated
 `knowledge_namespace_audit` event table containing `{ requestId, phase, realmId, namespaceId,
-projectId, sessionId, turnId, connectionId, method, targetName, namespaceMode, outcome,
-denialReason, createdAt }`. `phase` is `request` or `outcome`; an outcome event links to its request by
+projectId, sessionId, turnId, connectionId, upstreamSessionId, method, targetName,
+namespaceMode, outcome, denialReason, createdAt }`. `upstreamSessionId` is nullable for
+stateless calls and set for Streamable HTTP lifecycle traffic. `phase` is `request` or
+`outcome`; an outcome event links to its request by
 `requestId`, and only outcome events carry `outcome`/`denialReason`. `targetName` is the
 validated tool or resource identifier when the method has one. Events form a per-realm hash
 chain using the same sequence/previous-hash/event-hash shape as the Brokered Secrets audit
