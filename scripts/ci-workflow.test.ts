@@ -2125,6 +2125,24 @@ describe('GitHub-hosted runner boundary', () => {
 describe('live cutover smoke daemon guard', () => {
   const script = 'deploy/bin/verity-self-update-live-smoke';
 
+  it('keeps the independently supervised Agent Gateway alive across Server generations', () => {
+    const smoke = readFileSync(script, 'utf8');
+    const start = smoke.indexOf('--name verity-agent-gateway');
+    const adopt = smoke.indexOf('self-update-live-smoke.js adopt');
+
+    expect(start).toBeGreaterThan(-1);
+    expect(start).toBeLessThan(adopt);
+    expect(smoke).toContain(
+      'type=volume,src=verity-agent-gateway-control,dst=/run/verity-agent-gateway',
+    );
+    expect(smoke).toContain(
+      '--entrypoint=node "$target_digest" packages/server/dist/agent-gateway-main.js',
+    );
+    expect(smoke).toContain(
+      'docker rm -f verity-managed-server verity-agent-gateway verity-smoke-registry',
+    );
+  });
+
   // A complete argument list, so a refusal below is the guard's and not the usage
   // message's: image, previous image, and the tag the previous release was cut
   // from. `HEAD` stands in for that tag because the only thing the script asks of
