@@ -2126,6 +2126,17 @@ describe('live cutover smoke daemon guard', () => {
   const script = 'deploy/bin/verity-self-update-live-smoke';
   const driver = 'packages/server/src/self-update-live-smoke.ts';
 
+  it('serializes relay journal refreshes so an older generation cannot win last', () => {
+    const source = readFileSync(driver, 'utf8');
+    const relay = source.slice(
+      source.indexOf('async function startHandoffRelay('),
+      source.indexOf('async function relayContainer('),
+    );
+
+    expect(relay).not.toContain('setInterval(() => void tick()');
+    expect(relay).toMatch(/for \(;;\) \{\s*await tick\(\);\s*await sleep\(200\);\s*\}/);
+  });
+
   // The update smoke does not run through Compose. It hand-builds the deployment
   // it then updates, so every variable the Server refuses to start without has to
   // be named twice more — once in the environment the driver resolves against and

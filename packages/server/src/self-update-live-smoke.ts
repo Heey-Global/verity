@@ -1040,6 +1040,7 @@ async function startHandoffRelay(managedRoot: string): Promise<void> {
         });
         console.log('${HANDOFF_RELAY_READY}');
         let published = '';
+        let publishedHandoff = '';
         const tick = async () => {
           try {
             const state = JSON.parse(await readFile(process.env.VERITY_SMOKE_STANDBY_STATE, 'utf8'));
@@ -1072,8 +1073,31 @@ async function startHandoffRelay(managedRoot: string): Promise<void> {
             ' ' + (exchange.requested(operationId) ?? '-') +
             ' ' + (exchange.acknowledged(operationId) ?? '-');
           if (line !== published) { published = line; console.log(line); }
+          const handoff = await updater.readUpdaterHandoff({
+            socketPath: process.env.VERITY_SMOKE_RELAY_SOCKET,
+            token: process.env.VERITY_SMOKE_RELAY_TOKEN,
+          });
+          const handoffLine = handoff === null
+            ? 'handoff-state none'
+            : 'handoff-state ' + handoff.binding.operationId +
+              ' sender=' + String(handoff.senderIdentityPublicKey !== undefined) +
+              ' offer=' + String(handoff.offer !== undefined);
+          if (handoffLine !== publishedHandoff) {
+            publishedHandoff = handoffLine;
+            console.log(handoffLine);
+          }
         };
-        setInterval(() => void tick(), 200);
+        // Do not schedule a second refresh while the first one is still between
+        // reading the state file and atomically replacing the journal. Two async
+        // interval callbacks can otherwise complete out of order: the newer one
+        // installs generation N, then the older one puts N-1 back. Handoff peers
+        // observe the binding disappear and recreate their ephemeral material;
+        // enough churn exhausts the outgoing Server's bounded seal budget.
+        const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        for (;;) {
+          await tick();
+          await sleep(200);
+        }
       })().catch((error) => { console.error(error); process.exit(1); })`,
     ],
     env: [
