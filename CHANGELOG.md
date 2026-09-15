@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Heey-Global/verity/compare/v0.4.1...v0.5.0) (2026-09-15)
+
+
+### Features
+
+* **security:** enable arm64 brokered secrets ([#337](https://github.com/Heey-Global/verity/issues/337)) ([529e19e](https://github.com/Heey-Global/verity/commit/529e19e7aee1e657f22fef938afb2d1043e68dba))
+
 ## [0.4.1](https://github.com/Heey-Global/verity/compare/v0.4.0...v0.4.1) (2026-09-14)
 
 
