@@ -694,7 +694,7 @@ async function runCatchupClient(token: string, deadlineAt: number): Promise<void
     report('ack-before', {});
 
     const refused = await waitForFrontDoor(
-      (seen) => seen !== undefined && seen.status === 503,
+      isGatewayMaintenance,
       deadlineAt,
       'the Gateway never entered maintenance',
     );

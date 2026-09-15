@@ -2466,7 +2466,7 @@ describe('live cutover smoke daemon guard', () => {
     expect(predicate).toContain('answer.status === 503');
     expect(predicate).toContain(JSON.parse(maintenanceBody ?? '{}').error);
     expect(predicate).not.toMatch(/answer\.status === 503\s*[;)]/);
-    expect(client).toMatch(/waitForFrontDoor\(\s*isGatewayMaintenance,/);
+    expect(client.match(/waitForFrontDoor\(\s*isGatewayMaintenance,/g)).toHaveLength(2);
   });
 
   it('runs the workflow-owned drain client from the candidate image', () => {
