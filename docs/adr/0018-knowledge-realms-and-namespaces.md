@@ -135,6 +135,10 @@ The method policy is also fail-closed. A `read` namespace permits only MCP lifec
 unknown or extension methods. Supporting a read-only resource API later requires another
 explicit method-and-identifier policy, not a broader wildcard.
 
+JSON-RPC batch arrays are rejected for namespace connections in phase 1. Supporting them later
+requires authorizing and pre-auditing every element before forwarding any element; mixed
+partially authorized batches must fail as a unit.
+
 At the Streamable HTTP layer, `POST` carries only the JSON-RPC methods above. `GET` (SSE) and
 `DELETE` (cleanup) are allowed only for an upstream session id established through that same
 resolved namespace, caller session and connection; arbitrary session ids fail closed. Audit
@@ -229,11 +233,15 @@ applied after the fact.
 
 **The decision is that runtime separation is expressed by realm membership** — put the
 private projects in the private realm and give that realm only the namespaces and the
-runtimes it should have. A realm may additionally declare an allowed runtime set:
+runtimes it should have. A realm may additionally declare an allowed runtime set through a
+normalized relation:
 
 ```
-realms.allowed_runtimes  TEXT NULL   -- NULL = no restriction
+realm_allowed_runtimes(realm_id, runtime)  PRIMARY KEY (realm_id, runtime)
 ```
+
+No rows for a realm means unrestricted. `runtime` is validated against the server's canonical
+backend identifiers at write time; unknown values are rejected rather than ignored.
 
 enforced by one shared realm-aware model validator used by every creation, dispatch,
 existing-session model change, per-turn override, handoff and Agent Loop reaction path
@@ -290,7 +298,7 @@ has a durable intent record even across a database failure that occurs after for
 ## Consequences
 
 - One migration: `realms`, `knowledge_namespaces`, `knowledge_namespace_audit`, non-null
-  `project_settings.realm_id`, immutable `sessions.realm_id`, and `realms.allowed_runtimes`,
+  `project_settings.realm_id`, immutable `sessions.realm_id`, and `realm_allowed_runtimes`,
   including the seeded default realm and settings/session backfill. Audit appends serialize on
   a locked per-realm chain-head row before assigning the next sequence and hashes, matching
   the Brokered Secrets audit's concurrency discipline.
