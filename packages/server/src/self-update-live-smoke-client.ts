@@ -405,6 +405,14 @@ interface FrontDoor {
   readonly body: string;
 }
 
+/** A 503 from the backend is a serving, degraded Verity Server. Maintenance is
+ * the Gateway's own 503 and is distinguished by the body it writes itself. */
+function isGatewayMaintenance(answer: FrontDoor | undefined): boolean {
+  return (
+    answer !== undefined && answer.status === 503 && answer.body.includes('server maintenance')
+  );
+}
+
 /** One look at the front door. A Gateway that is closing, switching or gone is a
  *  status or a transport error; both are "not serving" to a client. */
 async function frontDoor(): Promise<FrontDoor | undefined> {
@@ -820,7 +828,7 @@ async function main(): Promise<void> {
   // the deployment refusing new work while it changes generation, and it is the
   // first thing a client can see of an update it was never told about.
   const refused = await waitForFrontDoor(
-    (seen) => seen !== undefined && seen.status === 503,
+    isGatewayMaintenance,
     deadlineAt,
     'the Gateway never entered maintenance',
   );
@@ -840,7 +848,7 @@ async function main(): Promise<void> {
   // taken away — the failure this whole maintenance window exists to prevent.
   const late = await frontDoor();
   expect(
-    late !== undefined && late.status === 503,
+    isGatewayMaintenance(late),
     `the Gateway routed a new request during maintenance (${String(late?.status)})`,
   );
 

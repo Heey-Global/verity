@@ -2434,6 +2434,24 @@ describe('live cutover smoke daemon guard', () => {
     expect(holding).toContain('gateway client network={{json .NetworkSettings.Networks}}');
   });
 
+  it('does not mistake a degraded backend for Gateway maintenance', () => {
+    // Both answers are 503. The body written by the Gateway itself is the only
+    // discriminator; a status-only predicate makes the client tear down its held
+    // work before the drain begins whenever the Server is degraded.
+    const gateway = readFileSync('packages/server/src/self-update/managed-gateway.ts', 'utf8');
+    const client = readFileSync('packages/server/src/self-update-live-smoke-client.ts', 'utf8');
+    const maintenanceBody =
+      /const unavailable[\s\S]*?response\.end\('(\{"error":"[^"]+"\})'\)/.exec(gateway)?.[1];
+    expect(maintenanceBody, 'the Gateway maintenance response moved; re-derive this guard').toBe(
+      '{"error":"server maintenance"}',
+    );
+    const predicate = /function isGatewayMaintenance[\s\S]*?\n\}/.exec(client)?.[0] ?? '';
+    expect(predicate).toContain('answer.status === 503');
+    expect(predicate).toContain(JSON.parse(maintenanceBody ?? '{}').error);
+    expect(predicate).not.toMatch(/answer\.status === 503\s*[;)]/);
+    expect(client).toMatch(/waitForFrontDoor\(\s*isGatewayMaintenance,/);
+  });
+
   // The update smoke does not run through Compose. It hand-builds the deployment
   // it then updates, so every variable the Server refuses to start without has to
   // be named twice more — once in the environment the driver resolves against and
