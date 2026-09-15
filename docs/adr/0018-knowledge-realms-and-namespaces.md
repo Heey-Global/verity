@@ -121,6 +121,14 @@ same set. Connections that cannot provide a stable read-only tool set cannot be 
 `read` namespace. `read_write` is a separate explicit mode, never the fallback when read-only
 enforcement is unavailable.
 
+A namespace connection must itself expose exactly one corpus, scoped by its upstream root or
+credential. The same connection may belong to at most one namespace globally. Verity refuses
+namespace creation unless the connection is marked `isolated_corpus` during an operator
+verification step; the UI states that a tool allowlist does not partition its arguments. A
+server that can search both private and business roots therefore needs two connection rows
+with independently scoped upstream configuration. Verity does not claim to repair an upstream
+credential that can escape its declared corpus.
+
 The method policy is also fail-closed. A `read` namespace permits only MCP lifecycle traffic
 (`initialize`, `notifications/initialized`, `ping`), `tools/list`, and allowlisted
 `tools/call`; it rejects resources, prompts, completion, logging, sampling, elicitation and

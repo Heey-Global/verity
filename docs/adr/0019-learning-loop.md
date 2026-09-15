@@ -89,6 +89,9 @@ current host project. `agent_loops` gains `kind = 'standard' | 'learning'` and a
 uses one project-owned session as its execution host. Moving that host project to another
 realm or deleting it is rejected while it hosts a Learning Loop; the operator must first
 rehost or delete the loop. Rehosting changes the project/session, never the loop's realm.
+The migration replaces the current cascading `agent_loops.project_id` foreign key with
+`ON DELETE RESTRICT`; the project-deletion transaction reports the hosted loops that must be
+rehosted or explicitly deleted first.
 
 ### D3 — The read path is a server-computed digest of aggregates, not a transcript feed
 
@@ -115,13 +118,14 @@ least 3, and the response contains at most 100 candidates, three exemplars per c
 4,000 characters per exemplar, and 128 KiB total serialized data. The server truncates within
 those bounds and records truncation in the response; the script cannot widen them.
 
-Each candidate carries an opaque, authenticated `candidateEvidence` token bound to the loop
-run, realm, structural predicate, train/hold-out windows and server-computed metrics. It
-expires after 24 hours. A proposal must echo that token. At proposal-event ingestion the
-server verifies it, derives the displayed fields from its authenticated claims, and persists
-a verification receipt with the proposal. A later operator tap references that immutable
-proposal row rather than re-verifying the expired token. This keeps raw digest output
-ephemeral without trusting a rewritten prompt or recomputing against a later data window.
+Each candidate carries an opaque, authenticated `candidateEvidence` id. At digest computation
+the server persists an immutable evidence row bound to the loop run, realm, structural
+predicate, train/hold-out windows and server-computed metrics, retained for 30 days. A
+proposal must echo the id; at proposal-event ingestion the server loads the row, verifies the
+run and realm, derives the displayed fields from it, and persists a verification receipt with
+the proposal. A later operator tap references that immutable proposal row. This keeps raw
+digest text ephemeral, permits delayed unattended ingestion within the documented retention
+window, and avoids trusting a rewritten prompt or recomputing against later data.
 
 The service returns **counts keyed on structural fields** from the durable operator-decision
 sources — tool name, risk class, behavior, scope and safe secret-target identifiers — with at
