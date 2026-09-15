@@ -79,7 +79,7 @@ export async function resolveRepoWorktreeFetchAuthHeader(
 import { buildControlPlane } from './app.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
-import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
+import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
@@ -1902,6 +1902,9 @@ export async function buildEmbeddedServer(
   // 503 until unlock.
   const secretCipher = createSealableSecretCipher();
   const eventStore = new EventStore(db, secretCipher);
+  if (config.controlPlaneRunner === true) {
+    await ensureControlPlaneProject(eventStore);
+  }
   const googleAccessToken = createCachedGoogleAccessToken(async () => {
     if (secretCipher.isSealed()) return undefined;
     const settings = await eventStore.getVeritySettings();

@@ -10,3 +10,36 @@
  * approval card. Both are defined from this constant so the divergence cannot happen.
  */
 export const CONTROL_PLANE_PROJECT_ID = 'verity-control';
+export const CONTROL_PLANE_PROJECT_OWNER = 'verity';
+export const CONTROL_PLANE_PROJECT_REPO = 'control';
+export const CONTROL_PLANE_PROJECT_CONTAINER = 'verity-control';
+
+/** Persist the built-in project before any subsystem creates a row that
+ * references it. The Runner identity starts during server construction, before
+ * the HTTP overview has a chance to lazily materialize this project. */
+export async function ensureControlPlaneProject(
+  store: Pick<
+    EventStore,
+    'upsertProject' | 'updateProjectState' | 'setProjectSetupStatus' | 'getProject'
+  >,
+): Promise<ProjectRecord> {
+  const project = await store.upsertProject({
+    id: CONTROL_PLANE_PROJECT_ID,
+    kind: 'control_plane',
+    owner: CONTROL_PLANE_PROJECT_OWNER,
+    repo: CONTROL_PLANE_PROJECT_REPO,
+    containerName: CONTROL_PLANE_PROJECT_CONTAINER,
+    state: 'active',
+    overviewVisible: true,
+  });
+  const active =
+    project.state === 'active'
+      ? project
+      : ((await store.updateProjectState(project.id, 'active', null)) ?? project);
+  if (active.setupStatus !== 'complete') {
+    await store.setProjectSetupStatus(project.id, 'complete');
+    return (await store.getProject(project.id)) ?? active;
+  }
+  return active;
+}
+import type { EventStore, ProjectRecord } from '@verity/store';

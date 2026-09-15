@@ -30,9 +30,38 @@ services:
   verity-control-runner:
     profiles: [legacy]
 
-  # Its one-shot init goes with it. The managed path grew an equivalent of its
-  # own in `prepareSpec()` — same mkdir/chown/chmod, plus a repair loop for
-  # identity material published before the setgid bit existed — and runs it
-  # before the Runner on every reconcile.
+  # The managed Server prepares these dedicated volumes while reconciling its
+  # own Runner. Do not run the legacy owner alongside it.
   verity-control-runner-init:
     profiles: [legacy]
+
+  # Prepare the shared data root before either entry point can create a managed
+  # Server. Docker otherwise creates `/srv/verity/runners` as root while mounting
+  # the nested control runtime, and the non-root Server cannot create any project
+  # runtime on a fresh installation.
+  verity-managed-data-init:
+    image: ${VERITY_SERVER_IMAGE:?set the digest-pinned server image containing the agent gateway}
+    user: root
+    entrypoint: [/bin/sh, -c]
+    command:
+      - >-
+        mkdir -p /data/workspaces /data/sessions /data/runners &&
+        chown "$${VERITY_SERVER_UID}:$${VERITY_SERVER_GID}"
+        /data /data/workspaces /data/sessions /data/runners &&
+        chmod 0750 /data/runners
+    environment:
+      VERITY_SERVER_UID: ${VERITY_SERVER_UID:-1000}
+      VERITY_SERVER_GID: ${VERITY_SERVER_GID:-1000}
+    volumes:
+      - verity-data:/data
+    restart: 'no'
+
+  verity-updater:
+    depends_on:
+      verity-managed-data-init:
+        condition: service_completed_successfully
+
+  managed-bootstrap:
+    depends_on:
+      verity-managed-data-init:
+        condition: service_completed_successfully

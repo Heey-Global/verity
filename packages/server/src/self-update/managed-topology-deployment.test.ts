@@ -32,6 +32,13 @@ describe('managed Compose ownership topology', () => {
     const overlay = await readFile(resolve(root, 'deploy/docker-compose.managed.yml'), 'utf8');
     expect(overlay).toMatch(/verity-control-runner:\n\s+profiles: \[legacy\]/);
     expect(overlay).toMatch(/verity-control-runner-init:\n\s+profiles: \[legacy\]/);
+    const orderedInit =
+      /depends_on:\n\s+verity-managed-data-init:\n\s+condition: service_completed_successfully/g;
+    expect(overlay.match(orderedInit)).toHaveLength(2);
+    expect(overlay).toMatch(/verity-managed-data-init:[\s\S]*?verity-data:\/data/);
+    expect(overlay).toContain('VERITY_SERVER_UID: ${VERITY_SERVER_UID:-1000}');
+    expect(overlay).toContain('VERITY_SERVER_GID: ${VERITY_SERVER_GID:-1000}');
+    expect(overlay).toContain('chown "$${VERITY_SERVER_UID}:$${VERITY_SERVER_GID}"');
     // A `depends_on` re-wiring here would mean the service is still in the
     // managed profile — the exact shape of the bug.
     expect(overlay).not.toMatch(/verity-control-runner:\n\s+depends_on:/);
