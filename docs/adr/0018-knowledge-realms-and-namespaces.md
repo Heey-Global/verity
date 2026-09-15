@@ -152,11 +152,13 @@ project (`store.ts:5884`) becomes a union-aware invariant. Enabling a namespace 
 project validates the resulting deduplicated union for every affected project and rejects the
 write if any would exceed 16; descriptor construction asserts the same bound fail closed.
 
-A realm move is a quiescing operation, not a metadata-only update. The server refuses new
-turns, stops active turns, tears down every backend context for the project, applies the realm
-change and only then permits fresh contexts. If any context cannot be confirmed terminated,
-the move fails without changing membership. This prevents a context containing old-realm
-memory or fetched corpus data from continuing with new-realm namespace authority.
+A realm move is a session-generation boundary, not a metadata-only update. The server refuses
+new turns, stops active turns, permanently closes every existing project session against
+further dispatch/resume, tears down their backend contexts, applies the realm change and only
+then permits newly created sessions. Closed transcripts remain visible as history but cannot
+seed a backend context or call MCP. If any session cannot be confirmed closed, the move fails
+without changing membership. This prevents old-realm memory, messages or fetched corpus data
+from entering a context that has new-realm namespace authority.
 
 Policy provenance is unique rather than composed. `connection_id` is globally unique in
 `knowledge_namespaces`, and
