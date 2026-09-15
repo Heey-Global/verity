@@ -1386,12 +1386,17 @@ interface ModelList {
 const streamQuery = z.object({ sinceSeq: z.coerce.number().int().nonnegative().optional() });
 
 // Resource limits on per-turn attachments so a client can't push an unbounded
-// base64 blob through the control plane. ~7M base64 chars ≈ 5 MiB decoded/image.
+// base64 blob through the control plane. Files get a larger allowance because
+// they are materialized into the worktree; images stay within vision-provider
+// request limits and are resized by the mobile client before sending.
 // Default history page size for GET /sessions/:id/events — how many of the most
 // recent events the app loads on open (older turns come in on scroll-up).
 const DEFAULT_HISTORY_PAGE = 40;
 const MAX_ATTACHMENTS = 8;
-const MAX_ATTACHMENT_BASE64_LEN = 7_000_000;
+const MAX_IMAGE_ATTACHMENT_BASE64_LEN = 10_000_000;
+const MAX_FILE_ATTACHMENT_BYTES = 25_000_000;
+const MAX_TURN_ATTACHMENT_BYTES = 50_000_000;
+const MAX_TURN_ATTACHMENT_BASE64_LEN = 66_666_668;
 const DEFAULT_MEETING_AUDIO_STREAM_BYTES = 500_000_000;
 // The streamed upload route acknowledges first; transcription of a two-hour
 // recording is allowed to continue server-side without an HTTP request deadline.
@@ -1401,7 +1406,7 @@ const DEFAULT_MEETING_TRANSCRIBE_COMMAND = 'verity-transcribe-meeting';
 const MAX_SESSION_DIRECTORY_ENTRIES = 1_000;
 const MAX_SESSION_TEXT_FILE_BYTES = 1_000_000;
 const MAX_SESSION_DOWNLOAD_BYTES = 50_000_000;
-const MAX_SESSION_UPLOAD_BYTES = 50_000_000;
+const MAX_SESSION_UPLOAD_BYTES = 250_000_000;
 export const VERITY_CONTROL_SESSION_NAME = 'Verity Control';
 export const VERITY_CONTROL_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
 const VERITY_CONTROL_PROJECT_OWNER = 'verity';
@@ -1485,10 +1490,41 @@ function stripRepeatedOperatorInstructions(prompt: string): string {
 
 // A turn attachment is the neutral `attachmentUploadSchema` from @verity/events
 // (raw base64) with a server-side size cap layered on the payload. It's a
-// discriminated union (image | file), so the cap rides as a refine on `data`
-// (shared by both members) rather than an `.extend()` (union has no such method).
+// discriminated union (image | file), so the cap is selected from its kind.
+export function isAttachmentBase64SizeAllowed(
+  kind: 'image' | 'file',
+  base64Length: number,
+  paddingCharacters = 0,
+): boolean {
+  if (kind === 'image') return base64Length <= MAX_IMAGE_ATTACHMENT_BASE64_LEN;
+  return Math.floor((base64Length * 3) / 4) - paddingCharacters <= MAX_FILE_ATTACHMENT_BYTES;
+}
+
+export function isAttachmentBase64TotalSizeAllowed(
+  attachments: readonly { base64Length: number; paddingCharacters: number }[],
+): boolean {
+  return (
+    attachments.reduce(
+      (total, attachment) =>
+        total + Math.floor((attachment.base64Length * 3) / 4) - attachment.paddingCharacters,
+      0,
+    ) <= MAX_TURN_ATTACHMENT_BYTES
+  );
+}
+
 const turnAttachment = attachmentUploadSchema.refine(
-  (a) => a.data.length <= MAX_ATTACHMENT_BASE64_LEN,
+  (attachment) => {
+    const paddingCharacters = attachment.data.endsWith('==')
+      ? 2
+      : attachment.data.endsWith('=')
+        ? 1
+        : 0;
+    return isAttachmentBase64SizeAllowed(
+      attachment.kind,
+      attachment.data.length,
+      paddingCharacters,
+    );
+  },
   { message: 'attachment exceeds the size limit', path: ['data'] },
 );
 
@@ -2159,6 +2195,20 @@ const turnBody = z
     // turn. Bounded length — it is an opaque token, not free text.
     clientReplyId: z.string().min(1).max(200).optional(),
   })
+  .refine(
+    (body) =>
+      isAttachmentBase64TotalSizeAllowed(
+        (body.attachments ?? []).map((attachment) => ({
+          base64Length: attachment.data.length,
+          paddingCharacters: attachment.data.endsWith('==')
+            ? 2
+            : attachment.data.endsWith('=')
+              ? 1
+              : 0,
+        })),
+      ),
+    { message: 'attachments exceed the total size limit', path: ['attachments'] },
+  )
   .refine((b) => b.prompt.trim().length > 0 || (b.attachments?.length ?? 0) > 0, {
     message: 'a turn needs a prompt or at least one attachment',
     path: ['prompt'],
@@ -2746,8 +2796,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deps.eventStore.scheduleMessageProjection();
   }
   // Raise the body limit above Fastify's 1 MiB default: a turn may carry image
-  // attachments (base64), and the per-route schema is what actually bounds them
-  // (MAX_ATTACHMENTS × MAX_ATTACHMENT_BASE64_LEN). Without this, a real screenshot
+  // attachments (base64), and the per-route schema is what actually bounds their
+  // aggregate size. Without this, a real screenshot
   // (>1 MiB of base64) is rejected with a 413 BEFORE the schema runs — the turn
   // silently never dispatches. Headroom added for the prompt + JSON envelope.
   // The same reasoning binds MAX_MEETING_AUDIO_BASE64_LEN, which lives in
@@ -2755,7 +2805,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // has to stay above it, so lowering one without the other is what turns a field
   // error into a bare 413.
   const bodyLimit =
-    Math.max(MAX_ATTACHMENTS * MAX_ATTACHMENT_BASE64_LEN, MAX_MEETING_AUDIO_BASE64_LEN) + 1_000_000;
+    Math.max(MAX_TURN_ATTACHMENT_BASE64_LEN, MAX_MEETING_AUDIO_BASE64_LEN) + 1_000_000;
   const loggerOption: NonNullable<FastifyServerOptions['logger']> = deps.logger
     ? {
         serializers: {
@@ -6723,7 +6773,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       if (declaredSize > MAX_SESSION_UPLOAD_BYTES) {
         reply.code(413);
-        return { error: 'file exceeds the 50 MB upload limit' };
+        return { error: 'file exceeds the 250 MB upload limit' };
       }
       const session = await deps.eventStore.getSession(id);
       if (!session) {

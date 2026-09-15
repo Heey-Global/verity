@@ -73,6 +73,8 @@ import {
   meetingTranscriptionSettingsWhileSealed,
   CLAUDE_MODELS,
   DEFAULT_MODEL,
+  isAttachmentBase64SizeAllowed,
+  isAttachmentBase64TotalSizeAllowed,
   redactScrollDiagnosticData,
   redactScrollDiagnosticEvent,
   sortModelIds,
@@ -2132,11 +2134,11 @@ describe('session worktree files', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/sessions/s1/files?path=docs&fileName=huge.bin',
-      headers: { 'content-type': 'application/octet-stream', 'content-length': '50000001' },
+      headers: { 'content-type': 'application/octet-stream', 'content-length': '250000001' },
       payload: Buffer.alloc(0),
     });
     expect(response.statusCode).toBe(413);
-    expect(response.json()).toEqual({ error: 'file exceeds the 50 MB upload limit' });
+    expect(response.json()).toEqual({ error: 'file exceeds the 250 MB upload limit' });
   });
 
   it('accepts uploads under the media type the picked file carries', async () => {
@@ -7142,6 +7144,26 @@ describe('POST /sessions/:id/turns', () => {
     });
     expect(res.statusCode).toBe(202);
     expect(dispatchTurn).toHaveBeenCalled();
+  });
+
+  it('applies separate image and decoded-file size limits without allocating payloads', () => {
+    expect(isAttachmentBase64SizeAllowed('image', 10_000_000)).toBe(true);
+    expect(isAttachmentBase64SizeAllowed('image', 10_000_001)).toBe(false);
+    // Adjacent decoded byte counts can share a base64 length and differ only in padding.
+    expect(isAttachmentBase64SizeAllowed('file', 33_333_336, 2)).toBe(true);
+    expect(isAttachmentBase64SizeAllowed('file', 33_333_336, 1)).toBe(false);
+  });
+
+  it('caps the decoded attachment total without allocating payloads', () => {
+    const maximumFile = { base64Length: 33_333_336, paddingCharacters: 2 };
+    expect(isAttachmentBase64TotalSizeAllowed([maximumFile, maximumFile])).toBe(true);
+    expect(
+      isAttachmentBase64TotalSizeAllowed([
+        maximumFile,
+        maximumFile,
+        { base64Length: 4, paddingCharacters: 2 },
+      ]),
+    ).toBe(false);
   });
 
   it('rejects more than the attachment count limit (400)', async () => {
