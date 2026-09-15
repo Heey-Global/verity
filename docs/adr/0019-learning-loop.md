@@ -110,6 +110,11 @@ normal session, another loop, a replay, and a loop whose host was moved all fail
 The script fetches the digest once and emits it through the existing Agent Loop stdout
 contract; the reaction turn receives that external-data block and never receives the grant.
 
+The request is server-bounded: `windowHours` is at most 720 (30 days), `minOccurrences` is at
+least 3, and the response contains at most 100 candidates, three exemplars per candidate,
+4,000 characters per exemplar, and 128 KiB total serialized data. The server truncates within
+those bounds and records truncation in the response; the script cannot widen them.
+
 The route returns **counts keyed on structural fields** — tool name, risk class, denial
 reason, error kind — with at most a handful of exemplars per candidate, each passed through
 `redactSessionObservationText`. It does not return transcripts.
@@ -132,27 +137,21 @@ The concept's provenance rule (`:417`) is that guardrail proposals may be derive
 operator actions and corrections, never from tool-output text — the same rule that keeps
 memory from being poisoned by something an agent read.
 
-**Admissible signals:** `permission` events and `result.permissionDenials` (what the operator
-blocked, and what the runtime auto-denied), `secret_approvals` decisions, and user prompts in
-the `messages` projection (`role:'user'`).
+**Admissible signals:** durable ordinary permission-decision rows, `secret_approvals`
+decisions, and explicit operator-feedback events created by a dedicated UI action. Adding the
+ordinary decision row is therefore a prerequisite for the Learning Loop, not a follow-up.
+Each signal records its operator actor and decision source.
 
-**Inadmissible:** `tool_result` output, agent-authored text, repository content, and anything
-fetched from a document or a knowledge namespace. The digest query selects the admissible
-signals; the inadmissible ones are not in its `FROM` clause, which is a stronger guarantee
-than instructing the model to ignore them.
+**Inadmissible:** permission-request events, runtime-generated `permissionDenials`, ordinary
+user prompts, `tool_result` output, agent-authored text, repository content, and anything
+fetched from a document or a knowledge namespace. The digest query selects only durable
+operator-decision sources; the inadmissible ones are not in its `FROM` clause, which is a
+stronger guarantee than instructing the model to ignore them.
 
 The digest crosses into the reaction turn through `appendExternalPromptData` with source
-`verity:learning-digest` — the seam the Agent Loop executor already uses. Two honest limits
-belong on the record: a user prompt can itself contain text the operator pasted from an
-untrusted source, and `external-content.ts` says of itself that it "is a prompt-structure
-boundary, not a prompt-injection classifier … it cannot make an untrusted document
-trustworthy". Provenance bounds authority; it does not confer trust.
-
-**One gap to close or accept:** an ordinary permission allow/deny is not persisted as a
-decision row (see Context). The strongest available signal is therefore "the operator was
-asked, and the turn reports the tool was denied", not "the operator denied it at 02:14".
-Phase 1 derives from what exists. A durable decision row would make the provenance rule
-sharper and is the first follow-up worth doing.
+`verity:learning-digest` — the seam the Agent Loop executor already uses. As
+`external-content.ts` says, this is a prompt-structure boundary, not an injection classifier.
+Provenance bounds authority; it does not confer trust.
 
 ### D5 — A recurrence threshold and a hold-out evaluation gate, before anything is proposed
 
@@ -244,7 +243,6 @@ no operator-veto mode — a guardrail must not be live while it is being judged.
   first window of real data.
 - Hold-out window size and the pass criterion for D5 — the numbers matter more than the
   mechanism and should come from measurement, not from this document.
-- Whether to add a durable permission-decision row (D4). Recommended, as a separate change.
 - How the UI chooses a host project and guides rehosting when no project in a realm is an
   obvious long-lived host.
 - Whether proposals should ever target a repository's `AGENTS.md` rather than memory. That is

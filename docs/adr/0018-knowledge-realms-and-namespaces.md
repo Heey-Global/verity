@@ -74,16 +74,17 @@ drift ADR 0013 was written against.
 ### D2 — Realm assignment lives in `project_settings`, not in `projects`
 
 ```
-project_settings.realm_id  TEXT NULL REFERENCES realms(id)   -- NULL = the default realm
+project_settings.realm_id  TEXT NOT NULL REFERENCES realms(id)
 ```
 
 `ProjectSettingsTable` exists precisely so that "GitHub/project sync can refresh lifecycle
 metadata without touching local runtime preferences" (`schema.ts:219`). Realm assignment
 is such a preference: the installation-sync upsert writes `projects` rows and would have
 to be taught to preserve a column there, which is the kind of thing that is correct on the
-day it is written and silently wrong after the next sync change. A missing
-`project_settings` row therefore resolves to the default realm, which is also the
-migration behaviour for every existing project.
+day it is written and silently wrong after the next sync change. The migration creates one
+real default-realm row and backfills a settings row for every project. Project creation must
+create both records transactionally. There is no `NULL` sentinel: every authorization join
+uses an ordinary non-null foreign key, and a missing settings row fails closed.
 
 `realms` itself is minimal — `id`, `name`, `memory`, timestamps.
 
@@ -120,10 +121,11 @@ same set. Connections that cannot provide a stable read-only tool set cannot be 
 `read` namespace. `read_write` is a separate explicit mode, never the fallback when read-only
 enforcement is unavailable.
 
-`project_mcp_bindings` stays as it is for project-specific tools. Namespace resolution is
-**additive** at exactly one place: `resolveConnection` in `server.ts:4518` gains a second
-lookup that joins the caller's project to its realm and accepts a connection reachable
-through an enabled namespace of that realm.
+`project_mcp_bindings` stays as it is for project-specific tools. A shared resolver produces
+the deduplicated union of direct bindings and enabled namespaces for a project. The Conductor
+uses that resolver when building MCP descriptors in `embedded.ts`; descriptors carry the
+namespace mode and read allowlist to the proxy. `resolveConnection` in `server.ts:4518` uses
+the same resolver on every call and returns that policy with the upstream connection.
 
 That location is the whole point of the design. It already re-resolves the binding on
 **every** proxied call, against `identity.projectId` taken from the internal connection
@@ -131,8 +133,9 @@ identity rather than from anything the Sandbox says (`http-mcp-proxy.ts:188`). A
 check placed there inherits that property unchanged: a Sandbox cannot name its own realm
 any more than it can name its own project, and revoking a namespace takes effect on the
 next call rather than on the next session. The existing cap of 16 enabled connections per
-project (`store.ts:5884`) applies to the union of direct bindings and namespace-reachable
-connections, so the descriptor list the Conductor builds stays bounded.
+project (`store.ts:5884`) becomes a union-aware invariant. Enabling a namespace or moving a
+project validates the resulting deduplicated union for every affected project and rejects the
+write if any would exceed 16; descriptor construction asserts the same bound fail closed.
 
 ### D5 — Realm memory is read with a scope check; only the operator writes it
 
@@ -207,12 +210,12 @@ trust.
 
 ## Consequences
 
-- One migration: `realms`, `knowledge_namespaces`, `project_settings.realm_id`, and
-  `realms.allowed_runtimes`. Existing projects resolve to the default realm with no row
-  written.
-- Three code seams, all extensions of existing ones: the `resolveConnection` join
-  (`server.ts:4518`), the two-part memory read (`conductor.ts:5137`), and the model-resolution
-  guard (`server.ts:4659`, `:7307`). No new broker, no new capability, no new transport.
+- One migration: `realms`, `knowledge_namespaces`, non-null `project_settings.realm_id`, and
+  `realms.allowed_runtimes`, including the seeded default realm and settings backfill.
+- Four code seams, all extensions of existing ones: shared descriptor/connection resolution,
+  proxy policy enforcement (`server.ts:4518`), the two-part memory read
+  (`conductor.ts:5137`), and the model-resolution guard (`server.ts:4659`, `:7307`). No new
+  broker, capability, or transport.
 - The system prompt grows by the realm memory once per fresh backend context — the same
   cadence and the same cap mechanism as ADR 0008, not per turn.
 - The private/business separation is exactly as strong as the per-project Sandbox boundary
@@ -229,8 +232,8 @@ trust.
 
 ## Scope / open questions
 
-- Default realm: whether it is a seeded row or an implicit `NULL` sentinel, and whether the
-  `control_plane` project (`schema.ts:139`) gets a realm of its own.
+- Whether the `control_plane` project (`schema.ts:139`) starts in the seeded default realm or
+  gets a dedicated realm during migration.
 - Whether realm memory shares `PROJECT_MEMORY_MAX_CHARS` or takes its own cap; the combined
   injected size is what actually needs bounding.
 - Whether `allowed_runtimes` ships in phase 1 or follows the namespace work.
