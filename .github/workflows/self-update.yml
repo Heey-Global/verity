@@ -82,6 +82,8 @@ jobs:
             "$RUNNER_TEMP/verity-self-update-harness/verity-self-update-live-smoke"
           install -m 0644 packages/server/src/self-update-live-smoke.ts \
             "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke.ts"
+          install -m 0644 packages/server/src/self-update-live-smoke-client.ts \
+            "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke-client.ts"
           # The isolated daemon's own image, staged for the same reason as the two
           # above and one more. Its build is the only one in this job that runs on
           # the SHARED host daemon, and its output is then started `--privileged`
@@ -107,6 +109,8 @@ jobs:
             deploy/bin/verity-self-update-live-smoke
           install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke.ts" \
             packages/server/src/self-update-live-smoke.ts
+          install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke-client.ts" \
+            packages/server/src/self-update-live-smoke-client.ts
 
       # Deliberately at the START of the job, not only in the teardown. The
       # teardown removes THIS run's volume, and it is an `if: always()` step — but

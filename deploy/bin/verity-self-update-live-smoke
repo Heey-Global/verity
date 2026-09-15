@@ -475,7 +475,7 @@ start_client() {
     --env "VERITY_SMOKE_MASTER_PASSWORD=$master_password" \
     --env "VERITY_SMOKE_CLIENT_MODE=$mode" \
     --env "VERITY_SMOKE_DATABASE_URL=$VERITY_SMOKE_DATABASE_URL" \
-    --entrypoint=node "$previous_digest" \
+    --entrypoint=node "$target_digest" \
     packages/server/dist/self-update-live-smoke-client.js >/dev/null
   # Attached means: streams upgraded and caught up, request bodies open. Only
   # then may the update start, or the drain would have nothing to drain.

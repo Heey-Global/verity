@@ -1418,6 +1418,12 @@ describe('self-update release gate', () => {
     );
     expect(steps[restoreIndex]?.run).toContain('deploy/bin/verity-self-update-live-smoke');
     expect(steps[restoreIndex]?.run).toContain('packages/server/src/self-update-live-smoke.ts');
+    expect(steps[stageIndex]?.run).toContain(
+      'install -m 0644 packages/server/src/self-update-live-smoke-client.ts',
+    );
+    expect(steps[restoreIndex]?.run).toContain(
+      'packages/server/src/self-update-live-smoke-client.ts',
+    );
     expect(smoke?.run).toContain('deploy/bin/verity-self-update-live-smoke');
   });
 
@@ -2450,6 +2456,17 @@ describe('live cutover smoke daemon guard', () => {
     expect(predicate).toContain(JSON.parse(maintenanceBody ?? '{}').error);
     expect(predicate).not.toMatch(/answer\.status === 503\s*[;)]/);
     expect(client).toMatch(/waitForFrontDoor\(\s*isGatewayMaintenance,/);
+  });
+
+  it('runs the workflow-owned drain client from the candidate image', () => {
+    // `$previous_digest` contains the old released client and cannot carry fixes
+    // to the workflow-owned acceptance harness. Every generated target digest is
+    // the candidate image with only a label changed, so it is the executable side
+    // of the same staging boundary as the restored TypeScript source.
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const start = /start_client\(\) \{([\s\S]*?)\n\}/.exec(smoke)?.[1] ?? '';
+    expect(start).toContain('--entrypoint=node "$target_digest"');
+    expect(start).not.toContain('--entrypoint=node "$previous_digest"');
   });
 
   // The update smoke does not run through Compose. It hand-builds the deployment
