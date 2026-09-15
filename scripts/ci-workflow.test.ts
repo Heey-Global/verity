@@ -619,6 +619,12 @@ describe('Verity website publication smoke', () => {
       'chore${scope}: release server ${version}',
     );
     expect(backend?.['include-component-in-tag']).toBe(false);
+    // A fixed history boundary makes every future release replay the same old
+    // commits even after the manifest and tag have advanced. Bootstrap hints
+    // belong only to an unreleased train; this one is established.
+    expect(backendConfig).not.toHaveProperty('last-release-sha');
+    expect(backendConfig).not.toHaveProperty('bootstrap-sha');
+    expect(backend).not.toHaveProperty('initial-version');
     expect(website?.['include-component-in-tag']).toBe(true);
     expect(website?.['tag-separator']).toBe('-');
     // The first release has no manifest entry to read a version from, so this
