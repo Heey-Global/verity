@@ -346,7 +346,13 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
       socket.destroy();
       // Take the values off the request before anything can resolve, so the only
       // remaining reference is the local one the redactor needs.
-      const secrets = request.secrets.map((entry) => entry.secret);
+      // File injection materializes decoded bytes, so a CLI can echo either the
+      // wire value or the original credential. Both must be masked.
+      const secrets = request.secrets.flatMap((entry) =>
+        entry.encoding === 'base64'
+          ? [entry.secret, Buffer.from(entry.secret, 'base64').toString('utf8')]
+          : [entry.secret],
+      );
       for (const entry of request.secrets) entry.secret = '';
       if (error !== undefined) rejectResult(error);
       else if (truncated) {

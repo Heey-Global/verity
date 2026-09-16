@@ -28,6 +28,7 @@ import {
   SupervisorRunnerClient,
   SupervisorRunnerRecovery,
   runnerFrameIngestEnvelope,
+  runSupervisorTrustedCli,
   tailFrames,
   type Backend,
   type RunnerAttachTarget,
@@ -2443,9 +2444,20 @@ describe('verity-runner supervisor runtime', () => {
             encoding: 'base64',
           },
         ],
-        command: ['/bin/sh', '-c', 'test "$(cat "$KUBECONFIG")" = "apiVersion: v1"'],
+        command: [
+          '/bin/sh',
+          '-c',
+          'cat "$KUBECONFIG"; cat "$KUBECONFIG" >&2; base64 < "$KUBECONFIG"',
+        ],
       });
-      expect(encodedFile).toMatchObject({ ok: true, exitCode: 0 });
+      // The broker decodes file injection; masking only the wire value leaks
+      // the original credential when a CLI echoes its configuration.
+      expect(encodedFile).toMatchObject({
+        ok: true,
+        exitCode: 0,
+        stdout: '[REDACTED][REDACTED]\n',
+        stderr: '[REDACTED]',
+      });
       // Every value is redacted, not just the first one.
       for (const value of ['private-key-marker', 'key-id-marker', 'issuer-id-marker']) {
         expect(JSON.stringify(multi)).not.toContain(value);
@@ -2671,6 +2683,33 @@ describe('verity-runner supervisor runtime', () => {
           command: ['/bin/true'],
         }),
       ).resolves.toMatchObject({ ok: true, exitCode: 0, stdout: '', stderr: '' });
+      // Exercise the production client too: a lost encoding marker at that
+      // boundary can leave the broker-only tests green.
+      const fileSecret = 'token: plötzlich/größer\n';
+      await expect(
+        runSupervisorTrustedCli(runtimeDir, {
+          turnId,
+          secrets: [
+            {
+              secretAlias: 'KUBECONFIG',
+              env: 'KUBECONFIG',
+              injection: 'file',
+              encoding: 'base64',
+              secret: Buffer.from(fileSecret).toString('base64'),
+            },
+          ],
+          command: [
+            '/bin/sh',
+            '-c',
+            `test "$(sha256sum "$KUBECONFIG" | cut -d ' ' -f 1)" = "${createHash('sha256').update(fileSecret).digest('hex')}" || exit 23; cat "$KUBECONFIG"; cat "$KUBECONFIG" >&2`,
+          ],
+        }),
+      ).resolves.toMatchObject({
+        exitCode: 0,
+        stdout: '[REDACTED]',
+        stderr: '[REDACTED]',
+      });
+      await expect(readFile(join(secretDir, 'KUBECONFIG'))).rejects.toThrow(/ENOENT/u);
       const cancellation = supervisorRequest(supervisor.socketPath, {
         protocolVersion: 1,
         kind: 'cancel-turn',
