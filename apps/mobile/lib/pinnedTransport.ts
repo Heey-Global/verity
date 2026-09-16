@@ -93,6 +93,26 @@ function base64ToBuffer(encoded: string): ArrayBuffer {
   return buffer;
 }
 
+function utf8ResponseBody(response: NativeResponse): BodyInit | null {
+  if ([204, 205, 304].includes(response.status)) return null;
+  const buffer = base64ToBuffer(response.bodyBase64);
+  const contentType = Object.entries(response.headers).find(
+    ([name]) => name.toLowerCase() === 'content-type',
+  )?.[1];
+  const mediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase();
+  if (
+    mediaType?.startsWith('text/') ||
+    mediaType === 'application/json' ||
+    mediaType?.endsWith('+json')
+  ) {
+    // React Native's whatwg-fetch Response decodes an ArrayBuffer by mapping each
+    // byte directly to a JS character. Decode textual native responses here, at
+    // the byte boundary, so UTF-8 never reaches that Latin-1-shaped fallback.
+    return new TextDecoder('utf-8').decode(buffer);
+  }
+  return buffer;
+}
+
 async function encodeBody(body: BodyInit | null | undefined): Promise<string | null> {
   if (body == null) return null;
   if (typeof body === 'string') return bytesToBase64(new TextEncoder().encode(body));
@@ -150,9 +170,7 @@ export function createPinnedFetch(tlsPin: string): typeof fetch {
     } finally {
       init.signal?.removeEventListener('abort', onAbort);
     }
-    const body = [204, 205, 304].includes(response.status)
-      ? null
-      : base64ToBuffer(response.bodyBase64);
+    const body = utf8ResponseBody(response);
     return new Response(body, {
       status: response.status,
       headers: response.headers,
