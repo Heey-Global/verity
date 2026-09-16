@@ -385,7 +385,7 @@ describe('multi-architecture runtime image publication', () => {
 });
 
 describe('release merge policy', () => {
-  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+  const workflow = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
     jobs: { 'release-please': { steps: WorkflowStep[] } };
   };
 
@@ -454,8 +454,8 @@ describe('release merge policy', () => {
 });
 
 describe('website release recovery', () => {
-  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
-    on: { workflow_dispatch?: { inputs?: Record<string, { type?: string }> } };
+  const workflow = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+    on: { workflow_call?: { inputs?: Record<string, { type?: string }> } };
     jobs: {
       'release-please': {
         outputs?: Record<string, string>;
@@ -471,8 +471,8 @@ describe('website release recovery', () => {
   };
 
   it('accepts an explicit version and source ref only for manual recovery', () => {
-    expect(workflow.on.workflow_dispatch?.inputs?.['website-version']?.type).toBe('string');
-    expect(workflow.on.workflow_dispatch?.inputs?.['website-ref']?.type).toBe('string');
+    expect(workflow.on.workflow_call?.inputs?.['website-version']?.type).toBe('string');
+    expect(workflow.on.workflow_call?.inputs?.['website-ref']?.type).toBe('string');
     const step = workflow.jobs['release-please'].steps.find(
       (candidate) => candidate.id === 'website-recovery',
     );
@@ -662,5 +662,120 @@ describe('release immutability lifecycle', () => {
         );
       }
     }
+  });
+});
+
+describe('release train concurrency', () => {
+  type Job = {
+    needs?: string | string[];
+    if?: string;
+    uses?: string;
+    strategy?: { matrix?: { train?: string[] }; 'fail-fast'?: boolean };
+    concurrency?: { group?: string; queue?: string; 'cancel-in-progress'?: boolean };
+    with?: Record<string, string>;
+    permissions?: Record<string, string>;
+    outputs?: Record<string, string>;
+    steps?: WorkflowStep[];
+  };
+  type Workflow = {
+    on: Record<string, unknown> & {
+      workflow_call?: { inputs?: Record<string, { type: string; required?: boolean }> };
+    };
+    concurrency?: unknown;
+    jobs: Record<string, Job>;
+  };
+  const trains = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as Workflow;
+  const backend = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as Workflow;
+
+  const dispatch = parse(
+    readFileSync('.github/workflows/release-dispatch.yml', 'utf8'),
+  ) as Workflow;
+
+  it('holds each train lock from metadata through publication without cancelling queued releases', () => {
+    // Locking publication alone lets a second metadata run recreate next-release
+    // PRs against an unpublished draft; the entire train must own one lock.
+    expect(dispatch.concurrency).toBeUndefined();
+    expect(trains.concurrency).toBeUndefined();
+    expect(backend.concurrency).toBeUndefined();
+    const callers = Object.values(dispatch.jobs).filter(
+      (job) => job.uses === './.github/workflows/release-trains.yml',
+    );
+    expect(callers).toHaveLength(1);
+    const caller = callers[0];
+    expect(caller?.strategy?.matrix?.train).toEqual(['backend', 'mobile', 'website']);
+    expect(caller?.strategy?.['fail-fast']).toBe(false);
+    expect(caller?.concurrency).toEqual({
+      group: 'release-${{ matrix.train }}',
+      queue: 'max',
+      'cancel-in-progress': false,
+    });
+    expect(caller?.with?.train).toBe('${{ matrix.train }}');
+    expect(trains.jobs['release-please']?.concurrency).toEqual({
+      group: 'release-metadata',
+      queue: 'max',
+      'cancel-in-progress': false,
+    });
+    for (const name of ['publish-backend', 'publish-mobile-native', 'publish-website']) {
+      expect(trains.jobs[name]?.needs).toBe('release-please');
+      expect(trains.jobs[name]?.concurrency).toBeUndefined();
+    }
+    expect(Object.values(backend.jobs).every((job) => job.concurrency === undefined)).toBe(true);
+    expect(Object.keys(caller?.with ?? {}).sort()).toEqual(
+      Object.keys(trains.on.workflow_call?.inputs ?? {}).sort(),
+    );
+    for (const job of Object.values(trains.jobs)) {
+      for (const [scope, access] of Object.entries(job.permissions ?? {})) {
+        if (access === 'write') expect(caller?.permissions?.[scope], scope).toBe('write');
+      }
+    }
+  });
+
+  it('runs only the selected train metadata action and recovery path', () => {
+    const steps = trains.jobs['release-please']?.steps ?? [];
+    const actions = steps.filter((step) =>
+      step.uses?.startsWith('googleapis/release-please-action@'),
+    );
+    expect(actions).toHaveLength(3);
+    for (const train of ['backend', 'mobile', 'website']) {
+      const action = actions.find((step) => step.id === `release-${train}`);
+      expect(action?.if).toContain(`inputs.train == '${train}'`);
+    }
+    expect(steps.find((step) => step.id === 'maintenance')?.if).toContain(
+      "inputs.train == 'backend'",
+    );
+    expect(steps.find((step) => step.id === 'website-recovery')?.if).toContain(
+      "inputs.train == 'website'",
+    );
+    expect(trains.jobs['publish-mobile-native']?.if).toContain("inputs.train == 'mobile'");
+  });
+
+  it('keeps the signing workflow identity and passes every backend handoff input', () => {
+    // Existing installations pin this filename in their certificate verifier.
+    const caller = trains.jobs['publish-backend'];
+    for (const job of Object.values(backend.jobs)) {
+      for (const [scope, access] of Object.entries(job.permissions ?? {})) {
+        if (access === 'write') expect(caller?.permissions?.[scope], scope).toBe('write');
+      }
+    }
+    expect(caller?.uses).toBe('./.github/workflows/release.yml');
+    expect(Object.keys(backend.on)).toEqual(['workflow_call']);
+    expect(Object.keys(trains.on)).toEqual(['workflow_call']);
+    expect(dispatch.on.push).toBeDefined();
+    expect(dispatch.on.workflow_dispatch).toBeDefined();
+    expect(caller?.if).toBe("needs.release-please.outputs.backend-release-created == 'true'");
+    const inputs = backend.on.workflow_call?.inputs ?? {};
+    expect(Object.keys(caller?.with ?? {}).sort()).toEqual(Object.keys(inputs).sort());
+    for (const name of ['backend-version', 'backend-sha']) {
+      expect(inputs[name]).toMatchObject({ type: 'string', required: true });
+      expect(caller?.with?.[name]).toBe(`\${{ needs.release-please.outputs.${name} }}`);
+    }
+    for (const name of ['backend-republish', 'backend-accept-no-rollback']) {
+      expect(inputs[name]?.type).toBe('boolean');
+      expect(caller?.with?.[name]).toBe(`\${{ inputs['${name}'] || false }}`);
+    }
+    expect(caller?.with?.['backend-schema-forward-max']).toBe(
+      "${{ inputs['backend-schema-forward-max'] || '' }}",
+    );
+    expect(backend.jobs['release-please']?.outputs?.['backend-release-created']).toBe('true');
   });
 });

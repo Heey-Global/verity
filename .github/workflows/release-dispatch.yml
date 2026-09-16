@@ -1,0 +1,77 @@
+name: verity-release-dispatch
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mobile-tag:
+        description: Existing draft mobile-vX.Y.0 release to recover
+        required: false
+        type: string
+      backend-version:
+        description: Existing draft maintenance release version (X.Y.Z)
+        required: false
+        type: string
+      backend-ref:
+        description: Maintenance source branch or tag
+        required: false
+        type: string
+      backend-republish:
+        description: Republish an existing backend release and stable channel
+        required: false
+        default: false
+        type: boolean
+      backend-schema-forward-max:
+        description: Reviewed migration key promised readable by a maintenance bridge
+        required: false
+        type: string
+      backend-accept-no-rollback:
+        description: Republish despite a failed N-1 rollback (irreversible emergency override)
+        required: false
+        default: false
+        type: boolean
+      website-version:
+        description: Existing website release version to recover (X.Y.Z)
+        required: false
+        type: string
+      website-ref:
+        description: Commit, branch, or tag backing the existing website release
+        required: false
+        type: string
+
+permissions: read-all
+
+jobs:
+  release-train:
+    # Keep metadata and publication for one train in the same lifecycle lock.
+    # Otherwise an unpublished draft can be mistaken for a new release boundary.
+    strategy:
+      fail-fast: false
+      matrix:
+        train: [backend, mobile, website]
+    concurrency:
+      group: release-${{ matrix.train }}
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+      issues: write
+      packages: write
+      pull-requests: write
+    uses: ./.github/workflows/release-trains.yml
+    secrets: inherit
+    with:
+      train: ${{ matrix.train }}
+      mobile-tag: ${{ inputs['mobile-tag'] || '' }}
+      backend-version: ${{ inputs['backend-version'] || '' }}
+      backend-ref: ${{ inputs['backend-ref'] || '' }}
+      backend-republish: ${{ inputs['backend-republish'] || false }}
+      backend-schema-forward-max: ${{ inputs['backend-schema-forward-max'] || '' }}
+      backend-accept-no-rollback: ${{ inputs['backend-accept-no-rollback'] || false }}
+      website-version: ${{ inputs['website-version'] || '' }}
+      website-ref: ${{ inputs['website-ref'] || '' }}
