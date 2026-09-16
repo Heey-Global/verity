@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/Heey-Global/verity/compare/v0.10.1...v0.10.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* **installer:** prevent stale interactive reinstall ([#379](https://github.com/Heey-Global/verity/issues/379)) ([d71dc54](https://github.com/Heey-Global/verity/commit/d71dc54e464fb7ed09fcbdef0fb35010683499d2))
+
 ## [0.10.1](https://github.com/Heey-Global/verity/compare/v0.10.0...v0.10.1) (2026-09-15)
 
 
