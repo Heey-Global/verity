@@ -730,6 +730,43 @@ describe('release train concurrency', () => {
     }
   });
 
+  it('keeps every nested workflow permission within its caller grant', () => {
+    type Permissions = Record<string, string>;
+    type PermissionWorkflow = {
+      permissions?: Permissions | string;
+      jobs: Record<string, { permissions?: Permissions; uses?: string }>;
+    };
+    const rank: Record<string, number> = { none: 0, read: 1, write: 2 };
+    const check = (file: string, allowed?: Permissions): void => {
+      const workflow = parse(readFileSync(file, 'utf8')) as PermissionWorkflow;
+      // read-all requests scopes omitted by an explicit caller, so GitHub
+      // rejects the entire graph before Release Please gets a runner.
+      expect(typeof workflow.permissions, file).not.toBe('string');
+      const defaults = workflow.permissions as Permissions | undefined;
+      const within = (requested: Permissions): void => {
+        if (allowed === undefined) return;
+        for (const [scope, access] of Object.entries(requested)) {
+          expect(rank[access], `${file}: ${scope}`).toBeLessThanOrEqual(
+            rank[allowed[scope] ?? 'none']!,
+          );
+        }
+      };
+      within(defaults ?? {});
+      for (const job of Object.values(workflow.jobs)) {
+        const effective = job.permissions ?? defaults ?? allowed ?? {};
+        within(effective);
+        if (job.uses?.startsWith('./.github/workflows/')) {
+          check(job.uses.slice(2), effective);
+        }
+      }
+    };
+    for (const job of Object.values(dispatch.jobs)) {
+      if (job.uses?.startsWith('./.github/workflows/')) {
+        check(job.uses.slice(2), job.permissions);
+      }
+    }
+  });
+
   it('runs only the selected train metadata action and recovery path', () => {
     const steps = trains.jobs['release-please']?.steps ?? [];
     const actions = steps.filter((step) =>
