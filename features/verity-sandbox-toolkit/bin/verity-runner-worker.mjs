@@ -29916,6 +29916,7 @@ var AcpOpenCodeBackend = class {
 // packages/session/dist/broker-spawner.js
 import { createConnection } from "node:net";
 import { constants as osConstants } from "node:os";
+import { StringDecoder } from "node:string_decoder";
 var PROTOCOL_VERSION2 = 1;
 var MAX_STDERR_CHARS = 64 * 1024;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
@@ -29982,9 +29983,6 @@ var AsyncTextQueue = class {
 function encode(data) {
   return Buffer.from(data, "utf8").toString("base64");
 }
-function decode(data) {
-  return Buffer.from(data, "base64").toString("utf8");
-}
 function send(socket, frame) {
   if (socket.destroyed || !socket.writable)
     return false;
@@ -30001,6 +29999,8 @@ function createBrokerSpawner(socketPath) {
       queueMicrotask(processBuffered);
     });
     let stderrTail = "";
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     let pid;
     let spawned = false;
     let settled2 = false;
@@ -30014,6 +30014,10 @@ function createBrokerSpawner(socketPath) {
       if (settled2)
         return;
       settled2 = true;
+      const stdoutTail = stdoutDecoder.end();
+      if (stdoutTail !== "")
+        stdout.push(stdoutTail);
+      stderrTail = `${stderrTail}${stderrDecoder.end()}`.slice(-MAX_STDERR_CHARS);
       stdout.end();
       socket.destroy();
       resolveExited(code);
@@ -30077,10 +30081,11 @@ function createBrokerSpawner(socketPath) {
           pid = typeof frame.pid === "number" ? frame.pid : void 0;
           flushInput();
         } else if (frame.kind === "stdout" && typeof frame.data === "string") {
-          if (!stdout.push(decode(frame.data)))
+          const decoded = stdoutDecoder.write(Buffer.from(frame.data, "base64"));
+          if (decoded !== "" && !stdout.push(decoded))
             break;
         } else if (frame.kind === "stderr" && typeof frame.data === "string") {
-          stderrTail = `${stderrTail}${decode(frame.data)}`.slice(-MAX_STDERR_CHARS);
+          stderrTail = `${stderrTail}${stderrDecoder.write(Buffer.from(frame.data, "base64"))}`.slice(-MAX_STDERR_CHARS);
         } else if (frame.kind === "exit") {
           const signalNumber = typeof frame.signal === "string" ? osConstants.signals[frame.signal] : void 0;
           settle(typeof frame.code === "number" ? frame.code : 128 + (signalNumber ?? 0));

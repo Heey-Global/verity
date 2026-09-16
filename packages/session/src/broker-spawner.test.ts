@@ -1264,6 +1264,25 @@ describe('broker spawner protocol handling', () => {
     await expect(handle.exited).resolves.toBe(7);
   });
 
+  it('preserves UTF-8 characters split across broker stdout frames', async () => {
+    const broker = await startScriptedBroker();
+    const handle = await connect(broker);
+    const bytes = Buffer.from('Plötzlich größer', 'utf8');
+    const split = bytes.indexOf(0xc3) + 1;
+
+    broker.send(
+      { ok: true, kind: 'spawned', pid: 10 },
+      { ok: true, kind: 'stdout', data: bytes.subarray(0, split).toString('base64') },
+      { ok: true, kind: 'stdout', data: bytes.subarray(split).toString('base64') },
+      { ok: true, kind: 'exit', code: 0 },
+    );
+
+    const chunks: string[] = [];
+    for await (const chunk of handle.stdout) chunks.push(chunk);
+    await expect(handle.exited).resolves.toBe(0);
+    expect(chunks.join('')).toBe('Plötzlich größer');
+  });
+
   // The turn ends at its `exit` frame. Anything the broker wrote after it belongs
   // to no turn and must not reach the consumer, or a settled turn's transcript
   // grows output nobody can attribute.
