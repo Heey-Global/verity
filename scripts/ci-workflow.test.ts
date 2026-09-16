@@ -3460,6 +3460,53 @@ describe('server image CI smoke', () => {
   });
 });
 
+describe('managed installer CI acceptance', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    jobs: { 'server-image': WorkflowJob & { env: Record<string, string> } };
+  };
+  const job = workflow.jobs['server-image'];
+  const step = job.steps.find((entry) =>
+    entry.run?.includes('deploy/bin/verity-managed-install-smoke '),
+  );
+
+  it('runs the candidate through the installer in a separate disposable daemon', () => {
+    // A green legacy Compose smoke does not exercise the managed installer.
+    // Keep its acceptance call unconditional in the candidate image job.
+    expect(step).toBeDefined();
+    expect(step?.if).toBeUndefined();
+    const run = step?.run ?? '';
+    const legacyIndex = job.steps.findIndex((entry) =>
+      entry.run?.includes('deploy/bin/verity-clean-install-smoke '),
+    );
+    expect(legacyIndex).toBeGreaterThanOrEqual(0);
+    expect(job.steps.indexOf(step!)).toBeGreaterThan(legacyIndex);
+    for (const key of ['VERITY_CI_MANAGED_DIND', 'VERITY_CI_MANAGED_DIND_VOLUME']) {
+      expect(job.env[key]).toContain('${{ github.run_id }}');
+      expect(job.env[key]).toContain('${{ github.run_attempt }}');
+    }
+    expect(run).toContain('--file deploy/managed-install-ci.Dockerfile');
+    expect(run).toContain('--build-arg "VERITY_GVISOR_CI_IMAGE=$gvisor_image"');
+    expect(run).toContain('--add-host ghcr.io:127.0.0.1');
+    expect(run).toContain('--insecure-registry ghcr.io');
+    expect(run).toContain('docker save "$VERITY_CI_IMAGE" | docker --host "$isolated" load');
+    expect(run).toContain(
+      'VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated"',
+    );
+    expect(run).toContain(
+      'deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"',
+    );
+    expect(run).toContain('trap cleanup_managed_install EXIT');
+    expect(run).toContain(
+      'docker --host unix:///var/run/docker.sock rm --force "$VERITY_CI_MANAGED_DIND"',
+    );
+    expect(run).toContain(
+      'docker --host unix:///var/run/docker.sock volume rm "$VERITY_CI_MANAGED_DIND_VOLUME"',
+    );
+    expect(run).not.toContain('GITHUB_ENV');
+    expect(run).not.toContain('continue-on-error');
+  });
+});
+
 describe('sandbox smoke isolation', () => {
   const raw = readFileSync('.github/workflows/verity-sandbox.yml', 'utf8');
   const workflow = parse(raw) as {
@@ -4712,6 +4759,20 @@ describe('changed-area detector', () => {
       test: 'true',
       server_image: 'true',
     });
+  });
+
+  it('routes the managed acceptance harness and host image through the image gate', async () => {
+    for (const file of [
+      'deploy/bin/verity-managed-install-smoke',
+      'deploy/managed-install-ci.Dockerfile',
+    ]) {
+      expect(await run({ name: 'pull_request', baseRef: 'main' }, [file])).toEqual({
+        ...all('false'),
+        lint: 'true',
+        test: 'true',
+        server_image: 'true',
+      });
+    }
   });
 
   // The narrow jobs stay narrow. A catch-all that also turned these on would put
