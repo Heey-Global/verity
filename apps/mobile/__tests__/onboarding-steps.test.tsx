@@ -195,6 +195,26 @@ describe('device authorization unlock route', () => {
     expect(screen.queryByLabelText('Master password')).toBeNull();
   });
 
+  it('still loads the device bearer when the sealed store has no Face ID master password', async () => {
+    mockLocalSearchParams = { returnTo: '/', serverSecret: '1' };
+    const getSecretStatus = jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus }));
+    // A QR-paired device holds an enrolled bearer but never a Face ID-protected
+    // master password, so the secret unlock above cannot run.
+    mockUnlockServerSecretWithBiometrics.mockResolvedValue(false);
+    mockUnlockAuthTokenWithBiometrics.mockResolvedValue(true);
+
+    render(<UnlockDevice />);
+
+    // Without this, the password form below submits an unproven device and
+    // /secret/unlock rejects it before ever comparing the password — the operator
+    // sees a correct master password refused, with no way to get past it.
+    await waitFor(() =>
+      expect(mockUnlockAuthTokenWithBiometrics).toHaveBeenCalledWith('http://verity.example:8082'),
+    );
+    expect(await screen.findByLabelText('Master password')).toBeOnTheScreen();
+  });
+
   it('does not use token-only biometric unlock when server secret unlock is required', async () => {
     mockLocalSearchParams = { returnTo: '/', serverSecret: '1' };
     const getSecretStatus = jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed');
@@ -309,10 +329,27 @@ describe('onboarding master-password step', () => {
     fireEvent.changeText(screen.getByLabelText('Master password'), 'wrong-pw');
     fireEvent.press(screen.getByLabelText('Unlock secret store'));
 
-    expect(
-      await screen.findByText('Incorrect password or a new pairing code is required.'),
-    ).toBeOnTheScreen();
+    expect(await screen.findByText('Incorrect password.')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Next')).toBeNull();
+  });
+
+  it('unlock mode: an unpaired device is told to re-pair, not that its password is wrong', async () => {
+    const unlockSecret = jest
+      .fn<Promise<SecretUnlocked>, [string]>()
+      .mockRejectedValue(new VerityApiError(401, 'valid device pairing is required'));
+    const getSecretStatus = jest.fn<Promise<'sealed'>, []>().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(fakeClient({ getSecretStatus, unlockSecret }));
+
+    render(<OnboardingMasterPassword />);
+    fireEvent.changeText(await screen.findByLabelText('Master password'), 'correct-pw');
+    fireEvent.press(screen.getByLabelText('Unlock secret store'));
+
+    // The server refuses an unproven device BEFORE it compares the password. Both
+    // rejections are 401, but only one is fixable by retyping — reporting this one
+    // as a wrong password sends the operator into an unwinnable retry loop with a
+    // password that is in fact correct.
+    expect(await screen.findByText(/not authorized for this server/)).toBeOnTheScreen();
+    expect(screen.queryByText('Incorrect password.')).toBeNull();
   });
 
   it('unlock mode: correct password with returnTo goes back to sessions', async () => {

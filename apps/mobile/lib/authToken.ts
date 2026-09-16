@@ -11,8 +11,12 @@ import { CryptoDigestAlgorithm, digestStringAsync } from 'expo-crypto';
 //   1. It lives in the OS keychain via expo-secure-store (never AsyncStorage,
 //      which is plain-text) — see lib/client.ts for the base URL, which is NOT a
 //      secret and stays in AsyncStorage.
-//   2. Loading it into memory after a fresh launch requires a biometric/passcode
-//      check (Face ID / Touch ID), so a stolen-but-locked device can't use it.
+//   2. Where biometric unlock is enabled, loading it into memory after a fresh
+//      launch requires a biometric/passcode check (Face ID / Touch ID), so a
+//      stolen-but-locked device can't use it. Without that opt-in the token is
+//      stored unprotected and `restoreUnprotectedAuthToken` loads it at launch —
+//      the keychain's AFTER_FIRST_UNLOCK class is then the only guard, which is
+//      exactly what the absent opt-in selected.
 
 const LEGACY_TOKEN_KEY = 'verity.authToken';
 const BIOMETRIC_ENABLED_VALUE = '1';
@@ -305,6 +309,41 @@ export async function unlockAuthTokenWithBiometrics(baseUrl: string | null): Pro
     });
     if (stored === null) return false;
     const record = JSON.parse(stored) as { origin?: unknown; secret?: unknown };
+    if (record.origin !== baseUrl || typeof record.secret !== 'string') return false;
+    currentTokenBaseUrl = baseUrl;
+    currentToken = record.secret;
+    currentTokenId = await getStoredAuthTokenId(baseUrl);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Load a token that is NOT authentication-bound into memory at launch.
+ *
+ * QR device pairing enrolls a bearer without ever showing the master-password
+ * step, so the biometric opt-in that step offers never happens and the token is
+ * persisted unprotected. Nothing else reads it back: the launch gate then sees no
+ * token, routes to the master-password form, and `POST /secret/unlock` rejects
+ * the request for want of a device bearer — which the form reports as a wrong
+ * password. A correctly paired device could never get back in after a cold start.
+ *
+ * Only reads the item while biometric unlock is off, which is exactly when
+ * {@link setAuthToken} wrote it without `requireAuthentication`, so this never
+ * raises a native prompt. An enabled preference remains the business of
+ * {@link unlockAuthTokenWithBiometrics}, which /unlock-device drives.
+ */
+export async function restoreUnprotectedAuthToken(baseUrl: string | null): Promise<boolean> {
+  const key = await tokenKey(baseUrl);
+  if (key === null) return false;
+  try {
+    if (await isBiometricUnlockEnabled(baseUrl)) return false;
+    const stored = await SecureStore.getItemAsync(key);
+    if (stored === null) return false;
+    const record = JSON.parse(stored) as { origin?: unknown; secret?: unknown };
+    // Same origin binding as the protected path: a keychain entry that survived a
+    // reinstall under another server URL must not authorize this one.
     if (record.origin !== baseUrl || typeof record.secret !== 'string') return false;
     currentTokenBaseUrl = baseUrl;
     currentToken = record.secret;

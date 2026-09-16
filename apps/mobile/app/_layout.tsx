@@ -26,8 +26,9 @@ import { WindowControlsProbe } from '../components/WindowControls';
 import { useServerUpdateBadge } from '../lib/serverUpdateBadge';
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
+import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
-import { hydrateVerityBaseUrl } from '../lib/client';
+import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { TASKS_ENABLED } from '../lib/featureFlags';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
@@ -62,8 +63,10 @@ export default function RootLayout() {
   // the gate; disabled/offline/current update states continue normally.
   // Robust: `hydrateVerityBaseUrl` never throws, and we resolve `hydrated` in every
   // case so a storage hiccup can't hard-lock the app behind the loader. Device
-  // authorization is intentionally handled only by /unlock-device; doing a
-  // biometric prompt here as well causes duplicate Face ID prompts during setup.
+  // authorization behind a PROMPT is intentionally handled only by /unlock-device;
+  // doing a biometric prompt here as well causes duplicate Face ID prompts during
+  // setup. Restoring an unprotected token raises no prompt and must happen before
+  // the first gate check, which routes to /unlock-device whenever it sees none.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
     let active = true;
@@ -77,7 +80,10 @@ export default function RootLayout() {
       // If the reinstall cleanup fails, stay unpaired for this launch and retry
       // next time. Hydrating the surviving Keychain profile would reconnect to
       // the old server; keeping the app behind onboarding is the safe fallback.
-      if (installationReady) await hydrateVerityBaseUrl().catch(() => undefined);
+      if (installationReady) {
+        await hydrateVerityBaseUrl().catch(() => undefined);
+        await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
+      }
       if (active) setHydrated(true);
     })();
     return () => {
@@ -207,6 +213,7 @@ function HydratedRoot() {
             <Stack.Screen name="workflows" options={{ title: 'Workflows' }} />
             <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
             <Stack.Screen name="unlock-device" options={{ headerShown: false }} />
+            <Stack.Screen name="secure-device" options={{ headerShown: false }} />
             {/* The onboarding wizard renders its own header/progress (#320). */}
             <Stack.Screen name="onboarding" options={{ headerShown: false }} />
           </Stack>

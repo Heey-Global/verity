@@ -216,6 +216,7 @@ export {
 export {
   VerityApiError,
   VerityClient,
+  isDevicePairingRequiredError,
   isServerSecretSealedError,
   veritySettingsSchema,
   agentLoginProviderSchema,

@@ -1564,6 +1564,20 @@ export function isServerSecretSealedError(error: unknown): error is VerityApiErr
   );
 }
 
+/**
+ * Whether a `/secret/init|unlock` rejection means "this device is not paired"
+ * rather than "wrong master password". Both answer 401, but the pairing check
+ * runs BEFORE the password is compared, so only this one is unfixable by
+ * retyping. The server wording is pinned by a guard in the server suite.
+ */
+export function isDevicePairingRequiredError(error: unknown): error is VerityApiError {
+  return (
+    error instanceof VerityApiError &&
+    error.status === 401 &&
+    error.message === 'valid device pairing is required'
+  );
+}
+
 export interface VerityClientOptions {
   /** Base URL of the control-plane server, no trailing slash (e.g. via Tailscale). */
   baseUrl: string;
