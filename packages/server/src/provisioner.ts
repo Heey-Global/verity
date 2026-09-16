@@ -2958,17 +2958,49 @@ export class ProvisionerImpl implements Provisioner {
     }
     let containerPhaseStarted = false;
     let replacementStarted = false;
+
+    // Resolve/build and, for registry-backed images, pull the replacement while
+    // the current sandbox is still serving. A registry timeout must not turn a
+    // usable (if stale) sandbox into a missing one. Passing the resolved image
+    // into the container phase also pins the create to exactly what this
+    // preflight validated instead of resolving a possibly moved tag twice.
+    const dirs = projectDirs(this.opts.hostCloneRoot, project);
+    let replacementImage: ProjectImage;
+    try {
+      replacementImage = await this.resolveOrBuildImage(project, dirs, false);
+      if (!replacementImage.usesDevcontainerImage && this.opts.docker.pullImage !== undefined) {
+        await this.opts.docker.pullImage(replacementImage.imageRef);
+      }
+    } catch (cause) {
+      if (opts.forceRebuild === true) {
+        await this.opts.store.updateProjectState(
+          project.id,
+          project.state,
+          project.provisionError,
+          project.provisionWarning,
+        );
+      }
+      if (cause instanceof ProvisioningError) throw cause;
+      const token = typeof this.opts.token === 'function' ? this.opts.token() : this.opts.token;
+      const detail = redactSensitive(failureMessage(cause), [
+        token,
+        process.env.GH_TOKEN,
+        process.env.VERITY_REGISTRY_AUTH,
+      ]);
+      throw new ProvisioningError(`replacement image preparation failed: ${detail}`, cause);
+    }
+
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
       replacementStarted = true;
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
 
-      // ADR 0004 — "Update & restart" must actively fetch. Force a fresh pull of
-      // the target image so a moved tag / updated image already present locally is
-      // re-fetched (the ADR-0003 stale-image class). The normal provision path
-      // keeps its lazy pull-on-miss behavior.
+      // ADR 0004 — "Update & restart" actively fetched the target image in the
+      // non-destructive preflight above. Keep forcePull true here to retain the
+      // replacement path's locking contract; preparedImage suppresses a second
+      // pull after the old container has been removed.
       containerPhaseStarted = true;
-      return this.runContainerPhase(project, true, containerPhaseOpts);
+      return this.runContainerPhase(project, true, containerPhaseOpts, replacementImage);
     };
     try {
       return await (this.opts.withContainerReplace
@@ -3712,8 +3744,9 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     forcePull = false,
     opts: RecreateContainerOptions = {},
+    preparedImage?: ProjectImage,
   ): Promise<ProjectRecord> {
-    const run = () => this.runContainerPhaseUnlocked(project, forcePull, opts);
+    const run = () => this.runContainerPhaseUnlocked(project, forcePull, opts, preparedImage);
     return !forcePull && this.opts.withContainerReplace
       ? this.opts.withContainerReplace(project, run)
       : run();
@@ -3723,10 +3756,17 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     forcePull = false,
     opts: RecreateContainerOptions = {},
+    preparedImage?: ProjectImage,
   ): Promise<ProjectRecord> {
     const relayAttempt = { started: false };
     try {
-      return await this.runContainerPhaseAttempt(project, forcePull, opts, relayAttempt);
+      return await this.runContainerPhaseAttempt(
+        project,
+        forcePull,
+        opts,
+        relayAttempt,
+        preparedImage,
+      );
     } catch (error) {
       if (relayAttempt.started) {
         try {
@@ -3748,6 +3788,7 @@ export class ProvisionerImpl implements Provisioner {
     forcePull = false,
     opts: RecreateContainerOptions = {},
     relayAttempt: { started: boolean } = { started: false },
+    preparedImage?: ProjectImage,
   ): Promise<ProjectRecord> {
     await this.opts.store.updateProjectState(project.id, 'container_starting');
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
@@ -3762,7 +3803,9 @@ export class ProvisionerImpl implements Provisioner {
     }
     let image: ProjectImage;
     try {
-      image = await this.resolveOrBuildImage(project, dirs, opts.forceRebuild === true);
+      image =
+        preparedImage ??
+        (await this.resolveOrBuildImage(project, dirs, opts.forceRebuild === true));
     } catch (cause) {
       // The build runs with `{ ...process.env, DOCKER_HOST }`, so its stderr can
       // echo a token that lives in the server env. Redact before it lands in the
@@ -4401,7 +4444,8 @@ export class ProvisionerImpl implements Provisioner {
     try {
       let containerId: string;
       try {
-        const shouldForcePull = forcePull && !image.usesDevcontainerImage;
+        const shouldForcePull =
+          forcePull && preparedImage === undefined && !image.usesDevcontainerImage;
         const created = await this.createContainerPullingIfMissing(spec, shouldForcePull);
         containerId = created.id;
       } catch (cause) {

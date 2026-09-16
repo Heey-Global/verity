@@ -4461,7 +4461,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(pullImage).not.toHaveBeenCalled();
   });
 
-  it('surfaces a provision failure when the recreate force-pull itself fails (ADR 0004)', async () => {
+  it('keeps the running sandbox when replacement image preparation fails', async () => {
     const id = await seedProject('active');
     await ctx.store.recordProjectImageRef(id, 'ghcr.io/heey-global/dev-base:previous', null);
     const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
@@ -4472,8 +4472,12 @@ describe('ProvisionerImpl (#174)', () => {
         message: 'pull access denied',
       });
     });
+    const stopContainer = vi.fn(async () => {});
+    const removeContainer = vi.fn(async () => {});
     const { client: docker } = fakeDocker({
       pullImage,
+      stopContainer,
+      removeContainer,
       createdContainerId: 'cid-recreated',
     });
     const provisioner = createProvisioner({
@@ -4490,11 +4494,16 @@ describe('ProvisionerImpl (#174)', () => {
       isDirectory: () => true,
     });
 
-    await expect(provisioner.recreateContainer(id)).rejects.toThrow(/docker.*image_not_found/);
+    await expect(provisioner.recreateContainer(id, { forceRebuild: true })).rejects.toThrow(
+      /replacement image preparation failed.*image_not_found/,
+    );
     expect(pullImage).toHaveBeenCalledOnce();
+    expect(stopContainer).not.toHaveBeenCalled();
+    expect(removeContainer).not.toHaveBeenCalled();
     const row = await ctx.store.getProject(id);
-    expect(row?.state).toBe('failed');
-    expect(row?.provisionError).toMatch(/image_not_found/);
+    expect(row?.state).toBe('active');
+    expect(row?.provisionError).toBeNull();
+    expect(row?.provisionWarning).toBeNull();
     expect(row?.imageRef).toBe('ghcr.io/heey-global/dev-base:previous');
   });
 
@@ -8053,11 +8062,10 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
   });
 
-  it('retries a real recreate failure after it persists the project as failed', async () => {
-    // `runContainerPhaseAttempt` persists `failed` when the force-pull fails. The
-    // next pass must retain and retry that known repair attempt even though normal
-    // failed projects are outside relay reconciliation; otherwise the consecutive
-    // failure threshold can never be reached by the production path.
+  it('retries a real recreate failure while preserving the active sandbox', async () => {
+    // Image preparation fails before replacement, so the old sandbox remains
+    // active. The next pass must retry it and still reach the consecutive-failure
+    // threshold without first destroying the usable container.
     const p = await seedActive('real-recreate-failure', 'dev-real-recreate-failure');
     const pullImage = vi.fn(async () => {
       throw new DockerError({
@@ -8081,18 +8089,20 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     provisioner.attachProjectBusyProbe(async () => false);
 
     await expect(provisioner.reconcileRelays([p])).rejects.toThrow(/Relay migration failed/);
-    const failed = await ctx.store.getProject(p.id);
-    expect(failed?.state).toBe('failed');
-    expect(containerPresent).toBe(false);
+    const activeAfterFailure = await ctx.store.getProject(p.id);
+    expect(activeAfterFailure?.state).toBe('active');
+    expect(containerPresent).toBe(true);
     expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
 
-    await expect(provisioner.reconcileRelays([failed!])).rejects.toThrow(/Relay migration failed/);
+    await expect(provisioner.reconcileRelays([activeAfterFailure!])).rejects.toThrow(
+      /Relay migration failed/,
+    );
     expect(pullImage).toHaveBeenCalledTimes(2);
     expect([...provisioner.unrepairedSandboxes()]).toEqual([p.id]);
   });
 
   it.each(['confirmed deferral', 'unknown probe'] as const)(
-    'keeps a failed project eligible after an intervening %s',
+    'keeps an image-preparation retry eligible after an intervening %s',
     async (interruption) => {
       const p = await seedActive(`retry-after-${interruption}`, `dev-retry-after-${interruption}`);
       const pullImage = vi.fn(async () => {
@@ -8116,14 +8126,14 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       });
 
       await expect(provisioner.reconcileRelays([p])).rejects.toThrow(/Relay migration failed/);
-      const failed = await ctx.store.getProject(p.id);
-      expect(failed?.state).toBe('failed');
+      const activeAfterFailure = await ctx.store.getProject(p.id);
+      expect(activeAfterFailure?.state).toBe('active');
 
       // Both paths defer without attempting a recreate. They break the consecutive
-      // failure streak, but must not forget that this failed project still needs an
-      // automatic retry even though it is no longer `active`.
-      await expect(provisioner.reconcileRelays([failed!])).resolves.toBeUndefined();
-      await expect(provisioner.reconcileRelays([failed!])).rejects.toThrow(
+      // failure streak, but must not forget that this project still needs an
+      // automatic retry while its old sandbox remains active.
+      await expect(provisioner.reconcileRelays([activeAfterFailure!])).resolves.toBeUndefined();
+      await expect(provisioner.reconcileRelays([activeAfterFailure!])).rejects.toThrow(
         /Relay migration failed/,
       );
       expect(pullImage).toHaveBeenCalledTimes(2);
