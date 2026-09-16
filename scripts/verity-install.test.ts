@@ -35,6 +35,9 @@ describe('public Verity installer', () => {
     expect(installer).toContain("run_docker ps -a --filter 'name=^/verity-managed-server'");
     expect(installer).toContain("previous_image=$(run_docker inspect --format '{{.Config.Image}}'");
     expect(installer).toContain('source_image=$(sealed_managed_image "$previous_image")');
+    expect(installer).toContain('bootstrap_recovery_only=1');
+    expect(installer).toContain('VERITY_BOOTSTRAP_RECOVERY_ONLY="$bootstrap_recovery_only"');
+    expect(installer).toContain("grep -q 'VERITY_BOOTSTRAP_RECOVERY_ONLY'");
     expect(installer).toContain('source_image="$source_image_override"');
     expect(installer).toContain('[ "$generation" -le 2147483647 ]');
     expect(installer).toContain('payload_root=/opt/verity-install');
@@ -85,7 +88,7 @@ describe('public Verity installer', () => {
     try {
       await writeFile(
         join(payload, 'deploy', 'bin', 'verity-install'),
-        '#!/bin/sh\nprintf "%s\\n" "$*" > "$MOCK_MARKER"\n',
+        '#!/bin/sh\nprintf "%s\\n" "$*" > "$MOCK_MARKER"\nprintf "%s\\n" "${VERITY_BOOTSTRAP_RECOVERY_ONLY-}" > "$MOCK_MARKER.recovery"\n',
         { mode: 0o755 },
       );
       await writeFile(join(payload, 'deploy', 'bin', 'verity-compose'), '#!/bin/sh\nexit 0\n', {
@@ -247,6 +250,31 @@ esac
       );
       expect(recoveryLog).toContain(`pull --quiet ${managedImage}`);
       expect(recoveryLog).not.toContain(`pull --quiet ${staleManagedImage}`);
+      expect(await readFile(`${marker}.recovery`, 'utf8')).toBe('1\n');
+
+      const payloadInstaller = join(payload, 'deploy', 'bin', 'verity-install');
+      await writeFile(payloadInstaller, '#!/bin/sh\nexit 99\n', { mode: 0o755 });
+      await expect(
+        execFileAsync('script', ['-qec', `bash ${installerPath}`, '/dev/null'], {
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            MOCK_DOCKER: join(bin, 'docker'),
+            MOCK_DOCKER_LOG: dockerLog,
+            MOCK_MANAGED_IMAGE: managedImage,
+            MOCK_MARKER: marker,
+            MOCK_PAYLOAD: payload,
+            MOCK_PRIVILEGED: privileged,
+          },
+        }),
+      ).rejects.toMatchObject({
+        stdout: expect.stringContaining('cannot safely offer interactive repair'),
+      });
+      await writeFile(
+        payloadInstaller,
+        '#!/bin/sh\nprintf "%s\\n" "$*" > "$MOCK_MARKER"\nprintf "%s\\n" "${VERITY_BOOTSTRAP_RECOVERY_ONLY-}" > "$MOCK_MARKER.recovery"\n',
+        { mode: 0o755 },
+      );
 
       await writeFile(dockerLog, '');
       await execFileAsync('bash', [installerPath, '--check'], {
@@ -285,6 +313,7 @@ esac
         'pull --quiet ghcr.io/heey-global/verity/verity-server:latest',
       );
       expect(await readFile(marker, 'utf8')).toContain('--reinstall --yes');
+      expect(await readFile(`${marker}.recovery`, 'utf8')).toBe('0\n');
 
       await writeFile(dockerLog, '');
       const oldManagedImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
