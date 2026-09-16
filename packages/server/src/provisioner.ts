@@ -55,7 +55,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type Kysely } from 'kysely';
 import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
@@ -714,6 +714,97 @@ export function devcontainerContentHash(
   return hash.digest('hex').slice(0, 12);
 }
 
+/** Keys that can point a devcontainer build at bytes outside `.devcontainer/`.
+ *  `build.dockerfile`/`build.context` are the current spelling, `dockerFile`
+ *  and `context` the top-level legacy one the devcontainer CLI still honours;
+ *  both have to be checked or the legacy form is a silent hole. `dockerFile`
+ *  inside `build` is not a spelling the CLI reads, and is listed anyway so the
+ *  answer does not depend on that staying true. */
+const DEVCONTAINER_BUILD_PATH_KEYS = ['dockerfile', 'dockerFile', 'context'] as const;
+const DEVCONTAINER_LEGACY_BUILD_PATH_KEYS = ['dockerFile', 'context'] as const;
+
+/** Whether the image this `.devcontainer/` describes is fully determined by the
+ *  directory {@link devcontainerContentHash} covers.
+ *
+ *  `devcontainer.json` may point the build outside that directory:
+ *  `"context": ".."` is the documented way to COPY repository files into the
+ *  image, and `"dockerfile": "../Dockerfile"` moves the recipe itself out. Those
+ *  bytes are build inputs the content hash never reads. The derived tag then
+ *  stays constant while the image the repository asks for changes, the cache
+ *  check finds that tag, and every later provision runs an image built from an
+ *  older commit — with nothing in the failure that names the cache as the
+ *  reason. A repository that bakes a checked-in script into its image and
+ *  verifies the baked copy against the checkout in `postCreateCommand` fails
+ *  that check on every provision and every repair, forever.
+ *
+ *  Absent keys are confined: the spec defaults `context` to the directory
+ *  holding `devcontainer.json`, and an `image`-only devcontainer reads no
+ *  context at all. Anything this cannot resolve to a path — a non-string value,
+ *  a `${localWorkspaceFolder}`-style variable, a compose file naming services
+ *  this runtime does not model — counts as NOT confined. A misread here is the
+ *  difference between one redundant build and a permanently stale image, and
+ *  only one of those announces itself. */
+export function devcontainerBuildInputsConfined(devcontainerDir: string): boolean {
+  const raw = readDevcontainerJson(devcontainerDir);
+  if (raw === undefined) return true;
+  // Compose is not in UNSUPPORTED_DEVCONTAINER_RUNTIME_KEYS, so such a config
+  // does reach this point. Its files and services are a build shape this
+  // runtime does not model at all; nothing here can say where it reads from.
+  if (topLevelJsonValue(raw, 'dockerComposeFile') !== undefined) return false;
+  const candidates: Array<{ kind: string; value?: string } | undefined> = [];
+  const buildSource = topLevelObjectSource(raw, 'build');
+  if (buildSource === undefined) {
+    // `build` present but unreadable as an object — resolve nothing, trust nothing.
+    if (topLevelJsonValue(raw, 'build') !== undefined) return false;
+  } else {
+    // `build.options` is forwarded to `docker build` verbatim, so it can carry
+    // `-f ../Dockerfile` or `--build-context src=../` — paths in argv positions
+    // this does not parse. Its mere presence means the inputs are unknown.
+    if (topLevelJsonValue(buildSource, 'options') !== undefined) return false;
+    for (const key of DEVCONTAINER_BUILD_PATH_KEYS) {
+      candidates.push(topLevelJsonValue(buildSource, key));
+    }
+  }
+  for (const key of DEVCONTAINER_LEGACY_BUILD_PATH_KEYS) {
+    candidates.push(topLevelJsonValue(raw, key));
+  }
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue;
+    if (candidate.kind !== 'string' || candidate.value === undefined) return false;
+    if (!pathWithin(devcontainerDir, candidate.value)) return false;
+  }
+  return localFeaturePathsConfined(devcontainerDir, raw);
+}
+
+/** A `features` key spelled as a relative path is a Feature built from the
+ *  repository rather than pulled from a registry — another build input, on the
+ *  same footing as the context. Registry refs (`ghcr.io/…`) name no local
+ *  bytes and are already covered by the Feature identity mixed into the hash. */
+function localFeaturePathsConfined(devcontainerDir: string, raw: string): boolean {
+  const features = topLevelObjectSource(raw, 'features');
+  if (features === undefined) {
+    // A `features` value that is not an object is a shape this cannot read.
+    return topLevelJsonValue(raw, 'features') === undefined;
+  }
+  for (const ref of devcontainerPropertyKeys(features)) {
+    const local = ref.startsWith('./') || ref.startsWith('../') || isAbsolute(ref);
+    if (!local && !ref.includes('${')) continue;
+    if (!pathWithin(devcontainerDir, ref)) return false;
+  }
+  return true;
+}
+
+/** Whether `value`, read as a path relative to `dir`, stays inside `dir`.
+ *  Variable references are unresolvable here and reported as outside.
+ *  Symlinks are not resolved and do not need to be: `collectDirFiles` refuses
+ *  any symlink under `.devcontainer/` before this is ever consulted, so a path
+ *  that reads as inside cannot secretly resolve out. */
+function pathWithin(dir: string, value: string): boolean {
+  if (value.includes('${')) return false;
+  const rel = relative(dir, resolve(dir, value));
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
 /** Sanitize an `(owner, repo)` pair into the derived-tag repository name
  *  `verity-devc-<owner>-<repo>`. Docker tags allow `[a-zA-Z0-9._-]`; any other
  *  char in owner/repo is replaced with `-` and the result lowercased so the tag
@@ -925,31 +1016,35 @@ function readJsonString(raw: string, start: number): { value: string; end: numbe
   throw new SyntaxError('unterminated JSON string');
 }
 
+/** Advance past JSONC whitespace and comments. Shared by every scanner below so
+ * they cannot drift into disagreeing about what a comment is. */
+function skipJsonTrivia(raw: string, start: number): number {
+  let pos = start;
+  while (pos < raw.length) {
+    const ch = raw[pos];
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+      pos += 1;
+      continue;
+    }
+    if (raw.startsWith('//', pos)) {
+      const end = raw.indexOf('\n', pos + 2);
+      pos = end === -1 ? raw.length : end + 1;
+      continue;
+    }
+    if (raw.startsWith('/*', pos)) {
+      const end = raw.indexOf('*/', pos + 2);
+      pos = end === -1 ? raw.length : end + 2;
+      continue;
+    }
+    break;
+  }
+  return pos;
+}
+
 function topLevelStringArray(raw: string, targetKey: string): string[] | undefined {
   let i = 0;
   let objectDepth = 0;
-  const skipTrivia = (start: number): number => {
-    let pos = start;
-    while (pos < raw.length) {
-      const ch = raw[pos];
-      if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
-        pos += 1;
-        continue;
-      }
-      if (raw.startsWith('//', pos)) {
-        const end = raw.indexOf('\n', pos + 2);
-        pos = end === -1 ? raw.length : end + 1;
-        continue;
-      }
-      if (raw.startsWith('/*', pos)) {
-        const end = raw.indexOf('*/', pos + 2);
-        pos = end === -1 ? raw.length : end + 2;
-        continue;
-      }
-      break;
-    }
-    return pos;
-  };
+  const skipTrivia = (start: number): number => skipJsonTrivia(raw, start);
   const readString = (start: number): { value: string; end: number } => readJsonString(raw, start);
   const readStringArray = (start: number): string[] | undefined => {
     const values: string[] = [];
@@ -1008,28 +1103,7 @@ function topLevelJsonValue(
   | undefined {
   let i = 0;
   let objectDepth = 0;
-  const skipTrivia = (start: number): number => {
-    let pos = start;
-    while (pos < raw.length) {
-      const ch = raw[pos];
-      if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
-        pos += 1;
-        continue;
-      }
-      if (raw.startsWith('//', pos)) {
-        const end = raw.indexOf('\n', pos + 2);
-        pos = end === -1 ? raw.length : end + 1;
-        continue;
-      }
-      if (raw.startsWith('/*', pos)) {
-        const end = raw.indexOf('*/', pos + 2);
-        pos = end === -1 ? raw.length : end + 2;
-        continue;
-      }
-      break;
-    }
-    return pos;
-  };
+  const skipTrivia = (start: number): number => skipJsonTrivia(raw, start);
   const readString = (start: number): { value: string; end: number } => readJsonString(raw, start);
   while (i < raw.length) {
     i = skipTrivia(i);
@@ -1066,32 +1140,67 @@ function topLevelJsonValue(
   return undefined;
 }
 
+/** Source text of the top-level object at `targetKey`, braces included — or
+ * undefined when the key is absent or its value is something other than an
+ * object. Feeding the slice back into {@link topLevelJsonValue} reads that
+ * object's own members: inside it they are at depth 1 again. The brace scan is
+ * string- and comment-aware, so a `{` inside either cannot unbalance the span. */
+function topLevelObjectSource(raw: string, targetKey: string): string | undefined {
+  const found = topLevelJsonValue(raw, targetKey);
+  if (found === undefined || found.kind !== 'object') return undefined;
+  let i = 0;
+  let objectDepth = 0;
+  while (i < raw.length) {
+    i = skipJsonTrivia(raw, i);
+    if (i >= raw.length) break;
+    if (raw[i] === '{') {
+      objectDepth += 1;
+      i += 1;
+      continue;
+    }
+    if (raw[i] === '}') {
+      objectDepth = Math.max(0, objectDepth - 1);
+      i += 1;
+      continue;
+    }
+    if (raw[i] !== '"') {
+      i += 1;
+      continue;
+    }
+    const key = readJsonString(raw, i);
+    const afterKey = skipJsonTrivia(raw, key.end);
+    if (raw[afterKey] !== ':' || objectDepth !== 1 || key.value !== targetKey) {
+      i = key.end;
+      continue;
+    }
+    const start = skipJsonTrivia(raw, afterKey + 1);
+    let depth = 0;
+    let pos = start;
+    while (pos < raw.length) {
+      pos = skipJsonTrivia(raw, pos);
+      if (pos >= raw.length) break;
+      const ch = raw[pos];
+      if (ch === '"') {
+        pos = readJsonString(raw, pos).end;
+        continue;
+      }
+      if (ch === '{' || ch === '[') depth += 1;
+      if (ch === '}' || ch === ']') {
+        depth -= 1;
+        if (depth === 0) return raw.slice(start, pos + 1);
+      }
+      pos += 1;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 function devcontainerPropertyKeys(raw: string): Set<string> {
   const keys = new Set<string>();
   let i = 0;
   let objectDepth = 0;
-  const skipTrivia = (start: number): number => {
-    let pos = start;
-    while (pos < raw.length) {
-      const ch = raw[pos];
-      if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
-        pos += 1;
-        continue;
-      }
-      if (raw.startsWith('//', pos)) {
-        const end = raw.indexOf('\n', pos + 2);
-        pos = end === -1 ? raw.length : end + 1;
-        continue;
-      }
-      if (raw.startsWith('/*', pos)) {
-        const end = raw.indexOf('*/', pos + 2);
-        pos = end === -1 ? raw.length : end + 2;
-        continue;
-      }
-      break;
-    }
-    return pos;
-  };
+  const skipTrivia = (start: number): number => skipJsonTrivia(raw, start);
   const readString = (start: number): { value: string; end: number } => readJsonString(raw, start);
   while (i < raw.length) {
     i = skipTrivia(i);
@@ -4643,14 +4752,21 @@ export class ProvisionerImpl implements Provisioner {
    *  closed: this path builds an image, then starts it through Verity's Docker
    *  create contract, so it must not silently ignore user/runtime semantics.
    *
-   *  `forceRebuild` is the operator's "Rebuild image" action. The cache above is
-   *  content-addressed over the `.devcontainer/` directory alone, which is the
-   *  right default and also its blind spot: a devcontainer that references a
-   *  Dockerfile or build context OUTSIDE that directory keeps its hash — and
-   *  therefore its cached tag — while the thing it builds from changes. There is
-   *  no automatic signal for that, so the escape hatch skips step 2 entirely and
-   *  builds with `--no-cache`, overwriting the derived tag in place (the hash is
-   *  unchanged, so the tag is the same one every later provision resolves to). */
+   *  The cache in step 2 is content-addressed over the `.devcontainer/`
+   *  directory alone, so it is only sound for a devcontainer that builds from
+   *  nothing else. One that names a Dockerfile or a build context OUTSIDE that
+   *  directory keeps its hash — and therefore its cached tag — while the thing
+   *  it builds from changes, which is silent staleness rather than a failure
+   *  anyone can read. `devcontainerBuildInputsConfined` recognizes that shape
+   *  and step 2 is skipped for it: the build runs every provision and the
+   *  daemon's layer cache, which does checksum the copied files, decides
+   *  whether anything is re-run. The tag is overwritten in place (the hash is
+   *  unchanged, so it is the same tag every later provision resolves to).
+   *
+   *  `forceRebuild` is the operator's "Rebuild image" action, and remains the
+   *  answer for what neither cache can see: a `RUN` whose inputs live outside
+   *  the build context entirely (an apt index, a remote install script). It
+   *  skips step 2 and builds with `--no-cache`. */
   private async resolveOrBuildImage(
     project: ProjectRecord,
     dirs: ProvisioningDirectory,
@@ -4704,8 +4820,18 @@ export class ProvisionerImpl implements Provisioner {
     const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
     // Cache check: the derived tag on the daemon means an identical
     // (devcontainer + base) was already built — reuse it, skip the build.
-    // A forced rebuild is precisely the request to not trust that conclusion.
-    if (!forceRebuild && this.opts.docker.imageExists !== undefined) {
+    // A forced rebuild is precisely the request to not trust that conclusion,
+    // and so is a devcontainer whose build reads bytes the hash cannot see
+    // (`devcontainerBuildInputsConfined`): for those the tag proves only that
+    // SOME build produced it, never that this checkout did. Fall through to the
+    // build and let the daemon's own content-addressed layer cache decide what
+    // to re-run — it checksums the copied context files, so an unchanged tree
+    // is a cheap all-hit no-op and a changed one rebuilds and re-tags in place.
+    if (
+      !forceRebuild &&
+      devcontainerBuildInputsConfined(devcontainerDir) &&
+      this.opts.docker.imageExists !== undefined
+    ) {
       const exists = await this.opts.docker.imageExists(derivedTag);
       if (exists)
         return {
