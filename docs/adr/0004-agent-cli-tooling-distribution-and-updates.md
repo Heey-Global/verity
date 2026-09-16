@@ -194,7 +194,7 @@ in-repo base):
 | **Publish toolkit → ghcr** (digest, `version` bump, security/changelog metadata) | injection + external repos | ❌ to build |
 | **Rebuild Sandbox image** (`verity-sandbox`, digest-tagged + rollback `:sha-` tag) | baked/blank projects | ⚠️ exists as `verity-base.yml`; add rollback tag |
 | **Smoke test all four CLIs** (actually launch `--version`/`--help` via a pseudo-terminal) | gate before merge/publish | ❌ to build |
-| **Server image** (`verity-server`, digest-tagged + rollback `:sha-` tag) | deployable control-plane image | ✅ exists as `verity-server.yml` |
+| **Server image** (`verity-server`, digest-tagged + rollback `:sha-` tag) | deployable control-plane image | ✅ verified by `ci.yml` (`server-image` job) |
 
 ## Consumers & what rebuilds on a bump (target)
 

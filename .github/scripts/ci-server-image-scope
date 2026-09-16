@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Retain unconditional security checks while selecting canonical image diagnosis.
+set -euo pipefail
+if [[ "${RELEASE_TRAIN:-full}" != full || -n "${RELEASE_PR:-}" ]]; then
+  echo '::error::Server image scope cannot be combined with release PR scope.' >&2
+  exit 1
+fi
+for area in lint typecheck test contract_test coverage installer mobile mobile_app agent_seed_drift; do
+  echo "$area=false" >> "$GITHUB_OUTPUT"
+done
+echo 'server_image=true' >> "$GITHUB_OUTPUT"
