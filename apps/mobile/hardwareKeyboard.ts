@@ -52,6 +52,29 @@ export function shouldPreserveComposerFocus(): boolean {
   return detected !== false;
 }
 
+/** Whether Return in the composer should send instead of inserting a newline, given the
+ * height of the on-screen keyboard right now (`null` = none on screen). Return inserts a
+ * newline only while a full software keyboard is up — the one case where the operator
+ * has no other way to type one. The hardware shortcut bar is "shown" but has nothing to
+ * type on, so it sends like a bare hardware keyboard does.
+ *
+ * Asked of the CURRENT keyboard rather than of the remembered `detected`, which is
+ * absent or stale in exactly the situations where Return matters. On an Apple Silicon
+ * Mac running this iPad binary there is no on-screen keyboard at all, so
+ * `keyboardWillShow` NEVER fires and the detection stays `unknown` for the whole run; on
+ * an iPad it also stays `unknown` when the hardware keyboard was attached before the
+ * first focus, and it stays at `software` after the operator puts the touch keyboard
+ * away and types on a hardware one. Gating on an observed hardware keyboard leaves
+ * Return dead in all three.
+ *
+ * The one case this cannot see is a software keyboard that is replaced by the shortcut
+ * bar WITHOUT iOS emitting any keyboard event: the caller's last known height stays
+ * large and Return keeps inserting newlines until the next event. That needs a device to
+ * confirm; it degrades to the pre-existing behavior rather than to a dead Return key. */
+export function shouldSubmitOnReturn(keyboardHeight: number | null): boolean {
+  return keyboardHeight === null || isExternalKeyboardHeight(keyboardHeight);
+}
+
 /** Update the detected state from a keyboard-show height. Called by the listener; also
  * the seam the unit test drives to exercise the full state machine without a device. */
 export function recordKeyboardHeight(height: number): void {
