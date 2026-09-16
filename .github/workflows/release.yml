@@ -598,6 +598,19 @@ jobs:
             fi
           done
 
+      # Preserve the removed handoff's validation before any backend job can start.
+      - name: Validate backend publication identity
+        id: validate-backend
+        if: steps.maintenance.outputs.release_created == 'true' || steps.release-backend.outputs['.release/backend--release_created'] == 'true'
+        env:
+          VERSION: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['.release/backend--major'], steps.release-backend.outputs['.release/backend--minor'], steps.release-backend.outputs['.release/backend--patch']) }}
+          SHA: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs['.release/backend--sha'] }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+
   publish-mobile-native:
     # Not gated on the cutover: the native app is its own release train and
     # carries no Server image, so a failing Server cutover has nothing to say

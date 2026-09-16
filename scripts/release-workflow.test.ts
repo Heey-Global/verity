@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 
 import { parse } from 'yaml';
@@ -788,6 +789,25 @@ describe('release train concurrency', () => {
       "inputs.train == 'website'",
     );
     expect(trains.jobs['publish-mobile-native']?.if).toContain("inputs.train == 'mobile'");
+  });
+
+  it('validates the exact backend outputs before publication', () => {
+    const metadata = backend.jobs['release-please'];
+    const guard = metadata?.steps?.find((step) => step.id === 'validate-backend');
+    expect(guard?.env?.VERSION).toBe(metadata?.outputs?.['backend-version']);
+    expect(guard?.env?.SHA).toBe(metadata?.outputs?.['backend-sha']);
+    expect(guard?.run).toBeDefined();
+    for (const [version, sha, valid] of [
+      ['0.10.4', 'a'.repeat(40), true],
+      ['0.10', 'a'.repeat(40), false],
+      ['0.10.4', 'main', false],
+      ['0.10.4', 'a'.repeat(39), false],
+    ] as const) {
+      const result = spawnSync('bash', ['-c', guard!.run!], {
+        env: { ...process.env, VERSION: version, SHA: sha },
+      });
+      expect(result.status === 0, version + '/' + sha).toBe(valid);
+    }
   });
 
   it('keeps signing and publication in the directly called release workflow', () => {
