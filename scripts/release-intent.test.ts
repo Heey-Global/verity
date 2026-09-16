@@ -72,12 +72,33 @@ describe('backend release intent policy', () => {
     expect(validate(cwd, base).status).not.toBe(0);
   });
 
-  it('exempts generated bot pull requests', async () => {
-    const { cwd, base } = await repository();
-    await writeFile(join(cwd, 'source.txt'), 'generated\n');
-    git(cwd, 'add', '.');
-    git(cwd, 'commit', '--quiet', '-m', 'chore: generated update');
+  // Verity authors real product changes through a GitHub App. A blanket bot
+  // exemption lets those changes merge green but never enter Release Please.
+  it.each(['verity-fcgzv6b1[bot]', 'another-agent[bot]'])(
+    'requires an explicit decision from %s',
+    async (author) => {
+      const { cwd, base } = await repository();
+      await writeFile(join(cwd, 'source.txt'), 'product fix\n');
+      git(cwd, 'add', '.');
+      git(cwd, 'commit', '--quiet', '-m', 'fix(server): product fix');
+      expect(validate(cwd, base, author).status).not.toBe(0);
 
-    expect(validate(cwd, base, 'renovate[bot]').status).toBe(0);
-  });
+      await addIntent(cwd, 'backend');
+      git(cwd, 'add', '.');
+      git(cwd, 'commit', '--quiet', '-m', 'fix(server): declare release');
+      expect(validate(cwd, base, author).status).toBe(0);
+    },
+  );
+
+  it.each(['renovate[bot]', 'github-actions[bot]'])(
+    'exempts known automation %s',
+    async (author) => {
+      const { cwd, base } = await repository();
+      await writeFile(join(cwd, 'source.txt'), 'generated\n');
+      git(cwd, 'add', '.');
+      git(cwd, 'commit', '--quiet', '-m', 'chore: generated update');
+
+      expect(validate(cwd, base, author).status).toBe(0);
+    },
+  );
 });
