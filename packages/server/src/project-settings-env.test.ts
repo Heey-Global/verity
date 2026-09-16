@@ -21,7 +21,6 @@ describe('dockerEnvPassthrough (M8)', () => {
     expect(isSensitiveEnvKey('DOPPLER_TOKEN')).toBe(true);
     expect(isSensitiveEnvKey('CLAUDE_CODE_OAUTH_TOKEN')).toBe(true);
     expect(isSensitiveEnvKey('VERITY_DOPPLER_TOKEN_REF')).toBe(false);
-    expect(isSensitiveEnvKey('VERITY_GH_TOKEN_FILE')).toBe(false);
     expect(isSensitiveEnvKey('PATH')).toBe(false);
     expect(isSensitiveEnvKey('VERITY_PROJECT_DEV_SERVER_URL')).toBe(true);
     expect(isSensitiveEnvKey('DATABASE_URL')).toBe(true);

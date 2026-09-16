@@ -285,7 +285,7 @@ describe('createGitHubInstallationService (#174)', () => {
     expect(receivedSignal?.aborted).toBe(false);
   });
 
-  it('respects a token provider function (re-read on each call so the rotating ~/.gh-token tracks)', async () => {
+  it('respects a token provider function on each call', async () => {
     let tokenValue = 'tok1';
     let seenAuth: string | undefined;
     const fetch: HttpFetch = async (url, init) => {

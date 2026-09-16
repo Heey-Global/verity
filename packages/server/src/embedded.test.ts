@@ -49,8 +49,6 @@ import {
   parsePort,
   parsePushEnabled,
   parseTasksProjectNumber,
-  createProjectAwareGitHubTokenSource,
-  createPrTokenSources,
   refreshProjectGitHubToken,
   createProjectWorktreeFactory,
   buildRunnerConductorWiring,
@@ -280,22 +278,10 @@ describe('branchRenameAppliesToSession', () => {
 });
 
 describe('resolveInstallationListToken', () => {
-  it('prefers the DB-backed GitHub App token over the static fleet token', async () => {
-    await expect(
-      resolveInstallationListToken(
-        async () => 'db-installation-token',
-        () => 'static-fleet-token',
-      ),
-    ).resolves.toBe('db-installation-token');
-  });
-
-  it('falls back to the static fleet token only when no DB-backed App token exists', async () => {
-    await expect(
-      resolveInstallationListToken(
-        async () => undefined,
-        () => 'static-fleet-token',
-      ),
-    ).resolves.toBe('static-fleet-token');
+  it('uses the DB-backed GitHub App token', async () => {
+    await expect(resolveInstallationListToken(async () => 'db-installation-token')).resolves.toBe(
+      'db-installation-token',
+    );
   });
 });
 
@@ -303,7 +289,7 @@ describe('resolveRepoWorktreeFetchAuthHeader', () => {
   const b64 = (token: string): string =>
     Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
 
-  it('prefers a DB-backed GitHub App token for the repo refresh fetch', async () => {
+  it('uses a DB-backed GitHub App token for the repo refresh fetch', async () => {
     const seen: Array<{ owner: string; repo: string }> = [];
 
     await expect(
@@ -313,24 +299,22 @@ describe('resolveRepoWorktreeFetchAuthHeader', () => {
           seen.push(repo);
           return 'db-repo-token';
         },
-        () => 'static-fleet-token',
       ),
     ).resolves.toBe(`Authorization: Basic ${b64('db-repo-token')}`);
 
     expect(seen).toEqual([{ owner: 'Heey-Global', repo: 'Verity' }]);
   });
 
-  it('falls back to the fleet token when the DB-backed mint is unavailable', async () => {
+  it('omits the auth header when the DB-backed mint is unavailable', async () => {
     await expect(
       resolveRepoWorktreeFetchAuthHeader(
         async () => ({ owner: 'Heey-Global', repo: 'Verity' }),
         async () => undefined,
-        () => 'static-fleet-token',
       ),
-    ).resolves.toBe(`Authorization: Basic ${b64('static-fleet-token')}`);
+    ).resolves.toBeUndefined();
   });
 
-  it('omits the auth header when no repo identity or fallback token exists', async () => {
+  it('omits the auth header when no repo identity exists', async () => {
     await expect(
       resolveRepoWorktreeFetchAuthHeader(
         async () => null,
@@ -541,67 +525,6 @@ describe('parseTasksProjectNumber (ADR 0007)', () => {
     expect(() => parseTasksProjectNumber('-1')).toThrow(/VERITY_TASKS_PROJECT_NUMBER/);
     expect(() => parseTasksProjectNumber('1.5')).toThrow(/VERITY_TASKS_PROJECT_NUMBER/);
     expect(() => parseTasksProjectNumber('foo')).toThrow(/VERITY_TASKS_PROJECT_NUMBER/);
-  });
-});
-
-describe('createProjectAwareGitHubTokenSource', () => {
-  it('prefers the project-local token for project session worktrees', () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-project-pr-token-'));
-    try {
-      const projectRoot = join(root, 'example-org-sample-app');
-      const worktree = join(projectRoot, '.verity-sessions', 'agent-abc');
-      mkdirSync(worktree, { recursive: true });
-      writeFileSync(join(projectRoot, '.gh-token'), 'project-token\n');
-
-      const token = createProjectAwareGitHubTokenSource(worktree, 'global-token');
-
-      expect(token()).toBe('project-token');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('falls back when the project-local token file is empty', () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-project-empty-pr-token-'));
-    try {
-      const projectRoot = join(root, 'example-org-sample-app');
-      const worktree = join(projectRoot, '.verity-sessions', 'agent-abc');
-      mkdirSync(worktree, { recursive: true });
-      writeFileSync(join(projectRoot, '.gh-token'), '\n');
-
-      const token = createProjectAwareGitHubTokenSource(worktree, 'global-token');
-
-      expect(token()).toBe('global-token');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('falls back to the global token outside project worktrees', () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-global-pr-token-'));
-    try {
-      const repo = join(root, 'verity');
-      mkdirSync(repo, { recursive: true });
-
-      const token = createProjectAwareGitHubTokenSource(repo, () => 'global-token\n');
-
-      expect(token()).toBe('global-token');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('createPrTokenSources', () => {
-  it('keeps the installation mint when the configured fallback provider is empty', async () => {
-    const mint = vi.fn(async () => 'installation-token');
-    const sources = createPrTokenSources('/repo', () => undefined, mint);
-
-    expect(sources.token?.()).toBeUndefined();
-    await expect(sources.asyncToken('Example-Org', 'Example-Repo')).resolves.toBe(
-      'installation-token',
-    );
-    expect(mint).toHaveBeenCalledWith({ owner: 'Example-Org', repo: 'Example-Repo' });
   });
 });
 
@@ -2338,7 +2261,7 @@ describe('buildEmbeddedServer', () => {
         dataDir,
         repoDir: '',
         hostCloneRoot,
-        githubToken: 'test-token',
+        githubProjectTokenMint: async () => 'test-token',
       });
       const branches = await server.app.inject({
         method: 'GET',
@@ -2384,8 +2307,7 @@ describe('buildEmbeddedServer', () => {
   it('wires /projects without a static GitHub token so DB-backed Apps can list repos', async () => {
     // The first-project onboarding step uses GET /projects after the GitHub App
     // has been configured through the encrypted DB settings. That deployment has
-    // no static ~/.gh-token/Env token, so construction must not gate the fleet
-    // registry on config.githubToken being present at startup.
+    // construction must not gate the fleet registry on a token being present at startup.
     server = await buildTestEmbeddedServer({
       ...testProjectRelayConfig,
       dockerBaseUrl: 'http://127.0.0.1:1',
@@ -2492,8 +2414,8 @@ describe('buildEmbeddedServer', () => {
 
   it('wires /tasks on repoDir + tasksProjectNumber even without a token (ADR 0007 — DB-only App creds)', async () => {
     // The construction gate must NOT require a token at build time: an App configured
-    // purely via the app UI (creds in the encrypted DB store) has no `githubToken` and no
-    // `githubAppId` env config, yet the request-time mint would reach those DB creds. So
+    // purely via the app UI stores credentials in the encrypted DB, and the request-time
+    // mint reaches those DB credentials. So
     // opting in (repoDir + board number) alone wires the service; with no token resolvable
     // here it degrades to an inert board rather than a 503.
     const repoDir = mkdtempSync(join(tmpdir(), 'verity-tasks-gate-'));
@@ -2510,7 +2432,7 @@ describe('buildEmbeddedServer', () => {
   it('503s /tasks when the board number is not configured (not opted in)', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'verity-tasks-gate-'));
     try {
-      server = await buildTestEmbeddedServer({ repoDir, githubToken: 'tok' }); // no tasksProjectNumber
+      server = await buildTestEmbeddedServer({ repoDir }); // no tasksProjectNumber
       const res = await server.app.inject({ method: 'GET', url: '/tasks' });
       expect(res.statusCode).toBe(503);
     } finally {
@@ -2838,7 +2760,7 @@ describe('buildEmbeddedServer', () => {
   });
 
   it('returns the local project cache when provisioning is not configured (#174)', async () => {
-    server = await buildTestEmbeddedServer({ githubToken: 'tok' });
+    server = await buildTestEmbeddedServer();
     const res = await server.app.inject({ method: 'GET', url: '/projects' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([]);
@@ -2914,7 +2836,6 @@ process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'codex-
     server = await buildTestEmbeddedServer({
       ...testProjectRelayConfig,
       dockerBaseUrl: 'http://127.0.0.1:9234/v1.41',
-      githubToken: 'tok',
       hostCloneRoot: '/data/dev',
     });
 
@@ -2925,18 +2846,23 @@ process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'codex-
     });
     expect(created.statusCode).toBe(201);
 
-    const projects = await server.app.inject({ method: 'GET', url: '/projects' });
-    expect(projects.statusCode).toBe(200);
-    expect(projects.json()).toEqual([
+    const project = await server.app.inject({
+      method: 'GET',
+      url: `/projects/${String(created.json().project.id)}`,
+    });
+    expect(project.statusCode).toBe(200);
+    expect(project.json()).toEqual(
       expect.objectContaining({
-        owner: 'heey-global',
-        repo: 'legal-docs',
-        sandboxUpdate: expect.objectContaining({
-          state: 'unknown',
-          reason: 'project is not active',
+        project: expect.objectContaining({
+          owner: 'heey-global',
+          repo: 'legal-docs',
+          sandboxUpdate: expect.objectContaining({
+            state: 'unknown',
+            reason: 'project is not active',
+          }),
         }),
       }),
-    ]);
+    );
     const repositories = await server.app.inject({ method: 'GET', url: '/github/repositories' });
     expect(repositories.statusCode).toBe(200);
     expect(repositories.json()).toEqual([]);

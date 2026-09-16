@@ -58,21 +58,16 @@ import {
 
 export async function resolveInstallationListToken(
   dbTokenMint: () => Promise<string | undefined>,
-  fallbackToken?: string | (() => string | undefined),
 ): Promise<string | undefined> {
-  const dbToken = await dbTokenMint();
-  return dbToken ?? (typeof fallbackToken === 'function' ? fallbackToken() : fallbackToken);
+  return dbTokenMint();
 }
 
 export async function resolveRepoWorktreeFetchAuthHeader(
   repoIdentity: () => Promise<RepoIdentity | null>,
   dbTokenMint: GitHubProjectTokenMint,
-  fallbackToken?: GitHubTokenSource,
 ): Promise<string | undefined> {
   const identity = await repoIdentity();
-  const dbToken = identity ? await dbTokenMint(identity) : undefined;
-  const fallback = typeof fallbackToken === 'function' ? fallbackToken() : fallbackToken;
-  const token = dbToken ?? fallback;
+  const token = identity ? await dbTokenMint(identity) : undefined;
   return token ? gitAuthHeader(token) : undefined;
 }
 
@@ -101,7 +96,6 @@ import {
   createGitHubReleaseService,
   openPullRequest,
   type GitHubInstallationService,
-  type GitHubTokenSource,
 } from './github.js';
 import { createGitHubTaskService } from './github-tasks.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
@@ -658,14 +652,9 @@ export interface EmbeddedServerConfig {
    * the Verity repo). When set, `POST /sessions` provisions a REAL git worktree
    * on a fresh branch (§8); omit to fall back to an empty scratch dir. */
   repoDir?: string | undefined;
+  /** Test seam for the DB-backed, project-scoped GitHub App token mint. */
+  githubProjectTokenMint?: GitHubProjectTokenMint | undefined;
 
-  /** GitHub token — a string OR a provider fn re-consulted per lookup — for the
-   * open-PR lookup that adds `PR #N` to the header (#125). Resolved at the entrypoint
-   * (never here); the provider form lets the server track the fleet's rotating
-   * `~/.gh-token` without a restart (#131). When set together with `repoDir`, the
-   * branches endpoint reports the current branch's open PR; omit to disable the lookup
-   * (the header then shows only the branch-derived issue chip). */
-  githubToken?: string | (() => string | undefined) | undefined;
   /** Enable the Codex CLI backend and discover its visible model ids daily. */
   codexEnabled?: boolean | undefined;
   /** Explicit Codex model allow-list. When omitted, the bundled Codex CLI catalog is used. */
@@ -677,8 +666,8 @@ export interface EmbeddedServerConfig {
    *  backs task management — the `/tasks` routes (ADR 0007). Set together with `repoDir`
    *  to wire the GraphQL task service; omit either to disable it (the `/tasks` routes
    *  then return 503 and the mobile Plan tab hides). A token source is resolved at
-   *  REQUEST time (the shared `githubToken`, or App creds — env or DB-configured — for
-   *  the dedicated least-privilege mint); with none, the board simply reads inert. */
+   *  REQUEST time from DB-backed GitHub App credentials; with none, the board simply
+   *  reads inert. */
   tasksProjectNumber?: number | undefined;
   /** Enable Expo push-token registration + sender (ADR 0008). */
   pushEnabled?: boolean | undefined;
@@ -691,8 +680,8 @@ export interface EmbeddedServerConfig {
    *  - Mounted host unix socket, e.g. `unix:///var/run/docker.sock` (optionally
    *    `unix:///var/run/docker.sock:/v1.41`) for a standalone Server started
    *    with `-v /var/run/docker.sock:/var/run/docker.sock` — no proxy sidecar.
-   *  When set together with `githubToken`, the multi-repo fleet-registry
-   *  provisioner and deprovisioner are wired — `POST /sessions { project }` and
+   *  When set, the multi-repo fleet-registry provisioner and deprovisioner are wired —
+   *  `POST /sessions { project }` and
    *  `POST /projects/:id/deprovision` become operational. Omit → those routes
    *  return 503 (multi-repo fleet registry not configured). */
   dockerBaseUrl?: string | undefined;
@@ -760,10 +749,6 @@ export interface EmbeddedServerConfig {
   claudeConfigVolume?: string | undefined;
   codexConfigVolume?: string | undefined;
   piConfigVolume?: string | undefined;
-  /** Path to the host-side gh-token file (e.g. `~/.gh-token`) — mounted
-   * read-only in project containers so agent processes inside can `git push`.
-   * Required when `dockerBaseUrl` is set. */
-  ghTokenFilePath?: string | undefined;
   /** Origin allowlist for the WebSocket upgrade (anti-CSWSH, audit C1). Only
    *  enforced when non-empty; native mobile clients (no Origin) always pass. */
   wsAllowedOrigins?: readonly string[] | undefined;
@@ -2182,13 +2167,12 @@ export async function buildEmbeddedServer(
     }
     return cooldown;
   };
-  const prTokenSource = config.githubToken;
   const prServiceFor = (repoDir: string): ReturnType<typeof createGitHubPrService> => {
     let svc = prServices.get(repoDir);
     if (svc === undefined) {
       svc = createGitHubPrService({
         repoDir,
-        ...createPrTokenSources(repoDir, prTokenSource, cachedProjectTokenMint),
+        asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
         ttlMs: prStatusTtlMs,
         failureCooldownFor: prFailureCooldownFor,
       });
@@ -2196,16 +2180,12 @@ export async function buildEmbeddedServer(
     }
     return svc;
   };
-  // Open-issues list for the overview backlog (#137). The legacy host token is
-  // optional: managed installs mint repo-scoped installation tokens from the
-  // encrypted GitHub App settings, just like the PR services above.
+  // Open-issues list for the overview backlog (#137). Managed installs mint
+  // repo-scoped installation tokens from the encrypted GitHub App settings.
   const issueService = config.repoDir
     ? createGitHubIssueService({
         repoDir: config.repoDir,
-        ...(config.githubToken !== undefined ? { token: config.githubToken } : {}),
-        ...(config.githubToken === undefined
-          ? { asyncToken: (owner: string, repo: string) => cachedProjectTokenMint({ owner, repo }) }
-          : {}),
+        asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
       })
     : undefined;
   // Repo identity (owner/repo) for the header's tappable Issue/PR chips (#161). Needs
@@ -2257,10 +2237,12 @@ export async function buildEmbeddedServer(
   // org's Projects v2 board. Repo scope is still `[project.repo]`.
   // Minting fails closed until the installation has approved this complete set;
   // silently dropping a denied permission would give the sandbox a misleading token.
-  const projectTokenMint = createGitHubAppProjectTokenMint({
-    ...baseMintOpts,
-    permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,
-  });
+  const projectTokenMint =
+    config.githubProjectTokenMint ??
+    createGitHubAppProjectTokenMint({
+      ...baseMintOpts,
+      permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,
+    });
 
   // Task-management board over Projects v2 (ADR 0007) — the `/tasks` routes. Constructed
   // on the explicit opt-in (a `repoDir` whose origin owns the board + a configured board
@@ -2270,17 +2252,14 @@ export async function buildEmbeddedServer(
   // Deliberately NOT gated on a token being present at build time — like `releaseService`
   // below, it's wired whenever opted-in and degrades to an inert board (getBoard → null)
   // when no token resolves at request time. That's what lets an App configured purely via
-  // the app UI (ADR 0002 — creds in the encrypted DB store, no `githubToken`/`githubAppId`
-  // env config) still serve `/tasks`: the mint reads those DB creds first.
+  // the app UI (ADR 0002 — credentials in the encrypted DB store) still serves
+  // `/tasks`: the mint reads those DB credentials at request time.
   //
   // Token: a DEDICATED least-privilege mint scoped to only what the task engine needs —
-  // `organization_projects` (board read/write + rank) + `issues` (draft→issue) — instead
-  // of the broad shared `~/.gh-token` that carries the full installation permission set.
+  // `organization_projects` (board read/write + rank) + `issues` (draft→issue).
   // Minted for the repo each task operation needs (origin for board reads, the chosen
   // target repo for repo-picker create/convert), memoized ~50min (tokens live 1h) so
-  // a Plan-tab refresh doesn't re-mint per call. Falls back to the shared
-  // `config.githubToken` inside the service when the mint yields nothing (App creds
-  // absent/sealed store).
+  // a Plan-tab refresh doesn't re-mint per call.
   const taskTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: { organization_projects: 'write', issues: 'write' },
@@ -2291,11 +2270,14 @@ export async function buildEmbeddedServer(
   });
   // TTL memo + single-flight for REUSE consumers: release lookup uses per-repo
   // installation tokens, task issue operations use per-target-repo task tokens, and
-  // task board operations use one installation-wide task token. The provisioner /
-  // worktree paths keep the raw `projectTokenMint` — they write the token into a
-  // `.gh-token` file that must stay valid ~1h, so they need a fresh mint each time.
+  // task board operations use one installation-wide task token. Provisioner/worktree
+  // paths keep the raw `projectTokenMint` because each server-side operation needs a
+  // fresh project-scoped token.
   const cachedProjectTokenMint = createCachedProjectTokenMint(projectTokenMint, {
-    authorityKey: githubAppAuthorityKey,
+    authorityKey:
+      config.githubProjectTokenMint === undefined
+        ? githubAppAuthorityKey
+        : () => Promise.resolve('test-github-project-token-mint'),
   });
   const cachedTaskTokenMint = createCachedProjectTokenMint(taskTokenMint, {
     authorityKey: githubAppAuthorityKey,
@@ -2328,7 +2310,6 @@ export async function buildEmbeddedServer(
           resolveRepoWorktreeFetchAuthHeader(
             () => repoIdentityFor(config.repoDir as string)(),
             cachedProjectTokenMint,
-            config.githubToken,
           ),
       })
     : undefined;
@@ -2341,7 +2322,6 @@ export async function buildEmbeddedServer(
       ? createGitHubTaskService({
           repoDir: config.repoDir,
           projectNumber: config.tasksProjectNumber,
-          token: config.githubToken,
           asyncToken: async (repo) => {
             const id = repo ?? (await repoIdentityFor(config.repoDir as string)());
             return id ? cachedTaskTokenMint({ owner: id.owner, repo: id.repo }) : undefined;
@@ -2353,13 +2333,13 @@ export async function buildEmbeddedServer(
   // GitHub-App-installation repo list (concept §19, #174) — the live source of the
   // `projects` cache, fetched fresh per `GET /projects` (with a per-call TTL cached by
   // the service so a polled picker doesn't burn rate limit). The DB-backed App path
-  // mints a dedicated metadata-only installation token; static fleet tokens remain
-  // a fallback for legacy deployments. A sealed DB store must propagate as 503 so
-  // mobile can prompt for unlock instead of showing an empty repository list.
+  // mints a dedicated metadata-only installation token. A sealed DB store must
+  // propagate as 503 so mobile can prompt for unlock instead of showing an empty
+  // repository list.
   const installationService = createGitHubInstallationService({
     asyncToken: async () => {
       try {
-        return await resolveInstallationListToken(installationListTokenMint, config.githubToken);
+        return await resolveInstallationListToken(installationListTokenMint);
       } catch (err) {
         if (err instanceof SealedError) throw err;
         return undefined;
@@ -2373,10 +2353,7 @@ export async function buildEmbeddedServer(
   // and it refreshes in the background on a TTL. Absent → the overview shows no
   // release version (the field is simply null on the wire).
   const releaseService = createGitHubReleaseService({
-    token: config.githubToken,
-    ...(config.githubToken === undefined
-      ? { asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }) }
-      : {}),
+    asyncToken: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
   });
 
   const secretRoot =
@@ -2418,9 +2395,8 @@ export async function buildEmbeddedServer(
 
   // Multi-repo fleet-registry provisioning (concept §19.3/#19.8, #174):
   // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
-  // dockerBaseUrl and hostCloneRoot are configured. Git auth comes from the
-  // DB-backed GitHub App mint first, with the static ~/.gh-token provider only as
-  // a legacy fallback.
+  // dockerBaseUrl and hostCloneRoot are configured. Git auth comes exclusively from
+  // the DB-backed GitHub App mint.
   const projectDocker =
     config.dockerBaseUrl && config.hostCloneRoot
       ? createDockerClient({
@@ -3023,10 +2999,6 @@ export async function buildEmbeddedServer(
     }
     const dockerBaseUrl = config.dockerBaseUrl;
     docker = projectDocker;
-    const fallbackGitHubToken = config.githubToken;
-    const tokenSource: GitHubTokenSource =
-      typeof fallbackGitHubToken === 'function' ? fallbackGitHubToken : () => fallbackGitHubToken;
-    const ghTokenPath = config.ghTokenFilePath ?? join(process.env.HOME ?? '/root', '.gh-token');
     // Turn preparation calls this before every message. Reuse the same ~50-minute
     // token as the sandbox broker so a chat does not mint once per turn; authority
     // changes still invalidate the cache immediately.
@@ -3252,9 +3224,7 @@ export async function buildEmbeddedServer(
       store: eventStore,
       db,
       docker,
-      token: tokenSource,
       defaultImageRef: defaultProjectImage,
-      ghTokenFilePath: ghTokenPath,
       projectTokenMint,
       veritySettings: () => eventStore.getVeritySettings(),
       // Linking a local project to a repository that already has history publishes an
@@ -4920,49 +4890,6 @@ export async function syncProjectsFromInstallation(
   }
 
   return eventStore.listProjects({ includeHidden: opts?.includeHidden === true });
-}
-
-export function createProjectAwareGitHubTokenSource(
-  repoDir: string,
-  fallback: GitHubTokenSource,
-): () => string | undefined {
-  return () => readProjectGitHubToken(repoDir) ?? resolveGitHubToken(fallback);
-}
-
-export function createPrTokenSources(
-  repoDir: string,
-  fallback: GitHubTokenSource | undefined,
-  mint: GitHubProjectTokenMint,
-): {
-  token?: () => string | undefined;
-  asyncToken: (owner: string, repo: string) => Promise<string | undefined>;
-} {
-  return {
-    ...(fallback === undefined
-      ? {}
-      : { token: createProjectAwareGitHubTokenSource(repoDir, fallback) }),
-    asyncToken: (owner, repo) => mint({ owner, repo }),
-  };
-}
-
-function resolveGitHubToken(source: GitHubTokenSource): string | undefined {
-  const token = typeof source === 'function' ? source() : source;
-  const trimmed = token?.trim();
-  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
-}
-
-function readProjectGitHubToken(repoDir: string): string | undefined {
-  const marker = `${sep}.verity-sessions${sep}`;
-  const markerIndex = repoDir.indexOf(marker);
-  const projectRoot = markerIndex >= 0 ? repoDir.slice(0, markerIndex) : repoDir;
-  try {
-    const token = readFileSync(join(projectRoot, '.gh-token'), 'utf8').trim();
-    return token.length > 0 ? token : undefined;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
-    throw error;
-  }
 }
 
 /** Read the bundled `verity-sandbox-toolkit` Feature metadata from the Server image
