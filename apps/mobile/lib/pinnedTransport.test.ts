@@ -96,6 +96,49 @@ describe('pinned native file transport', () => {
     expect(response.body).toBeNull();
   });
 
+  it('decodes JSON response bytes as UTF-8 before constructing the response', async () => {
+    const json = JSON.stringify({ title: 'Plötzlich größer' });
+    mockRequest.mockResolvedValue({
+      status: 200,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      bodyBase64: Buffer.from(json, 'utf8').toString('base64'),
+    });
+
+    const response = await createPinnedFetch(`sha256-${'a'.repeat(43)}`)(
+      'https://192.0.2.1/sessions',
+    );
+
+    expect(response.body).toBe(json);
+  });
+
+  it('keeps binary response bytes as an ArrayBuffer', async () => {
+    mockRequest.mockResolvedValue({
+      status: 200,
+      headers: { 'content-type': 'application/octet-stream' },
+      bodyBase64: 'AP+A',
+    });
+
+    const response = await createPinnedFetch(`sha256-${'a'.repeat(43)}`)(
+      'https://192.0.2.1/download',
+    );
+
+    const body = (response as unknown as { body: BodyInit }).body;
+    expect(body).toBeInstanceOf(ArrayBuffer);
+    expect([...new Uint8Array(body as ArrayBuffer)]).toEqual([0, 255, 128]);
+  });
+
+  it('replaces malformed bytes in a textual response like standard fetch', async () => {
+    mockRequest.mockResolvedValue({
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+      bodyBase64: 'Z3LDvM8=',
+    });
+
+    const response = await createPinnedFetch(`sha256-${'a'.repeat(43)}`)('https://192.0.2.1/text');
+
+    expect(response.body).toBe('grü�');
+  });
+
   it('streams a pinned download directly into its destination', async () => {
     mockDownload.mockResolvedValue({ status: 200, uri: 'file:///cache/result.pdf' });
     await expect(
