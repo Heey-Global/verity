@@ -31,3 +31,6 @@ apps/mobile/expo-env.d.ts
 .claude
 .pnpm-store
 .wt-*
+
+# Preparation evidence belongs only to the current isolated build.
+.verity-eas-prepared

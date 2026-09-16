@@ -928,7 +928,8 @@ describe('native iOS compile gate', () => {
     expect(commands).toContain('--non-interactive');
     expect(commands).toContain('--output "$ipa"');
     expect(commands).toContain('altool --upload-app');
-    expect(commands).not.toContain('xcodebuild');
+    // Toolchain fingerprinting must not bypass EAS-managed native compilation.
+    expect(commands.replaceAll('xcodebuild -version', '')).not.toContain('xcodebuild');
     expect(commands.indexOf('patch:native')).toBeLessThan(commands.indexOf('eas-cli@20.3.0 build'));
     expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/builds');
     expect(commands).toContain('https://api.appstoreconnect.apple.com/v1/apps/$ASC_APP_ID');

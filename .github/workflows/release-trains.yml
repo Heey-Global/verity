@@ -717,6 +717,34 @@ jobs:
           npm run -w @verity/mobile-app patch:native
           npm run -w @verity/mobile build
 
+      - name: Configure native compiler cache pilot
+        id: compiler-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ccache >/dev/null || brew install ccache
+          toolchain="$( { xcodebuild -version; ccache --version; } | shasum -a 256 | cut -d ' ' -f 1)"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          {
+            echo "USE_CCACHE=1"
+            echo "CCACHE_DIR=$RUNNER_TEMP/verity-mobile-ccache"
+            echo "CCACHE_CONFIGPATH=$GITHUB_WORKSPACE/apps/mobile/build/ccache.conf"
+            echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/verity-eas-build"
+            echo "CCACHE_BASEDIR=$RUNNER_TEMP/verity-eas-build"
+          } >> "$GITHUB_ENV"
+
+      # Reuse only compiler objects, never credentials, IPAs, or EAS work directories.
+      # No broad restore prefix: compiler, dependencies and patch policy must agree.
+      # renovate: datasource=github-actions depName=actions/cache
+      - name: Restore native compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/verity-mobile-ccache
+          key: mobile-ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('package-lock.json', 'apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs', 'apps/mobile/app.config.ts') }}
+
+      - name: Reset native compiler cache statistics
+        run: ccache --zero-stats
+
       - name: Build and upload native TestFlight release
         working-directory: apps/mobile
         env:
@@ -788,6 +816,7 @@ jobs:
           # Build on the GitHub macOS runner while EAS supplies the remote
           # distribution certificate and provisioning profile. This does not
           # consume an EAS cloud-build slot or its build minutes.
+          build_started="$(date +%s)"
           npx --yes eas-cli@20.3.0 build \
             --platform ios \
             --profile testflight \
@@ -806,8 +835,13 @@ jobs:
 
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          echo "Native build and IPA verification: $(( $(date +%s) - build_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
+          upload_started="$(date +%s)"
           xcrun altool --upload-app --type ios --file "$ipa" \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+          echo "Apple upload acceptance: $(( $(date +%s) - upload_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
+          processing_started="$(date +%s)"
 
           # altool success means only that Apple accepted the upload. Keep the
           # draft GitHub release closed until App Store Connect has processed
@@ -836,6 +870,7 @@ jobs:
             case "$processing_state" in
               VALID)
                 echo "App Store Connect processed build $next_build successfully."
+                echo "Apple processing: $(( $(date +%s) - processing_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
                 break
                 ;;
               FAILED|INVALID)
@@ -856,6 +891,11 @@ jobs:
                 ;;
             esac
           done
+
+      - name: Report native compiler cache statistics
+        if: always() && steps.compiler-cache.outcome == 'success'
+        run: |
+          ccache --show-stats --verbose >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish verified native GitHub release
         env:

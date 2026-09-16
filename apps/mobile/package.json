@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "coverage": "jest --coverage",
-    "patch:native": "node ../../scripts/patch-mobile-native-deps.mjs"
+    "patch:native": "node ../../scripts/patch-mobile-native-deps.mjs",
+    "postinstall": "node ../../scripts/prepare-mobile-eas-build.mjs",
+    "eas-build-post-install": "node ../../scripts/prepare-mobile-eas-build.mjs --verify"
   },
   "dependencies": {
     "@expo/vector-icons": "15.1.1",
