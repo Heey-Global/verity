@@ -594,7 +594,7 @@ function NewProject({
             <Text style={setupStatus.intent === 'error' ? styles.error : styles.setupStatus}>
               {setupStatusLabel}
             </Text>
-            {setupProject.provisionError ? (
+            {setupProject.state === 'failed' && setupProject.provisionError ? (
               <Text style={styles.error}>{setupProject.provisionError}</Text>
             ) : null}
             {error ? <Text style={styles.error}>{error}</Text> : null}
