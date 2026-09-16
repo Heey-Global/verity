@@ -455,7 +455,7 @@ describe('release merge policy', () => {
 
 describe('website release recovery', () => {
   const workflow = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
-    on: { workflow_dispatch?: { inputs?: Record<string, { type?: string }> } };
+    on: { workflow_call?: { inputs?: Record<string, { type?: string }> } };
     jobs: {
       'release-please': {
         outputs?: Record<string, string>;
@@ -471,8 +471,8 @@ describe('website release recovery', () => {
   };
 
   it('accepts an explicit version and source ref only for manual recovery', () => {
-    expect(workflow.on.workflow_dispatch?.inputs?.['website-version']?.type).toBe('string');
-    expect(workflow.on.workflow_dispatch?.inputs?.['website-ref']?.type).toBe('string');
+    expect(workflow.on.workflow_call?.inputs?.['website-version']?.type).toBe('string');
+    expect(workflow.on.workflow_call?.inputs?.['website-ref']?.type).toBe('string');
     const step = workflow.jobs['release-please'].steps.find(
       (candidate) => candidate.id === 'website-recovery',
     );
@@ -670,6 +670,7 @@ describe('release train concurrency', () => {
     needs?: string | string[];
     if?: string;
     uses?: string;
+    strategy?: { matrix?: { train?: string[] }; 'fail-fast'?: boolean };
     concurrency?: { group?: string; queue?: string; 'cancel-in-progress'?: boolean };
     with?: Record<string, string>;
     permissions?: Record<string, string>;
@@ -686,26 +687,66 @@ describe('release train concurrency', () => {
   const trains = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as Workflow;
   const backend = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as Workflow;
 
-  it('queues metadata and each complete train independently without cancelling a release', () => {
-    // A workflow-wide lock makes a native build block unrelated Server metadata;
-    // individual backend job locks let two versions interleave channel writes.
+  const dispatch = parse(
+    readFileSync('.github/workflows/release-dispatch.yml', 'utf8'),
+  ) as Workflow;
+
+  it('holds each train lock from metadata through publication without cancelling queued releases', () => {
+    // Locking publication alone lets a second metadata run recreate next-release
+    // PRs against an unpublished draft; the entire train must own one lock.
+    expect(dispatch.concurrency).toBeUndefined();
     expect(trains.concurrency).toBeUndefined();
     expect(backend.concurrency).toBeUndefined();
-    const groups = [];
-    for (const name of [
-      'release-please',
-      'publish-backend',
-      'publish-mobile-native',
-      'publish-website',
-    ]) {
-      const job = trains.jobs[name];
-      expect(job?.concurrency).toMatchObject({ queue: 'max', 'cancel-in-progress': false });
-      expect(job?.concurrency?.group).toMatch(/^release-[a-z]+$/u);
-      groups.push(job?.concurrency?.group);
-      if (name !== 'release-please') expect(job?.needs).toBe('release-please');
+    const callers = Object.values(dispatch.jobs).filter(
+      (job) => job.uses === './.github/workflows/release-trains.yml',
+    );
+    expect(callers).toHaveLength(1);
+    const caller = callers[0];
+    expect(caller?.strategy?.matrix?.train).toEqual(['backend', 'mobile', 'website']);
+    expect(caller?.strategy?.['fail-fast']).toBe(false);
+    expect(caller?.concurrency).toEqual({
+      group: 'release-${{ matrix.train }}',
+      queue: 'max',
+      'cancel-in-progress': false,
+    });
+    expect(caller?.with?.train).toBe('${{ matrix.train }}');
+    expect(trains.jobs['release-please']?.concurrency).toEqual({
+      group: 'release-metadata',
+      queue: 'max',
+      'cancel-in-progress': false,
+    });
+    for (const name of ['publish-backend', 'publish-mobile-native', 'publish-website']) {
+      expect(trains.jobs[name]?.needs).toBe('release-please');
+      expect(trains.jobs[name]?.concurrency).toBeUndefined();
     }
-    expect(new Set(groups).size).toBe(groups.length);
     expect(Object.values(backend.jobs).every((job) => job.concurrency === undefined)).toBe(true);
+    expect(Object.keys(caller?.with ?? {}).sort()).toEqual(
+      Object.keys(trains.on.workflow_call?.inputs ?? {}).sort(),
+    );
+    for (const job of Object.values(trains.jobs)) {
+      for (const [scope, access] of Object.entries(job.permissions ?? {})) {
+        if (access === 'write') expect(caller?.permissions?.[scope], scope).toBe('write');
+      }
+    }
+  });
+
+  it('runs only the selected train metadata action and recovery path', () => {
+    const steps = trains.jobs['release-please']?.steps ?? [];
+    const actions = steps.filter((step) =>
+      step.uses?.startsWith('googleapis/release-please-action@'),
+    );
+    expect(actions).toHaveLength(3);
+    for (const train of ['backend', 'mobile', 'website']) {
+      const action = actions.find((step) => step.id === `release-${train}`);
+      expect(action?.if).toContain(`inputs.train == '${train}'`);
+    }
+    expect(steps.find((step) => step.id === 'maintenance')?.if).toContain(
+      "inputs.train == 'backend'",
+    );
+    expect(steps.find((step) => step.id === 'website-recovery')?.if).toContain(
+      "inputs.train == 'website'",
+    );
+    expect(trains.jobs['publish-mobile-native']?.if).toContain("inputs.train == 'mobile'");
   });
 
   it('keeps the signing workflow identity and passes every backend handoff input', () => {
@@ -718,8 +759,9 @@ describe('release train concurrency', () => {
     }
     expect(caller?.uses).toBe('./.github/workflows/release.yml');
     expect(Object.keys(backend.on)).toEqual(['workflow_call']);
-    expect(trains.on.push).toBeDefined();
-    expect(trains.on.workflow_dispatch).toBeDefined();
+    expect(Object.keys(trains.on)).toEqual(['workflow_call']);
+    expect(dispatch.on.push).toBeDefined();
+    expect(dispatch.on.workflow_dispatch).toBeDefined();
     expect(caller?.if).toBe("needs.release-please.outputs.backend-release-created == 'true'");
     const inputs = backend.on.workflow_call?.inputs ?? {};
     expect(Object.keys(caller?.with ?? {}).sort()).toEqual(Object.keys(inputs).sort());

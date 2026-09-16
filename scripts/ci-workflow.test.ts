@@ -438,6 +438,7 @@ describe('Verity website publication smoke', () => {
         string,
         {
           concurrency?: { group?: string; 'cancel-in-progress'?: boolean };
+          uses?: string;
           if?: string;
           needs?: string | string[];
           env?: Record<string, string>;
@@ -682,7 +683,11 @@ describe('Verity website publication smoke', () => {
     // Re-creating the version tag is safe only because releases on a ref are
     // serialized. Cancelling one mid-promote is the case that argument does
     // not cover, and it is set two hundred lines from where it is relied on.
-    expect(release.jobs['publish-website']?.concurrency?.['cancel-in-progress']).toBe(false);
+    const dispatch = workflow('.github/workflows/release-dispatch.yml');
+    const caller = Object.values(dispatch.jobs).find(
+      (job) => job.uses === './.github/workflows/release-trains.yml',
+    );
+    expect(caller?.concurrency?.['cancel-in-progress']).toBe(false);
   });
 });
 

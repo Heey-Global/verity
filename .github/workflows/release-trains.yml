@@ -1,28 +1,12 @@
 name: verity-release-trains
 
-# release-please maintains three deliberately gated release trains: one shared
-# backend version for toolkit/server/sandbox, one native mobile version, and one
-# for the product website. It collects Conventional Commits into separate
-# release PRs; artifacts ship only after the corresponding release PR is merged.
-#
-# Backend releases keep the existing `v<semver>` tag and shared artifact version.
-# Native app releases use `mobile-vX.Y.0`; every native release bumps the minor
-# version and always triggers a new native TestFlight build. The mobile release
-# PR is opened only when the cumulative diff from the latest `.0` contains a
-# native-sensitive change. OTA patches are handled separately by mobile-ota.yml
-# as `mobile-vX.Y.1`, `.2`, and so on.
-# Website releases use `website-vX.Y.Z` and publish one image, tagged `vX.Y.Z`,
-# which the k8s repository pins. The website is on its own train so that a
-# backend release does not move a version the cluster tracks, and so that an
-# nginx base-image bump reaches a released website version on its own — the
-# latter needs the bump to be typed `fix`, which renovate.json arranges for
-# that one Dockerfile, since a `chore` commit releases nothing.
-
+# Called once per train while the dispatcher holds its complete lifecycle lock.
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
     inputs:
+      train:
+        required: true
+        type: string
       mobile-tag:
         description: Existing draft mobile-vX.Y.0 release to recover
         required: false
@@ -252,9 +236,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.sha }}
-          BACKEND_SELECTED: ${{ steps.release-trains.outputs.backend }}
-          MOBILE_SELECTED: ${{ steps.release-trains.outputs.mobile }}
-          WEBSITE_SELECTED: ${{ steps.release-trains.outputs.website }}
+          BACKEND_SELECTED: ${{ inputs.train == 'backend' && steps.release-trains.outputs.backend == 'true' }}
+          MOBILE_SELECTED: ${{ inputs.train == 'mobile' && steps.release-trains.outputs.mobile == 'true' }}
+          WEBSITE_SELECTED: ${{ inputs.train == 'website' && steps.release-trains.outputs.website == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -319,7 +303,7 @@ jobs:
 
       - name: Open backend release PR or create release
         id: release-backend
-        if: github.event_name == 'push' && steps.release-trains.outputs.backend == 'true'
+        if: github.event_name == 'push' && inputs.train == 'backend' && steps.release-trains.outputs.backend == 'true'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -329,7 +313,7 @@ jobs:
 
       - name: Open mobile release PR or create release
         id: release-mobile
-        if: github.event_name == 'push' && steps.release-trains.outputs.mobile == 'true'
+        if: github.event_name == 'push' && inputs.train == 'mobile' && steps.release-trains.outputs.mobile == 'true'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -339,7 +323,7 @@ jobs:
 
       - name: Open website release PR or create release
         id: release-website
-        if: github.event_name == 'push' && steps.release-trains.outputs.website == 'true'
+        if: github.event_name == 'push' && inputs.train == 'website' && steps.release-trains.outputs.website == 'true'
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -424,7 +408,7 @@ jobs:
 
       - name: Validate maintenance backend release
         id: maintenance
-        if: github.event_name == 'workflow_dispatch' && inputs['backend-version'] != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.train == 'backend' && inputs['backend-version'] != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # This job deliberately has no checkout. Tell gh which repository to
@@ -502,7 +486,7 @@ jobs:
       # and promoting the website image through the ordinary publish job.
       - name: Validate existing website release for recovery
         id: website-recovery
-        if: github.event_name == 'workflow_dispatch' && inputs['website-version'] != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.train == 'website' && inputs['website-version'] != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -615,11 +599,7 @@ jobs:
   publish-backend:
     needs: release-please
     if: needs.release-please.outputs.backend-release-created == 'true'
-    # Hold this lock across the entire reusable DAG, including all channel writes.
-    concurrency:
-      group: release-backend
-      queue: max
-      cancel-in-progress: false
+    # The dispatcher holds the train lock across metadata and this entire DAG.
     permissions:
       artifact-metadata: write
       attestations: write
@@ -638,13 +618,9 @@ jobs:
     # Not gated on the cutover: the native app is its own release train and
     # carries no Server image, so a failing Server cutover has nothing to say
     # about it.
-    concurrency:
-      group: release-mobile
-      queue: max
-      cancel-in-progress: false
     needs: release-please
     if: >-
-      always() &&
+      always() && inputs.train == 'mobile' &&
       (needs.release-please.outputs.mobile-release-created == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
     # Public-repository GitHub-hosted runners are free. Keep the expensive macOS
@@ -956,10 +932,6 @@ jobs:
     # different train and would read as missing for every backend release.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    concurrency:
-      group: release-website
-      queue: max
-      cancel-in-progress: false
     needs: release-please
     if: needs.release-please.outputs.website-release-created == 'true'
     permissions:

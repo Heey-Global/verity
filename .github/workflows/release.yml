@@ -1,8 +1,8 @@
 name: verity-release
 
 # Keep this filename: installed Servers trust its Fulcio signing identity.
-# Push/manual orchestration is in release-trains.yml, whose backend caller holds
-# one lock for this entire DAG. Do not add a matching lock here (nested deadlock).
+# Push/manual orchestration is in release-dispatch.yml, whose train caller holds
+# one lock across metadata and this DAG. Never repeat that lock in a callee.
 on:
   workflow_call:
     inputs:
