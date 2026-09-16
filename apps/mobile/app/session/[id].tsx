@@ -147,6 +147,7 @@ import {
   hardwareKeyboardDetection,
   isExternalKeyboardHeight,
   shouldPreserveComposerFocus,
+  shouldSubmitOnReturn,
 } from '../../hardwareKeyboard';
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
@@ -2904,14 +2905,19 @@ export function SessionChat({
   // field and the keyboard top. Track keyboard visibility and drop the inset while
   // it's up (keyboardWillShow/Hide on iOS for in-sync animation; the Did* events on
   // Android, where the Will* variants don't fire reliably).
-  const [keyboardShown, setKeyboardShown] = useState(false);
+  //
+  // The HEIGHT is kept, not just a boolean, because the composer's Return key needs to
+  // tell a full software keyboard (newline — it's the only way to type one) from the
+  // hardware shortcut bar (send). Both are "shown"; only the height separates them, and
+  // taking it from the same event that flips visibility keeps the two in step.
+  const [keyboardHeight, setKeyboardHeight] = useState<number | null>(null);
   const probingAutofocusRef = useRef(false);
   useEffect(() => {
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const show = Keyboard.addListener(showEvt, (event) => {
       keyboardShownRef.current = true;
-      setKeyboardShown(true);
+      setKeyboardHeight(event.endCoordinates?.height ?? 0);
       if (
         Platform.OS === 'ios' &&
         Platform.isPad &&
@@ -2926,7 +2932,7 @@ export function SessionChat({
     });
     const hide = Keyboard.addListener(hideEvt, () => {
       keyboardShownRef.current = false;
-      setKeyboardShown(false);
+      setKeyboardHeight(null);
       probingAutofocusRef.current = false;
     });
     return () => {
@@ -3529,7 +3535,8 @@ export function SessionChat({
           refreshModels();
           setEnginePickerOpen(true);
         }}
-        bottomInset={keyboardShown ? 0 : insets.bottom}
+        bottomInset={keyboardHeight === null ? insets.bottom : 0}
+        keyboardHeight={keyboardHeight}
         onHeightChange={setInputBarHeight}
         attachments={attachments}
         onAttach={onAttach}
@@ -6748,6 +6755,7 @@ function InputBar({
   engineBusy,
   onEnginePress,
   bottomInset,
+  keyboardHeight,
   onHeightChange,
   attachments,
   onAttach,
@@ -6782,6 +6790,10 @@ function InputBar({
   /** Open the engine/model picker sheet. */
   onEnginePress: () => void;
   bottomInset: number;
+  /** Height of the on-screen keyboard right now, `null` when none is up. Decides what
+   * Return does: a full software keyboard inserts a newline, the shortcut bar or no
+   * keyboard at all sends (see `shouldSubmitOnReturn`). */
+  keyboardHeight: number | null;
   /** Reports the bar's rendered height so the scroll-to-bottom button can anchor
    * above it (it grows with multi-line text / attachment previews). */
   onHeightChange: (height: number) => void;
@@ -6820,12 +6832,12 @@ function InputBar({
     (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
       if (dead || Platform.OS !== 'ios' || !Platform.isPad || event.nativeEvent.key !== 'Enter')
         return;
-      if (hardwareKeyboardDetection() !== 'hardware') return;
+      if (!shouldSubmitOnReturn(keyboardHeight)) return;
       suppressReturnChangeRef.current = true;
       returnSubmitValueRef.current = value;
       onSend();
     },
-    [dead, onSend, value],
+    [dead, keyboardHeight, onSend, value],
   );
   // Auto-grow: let the native multiline TextInput size to its content (it grows up
   // to `maxHeight`, then scrolls). We deliberately do NOT set an explicit `height`
