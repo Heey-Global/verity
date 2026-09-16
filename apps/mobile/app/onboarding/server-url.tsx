@@ -41,6 +41,10 @@ function unlockRoute(returnTo: string): string {
   return `/unlock-device?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
+function secureDeviceRoute(returnTo: string): string {
+  return `/secure-device?returnTo=${encodeURIComponent(returnTo)}`;
+}
+
 type TestState =
   | { kind: 'idle' }
   | { kind: 'testing' }
@@ -216,9 +220,19 @@ export default function OnboardingServerUrl() {
         if (!mounted.current) return;
         setTest({ kind: 'ok' });
         const target = onboardingRoute(status);
-        if (status.masterPasswordSet && getAuthToken(pairing.suggestedUrl) === null)
+        if (status.masterPasswordSet && getAuthToken(pairing.suggestedUrl) === null) {
           router.replace(unlockRoute(target));
-        else router.replace(target);
+          return;
+        }
+        // Pairing into an already-configured server skips the wizard entirely, and
+        // with it the only Face ID opt-in this app offers. Ask here instead, or the
+        // device reaches its next cold start with no way to unlock itself. A device
+        // still heading into the wizard gets asked by its master-password step.
+        if (isCoreOnboardingComplete(status)) {
+          router.replace(secureDeviceRoute(target));
+          return;
+        }
+        router.replace(target);
       })
       .catch((error: unknown) => {
         if (!mounted.current) return;

@@ -6,9 +6,11 @@ import {
   disableBiometricUnlock,
   enableBiometricUnlock,
   getAuthToken,
+  getAuthTokenId,
   hasStoredAuthToken,
   isBiometricUnlockEnabled,
   refreshBiometricUnlockSecret,
+  restoreUnprotectedAuthToken,
   setAuthToken,
   unlockAuthTokenWithBiometrics,
   unlockServerSecretWithBiometrics,
@@ -218,6 +220,49 @@ describe('authToken', () => {
     await clearLegacyAuthState();
 
     expect(secureStore.has('verity.authToken')).toBe(false);
+  });
+
+  it('restores a paired device token that was never offered biometric protection', async () => {
+    // QR pairing enrolls a bearer and never reaches the biometric opt-in, so the
+    // token is persisted unprotected. The silent failure this guards: nothing
+    // reads it back at launch, the gate sees an unauthenticated app, and
+    // /secret/unlock rejects the device for want of that very bearer — which the
+    // unlock form can only report to the operator as a wrong master password.
+    await setAuthToken(DOGFOOD, 'paired-token', 'device-id');
+    await clearAuthToken(null); // cold start: only the keychain survives
+
+    expect(await restoreUnprotectedAuthToken(DOGFOOD)).toBe(true);
+    expect(getAuthToken(DOGFOOD)).toBe('paired-token');
+    expect(getAuthTokenId(DOGFOOD)).toBe('device-id');
+  });
+
+  it('leaves a Face ID-protected token to the launch prompt', async () => {
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    await setAuthToken(DOGFOOD, 'dogfood-token');
+    expect(await enableBiometricUnlock(DOGFOOD)).toBe(true);
+    await clearAuthToken(null);
+
+    // A prompt-free restore of an authentication-bound item would hand the token
+    // to anyone who opens the app, silently voiding an explicit Face ID opt-in.
+    expect(await restoreUnprotectedAuthToken(DOGFOOD)).toBe(false);
+    expect(getAuthToken(DOGFOOD)).toBeNull();
+  });
+
+  it('refuses a restored token whose embedded server origin does not match', async () => {
+    await setAuthToken(DOGFOOD, 'dogfood-token');
+    await clearAuthToken(null);
+    const storedToken = [...secureStore.entries()].find(([key]) =>
+      /^verity\.authToken\.v2\.[^.]+$/.test(key),
+    );
+    expect(storedToken).toBeDefined();
+    secureStore.set(
+      storedToken![0],
+      JSON.stringify({ origin: 'https://attacker.example', secret: 'dogfood-token' }),
+    );
+
+    expect(await restoreUnprotectedAuthToken(DOGFOOD)).toBe(false);
+    expect(getAuthToken(DOGFOOD)).toBeNull();
   });
 
   it('does not load the token after biometric unlock is disabled', async () => {

@@ -14,6 +14,7 @@
 import {
   VerityApiError,
   MIN_MASTER_PASSWORD_LENGTH,
+  isDevicePairingRequiredError,
   secretUiMode,
   validateMasterPassword,
   type VerityClient,
@@ -34,6 +35,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { BiometricConsent } from '../../components/BiometricConsent';
 import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold';
 import {
   canUseBiometricUnlock,
@@ -218,10 +220,14 @@ function MasterPasswordStep({
       })
       .catch((caught) => {
         if (caught instanceof VerityApiError && caught.status === 401) {
+          // The server refuses an unproven device BEFORE it compares the password,
+          // so the two 401s mean different things to the operator: one is a typo,
+          // the other no amount of retyping can fix. Reporting both as a wrong
+          // password is what makes a correct password look permanently wrong.
           setFieldError(
-            pairingBootstrap
-              ? 'Incorrect password. Scan a new pairing code before retrying.'
-              : 'Incorrect password or a new pairing code is required.',
+            isDevicePairingRequiredError(caught)
+              ? 'This device is not authorized for this server. Scan a new pairing code, then unlock.'
+              : 'Incorrect password.',
           );
           return;
         }
@@ -441,53 +447,6 @@ function DeviceAuthorizationScaffold({ children }: { children: ReactNode }) {
         {children}
       </ScrollView>
     </KeyboardAvoidingView>
-  );
-}
-
-function BiometricConsent({
-  busy,
-  onEnable,
-  onSkip,
-}: {
-  busy: boolean;
-  onEnable: () => void;
-  onSkip: () => void;
-}) {
-  return (
-    <View style={styles.card}>
-      <Text style={styles.sectionTitle}>Use Face ID or Touch ID?</Text>
-      <Text style={styles.intro}>
-        Verity can use this device's biometric unlock to load your local device token next time.
-        Your master password still protects the server secrets.
-      </Text>
-      <Pressable
-        style={({ pressed }) => [
-          styles.primaryButton,
-          busy ? styles.buttonDisabled : null,
-          pressed ? styles.pressed : null,
-        ]}
-        onPress={onEnable}
-        disabled={busy}
-        accessibilityRole="button"
-        accessibilityLabel="Use Face ID"
-      >
-        {busy ? <ActivityIndicator size="small" color="#05050a" /> : null}
-        <Text style={styles.primaryButtonLabel}>Use Face ID</Text>
-      </Pressable>
-      <Pressable
-        style={({ pressed }) => [
-          styles.secondaryButton,
-          busy ? styles.buttonDisabled : null,
-          pressed ? styles.pressed : null,
-        ]}
-        onPress={onSkip}
-        disabled={busy}
-        accessibilityRole="button"
-        accessibilityLabel="Not now"
-      >
-        <Text style={styles.secondaryButtonLabel}>Not now</Text>
-      </Pressable>
-    </View>
   );
 }
 

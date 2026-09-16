@@ -131,6 +131,45 @@ describe('onboarding connection entry', () => {
     expect(mockReplace).toHaveBeenCalledWith('/onboarding/master-password');
   });
 
+  it('offers to secure a device paired into an already-configured server', async () => {
+    // Device pairing mints a bearer without the master-password step, which is the
+    // only other place this app offers the Face ID opt-in. Skipping the offer here
+    // leaves the paired device with no biometric credential, so its next cold start
+    // can only show the password form — and the server rejects that password for
+    // want of a proven device.
+    mockParsePairingUri.mockReturnValue({
+      serverId: 'server-1',
+      kind: 'device',
+      suggestedUrl: 'https://verity.example.test:8082',
+      identityKey: 'identity',
+      tlsPin: 'pin',
+      pairingCode: 'pairing-code',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    mockEstablishPairing.mockResolvedValue(
+      status({
+        sealed: false,
+        masterPasswordSet: true,
+        githubAppConfigured: true,
+        signingKeyConfigured: true,
+        hasProject: true,
+        complete: true,
+        nextStep: null,
+      }),
+    );
+    mockGetAuthToken.mockReturnValue('enrolled-token');
+    render(<OnboardingServerUrl />);
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => scan?.({ data: 'verity-pair://device' }));
+
+    await waitFor(() =>
+      expect(mockReplace).toHaveBeenCalledWith(
+        `/secure-device?returnTo=${encodeURIComponent('/')}`,
+      ),
+    );
+  });
+
   it.each([
     [
       'UnexpectedException: The request timed out. (at ExpoModulesCore/ConcurrentFunctionDefinition.swift:90)',

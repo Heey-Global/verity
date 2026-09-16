@@ -27,12 +27,22 @@ export default function UnlockDevice() {
     let active = true;
     const baseUrl = getVerityBaseUrl();
     const attempt = tryBiometricSecretUnlock
-      ? (() => {
+      ? (async () => {
           const client = createVerityClient();
-          if (client === null) return Promise.resolve(false);
-          return unlockServerSecretWithBiometrics(baseUrl, (password) =>
-            client.unlockSecret(password),
-          );
+          const unlocked =
+            client === null
+              ? false
+              : await unlockServerSecretWithBiometrics(baseUrl, (password) =>
+                  client.unlockSecret(password),
+                );
+          if (unlocked) return true;
+          // The store is still sealed and this device holds no Face ID-protected
+          // master password — a QR-paired device never sees one. Load its bearer
+          // so the manual unlock below can prove the device: /secret/unlock
+          // rejects an unproven device before it ever compares the password, and
+          // the form can only report that as a wrong password.
+          await unlockAuthTokenWithBiometrics(baseUrl);
+          return false;
         })()
       : unlockAuthTokenWithBiometrics(baseUrl);
     void attempt
