@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.3](https://github.com/Heey-Global/verity/compare/v0.10.2...v0.10.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* **secrets:** redact decoded trusted CLI file credentials ([#393](https://github.com/Heey-Global/verity/issues/393)) ([c348055](https://github.com/Heey-Global/verity/commit/c348055f04cff326ab4d6a7ac97c4599e792ab95))
+
 ## [0.10.2](https://github.com/Heey-Global/verity/compare/v0.10.1...v0.10.2) (2026-09-16)
 
 
