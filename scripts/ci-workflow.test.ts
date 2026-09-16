@@ -701,6 +701,19 @@ describe('server test CI', () => {
     expect(embedded?.run).toContain('--maxWorkers=1');
   });
 
+  it('isolates the embedded WASM runtime in a process instead of a worker thread', () => {
+    // Run 35117365072 aborted inside V8 UnregisterWasmAllocation in the thread
+    // pool, before Vitest could report a test result or run cleanup.
+    const command = test?.run
+      ?.replace(/\\\n\s*/g, ' ')
+      .split('\n')
+      .find((line) => line.includes('vitest run packages/server/src/embedded.test.ts'));
+    expect(command).toBeDefined();
+    expect(command).toContain('--pool=forks');
+    expect(command).toContain('--maxWorkers=1');
+    expect(command).toContain('--maxConcurrency=1');
+  });
+
   it('gives every Vitest-running step the shared PostgreSQL', () => {
     // The harness falls back to pglite when the URL is absent (see
     // packages/store/src/testing.ts), so a step that loses this env var does not

@@ -856,11 +856,11 @@ jobs:
               failed=1
             fi
           done
-          # This composition suite retains enough state that a forked worker can
-          # be killed after the preceding PGlite files. Its own process with one
-          # worker thread keeps it below the runner's memory ceiling.
+          # Keep this memory-heavy suite in a fresh single-worker invocation.
+          # A thread worker aborted inside V8 UnregisterWasmAllocation (run
+          # 35117365072); a fork isolates its WASM runtime from the parent.
           if ! npx vitest run packages/server/src/embedded.test.ts \
-            --pool=threads --maxWorkers=1 --maxConcurrency=1; then
+            --pool=forks --maxWorkers=1 --maxConcurrency=1; then
             failed=1
           fi
           exit "$failed"
