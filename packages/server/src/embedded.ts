@@ -2188,12 +2188,7 @@ export async function buildEmbeddedServer(
     if (svc === undefined) {
       svc = createGitHubPrService({
         repoDir,
-        ...(prTokenSource !== undefined
-          ? { token: createProjectAwareGitHubTokenSource(repoDir, prTokenSource) }
-          : {}),
-        ...(prTokenSource === undefined
-          ? { asyncToken: (owner: string, repo: string) => cachedProjectTokenMint({ owner, repo }) }
-          : {}),
+        ...createPrTokenSources(repoDir, prTokenSource, cachedProjectTokenMint),
         ttlMs: prStatusTtlMs,
         failureCooldownFor: prFailureCooldownFor,
       });
@@ -4932,6 +4927,22 @@ export function createProjectAwareGitHubTokenSource(
   fallback: GitHubTokenSource,
 ): () => string | undefined {
   return () => readProjectGitHubToken(repoDir) ?? resolveGitHubToken(fallback);
+}
+
+export function createPrTokenSources(
+  repoDir: string,
+  fallback: GitHubTokenSource | undefined,
+  mint: GitHubProjectTokenMint,
+): {
+  token?: () => string | undefined;
+  asyncToken: (owner: string, repo: string) => Promise<string | undefined>;
+} {
+  return {
+    ...(fallback === undefined
+      ? {}
+      : { token: createProjectAwareGitHubTokenSource(repoDir, fallback) }),
+    asyncToken: (owner, repo) => mint({ owner, repo }),
+  };
 }
 
 function resolveGitHubToken(source: GitHubTokenSource): string | undefined {

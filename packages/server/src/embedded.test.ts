@@ -50,6 +50,7 @@ import {
   parsePushEnabled,
   parseTasksProjectNumber,
   createProjectAwareGitHubTokenSource,
+  createPrTokenSources,
   refreshProjectGitHubToken,
   createProjectWorktreeFactory,
   buildRunnerConductorWiring,
@@ -588,6 +589,19 @@ describe('createProjectAwareGitHubTokenSource', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('createPrTokenSources', () => {
+  it('keeps the installation mint when the configured fallback provider is empty', async () => {
+    const mint = vi.fn(async () => 'installation-token');
+    const sources = createPrTokenSources('/repo', () => undefined, mint);
+
+    expect(sources.token?.()).toBeUndefined();
+    await expect(sources.asyncToken('Example-Org', 'Example-Repo')).resolves.toBe(
+      'installation-token',
+    );
+    expect(mint).toHaveBeenCalledWith({ owner: 'Example-Org', repo: 'Example-Repo' });
   });
 });
 

@@ -886,6 +886,22 @@ describe('createGitHubPrService', () => {
     expect(calls[0]?.headers?.Authorization).toBe('Bearer app-installation-token');
   });
 
+  it('prefers an async installation token when the configured sync provider is empty', async () => {
+    const { fetch, calls } = fakeFetch(ok([{ number: 5 }]));
+    const asyncToken = vi.fn(() => Promise.resolve('app-installation-token'));
+    const svc = createGitHubPrService({
+      repoDir: '/r',
+      token: () => undefined,
+      asyncToken,
+      git: githubRemote,
+      fetch,
+    });
+
+    expect(await svc.prForBranch('feat/1-x')).toBe(5);
+    expect(asyncToken).toHaveBeenCalledWith('Example-Org', 'Example-Repo');
+    expect(calls[0]?.headers?.Authorization).toBe('Bearer app-installation-token');
+  });
+
   it('degrades async token mint failures to null without calling GitHub', async () => {
     const { fetch, calls } = fakeFetch(ok([{ number: 5 }]));
     const svc = createGitHubPrService({
