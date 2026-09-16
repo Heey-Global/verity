@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.4](https://github.com/Heey-Global/verity/compare/v0.10.3...v0.10.4) (2026-09-16)
+
+
+### Bug Fixes
+
+* **server:** release sandbox recovery and PR discovery fixes ([#404](https://github.com/Heey-Global/verity/issues/404)) ([41b18af](https://github.com/Heey-Global/verity/commit/41b18afae63c987f3cde163ff9d445cdfd32c4b1))
+
 ## [0.10.3](https://github.com/Heey-Global/verity/compare/v0.10.2...v0.10.3) (2026-09-16)
 
 
