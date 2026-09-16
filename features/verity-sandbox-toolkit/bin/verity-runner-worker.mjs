@@ -762,9 +762,6 @@ var require_util = __commonJS({
         else
           defineBound(proto, key, desc.value);
       }
-      for (const sym of Object.getOwnPropertySymbols(table)) {
-        defineBound(proto, sym, table[sym]);
-      }
     }
     function own(inst, key, value, enumerable = true) {
       Object.defineProperty(inst, key, { configurable: true, writable: true, enumerable, value });
@@ -941,8 +938,7 @@ var require_core = __commonJS({
           } finally {
             _zodDesc.value = void 0;
           }
-        }
-        if (inst._zod.traits.has(name)) {
+        } else if (inst._zod.traits.has(name)) {
           return;
         }
         inst._zod.traits.add(name);
@@ -1545,8 +1541,8 @@ var require_regexes = __commonJS({
       return result2;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.sha1_base64url = exports.sha1_base64 = exports.sha1_hex = exports.md5_base64url = exports.md5_base64 = exports.md5_hex = exports.hex = exports.uppercase = exports.lowercase = exports.undefined = exports.null = exports.boolean = exports.number = exports.integer = exports.bigint = exports.string = exports.anyString = exports.date = exports.iban = exports.creditCard = exports.e164 = exports.httpProtocol = exports.domain = exports.hostname = exports.base64url = exports.base64 = exports.cidrv6 = exports.cidrv4 = exports.mac = exports.ipv6 = exports.ipv4 = exports.browserEmail = exports.idnEmail = exports.unicodeEmail = exports.rfc5322Email = exports.html5Email = exports.email = exports.uuid7 = exports.uuid6 = exports.uuid4 = exports.uuid = exports.guid = exports.extendedDuration = exports.duration = exports.nanoid = exports.ksuid = exports.xid = exports.ulid = exports.cuid2 = exports.cuid = void 0;
-    exports.sha512_base64url = exports.sha512_base64 = exports.sha512_hex = exports.sha384_base64url = exports.sha384_base64 = exports.sha384_hex = exports.sha256_base64url = exports.sha256_base64 = exports.sha256_hex = void 0;
+    exports.sha1_base64 = exports.sha1_hex = exports.md5_base64url = exports.md5_base64 = exports.md5_hex = exports.hex = exports.uppercase = exports.lowercase = exports.undefined = exports.null = exports.boolean = exports.number = exports.integer = exports.bigint = exports.string = exports.anyString = exports.date = exports.iban = exports.currencyCode = exports.creditCard = exports.e164 = exports.httpProtocol = exports.domain = exports.hostname = exports.base64url = exports.base64 = exports.cidrv6 = exports.cidrv4 = exports.mac = exports.ipv6 = exports.ipv4 = exports.browserEmail = exports.idnEmail = exports.unicodeEmail = exports.rfc5322Email = exports.html5Email = exports.email = exports.uuid7 = exports.uuid6 = exports.uuid4 = exports.uuid = exports.guid = exports.extendedDuration = exports.duration = exports.nanoid = exports.ksuid = exports.xid = exports.ulid = exports.cuid2 = exports.cuid = void 0;
+    exports.sha512_base64url = exports.sha512_base64 = exports.sha512_hex = exports.sha384_base64url = exports.sha384_base64 = exports.sha384_hex = exports.sha256_base64url = exports.sha256_base64 = exports.sha256_hex = exports.sha1_base64url = void 0;
     exports.nanoidOfLength = nanoidOfLength;
     exports.emoji = emoji;
     exports.time = time;
@@ -1599,6 +1595,7 @@ var require_regexes = __commonJS({
     exports.httpProtocol = /^https?$/;
     exports.e164 = /^\+[1-9]\d{6,14}$/;
     exports.creditCard = /^\d(?:[ -]?\d){11,18}$/;
+    exports.currencyCode = /^(?:AED|AFN|ALL|AMD|AOA|ARS|AUD|AWG|AZN|BAM|BBD|BDT|BHD|BIF|BMD|BND|BOB|BOV|BRL|BSD|BTN|BWP|BYN|BZD|CAD|CDF|CHE|CHF|CHW|CLF|CLP|CNY|COP|COU|CRC|CUP|CVE|CZK|DJF|DKK|DOP|DZD|EGP|ERN|ETB|EUR|FJD|FKP|GBP|GEL|GHS|GIP|GMD|GNF|GTQ|GYD|HKD|HNL|HTG|HUF|IDR|ILS|INR|IQD|IRR|ISK|JMD|JOD|JPY|KES|KGS|KHR|KMF|KPW|KRW|KWD|KYD|KZT|LAK|LBP|LKR|LRD|LSL|LYD|MAD|MDL|MGA|MKD|MMK|MNT|MOP|MRU|MUR|MVR|MWK|MXN|MXV|MYR|MZN|NAD|NGN|NIO|NOK|NPR|NZD|OMR|PAB|PEN|PGK|PHP|PKR|PLN|PYG|QAR|RON|RSD|RUB|RWF|SAR|SBD|SCR|SDG|SEK|SGD|SHP|SLE|SOS|SRD|SSP|STN|SVC|SYP|SZL|THB|TJS|TMT|TND|TOP|TRY|TTD|TWD|TZS|UAH|UGX|USD|USN|UYI|UYU|UYW|UZS|VED|VES|VND|VUV|WST|XAD|XAF|XAG|XAU|XBA|XBB|XBC|XBD|XCD|XCG|XDR|XOF|XPD|XPF|XPT|XSU|XTS|XUA|XXX|YER|ZAR|ZMW|ZWG)$/;
     exports.iban = /^[A-Z]{2}(?!00|01|99)\d{2}[A-Z0-9]{11,30}$/;
     var dateSource = `(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))`;
     function anchor(source) {
@@ -1710,7 +1707,7 @@ var require_checks = __commonJS({
       return result2;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.$ZodCheckOverwrite = exports.$ZodCheckMimeType = exports.$ZodCheckProperty = exports.$ZodCheckEndsWith = exports.$ZodCheckStartsWith = exports.$ZodCheckIncludes = exports.$ZodCheckUpperCase = exports.$ZodCheckLowerCase = exports.$ZodCheckRegex = exports.$ZodCheckStringFormat = exports.$ZodCheckLengthEquals = exports.$ZodCheckMinLength = exports.$ZodCheckMaxLength = exports.$ZodCheckSizeEquals = exports.$ZodCheckMinSize = exports.$ZodCheckMaxSize = exports.$ZodCheckBigIntFormat = exports.$ZodCheckNumberFormat = exports.$ZodCheckMultipleOf = exports.$ZodCheckGreaterThan = exports.$ZodCheckLessThan = exports.$ZodCheck = void 0;
+    exports.$ZodCheckOverwrite = exports.$ZodCheckMimeType = exports.$ZodCheckProperties = exports.$ZodCheckProperty = exports.$ZodCheckEndsWith = exports.$ZodCheckStartsWith = exports.$ZodCheckIncludes = exports.$ZodCheckUpperCase = exports.$ZodCheckLowerCase = exports.$ZodCheckRegex = exports.$ZodCheckStringFormat = exports.$ZodCheckLengthEquals = exports.$ZodCheckMinLength = exports.$ZodCheckMaxLength = exports.$ZodCheckSizeEquals = exports.$ZodCheckMinSize = exports.$ZodCheckMaxSize = exports.$ZodCheckBigIntFormat = exports.$ZodCheckNumberFormat = exports.$ZodCheckMultipleOf = exports.$ZodCheckGreaterThan = exports.$ZodCheckLessThan = exports.$ZodCheck = void 0;
     var core = __importStar(require_core());
     var regexes = __importStar(require_regexes());
     var util = __importStar(require_util());
@@ -2139,6 +2136,34 @@ var require_checks = __commonJS({
         return;
       };
     });
+    exports.$ZodCheckProperties = core.$constructor("$ZodCheckProperties", (inst, def) => {
+      exports.$ZodCheck.init(inst, def);
+      util.hide(inst, Symbol.iterator, function* () {
+        yield inst;
+      });
+      let entries;
+      inst._zod.check = (payload) => {
+        if (payload.value == null) {
+          payload.issues.push({ expected: "object", code: "invalid_type", input: payload.value, inst });
+          return void 0;
+        }
+        entries ?? (entries = Reflect.ownKeys(def.shape).map((key) => [key, def.shape[key]]));
+        const input = payload.value;
+        let proms;
+        for (const [key, schema] of entries) {
+          const result2 = schema._zod.run({ value: input[key], issues: [] }, {});
+          if (result2 instanceof Promise) {
+            proms ?? (proms = []);
+            proms.push(result2.then((result3) => handleCheckPropertyResult(result3, payload, key)));
+          } else {
+            handleCheckPropertyResult(result2, payload, key);
+          }
+        }
+        if (proms)
+          return Promise.all(proms).then(() => void 0);
+        return void 0;
+      };
+    });
     exports.$ZodCheckMimeType = core.$constructor("$ZodCheckMimeType", (inst, def) => {
       exports.$ZodCheck.init(inst, def);
       const mimeSet = new Set(def.mime);
@@ -2253,7 +2278,7 @@ var require_versions = __commonJS({
     exports.version = {
       major: 4,
       minor: 6,
-      patch: 2
+      patch: 4
     };
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
@@ -2307,8 +2332,10 @@ var require_schemas = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.$ZodObject = exports.$ZodArray = exports.$ZodDate = exports.$ZodVoid = exports.$ZodNever = exports.$ZodUnknown = exports.$ZodAny = exports.$ZodNull = exports.$ZodUndefined = exports.$ZodSymbol = exports.$ZodBigIntFormat = exports.$ZodBigInt = exports.$ZodBoolean = exports.$ZodNumberFormat = exports.$ZodNumber = exports.$ZodCustomStringFormat = exports.$ZodJWT = exports.$ZodIBAN = exports.$ZodCreditCard = exports.$ZodE164 = exports.$ZodBase64URL = exports.base64urlCharset = exports.$ZodBase64 = exports.base64Charset = exports.$ZodCIDRv6 = exports.$ZodCIDRv4 = exports.$ZodMAC = exports.$ZodIPv6 = exports.$ZodIPv4 = exports.$ZodISODuration = exports.$ZodISOTime = exports.$ZodISODate = exports.$ZodISODateTime = exports.$ZodKSUID = exports.$ZodXID = exports.$ZodULID = exports.$ZodCUID2 = exports.$ZodCUID = exports.$ZodNanoID = exports.$ZodEmoji = exports.$ZodURL = exports.URL_UNPARSEABLE = exports.URL_BAD_FORMAT = exports.$ZodEmail = exports.$ZodUUID = exports.$ZodGUID = exports.$ZodStringFormat = exports.$ZodString = exports.clone = exports.$ZodType = void 0;
-    exports.$ZodProperties = exports.$ZodCustom = exports.$ZodLazy = exports.$ZodPromise = exports.$ZodFunction = exports.$ZodTemplateLiteral = exports.$ZodReadonly = exports.$ZodPreprocess = exports.$ZodCodec = exports.$ZodPipe = exports.$ZodNaN = exports.$ZodCatch = exports.$ZodSuccess = exports.$ZodNonOptional = exports.$ZodPrefault = exports.$ZodDefault = exports.$ZodNullable = exports.$ZodExactOptional = exports.$ZodOptional = exports.$ZodTransform = exports.$ZodFile = exports.$ZodLiteral = exports.$ZodEnum = exports.$ZodSet = exports.$ZodMap = exports.$ZodRecord = exports.$ZodTuple = exports.$ZodIntersection = exports.$ZodDiscriminatedUnion = exports.$ZodXor = exports.$ZodUnion = exports.$ZodObjectJIT = void 0;
+    exports.$ZodCustom = exports.$ZodLazy = exports.$ZodPromise = exports.$ZodFunction = exports.$ZodTemplateLiteral = exports.$ZodReadonly = exports.$ZodPreprocess = exports.$ZodCodec = exports.$ZodPipe = exports.$ZodNaN = exports.$ZodCatch = exports.$ZodSuccess = exports.$ZodNonOptional = exports.$ZodPrefault = exports.$ZodDefault = exports.$ZodNullable = exports.$ZodExactOptional = exports.$ZodOptional = exports.$ZodTransform = exports.$ZodFile = exports.$ZodLiteral = exports.$ZodEnum = exports.$ZodSet = exports.$ZodMap = exports.$ZodRecord = exports.$ZodTuple = exports.$ZodIntersection = exports.$ZodDiscriminatedUnion = exports.$ZodXor = exports.$ZodUnion = exports.$ZodObjectJIT = void 0;
     exports.standardProps = standardProps;
+    exports.canParseURL = canParseURL;
+    exports.validateURL = validateURL;
     exports.parseURLObject = parseURLObject;
     exports.stripTabAndNewline = stripTabAndNewline;
     exports.urlHostnameOk = urlHostnameOk;
@@ -2517,11 +2544,32 @@ var require_schemas = __commonJS({
     });
     exports.URL_BAD_FORMAT = 1;
     exports.URL_UNPARSEABLE = 2;
+    function canParseURL(input) {
+      try {
+        if (typeof URL !== "undefined" && typeof URL.canParse === "function")
+          return URL.canParse(input);
+        new URL(input);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    function validateURL(trimmed, def) {
+      if (!("normalize" in def) && !("hostname" in def) && !("protocol" in def)) {
+        return canParseURL(trimmed) || exports.URL_UNPARSEABLE;
+      }
+      return parseURLObject(trimmed, def);
+    }
     function parseURLObject(trimmed, def) {
       if (!def.normalize && def.protocol?.source === regexes.httpProtocol.source && !/^https?:\/\//i.test(trimmed)) {
         return exports.URL_BAD_FORMAT;
       }
       try {
+        if (typeof URL !== "undefined") {
+          const URLStatic = URL;
+          if (typeof URLStatic.parse === "function")
+            return URLStatic.parse(trimmed) ?? exports.URL_UNPARSEABLE;
+        }
         return new URL(trimmed);
       } catch {
         return exports.URL_UNPARSEABLE;
@@ -2544,7 +2592,7 @@ var require_schemas = __commonJS({
       inst._zod.check = (payload) => {
         try {
           const trimmed = payload.value.trim();
-          const url2 = parseURLObject(trimmed, def);
+          const url2 = validateURL(trimmed, def);
           if (url2 === exports.URL_BAD_FORMAT) {
             payload.issues.push({
               code: "invalid_format",
@@ -2564,6 +2612,10 @@ var require_schemas = __commonJS({
               inst,
               continue: !def.abort
             });
+            return;
+          }
+          if (url2 === true) {
+            payload.value = stripTabAndNewline(trimmed);
             return;
           }
           if (def.hostname && !urlHostnameOk(url2, def.hostname)) {
@@ -2655,12 +2707,7 @@ var require_schemas = __commonJS({
     function isValidIPv6(value) {
       if (!ipv6Alphabet.test(value))
         return false;
-      try {
-        new URL(`http://[${value}]`);
-        return true;
-      } catch {
-        return false;
-      }
+      return canParseURL(`http://[${value}]`);
     }
     exports.$ZodIPv6 = core.$constructor("$ZodIPv6", (inst, def) => {
       def.pattern ?? (def.pattern = regexes.ipv6);
@@ -4725,59 +4772,6 @@ var require_schemas = __commonJS({
         payload.issues.push(util.issue(_iss));
       }
     }
-    function handlePropertiesResult(result2, payload, key) {
-      if (result2.issues.length) {
-        payload.issues.push(...util.prefixIssues(key, result2.issues));
-      }
-    }
-    exports.$ZodProperties = core.$constructor("$ZodProperties", (inst, def) => {
-      exports.$ZodType.init(inst, def);
-      checks.$ZodCheck.init(inst, def);
-      const memo = core.globalConfig.memoizer;
-      memo?.attach(inst);
-      let entries;
-      const runShape = (payload, ctx) => {
-        entries ?? (entries = Reflect.ownKeys(def.shape).map((key) => [key, def.shape[key]]));
-        const input = payload.value;
-        let proms;
-        for (const [key, schema] of entries) {
-          const result2 = schema._zod.run({ value: input[key], issues: [] }, ctx);
-          if (result2 instanceof Promise) {
-            proms ?? (proms = []);
-            proms.push(result2.then((result3) => handlePropertiesResult(result3, payload, key)));
-          } else {
-            handlePropertiesResult(result2, payload, key);
-          }
-        }
-        if (proms)
-          return Promise.all(proms).then(() => void 0);
-        return void 0;
-      };
-      inst._zod.parse = (payload, ctx) => {
-        const input = payload.value;
-        if (input === null || typeof input !== "object" && typeof input !== "function") {
-          payload.issues.push({ expected: "object", code: "invalid_type", input, inst });
-          return payload;
-        }
-        if (ctx.direction === "backward")
-          ctx = { ...ctx, direction: "forward" };
-        if (memo)
-          memo.alloc(inst, payload, input, ctx);
-        const result2 = runShape(payload, ctx);
-        return result2 instanceof Promise ? result2.then(() => payload) : payload;
-      };
-      inst._zod.check = (payload) => {
-        if (payload.value == null) {
-          payload.issues.push({ expected: "object", code: "invalid_type", input: payload.value, inst });
-          return void 0;
-        }
-        return runShape(payload, {});
-      };
-    }, {
-      *[Symbol.iterator]() {
-        yield this;
-      }
-    });
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
       for (var i = 0; i < keys.length; i++) {
@@ -4844,7 +4838,7 @@ var require_memoizer = __commonJS({
     var STATE = "~memo";
     var NO_ISSUES = [];
     function isRef(value) {
-      return value !== null && (typeof value === "object" || typeof value === "function");
+      return value !== null && typeof value === "object";
     }
     function cloneIssues(issues) {
       return issues.map((iss) => iss.path ? { ...iss, path: iss.path.slice() } : { ...iss });
@@ -4893,9 +4887,6 @@ var require_memoizer = __commonJS({
           check(def.catchall);
           break;
         }
-        case "properties":
-          merge(shape(def.shape, false));
-          break;
         case "array":
           check(def.element);
           break;
@@ -5206,6 +5197,7 @@ var require_ar = __commonJS({
         json_string: "\u0646\u064E\u0635 \u0639\u0644\u0649 \u0647\u064A\u0626\u0629 JSON",
         e164: "\u0631\u0642\u0645 \u0647\u0627\u062A\u0641 \u0628\u0645\u0639\u064A\u0627\u0631 E.164",
         credit_card: "\u0631\u0642\u0645 \u0628\u0637\u0627\u0642\u0629 \u0627\u0644\u0627\u0626\u062A\u0645\u0627\u0646",
+        currency_code: "\u0631\u0645\u0632 \u0627\u0644\u0639\u0645\u0644\u0629",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0645\u062F\u062E\u0644"
@@ -5353,6 +5345,7 @@ var require_az = __commonJS({
         json_string: "JSON string",
         e164: "E.164 number",
         credit_card: "kredit kart\u0131 n\xF6mr\u0259si",
+        currency_code: "valyuta kodu",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -5549,6 +5542,7 @@ var require_be = __commonJS({
         json_string: "JSON \u0440\u0430\u0434\u043E\u043A",
         e164: "\u043D\u0443\u043C\u0430\u0440 E.164",
         credit_card: "\u043D\u0443\u043C\u0430\u0440 \u043A\u0440\u044D\u0434\u044B\u0442\u043D\u0430\u0439 \u043A\u0430\u0440\u0442\u044B",
+        currency_code: "\u043A\u043E\u0434 \u0432\u0430\u043B\u044E\u0442\u044B",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0443\u0432\u043E\u0434"
@@ -5703,6 +5697,7 @@ var require_bg = __commonJS({
         json_string: "JSON \u043D\u0438\u0437",
         e164: "E.164 \u043D\u043E\u043C\u0435\u0440",
         credit_card: "\u043D\u043E\u043C\u0435\u0440 \u043D\u0430 \u043A\u0440\u0435\u0434\u0438\u0442\u043D\u0430 \u043A\u0430\u0440\u0442\u0430",
+        currency_code: "\u043A\u043E\u0434 \u043D\u0430 \u0432\u0430\u043B\u0443\u0442\u0430",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0432\u0445\u043E\u0434"
@@ -5864,6 +5859,7 @@ var require_bn = __commonJS({
         json_string: "JSON \u09B8\u09CD\u099F\u09CD\u09B0\u09BF\u0982",
         e164: "E.164 \u09A8\u09AE\u09CD\u09AC\u09B0",
         credit_card: "\u0995\u09CD\u09B0\u09C7\u09A1\u09BF\u099F \u0995\u09BE\u09B0\u09CD\u09A1 \u09A8\u09AE\u09CD\u09AC\u09B0",
+        currency_code: "\u09AE\u09C1\u09A6\u09CD\u09B0\u09BE \u0995\u09CB\u09A1",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0987\u09A8\u09AA\u09C1\u099F"
@@ -6013,6 +6009,7 @@ var require_ca = __commonJS({
         json_string: "cadena JSON",
         e164: "n\xFAmero E.164",
         credit_card: "n\xFAmero de targeta de cr\xE8dit",
+        currency_code: "codi de moneda",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "entrada"
@@ -6162,6 +6159,7 @@ var require_ckb = __commonJS({
         json_string: "\u062F\u06D5\u0642\u06CC JSON",
         e164: "\u0698\u0645\u0627\u0631\u06D5\u06CC E.164",
         credit_card: "\u0698\u0645\u0627\u0631\u06D5\u06CC \u06A9\u0627\u0631\u062A\u06CC \u06A9\u0631\u06CE\u062F\u06CC\u062A",
+        currency_code: "\u06A9\u06C6\u062F\u06CC \u062F\u0631\u0627\u0648",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u062A\u06CE\u06A9\u0631\u062F\u06D5"
@@ -6330,6 +6328,7 @@ var require_cs = __commonJS({
         json_string: "\u0159et\u011Bzec ve form\xE1tu JSON",
         e164: "\u010D\xEDslo E.164",
         credit_card: "\u010D\xEDslo kreditn\xED karty",
+        currency_code: "k\xF3d m\u011Bny",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "vstup"
@@ -6482,6 +6481,7 @@ var require_da = __commonJS({
         json_string: "JSON-streng",
         e164: "E.164-nummer",
         credit_card: "kreditkortnummer",
+        currency_code: "valutakode",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -6638,6 +6638,7 @@ var require_de = __commonJS({
         json_string: "JSON-String",
         e164: "E.164-Nummer",
         credit_card: "Kreditkartennummer",
+        currency_code: "W\xE4hrungscode",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "Eingabe"
@@ -6787,6 +6788,7 @@ var require_el = __commonJS({
         json_string: "\u03C3\u03C5\u03BC\u03B2\u03BF\u03BB\u03BF\u03C3\u03B5\u03B9\u03C1\u03AC JSON",
         e164: "\u03B1\u03C1\u03B9\u03B8\u03BC\u03CC\u03C2 E.164",
         credit_card: "\u03B1\u03C1\u03B9\u03B8\u03BC\u03CC\u03C2 \u03C0\u03B9\u03C3\u03C4\u03C9\u03C4\u03B9\u03BA\u03AE\u03C2 \u03BA\u03AC\u03C1\u03C4\u03B1\u03C2",
+        currency_code: "\u03BA\u03C9\u03B4\u03B9\u03BA\u03CC\u03C2 \u03BD\u03BF\u03BC\u03AF\u03C3\u03BC\u03B1\u03C4\u03BF\u03C2",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u03B5\u03AF\u03C3\u03BF\u03B4\u03BF\u03C2"
@@ -6934,6 +6936,7 @@ var require_en = __commonJS({
         base64url: "base64url-encoded string",
         json_string: "JSON string",
         e164: "E.164 number",
+        currency_code: "currency code",
         credit_card: "credit card number",
         iban: "IBAN",
         jwt: "JWT",
@@ -7095,6 +7098,7 @@ var require_eo = __commonJS({
         json_string: "JSON-karaktraro",
         e164: "E.164-nombro",
         credit_card: "kreditkarta numero",
+        currency_code: "valuta kodo",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "enigo"
@@ -7244,6 +7248,7 @@ var require_es = __commonJS({
         json_string: "cadena JSON",
         e164: "n\xFAmero E.164",
         credit_card: "n\xFAmero de tarjeta de cr\xE9dito",
+        currency_code: "c\xF3digo de moneda",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "entrada"
@@ -7417,6 +7422,7 @@ var require_fa = __commonJS({
         json_string: "JSON \u0631\u0634\u062A\u0647",
         e164: "E.164 \u0639\u062F\u062F",
         credit_card: "\u0634\u0645\u0627\u0631\u0647 \u06A9\u0627\u0631\u062A \u0627\u0639\u062A\u0628\u0627\u0631\u06CC",
+        currency_code: "\u06A9\u062F \u0627\u0631\u0632",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0648\u0631\u0648\u062F\u06CC"
@@ -7576,6 +7582,7 @@ var require_fi = __commonJS({
         json_string: "JSON-merkkijono",
         e164: "E.164-luku",
         credit_card: "luottokortin numero",
+        currency_code: "valuuttakoodi",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "templaattimerkkijono"
@@ -7724,6 +7731,7 @@ var require_fr = __commonJS({
         json_string: "cha\xEEne de caract\xE8res JSON",
         e164: "num\xE9ro au format E.164",
         credit_card: "num\xE9ro de carte de cr\xE9dit",
+        currency_code: "code de devise",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "entr\xE9e"
@@ -7890,6 +7898,7 @@ var require_fr_CA = __commonJS({
         json_string: "cha\xEEne JSON",
         e164: "num\xE9ro E.164",
         credit_card: "num\xE9ro de carte de cr\xE9dit",
+        currency_code: "code de devise",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "entr\xE9e"
@@ -8038,6 +8047,7 @@ var require_gu = __commonJS({
         json_string: "JSON \u0AB8\u0ACD\u0A9F\u0ACD\u0AB0\u0ABF\u0A82\u0A97",
         e164: "E.164 \u0AA8\u0A82\u0AAC\u0AB0",
         credit_card: "\u0A95\u0ACD\u0AB0\u0AC7\u0AA1\u0ABF\u0A9F \u0A95\u0ABE\u0AB0\u0ACD\u0AA1 \u0AA8\u0A82\u0AAC\u0AB0",
+        currency_code: "\u0A9A\u0AB2\u0AA3 \u0A95\u0ACB\u0AA1",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0A87\u0AA8\u0AAA\u0AC1\u0A9F"
@@ -8223,6 +8233,7 @@ var require_he = __commonJS({
         json_string: { label: "\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA JSON", gender: "f" },
         e164: { label: "\u05DE\u05E1\u05E4\u05E8 E.164", gender: "m" },
         credit_card: { label: "\u05DE\u05E1\u05E4\u05E8 \u05DB\u05E8\u05D8\u05D9\u05E1 \u05D0\u05E9\u05E8\u05D0\u05D9", gender: "m" },
+        currency_code: { label: "\u05E7\u05D5\u05D3 \u05DE\u05D8\u05D1\u05E2", gender: "m" },
         iban: { label: "IBAN", gender: "m" },
         jwt: { label: "JWT", gender: "m" },
         template_literal: { label: "\u05E7\u05DC\u05D8", gender: "m" },
@@ -8424,6 +8435,7 @@ var require_hi = __commonJS({
         json_string: "JSON \u0938\u094D\u091F\u094D\u0930\u093F\u0902\u0917",
         e164: "E.164 \u0938\u0902\u0916\u094D\u092F\u093E",
         credit_card: "\u0915\u094D\u0930\u0947\u0921\u093F\u091F \u0915\u093E\u0930\u094D\u0921 \u0938\u0902\u0916\u094D\u092F\u093E",
+        currency_code: "\u092E\u0941\u0926\u094D\u0930\u093E \u0915\u094B\u0921",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0907\u0928\u092A\u0941\u091F"
@@ -8570,6 +8582,7 @@ var require_hr = __commonJS({
         json_string: "JSON tekst",
         e164: "E.164 broj",
         credit_card: "broj kreditne kartice",
+        currency_code: "kod valute",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "unos"
@@ -8733,6 +8746,7 @@ var require_hu = __commonJS({
         json_string: "JSON string",
         e164: "E.164 sz\xE1m",
         credit_card: "hitelk\xE1rtyasz\xE1m",
+        currency_code: "p\xE9nznemk\xF3d",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "bemenet"
@@ -8922,6 +8936,7 @@ var require_hy = __commonJS({
         json_string: "JSON \u057F\u0578\u0572",
         e164: "E.164 \u0570\u0561\u0574\u0561\u0580",
         credit_card: "\u056F\u0580\u0565\u0564\u056B\u057F \u0584\u0561\u0580\u057F\u056B \u0570\u0561\u0574\u0561\u0580",
+        currency_code: "\u0561\u0580\u056A\u0578\u0582\u0575\u0569\u056B \u056F\u0578\u0564",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0574\u0578\u0582\u057F\u0584"
@@ -9076,6 +9091,7 @@ var require_id = __commonJS({
         json_string: "string JSON",
         e164: "angka E.164",
         credit_card: "nomor kartu kredit",
+        currency_code: "kode mata uang",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -9223,6 +9239,7 @@ var require_is = __commonJS({
         json_string: "JSON strengur",
         e164: "E.164 t\xF6lugildi",
         credit_card: "kreditkortan\xFAmer",
+        currency_code: "gjaldmi\xF0ilsk\xF3\xF0i",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "gildi"
@@ -9373,6 +9390,7 @@ var require_it = __commonJS({
         json_string: "stringa JSON",
         e164: "numero E.164",
         credit_card: "numero di carta di credito",
+        currency_code: "codice valuta",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -9522,6 +9540,7 @@ var require_ja = __commonJS({
         json_string: "JSON\u6587\u5B57\u5217",
         e164: "E.164\u756A\u53F7",
         credit_card: "\u30AF\u30EC\u30B8\u30C3\u30C8\u30AB\u30FC\u30C9\u756A\u53F7",
+        currency_code: "\u901A\u8CA8\u30B3\u30FC\u30C9",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u5165\u529B\u5024"
@@ -9670,6 +9689,7 @@ var require_ka = __commonJS({
         json_string: "JSON \u10D5\u10D4\u10DA\u10D8",
         e164: "E.164 \u10DC\u10DD\u10DB\u10D4\u10E0\u10D8",
         credit_card: "\u10E1\u10D0\u10D9\u10E0\u10D4\u10D3\u10D8\u10E2\u10DD \u10D1\u10D0\u10E0\u10D0\u10D7\u10D8\u10E1 \u10DC\u10DD\u10DB\u10D4\u10E0\u10D8",
+        currency_code: "\u10D5\u10D0\u10DA\u10E3\u10E2\u10D8\u10E1 \u10D9\u10DD\u10D3\u10D8",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u10E8\u10D4\u10E7\u10D5\u10D0\u10DC\u10D0"
@@ -9823,6 +9843,7 @@ var require_km = __commonJS({
         json_string: "\u1781\u17D2\u179F\u17C2\u17A2\u1780\u17D2\u179F\u179A JSON",
         e164: "\u179B\u17C1\u1781 E.164",
         credit_card: "\u179B\u17C1\u1781\u1794\u17D0\u178E\u17D2\u178E\u17A5\u178E\u1791\u17B6\u1793",
+        currency_code: "\u1780\u17BC\u178A\u179A\u17BC\u1794\u17B7\u1799\u1794\u17D0\u178E\u17D2\u178E",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u1791\u17B7\u1793\u17D2\u1793\u1793\u17D0\u1799\u1794\u1789\u17D2\u1785\u17BC\u179B"
@@ -9991,6 +10012,7 @@ var require_kn = __commonJS({
         json_string: "JSON\u0CB8\u0CCD\u0C9F\u0CCD\u0CB0\u0CBF\u0C82\u0C97\u0CCD",
         e164: "E.164 \u0CB8\u0C82\u0C96\u0CCD\u0CAF\u0CC6",
         credit_card: "\u0C95\u0CCD\u0CB0\u0CC6\u0CA1\u0CBF\u0C9F\u0CCD \u0C95\u0CBE\u0CB0\u0CCD\u0CA1\u0CCD \u0CB8\u0C82\u0C96\u0CCD\u0CAF\u0CC6",
+        currency_code: "\u0C95\u0CB0\u0CC6\u0CA8\u0CCD\u0CB8\u0CBF \u0C95\u0CCB\u0CA1\u0CCD",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0C87\u0CA8\u0CCD\u0CAA\u0CC1\u0C9F\u0CCD"
@@ -10142,6 +10164,7 @@ var require_ko = __commonJS({
         json_string: "JSON \uBB38\uC790\uC5F4",
         e164: "E.164 \uBC88\uD638",
         credit_card: "\uC2E0\uC6A9\uCE74\uB4DC \uBC88\uD638",
+        currency_code: "\uD1B5\uD654 \uCF54\uB4DC",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\uC785\uB825"
@@ -10376,6 +10399,7 @@ var require_lt = __commonJS({
         json_string: "JSON eilut\u0117",
         e164: "E.164 numeris",
         credit_card: "kredito kortel\u0117s numeris",
+        currency_code: "valiutos kodas",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u012Fvestis"
@@ -10537,6 +10561,7 @@ var require_mk = __commonJS({
         json_string: "JSON \u043D\u0438\u0437\u0430",
         e164: "E.164 \u0431\u0440\u043E\u0458",
         credit_card: "\u0431\u0440\u043E\u0458 \u043D\u0430 \u043A\u0440\u0435\u0434\u0438\u0442\u043D\u0430 \u043A\u0430\u0440\u0442\u0438\u0447\u043A\u0430",
+        currency_code: "\u043A\u043E\u0434 \u043D\u0430 \u0432\u0430\u043B\u0443\u0442\u0430",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0432\u043D\u0435\u0441"
@@ -10687,6 +10712,7 @@ var require_ms = __commonJS({
         json_string: "string JSON",
         e164: "nombor E.164",
         credit_card: "nombor kad kredit",
+        currency_code: "kod mata wang",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -10835,6 +10861,7 @@ var require_ne = __commonJS({
         json_string: "JSON \u0938\u094D\u091F\u094D\u0930\u093F\u0919",
         e164: "E.164 \u0928\u092E\u094D\u092C\u0930",
         credit_card: "\u0915\u094D\u0930\u0947\u0921\u093F\u091F \u0915\u093E\u0930\u094D\u0921 \u0928\u092E\u094D\u092C\u0930",
+        currency_code: "\u092E\u0941\u0926\u094D\u0930\u093E \u0915\u094B\u0921",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0907\u0928\u092A\u0941\u091F"
@@ -10982,6 +11009,7 @@ var require_nl = __commonJS({
         json_string: "JSON string",
         e164: "E.164-nummer",
         credit_card: "creditcardnummer",
+        currency_code: "valutacode",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "invoer"
@@ -11133,6 +11161,7 @@ var require_nn = __commonJS({
         json_string: "JSON-streng",
         e164: "E.164-nummer",
         credit_card: "kredittkortnummer",
+        currency_code: "valutakode",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -11282,6 +11311,7 @@ var require_no = __commonJS({
         json_string: "JSON-streng",
         e164: "E.164-nummer",
         credit_card: "kredittkortnummer",
+        currency_code: "valutakode",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -11431,6 +11461,7 @@ var require_ota = __commonJS({
         json_string: "JSON metin",
         e164: "E.164 say\u0131s\u0131",
         credit_card: "i'tib\xE2r kart\u0131 numaras\u0131",
+        currency_code: "para birimi kodu",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "giren"
@@ -11581,6 +11612,7 @@ var require_ps = __commonJS({
         json_string: "JSON \u0645\u062A\u0646",
         e164: "\u062F E.164 \u0634\u0645\u06D0\u0631\u0647",
         credit_card: "\u062F \u06A9\u0631\u06CC\u0689\u06CC\u067C \u06A9\u0627\u0631\u062A \u0634\u0645\u06CC\u0631\u0647",
+        currency_code: "\u062F \u0627\u0633\u0639\u0627\u0631\u0648 \u06A9\u0648\u0689",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0648\u0631\u0648\u062F\u064A"
@@ -11736,6 +11768,7 @@ var require_pl = __commonJS({
         json_string: "ci\u0105g znak\xF3w w formacie JSON",
         e164: "liczba E.164",
         credit_card: "numer karty kredytowej",
+        currency_code: "kod waluty",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "wej\u015Bcie"
@@ -11886,6 +11919,7 @@ var require_pt = __commonJS({
         json_string: "o texto JSON",
         e164: "o n\xFAmero E.164",
         credit_card: "o n\xFAmero de cart\xE3o de cr\xE9dito",
+        currency_code: "o c\xF3digo de moeda",
         iban: "o IBAN",
         jwt: "o JWT",
         template_literal: "a entrada"
@@ -12065,6 +12099,7 @@ var require_pt_BR = __commonJS({
         json_string: "o texto JSON",
         e164: "o n\xFAmero E.164",
         credit_card: "o n\xFAmero de cart\xE3o de cr\xE9dito",
+        currency_code: "o c\xF3digo de moeda",
         iban: "o IBAN",
         jwt: "o JWT",
         template_literal: "a entrada"
@@ -12245,6 +12280,7 @@ var require_ro = __commonJS({
         json_string: "\u0219ir JSON",
         e164: "num\u0103r E.164",
         credit_card: "num\u0103r de card de credit",
+        currency_code: "cod valutar",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "intrare"
@@ -12453,6 +12489,7 @@ var require_ru = __commonJS({
         json_string: "JSON \u0441\u0442\u0440\u043E\u043A\u0430",
         e164: "\u043D\u043E\u043C\u0435\u0440 E.164",
         credit_card: "\u043D\u043E\u043C\u0435\u0440 \u043A\u0440\u0435\u0434\u0438\u0442\u043D\u043E\u0439 \u043A\u0430\u0440\u0442\u044B",
+        currency_code: "\u043A\u043E\u0434 \u0432\u0430\u043B\u044E\u0442\u044B",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0432\u0432\u043E\u0434"
@@ -12607,6 +12644,7 @@ var require_sk = __commonJS({
         json_string: "re\u0165azec vo form\xE1te JSON",
         e164: "\u010D\xEDslo E.164",
         credit_card: "\u010D\xEDslo kreditnej karty",
+        currency_code: "k\xF3d meny",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "vstup"
@@ -12759,6 +12797,7 @@ var require_sl = __commonJS({
         json_string: "JSON niz",
         e164: "E.164 \u0161tevilka",
         credit_card: "\u0161tevilka kreditne kartice",
+        currency_code: "koda valute",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "vnos"
@@ -12909,6 +12948,7 @@ var require_sv = __commonJS({
         json_string: "JSON-str\xE4ng",
         e164: "E.164-nummer",
         credit_card: "kreditkortsnummer",
+        currency_code: "valutakod",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "mall-literal"
@@ -13060,6 +13100,7 @@ var require_ta = __commonJS({
         json_string: "JSON \u0B9A\u0BB0\u0BAE\u0BCD",
         e164: "E.164 \u0B8E\u0BA3\u0BCD",
         credit_card: "\u0B95\u0B9F\u0BA9\u0BCD \u0B85\u0B9F\u0BCD\u0B9F\u0BC8 \u0B8E\u0BA3\u0BCD",
+        currency_code: "\u0BA8\u0BBE\u0BA3\u0BAF\u0B95\u0BCD \u0B95\u0BC1\u0BB1\u0BBF\u0BAF\u0BC0\u0B9F\u0BC1",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "input"
@@ -13211,6 +13252,7 @@ var require_tg = __commonJS({
         json_string: "\u0441\u0430\u0442\u0440\u0438 JSON",
         e164: "\u0440\u0430\u049B\u0430\u043C\u0438 E.164",
         credit_card: "\u0440\u0430\u049B\u0430\u043C\u0438 \u043A\u043E\u0440\u0442\u0438 \u043A\u0440\u0435\u0434\u0438\u0442\u04E3",
+        currency_code: "\u0440\u0430\u043C\u0437\u0438 \u0430\u0441\u044A\u043E\u0440",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0432\u0443\u0440\u0443\u0434"
@@ -13363,6 +13405,7 @@ var require_th = __commonJS({
         json_string: "\u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E41\u0E1A\u0E1A JSON",
         e164: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E42\u0E17\u0E23\u0E28\u0E31\u0E1E\u0E17\u0E4C\u0E23\u0E30\u0E2B\u0E27\u0E48\u0E32\u0E07\u0E1B\u0E23\u0E30\u0E40\u0E17\u0E28 (E.164)",
         credit_card: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E25\u0E02\u0E1A\u0E31\u0E15\u0E23\u0E40\u0E04\u0E23\u0E14\u0E34\u0E15",
+        currency_code: "\u0E23\u0E2B\u0E31\u0E2A\u0E2A\u0E01\u0E38\u0E25\u0E40\u0E07\u0E34\u0E19",
         iban: "IBAN",
         jwt: "\u0E42\u0E17\u0E40\u0E04\u0E19 JWT",
         template_literal: "\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E17\u0E35\u0E48\u0E1B\u0E49\u0E2D\u0E19"
@@ -13514,6 +13557,7 @@ var require_tk = __commonJS({
         json_string: "JSON setiri",
         e164: "E.164 nomeri",
         credit_card: "kredit kartyny\u0148 nomeri",
+        currency_code: "wal\xFDuta kody",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u015Fablon"
@@ -13657,6 +13701,7 @@ var require_tr = __commonJS({
         json_string: "JSON dizesi",
         e164: "E.164 say\u0131s\u0131",
         credit_card: "kredi kart\u0131 numaras\u0131",
+        currency_code: "para birimi kodu",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u015Eablon dizesi"
@@ -13803,6 +13848,7 @@ var require_uk = __commonJS({
         json_string: "\u0440\u044F\u0434\u043E\u043A JSON",
         e164: "\u043D\u043E\u043C\u0435\u0440 E.164",
         credit_card: "\u043D\u043E\u043C\u0435\u0440 \u043A\u0440\u0435\u0434\u0438\u0442\u043D\u043E\u0457 \u043A\u0430\u0440\u0442\u043A\u0438",
+        currency_code: "\u043A\u043E\u0434 \u0432\u0430\u043B\u044E\u0442\u0438",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0432\u0445\u0456\u0434\u043D\u0456 \u0434\u0430\u043D\u0456"
@@ -13969,6 +14015,7 @@ var require_ur = __commonJS({
         json_string: "\u062C\u06D2 \u0627\u06CC\u0633 \u0627\u0648 \u0627\u06CC\u0646 \u0633\u0679\u0631\u0646\u06AF",
         e164: "\u0627\u06CC 164 \u0646\u0645\u0628\u0631",
         credit_card: "\u06A9\u0631\u06CC\u0688\u0679 \u06A9\u0627\u0631\u0688 \u0646\u0645\u0628\u0631",
+        currency_code: "\u06A9\u0631\u0646\u0633\u06CC \u06A9\u0648\u0688",
         iban: "IBAN",
         jwt: "\u062C\u06D2 \u0688\u0628\u0644\u06CC\u0648 \u0679\u06CC",
         template_literal: "\u0627\u0646 \u067E\u0679"
@@ -14120,6 +14167,7 @@ var require_uz = __commonJS({
         json_string: "JSON satr",
         e164: "E.164 raqam",
         credit_card: "kredit karta raqami",
+        currency_code: "valyuta kodi",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "kirish"
@@ -14269,6 +14317,7 @@ var require_vi = __commonJS({
         json_string: "chu\u1ED7i JSON",
         e164: "s\u1ED1 E.164",
         credit_card: "s\u1ED1 th\u1EBB t\xEDn d\u1EE5ng",
+        currency_code: "m\xE3 ti\u1EC1n t\u1EC7",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u0111\u1EA7u v\xE0o"
@@ -14418,6 +14467,7 @@ var require_zh_CN = __commonJS({
         json_string: "JSON\u5B57\u7B26\u4E32",
         e164: "E.164\u53F7\u7801",
         credit_card: "\u4FE1\u7528\u5361\u53F7",
+        currency_code: "\u8D27\u5E01\u4EE3\u7801",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u8F93\u5165"
@@ -14568,6 +14618,7 @@ var require_zh_TW = __commonJS({
         json_string: "JSON \u5B57\u4E32",
         e164: "E.164 \u6578\u503C",
         credit_card: "\u4FE1\u7528\u5361\u865F",
+        currency_code: "\u8CA8\u5E63\u4EE3\u78BC",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u8F38\u5165"
@@ -14716,6 +14767,7 @@ var require_yo = __commonJS({
         json_string: "\u1ECD\u0300r\u1ECD\u0300 JSON",
         e164: "n\u1ECD\u0301mb\xE0 E.164",
         credit_card: "n\u1ECDmba kaadi gbese",
+        currency_code: "koodu ow\xF3",
         iban: "IBAN",
         jwt: "JWT",
         template_literal: "\u1EB9\u0300r\u1ECD \xECb\xE1w\u1ECDl\xE9"
@@ -15446,7 +15498,7 @@ ${code}
             generatePropertyCheck(doc, ctx, def, currentAccessor);
             break;
           case "properties":
-            generatePropertiesChecks(doc, ctx, def, currentAccessor, false);
+            generatePropertiesChecks(doc, ctx, def, currentAccessor);
             break;
           case "overwrite": {
             const newAccessor = newVar(ctx);
@@ -15556,11 +15608,11 @@ ${code}
         doc.write(`if (!${mimeSet}.has(${accessor}.type)) return INVALID;`);
       }
     }
-    function generatePropertiesChecks(doc, ctx, def, accessor, schemaRole) {
+    function generatePropertiesChecks(doc, ctx, def, accessor) {
       if (def.when) {
         throw new ZodCompileUnsupportedError(`check with a custom "when" condition`);
       }
-      doc.write(schemaRole ? `if (${accessor} === null || (typeof ${accessor} !== "object" && typeof ${accessor} !== "function")) return INVALID;` : `if (${accessor} == null) return INVALID;`);
+      doc.write(`if (${accessor} == null) return INVALID;`);
       const shape = def.shape;
       for (const key of Reflect.ownKeys(shape)) {
         const keyExpr = typeof key === "symbol" ? addConstant(ctx, key) : util.esc(key);
@@ -15650,7 +15702,7 @@ ${code}
       "uuid",
       "xid"
     ]);
-    function generateStringFormatCheck(doc, ctx, def, accessor) {
+    function generateStringFormatCheck(doc, ctx, def, accessor, needsValue = true) {
       const fmt = def.format;
       if (fmt === "base64") {
         const validator = addConstant(ctx, schemas_js_1.isValidBase64);
@@ -15690,7 +15742,7 @@ ${code}
       }
       const formatDef = def;
       if (fmt === "url" || fmt === "httpurl" || formatDef.normalize || formatDef.hostname !== void 0 || formatDef.protocol !== void 0) {
-        const parseConst = addConstant(ctx, schemas_js_1.parseURLObject);
+        const parseConst = addConstant(ctx, schemas_js_1.validateURL);
         const defConst = addConstant(ctx, def);
         const trimVar = newVar(ctx);
         const urlVar = newVar(ctx);
@@ -15705,6 +15757,8 @@ ${code}
           const protocolConst = addConstant(ctx, schemas_js_1.urlProtocolOk);
           doc.write(`if (!${protocolConst}(${urlVar}, ${defConst}.protocol)) return INVALID;`);
         }
+        if (!needsValue)
+          return null;
         const outputVar = newVar(ctx);
         const outputExpr = formatDef.normalize ? `${urlVar}.href` : `${addConstant(ctx, schemas_js_1.stripTabAndNewline)}(${trimVar})`;
         doc.write(`const ${outputVar} = ${outputExpr};`);
@@ -15764,7 +15818,7 @@ ${code}
       let typeAccessor;
       switch (type) {
         case "string":
-          typeAccessor = generateStringCheck(doc, ctx, schema, accessor);
+          typeAccessor = generateStringCheck(doc, ctx, schema, accessor, buildsValue);
           break;
         case "number":
           typeAccessor = generateNumberCheck(doc, schema, accessor);
@@ -15870,10 +15924,6 @@ ${code}
         case "custom":
           typeAccessor = generateCustomCheck(doc, ctx, schema, accessor);
           break;
-        case "properties":
-          generatePropertiesChecks(doc, ctx, schema._zod.def, accessor, true);
-          typeAccessor = accessor;
-          break;
         case "transform":
           typeAccessor = generateTransformCheck(doc, ctx, schema, accessor);
           break;
@@ -15889,12 +15939,12 @@ ${code}
         return null;
       return generateChecks(doc, ctx, schema, typeAccessor);
     }
-    function generateStringCheck(doc, ctx, schema, accessor) {
+    function generateStringCheck(doc, ctx, schema, accessor, needsValue = true) {
       doc.write(`if (typeof ${accessor} !== "string") return INVALID;`);
       const def = schema._zod.def;
       if (def.format === void 0)
         return accessor;
-      return generateStringFormatCheck(doc, ctx, def, accessor);
+      return generateStringFormatCheck(doc, ctx, def, accessor, needsValue);
     }
     function generateNumberCheck(doc, schema, accessor) {
       doc.write(`if (typeof ${accessor} !== "number" || !Number.isFinite(${accessor})) return INVALID;`);
@@ -16971,20 +17021,18 @@ var require_api = __commonJS({
     var registries = __importStar(require_registries());
     var schemas = __importStar(require_schemas());
     var util = __importStar(require_util());
+    function snapshotChecks(def) {
+      if (def.checks)
+        def.checks = [...def.checks];
+      return def;
+    }
     // @__NO_SIDE_EFFECTS__
     function _string(Class, params) {
-      return new Class({
-        type: "string",
-        ...util.normalizeParams(params)
-      });
+      return new Class(snapshotChecks({ type: "string", ...util.normalizeParams(params) }));
     }
     // @__NO_SIDE_EFFECTS__
     function _coercedString(Class, params) {
-      return new Class({
-        type: "string",
-        coerce: true,
-        ...util.normalizeParams(params)
-      });
+      return new Class(snapshotChecks({ type: "string", coerce: true, ...util.normalizeParams(params) }));
     }
     // @__NO_SIDE_EFFECTS__
     function _email(Class, params) {
@@ -17288,20 +17336,11 @@ var require_api = __commonJS({
     }
     // @__NO_SIDE_EFFECTS__
     function _number(Class, params) {
-      return new Class({
-        type: "number",
-        checks: [],
-        ...util.normalizeParams(params)
-      });
+      return new Class(snapshotChecks({ type: "number", checks: [], ...util.normalizeParams(params) }));
     }
     // @__NO_SIDE_EFFECTS__
     function _coercedNumber(Class, params) {
-      return new Class({
-        type: "number",
-        coerce: true,
-        checks: [],
-        ...util.normalizeParams(params)
-      });
+      return new Class(snapshotChecks({ type: "number", coerce: true, checks: [], ...util.normalizeParams(params) }));
     }
     // @__NO_SIDE_EFFECTS__
     function _int(Class, params) {
@@ -17643,9 +17682,8 @@ var require_api = __commonJS({
       });
     }
     // @__NO_SIDE_EFFECTS__
-    function _properties(Class, shape, params) {
-      return new Class({
-        type: "properties",
+    function _properties(shape, params) {
+      return new checks.$ZodCheckProperties({
         check: "properties",
         shape,
         ...util.normalizeParams(params)
@@ -18073,7 +18111,6 @@ var require_to_json_schema = __commonJS({
     exports.process = processSchema;
     exports.extractDefs = extractDefs;
     exports.finalize = finalize;
-    exports.isTransforming = isTransforming;
     var registries_js_1 = require_registries();
     var util_js_1 = require_util();
     function assignProps(target, ...sources) {
@@ -18657,7 +18694,7 @@ var require_json_schema_processors = __commonJS({
       return result2;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.allProcessors = exports.lazyProcessor = exports.optionalProcessor = exports.promiseProcessor = exports.readonlyProcessor = exports.pipeProcessor = exports.catchProcessor = exports.prefaultProcessor = exports.defaultProcessor = exports.nonoptionalProcessor = exports.nullableProcessor = exports.recordProcessor = exports.tupleProcessor = exports.intersectionProcessor = exports.unionProcessor = exports.propertiesProcessor = exports.objectProcessor = exports.arrayProcessor = exports.setProcessor = exports.mapProcessor = exports.transformProcessor = exports.functionProcessor = exports.customProcessor = exports.successProcessor = exports.fileProcessor = exports.templateLiteralProcessor = exports.nanProcessor = exports.literalProcessor = exports.enumProcessor = exports.dateProcessor = exports.unknownProcessor = exports.anyProcessor = exports.neverProcessor = exports.voidProcessor = exports.undefinedProcessor = exports.nullProcessor = exports.symbolProcessor = exports.bigintProcessor = exports.booleanProcessor = exports.numberProcessor = exports.stringProcessor = void 0;
+    exports.allProcessors = exports.lazyProcessor = exports.optionalProcessor = exports.promiseProcessor = exports.readonlyProcessor = exports.pipeProcessor = exports.catchProcessor = exports.prefaultProcessor = exports.defaultProcessor = exports.nonoptionalProcessor = exports.nullableProcessor = exports.recordProcessor = exports.tupleProcessor = exports.intersectionProcessor = exports.unionProcessor = exports.objectProcessor = exports.arrayProcessor = exports.setProcessor = exports.mapProcessor = exports.transformProcessor = exports.functionProcessor = exports.customProcessor = exports.successProcessor = exports.fileProcessor = exports.templateLiteralProcessor = exports.nanProcessor = exports.literalProcessor = exports.enumProcessor = exports.dateProcessor = exports.unknownProcessor = exports.anyProcessor = exports.neverProcessor = exports.voidProcessor = exports.undefinedProcessor = exports.nullProcessor = exports.symbolProcessor = exports.bigintProcessor = exports.booleanProcessor = exports.numberProcessor = exports.stringProcessor = void 0;
     exports.aggregateChecks = aggregateChecks;
     exports.toJSONSchema = toJSONSchema;
     var regexes = __importStar(require_regexes());
@@ -19038,17 +19075,15 @@ var require_json_schema_processors = __commonJS({
           path: [...params.path, "properties", key]
         }));
       }
-      const allKeys = new Set(Object.keys(shape));
-      const requiredKeys = new Set([...allKeys].filter((key) => {
+      const requiredKeys = [];
+      for (const key of Object.keys(shape)) {
         const field = def.shape[key];
-        if (ctx.io === "input") {
-          return inputOptin(field) === void 0;
-        } else {
-          return field._zod.optout === void 0;
+        if (ctx.io === "input" ? inputOptin(field) === void 0 : field._zod.optout === void 0) {
+          requiredKeys.push(key);
         }
-      }));
-      if (requiredKeys.size > 0) {
-        json.required = Array.from(requiredKeys);
+      }
+      if (requiredKeys.length > 0) {
+        json.required = requiredKeys;
       }
       if (def.catchall?._zod.def.type === "never") {
         json.additionalProperties = false;
@@ -19063,32 +19098,6 @@ var require_json_schema_processors = __commonJS({
       }
     };
     exports.objectProcessor = objectProcessor;
-    var propertiesProcessor = (schema, ctx, _json, params) => {
-      const json = _json;
-      const def = schema._zod.def;
-      if (Object.getOwnPropertySymbols(def.shape).length && (0, to_json_schema_js_1.handleUnrepresentable)(schema, ctx, json, params, "Symbol keys cannot be represented in JSON Schema")) {
-        return;
-      }
-      if (ctx.io === "output") {
-        for (const key in def.shape) {
-          if ((0, to_json_schema_js_1.isTransforming)(def.shape[key]) && (0, to_json_schema_js_1.handleUnrepresentable)(schema, ctx, json, params, `z.properties() returns its input, so the output of a transforming schema at key "${key}" cannot be represented in JSON Schema`)) {
-            return;
-          }
-        }
-      }
-      json.type = "object";
-      json.properties = {};
-      for (const key in def.shape) {
-        (0, util_js_1.assignProp)(json.properties, key, (0, to_json_schema_js_1.processSchema)(def.shape[key], ctx, {
-          ...params,
-          path: [...params.path, "properties", key]
-        }));
-      }
-      const required = Object.keys(def.shape).filter((key) => inputOptin(def.shape[key]) === void 0);
-      if (required.length > 0)
-        json.required = required;
-    };
-    exports.propertiesProcessor = propertiesProcessor;
     var unionProcessor = (schema, ctx, json, params) => {
       const def = schema._zod.def;
       const isExclusive = def.inclusive === false;
@@ -19422,7 +19431,6 @@ var require_json_schema_processors = __commonJS({
       file: exports.fileProcessor,
       success: exports.successProcessor,
       custom: exports.customProcessor,
-      properties: exports.propertiesProcessor,
       function: exports.functionProcessor,
       transform: exports.transformProcessor,
       map: exports.mapProcessor,
@@ -19713,7 +19721,7 @@ var require_checks2 = __commonJS({
   "node_modules/zod/v4/classic/checks.cjs"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.slugify = exports.toUpperCase = exports.toLowerCase = exports.trim = exports.normalize = exports.overwrite = exports.mime = exports.property = exports.endsWith = exports.startsWith = exports.includes = exports.uppercase = exports.lowercase = exports.regex = exports.length = exports.minLength = exports.maxLength = exports.size = exports.minSize = exports.maxSize = exports.multipleOf = exports.nonnegative = exports.nonpositive = exports.negative = exports.positive = exports.gte = exports.gt = exports.lte = exports.lt = void 0;
+    exports.slugify = exports.toUpperCase = exports.toLowerCase = exports.trim = exports.normalize = exports.overwrite = exports.mime = exports.properties = exports.property = exports.endsWith = exports.startsWith = exports.includes = exports.uppercase = exports.lowercase = exports.regex = exports.length = exports.minLength = exports.maxLength = exports.size = exports.minSize = exports.maxSize = exports.multipleOf = exports.nonnegative = exports.nonpositive = exports.negative = exports.positive = exports.gte = exports.gt = exports.lte = exports.lt = void 0;
     var index_js_1 = require_core2();
     Object.defineProperty(exports, "lt", { enumerable: true, get: function() {
       return index_js_1._lt;
@@ -19780,6 +19788,9 @@ var require_checks2 = __commonJS({
     } });
     Object.defineProperty(exports, "property", { enumerable: true, get: function() {
       return index_js_1._property;
+    } });
+    Object.defineProperty(exports, "properties", { enumerable: true, get: function() {
+      return index_js_1._properties;
     } });
     Object.defineProperty(exports, "mime", { enumerable: true, get: function() {
       return index_js_1._mime;
@@ -20029,7 +20040,7 @@ var require_schemas2 = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ZodIntersection = exports.ZodDiscriminatedUnion = exports.ZodXor = exports.ZodUnion = exports.ZodObject = exports.ZodArray = exports.ZodDate = exports.ZodVoid = exports.ZodNever = exports.ZodUnknown = exports.ZodAny = exports.ZodNull = exports.ZodUndefined = exports.ZodSymbol = exports.ZodBigIntFormat = exports.ZodBigInt = exports.ZodBoolean = exports.ZodNumberFormat = exports.ZodNumber = exports.ZodCustomStringFormat = exports.ZodJWT = exports.ZodIBAN = exports.ZodCreditCard = exports.ZodE164 = exports.ZodBase64URL = exports.ZodBase64 = exports.ZodCIDRv6 = exports.ZodCIDRv4 = exports.ZodIPv6 = exports.ZodMAC = exports.ZodIPv4 = exports.ZodKSUID = exports.ZodXID = exports.ZodULID = exports.ZodCUID2 = exports.ZodCUID = exports.ZodNanoID = exports.ZodEmoji = exports.ZodURL = exports.ZodUUID = exports.ZodGUID = exports.ZodEmail = exports.ZodISODuration = exports.ZodISOTime = exports.ZodISODate = exports.ZodISODateTime = exports.ZodStringFormat = exports.ZodString = exports._ZodString = exports.ZodType = void 0;
-    exports.stringbool = exports.ZodInstanceOf = exports.meta = exports.describe = exports.ZodProperties = exports.ZodCustom = exports.ZodFunction = exports.ZodPromise = exports.ZodLazy = exports.ZodTemplateLiteral = exports.ZodReadonly = exports.ZodPreprocess = exports.ZodCodec = exports.ZodPipe = exports.ZodNaN = exports.ZodCatch = exports.ZodSuccess = exports.ZodNonOptional = exports.ZodPrefault = exports.ZodDefault = exports.ZodNullable = exports.ZodExactOptional = exports.ZodOptional = exports.ZodTransform = exports.ZodFile = exports.ZodLiteral = exports.ZodEnum = exports.ZodSet = exports.ZodMap = exports.ZodRecord = exports.ZodTuple = void 0;
+    exports.stringbool = exports.ZodInstanceOf = exports.meta = exports.describe = exports.ZodCustom = exports.ZodFunction = exports.ZodPromise = exports.ZodLazy = exports.ZodTemplateLiteral = exports.ZodReadonly = exports.ZodPreprocess = exports.ZodCodec = exports.ZodPipe = exports.ZodNaN = exports.ZodCatch = exports.ZodSuccess = exports.ZodNonOptional = exports.ZodPrefault = exports.ZodDefault = exports.ZodNullable = exports.ZodExactOptional = exports.ZodOptional = exports.ZodTransform = exports.ZodFile = exports.ZodLiteral = exports.ZodEnum = exports.ZodSet = exports.ZodMap = exports.ZodRecord = exports.ZodTuple = void 0;
     exports.string = string3;
     exports.email = email;
     exports.guid = guid;
@@ -20060,6 +20071,7 @@ var require_schemas2 = __commonJS({
     exports.stringFormat = stringFormat;
     exports.hostname = hostname;
     exports.hex = hex;
+    exports.currencyCode = currencyCode;
     exports.hash = hash;
     exports.number = number2;
     exports.int = int2;
@@ -20120,7 +20132,6 @@ var require_schemas2 = __commonJS({
     exports.function = _function;
     exports._function = _function;
     exports.function = _function;
-    exports.properties = properties;
     exports.check = check;
     exports.custom = custom;
     exports.refine = refine;
@@ -20131,6 +20142,7 @@ var require_schemas2 = __commonJS({
     var core = __importStar(require_core2());
     var index_js_1 = require_core2();
     var processors = __importStar(require_json_schema_processors());
+    var regexes = __importStar(require_regexes());
     var to_json_schema_js_1 = require_to_json_schema();
     var en_js_1 = __importDefault(require_en());
     var checks = __importStar(require_checks2());
@@ -20522,8 +20534,8 @@ var require_schemas2 = __commonJS({
     }
     function httpUrl(params) {
       return core._url(exports.ZodURL, {
-        protocol: core.regexes.httpProtocol,
-        hostname: core.regexes.domain,
+        protocol: regexes.httpProtocol,
+        hostname: regexes.domain,
         ...index_js_1.util.normalizeParams(params)
       });
     }
@@ -20661,10 +20673,13 @@ var require_schemas2 = __commonJS({
       return core._stringFormat(exports.ZodCustomStringFormat, format, fnOrRegex, _params);
     }
     function hostname(_params) {
-      return core._stringFormat(exports.ZodCustomStringFormat, "hostname", core.regexes.hostname, _params);
+      return core._stringFormat(exports.ZodCustomStringFormat, "hostname", regexes.hostname, _params);
     }
     function hex(_params) {
-      return core._stringFormat(exports.ZodCustomStringFormat, "hex", core.regexes.hex, _params);
+      return core._stringFormat(exports.ZodCustomStringFormat, "hex", regexes.hex, _params);
+    }
+    function currencyCode(_params) {
+      return core._stringFormat(exports.ZodCustomStringFormat, "currency_code", regexes.currencyCode, _params);
     }
     function hash(alg, params) {
       const enc = params?.enc ?? "hex";
@@ -21529,14 +21544,6 @@ var require_schemas2 = __commonJS({
       exports.ZodType.init(inst, def);
       inst._zod.processJSONSchema = (ctx, json2, params) => processors.customProcessor(inst, ctx, json2, params);
     });
-    exports.ZodProperties = core.$constructor("ZodProperties", (inst, def) => {
-      _ensureDefaultMemoizer();
-      core.$ZodProperties.init(inst, def);
-      exports.ZodType.init(inst, def);
-    });
-    function properties(shape, params) {
-      return core._properties(exports.ZodProperties, shape, params);
-    }
     function check(fn) {
       const ch = new core.$ZodCheck({
         check: "custom"
@@ -21560,7 +21567,7 @@ var require_schemas2 = __commonJS({
       exports.ZodCustom.init(inst, def);
     }, {
       properties(shape, params) {
-        return this.check(properties(shape, params));
+        return this.check(core._properties(shape, params));
       }
     });
     function _instanceof(cls, params = {}) {
@@ -22736,18 +22743,6 @@ var require_visit = __commonJS({
             const original = def.getter;
             const { _cachedInner, ...rest } = def;
             return (0, util_js_1.clone)(s, { ...rest, getter: () => run(original()) });
-          }
-          case "properties": {
-            const oldShape = def.shape;
-            let changed = false;
-            const newShape = {};
-            for (const k of Reflect.ownKeys(oldShape)) {
-              const mapped = run(oldShape[k]);
-              if (mapped !== oldShape[k])
-                changed = true;
-              newShape[k] = mapped;
-            }
-            return changed ? (0, util_js_1.clone)(s, { ...def, shape: newShape }) : s;
           }
           // A leaf by choice: `parts` are regex fragments, not data positions.
           case "template_literal":
