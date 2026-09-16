@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.0](https://github.com/Heey-Global/verity/compare/v0.10.2...v0.11.0) (2026-09-16)
+
+
+### Features
+
+* **deploy:** enable arm64 hosts ([#332](https://github.com/Heey-Global/verity/issues/332)) ([eb92547](https://github.com/Heey-Global/verity/commit/eb9254752fbfd70e10832c0ba8c8640b159d4797))
+* **release:** publish arm64 release channel ([#322](https://github.com/Heey-Global/verity/issues/322)) ([ad34d7a](https://github.com/Heey-Global/verity/commit/ad34d7a6a023c44f0c5948232d1f21c95165d33d))
+* **security:** enable arm64 brokered secrets ([#337](https://github.com/Heey-Global/verity/issues/337)) ([529e19e](https://github.com/Heey-Global/verity/commit/529e19e7aee1e657f22fef938afb2d1043e68dba))
+
+
+### Bug Fixes
+
+* **installer:** correct first-install setup ([#249](https://github.com/Heey-Global/verity/issues/249)) ([2888c1b](https://github.com/Heey-Global/verity/commit/2888c1b7480f7cc60644a07f34af553eaf4d79b4))
+* **installer:** prevent stale interactive reinstall ([#379](https://github.com/Heey-Global/verity/issues/379)) ([d71dc54](https://github.com/Heey-Global/verity/commit/d71dc54e464fb7ed09fcbdef0fb35010683499d2))
+* **server:** release GitHub token cache fix ([#242](https://github.com/Heey-Global/verity/issues/242)) ([e0f8185](https://github.com/Heey-Global/verity/commit/e0f81851952eeaa36d3ffe654966037840fd5e16))
+* **server:** release runner permission repair ([#330](https://github.com/Heey-Global/verity/issues/330)) ([1283539](https://github.com/Heey-Global/verity/commit/1283539c3af3d63998e0537d991bb537f2b0e459))
+* **setup:** initialize managed runner state ([#370](https://github.com/Heey-Global/verity/issues/370)) ([35b343a](https://github.com/Heey-Global/verity/commit/35b343a2b3e0860a76af1294005c8714bdf68cf1))
+* **setup:** repair fresh managed installation ([#338](https://github.com/Heey-Global/verity/issues/338)) ([191e181](https://github.com/Heey-Global/verity/commit/191e1817fba58f23ce3b01e610d8ad79e8b137b1))
+
 ## [0.10.2](https://github.com/Heey-Global/verity/compare/v0.10.1...v0.10.2) (2026-09-16)
 
 
