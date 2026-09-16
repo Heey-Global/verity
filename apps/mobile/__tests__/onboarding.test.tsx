@@ -196,6 +196,29 @@ describe('onboarding first-run gate', () => {
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
+  it('returns to the app after unlocking a redacted post-setup status', async () => {
+    mockGetAuthToken.mockReturnValue(null);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient(
+        jest.fn().mockResolvedValue(
+          makeStatus({
+            sealed: false,
+            masterPasswordSet: true,
+            githubAppConfigured: false,
+            signingKeyConfigured: false,
+            hasProject: false,
+            complete: false,
+            nextStep: null,
+          }),
+        ),
+      ),
+    );
+    render(<GateProbe />);
+
+    expect(await screen.findByText('gate:done:/unlock-device?returnTo=%2F')).toBeOnTheScreen();
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
   it('does not redirect when already inside the onboarding wizard', async () => {
     mockSegments = ['onboarding', 'github'];
     mockCreateVerityClient.mockReturnValue(makeClient(jest.fn().mockResolvedValue(makeStatus())));

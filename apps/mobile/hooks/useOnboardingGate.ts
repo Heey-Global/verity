@@ -113,7 +113,14 @@ export function useOnboardingGate(): OnboardingGateState {
           setState({
             status: 'done',
             redirectTo: unlockRoute(
-              isCoreOnboardingComplete(status) ? currentReturnTo() : onboardingRoute(status),
+              // An unauthenticated post-setup response deliberately hides provider
+              // state and carries `nextStep: null`. Return to the requested screen
+              // after device authorization; the next authenticated gate check can
+              // then route to a genuinely incomplete step. Treating the redacted
+              // response as incomplete sends every cold launch to master password.
+              isCoreOnboardingComplete(status) || status.nextStep === null
+                ? currentReturnTo()
+                : onboardingRoute(status),
               {
                 serverSecret: false,
               },
