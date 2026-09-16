@@ -5,7 +5,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, readFile, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildEmbeddedServer,
@@ -31,7 +30,6 @@ import {
   migrationProvider,
   PostgresAdvisoryLockHeldError,
 } from '@verity/store';
-import { createGhTokenReader } from './github.js';
 import {
   createControlPlaneGenerationFence,
   GenerationFenceLostError,
@@ -757,8 +755,6 @@ async function main(): Promise<void> {
   if (dataVolume === undefined || dataVolume.length === 0) {
     throw new Error('VERITY_DATA_VOLUME is required for project relay Unix sockets');
   }
-  const ghTokenFilePath = process.env.VERITY_GH_TOKEN_FILE ?? join(homedir(), '.gh-token');
-
   // Single data root. Verity derives everything it needs to put on disk under here:
   //   <root>/workspaces  — project clones, host-visible (bind-mounted into sibling
   //                        sandboxes → must be an absolute HOST path in the deploy)
@@ -984,19 +980,9 @@ async function main(): Promise<void> {
       // repo root (e.g. /work), not the server's cwd (packages/server). Set
       // VERITY_REPO_DIR='' to disable (scratch worktrees, no repo-root guard).
       repoDir: process.env.VERITY_REPO_DIR ?? gitToplevel() ?? process.cwd(),
-      // Token provider for the header's open-PR lookup (#125, #131). Reads the fleet's
-      // rotating `~/.gh-token` (refreshed hourly by heey-token-mint) freshly per lookup
-      // so the lookup keeps working past the 1h token life without a restart, falling
-      // back to a static PAT in the env (GITHUB_TOKEN / GH_TOKEN) when there's no file.
-      // The provider form means the secret is never captured once at startup; absent
-      // everywhere → the PR chip is simply disabled. Never logged.
       // Git committer identity is NOT configured via env — it is derived from the
       // GitHub App installation during signing-key onboarding (see
       // resolveGitHubAppIdentity), so no VERITY_GIT_USER_NAME/EMAIL knobs exist.
-      githubToken: createGhTokenReader({
-        path: ghTokenFilePath,
-        env: () => process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN,
-      }),
       workflowGithubWebhookSecret: process.env.VERITY_GITHUB_WEBHOOK_SECRET,
       authorizeWorkflowAction:
         process.env.VERITY_WORKFLOW_ALLOW_PAIRED_DEVICES === '1' ||
@@ -1046,7 +1032,6 @@ async function main(): Promise<void> {
       dockerGc: true,
       dockerGcPolicy: dockerGcPolicyFromEnv(),
       agentSeedHostPath: sandboxAgentSeedHostPath(process.env),
-      ghTokenFilePath,
       // Anti-CSWSH Origin allowlist for the live WebSocket (audit C1). Comma-list,
       // e.g. `https://verity.example.com`. Unset → no Origin check (native mobile
       // sends none; the bearer token is the primary guard).

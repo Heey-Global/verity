@@ -101,7 +101,6 @@ export {
   devcontainerLifecyclePath,
   type ContainerCommandRunner,
 } from './devcontainer-lifecycle.js';
-import type { GitHubTokenSource } from './github.js';
 import type { GitHubInstallationTokenMint, GitHubProjectTokenMint } from './github-app-token.js';
 import type { ProjectRelayActivation, ProjectRelayBinding } from './project-relay-lifecycle.js';
 import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
@@ -431,9 +430,6 @@ export interface ProvisionerOptions {
   db: Kysely<Database>;
   /** Docker client (socket-proxy-backed; from slice 3a). */
   docker: DockerClient;
-  /** Token provider — fresh `ghs_*` per clone (*not* cached; the issue says
-   *  `~/.gh-token` rotates ~hourly, the call site re-reads each time). */
-  token: GitHubTokenSource;
   /** Runs after a project container has started, before provisioning succeeds. */
   onContainerStarted?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Fail-closed hook for generation-bound dependants such as public previews.
@@ -443,13 +439,7 @@ export interface ProvisionerOptions {
   /** Default image ref (centrally pinned, §19.5) for projects without an
    *  explicit `image_ref` override. */
   defaultImageRef: ProjectImageRefSource;
-  /** Path to the host-side gh-token file — mount read-only in the container
-   *  so agent processes inside can `git push` (per §19.3 + §16 blast-radius
-   *  note). */
-  ghTokenFilePath: string;
-  /** Optional GitHub App token minter. When configured, Verity mints and
-   *  persists a fresh project-local token during provisioning instead of
-   *  relying on external Concierge rotation. */
+  /** GitHub App token minter for server-side repository operations. */
   projectTokenMint?: GitHubProjectTokenMint | undefined;
   /** Bind-mount root (`/data/dev`). The provisioner joins `<root>/<slug>`. */
   hostCloneRoot: string;
@@ -2939,9 +2929,8 @@ export class ProvisionerImpl implements Provisioner {
       try {
         await this.resolveOrBuildImage(project, dirs, true);
       } catch (cause) {
-        const token = typeof this.opts.token === 'function' ? this.opts.token() : this.opts.token;
         const detail = redactSensitive(buildFailureMessage(cause), [
-          token,
+          process.env.GITHUB_TOKEN,
           process.env.GH_TOKEN,
           process.env.VERITY_REGISTRY_AUTH,
         ]);
@@ -2981,9 +2970,8 @@ export class ProvisionerImpl implements Provisioner {
         );
       }
       if (cause instanceof ProvisioningError) throw cause;
-      const token = typeof this.opts.token === 'function' ? this.opts.token() : this.opts.token;
       const detail = redactSensitive(failureMessage(cause), [
-        token,
+        process.env.GITHUB_TOKEN,
         process.env.GH_TOKEN,
         process.env.VERITY_REGISTRY_AUTH,
       ]);
@@ -3810,9 +3798,8 @@ export class ProvisionerImpl implements Provisioner {
       // The build runs with `{ ...process.env, DOCKER_HOST }`, so its stderr can
       // echo a token that lives in the server env. Redact before it lands in the
       // operator-visible `provision_error` — mirrors the git-clone failure path.
-      const token = typeof this.opts.token === 'function' ? this.opts.token() : this.opts.token;
       const detail = redactSensitive(buildFailureMessage(cause), [
-        token,
+        process.env.GITHUB_TOKEN,
         process.env.GH_TOKEN,
         process.env.VERITY_REGISTRY_AUTH,
       ]);
@@ -4815,16 +4802,11 @@ export class ProvisionerImpl implements Provisioner {
    *  runner can't be awaited inside the sync decision (the clone-phase body is
    *  async), so this stat is the cheaper probe. NO fs-permission elevation —
    *  the clone path is the operator-side bind-mount root. */
-  /** The token for a SERVER-SIDE clone/fetch: a fresh App-minted, repo-scoped token
-   *  when the mint is configured, else the fleet fallback (`this.opts.token`). The
-   *  token is used only for this server-side git operation and is NEVER written
-   *  into the sandbox — the sandbox authenticates to GitHub via the token broker. */
+  /** The token for a SERVER-SIDE clone/fetch. It is used only for this server-side
+   *  git operation and is NEVER written into the sandbox — the sandbox authenticates
+   *  to GitHub via the token broker. */
   private async resolveProjectToken(project: ProjectRecord): Promise<string | undefined> {
-    if (this.opts.projectTokenMint !== undefined) {
-      const token = await this.opts.projectTokenMint(project);
-      if (token !== undefined) return token;
-    }
-    return typeof this.opts.token === 'function' ? this.opts.token() : this.opts.token;
+    return this.opts.projectTokenMint?.(project);
   }
 
   private resolveRelayClaudeGateway(project: ProjectRecord): {

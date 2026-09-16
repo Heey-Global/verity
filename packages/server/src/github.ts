@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { GitOutput } from './branches.js';
 
@@ -118,13 +117,9 @@ export type HttpFetch = (
 ) => Promise<HttpResponse>;
 
 /**
- * The GitHub token, provided at the composition root (never read from `process.env`
- * here, never logged). Either a static string OR a provider fn re-consulted on EACH
- * lookup — the provider lets the server track a rotating token (the fleet's ~1h
- * `~/.gh-token`, refreshed by `heey-token-mint`, #131) without a restart, since the
- * service reads it freshly per lookup instead of capturing it once at startup. When
- * it resolves to absent the service is inert (every lookup returns null) until a
- * token appears.
+ * A GitHub token injected by a caller. Production services use their asynchronous,
+ * DB-backed GitHub App token providers; this synchronous source remains a unit seam
+ * for the standalone service implementations.
  */
 export type GitHubTokenSource = string | (() => string | undefined);
 
@@ -879,56 +874,6 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
   };
 }
 
-export interface GhTokenReaderOptions {
-  /** Path to the fleet's GH App token file (heey-token-mint keeps it fresh, ~50min,
-   * #131). Read freshly so a rotated token is picked up without a server restart. */
-  path: string;
-  /** Fallback when the file is absent/empty — e.g. a static PAT in the env for a
-   * deployment without the token-mint machinery. Consulted only when the file yields
-   * nothing, so the (always-fresh) file wins over a possibly-stale env value. */
-  env?: () => string | undefined;
-  /** Injected file reader (tests); defaults to a UTF-8 read that maps any error
-   * (missing/unreadable) to undefined. */
-  readFile?: (path: string) => string | undefined;
-  /** Re-read the file at most this often (default 30s) — frequent enough to track the
-   * ~50min refresh, infrequent enough not to stat the FS on every lookup. */
-  ttlMs?: number;
-  /** Clock seam (tests). */
-  now?: () => number;
-}
-
-const defaultReadFile = (path: string): string | undefined => {
-  try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    return undefined; // missing / unreadable → fall back to env
-  }
-};
-
-/**
- * A token provider for {@link createGitHubPrService} that reads the fleet's rotating
- * `~/.gh-token` (refreshed hourly by `heey-token-mint`) on demand, so the server's
- * PR lookups keep working past the 1h token life without a restart (#131). The read
- * is cached for a short TTL to avoid touching the FS on every lookup; the file value
- * wins over the `env` fallback (the env var is sourced once at shell start and goes
- * stale, while the file is kept current). Returns undefined when neither yields a
- * token — the service is then simply inert until one appears.
- */
-export function createGhTokenReader(opts: GhTokenReaderOptions): () => string | undefined {
-  const read = opts.readFile ?? defaultReadFile;
-  const ttlMs = opts.ttlMs ?? 30_000;
-  const now = opts.now ?? ((): number => Date.now());
-  let cached: { token: string | undefined; at: number } | undefined;
-  return () => {
-    if (cached !== undefined && now() - cached.at < ttlMs) return cached.token;
-    const fromFile = read(opts.path)?.trim();
-    const raw = fromFile !== undefined && fromFile.length > 0 ? fromFile : opts.env?.();
-    const token = raw !== undefined && raw.trim().length > 0 ? raw.trim() : undefined;
-    cached = { token, at: now() };
-    return token;
-  };
-}
-
 /**
  * One open GitHub issue, trimmed to what the overview backlog needs (#137): the
  * number, title, body (markdown) and html url. Pull requests are excluded by the
@@ -1295,7 +1240,7 @@ interface InstallationRepo {
  * Unlike the PR/issue services this is NOT scoped to a single repo's `origin`
  * identity — it queries the App-installation-level endpoint
  * `GET /installation/repositories`, available to any `ghs_*` App-installation
- * token (the fleet already sources one via {@link createGhTokenReader}). No
+ * token minted from the DB-backed GitHub App credentials. No
  * `repoDir`/`git` dependency.
  */
 export interface GitHubInstallationService {

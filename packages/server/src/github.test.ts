@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GitOutput } from './branches.js';
 import {
-  createGhTokenReader,
   createGitHubIssueService,
   createGitHubPrService,
   createGitHubReleaseService,
@@ -1295,7 +1294,7 @@ describe('createGitHubPrService', () => {
     });
     expect(await svc.prForBranch('feat/1-x')).toBeNull(); // no token yet → inert, no fetch
     expect(calls).toHaveLength(0);
-    current = 'tok'; // token appears (e.g. heey-token-mint wrote the file)
+    current = 'tok'; // token appears after the provider's credentials become available
     expect(await svc.prForBranch('feat/1-x')).toBe(9); // now looked up
     expect(calls[0]?.headers?.Authorization).toBe('Bearer tok');
   });
@@ -1333,49 +1332,6 @@ describe('createGitHubPrService', () => {
     expect(calls).toHaveLength(2);
     expect(calls[1]?.headers?.Authorization).toBe('Bearer new');
     expect(calls[1]?.headers?.['If-None-Match']).toBeUndefined();
-  });
-});
-
-describe('createGhTokenReader (#131)', () => {
-  it('reads the trimmed token from the file', () => {
-    const read = createGhTokenReader({ path: '/x/.gh-token', readFile: () => 'ghs_abc\n' });
-    expect(read()).toBe('ghs_abc');
-  });
-
-  it('falls back to env when the file is absent or blank', () => {
-    expect(
-      createGhTokenReader({ path: '/x', readFile: () => undefined, env: () => 'pat_env' })(),
-    ).toBe('pat_env');
-    expect(
-      createGhTokenReader({ path: '/x', readFile: () => '   \n', env: () => 'pat_env' })(),
-    ).toBe('pat_env');
-  });
-
-  it('prefers the (always-fresh) file over the (possibly-stale) env value', () => {
-    const read = createGhTokenReader({
-      path: '/x',
-      readFile: () => 'file_tok',
-      env: () => 'env_tok',
-    });
-    expect(read()).toBe('file_tok');
-  });
-
-  it('returns undefined when neither file nor env yields a token', () => {
-    expect(createGhTokenReader({ path: '/x', readFile: () => undefined })()).toBeUndefined();
-  });
-
-  it('caches within the ttl, then re-reads so a rotated token is picked up', () => {
-    const now = vi.fn<() => number>(() => 1000);
-    let fileVal = 'tok_A';
-    const readFile = vi.fn(() => fileVal);
-    const read = createGhTokenReader({ path: '/x', readFile, ttlMs: 30_000, now });
-    expect(read()).toBe('tok_A');
-    fileVal = 'tok_B';
-    expect(read()).toBe('tok_A'); // still cached — file not re-read
-    expect(readFile).toHaveBeenCalledTimes(1);
-    now.mockReturnValue(1000 + 30_001); // ttl elapsed
-    expect(read()).toBe('tok_B'); // re-read picks up the rotation
-    expect(readFile).toHaveBeenCalledTimes(2);
   });
 });
 
