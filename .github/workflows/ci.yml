@@ -45,7 +45,8 @@ concurrency:
   # as failure and stamps a false red X on the merge commit (seen with #465, cancelled
   # 3s later by #464's merge). `github.head_ref` is empty on push, so the fallback picks
   # the SHA there.
-  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  # Targeted diagnostics must not cancel full manual CI on the same commit.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}${{ github.event_name == 'workflow_dispatch' && inputs['check-suite'] == 'server-image' && '-server-image' || '' }}
   cancel-in-progress: true
 
 jobs:

@@ -53,8 +53,12 @@ it.each(['true', 'false'])('preserves script ownership when contract tests are %
 
 it('keeps manual diagnostics separate from the required full CI verdict', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    concurrency: { group: string };
     jobs: Record<string, { name?: string }>;
   };
+  expect(workflow.concurrency.group).toContain(
+    "${{ github.event_name == 'workflow_dispatch' && inputs['check-suite'] == 'server-image' && '-server-image' || '' }}",
+  );
   expect(workflow.jobs['ci-checks']?.name).toBe(
     "${{ github.event_name == 'workflow_dispatch' && inputs['check-suite'] == 'server-image' && 'server-image-diagnostics' || 'ci-checks' }}",
   );
