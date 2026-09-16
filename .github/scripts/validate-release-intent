@@ -5,11 +5,11 @@ base="${1:?base SHA is required}"
 head="${2:?head SHA is required}"
 author="${3:-}"
 
-# Generated dependency and release PRs cannot author intent fragments. They are
-# deliberately release-neutral unless a human follow-up adds product changes.
-if [[ "$author" == *'[bot]' ]]; then
-  exit 0
-fi
+# Only known dependency/release automation is release-neutral without an intent.
+# Agent GitHub Apps author product changes and must declare the release decision.
+case "$author" in
+  'renovate[bot]'|'github-actions[bot]') exit 0 ;;
+esac
 
 mapfile -t intent_changes < <(
   git diff --no-renames --name-status "$base...$head" -- \

@@ -30,9 +30,11 @@ title, and version bump become one commit. Merge commits could be parsed twice;
 rebase merges could separate the intent from the title it classifies. The
 release workflow checks the repository setting before invoking Release Please.
 
-Generated bot pull requests are exempt because they cannot add a reviewed human
-release decision. A product change from such a pull request needs a human
-follow-up intent before it can enter the backend train.
+Only `renovate[bot]` and `github-actions[bot]` pull requests are exempt for the
+existing dependency and release automations. Verity and other agent GitHub Apps
+must add an intent just like human contributors; a bot identity alone is not an
+exemption. A product change from exempt automation still needs a follow-up
+backend intent before it can enter the backend train.
 
 ## Release-PR checks without a PAT
 
