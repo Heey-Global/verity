@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.31.0](https://github.com/Heey-Global/verity/compare/mobile-v1.30.0...mobile-v1.31.0) (2026-09-16)
+
+
+### Features
+
+* **attachments:** raise chat and file upload limits ([#361](https://github.com/Heey-Global/verity/issues/361)) ([659397e](https://github.com/Heey-Global/verity/commit/659397ed1c68b917d4593e68dc60dfcd26816faa))
+* **mobile:** reorganize settings navigation ([#341](https://github.com/Heey-Global/verity/issues/341)) ([c324673](https://github.com/Heey-Global/verity/commit/c3246735bbe877533eec3062881a3d15952e25da))
+
+
+### Bug Fixes
+
+* **mobile:** decode pinned text responses as UTF-8 ([#391](https://github.com/Heey-Global/verity/issues/391)) ([22287a9](https://github.com/Heey-Global/verity/commit/22287a967f6354a5f0aa657b25845cce2dd37e06))
+* **mobile:** leave onboarding after cold unlock ([#389](https://github.com/Heey-Global/verity/issues/389)) ([3c6c26f](https://github.com/Heey-Global/verity/commit/3c6c26fb4bec6b7248ca3689d287570ec1a827cc))
+* **mobile:** restore paired-device access after restart ([#401](https://github.com/Heey-Global/verity/issues/401)) ([d679e34](https://github.com/Heey-Global/verity/commit/d679e340d63a9913297c5319912c393af89ac07f))
+* **mobile:** send on Return without a software keyboard ([#397](https://github.com/Heey-Global/verity/issues/397)) ([695a4e2](https://github.com/Heey-Global/verity/commit/695a4e2a65a90564506a6eafa3156da6bf8025d9))
+* **onboarding:** move project setup into app ([#325](https://github.com/Heey-Global/verity/issues/325)) ([d05337d](https://github.com/Heey-Global/verity/commit/d05337dd23b604b349012c3ea30ca9d7a35e5f73))
+* **setup:** repair runner volume permissions ([#328](https://github.com/Heey-Global/verity/issues/328)) ([1f54f65](https://github.com/Heey-Global/verity/commit/1f54f6579798ce4682df72b424cec29e259fcbad))
+* **ui:** keep asynchronous project start in progress ([#380](https://github.com/Heey-Global/verity/issues/380)) ([e27830c](https://github.com/Heey-Global/verity/commit/e27830c235c7ebc86e1f78e78eb486de50c00305))
+
 ## [1.30.0](https://github.com/Heey-Global/verity/compare/mobile-v1.29.0...mobile-v1.30.0) (2026-09-14)
 
 
