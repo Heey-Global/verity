@@ -40,7 +40,7 @@ backend intent before it can enter the backend train.
 
 release-please intentionally uses only the repository `GITHUB_TOKEN`. Pull
 requests created with that token do not recursively trigger `pull_request`
-workflows, so `.github/workflows/release-trains.yml` explicitly dispatches `ci.yml` for
+workflows, so `.github/workflows/release.yml` explicitly dispatches `ci.yml` for
 every release-PR branch returned by release-please. This requires `actions: write`
 on the release workflow and a `workflow_dispatch` trigger on CI.
 
@@ -131,15 +131,15 @@ the GitHub release.
 ## Independent publication queues
 
 `release-dispatch.yml` handles main pushes and manual recovery. Each matrix entry
-calls `release-trains.yml` under a separate backend, native mobile, or website
+calls `release.yml` under a separate backend, native mobile, or website
 lifecycle lock. That lock covers metadata generation through publication, so a
 second run cannot create a premature release PR while the first release is still
 a draft. A native app build does not block the Server train.
 
 The short `release-please` jobs also share a metadata lock to serialize repository
 metadata mutations. Each invocation processes only its selected train. The
-backend calls reusable `release.yml` for acceptance, sibling images, channels,
-evidence, and release finalization. Signing jobs stay in `release.yml` because
+same workflow owns backend acceptance, sibling images, channels, evidence, and
+release finalization; there is no intermediate backend handoff. Signing jobs stay in `release.yml` because
 installed Servers trust that workflow's Fulcio certificate identity. Never move
 them without a compatible trust migration or repeat the lifecycle lock inside a
 called workflow: that would deadlock the parent and child.
