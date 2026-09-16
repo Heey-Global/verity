@@ -188,6 +188,28 @@ describe('new project live setup', () => {
     expect(mockReplace).not.toHaveBeenCalledWith('/');
   });
 
+  it('keeps an accepted asynchronous repair in progress instead of showing a stale error', async () => {
+    const accepted = {
+      ...project('container_starting'),
+      provisionError: 'A previous provisioning attempt failed.',
+    };
+    mockCreateClient.mockReturnValue(
+      client({ repairProject: jest.fn().mockResolvedValue(accepted) }),
+    );
+    render(<NewProjectScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Create project'));
+
+    expect(await screen.findByText('Starting secure workspace…')).toBeOnTheScreen();
+    expect(screen.queryByText('A previous provisioning attempt failed.')).toBeNull();
+    expect(screen.getByLabelText('Project setup progress')).toHaveProp('accessibilityValue', {
+      min: 0,
+      max: 5,
+      now: 2,
+      text: 'Starting secure workspace…',
+    });
+  });
+
   it('retries project analysis after a transient failure', async () => {
     const getDevServerDetection = jest
       .fn()

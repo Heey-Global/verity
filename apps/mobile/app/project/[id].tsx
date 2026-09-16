@@ -324,7 +324,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
         {project.state !== 'active' && project.state !== 'absent' ? (
           <View style={styles.runtimePanel} accessibilityLabel="Project setup progress">
             <Text style={styles.operationsTitle}>{projectSetupStatus(project).label}</Text>
-            {project.provisionError ? (
+            {project.state === 'failed' && project.provisionError ? (
               <Text style={styles.settingsError}>{project.provisionError}</Text>
             ) : (
               <Text style={styles.operationsSubtitle}>

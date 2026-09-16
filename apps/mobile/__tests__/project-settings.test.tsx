@@ -870,6 +870,25 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
   });
 
+  it('does not show a stale provision error while the environment is starting', async () => {
+    const base = makeDetail();
+    const detail: ProjectDetail = {
+      ...base,
+      project: {
+        ...base.project,
+        state: 'container_starting',
+        setupStatus: 'complete',
+        provisionError: 'A previous provisioning attempt failed.',
+      },
+    };
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
+    render(<ProjectDetailScreen />);
+
+    expect(await screen.findByText('Starting secure workspace…')).toBeOnTheScreen();
+    expect(screen.queryByText('A previous provisioning attempt failed.')).toBeNull();
+    expect(screen.getByText(/continues in the background/)).toBeOnTheScreen();
+  });
+
   // The escape hatch for a devcontainer change the image cache cannot see:
   // Update and Repair both reuse the content-hash-cached tag, so only this
   // action rebuilds. It has to reach the server as an explicit `forceRebuild`,
