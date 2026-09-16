@@ -1,0 +1,1179 @@
+name: verity-release-trains
+
+# release-please maintains three deliberately gated release trains: one shared
+# backend version for toolkit/server/sandbox, one native mobile version, and one
+# for the product website. It collects Conventional Commits into separate
+# release PRs; artifacts ship only after the corresponding release PR is merged.
+#
+# Backend releases keep the existing `v<semver>` tag and shared artifact version.
+# Native app releases use `mobile-vX.Y.0`; every native release bumps the minor
+# version and always triggers a new native TestFlight build. The mobile release
+# PR is opened only when the cumulative diff from the latest `.0` contains a
+# native-sensitive change. OTA patches are handled separately by mobile-ota.yml
+# as `mobile-vX.Y.1`, `.2`, and so on.
+# Website releases use `website-vX.Y.Z` and publish one image, tagged `vX.Y.Z`,
+# which the k8s repository pins. The website is on its own train so that a
+# backend release does not move a version the cluster tracks, and so that an
+# nginx base-image bump reaches a released website version on its own — the
+# latter needs the bump to be typed `fix`, which renovate.json arranges for
+# that one Dockerfile, since a `chore` commit releases nothing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mobile-tag:
+        description: Existing draft mobile-vX.Y.0 release to recover
+        required: false
+        type: string
+      backend-version:
+        description: Existing draft maintenance release version (X.Y.Z)
+        required: false
+        type: string
+      backend-ref:
+        description: Maintenance source branch or tag
+        required: false
+        type: string
+      backend-republish:
+        description: Republish an existing backend release and stable channel
+        required: false
+        default: false
+        type: boolean
+      backend-schema-forward-max:
+        description: Reviewed migration key promised readable by a maintenance bridge
+        required: false
+        type: string
+      backend-accept-no-rollback:
+        description: Republish despite a failed N-1 rollback (irreversible emergency override)
+        required: false
+        default: false
+        type: boolean
+      website-version:
+        description: Existing website release version to recover (X.Y.Z)
+        required: false
+        type: string
+      website-ref:
+        description: Commit, branch, or tag backing the existing website release
+        required: false
+        type: string
+
+permissions: read-all
+
+jobs:
+  release-please:
+    concurrency:
+      group: release-metadata
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Release Please creates releases and PRs; this job also dispatches the
+    # checks that GITHUB_TOKEN-created PRs do not trigger automatically.
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs['.release/backend--release_created'] }}
+      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['.release/backend--major'], steps.release-backend.outputs['.release/backend--minor'], steps.release-backend.outputs['.release/backend--patch']) }}
+      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs['.release/backend--sha'] }}
+      mobile-release-created: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
+      mobile-version: ${{ steps.release-mobile.outputs['apps/mobile--major'] }}.${{ steps.release-mobile.outputs['apps/mobile--minor'] }}.${{ steps.release-mobile.outputs['apps/mobile--patch'] }}
+      mobile-sha: ${{ steps.release-mobile.outputs['apps/mobile--sha'] }}
+      mobile-tag: ${{ steps.release-mobile.outputs['apps/mobile--tag_name'] }}
+      # The website is its own release train (`website-vX.Y.Z`), so it has no
+      # maintenance arm to fall back to: `steps.maintenance` recovers a backend
+      # version and says nothing about this package.
+      website-release-created: ${{ steps.website-recovery.outputs.release_created || steps.release-website.outputs['docs/website--release_created'] }}
+      website-version: ${{ steps.website-recovery.outputs.version || format('{0}.{1}.{2}', steps.release-website.outputs['docs/website--major'], steps.release-website.outputs['docs/website--minor'], steps.release-website.outputs['docs/website--patch']) }}
+      website-sha: ${{ steps.website-recovery.outputs.sha || steps.release-website.outputs['docs/website--sha'] }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              # No sudo on the runner: a prior container job left root-owned files the
+              # non-root runner can't chown (so actions/checkout's clean fails with
+              # EACCES). Chown them back as root in a throwaway container — the runner
+              # is in the docker group.
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            else
+              chown -R "$owner" "$GITHUB_WORKSPACE" 2>/dev/null || true
+            fi
+          fi
+
+      - name: Enforce release-safe merge policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          merge_policy="$(gh api "repos/${GITHUB_REPOSITORY}" \
+            --jq '[.allow_merge_commit, .allow_squash_merge, .allow_rebase_merge] | @tsv')"
+          # An explicit release intent and its product change must reach main as
+          # one commit. A rebase merge can separate them, leaving Release Please
+          # with only the intent commit and the wrong title/version bump.
+          if [[ "$merge_policy" != $'false\ttrue\tfalse' ]]; then
+            echo "::error::Under Settings > General > Pull Requests, enable squash merging only. Merge commits can be parsed twice, while rebase merges separate product changes from their release intent."
+            exit 1
+          fi
+
+      # The selector diffs immutable event SHAs locally. A complete checkout
+      # avoids the Compare API's 300-file ceiling and keeps large pushes from
+      # hiding a manifest or a file that does not belong to the selected train.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+
+      - name: Select release trains for this push
+        id: release-trains
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          diff="$(git diff --no-renames --name-status "$BEFORE" "$HEAD_SHA")" || {
+            echo "::error::Could not resolve the immutable push diff ${BEFORE}...${HEAD_SHA}." >&2
+            exit 1
+          }
+          if [[ -z "$diff" ]]; then
+            # A valid push shape (squash merge whose content already landed),
+            # not a resolution failure — that case exited above. Fall through
+            # to the always-on trains so delayed-release catch-up still runs.
+            echo "::notice::Empty push diff ${BEFORE}...${HEAD_SHA}: duplicate content; selecting the default trains."
+          fi
+
+          backend=false
+          mobile=false
+          website=false
+          while IFS=$'\t' read -r status file; do
+            case "$file" in
+              .release-please-manifest.backend.json) backend=true ;;
+              .release-please-manifest.mobile.json) mobile=true ;;
+              .release-please-manifest.website.json) website=true ;;
+              *) continue ;;
+            esac
+            [[ "$status" == M ]] || {
+              echo "::error::Release manifest $file had Git status $status rather than M." >&2
+              exit 1
+            }
+          done <<<"$diff"
+
+          if [[ "$backend" == false && "$mobile" == false && "$website" == false ]]; then
+            # Ordinary source pushes update the always-on trains. Mobile is
+            # different: JS-only changes ship through the OTA train and must not
+            # make a native release look necessary. Compare cumulatively from
+            # the latest native release so an OTA-safe merge cannot hide an
+            # earlier native change that has not reached TestFlight yet.
+            backend=true
+            website=true
+            native_tag="$(git tag --merged "$HEAD_SHA" --list 'mobile-v[0-9]*.[0-9]*.0' --sort=-version:refname | head -n 1)"
+            if [[ -z "$native_tag" ]]; then
+              mobile=true
+              echo 'No native mobile release exists; enabling the initial mobile release PR.'
+            else
+              if ! native_path_changes="$(git diff --name-only "$native_tag" "$HEAD_SHA" -- \
+                  apps/mobile/package.json apps/mobile/app.config.ts apps/mobile/eas.json \
+                  apps/mobile/ios apps/mobile/android apps/mobile/native \
+                  apps/mobile/plugins apps/mobile/patches)"; then
+                echo "::error::Could not compare native-sensitive mobile paths with $native_tag." >&2
+                exit 1
+              fi
+              if ! native_lock_changes="$(node scripts/mobile-native-lock-changes.mjs "$native_tag" "$HEAD_SHA")"; then
+                echo "::error::Could not compare the mobile dependency closure with $native_tag." >&2
+                exit 1
+              fi
+              native_changes="$(printf '%s\n%s\n' "$native_path_changes" "$native_lock_changes" | sed '/^$/d')"
+              if [[ -n "$native_changes" ]]; then
+                mobile=true
+                echo "Native mobile release required since $native_tag:"
+                echo "$native_changes"
+              else
+                mobile=false
+                echo "No native-sensitive changes since $native_tag; the OTA train owns mobile delivery."
+              fi
+            fi
+          else
+            # A release-please merge may publish only the train whose manifest is
+            # in this event's immutable diff. Do not let a delayed run observe a
+            # later merge through the moving main branch and publish that train.
+            while IFS=$'\t' read -r _ file; do
+              owned=false
+              if [[ "$backend" == true ]]; then
+                case "$file" in
+                  .release-please-manifest.backend.json|CHANGELOG.md|version.txt) owned=true ;;
+                esac
+              fi
+              if [[ "$mobile" == true ]]; then
+                case "$file" in
+                  .release-please-manifest.mobile.json|apps/mobile/CHANGELOG.md|apps/mobile/app.config.ts|apps/mobile/version.txt) owned=true ;;
+                esac
+              fi
+              if [[ "$website" == true ]]; then
+                case "$file" in
+                  .release-please-manifest.website.json|docs/website/CHANGELOG.md|docs/website/version.txt) owned=true ;;
+                esac
+              fi
+              [[ "$owned" == true ]] || {
+                echo "::error::$file does not belong to the release train selected by this push." >&2
+                exit 1
+              }
+            done <<<"$diff"
+          fi
+
+          {
+            echo "backend=$backend"
+            echo "mobile=$mobile"
+            echo "website=$website"
+          } >> "$GITHUB_OUTPUT"
+
+      # GitHub's Releases API creates a missing tag as part of the release. If
+      # a delayed run targets a release commit behind HEAD and workflow files
+      # changed in between, that implicit ref creation requires workflows:write
+      # — a permission GITHUB_TOKEN cannot receive. Create only that recovery
+      # tag as an ordinary Git ref first; Release Please then attaches the
+      # release to the existing, verified tag. On-time release runs retain the
+      # normal draft-without-a-tag lifecycle.
+      - name: Require tags for delayed release commits
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+          BACKEND_SELECTED: ${{ steps.release-trains.outputs.backend }}
+          MOBILE_SELECTED: ${{ steps.release-trains.outputs.mobile }}
+          WEBSITE_SELECTED: ${{ steps.release-trains.outputs.website }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pretag_delayed_release() {
+            local selected="$1" component="$2" manifest="$3" path="$4" prefix="$5"
+            [[ "$selected" == true ]] || return 0
+
+            local prs count pr author release_sha version tag
+            prs="$(gh pr list --state merged --base main \
+              --head "release-please--branches--main--components--${component}" \
+              --label 'autorelease: pending' --limit 2 \
+              --json number,author,mergeCommit)"
+            count="$(jq 'length' <<<"$prs")"
+            [[ "$count" != 0 ]] || return 0
+            if [[ "$count" != 1 ]]; then
+              echo "::error::Found $count pending $component release PRs; refusing to guess a tag target." >&2
+              exit 1
+            fi
+
+            pr="$(jq -r '.[0].number' <<<"$prs")"
+            author="$(jq -r '.[0].author.login' <<<"$prs")"
+            release_sha="$(jq -r '.[0].mergeCommit.oid' <<<"$prs")"
+            if [[ "$author" != 'app/github-actions' && "$author" != 'github-actions' ]] ||
+              [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Pending $component release PR #$pr has an unexpected author or merge commit." >&2
+              exit 1
+            fi
+            git merge-base --is-ancestor "$release_sha" "$HEAD_SHA" || {
+              echo "::error::Pending $component release PR #$pr is not an ancestor of this push." >&2
+              exit 1
+            }
+
+            # HEAD needs no workaround. A delayed target needs one only when
+            # its workflow tree differs, which is the scope GitHub protects.
+            [[ "$release_sha" != "$HEAD_SHA" ]] || return 0
+            git diff --quiet "$release_sha" "$HEAD_SHA" -- .github/workflows && return 0
+
+            version="$(jq -er --arg path "$path" '.[$path] | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' "$manifest")"
+            tag="${prefix}${version}"
+            if git show-ref --verify --quiet "refs/tags/${tag}"; then
+              tagged_sha="$(git rev-parse "${tag}^{commit}")"
+              if [[ "$tagged_sha" != "$release_sha" ]]; then
+                echo "::error::$tag points to $tagged_sha, not pending release commit $release_sha." >&2
+                exit 1
+              fi
+              return 0
+            fi
+
+            echo "::error::Delayed $component release PR #$pr needs $tag at $release_sha, but the workflow token cannot create a tag whose tree contains older workflow files." >&2
+            echo "Create and push the validated tag from an authorized checkout, then re-run this workflow:" >&2
+            echo "  git tag $tag $release_sha" >&2
+            echo "  git push origin refs/tags/$tag" >&2
+            exit 1
+          }
+
+          pretag_delayed_release "$BACKEND_SELECTED" server \
+            .release-please-manifest.backend.json '.release/backend' v
+          pretag_delayed_release "$MOBILE_SELECTED" mobile \
+            .release-please-manifest.mobile.json 'apps/mobile' mobile-v
+          pretag_delayed_release "$WEBSITE_SELECTED" website \
+            .release-please-manifest.website.json 'docs/website' website-v
+
+      - name: Open backend release PR or create release
+        id: release-backend
+        if: github.event_name == 'push' && steps.release-trains.outputs.backend == 'true'
+        # renovate: datasource=github-actions depName=googleapis/release-please-action
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.backend.json
+          manifest-file: .release-please-manifest.backend.json
+
+      - name: Open mobile release PR or create release
+        id: release-mobile
+        if: github.event_name == 'push' && steps.release-trains.outputs.mobile == 'true'
+        # renovate: datasource=github-actions depName=googleapis/release-please-action
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.mobile.json
+          manifest-file: .release-please-manifest.mobile.json
+
+      - name: Open website release PR or create release
+        id: release-website
+        if: github.event_name == 'push' && steps.release-trains.outputs.website == 'true'
+        # renovate: datasource=github-actions depName=googleapis/release-please-action
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.website.json
+          manifest-file: .release-please-manifest.website.json
+
+      # A draft release has no Git tag until the verified artifacts publish it.
+      # Release Please can therefore create a next-release PR in the same action
+      # from the previous tag, repeating already released commits. Such a PR is
+      # identifiable without trusting its title: the action reports both a release
+      # and a PR, and the generated PR commit is parented directly by that release
+      # SHA. Remove only that exact bot-owned branch. A later main push recreates a
+      # real next-release PR after the tag exists.
+      - name: Remove premature next release PRs
+        id: remove-premature-prs
+        if: >-
+          (steps.release-backend.outputs['.release/backend--release_created'] == 'true' && steps.release-backend.outputs.prs_created == 'true') ||
+          (steps.release-mobile.outputs['apps/mobile--release_created'] == 'true' && steps.release-mobile.outputs.prs_created == 'true') ||
+          (steps.release-website.outputs['docs/website--release_created'] == 'true' && steps.release-website.outputs.prs_created == 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BACKEND_RELEASED: ${{ steps.release-backend.outputs['.release/backend--release_created'] }}
+          BACKEND_SHA: ${{ steps.release-backend.outputs['.release/backend--sha'] }}
+          BACKEND_PRS: ${{ steps.release-backend.outputs.prs }}
+          MOBILE_RELEASED: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
+          MOBILE_SHA: ${{ steps.release-mobile.outputs['apps/mobile--sha'] }}
+          MOBILE_PRS: ${{ steps.release-mobile.outputs.prs }}
+          WEBSITE_RELEASED: ${{ steps.release-website.outputs['docs/website--release_created'] }}
+          WEBSITE_SHA: ${{ steps.release-website.outputs['docs/website--sha'] }}
+          WEBSITE_PRS: ${{ steps.release-website.outputs.prs }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          removed_file="$RUNNER_TEMP/removed-premature-release-prs"
+          : > "$removed_file"
+          node -e '
+            for (const [train, component, released, sha, raw] of [
+              ["backend", "server", "BACKEND_RELEASED", "BACKEND_SHA", "BACKEND_PRS"],
+              ["mobile", "mobile", "MOBILE_RELEASED", "MOBILE_SHA", "MOBILE_PRS"],
+              ["website", "website", "WEBSITE_RELEASED", "WEBSITE_SHA", "WEBSITE_PRS"],
+            ]) {
+              if (process.env[released] !== "true") continue;
+              const value = JSON.parse(process.env[raw] || "[]");
+              for (const pr of Array.isArray(value) ? value : [value]) {
+                const branch = pr.headBranchName || pr.headRefName || pr.branchName;
+                if (branch) process.stdout.write(`${train}\t${component}\t${process.env[sha]}\t${branch}\n`);
+              }
+            }
+          ' | while IFS=$'\t' read -r train component release_sha branch; do
+            expected_branch="release-please--branches--main--components--${component}"
+            if [[ "$branch" != "$expected_branch" || ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::warning::Refusing to remove unexpected $train next-release branch '$branch'."
+              continue
+            fi
+            pr="$(gh pr list --state open --head "$branch" --json number,author,baseRefName,headRefOid --jq '.[0] // empty')"
+            if [[ -z "$pr" ]]; then
+              echo "::warning::Could not resolve the premature $train release PR on $branch."
+              continue
+            fi
+            pr_number="$(jq -r .number <<<"$pr")"
+            identity="$(jq -r '[.author.login, .baseRefName] | join("|")' <<<"$pr")"
+            head_sha="$(jq -r .headRefOid <<<"$pr")"
+            parent="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}" --jq 'if (.parents | length) == 1 then .parents[0].sha else "" end')"
+            if [[ "$identity" != 'app/github-actions|main' && "$identity" != 'github-actions|main' ]] || [[ "$parent" != "$release_sha" ]]; then
+              echo "::warning::Refusing to remove PR #$pr_number: identity or release parent did not match."
+              continue
+            fi
+            if gh pr close "$pr_number" --delete-branch --comment \
+              "Closing a premature next-release PR created before this run publishes its verified tag. A later main push will recreate it from the published release boundary."; then
+              printf '%s\n' "$branch" >> "$removed_file"
+            else
+              echo "::warning::Could not close premature $train release PR #$pr_number."
+            fi
+          done
+          {
+            echo 'branches<<EOF'
+            cat "$removed_file"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate maintenance backend release
+        id: maintenance
+        if: github.event_name == 'workflow_dispatch' && inputs['backend-version'] != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job deliberately has no checkout. Tell gh which repository to
+          # query instead of making it discover one from a nonexistent .git.
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.backend-version }}
+          SOURCE_REF: ${{ inputs.backend-ref }}
+          REPUBLISH: ${{ inputs.backend-republish }}
+          SCHEMA_FORWARD_MAX: ${{ inputs.backend-schema-forward-max }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Maintenance backend version must match X.Y.Z, got '$VERSION'." >&2
+            exit 1
+          fi
+          if [[ -z "$SOURCE_REF" ]]; then
+            echo '::error::backend-ref is required with backend-version.' >&2
+            exit 1
+          fi
+          if [[ -n "$SCHEMA_FORWARD_MAX" && ! "$SCHEMA_FORWARD_MAX" =~ ^[0-9]{4}_[a-z0-9_]+$ ]]; then
+            echo "::error::backend-schema-forward-max must be a migration key." >&2
+            exit 1
+          fi
+          tag="v${VERSION}"
+          release_json="$(gh release view "$tag" --json isDraft,targetCommitish)"
+          is_draft="$(jq -r '.isDraft' <<<"$release_json")"
+          target="$(jq -r '.targetCommitish' <<<"$release_json")"
+          if [[ "$REPUBLISH" == 'true' ]]; then
+            if [[ "$is_draft" == 'true' ]]; then
+              echo "::error::$tag is still a draft; republish is only for an existing release." >&2
+              exit 1
+            fi
+          elif [[ "$is_draft" != 'true' ]]; then
+            echo "::error::$tag must exist as a draft release before maintenance publishing." >&2
+            exit 1
+          fi
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_REF}" --jq '.sha')"
+          if [[ "$is_draft" == 'true' ]]; then
+            # GitHub creates refs/tags/<tag> only when publishing the release, so
+            # accept only a pinned commit target that cannot move before then.
+            if [[ ! "$target" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$tag draft target must be a full commit SHA, got '$target'." >&2
+              exit 1
+            fi
+            release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${target}" --jq '.sha')"
+            if [[ "$target" != "$release_sha" ]]; then
+              echo "::error::$tag draft target does not resolve to its recorded commit." >&2
+              exit 1
+            fi
+          else
+            tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+            release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+            if [[ "$tag_type" == 'tag' ]]; then
+              release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${release_sha}" --jq '.object.sha')"
+            elif [[ "$tag_type" != 'commit' ]]; then
+              echo "::error::$tag resolves to unsupported object type $tag_type." >&2
+              exit 1
+            fi
+          fi
+          if [[ "$sha" != "$release_sha" ]]; then
+            echo "::error::$tag resolves to $release_sha but backend-ref resolves to $sha." >&2
+            exit 1
+          fi
+          {
+            echo 'release_created=true'
+            echo "version=$VERSION"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # Recovery is deliberately narrower than normal release creation. The
+      # GitHub Actions integration may be refused by the Releases API even with
+      # `contents: write`; a human can publish the missing GitHub release, then
+      # this path verifies its immutable tag/source binding before rebuilding
+      # and promoting the website image through the ordinary publish job.
+      - name: Validate existing website release for recovery
+        id: website-recovery
+        if: github.event_name == 'workflow_dispatch' && inputs['website-version'] != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.website-version }}
+          SOURCE_REF: ${{ inputs.website-ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Website version must match X.Y.Z, got '$VERSION'." >&2
+            exit 1
+          fi
+          if [[ -z "$SOURCE_REF" ]]; then
+            echo '::error::website-ref is required with website-version.' >&2
+            exit 1
+          fi
+          tag="website-v${VERSION}"
+          is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
+          if [[ "$is_draft" != 'false' ]]; then
+            echo "::error::$tag must be a published GitHub release before recovery." >&2
+            exit 1
+          fi
+          source_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_REF}" --jq '.sha')"
+          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')"
+          release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')"
+          if [[ "$tag_type" == 'tag' ]]; then
+            release_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${release_sha}" --jq '.object.sha')"
+          elif [[ "$tag_type" != 'commit' ]]; then
+            echo "::error::$tag resolves to unsupported object type $tag_type." >&2
+            exit 1
+          fi
+          if [[ "$source_sha" != "$release_sha" ]]; then
+            echo "::error::$tag resolves to $release_sha but website-ref resolves to $source_sha." >&2
+            exit 1
+          fi
+          {
+            echo 'release_created=true'
+            echo "version=$VERSION"
+            echo "sha=$source_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # Pull requests created with GITHUB_TOKEN intentionally do not emit another
+      # pull_request workflow event. Dispatch CI explicitly for every release PR
+      # branch instead of introducing a long-lived PAT. Each isolated train can
+      # create a PR in the same run, so collect all three `prs` outputs.
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - if: >-
+          steps.release-backend.outputs.prs_created == 'true' ||
+          steps.release-mobile.outputs.prs_created == 'true' ||
+          steps.release-website.outputs.prs_created == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Run checks for release PRs
+        if: >-
+          steps.release-backend.outputs.prs_created == 'true' ||
+          steps.release-mobile.outputs.prs_created == 'true' ||
+          steps.release-website.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BACKEND_PRS_JSON: ${{ steps.release-backend.outputs.prs }}
+          MOBILE_PRS_JSON: ${{ steps.release-mobile.outputs.prs }}
+          WEBSITE_PRS_JSON: ${{ steps.release-website.outputs.prs }}
+          REMOVED_RELEASE_BRANCHES: ${{ steps.remove-premature-prs.outputs.branches }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const prs = [["backend", "BACKEND_PRS_JSON"], ["mobile", "MOBILE_PRS_JSON"], ["website", "WEBSITE_PRS_JSON"]]
+              .flatMap(([train, name]) => {
+                const value = JSON.parse(process.env[name] || "[]");
+                return (Array.isArray(value) ? value : [value]).map((pr) => ({ train, pr }));
+              });
+            for (const { train, pr } of prs) {
+              const branch = pr.headBranchName || pr.headRefName || pr.branchName;
+              if (!branch) throw new Error("release-please PR has no head branch");
+              process.stdout.write(`${train}\t${branch}\n`);
+            }
+          ' | while IFS=$'\t' read -r train branch; do
+            pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
+            if [[ -z "$pr_number" ]]; then
+              if grep -Fxq "$branch" <<< "$REMOVED_RELEASE_BRANCHES"; then
+                echo "Premature release PR for $branch was removed; skipping its checks."
+                continue
+              fi
+              echo "::error::Could not resolve the release PR for $branch." >&2
+              exit 1
+            fi
+            echo "Dispatching $train CI for $branch"
+            gh workflow run ci.yml --ref "$branch" -f release-train="$train" -f release-pr="$pr_number"
+            echo "Dispatching Gitleaks for $branch"
+            gh workflow run gitleaks-dispatch.yml --ref "$branch"
+            # Release Please normally changes only these three mobile metadata
+            # files. Native source changes were compiled on their originating
+            # PRs, and the final signed device archive is built from the merged
+            # release SHA below. Keep a defensive fallback in case future
+            # release configuration starts editing another mobile file.
+            changed_files="$(gh pr diff "$pr_number" --name-only)"
+            unexpected_mobile_files="$(grep '^apps/mobile/' <<< "$changed_files" \
+              | grep -Ev '^apps/mobile/(CHANGELOG\.md|app\.config\.ts|version\.txt)$' || true)"
+            if [[ -n "$unexpected_mobile_files" ]]; then
+              echo "Release PR changes native-relevant mobile files; dispatching iOS compile:"
+              echo "$unexpected_mobile_files"
+              gh workflow run mobile-native-verify.yml --ref "$branch" -f ref="$branch"
+            fi
+          done
+
+  publish-backend:
+    needs: release-please
+    if: needs.release-please.outputs.backend-release-created == 'true'
+    # Hold this lock across the entire reusable DAG, including all channel writes.
+    concurrency:
+      group: release-backend
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/release.yml
+    with:
+      backend-version: ${{ needs.release-please.outputs.backend-version }}
+      backend-sha: ${{ needs.release-please.outputs.backend-sha }}
+      backend-republish: ${{ inputs['backend-republish'] || false }}
+      backend-schema-forward-max: ${{ inputs['backend-schema-forward-max'] || '' }}
+      backend-accept-no-rollback: ${{ inputs['backend-accept-no-rollback'] || false }}
+
+  publish-mobile-native:
+    # Not gated on the cutover: the native app is its own release train and
+    # carries no Server image, so a failing Server cutover has nothing to say
+    # about it.
+    concurrency:
+      group: release-mobile
+      queue: max
+      cancel-in-progress: false
+    needs: release-please
+    if: >-
+      always() &&
+      (needs.release-please.outputs.mobile-release-created == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
+    # Public-repository GitHub-hosted runners are free. Keep the expensive macOS
+    # allocation scoped to the native release job only.
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
+      MOBILE_REF: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/main' || needs.release-please.outputs.mobile-sha }}
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: read
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.MOBILE_REF }}
+          fetch-depth: 0
+
+      - name: Validate native release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$MOBILE_TAG" =~ ^mobile-v[0-9]+\.[0-9]+\.0$ ]]; then
+            echo "::error::Native release tag must match mobile-vX.Y.0, got '$MOBILE_TAG'." >&2
+            exit 1
+          fi
+          is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
+          if [[ "$is_draft" != "true" ]]; then
+            echo "::error::$MOBILE_TAG must still be a draft release before TestFlight publishing." >&2
+            exit 1
+          fi
+          configured_version="$(tr -d '[:space:]' < apps/mobile/version.txt)"
+          if [[ "mobile-v${configured_version}" != "$MOBILE_TAG" ]]; then
+            echo "::error::Checked-out mobile version $configured_version does not match $MOBILE_TAG." >&2
+            exit 1
+          fi
+
+      # A recovery runs from the fixed main workflow rather than the older commit
+      # where release-please first created the draft. Align the still-unpublished
+      # tag with the exact source used for the binary and future OTA baseline.
+      - name: Align recovered draft tag with build source
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_sha="$(git rev-parse HEAD)"
+          git tag --force "$MOBILE_TAG" "$build_sha"
+          git push --force origin "refs/tags/${MOBILE_TAG}"
+
+      # The release job must not depend on the ambient Node.js installation.
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Require App Store Connect credentials
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ASC_ISSUER_ID ASC_KEY_ID ASC_KEY_P8 ASC_APP_ID APPLE_TEAM_ID EXPO_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is required for the native TestFlight release." >&2
+              exit 1
+            fi
+          done
+
+      - name: Require Google Drive OAuth client
+        env:
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${GOOGLE_AUTH_ID:-}" =~ ^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$ ]]; then
+            echo "::error::GOOGLE_AUTH_ID must contain a Google iOS OAuth client ID." >&2
+            exit 1
+          fi
+
+      - name: Install mobile dependencies
+        run: npm ci
+
+      - name: Prepare mobile sources
+        run: |
+          npm run -w @verity/mobile-app patch:native
+          npm run -w @verity/mobile build
+
+      - name: Build and upload native TestFlight release
+        working-directory: apps/mobile
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_dir="$RUNNER_TEMP/app-store-connect"
+          key_path="$key_dir/AuthKey_${ASC_KEY_ID}.p8"
+          ipa="$RUNNER_TEMP/Verity.ipa"
+          mkdir -p "$key_dir"
+          printf '%s' "$ASC_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+
+          mint_asc_jwt() {
+            ruby -ropenssl -rjson -rbase64 -e '
+              b64 = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
+              header = b64.call({ alg: "ES256", kid: ENV.fetch("ASC_KEY_ID"), typ: "JWT" }.to_json)
+              now = Time.now.to_i
+              claims = b64.call({ iss: ENV.fetch("ASC_ISSUER_ID"), iat: now - 60, exp: now + 1200, aud: "appstoreconnect-v1" }.to_json)
+              input = "#{header}.#{claims}"
+              der = OpenSSL::PKey.read(File.read(ARGV.fetch(0))).sign(OpenSSL::Digest::SHA256.new, input)
+              r, s = OpenSSL::ASN1.decode(der).value.map(&:value)
+              raw = [r, s].map { |part| [part.to_s(16).rjust(64, "0")].pack("H*") }.join
+              print "#{input}.#{b64.call(raw)}"
+            ' "$key_path"
+          }
+          asc_jwt="$(mint_asc_jwt)"
+          expected_bundle_id="$(npx expo config --type public --json \
+            | ruby -rjson -e 'print JSON.parse(STDIN.read).dig("ios", "bundleIdentifier")')"
+          app_json="$(curl --fail-with-body \
+            --retry 3 --retry-all-errors --max-time 30 \
+            --header "Authorization: Bearer $asc_jwt" \
+            "https://api.appstoreconnect.apple.com/v1/apps/$ASC_APP_ID")"
+          actual_bundle_id="$(ruby -rjson -e 'print JSON.parse(STDIN.read).dig("data", "attributes", "bundleId")' <<< "$app_json")"
+          if [[ "$actual_bundle_id" != "$expected_bundle_id" ]]; then
+            echo "::error::ASC_APP_ID $ASC_APP_ID belongs to '$actual_bundle_id', expected '$expected_bundle_id'." >&2
+            exit 1
+          fi
+
+          builds_json="$(curl --fail-with-body --get \
+            --retry 3 --retry-all-errors --max-time 30 \
+            --header "Authorization: Bearer $asc_jwt" \
+            --data-urlencode "filter[app]=$ASC_APP_ID" \
+            --data-urlencode 'sort=-uploadedDate' \
+            --data-urlencode 'limit=1' \
+            https://api.appstoreconnect.apple.com/v1/builds)"
+          latest_build="$(ruby -rjson -e 'data=JSON.parse(STDIN.read).fetch("data"); puts(data.empty? ? 0 : Integer(data.first.dig("attributes", "version")))' <<< "$builds_json")"
+          next_build="$((latest_build + 1))"
+          export VERITY_IOS_BUILD_NUMBER="$next_build"
+
+          # The repository normally lets EAS manage its remote counter. This
+          # release instead uses the next number observed in App Store Connect,
+          # so make only this runner's temporary EAS config use the local value.
+          ruby -rjson -e '
+            path = "eas.json"
+            config = JSON.parse(File.read(path))
+            config.fetch("cli")["appVersionSource"] = "local"
+            config.fetch("build").fetch("testflight")["autoIncrement"] = false
+            File.write(path, JSON.pretty_generate(config) + "\n")
+          '
+
+          # Build on the GitHub macOS runner while EAS supplies the remote
+          # distribution certificate and provisioning profile. This does not
+          # consume an EAS cloud-build slot or its build minutes.
+          npx --yes eas-cli@20.3.0 build \
+            --platform ios \
+            --profile testflight \
+            --local \
+            --non-interactive \
+            --output "$ipa"
+
+          info_plist="$RUNNER_TEMP/Verity-Info.plist"
+          unzip -p "$ipa" 'Payload/*.app/Info.plist' > "$info_plist"
+          next_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist")"
+          if [[ "$next_build" != "$VERITY_IOS_BUILD_NUMBER" ]]; then
+            echo "::error::The locally built IPA has build number '$next_build', expected '$VERITY_IOS_BUILD_NUMBER'." >&2
+            exit 1
+          fi
+          echo "Built App Store build number $next_build locally on GitHub Actions."
+
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          xcrun altool --upload-app --type ios --file "$ipa" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+          # altool success means only that Apple accepted the upload. Keep the
+          # draft GitHub release closed until App Store Connect has processed
+          # this exact build and declared it valid.
+          for attempt in {1..60}; do
+            asc_jwt="$(mint_asc_jwt)"
+            if ! uploaded_builds="$(curl --fail-with-body --get \
+              --retry 3 --retry-all-errors --max-time 30 \
+              --header "Authorization: Bearer $asc_jwt" \
+              --data-urlencode "filter[app]=$ASC_APP_ID" \
+              --data-urlencode "filter[version]=$next_build" \
+              --data-urlencode 'limit=1' \
+              https://api.appstoreconnect.apple.com/v1/builds)"; then
+              if [[ "$attempt" == 60 ]]; then
+                echo "::error::App Store Connect remained unavailable while checking build $next_build." >&2
+                exit 1
+              fi
+              echo "App Store Connect check failed transiently; retrying ($attempt/60)."
+              sleep 30
+              continue
+            fi
+            processing_state="$(ruby -rjson -e '
+              data = JSON.parse(STDIN.read).fetch("data")
+              print(data.empty? ? "MISSING" : data.first.dig("attributes", "processingState"))
+            ' <<< "$uploaded_builds")"
+            case "$processing_state" in
+              VALID)
+                echo "App Store Connect processed build $next_build successfully."
+                break
+                ;;
+              FAILED|INVALID)
+                echo "::error::App Store Connect rejected build $next_build during processing ($processing_state)." >&2
+                exit 1
+                ;;
+              MISSING|PROCESSING)
+                if [[ "$attempt" == 60 ]]; then
+                  echo "::error::Timed out waiting for App Store Connect to process build $next_build." >&2
+                  exit 1
+                fi
+                echo "Build $next_build is $processing_state; waiting for App Store Connect ($attempt/60)."
+                sleep 30
+                ;;
+              *)
+                echo "::error::Unexpected App Store Connect processing state '$processing_state'." >&2
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Publish verified native GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # release-please normally replaces this label while creating the
+          # release. Recovery publishes an already-created draft without running
+          # that action. Move the label first, then roll it back if publication
+          # fails so either state remains retryable: pending+draft or tagged+public.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${MOBILE_TAG#mobile-v}"
+            pr_numbers="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
+              '.[] | select(.merged_at != null and .title == "chore(main): release mobile '"$version"'") | .number')"
+            pr_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$pr_numbers")"
+            if [ "$pr_count" -ne 1 ]; then
+              echo "::error::Expected exactly one release PR for $MOBILE_TAG, found $pr_count." >&2
+              exit 1
+            fi
+            pr_number="$pr_numbers"
+            require_release_labels() {
+              expected_pending="$1"
+              expected_tagged="$2"
+              labels="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" --jq '.[].name')"
+              pending=false
+              tagged=false
+              grep -Fxq 'autorelease: pending' <<< "$labels" && pending=true
+              grep -Fxq 'autorelease: tagged' <<< "$labels" && tagged=true
+              if [ "$pending" != "$expected_pending" ] || [ "$tagged" != "$expected_tagged" ]; then
+                echo "::error::Release PR labels are pending=$pending tagged=$tagged; expected pending=$expected_pending tagged=$expected_tagged." >&2
+                return 1
+              fi
+            }
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+              -f 'labels[]=autorelease: tagged'
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels/autorelease%3A%20pending" || delete_status=$?
+            require_release_labels false true
+
+            publish_status=0
+            gh release edit "$MOBILE_TAG" --draft=false --latest=false || publish_status=$?
+            is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
+            if [ "$is_draft" = "true" ]; then
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+                -f 'labels[]=autorelease: pending'
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels/autorelease%3A%20tagged" || delete_status=$?
+              require_release_labels true false
+              [ "$publish_status" -ne 0 ] || publish_status=1
+              exit "${publish_status:-1}"
+            fi
+            require_release_labels false true
+          else
+            gh release edit "$MOBILE_TAG" --draft=false --latest=false
+          fi
+
+  publish-website:
+    # The Verity product website rides its own release train, so this job is
+    # gated on `website-release-created` and not on the backend release. Two
+    # things follow from that, both deliberate.
+    #
+    # It does not need `self-update-gate`. That gate exists because a released
+    # Server resolves its sandbox image and toolkit Feature at its OWN version,
+    # so publishing those before self-update is proven strands a release. No
+    # Server resolves the website image; ArgoCD in the k8s repository does, by
+    # an explicit pin a human or Renovate moves.
+    #
+    # It is also absent from RELEASE_IMAGES in scripts/audit-release-images.mjs,
+    # which is not an oversight — see the note there. That audit asks whether a
+    # `vX.Y.Z` BACKEND release got its images; this image is versioned on a
+    # different train and would read as missing for every backend release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: release-website
+      queue: max
+      cancel-in-progress: false
+    needs: release-please
+    if: needs.release-please.outputs.website-release-created == 'true'
+    permissions:
+      contents: write
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: heey-global/verity/verity-website
+      VERSION: ${{ needs.release-please.outputs.website-version }}
+      TEST_CONTAINER: verity-website-release-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Repair workspace ownership
+        working-directory: /
+        run: |
+          set -euo pipefail
+          if [[ -d "${GITHUB_WORKSPACE:-}" ]]; then
+            owner="$(id -u):$(id -g)"
+            if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+              sudo -n chown -R "$owner" "$GITHUB_WORKSPACE" || true
+            elif command -v docker >/dev/null 2>&1; then
+              docker run --rm -v "$GITHUB_WORKSPACE":/ws \
+                python:3.14-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 \
+                chown -R "$owner" /ws || true
+            fi
+          fi
+
+      # `VERSION` is three release-please outputs joined by dots. If one is
+      # missing the join still succeeds and yields `..`, which every step below
+      # accepts: the build labels the image `v..` and the promote step creates
+      # that tag. Checked before the build rather than after, so a renamed
+      # output costs a failed step and not a released image nobody can pin.
+      - name: Verify the release version resolved
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Website release version did not resolve: '$VERSION'" >&2
+            exit 1
+          fi
+
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.website-sha }}
+
+      # The guard above proves `VERSION` is well-formed, not that it belongs to
+      # the source now checked out. `website-sha` is the release commit that
+      # bumped this file, so the two agree by construction — and if they ever
+      # disagree, the outputs came from different releases and the tag would
+      # name an image built from something else.
+      - name: Verify the checkout is the release it tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version="$(tr -d '[:space:]' < docs/website/version.txt)"
+          if [[ "$source_version" != "$VERSION" ]]; then
+            echo "Checked-out website is $source_version but the release is $VERSION" >&2
+            exit 1
+          fi
+
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+
+      - name: Log in to ghcr.io
+        # renovate: datasource=github-actions depName=docker/login-action
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed by digest and tagged only after the smoke passes, exactly as the
+      # per-commit publish does: a version tag is the thing the k8s manifest
+      # pins, so it must never name an image that was never proven to serve.
+      - name: Build and publish untagged image digest
+        id: build
+        # renovate: datasource=github-actions depName=docker/build-push-action
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docs/website/Dockerfile
+          platforms: linux/amd64
+          outputs: >-
+            type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: REQUIRE_APPLE_ASSOCIATION=true
+          secrets: |
+            apple_team_id=${{ secrets.APPLE_TEAM_ID }}
+          provenance: true
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.release-please.outputs.website-sha }}
+            org.opencontainers.image.version=v${{ env.VERSION }}
+
+      - name: Smoke-test published digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          deploy/bin/verity-website-smoke \
+            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}" "$TEST_CONTAINER"
+
+      # No `latest`. The per-commit publish deliberately has no mutable tag to
+      # race, and the deployment pins a version anyway — a floating tag here
+      # would be a second, unpinned way into the cluster.
+      #
+      # Re-running a failed release job is how a release that lost one image is
+      # recovered, so `v${VERSION}` is created rather than claimed once. But a
+      # release that already published has nothing to recover, and the cluster
+      # pins this tag by name: moving it under a running deployment is invisible
+      # to ArgoCD, so running pods keep the old digest while new ones get the
+      # new. Serialization does not help — that is a re-run, not a race. So the
+      # tag is only written when it is absent or already ours; a publish that
+      # genuinely has to replace a released image is a new patch version.
+      - name: Promote tested digest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version_target="${REGISTRY}/${IMAGE_NAME}:v${VERSION}"
+          # Sets `inspect_output` to the digest on success and to the error text
+          # on failure, because the two have to be told apart: "no such tag" is
+          # the normal case for a first publish, and every other failure is a
+          # read we did not get an answer from.
+          inspect_output=''
+          inspect_tag() {
+            inspect_output="$(
+              docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1" 2>&1
+            )"
+          }
+          if inspect_tag "$version_target"; then
+            existing="$inspect_output"
+          elif grep -qiE 'not found|manifest unknown|404' <<<"$inspect_output"; then
+            # Only an explicit absence is safe to promote. Authentication and
+            # authorization failures leave the existing digest unknown and must
+            # fail closed before the immutable version tag can be touched.
+            existing=''
+          else
+            # Treating an unreadable registry as an absent tag is how a guard
+            # against overwriting a released tag overwrites one.
+            echo "Could not read $version_target: $inspect_output" >&2
+            echo "Refusing to tag without knowing whether one is already published." >&2
+            exit 1
+          fi
+          if [[ -n "$existing" && "$existing" != "$IMAGE_DIGEST" ]]; then
+            echo "$version_target already published $existing." >&2
+            echo "That tag was created from a digest this job had already smoked, so" >&2
+            echo "the release is complete even if a later step failed. To publish" >&2
+            echo "different content, release a patch version; to genuinely replace" >&2
+            echo "this one, delete the tag in the registry first and re-run." >&2
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "$version_target" \
+            "${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          # Read back before reporting success. This image is deliberately
+          # outside the release audit (scripts/audit-release-images.mjs), so
+          # nothing downstream ever asks again whether the tag the release
+          # created resolves — and a `website-vX.Y.Z` tag with no image behind
+          # it is a pin the cluster cannot satisfy.
+          #
+          # Resolving at all is the failure; resolving to a different digest is
+          # only a warning. Whether `imagetools create` republishes an index
+          # under its own digest or copies the source one is a buildx detail
+          # this repository has never had to know — and the tag is already
+          # written by the time we could find out, so failing on it would turn a
+          # published release into one that reports failure and, by the guard
+          # above, can no longer be re-run.
+          # Retried: a tag that has just been written and a registry that is
+          # briefly unreadable look the same from here, and the failure exit is
+          # the expensive one — the guard above then refuses the re-run of a
+          # release that did publish.
+          resolved=''
+          for attempt in 1 2 3; do
+            if inspect_tag "$version_target"; then
+              resolved="$inspect_output"
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          if [[ -z "$resolved" ]]; then
+            echo "Tag $version_target does not resolve after promotion: $inspect_output" >&2
+            exit 1
+          fi
+          if [[ "$resolved" != "$IMAGE_DIGEST" ]]; then
+            echo "::warning::$version_target resolves to $resolved, not the built $IMAGE_DIGEST"
+          fi
+          {
+            echo "## Verity website"
+            echo
+            echo "\`$version_target\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Release immutability is enforced by the organization. Release Please
+      # must therefore create a draft, which stays mutable while the image is
+      # built and verified. Publish it only after the immutable image tag is in
+      # place. Manual recovery starts from an already published release and
+      # deliberately skips this transition.
+      - name: Publish verified website release
+        if: inputs['website-version'] == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: website-v${{ needs.release-please.outputs.website-version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+          gh release edit "$TAG" --draft=false --latest=false

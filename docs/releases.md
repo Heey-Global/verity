@@ -40,7 +40,7 @@ backend intent before it can enter the backend train.
 
 release-please intentionally uses only the repository `GITHUB_TOKEN`. Pull
 requests created with that token do not recursively trigger `pull_request`
-workflows, so `.github/workflows/release.yml` explicitly dispatches `ci.yml` for
+workflows, so `.github/workflows/release-trains.yml` explicitly dispatches `ci.yml` for
 every release-PR branch returned by release-please. This requires `actions: write`
 on the release workflow and a `workflow_dispatch` trigger on CI.
 
@@ -127,3 +127,28 @@ the `release` workflow manually with that existing `mobile-vX.Y.0` tag. Recovery
 validates the draft and checked-out version, aligns the unpublished tag with the
 fixed source being built, builds/uploads the native binary, and only then publishes
 the GitHub release.
+
+## Independent publication queues
+
+`release-trains.yml` handles main pushes and manual recovery. Its short
+`release-please` job serializes metadata changes. Server, native mobile, and
+website publication use separate concurrency groups, so a native app build does
+not block creation of the next Server release PR or Server publication.
+
+The backend caller holds one lock across the entire reusable `release.yml`
+workflow, including acceptance, sibling images, channels, evidence, and release
+finalization. The signing jobs stay in `release.yml` because installed Servers
+trust that workflow's Fulcio certificate identity. Never move them without a
+compatible trust migration, or apply the caller's lock again inside the callee.
+
+Each queue uses `queue: max` and does not cancel active runs. GitHub supports up
+to 100 pending entries and orders them by arrival at the lock, not by commit or
+workflow-dispatch time. This prevents pending entries being replaced by a newer
+arrival within that capacity; it does not promise chronological release order.
+Keep manual recovery deliberate, especially when republishing an older version.
+See [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
+Use `release-trains.yml` for manual recovery with the same existing inputs
+(`mobile-tag`, backend maintenance flags, or website recovery version/ref).
+Already-running workflows retain their original scheduling; this change takes
+effect only on runs using the updated workflow definitions.
