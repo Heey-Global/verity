@@ -435,6 +435,10 @@ jobs:
                   contract_test=true
                   mobile_app=true
                   ;;
+                # The preparation contract reads compiler-cache policy directly.
+                apps/mobile/build/ccache.conf)
+                  contract_test=true
+                  ;;
                 apps/mobile/*)
                   lint=true
                   typecheck=true
