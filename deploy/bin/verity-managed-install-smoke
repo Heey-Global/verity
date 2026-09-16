@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Run the bundled installer on an empty disposable host, then exercise first use.
+set -euo pipefail
+
+image="${1:?usage: verity-managed-install-smoke <server-image> <dind-container>}"
+dind="${2:?usage: verity-managed-install-smoke <server-image> <dind-container>}"
+: "${DOCKER_HOST:?an isolated Docker socket is required}"
+: "${VERITY_MANAGED_INSTALL_DAEMON_ID:?the isolated daemon must be explicitly authorized}"
+host_socket=unix:///var/run/docker.sock
+isolated_socket="$DOCKER_HOST"
+repo_root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+refuse() { echo "verity-managed-install-smoke refuses to run: $1" >&2; exit 1; }
+host_docker() { docker --host "$host_socket" "$@"; }
+isolated_docker() { docker --host "$isolated_socket" "$@"; }
+inside_host() {
+  host_docker exec --env DOCKER_HOST=unix:///var/run/docker.sock --env DOCKER_TLS_VERIFY= \
+    --env DOCKER_CERT_PATH= "$dind" "$@"
+}
+
+socket="${isolated_socket#unix://}"
+[[ "$isolated_socket" == unix:///*/verity-managed-install-dind-*/docker.sock ]] || refuse 'unexpected isolated socket path'
+[[ -S "$socket" ]] || refuse 'isolated socket is absent'
+[[ "$dind" == verity-managed-install-dind-* ]] || refuse 'unexpected daemon container name'
+host_id="$(host_docker info --format '{{.ID}}')"
+isolated_id="$(isolated_docker info --format '{{.ID}}')"
+inside_id="$(inside_host docker info --format '{{.ID}}')"
+[[ -n "$host_id" && -n "$isolated_id" && "$host_id" != "$isolated_id" ]] || refuse 'cannot prove daemon isolation'
+[[ "$inside_id" == "$isolated_id" && "$isolated_id" == "$VERITY_MANAGED_INSTALL_DAEMON_ID" ]] || refuse 'daemon identities do not match'
+[[ -z "$(isolated_docker ps -aq)" ]] || refuse 'isolated daemon contains containers'
+[[ -z "$(isolated_docker volume ls -q)" ]] || refuse 'isolated daemon contains volumes'
+[[ -z "$(isolated_docker network ls --format '{{.Name}}' | awk '$0 != "bridge" && $0 != "host" && $0 != "none"')" ]] || refuse 'isolated daemon contains custom networks'
+isolated_docker image inspect "$image" >/dev/null
+# The production managed deployment requests four CPUs. Do not silently rewrite
+# its sealed resource contract to make this acceptance test pass on a smaller host.
+[[ "$(isolated_docker info --format '{{.NCPU}}')" -ge 4 ]] || refuse 'managed installation requires a daemon reporting at least four CPUs'
+inside_host test ! -e /etc/verity
+inside_host test ! -e /opt/verity-install
+
+cleanup() {
+  status=$?
+  trap - EXIT
+  if [[ "$status" != 0 ]]; then
+    # Installer output contains pairing credentials; never print that log.
+    isolated_docker ps -a --format '{{.Names}} {{.Status}}' >&2 || true
+    echo 'Managed installation acceptance failed; private installer output remains only inside the disposable daemon.' >&2
+  fi
+  # The initial empty-daemon and identity checks authorize only this daemon.
+  ids="$(isolated_docker ps -aq)" || ids=''
+  if [[ -n "$ids" ]]; then isolated_docker rm -f $ids >/dev/null 2>&1 || true; fi
+  volumes="$(isolated_docker volume ls -q)" || volumes=''
+  if [[ -n "$volumes" ]]; then isolated_docker volume rm $volumes >/dev/null 2>&1 || true; fi
+  return "$status"
+}
+trap cleanup EXIT
+
+repo=ghcr.io/heey-global/verity/verity-server
+registry_image=registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+isolated_docker run -d --name verity-managed-install-registry --publish 80:5000 --publish 443:5000 "$registry_image" >/dev/null
+registry_ready=0
+for attempt in $(seq 1 60); do
+  if inside_host curl --fail --silent http://127.0.0.1/v2/ >/dev/null; then registry_ready=1; break; fi
+  sleep 0.25
+done
+[[ "$registry_ready" == 1 ]] || { echo 'isolated registry did not become ready' >&2; exit 1; }
+isolated_docker tag "$image" "$repo:managed-install-smoke"
+isolated_docker push --quiet "$repo:managed-install-smoke" >/dev/null
+digest="$(isolated_docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$repo:managed-install-smoke" | awk -v prefix="$repo@sha256:" 'index($0, prefix) == 1 { print; exit }')"
+[[ "$digest" =~ ^ghcr.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ ]] || refuse 'registry did not return the official image digest'
+isolated_docker pull --quiet "$digest" >/dev/null
+
+# Extract the image's shipped bundle, not the checkout's deploy scripts.
+payload="$(isolated_docker create "$digest")"
+inside_host mkdir -p /opt/verity-install /opt/verity-managed-install-smoke
+isolated_docker cp "$payload:/opt/verity-install/." - |
+  host_docker exec -i "$dind" tar -xf - -C /opt/verity-install
+isolated_docker rm "$payload" >/dev/null
+host_docker cp "$repo_root/scripts/managed-install-acceptance.mjs" "$dind:/opt/verity-managed-install-smoke/driver.mjs"
+
+echo '--- managed installation: run the bundled installer on empty host state'
+inside_host sh -c 'umask 077; exec env VERITY_PAIRING_IPS=127.0.0.1 VERITY_API_HOST_PORT=0 /opt/verity-install/deploy/bin/verity-install --image "$1" > /opt/verity-managed-install-smoke/install.log 2>&1' sh "$digest"
+
+run_driver() {
+  isolated_docker run --rm --user 0:0 --network verity-net \
+    --mount type=volume,src=verity-managed-install-smoke-driver,dst=/state \
+    --mount type=bind,src=/opt/verity-managed-install-smoke/driver.mjs,dst=/driver.mjs,readonly \
+    --mount type=bind,src=/etc/verity/pairing-code,dst=/pairing-code,readonly \
+    --mount type=bind,src=/etc/verity/tls-ca-cert.pem,dst=/tls-ca-cert.pem,readonly \
+    --env VERITY_SMOKE_BASE_URL=https://verity-managed-gateway:8082 \
+    --env VERITY_SMOKE_TLS_SERVERNAME=localhost \
+    --env VERITY_SMOKE_STATE_PATH=/state/state.json \
+    --entrypoint node "$digest" /driver.mjs "$1"
+}
+
+echo '--- managed installation: initialize and verify first use'
+run_driver initialize
+# Probe the production supervisor, rather than accepting a merely running Runner.
+runner_ready=0
+for attempt in $(seq 1 120); do
+  if isolated_docker exec verity-managed-control-plane-runner sh -ec \
+    'test ! -e /run/verity-runner-broker/connector-reconcile.failed; VERITY_RUNNER_RUNTIME=/run/verity-runner /usr/local/bin/verity-runner-supervisor --probe' >/dev/null 2>&1; then
+    runner_ready=1
+    break
+  fi
+  sleep 1
+done
+[[ "$runner_ready" == 1 ]] || { echo 'managed control Runner never became usable' >&2; exit 1; }
+# This is the real non-root Server identity and its actual mounted data volume.
+isolated_docker exec verity-managed-server sh -ec \
+  'test "$(id -u)" != 0; directory=$(mktemp -d /srv/verity/runners/acceptance.XXXXXX); rmdir "$directory"'
+
+# Replace only the ACP provider in this disposable Runner. The real launcher,
+# supervisor, broker, Server and gateway still carry every request.
+isolated_docker exec --user 0:0 verity-managed-control-plane-runner \
+  rm -f /usr/local/bin/claude-agent-acp
+isolated_docker cp "$repo_root/scripts/fixtures/fake-managed-install-acp.mjs" \
+  verity-managed-control-plane-runner:/usr/local/bin/claude-agent-acp
+isolated_docker exec --user 0:0 verity-managed-control-plane-runner sh -ec \
+  'chown 0:0 /usr/local/bin/claude-agent-acp; chmod 0755 /usr/local/bin/claude-agent-acp'
+run_driver exercise
+
+echo '--- managed installation: restart and unlock the installed Server'
+isolated_docker restart verity-managed-server >/dev/null
+run_driver verify-restart
+
+echo 'managed installation acceptance passed'

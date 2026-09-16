@@ -1187,6 +1187,8 @@ jobs:
       VERITY_CI_NETWORK: verity-ci-net-${{ github.run_id }}-${{ github.run_attempt }}
       VERITY_CI_CLEAN_DIND: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}
       VERITY_CI_CLEAN_DIND_VOLUME: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}-data
+      VERITY_CI_MANAGED_DIND: verity-managed-install-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_MANAGED_DIND_VOLUME: verity-managed-install-dind-${{ github.run_id }}-${{ github.run_attempt }}-data
       # The relay-only server validates an immutable relay reference at startup.
       # The image is never pulled in this health-only smoke because no project is
       # provisioned.
@@ -1476,6 +1478,56 @@ jobs:
           docker save "$VERITY_CI_IMAGE" | docker --host "$isolated" load
           isolated_id="$(docker --host "$isolated" info --format '{{.ID}}')"
           VERITY_CLEAN_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" deploy/bin/verity-clean-install-smoke "$VERITY_CI_IMAGE"
+
+      - name: Verify managed installer on an empty Docker host
+        shell: bash
+        run: |
+          set -euo pipefail
+          socket_dir="$RUNNER_TEMP/$VERITY_CI_MANAGED_DIND"
+          socket_path="$socket_dir/docker.sock"
+          gvisor_image="verity-gvisor-managed-install:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          managed_dind_image="verity-managed-install:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          cleanup_managed_install() {
+            docker --host unix:///var/run/docker.sock rm --force "$VERITY_CI_MANAGED_DIND" >/dev/null 2>&1 || true
+            docker --host unix:///var/run/docker.sock volume rm "$VERITY_CI_MANAGED_DIND_VOLUME" >/dev/null 2>&1 || true
+            docker --host unix:///var/run/docker.sock image rm --force "$managed_dind_image" "$gvisor_image" >/dev/null 2>&1 || true
+            rm -f "$socket_path"
+            rmdir "$socket_dir" 2>/dev/null || true
+          }
+          trap cleanup_managed_install EXIT
+
+          # Run after the Compose smoke has removed its daemon and image store.
+          # The installer owns /etc/verity and /srv inside this disposable host.
+          mkdir -p "$socket_dir"
+          docker volume create "$VERITY_CI_MANAGED_DIND_VOLUME" >/dev/null
+          docker build --file deploy/gvisor-ci.Dockerfile --tag "$gvisor_image" .
+          docker build --file deploy/managed-install-ci.Dockerfile --build-arg "VERITY_GVISOR_CI_IMAGE=$gvisor_image" --tag "$managed_dind_image" .
+          docker run --detach --privileged --name "$VERITY_CI_MANAGED_DIND" \
+            --add-host ghcr.io:127.0.0.1 \
+            --volume "$socket_dir:$socket_dir" \
+            --mount "type=volume,src=$VERITY_CI_MANAGED_DIND_VOLUME,dst=/var/lib/docker" \
+            --env DOCKER_TLS_CERTDIR= "$managed_dind_image" \
+            --host=unix:///var/run/docker.sock --host="unix://$socket_path" \
+            --insecure-registry ghcr.io
+
+          for attempt in $(seq 1 60); do
+            if docker exec "$VERITY_CI_MANAGED_DIND" docker info >/dev/null 2>&1; then
+              docker exec "$VERITY_CI_MANAGED_DIND" chmod 0666 "$socket_path"
+              break
+            fi
+            if [[ "$attempt" -eq 60 ]]; then
+              docker logs "$VERITY_CI_MANAGED_DIND" >&2 || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          isolated="unix://$socket_path"
+          docker save "$VERITY_CI_IMAGE" | docker --host "$isolated" load
+          isolated_id="$(docker --host "$isolated" info --format '{{.ID}}')"
+          VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" \
+            deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"
 
       - name: Clean Docker smoke artifacts
         if: always()
