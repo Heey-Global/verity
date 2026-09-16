@@ -1585,7 +1585,30 @@ describe('runSupervisorTrustedCli result validation', () => {
       name: 'TrustedCliDispatchError',
       stage: 'runner supervisor response',
       executionStarted: false,
+      supervisorRefusal: 'trusted CLI is unavailable for this turn',
     });
+  });
+
+  it('does not expose an unrecognized supervisor refusal', async () => {
+    const runtime = join(dir, 'unsafe-trusted-cli-refusal');
+    await serveByKind(join(runtime, 'supervisor.sock'), {
+      'run-trusted-cli': { ok: false, error: 'refused /run/secrets/private-token' },
+    });
+
+    let failure: unknown;
+    try {
+      await runSupervisorTrustedCli(runtime, {
+        turnId: 'turn-1',
+        secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'value' }],
+        command: ['/usr/bin/true'],
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ supervisorRefusal: undefined });
+    expect(trustedCliDispatchMessage(failure as TrustedCliDispatchError)).not.toContain(
+      '/run/secrets/private-token',
+    );
   });
 
   it.each(['validation', 'materialization', 'launch-spec', 'spawn'] as const)(

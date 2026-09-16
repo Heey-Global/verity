@@ -367,6 +367,11 @@ export type TrustedCliDispatchStage =
   'runner supervisor connection' | 'runner supervisor response' | 'spawn broker dispatch';
 export type TrustedCliBrokerFailurePhase =
   'validation' | 'materialization' | 'launch-spec' | 'spawn';
+export type TrustedCliSupervisorRefusal =
+  | 'trusted CLI is unavailable for this turn'
+  | 'trusted CLI turn capability is no longer active'
+  | 'invalid trusted CLI request'
+  | 'runner worker is not installed';
 
 /** A closed, secret-safe classification for failures before a trusted CLI result exists. */
 export class TrustedCliDispatchError extends Error {
@@ -377,6 +382,7 @@ export class TrustedCliDispatchError extends Error {
       phase: TrustedCliBrokerFailurePhase;
       cause: string;
     },
+    readonly supervisorRefusal?: TrustedCliSupervisorRefusal,
   ) {
     super(`trusted CLI dispatch failed during ${stage}`);
     this.name = 'TrustedCliDispatchError';
@@ -390,7 +396,9 @@ export function trustedCliDispatchMessage(error: TrustedCliDispatchError): strin
       : 'Whether the command started is unknown; do not retry a mutating command automatically.';
   const detail = error.brokerFailure
     ? ` Broker phase: ${error.brokerFailure.phase}; cause: ${error.brokerFailure.cause}.`
-    : '';
+    : error.supervisorRefusal
+      ? ` Supervisor refusal: ${error.supervisorRefusal}.`
+      : '';
   return `Trusted CLI dispatch failed during ${error.stage}.${detail} ${outcome} No secret value was exposed.`;
 }
 
@@ -460,7 +468,21 @@ export async function runSupervisorTrustedCli(
       throw new TrustedCliDispatchError('spawn broker dispatch', false, brokerFailure);
     }
     if (!startAcknowledged && message.startsWith('runner supervisor rejected request')) {
-      throw new TrustedCliDispatchError('runner supervisor response', false);
+      const refusal = message.slice('runner supervisor rejected request: '.length);
+      const refusals: TrustedCliSupervisorRefusal[] = [
+        'trusted CLI is unavailable for this turn',
+        'trusted CLI turn capability is no longer active',
+        'invalid trusted CLI request',
+        'runner worker is not installed',
+      ];
+      throw new TrustedCliDispatchError(
+        'runner supervisor response',
+        false,
+        undefined,
+        refusals.includes(refusal as TrustedCliSupervisorRefusal)
+          ? (refusal as TrustedCliSupervisorRefusal)
+          : undefined,
+      );
     }
     // A timeout, reset, or lost frame after connecting cannot prove whether the
     // privileged broker already spawned the command. Never invite an unsafe retry.
