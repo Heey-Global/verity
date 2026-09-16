@@ -3141,7 +3141,7 @@ describe('Actions cache budget', () => {
   });
 
   it('keys the scope by image and architecture, not by workflow', () => {
-    // ci.yml, verity-server.yml and release.yml all build deploy/Dockerfile and
+    // ci.yml and release.yml all build deploy/Dockerfile and
     // share entries for the same architecture. Matrix writers for different
     // architectures must not replace each other's reusable cache index.
     const group = (key: (site: (typeof gha)[number]) => string, value: typeof key) => {
@@ -3353,7 +3353,6 @@ describe('persistent buildx builder', () => {
       'ci.yml',
       'project-relay.yml',
       'verity-sandbox.yml',
-      'verity-server.yml',
     ]);
   });
 
@@ -3374,7 +3373,7 @@ describe('persistent buildx builder', () => {
         .filter((step) => /docker (builder|buildx) prune/.test(step.run ?? ''))
         .map((step) => ({ id, run: step.run ?? '' })),
     );
-    expect(prunes.length).toBeGreaterThanOrEqual(4);
+    expect(prunes.length).toBeGreaterThanOrEqual(3);
     const ageFiltered = prunes.flatMap(({ id, run }) =>
       run
         .split('\n')
@@ -3709,37 +3708,6 @@ describe('Claude ACP sandbox smoke', () => {
   });
 });
 
-describe('manual server image smoke', () => {
-  const workflow = parse(readFileSync('.github/workflows/verity-server.yml', 'utf8')) as {
-    env: Record<string, string>;
-    jobs: {
-      'smoke-test': {
-        steps: WorkflowStep[];
-      };
-    };
-  };
-  const smoke = workflow.jobs['smoke-test'].steps.find((step) => step.name === 'Smoke-test image');
-
-  it('starts the relay-only runtime with every mandatory deployment seam', () => {
-    expect(workflow.env.VERITY_CI_RELAY_IMAGE).toMatch(
-      /^ghcr\.io\/heey-global\/verity\/verity-project-relay@sha256:[a-f0-9]{64}$/,
-    );
-    expect(smoke?.run).toContain('--group-add 65532');
-    expect(smoke?.run).toContain('-e VERITY_DOCKER_BASE_URL=unix:///var/run/docker.sock');
-    expect(smoke?.run).toContain('-e VERITY_DATA_VOLUME=verity-data');
-    expect(smoke?.run).toContain('-e VERITY_PROJECT_RELAY_IMAGE="$VERITY_CI_RELAY_IMAGE"');
-    expect(smoke?.run).toContain(
-      '-e VERITY_AGENT_GATEWAY_CONTROL_SOCKET=/tmp/verity-agent-gateway-control.sock',
-    );
-    expect(smoke?.run).toContain(
-      '-e VERITY_AGENT_GATEWAY_UNSEAL_KEY="$VERITY_CI_GATEWAY_UNSEAL_KEY"',
-    );
-    expect(smoke?.run).toContain('-e VERITY_AGENT_GATEWAY_URL=https://verity-agent-gateway:9443');
-    expect(smoke?.run).toContain('-e VERITY_CLAUDE_EGRESS_GATEWAY_URL=https://verity:9443');
-    expect(smoke?.run).toContain('-e VERITY_CLAUDE_CONNECTOR_PORT=47821');
-  });
-});
-
 /**
  * The detector decides which jobs are allowed to skip, and `ci-checks` trusts its
  * verdict — a wrong `false` is a job that never ran and a gate that went green
@@ -3867,6 +3835,7 @@ describe('changed-area detector', () => {
       baseRef?: string;
       baseSha?: string;
       releaseTrain?: 'backend' | 'mobile' | 'website' | 'mobile-ota';
+      checkSuite?: string;
       releasePr?: string;
       prHead?: string;
     },
@@ -3987,6 +3956,7 @@ describe('changed-area detector', () => {
           GITHUB_REPOSITORY: 'heey-global/verity',
           GITHUB_REF_NAME: 'release-branch',
           GITHUB_SHA: 'release-sha',
+          CHECK_SUITE: event.checkSuite ?? 'full',
           RELEASE_TRAIN: event.releaseTrain ?? 'full',
           RELEASE_PR: event.releasePr ?? '',
           PR_NUMBER: event.releasePr ?? '',
@@ -4529,6 +4499,26 @@ describe('changed-area detector', () => {
 
   it('runs everything on a manual dispatch, which has no base to diff against', async () => {
     expect(await run({ name: 'workflow_dispatch' }, [])).toEqual(all('true'));
+    expect(await run({ name: 'workflow_dispatch', checkSuite: 'server-image' }, [])).toEqual({
+      ...all('false'),
+      server_image: 'true',
+    });
+    await expect(
+      run(
+        {
+          name: 'workflow_dispatch',
+          checkSuite: 'server-image',
+          releaseTrain: 'backend',
+          releasePr: '119',
+        },
+        [],
+      ),
+    ).rejects.toThrow();
+    expect(
+      await run({ name: 'pull_request', checkSuite: 'server-image', baseRef: 'main' }, [
+        'packages/server/src/app.ts',
+      ]),
+    ).not.toEqual({ ...all('false'), server_image: 'true' });
   });
 
   it('scopes generated release PR dispatches to their train', async () => {
