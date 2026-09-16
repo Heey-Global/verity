@@ -157,7 +157,7 @@ describe('EAS archive preparation', () => {
   });
 
   it('keeps the cache bounded, strict and confined to compiler objects', () => {
-    const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
+    const workflow = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8'));
     const steps = workflow.jobs['publish-mobile-native'].steps as {
       id?: string;
       name?: string;
