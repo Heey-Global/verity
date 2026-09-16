@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.6.1](https://github.com/Heey-Global/verity/compare/website-v1.6.0...website-v1.6.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged:1.31-alpine docker digest to b54ac35 ([#375](https://github.com/Heey-Global/verity/issues/375)) ([6d04d2f](https://github.com/Heey-Global/verity/commit/6d04d2fb5f142c3821ec73d4e6c1d2da82a324a3))
+* **installer:** prevent stale interactive reinstall ([#379](https://github.com/Heey-Global/verity/issues/379)) ([d71dc54](https://github.com/Heey-Global/verity/commit/d71dc54e464fb7ed09fcbdef0fb35010683499d2))
+
 ## [1.6.0](https://github.com/Heey-Global/verity/compare/website-v1.5.1...website-v1.6.0) (2026-09-15)
 
 
