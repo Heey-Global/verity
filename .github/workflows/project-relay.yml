@@ -92,8 +92,8 @@ jobs:
           # does cost reuse between two pushes to the SAME PR; it costs nothing
           # across PRs, because a `refs/pull/N/merge` entry was never visible to
           # them anyway.
-          cache-from: type=gha,scope=verity-project-relay
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-project-relay,ignore-error=true' || '' }}
+          cache-from: type=gha,scope=verity-project-relay-${{ matrix.architecture }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope=verity-project-relay-{0},ignore-error=true', matrix.architecture) || '' }}
 
       - name: Verify fixed routes and runtime confinement
         run: deploy/bin/verity-project-relay-smoke verity-project-relay:smoke

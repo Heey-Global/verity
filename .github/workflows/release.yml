@@ -934,7 +934,7 @@ jobs:
           fi
 
   publish-toolkit:
-    needs: [release-please, self-update-gate]
+    needs: [release-please, self-update-gate, prepare-server-build-context]
     if: needs.release-please.outputs.backend-release-created == 'true'
     runs-on: ubuntu-24.04
     permissions:
@@ -971,16 +971,13 @@ jobs:
         with:
           node-version: '24.21.0'
 
-      - name: Build attested script sandbox artifacts
-        run: scripts/build-script-sandbox-prebuilts.sh
-
-      # Build the Feature with every published boundary build at or above the
-      # downgrade floor. This runs only after release-please has merged and tagged
-      # the trusted main commit; no PR-controlled code receives this job's package
-      # permissions. Reconstructing from immutable release tags also keeps the
-      # compatibility chain complete without a second commit after the tag.
-      - name: Assemble toolkit compatibility ledger
-        run: node scripts/update-toolkit-ledger.mjs
+      # Reuse the same trusted binaries and boundary ledger as both Server builds.
+      # renovate: datasource=github-actions depName=actions/download-artifact
+      - name: Download trusted Server build context
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: trusted-server-build-context-v${{ env.VERSION }}
+          path: features/verity-sandbox-toolkit
 
       # Stamp the shared release version into the manifest BEFORE devcontainers/action
       # reads it (the Feature publish tags from the manifest `version`).
@@ -1054,8 +1051,9 @@ jobs:
             "ghcr.io/heey-global/verity/verity-sandbox-toolkit:${VERSION}"
 
   prepare-server-build-context:
-    needs:
-      [release-please, self-update-gate, publish-project-relay, publish-sandbox, publish-toolkit]
+    # These local compiler/ledger inputs do not consume published images. Prepare
+    # them during the smoke; build-server still waits for the gate and siblings.
+    needs: release-please
     if: needs.release-please.outputs.backend-release-created == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -1223,8 +1221,10 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ env.VERSION }}
-          cache-from: type=gha,scope=verity-server
-          cache-to: type=gha,mode=max,scope=verity-server,ignore-error=true
+          # Export only final-image layers, with a bounded optional cache write.
+          # Cold intermediate dependency/compile stages may rebuild on later runs.
+          cache-from: type=gha,scope=verity-server-${{ matrix.architecture }}
+          cache-to: type=gha,mode=min,timeout=60s,scope=verity-server-${{ matrix.architecture }},ignore-error=true
 
   publish-server:
     # Also gated on the sandbox image and toolkit Feature, not just the relay: a
@@ -1548,7 +1548,8 @@ jobs:
           done
 
   build-sandbox:
-    needs: [release-please, self-update-gate]
+    # Candidate SHA tags may build during acceptance; version publication stays gated.
+    needs: release-please
     if: needs.release-please.outputs.backend-release-created == 'true'
     strategy:
       fail-fast: false
@@ -1650,8 +1651,8 @@ jobs:
             org.opencontainers.image.description=Verity project base image (plain base + verity-sandbox-toolkit Feature)
           # Scope matches verity-sandbox.yml's read-only build; see the note on the
           # `Build Verity server image` step in ci.yml.
-          cache-from: type=gha,scope=verity-sandbox
-          cache-to: type=gha,mode=max,scope=verity-sandbox,ignore-error=true
+          cache-from: type=gha,scope=verity-sandbox-${{ matrix.architecture }}
+          cache-to: type=gha,mode=min,timeout=60s,scope=verity-sandbox-${{ matrix.architecture }},ignore-error=true
 
   publish-sandbox:
     needs: [release-please, self-update-gate, build-sandbox]
@@ -1701,7 +1702,8 @@ jobs:
             "${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}-arm64"
 
   build-project-relay:
-    needs: [release-please, self-update-gate]
+    # Candidate SHA tags may build during acceptance; version publication stays gated.
+    needs: release-please
     if: needs.release-please.outputs.backend-release-created == 'true'
     strategy:
       fail-fast: false
@@ -1776,8 +1778,8 @@ jobs:
           # Same Dockerfile as the push step below and as project-relay.yml, so
           # deliberately the same scope; see the note on the `Build Verity server
           # image` step in ci.yml.
-          cache-from: type=gha,scope=verity-project-relay
-          cache-to: type=gha,mode=max,scope=verity-project-relay,ignore-error=true
+          # The push step reuses this builder and exports the cache once.
+          cache-from: type=gha,scope=verity-project-relay-${{ matrix.architecture }}
 
       - name: Verify exact release relay confinement
         run: deploy/bin/verity-project-relay-smoke verity-project-relay:release-smoke
@@ -1822,8 +1824,8 @@ jobs:
             org.opencontainers.image.title=heey-global/verity-project-relay
             org.opencontainers.image.description=Fixed-destination per-project Verity relay
           # See the note on the `Build Verity server image` step in ci.yml.
-          cache-from: type=gha,scope=verity-project-relay
-          cache-to: type=gha,mode=max,scope=verity-project-relay,ignore-error=true
+          cache-from: type=gha,scope=verity-project-relay-${{ matrix.architecture }}
+          cache-to: type=gha,mode=min,timeout=60s,scope=verity-project-relay-${{ matrix.architecture }},ignore-error=true
 
   publish-project-relay:
     needs: [release-please, self-update-gate, build-project-relay]
@@ -2000,11 +2002,11 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.release-please.outputs.backend-sha }}
             org.opencontainers.image.version=v${{ env.VERSION }}
-          # One scope per matrix component — edge and connector are different
-          # images and must not share an index. See the note on the `Build Verity
+          # One scope per component and architecture; neither independent writer
+          # may replace the other's index. See the note on the `Build Verity
           # server image` step in ci.yml.
-          cache-from: type=gha,scope=preview-${{ matrix.component }}
-          cache-to: type=gha,mode=max,scope=preview-${{ matrix.component }},ignore-error=true
+          cache-from: type=gha,scope=preview-${{ matrix.component }}-${{ matrix.architecture }}
+          cache-to: type=gha,mode=min,timeout=60s,scope=preview-${{ matrix.component }}-${{ matrix.architecture }},ignore-error=true
 
   publish-preview-images:
     needs: [release-please, self-update-gate, publish-server, build-preview-images]

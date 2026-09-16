@@ -15,19 +15,23 @@ interface WorkflowStep {
 interface ReleaseWorkflow {
   jobs: {
     'build-project-relay': {
+      needs?: string | string[];
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
       steps: WorkflowStep[];
     };
     'build-sandbox': {
+      needs?: string | string[];
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
       steps: WorkflowStep[];
     };
     'build-server': {
+      needs?: string[];
       if?: string;
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
       steps: WorkflowStep[];
     };
     'prepare-server-build-context': {
+      needs?: string | string[];
       steps: WorkflowStep[];
     };
     'build-preview-images': {
@@ -35,13 +39,16 @@ interface ReleaseWorkflow {
       steps: WorkflowStep[];
     };
     'publish-project-relay': {
+      needs?: string | string[];
       outputs?: Record<string, string>;
       steps: WorkflowStep[];
     };
     'publish-toolkit': {
+      needs?: string | string[];
       steps: WorkflowStep[];
     };
     'publish-sandbox': {
+      needs?: string | string[];
       steps: WorkflowStep[];
     };
     'publish-server': {
@@ -221,6 +228,60 @@ describe('multi-architecture runtime image publication', () => {
     );
     expect(relay?.run).toContain('${image}:sha-${short_sha}-amd64');
     expect(relay?.run).toContain('${image}:sha-${short_sha}-arm64');
+  });
+
+  it('prepares local Server inputs while the release gate runs without bypassing it', () => {
+    // Waiting for published siblings here silently puts a local-only compiler
+    // job on the critical path after every image has already finished.
+    const prepare = workflow.jobs['prepare-server-build-context'];
+    expect([prepare.needs].flat()).toEqual(['release-please']);
+    const build = workflow.jobs['build-server'];
+    expect(build.needs).toEqual(
+      expect.arrayContaining([
+        'prepare-server-build-context',
+        'self-update-gate',
+        'publish-project-relay',
+        'publish-sandbox',
+        'publish-toolkit',
+      ]),
+    );
+  });
+
+  it('overlaps candidate builds with acceptance while keeping version publication gated', () => {
+    for (const component of ['sandbox', 'project-relay'] as const) {
+      expect([workflow.jobs[`build-${component}`].needs].flat()).toEqual(['release-please']);
+      expect([workflow.jobs[`publish-${component}`].needs].flat()).toEqual(
+        expect.arrayContaining(['self-update-gate', `build-${component}`]),
+      );
+    }
+  });
+
+  it('publishes the toolkit with the exact compiler artifacts consumed by the Server', () => {
+    const prepare = workflow.jobs['prepare-server-build-context'];
+    const toolkit = workflow.jobs['publish-toolkit'];
+    expect([toolkit.needs].flat()).toEqual(
+      expect.arrayContaining(['self-update-gate', 'prepare-server-build-context']),
+    );
+    const serverDownload = workflow.jobs['build-server'].steps.find((step) =>
+      step.uses?.startsWith('actions/download-artifact@'),
+    );
+    const toolkitDownload = toolkit.steps.find((step) =>
+      step.uses?.startsWith('actions/download-artifact@'),
+    );
+    expect(toolkitDownload).toBeDefined();
+    expect(toolkitDownload?.with).toEqual(serverDownload?.with);
+    expect(
+      prepare.steps.some((step) => step.run === 'scripts/build-script-sandbox-prebuilts.sh'),
+    ).toBe(true);
+    expect(
+      toolkit.steps.some((step) =>
+        /build-script-sandbox-prebuilts|update-toolkit-ledger/.test(step.run ?? ''),
+      ),
+    ).toBe(false);
+    const downloadIndex = toolkit.steps.indexOf(toolkitDownload!);
+    expect(downloadIndex).toBeLessThan(
+      toolkit.steps.findIndex((step) => step.name === 'Stamp release version into manifest'),
+    );
   });
 
   it('builds the Server natively and signs the merged index digest', () => {
@@ -553,7 +614,7 @@ describe('signed GitHub release evidence', () => {
 describe('release toolkit trust ledger', () => {
   const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
 
-  it.each(['publish-toolkit', 'prepare-server-build-context'] as const)(
+  it.each(['prepare-server-build-context'] as const)(
     'assembles release boundary hashes in the trusted %s job',
     (jobName) => {
       const steps = workflow.jobs[jobName].steps;

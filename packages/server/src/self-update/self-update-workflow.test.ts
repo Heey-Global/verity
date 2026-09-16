@@ -971,9 +971,8 @@ describe('self-update workflow image', () => {
 
     expect(workflow).toContain('docker buildx build');
     expect(workflow).toContain('crazy-max/ghaction-github-runtime@');
-    expect(workflow).toContain(
-      '--cache-to type=gha,mode=max,scope=verity-server,ignore-error=true',
-    );
+    // Scope compatibility with the release build is checked in ci-workflow.test.ts.
+    expect(workflow).toMatch(/--cache-to type=gha,mode=max,scope=[^,\s]+,ignore-error=true/);
     expect(workflow).toContain('for attempt in 1 2 3; do');
     expect(workflow).toContain('failed to fetch oauth token: unexpected status from');
     expect(workflow).toContain('deterministic Dockerfile/build failures still fail immediately');
