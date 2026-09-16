@@ -99,6 +99,7 @@ describe('MCP gateway trusted CLI integration', () => {
           env: 'KUBECONFIG',
           injection: 'file',
           secret: Buffer.from('kubeconfig-marker').toString('base64'),
+          encoding: 'base64',
         },
       ],
       command: ['/usr/bin/kubectl', 'get', 'pods'],
