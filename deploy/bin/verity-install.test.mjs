@@ -124,7 +124,7 @@ function makeHost({
     join(binDir, 'verity-compose'),
     `#!/usr/bin/env bash\n{\n` +
       `  printf 'argv=%s\\n' "$*"\n` +
-      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
+      `  for v in VERITY_SERVER_IMAGE VERITY_MANAGED_DEPLOYMENT_ID VERITY_UPDATER_TOKEN_HOST_PATH VERITY_RUNNER_SUPERVISOR VERITY_GVISOR_REQUIRED VERITY_GVISOR_SMOKE_IMAGE VERITY_HOST_ARCHITECTURE VERITY_PAIRING_STATE_HOST_PATH VERITY_POSTGRES_PASSWORD VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM COMPOSE_PROJECT_NAME; do\n` +
       `    printf '%s=%s\\n' "$v" "\${!v-}"\n` +
       `  done\n} > ${JSON.stringify(handover)}\n`,
     { mode: 0o755 },
@@ -190,7 +190,7 @@ function run(host, args = [], env = {}) {
   };
 }
 
-function runInteractive(host, input) {
+function runInteractive(host, input, env = {}) {
   const result = spawnSync(
     'script',
     ['-qec', `unshare -r ${shellQuote(join(host.binDir, 'verity-install'))}`, '/dev/null'],
@@ -203,6 +203,7 @@ function runInteractive(host, input) {
         VERITY_STATE_DIR: host.stateDir,
         VERITY_SERVER_UID: '0',
         VERITY_SERVER_GID: '0',
+        ...env,
       },
     },
   );
@@ -356,6 +357,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const env = handoverEnv(host);
     assert.equal(env.argv, 'managed-up');
     assert.equal(env.VERITY_SERVER_IMAGE, DIGEST_A);
+    assert.equal(env.VERITY_GVISOR_SMOKE_IMAGE, DIGEST_A);
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
     assert.equal(env.VERITY_POSTGRES_PASSWORD, stateFile(host, 'postgres-password'));
     assert.equal(env.COMPOSE_PROJECT_NAME, 'verity');
@@ -449,6 +451,23 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(env.VERITY_RUNNER_SUPERVISOR, '1');
     assert.equal(env.VERITY_GVISOR_REQUIRED, '');
     assert.equal(stateFile(host, 'updater-token'), 'f'.repeat(64));
+  });
+
+  test('a recovery-pinned rerun cannot reinterpret replace as the latest release', () => {
+    const host = makeHost({
+      docker: runningServer('verity-managed-server-g4', 'host-abc', '["CHOWN"]', DIGEST_B),
+      state: {
+        'deployment-id': 'host-abc\n',
+        'compose-project': 'deploy\n',
+        'runner-supervisor': '1\n',
+        'updater-token': 'f'.repeat(64),
+      },
+    });
+    const result = runInteractive(host, '3\n', { VERITY_BOOTSTRAP_RECOVERY_ONLY: '1' });
+    assert.notEqual(result.status, 0, result.output);
+    assert.doesNotMatch(result.output, /3\) Completely replace/);
+    assert.match(result.output, /rerun install\.sh with --reinstall/);
+    assert.equal(readFileSync(host.stateDir + '/deployment-id', 'utf8'), 'host-abc\n');
   });
 
   test('--reinstall --yes removes the detected installation and starts fresh', () => {

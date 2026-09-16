@@ -46,6 +46,7 @@ EOF
 
 installer_args=()
 source_image_override=''
+bootstrap_recovery_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --preflight) PREFLIGHT_ONLY=1; shift ;;
@@ -355,6 +356,11 @@ elif [ "${#managed_names[@]}" -eq 1 ]; then
       die 'could not read the sealed managed Server image'
     valid_image_override "$source_image" ||
       die 'the sealed deployment does not use an official digest-pinned image'
+    # The release-matched installer can repair this deployment, but it cannot
+    # replace it with a newer release: this bootstrap has deliberately selected
+    # the sealed image. Tell current payloads to hide their destructive replace
+    # choice. Older payloads safely ignore the environment variable.
+    bootstrap_recovery_only=1
     printf 'verity-install: recovering the paired installation from %s\n' "${managed_names[0]}"
   fi
 else
@@ -424,9 +430,21 @@ as_root test -x "$privileged_root/deploy/bin/verity-install" || die 'release ins
 as_root test -f "$privileged_root/deploy/bin/verity-compose" || die 'release image has no Compose wrapper'
 as_root test ! -L "$privileged_root/deploy/bin/verity-compose" || die 'release Compose wrapper must not be a symlink'
 
+# A paired recovery deliberately extracts the installer from the sealed release.
+# Payloads published before the recovery-only contract still offer an interactive
+# destructive replacement, but can only reinstall their own stale image. Refuse
+# to enter that prompt; `--reinstall` is parsed above and resolves latest first.
+if [ "$bootstrap_recovery_only" = 1 ] && ( : </dev/tty && : >/dev/tty ) 2>/dev/null; then
+  as_root grep -q 'VERITY_BOOTSTRAP_RECOVERY_ONLY' \
+    "$privileged_root/deploy/bin/verity-install" \
+    || die 'the installed release cannot safely offer interactive repair; rerun install.sh with --reinstall to replace it with the latest release'
+fi
+
 progress 4 'running the release installer'
 if [ "$(id -u)" -eq 0 ]; then
-  "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "${installer_args[@]}"
+  VERITY_BOOTSTRAP_RECOVERY_ONLY="$bootstrap_recovery_only" \
+    "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "${installer_args[@]}"
 else
-  sudo "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "${installer_args[@]}"
+  sudo env VERITY_BOOTSTRAP_RECOVERY_ONLY="$bootstrap_recovery_only" \
+    "$privileged_root/deploy/bin/verity-install" --image "$image_digest" "${installer_args[@]}"
 fi

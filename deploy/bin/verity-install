@@ -40,6 +40,7 @@ opt_advance_unpaired_from=''
 opt_update=0
 opt_reinstall=0
 opt_yes=0
+bootstrap_recovery_only=${VERITY_BOOTSTRAP_RECOVERY_ONLY:-0}
 original_args=("$@")
 
 # Retired deployment switches must not leak through to the managed handoff.
@@ -145,6 +146,10 @@ done
 if [ -n "$opt_advance_unpaired_from" ] && [ "$opt_check" = 0 ]; then opt_update=1; fi
 [ "$opt_update" = 0 ] || [ "$opt_reinstall" = 0 ] \
   || die '--advance-unpaired-from and --reinstall cannot be used together'
+case "$bootstrap_recovery_only" in
+  0|1) ;;
+  *) die 'VERITY_BOOTSTRAP_RECOVERY_ONLY must be 0 or 1' ;;
+esac
 
 banner
 
@@ -583,14 +588,20 @@ if [ "$first_install" = 0 ] && [ "$opt_check" = 0 ] && [ "$opt_update" = 0 ] && 
     printf '\nAn existing Verity installation was found.\n' >/dev/tty
     printf '  1) Repair this installation (keep its version and all data)\n' >/dev/tty
     printf '  2) Update to the selected release (keep data; only before first pairing)\n' >/dev/tty
-    printf '  3) Completely replace it with the selected release (DELETE ALL VERITY DATA)\n' >/dev/tty
+    if [ "$bootstrap_recovery_only" = 0 ]; then
+      printf '  3) Completely replace it with the selected release (DELETE ALL VERITY DATA)\n' >/dev/tty
+    fi
     printf '  q) Cancel\n' >/dev/tty
     printf 'Selection [1]: ' >/dev/tty
     IFS= read -r existing_choice </dev/tty || existing_choice='q'
     case "${existing_choice:-1}" in
       1) ;;
       2) opt_update=1 ;;
-      3) opt_reinstall=1 ;;
+      3)
+        [ "$bootstrap_recovery_only" = 0 ] \
+          || die 'this repair run is pinned to the installed release; rerun install.sh with --reinstall to replace it with the latest release'
+        opt_reinstall=1
+        ;;
       q|Q) die 'installation cancelled; nothing was changed' ;;
       *) die "invalid installation selection: $existing_choice" ;;
     esac
@@ -902,6 +913,7 @@ VERITY_HOST_ARCHITECTURE="$host_architecture" \
 VERITY_PAIRING_STATE_HOST_PATH="$STATE_DIR" \
 VERITY_POSTGRES_PASSWORD="$postgres_password" \
 VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM="$opt_advance_unpaired_from" \
+VERITY_GVISOR_SMOKE_IMAGE="$server_image" \
 COMPOSE_PROJECT_NAME="$compose_project" \
   ./deploy/bin/verity-compose managed-up
 
