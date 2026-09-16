@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 
 import { parse } from 'yaml';
@@ -385,7 +386,7 @@ describe('multi-architecture runtime image publication', () => {
 });
 
 describe('release merge policy', () => {
-  const workflow = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
     jobs: { 'release-please': { steps: WorkflowStep[] } };
   };
 
@@ -454,7 +455,7 @@ describe('release merge policy', () => {
 });
 
 describe('website release recovery', () => {
-  const workflow = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
     on: { workflow_call?: { inputs?: Record<string, { type?: string }> } };
     jobs: {
       'release-please': {
@@ -684,7 +685,7 @@ describe('release train concurrency', () => {
     concurrency?: unknown;
     jobs: Record<string, Job>;
   };
-  const trains = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as Workflow;
+  const trains = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as Workflow;
   const backend = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as Workflow;
 
   const dispatch = parse(
@@ -698,7 +699,7 @@ describe('release train concurrency', () => {
     expect(trains.concurrency).toBeUndefined();
     expect(backend.concurrency).toBeUndefined();
     const callers = Object.values(dispatch.jobs).filter(
-      (job) => job.uses === './.github/workflows/release-trains.yml',
+      (job) => job.uses === './.github/workflows/release.yml',
     );
     expect(callers).toHaveLength(1);
     const caller = callers[0];
@@ -715,11 +716,15 @@ describe('release train concurrency', () => {
       queue: 'max',
       'cancel-in-progress': false,
     });
-    for (const name of ['publish-backend', 'publish-mobile-native', 'publish-website']) {
+    for (const name of ['self-update-gate', 'publish-mobile-native', 'publish-website']) {
       expect(trains.jobs[name]?.needs).toBe('release-please');
       expect(trains.jobs[name]?.concurrency).toBeUndefined();
     }
-    expect(Object.values(backend.jobs).every((job) => job.concurrency === undefined)).toBe(true);
+    expect(
+      Object.entries(backend.jobs)
+        .filter(([name]) => name !== 'release-please')
+        .every(([, job]) => job.concurrency === undefined),
+    ).toBe(true);
     expect(Object.keys(caller?.with ?? {}).sort()).toEqual(
       Object.keys(trains.on.workflow_call?.inputs ?? {}).sort(),
     );
@@ -786,33 +791,38 @@ describe('release train concurrency', () => {
     expect(trains.jobs['publish-mobile-native']?.if).toContain("inputs.train == 'mobile'");
   });
 
-  it('keeps the signing workflow identity and passes every backend handoff input', () => {
-    // Existing installations pin this filename in their certificate verifier.
-    const caller = trains.jobs['publish-backend'];
-    for (const job of Object.values(backend.jobs)) {
-      for (const [scope, access] of Object.entries(job.permissions ?? {})) {
-        if (access === 'write') expect(caller?.permissions?.[scope], scope).toBe('write');
-      }
+  it('validates the exact backend outputs before publication', () => {
+    const metadata = backend.jobs['release-please'];
+    const guard = metadata?.steps?.find((step) => step.id === 'validate-backend');
+    expect(guard?.env?.VERSION).toBe(metadata?.outputs?.['backend-version']);
+    expect(guard?.env?.SHA).toBe(metadata?.outputs?.['backend-sha']);
+    expect(guard?.run).toBeDefined();
+    for (const [version, sha, valid] of [
+      ['0.10.4', 'a'.repeat(40), true],
+      ['0.10', 'a'.repeat(40), false],
+      ['0.10.4', 'main', false],
+      ['0.10.4', 'a'.repeat(39), false],
+    ] as const) {
+      const result = spawnSync('bash', ['-c', guard!.run!], {
+        env: { ...process.env, VERSION: version, SHA: sha },
+      });
+      expect(result.status === 0, version + '/' + sha).toBe(valid);
     }
+  });
+
+  it('keeps signing and publication in the directly called release workflow', () => {
+    const caller = dispatch.jobs['release-train'];
     expect(caller?.uses).toBe('./.github/workflows/release.yml');
     expect(Object.keys(backend.on)).toEqual(['workflow_call']);
-    expect(Object.keys(trains.on)).toEqual(['workflow_call']);
     expect(dispatch.on.push).toBeDefined();
     expect(dispatch.on.workflow_dispatch).toBeDefined();
-    expect(caller?.if).toBe("needs.release-please.outputs.backend-release-created == 'true'");
-    const inputs = backend.on.workflow_call?.inputs ?? {};
-    expect(Object.keys(caller?.with ?? {}).sort()).toEqual(Object.keys(inputs).sort());
-    for (const name of ['backend-version', 'backend-sha']) {
-      expect(inputs[name]).toMatchObject({ type: 'string', required: true });
-      expect(caller?.with?.[name]).toBe(`\${{ needs.release-please.outputs.${name} }}`);
-    }
-    for (const name of ['backend-republish', 'backend-accept-no-rollback']) {
-      expect(inputs[name]?.type).toBe('boolean');
-      expect(caller?.with?.[name]).toBe(`\${{ inputs['${name}'] || false }}`);
-    }
-    expect(caller?.with?.['backend-schema-forward-max']).toBe(
-      "${{ inputs['backend-schema-forward-max'] || '' }}",
-    );
-    expect(backend.jobs['release-please']?.outputs?.['backend-release-created']).toBe('true');
+    expect(backend.jobs['publish-backend']).toBeUndefined();
+    expect(backend.jobs['publish-server']).toBeDefined();
+    expect(backend.jobs['finalize-backend-release']).toBeDefined();
+    expect(backend.jobs['self-update-gate']?.uses).toBe('./.github/workflows/self-update.yml');
+    // Removing the handoff must not turn every metadata invocation into a release.
+    expect(backend.jobs['release-please']?.outputs?.['backend-release-created']).not.toBe('true');
+    const callees = Object.values(backend.jobs).flatMap((job) => (job.uses ? [job.uses] : []));
+    expect(callees).toEqual(['./.github/workflows/self-update.yml']);
   });
 });

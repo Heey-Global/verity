@@ -68,23 +68,13 @@ describe('workflow token least privilege', () => {
       'mobile-ota.yml': {
         update: { actions: 'write', contents: 'write', 'pull-requests': 'write' },
       },
-      'release-trains.yml': {
+      'release.yml': {
         'release-please': {
           actions: 'write',
           contents: 'write',
           issues: 'write',
           'pull-requests': 'write',
         },
-        'publish-backend': {
-          actions: 'read',
-          contents: 'write',
-          packages: 'write',
-          'id-token': 'write',
-          'artifact-metadata': 'write',
-          attestations: 'write',
-        },
-      },
-      'release.yml': {
         'self-update-gate': { contents: 'read', packages: 'read' },
       },
     };
@@ -92,7 +82,7 @@ describe('workflow token least privilege', () => {
     for (const [file, jobs] of Object.entries(expected)) {
       const parsed = workflow(file);
       expect(parsed.permissions, file).toEqual(
-        ['release-trains.yml', 'release.yml'].includes(file) ? { contents: 'read' } : 'read-all',
+        file === 'release.yml' ? { contents: 'read' } : 'read-all',
       );
       for (const [job, permissions] of Object.entries(jobs))
         expect(parsed.jobs?.[job]?.permissions, `${file}:${job}`).toEqual(permissions);
@@ -104,14 +94,14 @@ describe('release-please train isolation', () => {
   const trains = ['backend', 'mobile', 'website'] as const;
 
   const workflowReleaseJob = (): { steps?: WorkflowStep[] } => {
-    const release = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { steps?: WorkflowStep[] }>;
     };
     return release.jobs['release-please'] ?? {};
   };
 
   it('keeps every release PR on a disjoint manifest', () => {
-    const release = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { steps?: WorkflowStep[] }>;
     };
     const steps = release.jobs['release-please']?.steps ?? [];
@@ -142,7 +132,7 @@ describe('release-please train isolation', () => {
   });
 
   it('reads backend action outputs from the non-root intent component', () => {
-    const release = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { outputs?: Record<string, string>; steps?: WorkflowStep[] }>;
     };
     const job = release.jobs['release-please'];
@@ -428,10 +418,7 @@ describe('Verity website publication smoke', () => {
   // (release.yml). They smoke the same build with the same script, so what
   // "healthy" means for this image cannot come to mean two things.
   const smoke = readFileSync('deploy/bin/verity-website-smoke', 'utf8');
-  const publishes = [
-    '.github/workflows/verity-website.yml',
-    '.github/workflows/release-trains.yml',
-  ];
+  const publishes = ['.github/workflows/verity-website.yml', '.github/workflows/release.yml'];
   const workflow = (file: string) =>
     parse(readFileSync(file, 'utf8')) as {
       on?: Record<string, { paths?: string[] } | null>;
@@ -512,7 +499,7 @@ describe('Verity website publication smoke', () => {
       ...Object.entries(website.jobs),
       [
         'publish-website',
-        workflow('.github/workflows/release-trains.yml').jobs['publish-website'],
+        workflow('.github/workflows/release.yml').jobs['publish-website'],
       ] as const,
     ];
     for (const [name, job] of jobs) {
@@ -557,7 +544,7 @@ describe('Verity website publication smoke', () => {
   });
 
   it('tags the release build off the website train, not the backend one', () => {
-    const job = workflow('.github/workflows/release-trains.yml').jobs['publish-website'];
+    const job = workflow('.github/workflows/release.yml').jobs['publish-website'];
     expect(job?.if).toBe("needs.release-please.outputs.website-release-created == 'true'");
     expect(job?.env?.VERSION).toBe('${{ needs.release-please.outputs.website-version }}');
     expect(job?.env?.IMAGE_NAME).toBe('heey-global/verity/verity-website');
@@ -580,7 +567,7 @@ describe('Verity website publication smoke', () => {
         step.uses?.startsWith('docker/build-push-action@'),
       )?.with ?? {};
     const perCommit = build('.github/workflows/verity-website.yml', 'publish');
-    const release = build('.github/workflows/release-trains.yml', 'publish-website');
+    const release = build('.github/workflows/release.yml', 'publish-website');
     for (const key of ['context', 'file', 'platforms', 'provenance', 'sbom', 'outputs']) {
       expect(release[key], `the two website builds disagree about \`${key}\``).toBe(perCommit[key]);
     }
@@ -591,7 +578,7 @@ describe('Verity website publication smoke', () => {
       const parsed = workflow(file);
       return parsed.jobs[job]?.env?.IMAGE_NAME ?? parsed.env?.IMAGE_NAME;
     };
-    expect(imageName('.github/workflows/release-trains.yml', 'publish-website')).toBe(
+    expect(imageName('.github/workflows/release.yml', 'publish-website')).toBe(
       imageName('.github/workflows/verity-website.yml', 'publish'),
     );
   });
@@ -653,7 +640,7 @@ describe('Verity website publication smoke', () => {
   });
 
   it('cannot tag a version it did not build, or report a tag that is not there', () => {
-    const release = workflow('.github/workflows/release-trains.yml');
+    const release = workflow('.github/workflows/release.yml');
     const steps = release.jobs['publish-website']?.steps ?? [];
     const script = steps.map((step) => step.run ?? '').join('\n');
     // Both outputs are read off the same release, so they agree by
@@ -688,7 +675,7 @@ describe('Verity website publication smoke', () => {
     // not cover, and it is set two hundred lines from where it is relied on.
     const dispatch = workflow('.github/workflows/release-dispatch.yml');
     const caller = Object.values(dispatch.jobs).find(
-      (job) => job.uses === './.github/workflows/release-trains.yml',
+      (job) => job.uses === './.github/workflows/release.yml',
     );
     expect(caller?.concurrency?.['cancel-in-progress']).toBe(false);
   });
@@ -909,7 +896,7 @@ describe('native iOS compile gate', () => {
   });
 
   it('builds TestFlight releases locally on GitHub with EAS-managed signing', () => {
-    const release = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<
         string,
         {
@@ -968,7 +955,7 @@ describe('native iOS compile gate', () => {
     expect(commands.indexOf('altool --upload-app')).toBeLessThan(
       commands.indexOf('filter[version]=$next_build'),
     );
-    const releaseSource = readFileSync('.github/workflows/release-trains.yml', 'utf8');
+    const releaseSource = readFileSync('.github/workflows/release.yml', 'utf8');
     expect(releaseSource).toContain(
       '^apps/mobile/(CHANGELOG\\.md|app\\.config\\.ts|version\\.txt)$',
     );
@@ -1592,7 +1579,7 @@ describe('self-update release gate', () => {
 
   it('keeps maintenance bridge promises immutable and release-controlled', () => {
     const source = readFileSync('.github/workflows/release.yml', 'utf8');
-    const parsed = parse(readFileSync('.github/workflows/release-trains.yml', 'utf8')) as {
+    const parsed = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { steps?: WorkflowStep[] }>;
     };
     const validation = parsed.jobs['release-please']?.steps?.find(
@@ -1614,7 +1601,7 @@ describe('self-update release gate', () => {
   });
 
   it('fails closed when the immutable website tag cannot be authorized', () => {
-    const source = readFileSync('.github/workflows/release-trains.yml', 'utf8');
+    const source = readFileSync('.github/workflows/release.yml', 'utf8');
     const promotion = source.slice(source.indexOf('- name: Promote tested digest'));
     expect(promotion).toContain("grep -qiE 'not found|manifest unknown|404'");
     expect(promotion).not.toMatch(/grep[^\n]*(denied|unauthorized)/iu);
@@ -1763,7 +1750,9 @@ describe('release image audit', () => {
       >;
     };
     const pushed = new Set<string>();
-    for (const job of Object.values(release.jobs)) {
+    for (const [name, job] of Object.entries(release.jobs)) {
+      // Website versions belong to a separate train, with their own image checks.
+      if (name === 'publish-website') continue;
       for (const matrix of job.strategy?.matrix?.include ?? [{}]) {
         // A sentinel version, so the match below keys on "pushed at the RELEASE
         // version" and not on `:latest` or `:sha-…`, which every publish also
@@ -3173,9 +3162,7 @@ describe('Actions cache budget', () => {
   it('bounds release cache exports and omits intermediate layers', () => {
     // The ARM64 image was already pushed while mode=max kept the release job
     // waiting another five minutes to prepare and upload intermediate layers.
-    const exports = gha.filter(
-      (site) => ['release.yml', 'release-trains.yml'].includes(site.file) && site.to !== '',
-    );
+    const exports = gha.filter((site) => site.file === 'release.yml' && site.to !== '');
     expect(exports.length).toBeGreaterThan(0);
     for (const site of exports) {
       expect(site.to, site.id).toContain('mode=min');
