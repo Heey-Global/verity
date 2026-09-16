@@ -2652,7 +2652,7 @@ describe('verity-runner supervisor runtime', () => {
       workerArgs: [
         '--input-type=module',
         '-e',
-        `import {writeFileSync} from 'node:fs';writeFileSync(${JSON.stringify(workerReadyPath)},'ready');process.once('SIGTERM',()=>{writeFileSync(${JSON.stringify(cancelSeenPath)},'seen');setTimeout(()=>process.exit(0),250)});setInterval(()=>{},1000);`,
+        `import {unlinkSync,writeFileSync} from 'node:fs';unlinkSync(process.argv[1]);writeFileSync(${JSON.stringify(workerReadyPath)},'ready');process.once('SIGTERM',()=>{writeFileSync(${JSON.stringify(cancelSeenPath)},'seen');setTimeout(()=>process.exit(0),250)});setInterval(()=>{},1000);`,
       ],
       brokerSocket: broker.socketPath,
     });
@@ -2675,14 +2675,22 @@ describe('verity-runner supervisor runtime', () => {
         await expect(readFile(workerReadyPath, 'utf8')).resolves.toBe('ready');
       });
       await expect(
+        readFile(join(runtimeDir, 'turns', turnId, 'request.json'), 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(
         supervisorRequest(supervisor.socketPath, {
           protocolVersion: 1,
           kind: 'run-trusted-cli',
           turnId,
           secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'live-secret' }],
-          command: ['/bin/true'],
+          command: ['/usr/bin/id'],
         }),
-      ).resolves.toMatchObject({ ok: true, exitCode: 0, stdout: '', stderr: '' });
+      ).resolves.toMatchObject({
+        ok: true,
+        exitCode: 0,
+        stdout: expect.stringMatching(/^uid=/u),
+        stderr: '',
+      });
       // Exercise the production client too: a lost encoding marker at that
       // boundary can leave the broker-only tests green.
       const fileSecret = 'token: plötzlich/größer\n';
@@ -5641,7 +5649,10 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
         uid: process.getuid?.() ?? 0,
         gid: process.getgid?.() ?? 0,
         workerCommand: process.execPath,
-        workerArgs: ['-e', 'setInterval(()=>{},1000)'],
+        workerArgs: [
+          '-e',
+          'require("node:fs").unlinkSync(process.argv[1]);setInterval(()=>{},1000)',
+        ],
       });
       process.stdout.write('ready\\n');
       setInterval(()=>{},1000);
@@ -5683,6 +5694,11 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
       const running = await readTurnState(runtimeDir, 'turn-persist');
       expect(running).toMatchObject({ status: 'running', workerPid: expect.any(Number) });
       workerPid = Number(running?.workerPid);
+      await vi.waitFor(async () => {
+        await expect(
+          readFile(join(runtimeDir, 'turns/turn-persist/request.json'), 'utf8'),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      });
 
       // Kill ONLY supervisor A. The worker retains worker.lock fd 3 and survives.
       supAProcess.kill('SIGKILL');

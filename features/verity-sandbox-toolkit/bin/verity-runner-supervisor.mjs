@@ -307,9 +307,13 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
     throw new Error('invalid trusted CLI request');
   }
   const runtimeDir = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
-  const startRequest = JSON.parse(
-    await readFile(join(runtimeDir, 'turns', request.turnId, 'request.json'), 'utf8'),
-  );
+  const persistedState = await readTurnState(runtimeDir, request.turnId);
+  // Standalone smoke tests and the exported broker helper predate durable turn
+  // state and still supply a request file directly. Real supervisor turns always
+  // have state; prefer it because the production worker consumes request.json.
+  const startRequest =
+    persistedState ??
+    JSON.parse(await readFile(join(runtimeDir, 'turns', request.turnId, 'request.json'), 'utf8'));
   if (
     !isObject(startRequest) ||
     startRequest.turnId !== request.turnId ||
@@ -1300,6 +1304,8 @@ export async function readTurnState(runtimeDir, turnId) {
     typeof parsed.updatedAt !== 'number' ||
     !Number.isFinite(parsed.updatedAt) ||
     (parsed.workerLock !== undefined && parsed.workerLock !== true) ||
+    (parsed.trustedCliExecution !== undefined && parsed.trustedCliExecution !== true) ||
+    (parsed.cwd !== undefined && (typeof parsed.cwd !== 'string' || !parsed.cwd.startsWith('/'))) ||
     (parsed.workerExitCode !== undefined &&
       parsed.workerExitCode !== null &&
       !Number.isInteger(parsed.workerExitCode)) ||
@@ -1701,7 +1707,16 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       // the shared runtime group after validation: the worker opens this inode once,
       // verifies its ownership/mode, and unlinks it before parsing.
       await writeJsonAtomic(requestPath, request, 0o600);
-      await updateTurnState(runtimeDir, request.turnId, { workerLock: true });
+      // The worker securely consumes and unlinks request.json before parsing it. Keep
+      // only the non-secret trusted-CLI capability beside the durable turn state so a
+      // later tool call (and a replacement supervisor adopting this worker) never
+      // depends on that one-use request pathname still existing.
+      await updateTurnState(runtimeDir, request.turnId, {
+        workerLock: true,
+        ...(request.trustedCliExecution === true
+          ? { trustedCliExecution: true, cwd: request.cwd }
+          : {}),
+      });
       workerLock = await acquireFileLock(workerLockPath);
       await assertSpawnBoundary(
         request,
