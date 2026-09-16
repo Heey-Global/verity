@@ -76,6 +76,7 @@ describe('workflow token least privilege', () => {
           'pull-requests': 'write',
         },
         'publish-backend': {
+          actions: 'read',
           contents: 'write',
           packages: 'write',
           'id-token': 'write',
@@ -90,7 +91,9 @@ describe('workflow token least privilege', () => {
 
     for (const [file, jobs] of Object.entries(expected)) {
       const parsed = workflow(file);
-      expect(parsed.permissions, file).toBe('read-all');
+      expect(parsed.permissions, file).toEqual(
+        ['release-trains.yml', 'release.yml'].includes(file) ? { contents: 'read' } : 'read-all',
+      );
       for (const [job, permissions] of Object.entries(jobs))
         expect(parsed.jobs?.[job]?.permissions, `${file}:${job}`).toEqual(permissions);
     }

@@ -42,7 +42,8 @@ on:
         required: false
         type: string
 
-permissions: read-all
+permissions:
+  contents: read
 
 jobs:
   release-please:
@@ -601,6 +602,7 @@ jobs:
     if: needs.release-please.outputs.backend-release-created == 'true'
     # The dispatcher holds the train lock across metadata and this entire DAG.
     permissions:
+      actions: read
       artifact-metadata: write
       attestations: write
       contents: write
