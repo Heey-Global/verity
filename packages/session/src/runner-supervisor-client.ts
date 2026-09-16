@@ -177,6 +177,7 @@ export interface TrustedCliExecutionInput {
     env: string;
     injection?: 'env' | 'file';
     secret: string;
+    encoding?: 'base64';
   }[];
   command: readonly string[];
   entryScript?: TrustedCliEntryScript;
@@ -419,6 +420,7 @@ export async function runSupervisorTrustedCli(
           env: secret.env,
           ...(secret.injection === undefined ? {} : { injection: secret.injection }),
           secret: secret.secret,
+          ...(secret.encoding === undefined ? {} : { encoding: secret.encoding }),
         })),
         command: [...input.command],
         ...(input.entryScript === undefined ? {} : { entryScript: input.entryScript }),
@@ -456,6 +458,9 @@ export async function runSupervisorTrustedCli(
             }
           : undefined;
       throw new TrustedCliDispatchError('spawn broker dispatch', false, brokerFailure);
+    }
+    if (!startAcknowledged && message.startsWith('runner supervisor rejected request')) {
+      throw new TrustedCliDispatchError('runner supervisor response', false);
     }
     // A timeout, reset, or lost frame after connecting cannot prove whether the
     // privileged broker already spawned the command. Never invite an unsafe retry.

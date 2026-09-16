@@ -1524,7 +1524,15 @@ describe('runSupervisorTrustedCli result validation', () => {
     await expect(
       client.runTrustedCli({
         turnId: 'turn-1',
-        secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'value' }],
+        secrets: [
+          {
+            secretAlias: 'TOKEN',
+            env: 'TOKEN',
+            injection: 'file',
+            secret: 'dmFsdWU=',
+            encoding: 'base64',
+          },
+        ],
         command: ['/usr/bin/gh', 'pr', 'list'],
       }),
     ).resolves.toEqual({ exitCode: 0, stdout: 'ok', stderr: '' });
@@ -1533,7 +1541,15 @@ describe('runSupervisorTrustedCli result validation', () => {
         protocolVersion: 1,
         kind: 'run-trusted-cli',
         turnId: 'turn-1',
-        secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'value' }],
+        secrets: [
+          {
+            secretAlias: 'TOKEN',
+            env: 'TOKEN',
+            injection: 'file',
+            secret: 'dmFsdWU=',
+            encoding: 'base64',
+          },
+        ],
         command: ['/usr/bin/gh', 'pr', 'list'],
       },
     ]);
@@ -1549,6 +1565,25 @@ describe('runSupervisorTrustedCli result validation', () => {
     ).rejects.toMatchObject({
       name: 'TrustedCliDispatchError',
       stage: 'runner supervisor connection',
+      executionStarted: false,
+    });
+  });
+
+  it('classifies an explicit supervisor refusal as a definitive pre-start failure', async () => {
+    const runtime = join(dir, 'refused-trusted-cli-request');
+    await serveByKind(join(runtime, 'supervisor.sock'), {
+      'run-trusted-cli': { ok: false, error: 'trusted CLI is unavailable for this turn' },
+    });
+
+    await expect(
+      runSupervisorTrustedCli(runtime, {
+        turnId: 'turn-1',
+        secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'value' }],
+        command: ['/usr/bin/true'],
+      }),
+    ).rejects.toMatchObject({
+      name: 'TrustedCliDispatchError',
+      stage: 'runner supervisor response',
       executionStarted: false,
     });
   });

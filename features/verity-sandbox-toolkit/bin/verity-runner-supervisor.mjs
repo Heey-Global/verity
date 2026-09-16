@@ -244,7 +244,8 @@ function isValidTrustedCliSecret(secret) {
     secret.secret.length > 0 &&
     !secret.secret.includes('\0') &&
     Buffer.byteLength(secret.secret) <= 1024 * 1024 &&
-    (secret.injection === undefined || secret.injection === 'env' || secret.injection === 'file')
+    (secret.injection === undefined || secret.injection === 'env' || secret.injection === 'file') &&
+    (secret.encoding === undefined || (secret.injection === 'file' && secret.encoding === 'base64'))
   );
 }
 

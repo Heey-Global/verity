@@ -2430,6 +2430,22 @@ describe('verity-runner supervisor runtime', () => {
         exitCode: 0,
         stdout: `id=[REDACTED] issuer=[REDACTED] file=${secretDir}/ASC_KEY_FILE key=[REDACTED]`,
       });
+      const encodedFile = await run({
+        protocolVersion: 1,
+        kind: 'run-trusted-cli',
+        turnId,
+        secrets: [
+          {
+            secretAlias: 'KUBECONFIG',
+            env: 'KUBECONFIG',
+            injection: 'file',
+            secret: Buffer.from('apiVersion: v1\n').toString('base64'),
+            encoding: 'base64',
+          },
+        ],
+        command: ['/bin/sh', '-c', 'test "$(cat "$KUBECONFIG")" = "apiVersion: v1"'],
+      });
+      expect(encodedFile).toMatchObject({ ok: true, exitCode: 0 });
       // Every value is redacted, not just the first one.
       for (const value of ['private-key-marker', 'key-id-marker', 'issuer-id-marker']) {
         expect(JSON.stringify(multi)).not.toContain(value);
