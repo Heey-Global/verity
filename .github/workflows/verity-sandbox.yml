@@ -213,8 +213,8 @@ jobs:
           # does cost reuse between two pushes to the SAME PR; it costs nothing
           # across PRs, because a `refs/pull/N/merge` entry was never visible to
           # them anyway.
-          cache-from: type=gha,scope=verity-sandbox
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-sandbox,ignore-error=true' || '' }}
+          cache-from: type=gha,scope=verity-sandbox-${{ matrix.architecture }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope=verity-sandbox-{0},ignore-error=true', matrix.architecture) || '' }}
 
       - name: Smoke-test image
         shell: bash

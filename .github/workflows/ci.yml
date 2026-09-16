@@ -221,18 +221,10 @@ jobs:
             git cat-file -e "${before}^{commit}" 2>/dev/null || before=''
           fi
           if [ -n "$before" ]; then
-            # `--no-renames` for both: rename detection is on by default and
-            # reports only a rename's DESTINATION, so a commit moving a source
-            # file onto one of the allowlisted paths would list that path alone
-            # — allowlisted, no deletion in sight — while the source is gone.
-            # Off, the same commit lists the source as deleted and the guard
-            # below catches it. release-please only ever edits files that
-            # already exist, so it never has a rename to detect.
+            # Rename detection hides source deletions behind allowlisted destinations.
+            # Disable it so moving source into a metadata path cannot skip checks.
             mapfile -t pushed < <(git diff --no-renames --name-only "$before" HEAD)
-            # `--name-only` reports a deleted file exactly like an edited one, and
-            # a commit that REMOVES the changelog is not release-please's output
-            # whatever its paths say. `-d` drops deletions, so a shorter list is
-            # one, and the allowlist below never sees that commit.
+            # Deleted metadata is not a generated release: reject a shorter kept list.
             mapfile -t kept < <(git diff --no-renames --name-only --diff-filter=d "$before" HEAD)
             # An empty diff must NOT count as release-only: "nothing changed" is
             # also what a mis-resolved base looks like, and the safe reading of a
@@ -241,13 +233,8 @@ jobs:
               release_only=true
               for file in "${pushed[@]}"; do
                 case "$file" in
-                  # release-please's `simple` release type, for the root package
-                  # and for the website. A release commit on either train writes
-                  # nothing but that package's changelog and version file, so the
-                  # argument above — there is no source here for a job to check —
-                  # is the same argument for both.
-                  # apps/mobile is deliberately absent: its release commit also
-                  # rewrites app.config.ts, which is source the mobile jobs cover.
+                  # Simple releases edit metadata only. Mobile app.config.ts is
+                  # deliberately excluded because it is source requiring validation.
                   CHANGELOG.md|version.txt|.release-please-manifest.backend.json|.release-please-manifest.mobile.json|.release-please-manifest.website.json|docs/website/CHANGELOG.md|docs/website/version.txt) ;;
                   *)
                     release_only=false
@@ -285,6 +272,16 @@ jobs:
               verdict="$(gh api "$runs" --jq \
                 '(.workflow_runs[0] // {}) | "\(.status // "missing")/\(.conclusion // "none")"' \
                 2>/dev/null || echo 'unreadable/none')"
+              # Release Please opens its metadata PR while main CI is still
+              # running. Wait for that exact base instead of starting a second
+              # full suite; source-bearing pushes retain their existing routing.
+              if [ "$release_only" = "true" ] && [ "${{ github.event_name }}" != "push" ]; then
+                case "$verdict" in
+                  queued/none|in_progress/none|pending/none|waiting/none)
+                    verdict="$(node scripts/ci-base-verdict.mjs "$verdict_base" "$verdict" || echo 'unreadable/none')"
+                    ;;
+                esac
+              fi
               if [ "$verdict" = "completed/success" ]; then
                 base_green=true
               elif [ "$release_only" = "true" ]; then
@@ -859,11 +856,11 @@ jobs:
               failed=1
             fi
           done
-          # This composition suite retains enough state that a forked worker can
-          # be killed after the preceding PGlite files. Its own process with one
-          # worker thread keeps it below the runner's memory ceiling.
+          # Keep this memory-heavy suite in a fresh single-worker invocation.
+          # A thread worker aborted inside V8 UnregisterWasmAllocation (run
+          # 35117365072); a fork isolates its WASM runtime from the parent.
           if ! npx vitest run packages/server/src/embedded.test.ts \
-            --pool=threads --maxWorkers=1 --maxConcurrency=1; then
+            --pool=forks --maxWorkers=1 --maxConcurrency=1; then
             failed=1
           fi
           exit "$failed"
@@ -1309,8 +1306,8 @@ jobs:
           # working image. Run 31219396281 sat 2.5 minutes on `#74 writing layer
           # <sha>` before failing, while the cache was over its limit and GitHub
           # was evicting the very blobs being written.
-          cache-from: type=gha,scope=verity-server
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server,ignore-error=true' || '' }}
+          cache-from: type=gha,scope=verity-server-amd64
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
       - name: Verify the bundled installer payload
         run: |
           docker run --rm --entrypoint /bin/sh "$VERITY_CI_IMAGE" -c '

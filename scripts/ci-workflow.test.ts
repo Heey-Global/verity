@@ -701,6 +701,19 @@ describe('server test CI', () => {
     expect(embedded?.run).toContain('--maxWorkers=1');
   });
 
+  it('isolates the embedded WASM runtime in a process instead of a worker thread', () => {
+    // Run 35117365072 aborted inside V8 UnregisterWasmAllocation in the thread
+    // pool, before Vitest could report a test result or run cleanup.
+    const command = test?.run
+      ?.replace(/\\\n\s*/g, ' ')
+      .split('\n')
+      .find((line) => line.includes('vitest run packages/server/src/embedded.test.ts'));
+    expect(command).toBeDefined();
+    expect(command).toContain('--pool=forks');
+    expect(command).toContain('--maxWorkers=1');
+    expect(command).toContain('--maxConcurrency=1');
+  });
+
   it('gives every Vitest-running step the shared PostgreSQL', () => {
     // The harness falls back to pglite when the URL is absent (see
     // packages/store/src/testing.ts), so a step that loses this env var does not
@@ -3048,6 +3061,7 @@ describe('Actions cache budget', () => {
     steps?: WorkflowStep[];
     permissions?: Record<string, string>;
     'timeout-minutes'?: number;
+    strategy?: { matrix?: { include?: Record<string, string>[] } };
   };
   const gha = readdirSync('.github/workflows')
     .filter((file) => file.endsWith('.yml'))
@@ -3058,20 +3072,32 @@ describe('Actions cache budget', () => {
       };
       const triggers = Object.keys(workflow.on ?? {});
       return Object.entries(workflow.jobs ?? {}).flatMap(([jobName, job]) =>
-        (job.steps ?? [])
-          .filter((step) =>
-            [step.with?.['cache-from'], step.with?.['cache-to']].some((value) =>
-              String(value ?? '').includes('type=gha'),
-            ),
-          )
-          .map((step) => ({
-            id: `${file}:${jobName}:${step.name ?? step.uses ?? '(unnamed)'}`,
-            triggers,
-            dockerfile: String(step.with?.file ?? '(none)'),
-            from: String(step.with?.['cache-from'] ?? ''),
-            to: String(step.with?.['cache-to'] ?? ''),
-            timeoutMinutes: job['timeout-minutes'],
-          })),
+        (job.strategy?.matrix?.include ?? [{}]).flatMap((matrix) => {
+          const expand = (value: string) =>
+            value
+              .replace(
+                /format\('([^']*)', matrix\.(\w+)\)/g,
+                (_, template: string, key: string) =>
+                  `'${template.replaceAll('{0}', matrix[key] ?? '')}'`,
+              )
+              .replace(/\$\{\{ matrix\.(\w+) \}\}/g, (_, key: string) => matrix[key] ?? '');
+          return (job.steps ?? [])
+            .filter((step) =>
+              [step.with?.['cache-from'], step.with?.['cache-to']].some((value) =>
+                String(value ?? '').includes('type=gha'),
+              ),
+            )
+            .map((step) => ({
+              id: `${file}:${jobName}:${step.name ?? step.uses ?? '(unnamed)'}:${matrix.architecture ?? 'amd64'}`,
+              file,
+              triggers,
+              dockerfile: expand(String(step.with?.file ?? '(none)')),
+              platform: expand(String(step.with?.platforms ?? '')),
+              from: expand(String(step.with?.['cache-from'] ?? '')),
+              to: expand(String(step.with?.['cache-to'] ?? '')),
+              timeoutMinutes: job['timeout-minutes'],
+            }));
+        }),
       );
     });
 
@@ -3110,10 +3136,10 @@ describe('Actions cache budget', () => {
     expect(mismatched).toEqual([]);
   });
 
-  it('keys the scope by image, not by workflow', () => {
+  it('keys the scope by image and architecture, not by workflow', () => {
     // ci.yml, verity-server.yml and release.yml all build deploy/Dockerfile and
-    // SHOULD share one entry — splitting them triples the budget for identical
-    // layers. Two different Dockerfiles sharing a scope is the original bug.
+    // share entries for the same architecture. Matrix writers for different
+    // architectures must not replace each other's reusable cache index.
     const group = (key: (site: (typeof gha)[number]) => string, value: typeof key) => {
       const groups = new Map<string, Set<string>>();
       for (const site of gha) {
@@ -3124,8 +3150,35 @@ describe('Actions cache budget', () => {
       return [...groups].filter(([, members]) => members.size > 1).map(([name]) => name);
     };
     const scope = (site: (typeof gha)[number]) => scopeOf(site.from) ?? '(none)';
-    expect(group((site) => site.dockerfile, scope)).toEqual([]);
-    expect(group(scope, (site) => site.dockerfile)).toEqual([]);
+    const imagePlatform = (site: (typeof gha)[number]) => `${site.dockerfile}:${site.platform}`;
+    expect(group(imagePlatform, scope)).toEqual([]);
+    expect(group(scope, imagePlatform)).toEqual([]);
+  });
+
+  it('bounds release cache exports and omits intermediate layers', () => {
+    // The ARM64 image was already pushed while mode=max kept the release job
+    // waiting another five minutes to prepare and upload intermediate layers.
+    const exports = gha.filter((site) => site.file === 'release.yml' && site.to !== '');
+    expect(exports.length).toBeGreaterThan(0);
+    for (const site of exports) {
+      expect(site.to, site.id).toContain('mode=min');
+      expect(site.to, site.id).toContain('timeout=60s');
+      expect(site.to, site.id).toContain('ignore-error=true');
+    }
+  });
+
+  it('shares the AMD64 server cache with the self-update smoke', () => {
+    const source = readFileSync('.github/workflows/self-update.yml', 'utf8');
+    const imports = source.match(/--cache-from (type=gha,[^\s\\]+)/g) ?? [];
+    const exports = source.match(/--cache-to (type=gha,[^\s\\]+)/g) ?? [];
+    expect(imports).toHaveLength(1);
+    expect(exports).toHaveLength(1);
+    const server = gha.find(
+      (site) => site.dockerfile === 'deploy/Dockerfile' && site.platform === 'linux/amd64',
+    );
+    expect(server).toBeDefined();
+    expect(scopeOf(imports[0]!)).toBe(scopeOf(server!.from));
+    expect(scopeOf(exports[0]!)).toBe(scopeOf(server!.from));
   });
 
   it('never lets a cache export fail the build', () => {
