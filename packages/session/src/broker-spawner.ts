@@ -1,5 +1,6 @@
 import { createConnection, type Socket } from 'node:net';
 import { constants as osConstants } from 'node:os';
+import { StringDecoder } from 'node:string_decoder';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
 const PROTOCOL_VERSION = 1;
@@ -83,10 +84,6 @@ function encode(data: string): string {
   return Buffer.from(data, 'utf8').toString('base64');
 }
 
-function decode(data: string): string {
-  return Buffer.from(data, 'base64').toString('utf8');
-}
-
 function send(socket: Socket, frame: object): boolean {
   if (socket.destroyed || !socket.writable) return false;
   socket.write(`${JSON.stringify(frame)}\n`);
@@ -105,6 +102,8 @@ export function createBrokerSpawner(socketPath: string): Spawner {
       },
     );
     let stderrTail = '';
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     let pid: number | undefined;
     let spawned = false;
     let settled = false;
@@ -117,6 +116,9 @@ export function createBrokerSpawner(socketPath: string): Spawner {
     const settle = (code: number): void => {
       if (settled) return;
       settled = true;
+      const stdoutTail = stdoutDecoder.end();
+      if (stdoutTail !== '') stdout.push(stdoutTail);
+      stderrTail = `${stderrTail}${stderrDecoder.end()}`.slice(-MAX_STDERR_CHARS);
       stdout.end();
       socket.destroy();
       resolveExited(code);
@@ -177,9 +179,13 @@ export function createBrokerSpawner(socketPath: string): Spawner {
           pid = typeof frame.pid === 'number' ? frame.pid : undefined;
           flushInput();
         } else if (frame.kind === 'stdout' && typeof frame.data === 'string') {
-          if (!stdout.push(decode(frame.data))) break;
+          const decoded = stdoutDecoder.write(Buffer.from(frame.data, 'base64'));
+          if (decoded !== '' && !stdout.push(decoded)) break;
         } else if (frame.kind === 'stderr' && typeof frame.data === 'string') {
-          stderrTail = `${stderrTail}${decode(frame.data)}`.slice(-MAX_STDERR_CHARS);
+          stderrTail =
+            `${stderrTail}${stderrDecoder.write(Buffer.from(frame.data, 'base64'))}`.slice(
+              -MAX_STDERR_CHARS,
+            );
         } else if (frame.kind === 'exit') {
           const signalNumber =
             typeof frame.signal === 'string'
