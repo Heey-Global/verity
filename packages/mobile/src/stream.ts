@@ -192,6 +192,8 @@ export class SessionStream {
     this.paused = true;
     this.setConnectionState('paused');
     this.reconnectGeneration += 1;
+    // The invalidated ticket request must not block a fresh request on resume.
+    this.opening = false;
     const socket = this.socket;
     this.socket = null;
     socket?.close();
@@ -229,13 +231,13 @@ export class SessionStream {
       const generation = this.reconnectGeneration;
       void ticketPromise
         .then((ticket) => {
-          this.opening = false;
           if (this.stopped || this.paused || generation !== this.reconnectGeneration) return;
+          this.opening = false;
           this.openSocket(`verity-stream-ticket.${ticket}`);
         })
         .catch(() => {
-          this.opening = false;
           if (this.stopped || generation !== this.reconnectGeneration) return;
+          this.opening = false;
           this.opts.onError?.('stream authorization failed');
           this.reconnectAttempt += 1;
           this.setConnectionState('reconnecting');

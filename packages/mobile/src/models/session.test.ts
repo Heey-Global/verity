@@ -79,6 +79,53 @@ function metadataHistoryEvent(seq: number): { seq: number; event: AgentEvent } {
 }
 
 describe('SessionModel — stream', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'opens on resume when the initial history probe settles in background (%s)',
+    async (outcome) => {
+      const { connect, sockets } = recordingConnect();
+      let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getHistory']>>) => void;
+      let rejectHistory!: (error: Error) => void;
+      const history = new Promise<Awaited<ReturnType<VerityClient['getHistory']>>>(
+        (resolve, reject) => {
+          resolveHistory = resolve;
+          rejectHistory = reject;
+        },
+      );
+      const client = stubClient();
+      client.getHistory = vi.fn().mockReturnValue(history);
+      const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+      try {
+        model.start();
+        model.pause();
+        if (outcome === 'resolve') {
+          resolveHistory({
+            events: [{ seq: 100, event: { t: 'text', delta: 'tail' } }],
+            hasMore: true,
+          });
+        } else {
+          rejectHistory(new Error('background request failed'));
+        }
+        await flush();
+        expect(sockets).toHaveLength(0);
+        expect(model.state.loaded).toBe(false);
+
+        // A completed probe must not strand the unstarted stream behind the loading screen.
+        model.resume();
+        await flush();
+        expect(sockets).toHaveLength(1);
+        expect(sockets[0]?.url).toBe(
+          `ws://host/sessions/s1/stream?sinceSeq=${outcome === 'resolve' ? 99 : 0}`,
+        );
+        sockets[0]?.emitEvent(100, { t: 'text', delta: 'loaded' });
+        sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
+        expect(model.state.loaded).toBe(true);
+        expect(agentTexts(model.state)).toEqual(['loaded']);
+      } finally {
+        model.stop();
+      }
+    },
+  );
+
   it('streams events into the session state and notifies, at the right URL', async () => {
     const { connect, sockets } = recordingConnect();
     const updates: number[] = [];
