@@ -49,6 +49,52 @@ function recordingConnect(): { connect: (url: string) => FakeSocket; sockets: Fa
 }
 
 describe('SessionStream', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'retries authorization on resume while a stale ticket is pending (%s)',
+    async (outcome) => {
+      let resolveStale!: (ticket: string) => void;
+      let rejectStale!: (error: Error) => void;
+      const stale = new Promise<string>((resolve, reject) => {
+        resolveStale = resolve;
+        rejectStale = reject;
+      });
+      let resolveFresh!: (ticket: string) => void;
+      const fresh = new Promise<string>((resolve) => {
+        resolveFresh = resolve;
+      });
+      const getStreamTicket = vi.fn().mockReturnValueOnce(stale).mockReturnValue(fresh);
+      const { connect, sockets } = recordingConnect();
+      const onError = vi.fn();
+      const stream = new SessionStream({
+        baseUrl: 'http://host',
+        sessionId: 's1',
+        connect,
+        getStreamTicket,
+        onError,
+      });
+      try {
+        stream.start();
+        stream.pause();
+        stream.resume();
+        expect(getStreamTicket).toHaveBeenCalledTimes(2);
+        if (outcome === 'resolve') resolveStale('stale');
+        else rejectStale(new Error('stale request failed'));
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(sockets).toHaveLength(0);
+        expect(onError).not.toHaveBeenCalled();
+        // A stale completion must not release the fresh request's in-flight guard.
+        stream.start();
+        expect(getStreamTicket).toHaveBeenCalledTimes(2);
+        resolveFresh('fresh');
+        await Promise.resolve();
+        expect(sockets).toHaveLength(1);
+      } finally {
+        stream.stop();
+      }
+    },
+  );
+
   it('connects to the session stream URL (http→ws) starting at sinceSeq 0', () => {
     const { connect, sockets } = recordingConnect();
     new SessionStream({ baseUrl: 'http://host:3000/', sessionId: 's1', connect }).start();

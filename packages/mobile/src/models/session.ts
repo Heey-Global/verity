@@ -660,7 +660,9 @@ export class SessionModel {
     } catch {
       // fall back to a full replay from 0 (no older page to fetch)
     }
-    if (!this._running || this._paused) return;
+    if (!this._running) return;
+    // Register the start even in background: the stream defers its socket until
+    // resume, otherwise a probe settling while paused leaves it unstarted forever.
     this.stream.start();
   }
 
