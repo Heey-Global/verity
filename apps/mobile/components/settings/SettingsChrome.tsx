@@ -97,6 +97,8 @@ export function SettingsPanel({ children }: { children: ReactNode }) {
   return <View style={styles.panel}>{children}</View>;
 }
 
+export { SettingsDisclosure } from './SettingsDisclosure';
+
 /** A grouped list of rows, hairline-separated. The
  *  separators are inserted here so a screen cannot forget one (or leave a
  *  dangling one behind a row it conditionally hides). */
@@ -146,7 +148,7 @@ export function SettingsNavRow({
       accessibilityLabel={accessibilityLabel ?? title}
     >
       <View style={styles.navRowIcon}>
-        <Icon name={icon} size={18} color={theme.colors.textMuted} />
+        <Icon name={icon} size={18} color={theme.colors.primary} />
       </View>
       <View style={styles.navRowBody}>
         <Text style={styles.navRowTitle}>{title}</Text>

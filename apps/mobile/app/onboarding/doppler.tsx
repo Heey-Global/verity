@@ -186,7 +186,7 @@ function DopplerStep({ client }: { client: VerityClient }) {
           accessibilityRole="button"
           accessibilityLabel="Save and validate Doppler token"
         >
-          {busy ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
+          {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
           <Text style={styles.primaryButtonLabel}>
             {phase.kind === 'saving'
               ? 'Saving…'
@@ -322,13 +322,13 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   buttonDisabled: {
     opacity: 0.5,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },

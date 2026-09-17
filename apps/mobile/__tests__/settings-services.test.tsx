@@ -36,6 +36,30 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+describe('settings/services — compact details', () => {
+  it('saves an endpoint when its details collapse without an input blur', async () => {
+    const client = makeClient('unlocked');
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ServicesSettingsScreen />);
+    const toggle = await screen.findByLabelText('OpenCode');
+    expect(screen.queryByLabelText('OpenCode API base URL')).toBeNull();
+    fireEvent.press(toggle);
+    fireEvent.changeText(screen.getByLabelText('OpenCode API base URL'), 'https://draft.test/v1');
+    fireEvent.press(toggle);
+    expect(screen.queryByLabelText('OpenCode API base URL')).toBeNull();
+    await waitFor(() =>
+      expect(client.updateVeritySettings).toHaveBeenCalledWith({
+        opencodeBaseUrl: 'https://draft.test/v1',
+      }),
+    );
+    fireEvent.press(toggle);
+    expect(screen.getByLabelText('OpenCode API base URL')).toHaveProp(
+      'value',
+      'https://draft.test/v1',
+    );
+  });
+});
+
 describe('settings/services — secret store onboarding', () => {
   it('renders the "set master password" UI when the store is uninitialized', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('uninitialized'));
@@ -126,6 +150,7 @@ describe('settings/services — secret store onboarding', () => {
   it('shows the Unlocked indicator and enables the paste boxes when unlocked', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Doppler'));
 
     expect(await screen.findByText('Unlocked')).toBeOnTheScreen();
     expect(screen.queryByText('Master password')).toBeNull();
@@ -136,6 +161,7 @@ describe('settings/services — secret store onboarding', () => {
   it('keeps the credential boxes read-only while the store is sealed', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('sealed'));
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Doppler'));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     // A write while sealed 503s, so the box says why rather than failing later.
@@ -171,6 +197,7 @@ describe('settings/services — write-only credentials', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Doppler'));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     fireEvent.changeText(doppler, 'dp.sa.fixture-token');
@@ -188,6 +215,7 @@ describe('settings/services — write-only credentials', () => {
     const updateVeritySettings = jest.fn();
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { updateVeritySettings }));
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Doppler'));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     fireEvent(doppler, 'blur');
@@ -205,6 +233,7 @@ describe('settings/services — write-only credentials', () => {
       .mockResolvedValue(makeSettings({ dopplerServiceTokenConfigured: true }));
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { updateVeritySettings }));
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Doppler'));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     fireEvent.changeText(doppler, 'dp.sa.fixture-token');
@@ -240,6 +269,7 @@ describe('settings/services — AI backends', () => {
       }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Claude'));
 
     fireEvent.press(await screen.findByLabelText('Reconnect Claude'));
 
@@ -347,6 +377,7 @@ describe('settings/services — AI backends', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('OpenCode'));
 
     await waitFor(() =>
       expect(screen.getByPlaceholderText('Paste the provider API key…').props.editable).toBe(true),
@@ -386,6 +417,7 @@ describe('settings/services — meeting transcription', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Transcription'));
 
     const pill = await screen.findByLabelText('Choose backend');
     expect(within(pill).getByText('!')).toBeOnTheScreen();
@@ -411,6 +443,7 @@ describe('settings/services — meeting transcription', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Transcription'));
 
     const url = await screen.findByLabelText('Transcription API base URL');
     const token = screen.getByPlaceholderText('Paste the transcription token…');
@@ -450,6 +483,7 @@ describe('settings/services — meeting transcription', () => {
       }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Transcription'));
 
     // The pill's glyph follows its intent (`✓` ready, `!` needs setup).
     expect(within(await screen.findByLabelText('External')).getByText('✓')).toBeOnTheScreen();
@@ -464,6 +498,7 @@ describe('settings/services — meeting transcription', () => {
       makeClient('unlocked', { settings: makeSettings({ transcribeBackendMode: 'local' }) }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Transcription'));
 
     const pill = await screen.findByLabelText('Local unavailable');
     expect(within(pill).getByText('!')).toBeOnTheScreen();

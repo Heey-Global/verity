@@ -2,14 +2,14 @@
 // into project containers that are already running.
 import { VerityApiError, reprovisionActiveProjects, type VerityClient } from '@verity/mobile';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { ServerUpdateSection } from '../../components/settings/ServerUpdateSection';
 import {
   SettingsGroup,
+  SettingsDisclosure,
   SettingsMessage,
-  SettingsSaveState,
   SettingsScaffold,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
@@ -98,8 +98,20 @@ function MaintenanceSettingsView({ client }: { client: VerityClient }) {
       </SettingsGroup>
 
       <SettingsGroup title="Project containers">
-        <View style={styles.reproPanel}>
-          <Text style={styles.reproTitle}>Apply to running containers</Text>
+        <SettingsDisclosure
+          title="Running containers"
+          icon="layers"
+          summary={
+            applyPending
+              ? 'Saved changes waiting to apply'
+              : repro.phase === 'done'
+                ? `${repro.done - repro.failed.length}/${repro.total} containers updated`
+                : 'Apply saved settings'
+          }
+          attention={
+            repro.phase === 'running' || (repro.phase === 'done' && repro.failed.length > 0)
+          }
+        >
           <Text style={styles.reproSubtitle}>
             Saved settings reach existing project containers after reprovisioning. This recreates
             each running container.
@@ -129,10 +141,8 @@ function MaintenanceSettingsView({ client }: { client: VerityClient }) {
             </Text>
           </Pressable>
           {saving > 0 ? <Text style={styles.reproHint}>Saving changes first…</Text> : null}
-        </View>
+        </SettingsDisclosure>
       </SettingsGroup>
-
-      <SettingsSaveState />
     </SettingsScaffold>
   );
 }

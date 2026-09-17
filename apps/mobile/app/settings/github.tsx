@@ -18,13 +18,12 @@ import { useUnistyles } from 'react-native-unistyles';
 import {
   SettingsGroup,
   SettingsMessage,
-  SettingsPanel,
+  SettingsDisclosure,
   SettingsSaveState,
   SettingsScaffold,
 } from '../../components/settings/SettingsChrome';
 import { SigningKeyDisplay } from '../../components/settings/SigningKeyDisplay';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
-import { StatusPill } from '../../components/StatusPill';
 import { createVerityClient } from '../../lib/client';
 import {
   patchVeritySettingsLocally,
@@ -72,8 +71,8 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
 
   const connected = githubRepositoryAccessReady(settings);
   // Readiness follows the draft, not the stored value: the operator has just
-  // typed a name and email, and a pill that stays red until the blur lands
-  // reads as if the typing did not count.
+  // typed a name and email; the collapsed summary must retain those edits
+  // even before the blur has persisted them.
   const identityReady =
     author.values.gitUserName.trim() !== '' && author.values.gitUserEmail.trim() !== '';
   const signingReady = verifiedCommitsReady(settings);
@@ -92,19 +91,14 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
         });
       }}
     >
-      <SettingsGroup
-        title="Repository access"
-        description="GitHub lets Verity clone repositories, push branches, and open pull requests."
-      >
-        <SettingsPanel>
-          <View style={styles.serviceStatusRow}>
-            <Text style={styles.serviceStatusLabel}>GitHub connection</Text>
-            <StatusPill
-              quiet
-              intent={connected ? 'ready' : 'needsSetup'}
-              label={connected ? 'Connected' : 'Not connected'}
-            />
-          </View>
+      <SettingsGroup title="Repository">
+        <SettingsDisclosure
+          title="GitHub connection"
+          summary={connected ? 'Connected' : 'Not connected'}
+        >
+          <Text style={styles.reproSubtitle}>
+            GitHub lets Verity clone repositories, push branches, and open pull requests.
+          </Text>
           {!connected ? (
             <Text style={styles.reproSubtitle}>
               Connect GitHub to give Verity access to your repositories.
@@ -118,19 +112,19 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
           >
             <Text style={styles.reproButtonLabel}>Manage GitHub connection</Text>
           </Pressable>
-        </SettingsPanel>
+        </SettingsDisclosure>
       </SettingsGroup>
 
-      <SettingsGroup title="Commit author">
-        <SettingsPanel>
-          <View style={styles.serviceStatusRow}>
-            <Text style={styles.serviceStatusLabel}>Author identity</Text>
-            <StatusPill
-              quiet
-              intent={identityReady ? 'ready' : 'needsSetup'}
-              label={identityReady ? 'Ready' : 'Needs setup'}
-            />
-          </View>
+      <SettingsGroup title="Commits">
+        <SettingsDisclosure
+          title="Author identity"
+          onCollapse={author.commit}
+          summary={
+            identityReady
+              ? `${author.values.gitUserName.trim()} · ${author.values.gitUserEmail.trim()}`
+              : 'Needs setup'
+          }
+        >
           <Text style={styles.reproSubtitle}>
             GitHub grants repository access but may not expose a personal commit author for
             organization connections. Enter the name and GitHub-verified email that Verity should
@@ -168,19 +162,8 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
               />
             </View>
           </View>
-        </SettingsPanel>
-      </SettingsGroup>
-
-      <SettingsGroup title="Verified commits">
-        <SettingsPanel>
-          <View style={styles.serviceStatusRow}>
-            <Text style={styles.serviceStatusLabel}>Signing</Text>
-            <StatusPill
-              quiet
-              intent={signingReady ? 'ready' : 'needsSetup'}
-              label={signingReady ? 'Ready' : 'Needs setup'}
-            />
-          </View>
+        </SettingsDisclosure>
+        <SettingsDisclosure title="Signing" summary={signingReady ? 'Ready' : 'Needs setup'}>
           <SigningKeyDisplay
             client={client}
             onGenerated={() => {
@@ -203,7 +186,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
                 : undefined
             }
           />
-        </SettingsPanel>
+        </SettingsDisclosure>
       </SettingsGroup>
 
       <SettingsSaveState dirty={author.dirty} />

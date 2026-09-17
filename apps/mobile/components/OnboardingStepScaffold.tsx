@@ -189,13 +189,13 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   nextButtonDisabled: {
     opacity: 0.45,
   },
   nextLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
