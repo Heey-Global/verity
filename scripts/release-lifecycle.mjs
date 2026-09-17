@@ -44,6 +44,7 @@ if (main !== eventSha) {
   const rawManifest = JSON.parse(readFileSync(`.release-please-manifest.${train}.json`, 'utf8'));
   const version = manifestVersion(rawManifest);
   const tag = `${spec.prefix}${version}`;
+  const versionParts = version.split('.').map(Number);
   // Paginate: a release disappearing from page one must never reset history.
   const releases = /** @type {{tag_name: string, draft: boolean, prerelease: boolean}[][]} */ (
     gh(
@@ -70,13 +71,22 @@ if (main !== eventSha) {
         'number,author,mergeCommit',
       )
     );
-  const drafts = releases.filter(
-    (release) =>
-      release.draft &&
-      new RegExp(`^${spec.prefix}\\d+\\.\\d+\\.${train === 'mobile' ? '0' : '\\d+'}$`).test(
-        release.tag_name,
-      ),
-  );
+  const drafts = releases.filter((release) => {
+    if (train !== 'backend')
+      return (
+        release.draft &&
+        new RegExp(`^${spec.prefix}\\d+\\.\\d+\\.${train === 'mobile' ? '0' : '\\d+'}$`).test(
+          release.tag_name,
+        )
+      );
+    if (!release.draft || !release.tag_name.startsWith(spec.prefix)) return false;
+    const candidate = release.tag_name.slice(spec.prefix.length).split('.').map(Number);
+    if (candidate.length !== 3 || !candidate.every(Number.isInteger)) return false;
+    for (let index = 0; index < candidate.length; index += 1) {
+      if (candidate[index] !== versionParts[index]) return candidate[index] > versionParts[index];
+    }
+    return true;
+  });
   if (drafts.length)
     throw new Error(
       `${train} publication is pending (${drafts.map((r) => r.tag_name).join(', ')}); recover that version before planning another release`,

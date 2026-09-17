@@ -8,6 +8,8 @@ import { parse } from 'yaml';
 const script = resolve('scripts/release-lifecycle.mjs');
 function run(state: {
   draft?: boolean;
+  unrelatedDraft?: boolean;
+  newerDraft?: boolean;
   pending?: boolean;
   missing?: boolean;
   stale?: boolean;
@@ -51,7 +53,12 @@ const args = process.argv.slice(2).join(' ');
 const fixture = ${JSON.stringify({ sha, boundarySha, state })};
 let result;
 if (args.includes('git/ref/heads/main')) result = {object:{sha:fixture.state.stale ? 'f'.repeat(40) : fixture.sha}};
-else if (args.includes('/releases?')) result = [(fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:'v1.2.3', draft:!!fixture.state.draft, prerelease:false}]];
+else if (args.includes('/releases?')) {
+  const releases = (fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:'v1.2.3', draft:!!fixture.state.draft, prerelease:false}];
+  if (fixture.state.unrelatedDraft) releases.push({tag_name:'v0.9.0', draft:true, prerelease:false});
+  if (fixture.state.newerDraft) releases.push({tag_name:'v1.3.0', draft:true, prerelease:false});
+  result = [releases];
+}
 else if (args.startsWith('pr list')) result = fixture.state.pending ? [{number:1,author:{login:'github-actions'},mergeCommit:{oid:fixture.boundarySha}}] : [];
 else throw new Error(args);
 process.stdout.write(JSON.stringify(result));
@@ -121,6 +128,14 @@ describe('release lifecycle reconciliation', () => {
   });
   it('does not create the next PR while publication is pending', () => {
     const result = run({ draft: true, pending: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('publication is pending');
+  });
+  it('ignores abandoned drafts from older release versions', () => {
+    expect(run({ unrelatedDraft: true })).toMatchObject({ status: 0, output: 'mode=plan\n' });
+  });
+  it('rejects drafts newer than the manifest version', () => {
+    const result = run({ newerDraft: true });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('publication is pending');
   });
