@@ -64,11 +64,9 @@ function GithubStep({ client }: { client: VerityClient }) {
 const styles = StyleSheet.create((theme) => ({
   card: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   intro: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 * theme.fontScale },
 }));

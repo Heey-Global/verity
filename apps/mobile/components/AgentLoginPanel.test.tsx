@@ -16,15 +16,15 @@ const waitingLogin = {
 } as AgentLogin;
 
 describe('AgentLoginPanel polling', () => {
-  it('uses the primary blue for agent login actions', () => {
+  it('uses the neutral setup palette for agent login actions', () => {
     const client = {} as VerityClient;
     render(<AgentLoginPanel client={client} configured={{ claude: false, codex: false }} />);
 
     expect(screen.getByLabelText('Connect Claude')).toHaveStyle({
-      backgroundColor: lightTheme.colors.primary,
+      backgroundColor: lightTheme.colors.setup.text,
     });
     expect(screen.getByLabelText('Connect Codex')).toHaveStyle({
-      backgroundColor: lightTheme.colors.primary,
+      backgroundColor: lightTheme.colors.setup.text,
     });
   });
 

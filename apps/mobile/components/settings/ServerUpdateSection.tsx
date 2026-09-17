@@ -114,7 +114,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
       <Text style={styles.reproSubtitle}>{view.detail}</Text>
       {view.progress !== null ? (
         <View style={styles.updateProgressRow}>
-          <ActivityIndicator size="small" color={theme.colors.accent} />
+          <ActivityIndicator size="small" color={theme.colors.setup.text} />
           <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
             {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
           </Text>
@@ -132,7 +132,7 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
           accessibilityRole="button"
           accessibilityLabel={view.action}
         >
-          {starting ? <ActivityIndicator size="small" color={theme.colors.accent} /> : null}
+          {starting ? <ActivityIndicator size="small" color={theme.colors.setup.text} /> : null}
           <Text style={styles.reproButtonLabel}>{starting ? 'Starting…' : view.action}</Text>
         </Pressable>
       ) : null}

@@ -105,7 +105,7 @@ export function SecretStoreSection({ client }: { client: VerityClient }) {
     <View style={styles.panel}>
       <View style={styles.sectionHeaderRow}>
         <Text style={styles.disclosureTitle}>Secret store</Text>
-        {mode === 'ready' ? <StatusPill intent="ready" label="Unlocked" /> : null}
+        {mode === 'ready' ? <StatusPill quiet intent="ready" label="Unlocked" /> : null}
       </View>
       <Text style={styles.sectionSubtitle}>
         {mode === 'set'

@@ -114,7 +114,7 @@ function AiBackendsStep({
       }
     >
       {phase.kind === 'loading' ? (
-        <ActivityIndicator size="small" color={theme.colors.accent} />
+        <ActivityIndicator size="small" color={theme.colors.setup.text} />
       ) : null}
 
       {phase.kind === 'error' ? (
@@ -154,14 +154,12 @@ function AiBackendsStep({
 const styles = StyleSheet.create((theme) => ({
   card: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   intro: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.md,
     lineHeight: 22 * theme.fontScale,
   },

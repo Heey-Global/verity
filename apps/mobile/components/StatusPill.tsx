@@ -3,7 +3,15 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 export type StatusPillIntent = 'ready' | 'needsSetup' | 'optional' | 'transient';
 
-export function StatusPill({ label, intent }: { label: string; intent: StatusPillIntent }) {
+export function StatusPill({
+  label,
+  intent,
+  quiet = false,
+}: {
+  label: string;
+  intent: StatusPillIntent;
+  quiet?: boolean;
+}) {
   const { theme } = useUnistyles();
 
   if (intent === 'optional') {
@@ -24,14 +32,17 @@ export function StatusPill({ label, intent }: { label: string; intent: StatusPil
 
   return (
     <View
-      style={[styles.pill, { borderColor: tone, backgroundColor: `${tone}1f` }]}
+      style={[
+        styles.pill,
+        quiet ? styles.quiet : { borderColor: tone, backgroundColor: `${tone}1f` },
+      ]}
       accessible
       accessibilityLabel={label}
       accessibilityLiveRegion={intent === 'transient' ? 'polite' : 'none'}
     >
       {intent === 'transient' ? <ActivityIndicator size="small" color={tone} /> : null}
       {glyph ? <Text style={[styles.glyph, { color: tone }]}>{glyph}</Text> : null}
-      <Text style={styles.label}>{label}</Text>
+      <Text style={[styles.label, quiet ? styles.quietLabel : null]}>{label}</Text>
     </View>
   );
 }
@@ -46,6 +57,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: 3,
     borderRadius: theme.radius.pill,
     borderWidth: 1,
+  },
+  quiet: {
+    minHeight: 24,
+    borderWidth: 0,
+    paddingHorizontal: 0,
+    backgroundColor: 'transparent',
+  },
+  quietLabel: {
+    color: theme.colors.setup.textMuted,
+    fontWeight: '400',
   },
   glyph: {
     fontSize: theme.text.xs,

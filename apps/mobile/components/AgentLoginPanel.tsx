@@ -433,7 +433,9 @@ function ProviderCard({
                 accessibilityRole="button"
                 accessibilityLabel={'Reconnect ' + title}
               >
-                {state.busy ? <ActivityIndicator size="small" color={theme.colors.accent} /> : null}
+                {state.busy ? (
+                  <ActivityIndicator size="small" color={theme.colors.setup.text} />
+                ) : null}
                 <Text style={styles.linkLabel}>Re-login</Text>
               </Pressable>
               <Pressable
@@ -462,7 +464,7 @@ function ProviderCard({
           accessibilityLabel={buttonLabel}
         >
           {isPreparing || isWaitingForCompletion ? (
-            <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+            <ActivityIndicator size="small" color={theme.colors.background} />
           ) : null}
           <Text style={styles.primaryButtonLabel}>{buttonLabel}</Text>
         </Pressable>
@@ -556,7 +558,7 @@ function ProviderCard({
             >
               {state.openedLoginPage ? (
                 <View style={styles.waitingRow}>
-                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <ActivityIndicator size="small" color={theme.colors.setup.text} />
                   <Text style={styles.waitingText}>Waiting for sign-in…</Text>
                 </View>
               ) : null}
@@ -663,30 +665,26 @@ function LoginStep({
 const styles = StyleSheet.create((theme) => ({
   guidance: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.lg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   guidanceTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
     marginBottom: theme.spacing.xs,
   },
   guidanceStep: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     lineHeight: 20 * theme.fontScale,
   },
   card: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   labelRow: {
     flexDirection: 'row',
@@ -701,10 +699,10 @@ const styles = StyleSheet.create((theme) => ({
   label: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   providerCopy: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     lineHeight: 20 * theme.fontScale,
   },
@@ -712,25 +710,25 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 4,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.setup.surfaceAlt,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
   },
   pillReady: {
     borderColor: theme.colors.tone.done,
   },
   pillText: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   pillTextReady: {
     color: theme.colors.tone.done,
   },
   primaryButton: {
-    minHeight: 48,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    minHeight: 44,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -738,35 +736,35 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
   },
   primaryButtonLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.background,
     fontSize: theme.text.md,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   submitButton: {
-    minHeight: 42,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    minHeight: 44,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
   },
   pasteButton: {
-    minHeight: 42,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    minHeight: 44,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
   },
   pasteButtonLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.background,
     fontSize: theme.text.sm,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   secondaryButtonLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.background,
     fontSize: theme.text.sm,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   buttonDisabled: {
     opacity: 0.45,
@@ -780,16 +778,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.xs,
   },
   linkLabel: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     fontWeight: '700',
   },
   codeRow: {
     minHeight: 50,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.setup.surfaceAlt,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -799,15 +797,15 @@ const styles = StyleSheet.create((theme) => ({
   code: {
     color: theme.colors.text,
     fontSize: theme.text.lg,
-    fontWeight: '900',
+    fontWeight: '600',
     letterSpacing: 0,
   },
   input: {
-    minHeight: 48,
+    minHeight: 44,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
     color: theme.colors.text,
     backgroundColor: theme.colors.background,
     fontSize: theme.text.sm,
@@ -817,13 +815,13 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.setup.surfaceAlt,
   },
   loginStepActive: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.setup.surface,
   },
   stepBadge: {
     width: 30,
@@ -831,30 +829,30 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 15,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.setup.surface,
   },
   stepBadgeActive: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.setup.text,
   },
   stepBadgeDone: {
     borderColor: theme.colors.tone.done,
     backgroundColor: theme.colors.tone.done,
   },
-  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '900' },
+  stepBadgeLabel: { color: theme.colors.background, fontSize: theme.text.sm, fontWeight: '600' },
   stepBadgeLabelMuted: { color: theme.colors.textFaint },
   stepBody: { flex: 1, gap: theme.spacing.sm },
-  stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '900' },
+  stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
   stepTitlePending: { color: theme.colors.textFaint },
   stepDescription: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     lineHeight: 18 * theme.fontScale,
   },
   waitingRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  waitingText: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '700' },
+  waitingText: { color: theme.colors.setup.textMuted, fontSize: theme.text.sm, fontWeight: '700' },
   error: {
     color: theme.colors.tone.danger,
     fontSize: theme.text.sm,
@@ -873,10 +871,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   secondaryButton: {
     minWidth: 136,
-    minHeight: 42,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    minHeight: 44,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -884,10 +882,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   dangerButton: {
     minWidth: 136,
-    minHeight: 42,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    minHeight: 44,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
