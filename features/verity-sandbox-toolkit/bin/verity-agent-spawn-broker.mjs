@@ -77,6 +77,7 @@ export const DEFAULT_WORKTREE_ROOT = '/work';
 export const SHARED_SESSION_ROOT = '/srv/verity/sessions';
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_ARGS_BYTES = 2 * 1024 * 1024;
+const SAFE_CORRELATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 /**
  * The `command` values a spawn request may name. Deliberately a closed set held
  * separately from the path map in {@link agentLaunchSpec}: this one bounds what the
@@ -334,6 +335,7 @@ async function validateSpawnRequest(raw, options) {
       raw.args.length > 255 ||
       raw.args.some((arg) => typeof arg !== 'string') ||
       typeof raw.cwd !== 'string' ||
+      (raw.correlationId !== undefined && !SAFE_CORRELATION_ID.test(raw.correlationId)) ||
       !Array.isArray(raw.secrets) ||
       raw.secrets.length === 0 ||
       raw.secrets.length > MAX_TRUSTED_CLI_SECRETS ||
@@ -450,6 +452,7 @@ async function validateSpawnRequest(raw, options) {
       command: raw.command,
       args: raw.args,
       cwd,
+      ...(raw.correlationId === undefined ? {} : { correlationId: raw.correlationId }),
       secrets: raw.secrets,
       ...(approvedEntryScript === undefined ? {} : { entryScript: approvedEntryScript }),
     };
@@ -1290,6 +1293,17 @@ function trustedCliSecretPath(name, options) {
 
 const TRUSTED_CLI_SECRET_LEAK_ERROR = 'trusted CLI secret file could not be removed';
 
+function trustedCliFailureCode(phase, error) {
+  if (phase !== 'materialization') return `${phase.replace('-', '_')}_failed`;
+  const code = error && typeof error === 'object' ? error.code : undefined;
+  if (code === 'EEXIST') return 'materialization_secret_file_exists';
+  if (code === 'EACCES' || code === 'EPERM') return 'materialization_path_permissions';
+  if (code === 'ENOENT') return 'materialization_path_missing';
+  if (code === 'ENOSPC' || code === 'EDQUOT') return 'materialization_storage_full';
+  if (code === 'EROFS') return 'materialization_read_only';
+  return 'materialization_failed';
+}
+
 /**
  * Pick which failure the caller hears about when a run fails and its secret file
  * survived. The leak wins: the run is lost either way, but only this outcome
@@ -1935,6 +1949,7 @@ export async function runAgentSpawnBroker(options = {}) {
     let childRecord;
     let protocolFailed = false;
     let trustedCliFailurePhase;
+    let trustedCliCorrelationId;
     const fail = (error) => {
       if (protocolFailed) return;
       protocolFailed = true;
@@ -1947,6 +1962,10 @@ export async function runAgentSpawnBroker(options = {}) {
               trustedCliFailure: {
                 phase: trustedCliFailurePhase,
                 cause: `${trustedCliFailurePhase} failed`,
+                code: trustedCliFailureCode(trustedCliFailurePhase, error),
+                ...(trustedCliCorrelationId === undefined
+                  ? {}
+                  : { correlationId: trustedCliCorrelationId }),
               },
             }),
       });
@@ -1971,6 +1990,7 @@ export async function runAgentSpawnBroker(options = {}) {
           trustedCliFailurePhase = 'validation';
         }
         const request = await validateSpawnRequest(raw, options);
+        if (request.kind === 'trusted-cli') trustedCliCorrelationId = request.correlationId;
         if (closing || connectionClosed) throw new Error('agent spawn request was detached');
         const connectorUrl =
           request.kind === 'agent'

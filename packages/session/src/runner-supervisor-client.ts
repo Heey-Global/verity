@@ -172,6 +172,8 @@ export interface SupervisorRunnerClientOptions {
 
 export interface TrustedCliExecutionInput {
   turnId: string;
+  /** Gateway call id used to correlate the sanitized failure with its audit record. */
+  correlationId?: string;
   secrets: readonly {
     secretAlias: string;
     env: string;
@@ -367,6 +369,16 @@ export type TrustedCliDispatchStage =
   'runner supervisor connection' | 'runner supervisor response' | 'spawn broker dispatch';
 export type TrustedCliBrokerFailurePhase =
   'validation' | 'materialization' | 'launch-spec' | 'spawn';
+export type TrustedCliBrokerFailureCode =
+  | 'validation_failed'
+  | 'materialization_secret_file_exists'
+  | 'materialization_path_permissions'
+  | 'materialization_path_missing'
+  | 'materialization_storage_full'
+  | 'materialization_read_only'
+  | 'materialization_failed'
+  | 'launch_spec_failed'
+  | 'spawn_failed';
 export type TrustedCliSupervisorRefusal =
   | 'trusted CLI is unavailable for this turn'
   | 'trusted CLI turn capability is no longer active'
@@ -381,6 +393,8 @@ export class TrustedCliDispatchError extends Error {
     readonly brokerFailure?: {
       phase: TrustedCliBrokerFailurePhase;
       cause: string;
+      code?: TrustedCliBrokerFailureCode;
+      correlationId?: string;
     },
     readonly supervisorRefusal?: TrustedCliSupervisorRefusal,
   ) {
@@ -395,7 +409,15 @@ export function trustedCliDispatchMessage(error: TrustedCliDispatchError): strin
       ? 'The command was not started.'
       : 'Whether the command started is unknown; do not retry a mutating command automatically.';
   const detail = error.brokerFailure
-    ? ` Broker phase: ${error.brokerFailure.phase}; cause: ${error.brokerFailure.cause}.`
+    ? ` Broker phase: ${error.brokerFailure.phase}; cause: ${error.brokerFailure.cause}.${
+        error.brokerFailure.code === undefined
+          ? ''
+          : ` Error code: ${error.brokerFailure.code}.${
+              error.brokerFailure.correlationId === undefined
+                ? ''
+                : ` Correlation ID: ${error.brokerFailure.correlationId}.`
+            }`
+      }`
     : error.supervisorRefusal
       ? ` Supervisor refusal: ${error.supervisorRefusal}.`
       : '';
@@ -423,6 +445,7 @@ export async function runSupervisorTrustedCli(
       {
         kind: 'run-trusted-cli',
         turnId: input.turnId,
+        ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
         secrets: input.secrets.map((secret) => ({
           secretAlias: secret.secretAlias,
           env: secret.env,
@@ -456,6 +479,17 @@ export async function runSupervisorTrustedCli(
         'launch-spec',
         'spawn',
       ];
+      const codes: TrustedCliBrokerFailureCode[] = [
+        'validation_failed',
+        'materialization_secret_file_exists',
+        'materialization_path_permissions',
+        'materialization_path_missing',
+        'materialization_storage_full',
+        'materialization_read_only',
+        'materialization_failed',
+        'launch_spec_failed',
+        'spawn_failed',
+      ];
       const brokerFailure =
         isObject(candidate) &&
         phases.includes(candidate.phase as TrustedCliBrokerFailurePhase) &&
@@ -463,6 +497,13 @@ export async function runSupervisorTrustedCli(
           ? {
               phase: candidate.phase as TrustedCliBrokerFailurePhase,
               cause: candidate.cause,
+              ...(codes.includes(candidate.code as TrustedCliBrokerFailureCode)
+                ? { code: candidate.code as TrustedCliBrokerFailureCode }
+                : {}),
+              ...(typeof candidate.correlationId === 'string' &&
+              /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(candidate.correlationId)
+                ? { correlationId: candidate.correlationId }
+                : {}),
             }
           : undefined;
       throw new TrustedCliDispatchError('spawn broker dispatch', false, brokerFailure);

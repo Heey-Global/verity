@@ -93,6 +93,7 @@ describe('MCP gateway trusted CLI integration', () => {
       protocolVersion: 1,
       kind: 'run-trusted-cli',
       turnId: 'turn-1',
+      correlationId: 'call-1',
       secrets: [
         {
           secretAlias: 'KUBECONFIG_PROD',

@@ -279,6 +279,7 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
   if (
     !isObject(request) ||
     !SAFE_ID.test(request.turnId ?? '') ||
+    (request.correlationId !== undefined && !SAFE_ID.test(request.correlationId)) ||
     !Array.isArray(request.secrets) ||
     request.secrets.length === 0 ||
     request.secrets.length > MAX_TRUSTED_CLI_SECRETS ||
@@ -423,6 +424,7 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
         `${JSON.stringify({
           protocolVersion: 1,
           kind: 'spawn-trusted-cli',
+          ...(request.correlationId === undefined ? {} : { correlationId: request.correlationId }),
           command: request.command[0],
           args: request.command.slice(1),
           ...(request.entryScript === undefined ? {} : { entryScript: request.entryScript }),
