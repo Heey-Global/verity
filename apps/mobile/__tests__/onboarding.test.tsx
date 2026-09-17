@@ -376,6 +376,29 @@ describe('onboarding first-run gate', () => {
     warn.mockRestore();
   });
 
+  it('opens server unlock when onboarding metadata looks uninitialized but the store is sealed', async () => {
+    const fetchOnboardingStatus = jest.fn().mockResolvedValue(makeStatus());
+    const getSecretStatus = jest.fn().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(makeClient(fetchOnboardingStatus, getSecretStatus));
+    render(<GateProbe />);
+
+    expect(
+      await screen.findByText('gate:done:/unlock-device?returnTo=%2F&serverSecret=1'),
+    ).toBeOnTheScreen();
+    expect(getSecretStatus).toHaveBeenCalledTimes(1);
+    expect(fetchOnboardingStatus).not.toHaveBeenCalled();
+  });
+
+  it('uses onboarding routing when the direct secret-status probe is unavailable', async () => {
+    const fetchOnboardingStatus = jest.fn().mockResolvedValue(makeStatus());
+    const getSecretStatus = jest.fn().mockRejectedValue(new Error('offline'));
+    mockCreateVerityClient.mockReturnValue(makeClient(fetchOnboardingStatus, getSecretStatus));
+    render(<GateProbe />);
+
+    expect(await screen.findByText('gate:done:/onboarding/welcome')).toBeOnTheScreen();
+    expect(fetchOnboardingStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('lets through with no server configured (client is null)', async () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<GateProbe />);
