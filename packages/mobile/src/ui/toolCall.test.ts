@@ -225,6 +225,16 @@ describe('toolCallView', () => {
     expect(
       trustedCliRetrySafeAfterUnlock(
         tool({
+          name: 'mcp__verity__verity_secret_run',
+          state: 'error',
+          input: {},
+          result: { content: [{ type: 'text', text: safe }], isError: true },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({
           name: 'verity_secret_run',
           state: 'error',
           input: {},
@@ -275,6 +285,23 @@ describe('toolCallView', () => {
       text: 'The secret store must be unlocked.',
     };
     expect(trustedCliUnlockCandidate([failedMessage, explanation])?.id).toBe('failed-secret-run');
+    expect(
+      trustedCliUnlockCandidate([
+        failedMessage,
+        {
+          ...failedMessage,
+          id: 'progress',
+          createdAt: 3,
+          tool: tool({
+            name: 'verity_publish_session_progress',
+            state: 'completed',
+            input: {},
+            result: 'published',
+          }),
+        },
+        explanation,
+      ])?.id,
+    ).toBe('failed-secret-run');
     expect(
       trustedCliUnlockCandidate([
         failedMessage,

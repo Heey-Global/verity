@@ -216,7 +216,7 @@ const NATIVE_TOOL_FAILURE_CAUSE =
 /** Only a materialization failure whose diagnostic confirms no process started is
  * safe for the app to resume automatically after unlocking. */
 export function trustedCliRetrySafeAfterUnlock(tool: ToolCall): boolean {
-  if (tool.name !== 'verity_secret_run' || tool.state !== 'error') return false;
+  if (!isTrustedCliToolName(tool.name) || tool.state !== 'error') return false;
   const preview = retryDiagnosticText(tool.result);
   return (
     preview !== null &&
@@ -225,6 +225,10 @@ export function trustedCliRetrySafeAfterUnlock(tool: ToolCall): boolean {
     preview.includes('The command was not started.') &&
     !preview.includes('Whether the command started is unknown')
   );
+}
+
+function isTrustedCliToolName(name: string): boolean {
+  return name === 'verity_secret_run' || name === 'mcp__verity__verity_secret_run';
 }
 
 /** Read only the text shapes emitted by native tool results. Retry eligibility
@@ -252,13 +256,13 @@ function retryDiagnosticTextBlocks(blocks: readonly unknown[]): string | null {
 }
 
 /** Return the last retry-safe trusted CLI failure from the current turn. A later
- * user message means that turn was already superseded and must not be resumed. */
+ * user message or trusted CLI call supersedes it; reporting tools do not. */
 export function trustedCliUnlockCandidate(messages: readonly Message[]): ToolCallMessage | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message === undefined) continue;
     if (message.kind === 'user-text') return null;
-    if (message.kind === 'tool-call') {
+    if (message.kind === 'tool-call' && isTrustedCliToolName(message.tool.name)) {
       return trustedCliRetrySafeAfterUnlock(message.tool) ? message : null;
     }
   }
