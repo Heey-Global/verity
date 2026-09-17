@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.2](https://github.com/Heey-Global/verity/compare/v0.13.1...v0.13.2) (2026-09-17)
+
+
+### Bug Fixes
+
+* **secrets:** allow trusted CLI secret directory traversal ([#449](https://github.com/Heey-Global/verity/issues/449)) ([4306ecd](https://github.com/Heey-Global/verity/commit/4306ecd41af26eb4484bff242daa1bb732a8bb06))
+* **server:** surface sandbox updates blocked by running turns ([#446](https://github.com/Heey-Global/verity/issues/446)) ([50b74fc](https://github.com/Heey-Global/verity/commit/50b74fcd5cb2d79370ff7bcfcf1221445f694f8c))
+
 ## [0.13.1](https://github.com/Heey-Global/verity/compare/v0.13.0...v0.13.1) (2026-09-17)
 
 
