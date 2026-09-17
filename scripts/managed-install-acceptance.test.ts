@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   assertCompletedTurn,
@@ -195,6 +197,49 @@ describe('managed first-use acceptance evidence', () => {
         );
         expect(submitted).toEqual([]);
       }
+    },
+  );
+});
+
+describe('managed repair fault injection', () => {
+  const smoke = readFileSync('deploy/bin/verity-managed-install-smoke', 'utf8');
+  const removal = smoke.slice(
+    smoke.indexOf('compose_project="$(inside_host cat /etc/verity/compose-project)"'),
+    smoke.indexOf('isolated_docker stop verity-managed-server'),
+  );
+
+  it.each(['single', 'absent', 'ambiguous', 'not-removed'])(
+    'requires a removed Gateway: %s',
+    (scenario) => {
+      // Docker rm can succeed for a nonexistent name, leaving the fault uninjected.
+      const result = spawnSync(
+        'bash',
+        [
+          '-eu',
+          '-c',
+          `
+      inside_host() { printf '%s\\n' acceptance-project; }
+      isolated_docker() {
+        case "$*" in
+          'ps -aq --filter label=com.docker.compose.project=acceptance-project --filter label=com.docker.compose.service=verity-managed-gateway')
+            case "$SCENARIO" in
+              absent) ;;
+              ambiguous) printf 'abc123\\ndef456\\n' ;;
+              *) printf 'abc123\\n' ;;
+            esac ;;
+          'rm -f abc123') ;;
+          'ps -aq --filter id=abc123')
+            if [ "$SCENARIO" = not-removed ]; then printf 'abc123\\n'; fi ;;
+          *) return 99 ;;
+        esac
+      }
+      ${removal}
+    `,
+        ],
+        { encoding: 'utf8', env: { ...process.env, SCENARIO: scenario } },
+      );
+      expect(removal).not.toBe('');
+      expect(result.status, result.stderr).toBe(scenario === 'single' ? 0 : 1);
     },
   );
 });

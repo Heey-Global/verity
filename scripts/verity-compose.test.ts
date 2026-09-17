@@ -846,44 +846,62 @@ describe('deploy/bin/verity-compose', () => {
     expect(invocations).not.toContain('--profile managed up');
   });
 
-  it('reconciles the complete topology when the managed Server is stopped', async () => {
-    tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
-    const bin = join(tempRoot, 'bin');
-    const calls = join(tempRoot, 'calls.txt');
-    const token = join(tempRoot, 'updater-token');
-    mkdirSync(bin);
-    writeFileSync(token, 'a'.repeat(64), { mode: 0o600 });
-    writeFileSync(
-      join(bin, 'docker'),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nif [ "$1" = ps ]; then printf '%s\\n' verity-managed-server; fi\nif [ "$1" = inspect ]; then printf '%s\\n' 'managed-test-1 server false'; fi\ncase "$*" in *' ps --status running -q verity') printf '%s\\n' legacy-container ;; esac\n`,
-      { mode: 0o755 },
-    );
-    writeFileSync(
-      join(bin, 'stat'),
-      `#!/bin/sh\ncase "$2:$3" in\n  %a:'${token}') printf 600 ;;\n  %a:*) printf 755 ;;\n  %u:*) printf 0 ;;\n  *) exec /usr/bin/stat "$@" ;;\nesac\n`,
-      { mode: 0o755 },
-    );
+  it.each([
+    ['verity-managed-server', false],
+    ['verity-managed-server-g7', false],
+    ['verity-managed-server-g7', true],
+  ] as const)(
+    'reconciles the complete topology when %s is stopped (start failure: %s)',
+    async (managedName, failStart) => {
+      tempRoot = mkdtempSync(join(tmpdir(), 'verity-compose-test-'));
+      const bin = join(tempRoot, 'bin');
+      const calls = join(tempRoot, 'calls.txt');
+      const token = join(tempRoot, 'updater-token');
+      mkdirSync(bin);
+      writeFileSync(token, 'a'.repeat(64), { mode: 0o600 });
+      writeFileSync(
+        join(bin, 'docker'),
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nif [ "$1" = ps ]; then printf '%s\\n' ${managedName}; fi\nif [ "$1" = start ] && [ "${failStart}" = true ]; then exit 1; fi\nif [ "$2:$3" = "-f:{{.State.Running}}" ]; then printf false; exit 0; fi\nif [ "$1" = inspect ]; then printf '%s\\n' 'managed-test-1 server false'; fi\ncase "$*" in *' ps --status running -q verity') printf '%s\\n' legacy-container ;; esac\n`,
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        join(bin, 'stat'),
+        `#!/bin/sh\ncase "$2:$3" in\n  %a:'${token}') printf 600 ;;\n  %a:*) printf 755 ;;\n  %u:*) printf 0 ;;\n  *) exec /usr/bin/stat "$@" ;;\nesac\n`,
+        { mode: 0o755 },
+      );
 
-    await execFileAsync('deploy/bin/verity-compose', ['managed-up'], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        VERITY_SERVER_IMAGE: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
-        VERITY_MANAGED_DEPLOYMENT_ID: 'managed-test-1',
-        VERITY_UPDATER_TOKEN_HOST_PATH: token,
-        VERITY_HOST_ARCHITECTURE: 'amd64',
-        VERITY_GVISOR_REQUIRED: '0',
-        VERITY_HOST_CLONE_ROOT: join(tempRoot, 'workspaces'),
-        VERITY_SECRET_MATERIALIZATION_ROOT: join(tempRoot, 'secrets'),
-      },
-    });
-    const invocations = readFileSync(calls, 'utf8');
-    expect(invocations).toContain('inspect -f');
-    expect(invocations).toContain('stop verity');
-    expect(invocations).toContain('--profile managed up -d');
-    expect(invocations).toContain('exec -T verity-managed-gateway node -e');
-  });
+      const result = execFileAsync('deploy/bin/verity-compose', ['managed-up'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          VERITY_SERVER_IMAGE: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
+          VERITY_MANAGED_DEPLOYMENT_ID: 'managed-test-1',
+          VERITY_UPDATER_TOKEN_HOST_PATH: token,
+          VERITY_HOST_ARCHITECTURE: 'amd64',
+          VERITY_GVISOR_REQUIRED: '0',
+          VERITY_HOST_CLONE_ROOT: join(tempRoot, 'workspaces'),
+          VERITY_SECRET_MATERIALIZATION_ROOT: join(tempRoot, 'secrets'),
+        },
+      });
+      if (failStart) await expect(result).rejects.toMatchObject({ code: 70 });
+      else await result;
+      const invocations = readFileSync(calls, 'utf8');
+      expect(invocations).toContain('inspect -f');
+      expect(invocations).toContain('stop verity');
+      expect(invocations).toContain('--profile managed up -d');
+      const start = invocations.indexOf(`start ${managedName}\n`);
+      expect(start).toBeGreaterThan(invocations.indexOf('stop verity\n'));
+      if (failStart) {
+        expect(invocations).not.toContain('exec -T verity-managed-gateway node -e');
+        expect(invocations).toContain(`stop ${managedName}\n`);
+        expect(invocations).toContain('up -d verity\n');
+        expect(invocations).not.toContain('rm -f');
+      } else {
+        expect(start).toBeLessThan(invocations.indexOf('exec -T verity-managed-gateway node -e'));
+      }
+    },
+  );
 
   it('reconciles a generation Server the Updater promoted instead of migrating again', async () => {
     // After a self-update the live Server is `verity-managed-server-g<n>`; the

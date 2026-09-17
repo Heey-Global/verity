@@ -141,7 +141,12 @@ echo '--- managed installation: repair missing gateway and stopped Server'
 # A healthy no-op rerun would not prove that the bundled repair restores topology.
 # Keep private identity snapshots inside the already-authorized disposable host.
 inside_host sh -ec 'umask 077; for name in deployment-id compose-project updater-token postgres-password tls-ca-cert.pem; do cp "/etc/verity/$name" "/opt/verity-managed-install-smoke/$name.before-repair"; done'
-isolated_docker rm -f verity-managed-gateway >/dev/null
+# Compose chooses the container name; identify the service by its persisted project.
+compose_project="$(inside_host cat /etc/verity/compose-project)"
+gateway_id="$(isolated_docker ps -aq --filter "label=com.docker.compose.project=$compose_project" --filter 'label=com.docker.compose.service=verity-managed-gateway')"
+[[ "$gateway_id" =~ ^[a-f0-9]+$ ]] || { echo 'expected exactly one managed Gateway before repair' >&2; exit 1; }
+isolated_docker rm -f "$gateway_id" >/dev/null
+[[ -z "$(isolated_docker ps -aq --filter "id=$gateway_id")" ]] || { echo 'managed Gateway was not removed before repair' >&2; exit 1; }
 isolated_docker stop verity-managed-server >/dev/null
 inside_host sh -c 'umask 077; exec env VERITY_PAIRING_IPS=127.0.0.1 VERITY_API_HOST_PORT=0 /opt/verity-install/deploy/bin/verity-install > /opt/verity-managed-install-smoke/repair.log 2>&1'
 inside_host sh -ec 'for name in deployment-id compose-project updater-token postgres-password tls-ca-cert.pem; do cmp -s "/etc/verity/$name" "/opt/verity-managed-install-smoke/$name.before-repair" || { echo "repair changed persisted $name" >&2; exit 1; }; done'
