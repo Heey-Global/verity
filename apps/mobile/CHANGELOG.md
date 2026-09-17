@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.33.0](https://github.com/Heey-Global/verity/compare/mobile-v1.32.0...mobile-v1.33.0) (2026-09-17)
+
+
+### Features
+
+* **opencode:** discover provider models automatically ([#423](https://github.com/Heey-Global/verity/issues/423)) ([2652974](https://github.com/Heey-Global/verity/commit/2652974c14de601cb907630c471d1491dd6d7d2d))
+
+
+### Bug Fixes
+
+* **mobile:** restore sealed store unlock route ([#419](https://github.com/Heey-Global/verity/issues/419)) ([1ae9954](https://github.com/Heey-Global/verity/commit/1ae99540b48c6e406341dff6c587882bb162ec16))
+* **mobile:** retry trusted CLI after secret unlock ([#424](https://github.com/Heey-Global/verity/issues/424)) ([a848b27](https://github.com/Heey-Global/verity/commit/a848b27eb1ccbb6fdf8efa862dd82eb684d2ae8a))
+* **mobile:** route sealed store directly to unlock ([#421](https://github.com/Heey-Global/verity/issues/421)) ([eb6eec0](https://github.com/Heey-Global/verity/commit/eb6eec0035ff15d177bc3958775228321a362c5f))
+* **mobile:** unify quiet settings and onboarding design ([#431](https://github.com/Heey-Global/verity/issues/431)) ([db6eb5f](https://github.com/Heey-Global/verity/commit/db6eb5ff57e9aed23203d604f1da7f402a092c6c))
+
 ## [1.32.0](https://github.com/Heey-Global/verity/compare/mobile-v1.31.0...mobile-v1.32.0) (2026-09-17)
 
 
