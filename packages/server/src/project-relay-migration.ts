@@ -345,6 +345,29 @@ export type MigrationAction = 'none' | 'migrate' | 'defer' | 'skip-foreign';
 export const ORPHAN_DEFER_TICK_LIMIT = 5;
 
 /**
+ * How many CONSECUTIVE reconcile ticks may defer a sandbox IMAGE update around a
+ * live turn before the wait is worth reporting.
+ *
+ * Deliberately not a limit on the recreate: unlike an orphan, a sandbox that is
+ * merely behind is fully usable, so nothing here ever interrupts a turn (see the
+ * `legacy` branch in {@link decideMigrationAction}, which the image-update path
+ * reuses for exactly that property). What the threshold bounds is the CLAIM the
+ * app makes while waiting — "Verity is rebuilding this sandbox" — which is true
+ * for the minute after a Server update and steadily less true after that.
+ *
+ * Past it the project is reported as blocked instead, which is the first moment
+ * the operator learns that the only thing that will move it is ending the turn.
+ * A project running an agent loop never goes idle on its own, so without this the
+ * wait, and the reassuring label on it, last forever.
+ *
+ * Thirty ticks is thirty minutes at the reconcile cadence. Long enough that no
+ * ordinary turn — including the slow ones, a full test suite or a large rebase —
+ * ever produces the report, short enough that a stuck fleet is visible within the
+ * hour rather than at the next Server update.
+ */
+export const IMAGE_UPDATE_DEFER_TICK_LIMIT = 30;
+
+/**
  * How many CONSECUTIVE failed automatic recreates make a sandbox's self-repair
  * count as stalled rather than merely in progress.
  *

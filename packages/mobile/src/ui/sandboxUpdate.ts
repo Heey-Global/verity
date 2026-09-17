@@ -21,12 +21,24 @@ import type { SandboxUpdate } from '../api.js';
  * image staleness, so it only rebuilds a sandbox as a side effect of a Server
  * restart. On a deployment whose target image moves without one, nothing recreates
  * anything, and the Server reports `stalled` rather than a `converging` that would
- * never converge. Either way, only `stalled` is worth a glyph.
+ * never converge.
+ *
+ * `turnBlocked` is the third way the premise fails, and the only one where Verity
+ * is working exactly as designed: the recreate is ready and refuses to interrupt a
+ * live turn, so a project running an agent loop waits for as long as the loop
+ * runs. Nothing on the Verity side will ever end that wait, which puts it on the
+ * same footing as `stalled` for whether it is worth a glyph — and on a different
+ * one entirely for what it should say, because here there IS something to do.
  */
 export function sandboxUpdateNeedsAttention(
   update: SandboxUpdate | undefined,
-): update is SandboxUpdate & { selfRepair: 'stalled' } {
-  return update?.selfRepair === 'stalled' && update.state !== 'current';
+): update is SandboxUpdate {
+  if (update === undefined || update.state === 'current') return false;
+  // Narrows away `undefined` only. It used to also promise `selfRepair: 'stalled'`,
+  // which callers do read — and which is now one of two reasons to draw attention,
+  // so a caller branching on that narrowing would silently take the `stalled` path
+  // for a blocked update and describe a failure that did not happen.
+  return update.selfRepair === 'stalled' || update.turnBlocked;
 }
 
 /** Whether the missed update carries a security fix — the one distinction that
@@ -44,11 +56,14 @@ export function isSecuritySandboxUpdate(update: SandboxUpdate | undefined): bool
 /**
  * What a project's sandbox update state means for the operator, as words.
  *
- * Three cases, because the honest answer differs by more than wording:
- * - `current`    — nothing to say.
- * - `converging` — behind, and Verity is handling it. Reportable where there is
+ * Four cases, because the honest answer differs by more than wording:
+ * - `current`     — nothing to say.
+ * - `converging`  — behind, and Verity is handling it. Reportable where there is
  *   room for a sentence (the project detail screen), never as an alert.
- * - `stalled`    — behind, and Verity has given up retrying.
+ * - `turnBlocked` — behind, and Verity is waiting for a turn that has been running
+ *   long enough that it may not end on its own. The only case whose sentence names
+ *   an action, because it is the only one the operator can resolve directly.
+ * - `stalled`     — behind, and Verity has given up retrying.
  */
 export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string | null {
   if (update?.selfRepair === 'stalled' && update.state === 'unknown') {
@@ -56,6 +71,13 @@ export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string 
   }
   if (update === undefined || update.state !== 'available') return null;
   const security = isSecuritySandboxUpdate(update);
+  // Ahead of `stalled`: the Server raises both flags for a blocked update, and of
+  // the two sentences only this one says what would actually move it.
+  if (update.turnBlocked) {
+    return security
+      ? 'Security update waiting for a turn to finish — cancel it to update now'
+      : 'Update waiting for a turn to finish — cancel it to update now';
+  }
   return update.selfRepair === 'stalled'
     ? security
       ? 'Security update stuck — the sandbox is still on the old image'
@@ -71,24 +93,36 @@ export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string 
 export interface SandboxUpdateIndicator {
   label: string;
   /** Feather icon name. */
-  icon: 'shield' | 'alert-triangle';
+  icon: 'shield' | 'alert-triangle' | 'clock';
   tone: 'danger' | 'attention';
 }
 
 /**
  * What, if anything, the project overview should draw next to a project.
  *
- * `undefined` for everything except a stalled update — including a pending one,
- * which is the whole point (see the module doc). Deliberately NOT a download
- * glyph: nothing here is an offer to update, it is a report that an update did
- * not happen. The security case gets a shield in `danger` rather than the same
- * triangle in a louder color, so the two are distinguishable at glyph size.
+ * `undefined` for everything except an update that has stopped moving on its own —
+ * never for a merely pending one, which is the whole point (see the module doc).
+ * Deliberately NOT a download glyph: nothing here is an offer to update, it is a
+ * report that an update did not happen. The security case gets a shield in
+ * `danger` rather than the same triangle in a louder color, so the two are
+ * distinguishable at glyph size.
+ *
+ * A turn-blocked update draws a clock rather than the triangle: the sandbox is
+ * healthy and the update is queued behind work the operator owns, so a fault glyph
+ * would send them looking for a fault. The security variant keeps the shield —
+ * what is urgent about it does not become less urgent because a turn is why.
  */
 export function sandboxUpdateIndicator(
   update: SandboxUpdate | undefined,
 ): SandboxUpdateIndicator | undefined {
   if (!sandboxUpdateNeedsAttention(update)) return undefined;
-  return isSecuritySandboxUpdate(update)
+  const security = isSecuritySandboxUpdate(update);
+  if (update?.turnBlocked === true) {
+    return security
+      ? { label: 'Security update waiting for a turn', icon: 'shield', tone: 'danger' }
+      : { label: 'Update waiting for a turn', icon: 'clock', tone: 'attention' };
+  }
+  return security
     ? { label: 'Security update stuck', icon: 'shield', tone: 'danger' }
     : { label: 'Sandbox update stuck', icon: 'alert-triangle', tone: 'attention' };
 }

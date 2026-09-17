@@ -766,9 +766,14 @@ function EnvironmentSection({
     if (!updateSummary || working !== undefined) return;
     Alert.alert(
       'Update project?',
-      isSecuritySandboxUpdate(update)
-        ? 'This recreates the project environment and applies the pending security update.'
-        : 'This recreates the project environment and applies the pending update.',
+      // The warning comes first for a blocked update because recreating is what
+      // ends the turn — the Server refuses while one is running, so this is the
+      // difference between a confirmed action and a 409 the operator cannot read.
+      update?.turnBlocked === true
+        ? 'A turn is running in this project. Recreating the environment now would end it — cancel the turn first, then update.'
+        : isSecuritySandboxUpdate(update)
+          ? 'This recreates the project environment and applies the pending security update.'
+          : 'This recreates the project environment and applies the pending update.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Update', onPress: () => recreate(false, 'Could not update project') },

@@ -348,6 +348,13 @@ const sandboxUpdateSchema = z.object({
   // send the field, and reading that as "converging" is exactly right (it is a
   // Server that still reconciles, it just cannot report the verdict).
   selfRepair: z.enum(['converging', 'stalled']).default('converging'),
+  // Whether the update is waiting on a turn rather than on Verity. The reconciler
+  // never interrupts a live turn to swap a usable sandbox's image, so a project
+  // that never goes idle waits forever — and the server sets this once that wait
+  // is long enough to be worth naming, alongside the `stalled` above.
+  // Defaulted for the same reason as `selfRepair`: a Server one release behind
+  // this app does not send it, and `false` is exactly what that Server means.
+  turnBlocked: z.boolean().default(false),
 });
 export type SandboxUpdate = z.infer<typeof sandboxUpdateSchema>;
 

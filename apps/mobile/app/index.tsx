@@ -413,10 +413,16 @@ function SessionList({ client }: { client: VerityClient }) {
     (project: ProjectRecord) => {
       const update = project.sandboxUpdate;
       if (!sandboxUpdateNeedsAttention(update)) return;
-      Alert.alert('Retry sandbox update?', sandboxUpdateMessage(project, update), [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Update', onPress: () => void updateProjectSandbox(project) },
-      ]);
+      Alert.alert(
+        // "Retry" is a claim about history and only one of these two has any:
+        // a blocked update has never been attempted, it has been held back.
+        update.turnBlocked ? 'Update waiting for a turn' : 'Retry sandbox update?',
+        sandboxUpdateMessage(project, update),
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Update', onPress: () => void updateProjectSandbox(project) },
+        ],
+      );
     },
     [updateProjectSandbox],
   );
@@ -1538,10 +1544,21 @@ async function confirmDeleteSession(
 
 function sandboxUpdateMessage(project: ProjectRecord, update: SandboxUpdate): string {
   const security = isSecuritySandboxUpdate(update);
+  const image = `it is still running the old image${security ? ', which is missing a security fix' : ''}`;
+  // A blocked update is not a failure and must not be described as one: Verity is
+  // holding the recreate off on purpose because recreating the container kills the
+  // turn inside it. Saying so is also what makes the outcome predictable — the
+  // Server refuses this request while the turn runs, so an operator told "retry"
+  // would just collect a 409 without learning why.
+  if (update.turnBlocked) {
+    return (
+      `${project.owner}/${project.repo} has a turn in flight, so Verity is not replacing its ` +
+      `sandbox — ${image}. Cancel the turn first; recreating the container now would end it.`
+    );
+  }
   return (
     `Verity could not update ${project.owner}/${project.repo}'s sandbox on its own — ` +
-    `it is still running the old image${security ? ', which is missing a security fix' : ''}. ` +
-    'This will recreate its container and retry.'
+    `${image}. This will recreate its container and retry.`
   );
 }
 

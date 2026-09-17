@@ -65,6 +65,7 @@ import {
   CONTAINER_GENERATION_LABEL,
   ENV_DRIFT_RECREATE_LIMIT,
   ENV_DRIFT_RECREATES_PER_TICK,
+  IMAGE_UPDATE_DEFER_TICK_LIMIT,
   ORPHAN_DEFER_TICK_LIMIT,
   PROJECT_ID_LABEL,
   SANDBOX_ENV_COHORTS,
@@ -7918,6 +7919,74 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(deferred).toHaveBeenCalledTimes(ORPHAN_DEFER_TICK_LIMIT + 2);
     expect(recreate).not.toHaveBeenCalled();
     expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
+    // Waiting is not yet worth reporting: the orphan window is far shorter than
+    // the image-update one, so a wait this long is still an ordinary turn.
+    expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+  });
+
+  it('reports a sandbox update the turn has held off for too long, without ever recreating it', async () => {
+    // The silent failure this guards: the recreate defers forever by design, so a
+    // project whose agent never goes idle — an agent loop, a wedged turn — keeps
+    // reporting `converging`, i.e. "Verity is rebuilding this sandbox", for as long
+    // as that lasts. Nothing else retracts that claim and nothing else ever tells
+    // the operator that ending the turn is the only thing that would move it.
+    const p = await seedActive('blocked-image-update', 'dev-blocked-image-update');
+    const { client } = dockerInspecting({ 'dev-blocked-image-update': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    provisioner.attachProjectBusyProbe(async () => true);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+
+    for (let tick = 0; tick < IMAGE_UPDATE_DEFER_TICK_LIMIT - 1; tick++) {
+      await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
+    }
+    expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+
+    await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
+    expect([...provisioner.turnBlockedSandboxes()]).toEqual([p.id]);
+    // The whole point of the report is that the repair still has not run: the flag
+    // must never be the observable half of a recreate that killed a turn.
+    expect(recreate).not.toHaveBeenCalled();
+    // And it stays out of the set that means "nothing is going to fix this" — the
+    // remedy differs, which is the only reason the two are separate.
+    expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
+  });
+
+  it('retracts the blocked report on the tick the turn ends', async () => {
+    const p = await seedActive('unblocked-update', 'dev-unblocked-update');
+    const { client } = dockerInspecting({ 'dev-unblocked-update': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    let busy = true;
+    provisioner.attachProjectBusyProbe(async () => busy);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+
+    for (let tick = 0; tick < IMAGE_UPDATE_DEFER_TICK_LIMIT; tick++) {
+      await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
+    }
+    expect([...provisioner.turnBlockedSandboxes()]).toEqual([p.id]);
+
+    busy = false;
+    await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
+    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+    expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+  });
+
+  it('does not spend the blocked-report window on a busy state it could not confirm', async () => {
+    // `busy` is the fail-safe answer for a probe that threw, and a probe that
+    // cannot answer is not evidence of a turn. Reporting one anyway sends the
+    // operator hunting for a session to cancel that may not exist — which is worse
+    // than the silence this whole change exists to end.
+    const p = await seedActive('unconfirmed-busy', 'dev-unconfirmed-busy');
+    const { client } = dockerInspecting({ 'dev-unconfirmed-busy': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    provisioner.attachProjectBusyProbe(() => Promise.reject(new Error('probe unreachable')));
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+
+    for (let tick = 0; tick < IMAGE_UPDATE_DEFER_TICK_LIMIT + 2; tick++) {
+      await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
+    }
+
+    expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+    expect(recreate).not.toHaveBeenCalled();
   });
 
   it('probes relay health for the generation the sandbox is actually stamped with', async () => {

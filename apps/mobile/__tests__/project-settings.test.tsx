@@ -710,6 +710,7 @@ describe('ProjectDetailScreen — project settings', () => {
           targetVersion: '2.9.2',
           targetRevision: null,
           selfRepair: 'converging',
+          turnBlocked: false,
         },
       },
     };

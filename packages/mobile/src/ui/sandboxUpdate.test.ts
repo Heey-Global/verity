@@ -21,6 +21,7 @@ function update(overrides: Partial<SandboxUpdate> = {}): SandboxUpdate {
     targetVersion: null,
     targetRevision: null,
     selfRepair: 'converging',
+    turnBlocked: false,
     ...overrides,
   };
 }
@@ -43,8 +44,24 @@ describe('sandboxUpdateNeedsAttention', () => {
     );
   });
 
+  it('reports an update a live turn has been holding off', () => {
+    // The silent failure this guards: a project running an agent loop defers the
+    // recreate on every reconcile tick, forever and by design. Read through
+    // `selfRepair` alone this is indistinguishable from the fleet-wide minute
+    // after a Server update — so the operator is shown "Verity is rebuilding
+    // this sandbox" about a rebuild that will not start until they cancel the
+    // turn, and the one case where there IS something to do is the one case that
+    // draws nothing.
+    expect(
+      sandboxUpdateNeedsAttention(update({ turnBlocked: true, selfRepair: 'converging' })),
+    ).toBe(true);
+  });
+
   it('says nothing about an up-to-date or missing status', () => {
     expect(sandboxUpdateNeedsAttention(update({ state: 'current', selfRepair: 'stalled' }))).toBe(
+      false,
+    );
+    expect(sandboxUpdateNeedsAttention(update({ state: 'current', turnBlocked: true }))).toBe(
       false,
     );
     expect(sandboxUpdateNeedsAttention(undefined)).toBe(false);
@@ -95,6 +112,22 @@ describe('sandboxUpdateSummary', () => {
       'Security update stuck',
     );
   });
+
+  it('tells the operator what to do about a turn-blocked update instead of calling it stuck', () => {
+    // The Server raises `selfRepair: 'stalled'` alongside `turnBlocked` — the
+    // enum has no member of its own, so the existing glyph keeps working on
+    // installed apps. Falling through to the `stalled` wording would therefore
+    // describe a rebuild that has failed, which is the opposite of what happened:
+    // nothing failed, and the operator holds the only thing that would move it.
+    const blocked = sandboxUpdateSummary(update({ turnBlocked: true, selfRepair: 'stalled' }));
+    expect(blocked).toBe('Update waiting for a turn to finish — cancel it to update now');
+    expect(blocked).not.toContain('stuck');
+    expect(
+      sandboxUpdateSummary(
+        update({ turnBlocked: true, selfRepair: 'stalled', category: 'security' }),
+      ),
+    ).toBe('Security update waiting for a turn to finish — cancel it to update now');
+  });
 });
 
 describe('sandboxUpdateIndicator', () => {
@@ -123,5 +156,26 @@ describe('sandboxUpdateIndicator', () => {
         tone: 'danger',
       },
     );
+  });
+
+  it('draws a waiting glyph, not a fault glyph, while a turn holds the update off', () => {
+    // A triangle here sends the operator looking for a broken sandbox. Nothing is
+    // broken: the recreate is ready and is declining to end a turn it has no
+    // business ending.
+    expect(sandboxUpdateIndicator(update({ turnBlocked: true, selfRepair: 'stalled' }))).toEqual({
+      label: 'Update waiting for a turn',
+      icon: 'clock',
+      tone: 'attention',
+    });
+  });
+
+  it('keeps the shield on a security update a turn is holding off', () => {
+    // The reason for the wait does not make the missing fix less urgent, so this
+    // one deliberately does NOT soften to the clock.
+    expect(
+      sandboxUpdateIndicator(
+        update({ turnBlocked: true, selfRepair: 'stalled', category: 'security' }),
+      ),
+    ).toEqual({ label: 'Security update waiting for a turn', icon: 'shield', tone: 'danger' });
   });
 });

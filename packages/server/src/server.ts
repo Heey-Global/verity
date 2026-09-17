@@ -297,7 +297,17 @@ const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
   targetVersion: null,
   targetRevision: null,
   selfRepair: 'converging',
+  turnBlocked: false,
 };
+
+/** What the reconciler knows about a sandbox update that the image checker cannot:
+ *  whether the automatic repair has given up, and whether it is being held off by
+ *  a turn. Passed as one value so a call site cannot read one and forget the
+ *  other — they are overlaid onto the same status by the same function. */
+interface SandboxRepairVerdicts {
+  unrepaired: ReadonlySet<string>;
+  turnBlocked: ReadonlySet<string>;
+}
 // How often to reconcile relay migration (Stage 5). Cheap when idle — it only
 // inspects active sandboxes and recreates the pre-relay ones once — so a short
 // cadence keeps a freshly relay-enabled deployment from lingering on legacy
@@ -318,7 +328,8 @@ const BRANCH_TTL_MS = 10_000;
  *  sandboxes (tests, non-relay setups) — allocating one per session summary on a
  *  2 s poll would be pure garbage. */
 const NO_DISCONNECTED_SANDBOXES: ReadonlySet<string> = new Set<string>();
-/** Same, for the self-repair verdict on the overview poll. */
+/** Same, for both reconciler verdicts on the overview poll — a provisioner that
+ *  reports neither shares this one empty set for both. */
 const NO_UNREPAIRED_SANDBOXES: ReadonlySet<string> = new Set<string>();
 
 // The server's own release version. semantic-release does NOT write the version
@@ -5273,14 +5284,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const withSelfRepair = (
     project: ProjectRecord,
     status: SandboxUpdateStatus,
-    unrepaired: ReadonlySet<string>,
-  ): SandboxUpdateStatus =>
-    unrepaired.has(project.id) &&
-    (status.state === 'available' || (project.state === 'failed' && status.state === 'unknown'))
-      ? { ...status, selfRepair: 'stalled' }
-      : status;
-  const unrepairedSandboxes = (): ReadonlySet<string> =>
-    deps.provisioner?.unrepairedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES;
+    verdicts: SandboxRepairVerdicts,
+  ): SandboxUpdateStatus => {
+    // Reported together, because they answer the same question — is this gap
+    // closing on its own? — from the two sides the reconciler can be on. A
+    // turn-blocked sandbox also reads `stalled` so that a client which knows
+    // nothing of `turnBlocked` still surfaces it rather than showing the
+    // reassuring spinner forever; one that does know reads the flag and names the
+    // remedy. `available` only: a blocked update the checker cannot even see is
+    // not something to report a turn about.
+    const blocked = status.state === 'available' && verdicts.turnBlocked.has(project.id);
+    if (
+      verdicts.unrepaired.has(project.id) &&
+      (status.state === 'available' || (project.state === 'failed' && status.state === 'unknown'))
+    )
+      return { ...status, selfRepair: 'stalled', turnBlocked: blocked };
+    return blocked ? { ...status, selfRepair: 'stalled', turnBlocked: true } : status;
+  };
+  const sandboxRepairVerdicts = (): SandboxRepairVerdicts => ({
+    unrepaired: deps.provisioner?.unrepairedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
+    turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
+  });
 
   const publicProjects = async (projects: ProjectRecord[]): Promise<PublicProjectRecord[]> => {
     const toolkit = await serverToolkitIdentity();
@@ -5293,7 +5317,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (await deps.sandboxUpdates?.statusAll(
         resolved.map(({ project }) => project).filter((project) => !isControlPlaneProject(project)),
       )) ?? new Map<string, SandboxUpdateStatus>();
-    const unrepaired = unrepairedSandboxes();
+    const verdicts = sandboxRepairVerdicts();
     return resolved.map(({ project, release }) =>
       publicProject(
         project,
@@ -5303,7 +5327,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           : withSelfRepair(
               project,
               sandboxUpdates.get(project.id) ?? UNKNOWN_SANDBOX_UPDATE,
-              unrepaired,
+              verdicts,
             ),
         projectToolkitDrift(project, toolkit),
       ),
@@ -5388,7 +5412,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const sandboxUpdate = withSelfRepair(
         resolved.project,
         (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-        unrepairedSandboxes(),
+        sandboxRepairVerdicts(),
       );
       return {
         project: publicProject(
@@ -5411,7 +5435,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const sandboxUpdate = withSelfRepair(
         resolved.project,
         (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-        unrepairedSandboxes(),
+        sandboxRepairVerdicts(),
       );
       return publicProject(
         resolved.project,
