@@ -620,7 +620,7 @@ export interface VeritySettingsRecord {
   opencodeBaseUrl?: string | null;
   /** OpenCode provider credential, encrypted at rest. */
   opencodeApiKey?: string | null;
-  /** Newline-separated OpenCode model ids, without a deployment-env fallback. */
+  /** Server-discovered OpenCode model ids, cached as newline-separated values. */
   opencodeModels?: string | null;
   /** Google connection for Drive imports and Slides editing (ADRs 0009/0016).
    *  Client id + account email are non-secret;

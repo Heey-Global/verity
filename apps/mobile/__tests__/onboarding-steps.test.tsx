@@ -1243,7 +1243,11 @@ describe('onboarding agent logins step', () => {
   });
 
   it('accepts a configured OpenCode provider as the first agent connection', async () => {
-    const updateVeritySettings = jest.fn().mockResolvedValue({});
+    const updateVeritySettings = jest.fn().mockResolvedValue({
+      opencodeBaseUrl: 'https://api.example.com/v1',
+      opencodeApiKeyConfigured: true,
+      opencodeModels: 'provider/model-a\nprovider/model-b',
+    });
     mockCreateVerityClient.mockReturnValue(
       fakeClient({
         fetchOnboardingStatus: jest.fn().mockResolvedValue(status()),
@@ -1265,17 +1269,13 @@ describe('onboarding agent logins step', () => {
       'https://api.example.com/v1',
     );
     fireEvent.changeText(screen.getByLabelText('OpenCode API key'), 'provider-secret');
-    fireEvent.changeText(
-      screen.getByLabelText('OpenCode models'),
-      'provider/model-a\nprovider/model-b',
-    );
+    expect(screen.queryByLabelText('OpenCode models')).toBeNull();
     fireEvent.press(screen.getByLabelText('Save OpenCode'));
 
     await waitFor(() =>
       expect(updateVeritySettings).toHaveBeenCalledWith({
         opencodeBaseUrl: 'https://api.example.com/v1',
         opencodeApiKey: 'provider-secret',
-        opencodeModels: 'provider/model-a\nprovider/model-b',
       }),
     );
     expect(await screen.findByLabelText('Open Verity')).toBeEnabled();

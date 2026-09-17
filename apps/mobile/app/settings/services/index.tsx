@@ -43,12 +43,7 @@ import { useSettingsFields } from '../../../lib/useSettingsFields';
 
 // Module-level: these arrays' identity drives the field hooks, and they are the
 // complete list of keys a save from this screen may contain.
-const TEXT_FIELDS = [
-  'transcribeBaseUrl',
-  'transcribeModel',
-  'opencodeBaseUrl',
-  'opencodeModels',
-] as const;
+const TEXT_FIELDS = ['transcribeBaseUrl', 'transcribeModel', 'opencodeBaseUrl'] as const;
 const SECRET_FIELDS = [
   'uplinkSubscriptionKey',
   'transcribeApiKey',
@@ -108,7 +103,7 @@ function ServicesSettingsView({
   const opencodeReady =
     (settings?.opencodeApiKeyConfigured ?? false) &&
     text.values.opencodeBaseUrl.trim() !== '' &&
-    text.values.opencodeModels.trim() !== '';
+    (settings?.opencodeModels ?? '').trim() !== '';
 
   return (
     <SettingsScaffold
@@ -180,7 +175,7 @@ function ServicesSettingsView({
               />
             </View>
             <Text style={styles.reproSubtitle}>
-              Models run through one OpenAI-compatible API. Enter one model id per line.
+              Verity automatically loads all models offered by your OpenAI-compatible API.
             </Text>
             <SettingsField
               label="API base URL"
@@ -200,15 +195,6 @@ function ServicesSettingsView({
               editable={writable}
               onBlur={secrets.commit}
               masked
-            />
-            <SettingsField
-              label="Models"
-              value={text.values.opencodeModels}
-              onChangeText={(value) => text.set('opencodeModels', value)}
-              onBlur={text.commit}
-              placeholder={'gpt-4.1\nqwen3-coder'}
-              accessibilityLabel="OpenCode models"
-              multiline
             />
             {!writable ? (
               <Text style={styles.reproHint}>Unlock credentials to configure OpenCode.</Text>

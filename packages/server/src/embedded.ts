@@ -3820,7 +3820,7 @@ export async function buildEmbeddedServer(
     // catalogue always has a non-empty list beside it, and this gate cannot drop one.
     ...{
       // Synchronous behind an async contract: the Codex catalogue is a cache the
-      // refresh timer fills, and the OpenCode half is the operator's pinned list,
+      // refresh timer fills, and the OpenCode half is the provider's discovered catalog,
       // so neither half has anything to await since the transport migration. The
       // signature stays a promise because it is the seam a live catalogue would
       // reappear in.

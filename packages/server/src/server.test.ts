@@ -4559,6 +4559,16 @@ describe('agent login routes', () => {
 });
 
 describe('GET/PATCH /settings', () => {
+  it('does not accept a manually supplied OpenCode model catalog', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { opencodeModels: 'manually-added-model' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect((await ctx.store.getVeritySettingsRaw())?.opencodeModels ?? null).toBeNull();
+  });
+
   it('clears the OpenCode credential when its provider URL changes', async () => {
     await ctx.store.updateVeritySettings({
       opencodeBaseUrl: 'https://first-provider.example/v1',

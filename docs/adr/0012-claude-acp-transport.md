@@ -361,3 +361,21 @@ bearer is minted for its turns, and the runner worker's own gates name their two
 members rather than asking whether the transport is ACP. That is the posture the
 native path had, so nothing is lost by carrying it across; admitting OpenCode later
 is a one-line change in each of those places plus the review that justifies it.
+
+
+## Amendment 5 (2026-09-17) — discover OpenCode models from the provider
+
+OpenCode setup now takes an API base URL and API key only. Verity requests the
+provider's authenticated `GET /models` catalog directly, without starting an
+agent, and exposes every returned model ID. This supersedes Amendment 4's pinned
+picker catalog. The internal `opencodeModels` setting is a server-owned cache,
+not an editable model allowlist; both sandbox configuration and session model
+validation consume that same cache.
+
+Discovery runs when provider settings are saved, at startup or secret unlock,
+and every 24 hours. Credential changes and refreshes are serialized so an
+old provider response cannot replace the new provider's catalog. Failed setup
+leaves the previous settings intact; a later refresh failure keeps the last
+successful catalog. A successful empty catalog clears the available models.
+Requests use the existing HTTPS egress policy, refuse redirects, and bound both
+response size and request duration.
