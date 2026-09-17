@@ -2,7 +2,9 @@
 // This seeds turn metadata to exercise the installed broker, not provider grants.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 const installedSupervisorPath = '/usr/local/bin/verity-runner-supervisor';
@@ -26,12 +28,24 @@ assert.equal(
   'explicit disposable Runner opt-in is required',
 );
 assert.equal(process.getuid(), 0, 'acceptance observer must run as root');
-const runtimeDir = '/run/verity-runner';
-const secretRoot = join(runtimeDir, 'secrets');
+const runtimeDir = await mkdtemp('/tmp/verity-broker-acceptance-');
+const secretRoot = '/run/verity-runner/secrets';
 const turnId = `acceptance-${randomUUID()}`;
 const turnDir = join(runtimeDir, 'turns', turnId);
-const cwd = await mkdtemp('/work/broker-acceptance-');
-await chmod(cwd, 0o777);
+// The Runner drops CAP_DAC_OVERRIDE: root cannot write the agent's /work.
+// Prepare and remove only our workspace using its actual owner identity.
+const workIdentity = await lstat('/work');
+assert.notEqual(workIdentity.uid, 0, 'acceptance requires an agent-owned workspace');
+const execAsAgent = promisify(execFile);
+const agentOptions = { uid: workIdentity.uid, gid: workIdentity.gid };
+const { stdout: workspace } = await execAsAgent(
+  '/usr/bin/mktemp',
+  ['-d', '/work/broker-acceptance-XXXXXX'],
+  agentOptions,
+);
+const cwd = workspace.trim();
+assert.match(cwd, /^\/work\/broker-acceptance-[A-Za-z0-9]+$/u);
+await execAsAgent('/bin/chmod', ['0777', cwd], agentOptions);
 await mkdir(turnDir, { recursive: true });
 await writeFile(
   join(turnDir, 'request.json'),
@@ -103,10 +117,9 @@ try {
     await delay(20);
   }
   for (const id of ids) {
-    assert.equal(
-      await readFile(join(secretRoot, id, 'ACCEPTANCE_FILE'), 'utf8'),
-      `synthetic-${id}-Grüße\nsecond line`,
-    );
+    // Each child compared env/file contents before publishing readiness; the
+    // observer must not rely on root bypassing its agent-owned 0600 file.
+    assert.equal((await lstat(join(secretRoot, id, 'ACCEPTANCE_FILE'))).mode & 0o777, 0o600);
   }
   await writeFile(release, 'release');
   for (const result of await Promise.all(pending)) assertSuccess(result);
@@ -130,6 +143,6 @@ try {
   await Promise.allSettled(pending);
   // Assertions above precede this fixture-owned cleanup; it cannot hide a leak.
   for (const id of knownIds) await rm(join(secretRoot, id), { recursive: true, force: true });
-  await rm(turnDir, { recursive: true, force: true });
-  await rm(cwd, { recursive: true, force: true });
+  await rm(runtimeDir, { recursive: true, force: true });
+  await execAsAgent('/bin/rm', ['-rf', '--', cwd], agentOptions);
 }
