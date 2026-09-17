@@ -1,6 +1,15 @@
 {
-  "branch": "staging-mobile-v1.33.3",
-  "commit": "bb1651df966ca9e747f36fecde0c601eee157073",
-  "tag": "mobile-v1.33.3",
-  "version": "1.33.3"
+  "schema": 1,
+  "version": "1.33.5",
+  "runtime": "1.33.0",
+  "channel": "testflight",
+  "commit": "66c97bed3c980c38647dd4493c703041c9460fb6",
+  "tag": "mobile-v1.33.5",
+  "branch": "staging-mobile-v1.33.5-66c97bed3c980c38647dd4493c703041c9460fb6",
+  "baseline": "mobile-v1.33.3",
+  "group": "70f4d36a-2928-4bf1-b4a0-ef0ac6d14f8e",
+  "notes": [
+    "smooth project collapse and reordering (#455)",
+    "add reliable model selection (#453)"
+  ]
 }
