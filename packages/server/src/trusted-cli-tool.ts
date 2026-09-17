@@ -40,6 +40,7 @@ export function createTrustedCliTool(options: {
     call: BrokeredToolCall,
     execute: (input: {
       turnId: string;
+      correlationId: string;
       secrets: readonly {
         secretAlias: string;
         env: string;
@@ -117,6 +118,7 @@ export function createTrustedCliTool(options: {
       }
       return await execute({
         turnId,
+        correlationId: call.id,
         secrets,
         command: request.command,
         ...(request.entryScript === undefined ? {} : { entryScript: request.entryScript }),

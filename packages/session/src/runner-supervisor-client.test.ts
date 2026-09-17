@@ -1617,6 +1617,22 @@ describe('runSupervisorTrustedCli result validation', () => {
       const runtime = join(dir, `trusted-cli-${phase}-failure`);
       const socket = join(runtime, 'supervisor.sock');
       const secret = 'dp.st.must-not-escape';
+      const diagnostic =
+        phase === 'materialization'
+          ? {
+              code: 'materialization_secret_file_exists' as const,
+              correlationId: 'call-safe-1',
+            }
+          : phase === 'validation'
+            ? { code: secret, correlationId: '/run/secrets/file' }
+            : {};
+      const expectedDiagnostic =
+        phase === 'materialization'
+          ? {
+              code: 'materialization_secret_file_exists' as const,
+              correlationId: 'call-safe-1',
+            }
+          : {};
       await mkdir(runtime, { recursive: true });
       const server = createServer((connection) => {
         connection.once('data', () =>
@@ -1624,7 +1640,7 @@ describe('runSupervisorTrustedCli result validation', () => {
             `${JSON.stringify({
               ok: false,
               error: `trusted CLI broker rejected execution: unsafe ${secret} /run/secrets/file`,
-              trustedCliFailure: { phase, cause: `${phase} failed` },
+              trustedCliFailure: { phase, cause: `${phase} failed`, ...diagnostic },
             })}\n`,
           ),
         );
@@ -1640,10 +1656,14 @@ describe('runSupervisorTrustedCli result validation', () => {
           name: 'TrustedCliDispatchError',
           stage: 'spawn broker dispatch',
           executionStarted: false,
-          brokerFailure: { phase, cause: `${phase} failed` },
+          brokerFailure: { phase, cause: `${phase} failed`, ...expectedDiagnostic },
         });
         expect(trustedCliDispatchMessage(failure as TrustedCliDispatchError)).toBe(
-          `Trusted CLI dispatch failed during spawn broker dispatch. Broker phase: ${phase}; cause: ${phase} failed. The command was not started. No secret value was exposed.`,
+          `Trusted CLI dispatch failed during spawn broker dispatch. Broker phase: ${phase}; cause: ${phase} failed.${
+            phase === 'materialization'
+              ? ' Error code: materialization_secret_file_exists. Correlation ID: call-safe-1.'
+              : ''
+          } The command was not started. No secret value was exposed.`,
         );
         expect(JSON.stringify(failure)).not.toContain(secret);
         expect(trustedCliDispatchMessage(failure as TrustedCliDispatchError)).not.toContain(

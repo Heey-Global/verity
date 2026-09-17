@@ -2518,6 +2518,7 @@ describe('verity-runner supervisor runtime', () => {
         protocolVersion: 1,
         kind: 'run-trusted-cli',
         turnId,
+        correlationId: 'call-materialization-1',
         secrets: [
           {
             secretAlias: 'ASC_API_KEY_P8',
@@ -2536,7 +2537,12 @@ describe('verity-runner supervisor runtime', () => {
       });
       expect(partial).toMatchObject({ ok: false, error: expect.stringContaining('EEXIST') });
       expect(partial).toMatchObject({
-        trustedCliFailure: { phase: 'materialization', cause: 'materialization failed' },
+        trustedCliFailure: {
+          phase: 'materialization',
+          cause: 'materialization failed',
+          code: 'materialization_secret_file_exists',
+          correlationId: 'call-materialization-1',
+        },
       });
       // Containment worked here, so the caller hears the materialization error
       // itself — the leak wording is reserved for the case that needs a rotation.
