@@ -1,7 +1,7 @@
 name: verity-mobile-ota
 
 # Publishes a patch-versioned EAS Update to an isolated staging branch on every
-# eligible merge to main, then opens a promotion PR. Merging that PR moves the
+# eligible merge to main, then updates one rolling promotion PR per runtime. Merging that PR moves the
 # TestFlight channel to the exact staged branch; this workflow never exposes an
 # unapproved bundle to installed TestFlight builds.
 #
@@ -9,10 +9,11 @@ name: verity-mobile-ota
 # release PR and GitHub-hosted TestFlight build instead. The explicit X.Y.0
 # runtime guarantees that patches only reach their native release line.
 #
-# Each successful publish gets the next patch in the current native line:
+# Each delivered promotion gets the next patch in the current native line:
 # `mobile-v1.4.0` is the TestFlight build, followed by OTA releases
 # `mobile-v1.4.1`, `mobile-v1.4.2`, and so on. The version is stamped into the
-# exported bundle, so the app always displays the exact release it is running.
+# exported bundle. Pending candidates share the planned patch version; their
+# source-specific branches and immutable records distinguish their exact bytes.
 #
 # Requires an EXPO_TOKEN repository secret (an Expo access token from
 # expo.dev -> account settings -> access tokens). The guard step below fails loudly
@@ -27,6 +28,8 @@ on:
       - 'packages/events/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'scripts/mobile-ota-release.ts'
+      - 'scripts/mobile-native-compatibility.mjs'
 
 permissions: read-all
 
@@ -34,6 +37,7 @@ concurrency:
   # Never cancel an in-flight publish: a cancelled `eas update` can leave a
   # half-rolled-out update. Serialize back-to-back merges instead of racing them.
   group: mobile-ota-staging
+  queue: max
   cancel-in-progress: false
 
 jobs:
@@ -136,196 +140,20 @@ jobs:
             exit 0
           fi
 
-          # The explicit runtime separates release lines; this cumulative guard
-          # protects compatibility within a line. Once native-sensitive files
-          # differ from the published .0 tag, no later merge may ship an OTA until
-          # the next native release captures that new native surface.
-          #
-          # The ROOT manifest/lockfile are deliberately NOT in this path list. In a
-          # workspaces monorepo they also carry pure tooling edits (a new lint
-          # script, a server-only dependency) that an installed binary absorbs
-          # fine — treating every such edit as native silently blocked EVERY OTA
-          # from mobile-v1.3.6 onward (a `lint:changed` script did it). What
-          # actually matters in the lockfile is a version move inside the app's own
-          # dependency closure; the helper reports exactly those.
-          if ! native_path_changes="$(git diff --name-only "$native_tag"..HEAD -- \
-              apps/mobile/package.json apps/mobile/app.config.ts apps/mobile/eas.json \
-              apps/mobile/ios apps/mobile/android apps/mobile/native \
-              apps/mobile/plugins apps/mobile/patches)"; then
-            echo "::error::Could not compare native-sensitive mobile paths with $native_tag." >&2
+          if ! native_changes="$(node scripts/mobile-native-compatibility.mjs "$native_tag" HEAD)"; then
+            echo "::error::Could not verify mobile native compatibility." >&2
             exit 1
           fi
-          if ! native_lock_changes="$(node scripts/mobile-native-lock-changes.mjs "$native_tag" HEAD)"; then
-            echo "::error::Could not compare the mobile dependency closure with $native_tag." >&2
-            exit 1
-          fi
-          native_changes="$(printf '%s\n%s\n' "$native_path_changes" "$native_lock_changes" | sed '/^$/d')"
           if [[ -n "$native_changes" ]]; then
             echo "blocked=true" >> "$GITHUB_OUTPUT"
-            echo "OTA skipped: native-sensitive changes exist after $native_tag:"
-            echo "$native_changes"
+            echo "OTA waits for a native release: $native_changes" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          echo "runtime=$native_version" >> "$GITHUB_OUTPUT"
 
-          current_tag="$(git tag --list "mobile-v${major}.${minor}.*" --sort=-version:refname | head -n 1)"
-          current_version="${current_tag#mobile-v}"
-          IFS=. read -r _ _ patch <<< "$current_version"
-          next_version="${major}.${minor}.$((patch + 1))"
-          next_tag="mobile-v${next_version}"
-
-          if git ls-remote --exit-code --tags origin "refs/tags/${next_tag}" >/dev/null 2>&1; then
-            echo "::error::OTA tag $next_tag already exists; refusing to publish an ambiguous version." >&2
-            exit 1
-          fi
-
-          echo "version=$next_version" >> "$GITHUB_OUTPUT"
-          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
-          echo "branch=staging-${next_tag}" >> "$GITHUB_OUTPUT"
-          echo "Allocating OTA release $next_tag from native line $native_tag"
-
-      # Stamp the exact release into a JS-only source file before Metro
-      # exports the bundle. GITHUB_SHA remains available internally for diagnosis.
-      - name: Stamp running release version
-        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
-        env:
-          MOBILE_RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: node scripts/stamp-mobile-build-info.mjs
-
-      - name: Publish isolated OTA staging update
-        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
-        working-directory: apps/mobile
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          # eas-cli is pinned here (not in package.json) so the OTA toolchain is
-          # reproducible without adding it to the app's dependency tree.
-          #
-          # The explicit X.Y.0 runtime comes from app.config.ts, so this update can
-          # only reach the corresponding native TestFlight release line.
-          npx eas-cli@21.0.1 update \
-            --branch "${{ steps.version.outputs.branch }}" \
-            --platform ios \
-            --message "v${{ steps.version.outputs.version }} · main@${GITHUB_SHA::7}" \
-            --non-interactive
-
-      - name: Point the staging channel at the candidate
-        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
-        working-directory: apps/mobile
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! npx eas-cli@21.0.1 channel:view staging --json --non-interactive >/dev/null 2>&1; then
-            npx eas-cli@21.0.1 channel:create staging --non-interactive
-          fi
-          npx eas-cli@21.0.1 channel:edit staging \
-            --branch "${{ steps.version.outputs.branch }}" --non-interactive
-
-      - name: Create immutable OTA promotion PR
+      - name: Stage immutable candidate and update rolling promotion PR
         if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OTA_BRANCH: ${{ steps.version.outputs.branch }}
-          OTA_TAG: ${{ steps.version.outputs.tag }}
-          OTA_VERSION: ${{ steps.version.outputs.version }}
-          CANDIDATE_SHA: ${{ github.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          promotion_branch="automation/promote-${OTA_TAG}"
-          title="chore(mobile): promote OTA $OTA_VERSION"
-          body="Promotes the tested **$OTA_TAG** candidate from EAS branch **$OTA_BRANCH** to the TestFlight channel. Merging does not rebuild the bundle."
-          open_pr="$(gh pr list --head "$promotion_branch" --state open --json number --jq '.[0].number // empty')"
-          if [[ -n "$open_pr" ]]; then
-            git fetch origin "$promotion_branch"
-            git show FETCH_HEAD:apps/mobile/ota-promotion.json > "$RUNNER_TEMP/existing-ota-promotion.json"
-            node -e '
-              const existing = require(process.env.RUNNER_TEMP + "/existing-ota-promotion.json");
-              const expected = {
-                branch: process.env.OTA_BRANCH,
-                commit: process.env.CANDIDATE_SHA,
-                tag: process.env.OTA_TAG,
-                version: process.env.OTA_VERSION,
-              };
-              if (JSON.stringify(existing) !== JSON.stringify(expected))
-                throw new Error("open promotion PR belongs to a different candidate");
-            '
-          else
-            candidate_contents="$(node -e '
-              const candidate = {
-                branch: process.env.OTA_BRANCH,
-                commit: process.env.CANDIDATE_SHA,
-                tag: process.env.OTA_TAG,
-                version: process.env.OTA_VERSION,
-              };
-              process.stdout.write(Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`).toString("base64"));
-            ')"
-            if [[ ! "$promotion_branch" =~ ^automation/promote-mobile-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::Refusing to manage unexpected promotion branch: $promotion_branch" >&2
-              exit 1
-            fi
-            # The REST ref endpoint rejects workflow-token branch creation with
-            # "Reference does not exist" in repositories governed by these
-            # rules. Checkout's authenticated Git transport is permitted, and
-            # force-updating this workflow-owned branch makes retries idempotent.
-            git push --force origin "$GITHUB_SHA:refs/heads/${promotion_branch}"
-
-            # GitHub's Git and GraphQL backends can briefly disagree just after
-            # the push, so retry only that propagation failure.
-            commit_result=''
-            for attempt in {1..6}; do
-              if commit_result="$(gh api graphql \
-              -f query='mutation($repository: String!, $branch: String!, $expectedHeadOid: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) {
-                createCommitOnBranch(input: {
-                  branch: { repositoryNameWithOwner: $repository, branchName: $branch },
-                  expectedHeadOid: $expectedHeadOid,
-                  message: { headline: $message },
-                  fileChanges: { additions: [{ path: $path, contents: $contents }] }
-                }) { commit { oid signature { isValid } } }
-              }' \
-              -f repository="$GITHUB_REPOSITORY" \
-              -f branch="$promotion_branch" \
-              -f expectedHeadOid="$GITHUB_SHA" \
-              -f message="chore(mobile): promote OTA $OTA_VERSION" \
-              -f path='apps/mobile/ota-promotion.json' \
-              -f contents="$candidate_contents" 2>"$RUNNER_TEMP/create-promotion-commit.err")"; then
-                break
-              fi
-              commit_error="$(<"$RUNNER_TEMP/create-promotion-commit.err")"
-              if [[ "$commit_error" != *'Reference does not exist'* || "$attempt" == 6 ]]; then
-                echo "$commit_error" >&2
-                exit 1
-              fi
-              sleep "$attempt"
-            done
-            if [[ "$(jq -r '.data.createCommitOnBranch.commit.signature.isValid' <<<"$commit_result")" != true ]]; then
-              echo '::error::GitHub did not create a verified promotion commit.' >&2
-              exit 1
-            fi
-            created_pr_url="$(gh pr create --base main --head "$promotion_branch" --title "$title" --body "$body")"
-            open_pr="${created_pr_url##*/}"
-          fi
-          # GITHUB_TOKEN-created commits intentionally emit no new push/PR event.
-          # Dispatch CI explicitly so the approval PR always has a current verdict.
-          if [[ ! "$open_pr" =~ ^[1-9][0-9]*$ ]]; then
-            echo '::error::The OTA promotion PR does not exist after creation.' >&2
-            exit 1
-          fi
-          gh workflow run ci.yml --ref "$promotion_branch" \
-            -f release-train=mobile-ota -f release-pr="$open_pr"
-
-      # Reserve only after the approval PR and its CI run exist. This is the last
-      # action in the serialized staging workflow, so a reserved version can no
-      # longer be orphaned by a later step failure.
-      - name: Reserve immutable OTA version
-        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
-        env:
-          OTA_TAG: ${{ steps.version.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git tag "$OTA_TAG" "$GITHUB_SHA"
-          git push origin "refs/tags/${OTA_TAG}"
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: node scripts/mobile-ota-release.ts stage "${{ steps.version.outputs.runtime }}"

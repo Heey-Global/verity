@@ -68,6 +68,7 @@ interface ReleaseWorkflow {
       permissions?: Record<string, string>;
       steps: WorkflowStep[];
     };
+    'prepare-server-channels': ReleaseWorkflow['jobs']['publish-server-channels'];
     'publish-server-channels': {
       strategy?: { matrix?: { include?: Array<Record<string, string>> } };
       env?: Record<string, string>;
@@ -230,10 +231,12 @@ describe('multi-architecture runtime image publication', () => {
     const sandbox = workflow.jobs['publish-sandbox'].steps.find(
       (step) => step.name === 'Publish multi-architecture sandbox indexes',
     );
-    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}-amd64');
-    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}-arm64');
-    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}-amd64');
-    expect(sandbox?.run).toContain('${REGISTRY}/${IMAGE_NAME_NEW}:sha-${short_sha}-arm64');
+    expect(sandbox?.run).toContain(
+      'for image in "${REGISTRY}/${IMAGE_NAME}" "${REGISTRY}/${IMAGE_NAME_NEW}"',
+    );
+    expect(sandbox?.run).toContain('publish-release-index.mjs');
+    expect(sandbox?.run).toContain('${image}:sha-${short_sha}-amd64');
+    expect(sandbox?.run).toContain('${image}:sha-${short_sha}-arm64');
 
     const relay = workflow.jobs['publish-project-relay'].steps.find(
       (step) => step.name === 'Publish multi-architecture relay index',
@@ -493,13 +496,13 @@ describe('website release recovery', () => {
     expect(step?.run).toContain('website-ref is required with website-version');
   });
 
-  it('requires an existing published release bound to the requested source', () => {
+  it('requires an existing release bound to the requested source', () => {
     const step = workflow.jobs['release-please'].steps.find(
       (candidate) => candidate.id === 'website-recovery',
     );
     expect(step?.run).toContain('gh release view "$tag" --json isDraft');
-    expect(step?.run).toContain('[[ "$is_draft" != \'false\' ]]');
-    expect(step?.run).toContain('git/ref/tags/${tag}');
+    expect(step?.run).toContain('targetCommitish');
+    expect(step?.run).toContain('commits/${tag}');
     expect(step?.run).toContain('if [[ "$source_sha" != "$release_sha" ]]');
   });
 
@@ -527,7 +530,6 @@ describe('website release recovery', () => {
     const website = workflow.jobs['publish-website'];
     expect(website.permissions?.contents).toBe('write');
     const publish = website.steps.find((step) => step.name === 'Publish verified website release');
-    expect(publish?.if).toContain("inputs['website-version'] == ''");
     expect(publish?.run).toContain('--json isDraft');
     expect(publish?.run).toContain('--draft=false');
     const promoteIndex = website.steps.findIndex((step) => step.name === 'Promote tested digest');
@@ -539,15 +541,16 @@ describe('website release recovery', () => {
 describe('signed GitHub release evidence', () => {
   const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
   const server = workflow.jobs['publish-server'];
-  const channels = workflow.jobs['publish-server-channels'];
+  const channels = workflow.jobs['prepare-server-channels'];
+  const promotion = workflow.jobs['publish-server-channels'];
   const evidence = workflow.jobs['publish-server-release-evidence'];
 
   it('passes the verified channel payload to a narrow release writer', () => {
     const upload = channels.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
     expect(upload?.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/);
-    expect(upload?.with?.path).toContain('.${{ matrix.architecture }}.*');
+    expect(upload?.with?.path).toContain('server-release-evidence-${{ matrix.architecture }}/*');
 
-    expect(evidence.needs).toEqual(['release-please', 'publish-server-channels']);
+    expect(evidence.needs).toEqual(['release-please', 'prepare-server-channels']);
     expect(evidence.permissions).toEqual({ actions: 'read', contents: 'write' });
     expect(evidence.env?.GH_REPO).toBe('${{ github.repository }}');
     const download = evidence.steps.find((step) =>
@@ -578,7 +581,7 @@ describe('signed GitHub release evidence', () => {
       'push-to-registry': true,
     });
     const channel = channels.steps.find(
-      (step) => step.name === 'Publish signed architecture release channel',
+      (step) => step.name === 'Prepare signed architecture release channel',
     );
     expect(channel?.run).toContain('cosign verify-attestation');
     expect(channel?.run).toContain('predicate_type=https://slsa.dev/provenance/v1');
@@ -595,17 +598,30 @@ describe('signed GitHub release evidence', () => {
     expect(channels.env?.SERVER_DIGEST).toBe('${{ needs.publish-server.outputs.digest }}');
     expect(server.outputs?.digest).toBe('${{ steps.build.outputs.digest }}');
     const publish = channels.steps.find(
-      (step) => step.name === 'Publish signed architecture release channel',
+      (step) => step.name === 'Prepare signed architecture release channel',
     );
     expect(publish?.run).toContain('imagetools inspect --raw');
     expect(publish?.run).toContain('.platform.architecture == $architecture');
     expect(publish?.run).toContain('--platform "linux/${ARCHITECTURE}"');
     expect(publish?.run).toContain('VERITY_RELEASE_ARCHITECTURE="$ARCHITECTURE"');
-    expect(publish?.run).toContain('channel-stable-${ARCHITECTURE}');
+    expect(promotion.steps.map((step) => step.run ?? '').join('\n')).toContain(
+      'channel-stable-${architecture}',
+    );
     expect(publish?.run).toContain('.${ARCHITECTURE}.release-channel.json');
-    expect(publish?.run).toContain('cd "$workdir"');
-    expect(publish?.run).toContain('channel.json:application/json');
-    expect(publish?.run).not.toContain('"$workdir/channel.json":application/json');
+    const promoteRun = promotion.steps.map((step) => step.run ?? '').join('\n');
+    expect(promoteRun).toContain('channel.json:application/json');
+    expect(promoteRun).not.toContain('"$workdir/channel.json":application/json');
+  });
+
+  it('does not advance the stable channel before all release evidence is ready', () => {
+    // A green image build alone must not expose a release whose sibling images
+    // or published evidence are still missing.
+    expect(promotion.needs).toContain('publish-server-release-evidence');
+    expect(promotion.needs).toContain('publish-preview-images');
+    expect(workflow.jobs['finalize-backend-release'].needs).toContain('publish-server-channels');
+    expect(channels.steps.map((step) => step.run ?? '').join('\n')).not.toContain(
+      'channel-stable-',
+    );
   });
 
   it('keeps the release mutable until its evidence and artifacts are complete', () => {

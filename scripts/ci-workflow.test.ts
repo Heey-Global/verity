@@ -5,7 +5,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
 import { on, once } from 'node:events';
-import { access, chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -63,7 +63,7 @@ describe('workflow token least privilege', () => {
         prune: { actions: 'write', contents: 'read' },
       },
       'mobile-ota-promote.yml': {
-        promote: { contents: 'write' },
+        promote: { contents: 'write', 'pull-requests': 'read', checks: 'read' },
       },
       'mobile-ota.yml': {
         update: { actions: 'write', contents: 'write', 'pull-requests': 'write' },
@@ -155,87 +155,21 @@ describe('release-please train isolation', () => {
     }
   });
 
-  it('removes only a next-release PR created before its draft tag is published', async () => {
+  it('never plans a next PR in the invocation that creates a release', () => {
     const steps = workflowReleaseJob().steps ?? [];
-    const cleanup = steps.find((step) => step.name === 'Remove premature next release PRs');
-    const dispatch = steps.find((step) => step.name === 'Run checks for release PRs');
-    expect(cleanup?.if).toMatch(/release_created'?\]?(?: |\.)*== 'true'/u);
-    expect(cleanup?.if).toContain("prs_created == 'true'");
-    expect(cleanup?.run).toContain('release-please--branches--main--components--${component}');
-    expect(cleanup?.run).toContain('.parents[0].sha');
-    expect(cleanup?.run).toContain('parent" != "$release_sha');
-    expect(cleanup?.run).toContain('gh pr close "$pr_number" --delete-branch');
-    expect(cleanup?.run).toContain('>> "$removed_file"');
-    expect(cleanup?.run).toContain('>> "$GITHUB_OUTPUT"');
-    expect(dispatch?.if).not.toContain("release_created != 'true'");
-    expect(dispatch?.env?.REMOVED_RELEASE_BRANCHES).toBe(
-      '${{ steps.remove-premature-prs.outputs.branches }}',
-    );
-    expect(dispatch?.run).toContain('grep -Fxq "$branch" <<< "$REMOVED_RELEASE_BRANCHES"');
-    expect(dispatch?.run).toContain('Could not resolve the release PR for $branch');
-
-    const dir = await mkdtemp(join(tmpdir(), 'premature-release-pr-'));
-    try {
-      const branch = 'release-please--branches--main--components--server';
-      const releaseSha = 'a'.repeat(40);
-      const headSha = 'b'.repeat(40);
-      const run = (identity = 'app/github-actions', parent = releaseSha, closeFails = false) => {
-        const output = join(dir, 'github-output');
-        const closed = join(dir, 'closed');
-        writeFileSync(output, '');
-        writeFileSync(closed, '');
-        execFileSync('bash', ['-c', cleanup?.run ?? 'exit 1'], {
-          env: {
-            ...process.env,
-            PATH: `${dir}:${process.env.PATH ?? ''}`,
-            GITHUB_OUTPUT: output,
-            GITHUB_REPOSITORY: 'heey-global/verity',
-            RUNNER_TEMP: dir,
-            BACKEND_RELEASED: 'true',
-            BACKEND_SHA: releaseSha,
-            BACKEND_PRS: JSON.stringify([{ headBranchName: branch }]),
-            MOBILE_RELEASED: 'false',
-            MOBILE_PRS: '[]',
-            WEBSITE_RELEASED: 'false',
-            WEBSITE_PRS: '[]',
-            MOCK_IDENTITY: identity,
-            MOCK_HEAD: headSha,
-            MOCK_PARENT: parent,
-            MOCK_CLOSED: closed,
-            MOCK_CLOSE_FAIL: String(closeFails),
-          },
-          stdio: 'pipe',
-        });
-        return { output: readFileSync(output, 'utf8'), closed: readFileSync(closed, 'utf8') };
-      };
-      await writeFile(
-        join(dir, 'gh'),
-        `#!/usr/bin/env bash
-if [[ "$1 $2" == "pr list" ]]; then
-  printf '{"number":211,"author":{"login":"%s"},"baseRefName":"main","headRefOid":"%s"}\n' "$MOCK_IDENTITY" "$MOCK_HEAD"
-elif [[ "$1" == api ]]; then
-  printf '%s\n' "$MOCK_PARENT"
-elif [[ "$1 $2" == "pr close" ]]; then
-  [[ "$MOCK_CLOSE_FAIL" != true ]] || exit 1
-  printf '%s\n' "$3" >> "$MOCK_CLOSED"
-fi
-`,
-        { mode: 0o755 },
+    const lifecycle = steps.find((step) => step.id === 'lifecycle');
+    expect(lifecycle?.run).toContain('scripts/release-lifecycle.mjs');
+    for (const train of trains) {
+      const action = steps.find((step) => step.id === `release-${train}`);
+      expect(action?.with?.['skip-github-release']).toBe(
+        "${{ steps.lifecycle.outputs.mode != 'release' }}",
       );
-
-      expect(run()).toEqual({ output: `branches<<EOF\n${branch}\nEOF\n`, closed: '211\n' });
-      expect(run('someone-else')).toEqual({ output: 'branches<<EOF\nEOF\n', closed: '' });
-      expect(run('app/github-actions', 'c'.repeat(40))).toEqual({
-        output: 'branches<<EOF\nEOF\n',
-        closed: '',
-      });
-      expect(run('app/github-actions', releaseSha, true)).toEqual({
-        output: 'branches<<EOF\nEOF\n',
-        closed: '',
-      });
-    } finally {
-      await rm(dir, { recursive: true, force: true });
+      expect(action?.with?.['skip-github-pull-request']).toBe(
+        "${{ steps.lifecycle.outputs.mode != 'plan' }}",
+      );
+      expect(action?.if).toContain("steps.lifecycle.outputs.mode != 'skip'");
     }
+    expect(steps.some((step) => step.name === 'Remove premature next release PRs')).toBe(false);
   });
 
   it('binds publication to the trains in the immutable push diff', async () => {
@@ -250,16 +184,7 @@ fi
     expect(select?.run).toContain('git diff --no-renames --name-status "$BEFORE" "$HEAD_SHA"');
     expect(select?.run).not.toContain('gh api');
     expect(select?.run).toContain('git tag --merged "$HEAD_SHA"');
-    expect(select?.run).toContain('scripts/mobile-native-lock-changes.mjs');
-    const nativePaths = (source: string): string[] => {
-      const block = /native_path_changes=.*?-- \\\n([\s\S]*?)\)"; then/.exec(source)?.[1];
-      expect(block, 'could not read the native-path contract').toBeDefined();
-      return (block ?? '').replaceAll('\\', '').trim().split(/\s+/);
-    };
-    expect(nativePaths(select?.run ?? '')).toEqual(
-      nativePaths(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')),
-    );
-
+    expect(select?.run).toContain('scripts/mobile-native-compatibility.mjs');
     const dir = await mkdtemp(join(tmpdir(), 'release-trains-'));
     try {
       await writeFile(
@@ -281,8 +206,8 @@ fi
       await writeFile(
         join(dir, 'node'),
         '#!/usr/bin/env bash\n' +
-          '[[ "$RELEASE_NATIVE_LOCK_FAIL" != true ]] || exit 1\n' +
-          'printf "%s\\n" "$RELEASE_NATIVE_LOCK"\n',
+          '[[ "$RELEASE_NATIVE_LOCK_FAIL" != true && "$RELEASE_NATIVE_DIFF_FAIL" != true ]] || exit 1\n' +
+          'printf "%s\\n%s\\n" "$RELEASE_NATIVE_LOCK" "$RELEASE_NATIVE_PATHS"\n',
         { mode: 0o755 },
       );
       const run = (
@@ -302,6 +227,7 @@ fi
           env: {
             ...process.env,
             PATH: `${dir}:${process.env.PATH ?? ''}`,
+            TRAIN: 'mobile',
             BEFORE: 'before-sha',
             HEAD_SHA: 'event-sha',
             GITHUB_OUTPUT: output,
@@ -369,11 +295,7 @@ fi
         mobile: 'true',
         website: 'true',
       });
-      expect(run(['M\tapps/mobile/app/index.tsx'], { nativeTag: '' })).toEqual({
-        backend: 'true',
-        mobile: 'true',
-        website: 'true',
-      });
+      expect(() => run(['M\tapps/mobile/app/index.tsx'], { nativeTag: '' })).toThrow();
       expect(run(rows('backend'))).toEqual({
         backend: 'true',
         mobile: 'false',
@@ -827,18 +749,10 @@ describe('native iOS compile gate', () => {
       jobs: Record<string, { steps: WorkflowStep[] }>;
     };
     const paths = ignore().add(workflow.on.pull_request.paths);
-    const otaSource = readFileSync('.github/workflows/mobile-ota.yml', 'utf8');
-    const nativePathBlock = /native_path_changes=.*?-- \\\n([\s\S]*?)\)"; then/.exec(
-      otaSource,
-    )?.[1];
-    expect(nativePathBlock, 'could not read the OTA native-path contract').toBeDefined();
-    const otaNativePaths = (nativePathBlock ?? '').replaceAll('\\', '').trim().split(/\s+/);
-    for (const source of otaNativePaths) {
-      expect(
-        workflow.on.pull_request.paths.includes(source) ||
-          workflow.on.pull_request.paths.includes(`${source}/**`),
-        `native verification does not cover OTA-sensitive path ${source}`,
-      ).toBe(true);
+    for (const file of ['release.yml', 'mobile-ota.yml', 'mobile-native-verify.yml']) {
+      expect(readFileSync(`.github/workflows/${file}`, 'utf8')).toContain(
+        'scripts/mobile-native-compatibility.mjs',
+      );
     }
     for (const source of [
       '.github/workflows/mobile-native-verify.yml',
@@ -866,8 +780,7 @@ describe('native iOS compile gate', () => {
     const detector = workflow.jobs.changes.steps.find((step) => step.id === 'native')?.run ?? '';
     // Editing the gate must exercise its cheap classifier without recursively
     // allocating the macOS runner that the edit is trying to avoid.
-    expect(detector).toContain('.github/workflows/mobile-native-verify\\.yml');
-    expect(detector).toContain('scripts/mobile-native-lock-changes\\.mjs');
+    expect(detector).toContain('scripts/mobile-native-compatibility.mjs');
     expect(detector).toContain("echo 'required=false'");
   });
 
@@ -972,139 +885,29 @@ describe('native iOS compile gate', () => {
 });
 
 describe('mobile OTA promotion', () => {
-  it('stages an immutable candidate and opens a promotion PR', () => {
-    const source = readFileSync('.github/workflows/mobile-ota.yml', 'utf8');
-    expect(source).toContain('--branch "${{ steps.version.outputs.branch }}"');
-    expect(source).toContain('channel:edit staging');
-    const create = source.match(/channel:create staging[^\n]*/)?.[0];
-    expect(create).toBeDefined();
-    // EAS channel:create only creates the named channel; branch assignment is a
-    // separate channel:edit operation, so passing --branch aborts the OTA job.
-    expect(create).not.toContain('--branch');
-    expect(source).toContain('automation/promote-${OTA_TAG}');
-    expect(source).toContain('--state open');
-    expect(source).toContain(
-      'git push --force origin "$GITHUB_SHA:refs/heads/${promotion_branch}"',
-    );
-    expect(source).not.toContain('git/ref/heads/${promotion_branch}');
-    expect(source).toContain('^automation/promote-mobile-v');
-    expect(source).toContain('createCommitOnBranch');
-    expect(source).toContain('signature.isValid');
-    expect(source).toContain('for attempt in {1..6}');
-    expect(source).toContain("*'Reference does not exist'*");
-    expect(source).toContain('sleep "$attempt"');
-    expect(source).not.toContain('git commit -m "chore(mobile): promote OTA');
-    expect(source).toContain('gh workflow run ci.yml --ref "$promotion_branch"');
-    expect(source).toContain('-f release-train=mobile-ota -f release-pr="$open_pr"');
-    expect(source).toContain('git push origin "refs/tags/${OTA_TAG}"');
-    expect(source).not.toContain('--channel testflight');
-    expect(source).not.toContain('gh release create');
-  });
-
-  it('recovers only from GitHub reference propagation failures', async () => {
-    const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
+  it('uses the tested rolling-candidate program for staging and promotion', () => {
+    const stage = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
       jobs: { update: WorkflowJob };
     };
-    const script = workflow.jobs.update.steps.find(
-      (step) => step.name === 'Create immutable OTA promotion PR',
-    )?.run;
-    expect(script).toBeDefined();
-    const dir = await mkdtemp(join(tmpdir(), 'ota-promotion-'));
-    const gh = join(dir, 'gh');
-    await writeFile(
-      gh,
-      `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\\n' "$*" >> "$GH_CALLS"
-if [[ "$*" == 'pr list '* ]]; then exit 0; fi
-if [[ "$*" == 'pr create '* ]]; then echo 'https://github.com/example/verity/pull/138'; exit 0; fi
-if [[ "$*" == 'api graphql '* ]]; then
-  count="$(grep -c '^api graphql ' "$GH_CALLS" || true)"
-  if [[ "$GH_MODE" == transient-graphql && "$count" == 1 ]]; then
-    echo 'gh: Reference does not exist (HTTP 422)' >&2
-    exit 1
-  fi
-  if [[ "$GH_MODE" == permanent ]]; then
-    echo 'gh: permission denied (HTTP 403)' >&2
-    exit 1
-  fi
-  echo '{"data":{"createCommitOnBranch":{"commit":{"signature":{"isValid":true}}}}}'
-fi
-`,
-      { mode: 0o755 },
+    const promotion = parse(readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8')) as {
+      concurrency: { group: string; 'cancel-in-progress': boolean };
+      jobs: { promote: WorkflowJob };
+    };
+    const stageCommands = stage.jobs.update.steps.map((step) => step.run ?? '').join('\n');
+    const promoteCommands = promotion.jobs.promote.steps.map((step) => step.run ?? '').join('\n');
+    expect(stageCommands).toContain('scripts/mobile-ota-release.ts stage');
+    expect(stageCommands).toContain('scripts/mobile-native-compatibility.mjs');
+    expect(promoteCommands).toContain('scripts/mobile-ota-release.ts promote');
+    expect(promotion.concurrency).toMatchObject({
+      group: 'release-mobile',
+      'cancel-in-progress': false,
+    });
+    expect(stageCommands).not.toContain('channel:edit testflight');
+    expect(promoteCommands).not.toContain('eas-cli@21.0.1 update');
+    const steps = promotion.jobs.promote.steps;
+    expect(steps.findIndex((step) => step.run === 'npm ci')).toBeLessThan(
+      steps.findIndex((step) => step.run?.includes('scripts/mobile-ota-release.ts promote')),
     );
-    const git = join(dir, 'git');
-    await writeFile(git, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$GIT_CALLS"\n');
-    await chmod(git, 0o755);
-    const sleep = join(dir, 'sleep');
-    await writeFile(sleep, '#!/usr/bin/env bash\nexit 0\n');
-    await chmod(sleep, 0o755);
-    const run = (mode: string) =>
-      spawnSync('bash', ['-c', script as string], {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PATH: `${dir}:${process.env.PATH ?? ''}`,
-          GH_CALLS: join(dir, `${mode}.calls`),
-          GH_MODE: mode,
-          GIT_CALLS: join(dir, `${mode}.git-calls`),
-          GITHUB_REPOSITORY: 'example/verity',
-          GITHUB_SHA: '0123456789abcdef',
-          OTA_BRANCH: 'staging-mobile-v1.18.1',
-          OTA_TAG: 'mobile-v1.18.1',
-          OTA_VERSION: '1.18.1',
-          RUNNER_TEMP: dir,
-        },
-      });
-
-    try {
-      const transient = run('transient-graphql');
-      expect(transient.status, transient.stderr).toBe(0);
-      expect(readFileSync(join(dir, 'transient-graphql.calls'), 'utf8')).toContain('pr create');
-      expect(readFileSync(join(dir, 'transient-graphql.git-calls'), 'utf8')).toContain(
-        'push --force origin 0123456789abcdef:refs/heads/automation/promote-mobile-v1.18.1',
-      );
-
-      const permanent = run('permanent');
-      expect(permanent.status).not.toBe(0);
-      expect(permanent.stderr).toContain('permission denied');
-      expect(
-        readFileSync(join(dir, 'permanent.calls'), 'utf8').match(/^api graphql /gm),
-      ).toHaveLength(1);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('moves TestFlight to the approved EAS branch without rebuilding', () => {
-    const source = readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8');
-    const workflow = parse(source) as { jobs: { promote: WorkflowJob } };
-    const steps = workflow.jobs.promote.steps;
-    const install = steps.findIndex((step) => step.run === 'npm ci');
-    const promote = steps.findIndex((step) => step.run?.includes('channel:edit testflight'));
-    expect(source).toContain("github.ref == 'refs/heads/main'");
-    expect(source).toContain('paths: [apps/mobile/ota-promotion.json]');
-    expect(source).toContain('channel:edit testflight');
-    expect(source).toContain('--branch "${{ steps.candidate.outputs.branch }}"');
-    expect(source).toContain('git merge-base --is-ancestor');
-    expect(source).toContain('for _ in {1..12}');
-    expect(source).toContain('git fetch --quiet --tags origin');
-    expect(source).toContain('Reserved tag does not point at the approved candidate');
-    expect(source).toContain('refusing to move TestFlight backwards');
-    expect(source).toContain('gh release create');
-    expect(source).toContain('gh release edit');
-    // The tag and its commit were already verified. Passing the commit again
-    // makes GitHub authorize a redundant ref update and 403 when that older
-    // tree has different workflow files.
-    expect(source).toContain('--draft \\');
-    expect(source).not.toContain('--target "${{ steps.candidate.outputs.commit }}"');
-    expect(source).toContain('gh release edit "$tag" --draft=false');
-    expect(source).toContain('already recorded as a published release');
-    expect(source).not.toContain('eas-cli@21.0.1 update');
-    // EAS loads app.config.ts for channel edits; without installed config
-    // plugins, promotion fails before it can move the channel.
-    expect(install).toBeGreaterThan(-1);
-    expect(install).toBeLessThan(promote);
   });
 
   it('does not compile the native app for an OTA promotion manifest', () => {
@@ -1776,6 +1579,17 @@ describe('release image audit', () => {
           /^\s*([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/gm,
         )) {
           vars[name] ??= value.replace(/^["']|["']$/g, '');
+        }
+        // Extract destinations from the actual immutable publisher invocation,
+        // including each explicit sandbox alias in its shell loop.
+        if (text.includes('publish-release-index.mjs')) {
+          const destinations = text.match(/for image in ([^;]+); do/)?.[1];
+          if (destinations) {
+            for (const [, image] of destinations.matchAll(/"([^"]+)"/g))
+              text += `\n${image}:v\${VERSION}`;
+          } else {
+            text += '\n${image}:v${VERSION}';
+          }
         }
         for (let pass = 0; pass < 8; pass += 1) {
           const next = text
@@ -4565,19 +4379,23 @@ describe('changed-area detector', () => {
     ).toEqual(all('true'));
   });
 
-  it('does not run backend checks for a generated OTA promotion PR', async () => {
-    expect(
-      await run(
-        {
-          name: 'pull_request',
-          baseRef: 'main',
-          releaseTrain: 'mobile-ota',
-          releasePr: '138',
-        },
-        ['apps/mobile/ota-promotion.json'],
-      ),
-    ).toEqual(all('false'));
-  });
+  it.each(['automation/promote-mobile-v1.2.3', 'automation/promote-mobile-ota-1.2.0'])(
+    'scopes the workflow-owned OTA promotion PR %s',
+    async (prHead) => {
+      expect(
+        await run(
+          {
+            name: 'pull_request',
+            baseRef: 'main',
+            releaseTrain: 'mobile-ota',
+            releasePr: '138',
+            prHead,
+          },
+          ['apps/mobile/ota-promotion.json'],
+        ),
+      ).toEqual(all('false'));
+    },
+  );
 
   it('scopes Release Please synchronize events to their owning train', async () => {
     expect(

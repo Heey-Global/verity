@@ -1,0 +1,146 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
+
+const script = resolve('scripts/release-lifecycle.mjs');
+function run(state: {
+  draft?: boolean;
+  pending?: boolean;
+  missing?: boolean;
+  stale?: boolean;
+  mismatchedTag?: boolean;
+}) {
+  const train = 'backend';
+  const manifestName = `.release-please-manifest.${train}.json`;
+  const cwd = mkdtempSync(join(tmpdir(), 'release-lifecycle-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('config', 'user.email', 'test@example.invalid');
+  git('config', 'user.name', 'Test');
+  git('config', 'tag.gpgSign', 'false');
+  git('config', 'commit.gpgSign', 'false');
+  writeFileSync(join(cwd, manifestName), JSON.stringify({ '.release/backend': '1.2.3' }));
+  git('add', '.');
+  git('commit', '-qm', 'chore: fixture');
+  const sha = git('rev-parse', 'HEAD');
+  git('tag', 'v1.2.3');
+  if (state.mismatchedTag) {
+    writeFileSync(join(cwd, manifestName), JSON.stringify({ '.release/backend': '1.2.4' }));
+    git('add', '.');
+    git('commit', '-qm', 'chore: next version');
+    git('tag', '--force', 'v1.2.3');
+    git('reset', '--hard', sha);
+  }
+  mkdirSync(join(cwd, 'bin'));
+  writeFileSync(
+    join(cwd, 'bin/gh'),
+    `#!/usr/bin/env node
+const args = process.argv.slice(2).join(' ');
+const fixture = ${JSON.stringify({ sha, state })};
+let result;
+if (args.includes('git/ref/heads/main')) result = {object:{sha:fixture.state.stale ? 'f'.repeat(40) : fixture.sha}};
+else if (args.includes('/releases?')) result = [(fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:'v1.2.3', draft:!!fixture.state.draft, prerelease:false}]];
+else if (args.startsWith('pr list')) result = fixture.state.pending ? [{number:1,author:{login:'github-actions'},mergeCommit:{oid:fixture.sha}}] : [];
+else throw new Error(args);
+process.stdout.write(JSON.stringify(result));
+`,
+    { mode: 0o755 },
+  );
+  const output = join(cwd, 'output');
+  writeFileSync(output, '');
+  const result = spawnSync(process.execPath, [script, train, sha], {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${join(cwd, 'bin')}:${process.env.PATH}`,
+      GITHUB_OUTPUT: output,
+      GITHUB_REPOSITORY: 'fixture/repo',
+    },
+  });
+  return { ...result, output: readFileSync(output, 'utf8') };
+}
+
+describe('release lifecycle reconciliation', () => {
+  it('plans only against a published boundary', () => {
+    expect(run({})).toMatchObject({ status: 0, output: 'mode=plan\n' });
+  });
+  it('never bootstraps history when the expected release disappears', () => {
+    const result = run({ missing: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Missing published release boundary');
+  });
+  it('rejects a published tag outside the candidate history', () => {
+    expect(run({ mismatchedTag: true }).status).not.toBe(0);
+  });
+  it('does not create the next PR while publication is pending', () => {
+    const result = run({ draft: true, pending: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('publication is pending');
+  });
+  it('reconciles a merged release without planning another PR', () => {
+    expect(run({ pending: true })).toMatchObject({ status: 0, output: 'mode=release\n' });
+  });
+  it('lets the newest event reconcile moving main', () => {
+    expect(run({ stale: true })).toMatchObject({ status: 0, output: 'mode=skip\n' });
+  });
+});
+
+describe('website retry preserves the published image', () => {
+  function resume(mode: 'same' | 'different' | 'absent' | 'denied') {
+    const cwd = mkdtempSync(join(tmpdir(), 'release-website-retry-'));
+    const source = 'a'.repeat(40);
+    const digest = `sha256:${'b'.repeat(64)}`;
+    const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+    };
+    const step = workflow.jobs['publish-website']?.steps.find(
+      (candidate) => candidate.name === 'Resume an existing immutable website image',
+    );
+    expect(step?.run).toBeTruthy();
+    writeFileSync(
+      join(cwd, 'docker'),
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'buildx') {
+  if (${JSON.stringify(mode)} === 'absent') { process.stderr.write('manifest unknown'); process.exit(1); }
+  if (${JSON.stringify(mode)} === 'denied') { process.stderr.write('unauthorized'); process.exit(1); }
+  process.stdout.write(${JSON.stringify(digest)});
+} else if (args[0] === 'image') process.stdout.write(${JSON.stringify(mode === 'different' ? 'c'.repeat(40) : source)});
+else if (args[0] !== 'pull') throw new Error(args.join(' '));
+`,
+      { mode: 0o755 },
+    );
+    const output = join(cwd, 'output');
+    writeFileSync(output, '');
+    const result = spawnSync('bash', ['-c', step?.run ?? 'exit 99'], {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${cwd}:${process.env.PATH}`,
+        GITHUB_OUTPUT: output,
+        SOURCE_SHA: source,
+        REGISTRY: 'ghcr.io',
+        IMAGE_NAME: 'fixture/site',
+        VERSION: '1.2.3',
+      },
+    });
+    return { ...result, output: readFileSync(output, 'utf8'), digest };
+  }
+  it('reuses only the digest belonging to the recorded source', () => {
+    const result = resume('same');
+    expect(result.status).toBe(0);
+    expect(result.output).toBe(`digest=${result.digest}\n`);
+  });
+  it('does not replace an existing image from another source', () => {
+    expect(resume('different').status).not.toBe(0);
+  });
+  it('allows a first build only for an explicit absence', () => {
+    expect(resume('absent')).toMatchObject({ status: 0, output: '' });
+    expect(resume('denied').status).not.toBe(0);
+  });
+});

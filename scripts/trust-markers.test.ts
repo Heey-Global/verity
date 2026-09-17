@@ -203,7 +203,9 @@ describe('release verification instructions', () => {
     // the pull command the verify command below it cannot be run at all.
     expect(SECURITY).toContain(`oras pull ${OFFICIAL_SERVER_IMAGE}:channel-stable-amd64`);
     const publish = readFileSync('.github/workflows/release.yml', 'utf8');
-    expect(publish, 'the channel tag moved').toContain('channel-stable-${ARCHITECTURE}');
+    const channelTag = /oras push \\\s*"([^"]+:channel-[^"]+)"/.exec(publish)?.[1];
+    expect(channelTag, 'the workflow no longer publishes a channel artifact').toBeDefined();
+    expect(SECURITY).toContain(`oras pull ${channelTag?.replace('${architecture}', 'amd64')}`);
   });
 
   it('documents verification of the Server provenance the release publishes', () => {
