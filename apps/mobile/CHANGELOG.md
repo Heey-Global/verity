@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.0](https://github.com/Heey-Global/verity/compare/mobile-v1.31.0...mobile-v1.32.0) (2026-09-17)
+
+
+### Bug Fixes
+
+* **mobile:** prepare isolated native builds and trial compiler cache ([#408](https://github.com/Heey-Global/verity/issues/408)) ([73dc5ba](https://github.com/Heey-Global/verity/commit/73dc5ba1f9b38073eff26e4674682df33b658bd5))
+
 ## [1.31.0](https://github.com/Heey-Global/verity/compare/mobile-v1.30.0...mobile-v1.31.0) (2026-09-16)
 
 
