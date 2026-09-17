@@ -228,6 +228,21 @@ describe('toolCallView', () => {
           name: 'verity_secret_run',
           state: 'error',
           input: {},
+          result: [{ type: 'text', text: safe }],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({ name: 'verity_secret_run', state: 'error', input: {}, result: { text: safe } }),
+      ),
+    ).toBe(false);
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({
+          name: 'verity_secret_run',
+          state: 'error',
+          input: {},
           result:
             'Cause: Trusted CLI dispatch failed during runner supervisor response. Whether the command started is unknown; do not retry a mutating command automatically. No secret value was exposed.',
         }),

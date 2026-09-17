@@ -217,7 +217,7 @@ const NATIVE_TOOL_FAILURE_CAUSE =
  * safe for the app to resume automatically after unlocking. */
 export function trustedCliRetrySafeAfterUnlock(tool: ToolCall): boolean {
   if (tool.name !== 'verity_secret_run' || tool.state !== 'error') return false;
-  const preview = previewResult(tool.name, tool.result);
+  const preview = retryDiagnosticText(tool.result);
   return (
     preview !== null &&
     preview.includes('Trusted CLI dispatch failed during spawn broker dispatch.') &&
@@ -225,6 +225,24 @@ export function trustedCliRetrySafeAfterUnlock(tool: ToolCall): boolean {
     preview.includes('The command was not started.') &&
     !preview.includes('Whether the command started is unknown')
   );
+}
+
+/** Read only the text shapes emitted by native tool results. Retry eligibility
+ * needs exact sentinels, not the general preview formatter or its regexes. */
+function retryDiagnosticText(result: unknown): string | null {
+  if (typeof result === 'string') return result;
+  if (!Array.isArray(result)) return null;
+  const parts: string[] = [];
+  for (const block of result) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      typeof (block as { text?: unknown }).text === 'string'
+    ) {
+      parts.push((block as { text: string }).text);
+    }
+  }
+  return parts.length > 0 ? parts.join('\n') : null;
 }
 
 /** Return the last retry-safe trusted CLI failure from the current turn. A later
