@@ -14,6 +14,10 @@ case "$head" in
   release-please--branches--main--components--server) train=backend ;;
   release-please--branches--main--components--mobile) train=mobile ;;
   release-please--branches--main--components--website) train=website ;;
+  automation/promote-mobile-ota-*)
+    [[ "$head" =~ ^automation/promote-mobile-ota-[0-9]+\.[0-9]+\.0$ ]] || exit 0
+    train=mobile-ota
+    ;;
   automation/promote-mobile-v[0-9]*.[0-9]*.[0-9]*)
     [[ "$head" =~ ^automation/promote-mobile-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 0
     train=mobile-ota

@@ -1,159 +1,174 @@
 # Releases
 
-Verity uses release-please to collect conventional commits into deliberately
-merged release pull requests. Backend artifacts and native mobile builds have
-separate release PRs; Mobile OTA patches continue to publish automatically.
+Verity has three products and four delivery paths: Server, website, native
+mobile, and mobile OTA. Changes accumulate in an open approval pull request;
+merging that pull request approves a specific release candidate. Ordinary source
+merges do not approve a release.
 
-## Backend release intent
+| Product | Approval | Delivered artifact |
+| --- | --- | --- |
+| Server | Release Please PR | Verified Server and supporting images, signed update channels |
+| Website | Release Please PR | Versioned, smoke-tested website image |
+| Mobile native | Release Please PR | A new `X.Y.0` runtime and TestFlight binary |
+| Mobile OTA | Rolling promotion PR per runtime | A specific EAS update group for the installed runtime |
 
-The backend is a product release group spanning several workspaces, deployment
-files, images, and the sandbox toolkit. It is not the repository root and is not
-one npm package. Each pull request therefore declares explicitly whether it
-belongs to that release train:
+## Release ownership
 
-- Add one unique, lowercase kebab-case Markdown file under
-  `.release/backend/intents/` when the change must appear in the next Server
-  release.
-- Add the file under `.release/none/intents/` when the change must not create a
-  Server release.
+Backend, native mobile, and website retain separate Release Please configurations
+and version manifests. Their generated files are disjoint, so one product's
+version change does not create a conflict in another product's release PR.
 
-Intent files are append-only audit records. Their content explains the decision;
-the pull request's Conventional Commit title remains the authoritative changelog
-entry and determines the semantic version bump. Release Please watches only the
-backend intent directory, while continuing to write the public `CHANGELOG.md`
-and `version.txt` at the repository root. Shared files such as `package-lock.json`
-therefore belong to a Server release only when the pull request says so, instead
-of being assigned accidentally by directory position.
+Every ordinary PR adds one unique, append-only Markdown release intent:
 
-Pull requests are squash-merged so the product changes, intent, authoritative
-title, and version bump become one commit. Merge commits could be parsed twice;
-rebase merges could separate the intent from the title it classifies. The
-release workflow checks the repository setting before invoking Release Please.
+- `.release/backend/intents/<slug>.md` includes its changes in the Server release.
+- `.release/none/intents/<slug>.md` records why no Server release is needed.
 
-Only `renovate[bot]` and `github-actions[bot]` pull requests are exempt for the
-existing dependency and release automations. Verity and other agent GitHub Apps
-must add an intent just like human contributors; a bot identity alone is not an
-exemption. A product change from exempt automation still needs a follow-up
-backend intent before it can enter the backend train.
+`none` applies to the Server train only; it does not prevent mobile or website
+releases. Mobile and website retain their own path-based ownership. A mixed PR
+can affect more than one product. Use an English Conventional Commit PR title:
+squash merging keeps that title, the changes, and their intent in one commit.
+Only the existing `renovate[bot]` and `github-actions[bot]` automation is exempt
+from the intent requirement.
 
-## Release-PR checks without a PAT
+## Planning and publication are separate
 
-release-please intentionally uses only the repository `GITHUB_TOKEN`. Pull
-requests created with that token do not recursively trigger `pull_request`
-workflows, so `.github/workflows/release.yml` explicitly dispatches `ci.yml` for
-every release-PR branch returned by release-please. This requires `actions: write`
-on the release workflow and a `workflow_dispatch` trigger on CI.
+The release lifecycle makes a decision before invoking Release Please:
 
-The dispatched run is visible in GitHub Actions and validates the exact release
-branch, but it is not attached to the pull request as a `pull_request` status
-check. This trade-off is intentional: Verity avoids a long-lived PAT and its
-associated storage, permissions, and rotation lifecycle.
+1. An ordinary eligible source push updates the product's release PR in
+   **planning-only** mode. It cannot create a GitHub release.
+2. A merged release PR is processed in **release-only** mode. It cannot create a
+   second release PR while the first version is still being published.
+3. A draft or unresolved publication blocks further planning for that product.
+   Recover that release instead of creating another version to hide the failure.
+4. Planning requires a known, published release boundary matching the product's
+   version manifest and Git history. Missing history is an error, not permission
+   to gather every historical commit into a new changelog.
 
-## Verity website
+The first release of a product needs an explicit bootstrap decision rather than
+an implicit fallback from an unknown boundary. A delayed trigger must not
+replace a newer plan with an older source snapshot.
 
-The product website is its own release train, `website-vX.Y.Z`, tracked in
-`docs/website`. A release publishes one image, `verity-website:vX.Y.Z`, and that
-tag is what the downstream deployment manifest pins. There is deliberately
-no `latest`: the cluster should have exactly one way in, and it should be a pin
-somebody moved on purpose.
+Server changes are collected through the backend intent component. Website
+changes are collected from `docs/website`; its `concept.md` and `landing-copy.md`
+are excluded. Shared deployment or test scripts are not automatically new
+website product changes.
 
-It is separate from the backend train for two reasons. A backend release must
-not move a version the cluster tracks, and release-please assigns commits to a
-package by path — so a change can only produce a website release if it lands
-under `docs/website`, which is why the Dockerfile and the nginx config sit there
-rather than in `deploy/`. A Renovate bump of the nginx base image is typed `fix`
-for that one file (`renovate.json`) so it produces a patch release; as a `chore`
-it would publish a `sha-<commit>` image that no released version, and therefore
-no pin, would ever reach.
+## Candidate identity and retry
 
-The corollary is worth knowing before moving a file: the shared smoke lives in
-`deploy/bin/verity-website-smoke`, outside the package, so fixing it releases the
-backend rather than the website. That is the right way round — a stricter smoke
-is not a new site — but it means the image a `website-vX.Y.Z` publishes can have
-been smoked by a script that never appeared in its changelog.
+Source identity and public availability are different facts. Git references
+bind a candidate to its source commit; a GitHub draft release is not evidence
+that customers can install it. Image digests, signed evidence, EAS update IDs,
+and Apple build validation establish what was built and checked.
 
-Backend, mobile, and website each have their own release-please config and
-manifest. The backend component is rooted at `.release/backend`, while its
-generated changelog and version stay at the repository root for compatibility.
-Their release PRs therefore update disjoint managed files: merging one train
-cannot make either of the other two conflict merely because its version moved.
-The three action invocations still run in one serialized release job so tag and
-artifact publication retain the existing ordering and permissions.
+Retries must retain the candidate's source. Native recovery must not force-move
+a tag to current `main`. A source fix requires a new candidate/release decision.
+A failed comparison, an unexpected owner, a missing record, or a conflicting
+artifact identity stops the workflow rather than guessing.
 
-Two edges of the train are worth knowing. `concept.md` and `landing-copy.md` are
-excluded from the package and the root excludes all of `docs/website`, so a
-commit touching only those two prose files releases nothing and appears in no
-changelog — deliberate, since neither reaches an image. And the train's scope is
-wider than the build's: a `fix:` to any other file under `docs/website` cuts a
-release, which republishes a byte-identical image under a new version. Harmless,
-but it is why a version bump alone does not imply the site changed.
+Remote writes are not atomic across GitHub, registries, Apple, and EAS. Recovery
+therefore checks completed effects and performs the remaining ones. In
+particular, an EAS channel change may succeed before GitHub release recording;
+retry verifies the approved group and channel before finishing the record.
 
-Every main commit that touches those paths still publishes an untagged digest and
-tags it `sha-<commit>` (`verity-website.yml`). Both publishes smoke the image
-before anything tags it, through the same script.
+## Server delivery
 
-Re-running the failed job of a publish that failed before it tagged is the
-recovery path and works. Re-running the whole workflow is not: release-please
-runs again, finds the release already made, and reports no release created, so
-the publish job is skipped and the run goes green without an image. There is no
-dispatch fallback for this train the way there is for mobile — if a release is
-left with a `website-v` tag and no image, release a patch version.
+The Server release includes the toolkit, sandbox, relay, Server, and required
+preview images. Existing installation, self-update/rollback, architecture,
+provenance, signing, and digest checks remain part of release acceptance.
 
-Once the tag exists, a re-run is refused: the rebuild would land on a new digest,
-and moving a released tag under the cluster is invisible to ArgoCD — the manifest
-still names `vX.Y.Z`, so nothing rolls out and running pods keep the old digest
-while newly-scheduled ones get the new. That case needs no recovery anyway; the
-tag was only written after the smoke passed. If an already-published version has
-to change, release a patch version, or — if the published image is genuinely
-wrong — delete the tag in the registry first and then re-run.
+Generate and upload signed channel evidence before updating the mutable stable
+channel. Promote only after the required images and evidence are complete, then
+finalize the public GitHub release. A partial promotion remains recoverable and
+must not be reported as a completed publication.
 
-## Mobile runtime lines
+Keep signing jobs in `.github/workflows/release.yml`: installed Servers trust
+that workflow's Fulcio certificate identity. Moving it requires a separate trust
+migration, not just a workflow rename.
 
-A published native release `mobile-vX.Y.0` opens exactly one OTA runtime line.
-The runtime identifier is the explicit string `X.Y.0`, and every merged mobile
-release PR always produces a new native TestFlight binary before its draft GitHub
-release is published. Fingerprints are not used as release-line identifiers because
-Expo intentionally excludes marketing versions from them.
+## Website delivery
 
-The OTA workflow requires the version configured in `apps/mobile/app.config.ts`
-to equal that latest published native release before allocating `X.Y.1`, `X.Y.2`,
-and subsequent patches. When a newer native release is still a draft or its
-TestFlight workflow failed, OTA publishing is skipped. This prevents an update
-for the new runtime from being mislabeled or offered as a patch for the previous
-native line.
+A website release publishes `verity-website:vX.Y.Z` after its smoke test. Deployment
+pins that version; there is no `latest` tag. The ordinary source workflow also
+produces `sha-<commit>` images, but those are not release approvals.
 
-If the GitHub workflow fails after release-please created the draft release, run
-the `release` workflow manually with that existing `mobile-vX.Y.0` tag. Recovery
-validates the draft and checked-out version, aligns the unpublished tag with the
-fixed source being built, builds/uploads the native binary, and only then publishes
-the GitHub release.
+The explicit website recovery inputs on `release-dispatch.yml` resume the
+recorded release source. Do not replace the bytes of a published version to fix
+a product defect: release a new version. Artifact/tag conflicts must stop
+recovery instead of silently moving an existing version.
 
-## Independent publication queues
+## Mobile: OTA by default
 
-`release-dispatch.yml` handles main pushes and manual recovery. Each matrix entry
-calls `release.yml` under a separate backend, native mobile, or website
-lifecycle lock. That lock covers metadata generation through publication, so a
-second run cannot create a premature release PR while the first release is still
-a draft. A native app build does not block the Server train.
+A published native `mobile-vX.Y.0` establishes runtime `X.Y.0`. Compatible changes
+accumulate as OTA patches of that runtime. Feature count and number of merges do
+not require a native build.
 
-The short `release-please` jobs also share a metadata lock to serialize repository
-metadata mutations. Each invocation processes only its selected train. The
-same workflow owns backend acceptance, sibling images, channels, evidence, and
-release finalization; there is no intermediate backend handoff. Signing jobs stay in `release.yml` because
-installed Servers trust that workflow's Fulcio certificate identity. Never move
-them without a compatible trust migration or repeat the lifecycle lock inside a
-called workflow: that would deadlock the parent and child.
+All release paths use the same native compatibility assessment. For dependency
+or configuration changes, compare native fingerprints from independently
+installed source trees with the same tool and environment. Pure JavaScript
+dependency changes alone must not force a new binary. Marketing version and the
+explicit runtime string are excluded from that comparison; native modules,
+plugins, native assets, and custom native preparation still matter. Failure to
+establish compatibility blocks OTA.
 
-Each queue uses `queue: max` and does not cancel active runs. GitHub supports up
-to 100 pending entries and orders them by arrival at the lock, not by commit or
-workflow-dispatch time. This prevents pending entries being replaced by a newer
-arrival within that capacity; it does not promise chronological release order.
-Keep manual recovery deliberate, especially when republishing an older version.
-See [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+Once `main` needs a different native runtime, its changes accumulate in the
+native release PR. Do not publish that source to the old runtime. Supporting
+parallel OTA fixes for an older runtime would need an explicit maintenance
+branch; the mainline workflow does not cherry-pick a subset automatically.
+Native releases become public only after the TestFlight build passes Apple
+processing. Compatible source merges then resume OTA delivery for the new line.
 
-Use `release-dispatch.yml` for manual recovery with the same existing inputs
-(`mobile-tag`, backend maintenance flags, or website recovery version/ref).
-Already-running workflows retain their original scheduling. Before merging the
-queue migration, let any active legacy release publication finish: its old
-`release-main` lock does not exclude the new per-train locks. After that initial
-cutover, independent trains may publish concurrently.
+## Rolling OTA approval
+
+There is one open OTA promotion PR per TestFlight runtime, not one PR per source
+merge. The PR contains the cumulative changelog since the latest **published**
+mobile release and points at the newest successfully prepared candidate.
+
+The planned patch version stays the same while source changes accumulate.
+Candidate references and EAS branches include the source identity, so updating
+the PR never overwrites a previously built candidate. Reserve the candidate
+before upload; retries reuse the recorded update group rather than publishing
+different bytes to the same candidate branch.
+
+A promotion manifest binds the runtime, source commit, planned version, EAS
+branch, exact update group, and release notes. The staging workflow updates the
+rolling PR only after preparing the candidate, then dispatches verification for
+its new head. Configure required checks and stale-review dismissal on the
+protected branch; an approval of an old PR head must not approve its replacement.
+
+Merging freezes the manifest used by promotion. Promotion validates that source,
+runtime, candidate reference, and EAS group agree, changes the TestFlight
+channel, reads it back, and records the same cumulative notes on the GitHub
+release. A later merge to `main` cannot change the already-approved candidate.
+
+## Scheduling, permissions, and migration
+
+`release-dispatch.yml` owns independent Server, native mobile, and website
+lifecycle locks. OTA promotion shares the native mobile publication lock so
+runtime transitions and OTA activation cannot race. OTA preparation can run
+separately because promotion revalidates compatibility and identity.
+
+Each lifecycle queue uses `queue: max` and does not cancel active publication.
+Arrival order is not commit order, so source and release-boundary checks remain
+necessary. Keep manual maintenance/rollback actions explicit.
+
+Release Please and OTA use the repository `GITHUB_TOKEN`. Bot-created PR updates
+do not recursively trigger normal PR workflows, so generated PRs explicitly
+dispatch CI against their current branch head. Do not weaken CI or add a personal
+token to work around that behavior.
+
+Before deploying changed release automation, let old publication jobs finish:
+running jobs retain the workflow code and locks from their original commit.
+Review existing generated release PRs against the last published release;
+close a stale historical replay instead of merging it. The new lifecycle must
+not manufacture a release boundary from a misleading PR description.
+
+Old OTA candidates already have versioned tags and branches. Preserve those
+references; never repoint them for the rolling scheme. Supersede an old
+workflow-owned approval only after the replacement is prepared, or complete its
+existing promotion first. Validate the migration against open PRs before merge.
+
+For recovery, dispatch `release-dispatch.yml` with the existing native tag,
+backend maintenance inputs, or website version/ref. OTA promotion can be retried
+through its own workflow. Always inspect the recorded source and artifact
+identity; a successful retry should complete the original operation, not create
+a new one under the same name.
