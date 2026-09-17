@@ -103,8 +103,9 @@ accumulate as OTA patches of that runtime. Feature count and number of merges do
 not require a native build.
 
 All release paths use the same native compatibility assessment. For dependency
-or configuration changes, compare native fingerprints from independently
-installed source trees with the same tool and environment. Pure JavaScript
+or configuration changes, compare iOS native fingerprints from independently
+installed source trees with the same tool and environment, matching the current
+TestFlight delivery target. Pure JavaScript
 dependency changes alone must not force a new binary. Marketing version and the
 explicit runtime string are excluded from that comparison; native modules,
 plugins, native assets, and custom native preparation still matter. Failure to

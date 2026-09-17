@@ -425,6 +425,8 @@ function stage(runtime: string) {
   // Reset the rolling branch onto the candidate source before writing metadata;
   // otherwise its CI would check the previous candidate's application code.
   const remote = git('ls-remote', 'origin', `refs/heads/${branch}`).split(/\s/)[0];
+  const ownerTag = `ota-rolling/${runtime}`;
+  const ownerRecord = git('for-each-ref', '--format=%(contents)', `refs/tags/${ownerTag}`);
   if (remote && !open[0]) {
     const historical = json<Pull[]>(
       'pr',
@@ -437,13 +439,58 @@ function stage(runtime: string) {
       'author',
     );
     if (
-      !historical.length ||
       historical.some(
         (pr) => !['app/github-actions', 'github-actions[bot]'].includes(pr.author?.login),
       )
     )
       throw new Error('Refusing to replace an unowned rolling branch');
+    if (!historical.length) {
+      // A branch can exist before its first PR. The ownership reservation must
+      // predate that write; namespace or matching source alone grants no authority.
+      if (!ownerRecord) throw new Error('Refusing to replace an unowned rolling branch');
+      const owner = validateCandidate(JSON.parse(ownerRecord));
+      if (owner.runtime !== runtime || git('rev-list', '-n', '1', ownerTag) !== owner.commit)
+        throw new Error('Invalid rolling branch ownership reservation');
+      git('merge-base', '--is-ancestor', owner.commit, commit);
+      git('fetch', 'origin', branch);
+      const sourceRecord = git(
+        'for-each-ref',
+        '--format=%(contents)',
+        `refs/tags/ota-artifact/${candidate.tag}/${remote}`,
+      );
+      const previous = validateCandidate(
+        JSON.parse(sourceRecord || git('show', `FETCH_HEAD:${manifestPath}`)),
+      );
+      const artifactTag = `ota-artifact/${previous.tag}/${previous.commit}`;
+      if (
+        previous.runtime !== runtime ||
+        git('for-each-ref', '--format=%(contents)', `refs/tags/${artifactTag}`) !==
+          JSON.stringify(previous) ||
+        git('rev-list', '-n', '1', artifactTag) !== previous.commit
+      )
+        throw new Error('Orphaned rolling branch has no matching immutable artifact');
+      git('merge-base', '--is-ancestor', previous.commit, commit);
+      if (sourceRecord) {
+        if (previous.commit !== remote)
+          throw new Error('Orphaned rolling source differs from its reservation');
+      } else {
+        const parents = git('rev-list', '--parents', '-n', '1', remote).split(' ');
+        const metadata = api<{ verification: { verified: boolean } }>(
+          `repos/${repository()}/git/commits/${remote}`,
+        );
+        if (
+          parents.length !== 2 ||
+          parents[1] !== previous.commit ||
+          !metadata.verification.verified ||
+          git('diff', '--name-only', previous.commit, remote) !== manifestPath
+        )
+          throw new Error(
+            'Orphaned rolling metadata commit is not a verified candidate-only change',
+          );
+      }
+    }
   }
+  if (!remote && !ownerRecord) reserve(ownerTag, candidate);
   if (open[0] && remote !== expectedHead) throw new Error('Rolling PR changed during staging');
   assertBaseline(candidate);
   git(

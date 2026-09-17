@@ -192,6 +192,10 @@ interface ServiceState {
   rollingHead?: string;
   sourceManifestMissing?: boolean;
   loseMetadata?: boolean;
+  noPullHistory?: boolean;
+  losePullCreation?: boolean;
+  modelMetadataCommit?: boolean;
+  invalidMetadata?: boolean;
 }
 
 function serviceFixture(changes: Partial<ServiceState> = {}) {
@@ -238,12 +242,14 @@ if(tool === 'git') {
   }
   if(args[0] === 'tag') {s.tags[args[1]]={commit:args[2],message:''};out('');}
   if(args[0] === 'push') { if(args.at(-1).includes(':refs/heads/')) s.rollingHead=args.at(-1).split(':')[0]; out(''); }
+  if(args[0] === 'rev-list' && args.includes('--parents')) out(s.rollingHead+' '+sha);
   if(args[0] === 'rev-list') out(s.tags[args.at(-1)]?.commit ?? '');
+  if(args[0] === 'diff') out(s.invalidMetadata ? 'unrelated.txt' : 'apps/mobile/ota-promotion.json');
   if(args[0] === 'for-each-ref') out(s.tags[args.at(-1).replace('refs/tags/','')]?.message ?? '');
   if(args[0] === 'show') { if(s.sourceManifestMissing && s.rollingHead===sha) fail(); out(candidate); }
 }
 if(tool === 'gh') {
-  if(args[0] === 'api' && args.includes('graphql')) {if(s.loseMetadata){s.loseMetadata=false;fail();}out({data:{createCommitOnBranch:{commit:{oid:sha,signature:{isValid:true}}}}});}
+  if(args[0] === 'api' && args.includes('graphql')) {if(s.loseMetadata){s.loseMetadata=false;fail();}if(s.modelMetadataCommit){s.rollingHead='d'.repeat(40);const contents=args.find(a=>a.startsWith('contents=')).slice(9);fs.writeFileSync(process.env.OTA_FAKE_CWD+'/apps/mobile/ota-promotion.json',Buffer.from(contents,'base64'));}out({data:{createCommitOnBranch:{commit:{oid:s.modelMetadataCommit?s.rollingHead:sha,signature:{isValid:true}}}}});}
   if(args[0] === 'api') {
     const endpoint=args.find(a=>a.startsWith('repos/'));
     if(endpoint?.includes('/releases?')) {
@@ -252,6 +258,7 @@ if(tool === 'gh') {
       out([[{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[])]]);
     }
     if(endpoint?.endsWith('/pulls')) out([{number:51,merged_at:'2026-01-01',head:{ref:'automation/promote-mobile-ota-1.33.0',sha}}]);
+    if(endpoint?.includes('/git/commits/')) out({verification:{verified:true}});
     if(endpoint?.includes('/reviews?')) out([s.reviews ?? []]);
     if(endpoint?.endsWith('/dismissals')) {
       if(s.loseDismiss) fail();
@@ -261,8 +268,8 @@ if(tool === 'gh') {
     if(endpoint?.includes('/contents/')) out({content:Buffer.from(JSON.stringify(candidate)).toString('base64')});
     if(endpoint?.includes('/check-runs?')) out([{check_runs:[{id:123,name:'ci-checks',conclusion:'success',app:{slug:'github-actions'}}]}]);
   }
-  if(args[0] === 'pr' && args[1] === 'list') out(args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
-  if(args[0] === 'pr' && args[1] === 'create') out('https://github.com/example/repo/pull/51');
+  if(args[0] === 'pr' && args[1] === 'list') out(!s.noPullHistory && args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
+  if(args[0] === 'pr' && args[1] === 'create') {if(s.losePullCreation){s.losePullCreation=false;fail();}s.noPullHistory=false;out('https://github.com/example/repo/pull/51');}
   if(args[0] === 'pr' || args[0] === 'workflow') out('');
   if(args[0] === 'release' && args[1] === 'create') {s.draft=true;out('');}
   if(args[0] === 'release' && args[1] === 'edit') {
@@ -431,5 +438,52 @@ describe('OTA CLI interrupted external operations', () => {
       service.state().calls.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
     ).toHaveLength(1);
     expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(true);
+  });
+  it.each(['metadata', 'pull'] as const)(
+    'recovers the first branch when %s creation was interrupted before any PR exists',
+    (failure) => {
+      const service = serviceFixture({
+        noPullHistory: true,
+        sourceManifestMissing: true,
+        loseMetadata: failure === 'metadata',
+        losePullCreation: failure === 'pull',
+        modelMetadataCommit: true,
+      });
+      expect(service.run('stage').status).not.toBe(0);
+      expect(service.state().noPullHistory).toBe(true);
+      const retry = service.run('stage');
+      expect(retry.stderr).toBe('');
+      expect(retry.status).toBe(0);
+      expect(service.state().noPullHistory).toBe(false);
+      expect(
+        service.state().calls.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('does not claim a pre-existing branch merely because its source is a staged artifact', () => {
+    const service = serviceFixture({ noPullHistory: true, rollingHead: sha });
+    const result = service.run('stage');
+    expect(result.stderr).toContain('unowned rolling branch');
+    expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
+    expect(service.state().tags['ota-rolling/1.33.0']).toBeUndefined();
+  });
+
+  it('rejects unrelated changes on an orphaned branch even with an ownership reservation', () => {
+    const service = serviceFixture({
+      noPullHistory: true,
+      losePullCreation: true,
+      modelMetadataCommit: true,
+      invalidMetadata: true,
+    });
+    expect(service.run('stage').status).not.toBe(0);
+    const pushCount = service
+      .state()
+      .calls.filter((call) => call.includes('--force-with-lease')).length;
+    const result = service.run('stage');
+    expect(result.stderr).toContain('not a verified candidate-only change');
+    expect(
+      service.state().calls.filter((call) => call.includes('--force-with-lease')),
+    ).toHaveLength(pushCount);
   });
 });
