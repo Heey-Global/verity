@@ -33,7 +33,6 @@ import {
   ProjectIdentityClaimConflict,
   SealedError,
   TranscriptStore,
-  WorkflowStore,
   type VeritySettingsPatch,
   type Database,
   type ProjectRecord,
@@ -48,13 +47,6 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
-import {
-  createGitHubWorkflowGate,
-  createArgoCdWorkflowGate,
-  createApplicationHealthWorkflowGate,
-  createOciProvenanceWorkflowGate,
-  createWorkflowGateReconciler,
-} from './workflow-providers.js';
 
 export async function resolveInstallationListToken(
   dbTokenMint: () => Promise<string | undefined>,
@@ -78,7 +70,6 @@ import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-p
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
-import { createControlPlaneDeliveryTool } from './workflow-control-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import {
   createGitWorktreeProvisioner,
@@ -614,28 +605,6 @@ export interface EmbeddedServerConfig {
    *  into the server env at image build (no runtime Doppler). Non-secret; the app
    *  reads it via `/settings` to build the PKCE request. */
   googleDriveClientId?: string | undefined;
-  /** HMAC secret for authenticated GitHub workflow webhooks. */
-  workflowGithubWebhookSecret?: string | undefined;
-  /** Explicit deployment policy for consequential cross-project workflow actions. */
-  authorizeWorkflowAction?: ServerDeps['authorizeWorkflowAction'];
-  workflowArgoCdBaseUrl?: string | undefined;
-  workflowArgoCdToken?: string | undefined;
-  /** Deployment-owned signed-provenance verifier. Omitted means OCI gates stay blocked. */
-  workflowOciVerifier?:
-    | ((input: {
-        imageRepository: string;
-        digest: string;
-        sourceRepository: string;
-        sourceCommit: string;
-      }) => Promise<{ issuer: string; subject: string; provenanceUrl?: string } | null>)
-    | undefined;
-  /** Service-specific verification beyond generic Argo CD sync and health. */
-  workflowApplicationHealthVerifier?:
-    | ((input: {
-        application: string;
-        desiredRevision: string;
-      }) => Promise<{ healthy: boolean; evidence?: Record<string, unknown>; reason?: string }>)
-    | undefined;
   /** Host-visible root for runtime-materialized files that spawned sibling
    * Docker containers bind-mount (gateway config, Git signing metadata). When
    * Verity talks to the host Docker daemon from inside a container, this path
@@ -1902,13 +1871,6 @@ export async function buildEmbeddedServer(
   const invokeGoogleSlides = googleSlidesTool.invoke;
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
-  const workflowStore = new WorkflowStore(db);
-  const createDeliveryFromControlPlane = createControlPlaneDeliveryTool({
-    controlProjectId: CONTROL_PLANE_RUNNER_PROJECT_ID,
-    workflowStore,
-    getSession: (sessionId) => eventStore.getSession(sessionId),
-    listProjects: () => eventStore.listProjects(),
-  });
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
   const brokeredHttpGrants = createBrokeredHttpGrantStore(db);
   const restrictedHttpTransport = createNodeRestrictedHttpJsonTransport();
@@ -1970,14 +1932,11 @@ export async function buildEmbeddedServer(
             'verity_google_slides',
           ]
         : ['verity_http_request', 'verity_publish_session_progress', 'verity_google_slides'],
-    // Control-plane-only tools. `verity_create_delivery` is served from the executor below;
-    // the two session tools are intercepted in `buildServer`, which owns the conductor they
-    // dispatch through — advertising them is still decided here, with the rest of the served
-    // set, so one place says what the control-plane gateway offers.
+    // Control-plane session tools are handled in `buildServer`, which owns session
+    // creation and dispatch. Keep their advertisement scoped to the control project.
     extraToolsForProject: (projectId) =>
       projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
         ? [
-            'verity_create_delivery',
             'verity_list_sessions',
             'verity_session_handoff',
             'verity_session_progress',
@@ -1994,7 +1953,6 @@ export async function buildEmbeddedServer(
       ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
         ? { runnerRoot: join(config.dataVolumeRoot, 'runners') }
         : {}),
-      createDelivery: createDeliveryFromControlPlane,
       googleSlides: invokeGoogleSlides,
     }),
     recordCall: async ({ projectId, kind, ...gateway }) => {
@@ -3722,13 +3680,6 @@ export async function buildEmbeddedServer(
     ...(config.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: config.unlockClientIdentity }
       : {}),
-    workflowStore,
-    ...(config.workflowGithubWebhookSecret !== undefined
-      ? { workflowGithubWebhookSecret: config.workflowGithubWebhookSecret }
-      : {}),
-    ...(config.authorizeWorkflowAction !== undefined
-      ? { authorizeWorkflowAction: config.authorizeWorkflowAction }
-      : {}),
     bus,
     ...(purgeRunnerArtifacts === undefined
       ? {}
@@ -4385,48 +4336,6 @@ export async function buildEmbeddedServer(
       },
     },
   });
-  const argoWorkflowGate =
-    config.workflowArgoCdBaseUrl !== undefined && config.workflowArgoCdToken !== undefined
-      ? createArgoCdWorkflowGate({
-          baseUrl: config.workflowArgoCdBaseUrl,
-          token: () => Promise.resolve(config.workflowArgoCdToken),
-        })
-      : undefined;
-  const workflowReconciler = createWorkflowGateReconciler({
-    store: workflowStore,
-    adapters: {
-      github: createGitHubWorkflowGate({
-        token: (owner, repo) => cachedProjectTokenMint({ owner, repo }),
-      }),
-      ...(config.workflowOciVerifier !== undefined
-        ? { oci: createOciProvenanceWorkflowGate({ verify: config.workflowOciVerifier }) }
-        : {}),
-      ...(argoWorkflowGate !== undefined ? { argoCd: argoWorkflowGate } : {}),
-      ...(config.workflowApplicationHealthVerifier !== undefined
-        ? {
-            applicationHealth: createApplicationHealthWorkflowGate({
-              verify: config.workflowApplicationHealthVerifier,
-            }),
-          }
-        : {}),
-    },
-  });
-  let workflowReconciling = false;
-  const reconcileWorkflows = async (): Promise<void> => {
-    if (workflowReconciling) return;
-    workflowReconciling = true;
-    try {
-      await workflowReconciler.reconcile();
-    } catch (error) {
-      app.log.warn({ err: error }, 'cross-project workflow reconciliation failed');
-    } finally {
-      workflowReconciling = false;
-    }
-  };
-  void reconcileWorkflows();
-  const workflowReconcileTimer = setInterval(() => void reconcileWorkflows(), 30_000);
-  workflowReconcileTimer.unref?.();
-  app.addHook('onClose', () => clearInterval(workflowReconcileTimer));
   // One-time reconciliation of backend transcripts left by sessions that no longer
   // exist (see `session-artifact-sweep.ts`). Deleting a session now takes its
   // transcripts with it, but everything deleted BEFORE that fix left its files behind

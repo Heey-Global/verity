@@ -108,37 +108,6 @@ describe('MCP gateway trusted CLI integration', () => {
   });
 });
 
-describe('MCP gateway Control delivery integration', () => {
-  it('passes the authenticated caller identity to the delivery executor', async () => {
-    const createDelivery = vi.fn(async () => ({ workflowId: 'wf_1', state: 'running' }));
-    const invoke = createMcpGatewayToolExecutor({
-      brokeredHttpTool: vi.fn(async () => ({ status: 200, body: null })),
-      trustedCliTool: vi.fn(),
-      createDelivery,
-    });
-    const request = { serviceId: 'api', environment: 'staging', objective: 'Ship it' };
-
-    await expect(
-      invoke({
-        projectId: 'verity-control',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        callId: 'call-1',
-        invocationId: 'invocation-1',
-        toolName: 'verity_create_delivery',
-        request,
-      }),
-    ).resolves.toEqual({ workflowId: 'wf_1', state: 'running' });
-    expect(createDelivery).toHaveBeenCalledWith({
-      projectId: 'verity-control',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      invocationId: 'invocation-1',
-      request,
-    });
-  });
-});
-
 describe('MCP gateway Google Slides integration', () => {
   it('passes the authenticated identity and replay key to the Slides executor', async () => {
     const googleSlides = vi.fn(async () => ({ revisionId: 'rev-2' }));

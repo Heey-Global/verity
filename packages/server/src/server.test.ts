@@ -49,7 +49,6 @@ import {
   LOCAL_PROJECT_OWNER,
   PROJECT_MEMORY_MAX_CHARS,
   SealedError,
-  WorkflowStore,
   type ProjectRecord,
 } from '@verity/store';
 import { createAuthTokenRegistry } from './auth.js';
@@ -593,61 +592,29 @@ beforeEach(async () => {
   branchSvc.resetToLocalBase.mockResolvedValue({ base: 'main', deletedBranch: 'feat/thing' });
 });
 
-describe('cross-project workflow route security', () => {
-  const serviceBody = {
-    id: 'api',
-    sourceProjectId: 'source',
-    sourceRepository: 'example/app',
-    imageRepository: 'ghcr.io/example/app',
-    deployments: {
-      staging: {
-        projectId: 'gitops',
-        repository: 'example/cluster',
-        manifestPath: 'apps/api/staging',
-        argoApplication: 'api-staging',
-      },
-    },
-  };
-
-  it('fails closed when no workflow authority policy is configured', async () => {
-    const server = buildServer({
-      eventStore: ctx.store,
-      workflowStore: new WorkflowStore(ctx.db),
-      bus,
-      conductor,
-    });
+describe('removed workflow API', () => {
+  it('does not register workflow or provider callback routes', async () => {
+    const server = buildServer({ eventStore: ctx.store, bus, conductor });
     try {
-      const response = await server.inject({
-        method: 'POST',
-        url: '/workflow-services',
-        payload: serviceBody,
-      });
-      expect(response.statusCode).toBe(403);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it('rejects an invalid GitHub workflow webhook signature', async () => {
-    const server = buildServer({
-      eventStore: ctx.store,
-      workflowStore: new WorkflowStore(ctx.db),
-      workflowGithubWebhookSecret: 'test-webhook-secret',
-      bus,
-      conductor,
-    });
-    try {
-      const response = await server.inject({
-        method: 'POST',
-        url: '/providers/github/webhook',
-        headers: {
-          'x-hub-signature-256': `sha256:${'0'.repeat(64)}`,
-          'x-github-delivery': 'delivery-1',
-          'x-github-event': 'pull_request',
-        },
-        payload: { action: 'opened' },
-      });
-      expect(response.statusCode).toBe(401);
+      // A hidden UI alone must not leave the retired orchestration API callable.
+      for (const [method, url] of [
+        ['GET', '/workflows'],
+        ['POST', '/workflows'],
+        ['GET', '/workflows/retired'],
+        ['POST', '/workflow-services'],
+        ['POST', '/workflows/retired/authorize'],
+        ['POST', '/workflows/retired/steps/step/dispatch'],
+        ['POST', '/workflows/retired/cancel'],
+        ['POST', '/workflows/retired/resume'],
+        ['POST', '/workflows/retired/decisions'],
+        ['POST', '/workflows/retired/image-candidate'],
+        ['POST', '/providers/github/webhook'],
+        ['POST', '/internal/workflow/result'],
+      ] as const) {
+        expect(server.hasRoute({ method, url }), `${method} ${url}`).toBe(false);
+        const response = await server.inject({ method, url });
+        expect(response.statusCode, `${method} ${url}`).toBe(404);
+      }
     } finally {
       await server.close();
     }

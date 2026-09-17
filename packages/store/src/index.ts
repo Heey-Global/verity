@@ -79,21 +79,6 @@ export {
 } from './store.js';
 export { TranscriptStore } from './transcript.js';
 export {
-  WorkflowStore,
-  WorkflowConflictError,
-  WorkflowNotFoundError,
-  WorkflowAuthorizationError,
-  type WorkflowState,
-  type WorkflowStepState,
-  type WorkflowServiceDeployment,
-  type WorkflowServiceInput,
-  type CreateWorkflowInput,
-  type WorkflowView,
-  type HandoffResultInput,
-  type WorkflowGateCandidate,
-  type WorkflowOutboxItem,
-} from './workflows.js';
-export {
   migrationProvider,
   latestMigrationKey,
   earliestMigrationKey,
@@ -142,16 +127,5 @@ export type {
   DevServerDetectionStateTable,
   PublicPreviewSharesTable,
   UplinkPendingShareRemovalsTable,
-  WorkflowServicesTable,
-  WorkflowsTable,
-  WorkflowStepsTable,
-  WorkflowHandoffsTable,
-  WorkflowResultsTable,
-  WorkflowArtifactsTable,
-  WorkflowEventsTable,
-  WorkflowProviderInboxTable,
-  WorkflowDispatchOutboxTable,
-  WorkflowCommandsTable,
-  WorkflowPolicyDecisionsTable,
   ScheduleConfig,
 } from './schema.js';
