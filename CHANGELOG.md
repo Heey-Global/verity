@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/Heey-Global/verity/compare/v0.13.0...v0.13.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **secrets:** isolate trusted CLI secret files ([#443](https://github.com/Heey-Global/verity/issues/443)) ([8fa1726](https://github.com/Heey-Global/verity/commit/8fa1726a69da368860c87aea21fdc6bc9f53b386))
+
 ## [0.13.0](https://github.com/Heey-Global/verity/compare/v0.12.0...v0.13.0) (2026-09-17)
 
 
