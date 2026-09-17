@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.5](https://github.com/Heey-Global/verity/compare/v0.10.4...v0.10.5) (2026-09-17)
+
+
+### Bug Fixes
+
+* **provisioner:** rebuild images with external devcontainer inputs ([#413](https://github.com/Heey-Global/verity/issues/413)) ([85e2dbc](https://github.com/Heey-Global/verity/commit/85e2dbc6e546bf1f37825dbbb2b1b947e082b8e9))
+
 ## [0.10.4](https://github.com/Heey-Global/verity/compare/v0.10.3...v0.10.4) (2026-09-16)
 
 
