@@ -187,6 +187,11 @@ interface ServiceState {
   changeBaseline?: boolean;
   racedHead?: boolean;
   draft?: boolean;
+  reviews?: { id: number; state: string; commit_id: string }[];
+  loseDismiss?: boolean;
+  rollingHead?: string;
+  sourceManifestMissing?: boolean;
+  loseMetadata?: boolean;
 }
 
 function serviceFixture(changes: Partial<ServiceState> = {}) {
@@ -225,20 +230,20 @@ if(tool === 'git') {
   if(args[0] === 'ls-remote') {
     const ref=args.at(-1);
     if(ref.startsWith('refs/tags/')) { const tag=s.tags[ref.slice(10)]; out(tag ? tag.commit+'\\t'+ref : ''); }
-    out(s.racedHead ? 'b'.repeat(40)+'\\t'+ref : '');
+    out(s.racedHead ? 'b'.repeat(40)+'\\t'+ref : s.rollingHead ? s.rollingHead+'\\t'+ref : '');
   }
   if(args[0] === 'tag' && args[1] === '--list') out(Object.keys(s.tags).filter(t=>t.startsWith(args[2].replace('*',''))).join('\\n'));
   if(args.includes('tag') && args.includes('-a')) {
     const i=args.indexOf('-a'); s.tags[args[i+1]]={commit:args[i+2],message:args[args.indexOf('-m')+1]}; out('');
   }
   if(args[0] === 'tag') {s.tags[args[1]]={commit:args[2],message:''};out('');}
-  if(args[0] === 'push') out('');
+  if(args[0] === 'push') { if(args.at(-1).includes(':refs/heads/')) s.rollingHead=args.at(-1).split(':')[0]; out(''); }
   if(args[0] === 'rev-list') out(s.tags[args.at(-1)]?.commit ?? '');
   if(args[0] === 'for-each-ref') out(s.tags[args.at(-1).replace('refs/tags/','')]?.message ?? '');
-  if(args[0] === 'show') out(candidate);
+  if(args[0] === 'show') { if(s.sourceManifestMissing && s.rollingHead===sha) fail(); out(candidate); }
 }
 if(tool === 'gh') {
-  if(args[0] === 'api' && args.includes('graphql')) out({data:{createCommitOnBranch:{commit:{oid:sha,signature:{isValid:true}}}}});
+  if(args[0] === 'api' && args.includes('graphql')) {if(s.loseMetadata){s.loseMetadata=false;fail();}out({data:{createCommitOnBranch:{commit:{oid:sha,signature:{isValid:true}}}}});}
   if(args[0] === 'api') {
     const endpoint=args.find(a=>a.startsWith('repos/'));
     if(endpoint?.includes('/releases?')) {
@@ -246,11 +251,17 @@ if(tool === 'gh') {
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
       out([[{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[])]]);
     }
-    if(endpoint?.endsWith('/pulls')) out([{merged_at:'2026-01-01',head:{ref:'automation/promote-mobile-ota-1.33.0',sha}}]);
+    if(endpoint?.endsWith('/pulls')) out([{number:51,merged_at:'2026-01-01',head:{ref:'automation/promote-mobile-ota-1.33.0',sha}}]);
+    if(endpoint?.includes('/reviews?')) out([s.reviews ?? []]);
+    if(endpoint?.endsWith('/dismissals')) {
+      if(s.loseDismiss) fail();
+      const id=Number(endpoint.split('/').at(-2));
+      const review=s.reviews.find(r=>r.id===id);review.state='DISMISSED';out({});
+    }
     if(endpoint?.includes('/contents/')) out({content:Buffer.from(JSON.stringify(candidate)).toString('base64')});
     if(endpoint?.includes('/check-runs?')) out([{check_runs:[{id:123,name:'ci-checks',conclusion:'success',app:{slug:'github-actions'}}]}]);
   }
-  if(args[0] === 'pr' && args[1] === 'list') out(s.racedHead && args.includes('--head')?[{number:51,headRefOid:'c'.repeat(40),author:{login:'app/github-actions'}}]:[]);
+  if(args[0] === 'pr' && args[1] === 'list') out(args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
   if(args[0] === 'pr' && args[1] === 'create') out('https://github.com/example/repo/pull/51');
   if(args[0] === 'pr' || args[0] === 'workflow') out('');
   if(args[0] === 'release' && args[1] === 'create') {s.draft=true;out('');}
@@ -359,5 +370,66 @@ describe('OTA CLI interrupted external operations', () => {
     const result = service.run('promote');
     expect(result.stderr).toContain('Candidate is stale');
     expect(service.state().calls.some((call) => call.includes('channel:edit'))).toBe(false);
+  });
+  it('dismisses stale approvals before CI while preserving exact-head approval', () => {
+    const service = serviceFixture({
+      reviews: [
+        { id: 1, state: 'APPROVED', commit_id: 'b'.repeat(40) },
+        { id: 2, state: 'APPROVED', commit_id: sha },
+      ],
+    });
+    const result = service.run('stage');
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    const state = service.state();
+    expect(state.reviews?.map((review) => review.state)).toEqual(['DISMISSED', 'APPROVED']);
+    const dismissal = state.calls.findIndex((call) => call.includes('/reviews/1/dismissals'));
+    const dispatch = state.calls.findIndex((call) => call.startsWith('gh workflow run'));
+    expect(dismissal).toBeGreaterThan(-1);
+    expect(dispatch).toBeGreaterThan(dismissal);
+  });
+
+  it('does not make the new candidate mergeable if stale approval cannot be cleared', () => {
+    const service = serviceFixture({
+      loseDismiss: true,
+      reviews: [{ id: 1, state: 'APPROVED', commit_id: 'b'.repeat(40) }],
+    });
+    expect(service.run('stage').status).not.toBe(0);
+    expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
+  });
+
+  it('refuses promotion if an administrative merge left a prior approval active', () => {
+    const candidate = artifact();
+    const service = serviceFixture({
+      group,
+      reviews: [{ id: 1, state: 'APPROVED', commit_id: 'b'.repeat(40) }],
+      tags: {
+        [`ota-artifact/${candidate.tag}/${sha}`]: {
+          commit: sha,
+          message: JSON.stringify(candidate),
+        },
+      },
+    });
+    const result = service.run('promote');
+    expect(result.stderr).toContain('prior candidate approval');
+    expect(service.state().calls.some((call) => call.includes('channel:edit'))).toBe(false);
+  });
+  it('recovers an interrupted rolling reset whose source has no promotion manifest', () => {
+    const service = serviceFixture({
+      rollingHead: 'c'.repeat(40),
+      sourceManifestMissing: true,
+      loseMetadata: true,
+    });
+    const first = service.run('stage');
+    expect(first.status).not.toBe(0);
+    expect(service.state().rollingHead).toBe(sha);
+    expect(service.state().calls.some((call) => call.includes('graphql'))).toBe(true);
+    const retry = service.run('stage');
+    expect(retry.stderr).toBe('');
+    expect(retry.status).toBe(0);
+    expect(
+      service.state().calls.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
+    ).toHaveLength(1);
+    expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(true);
   });
 });

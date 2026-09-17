@@ -132,8 +132,9 @@ different bytes to the same candidate branch.
 A promotion manifest binds the runtime, source commit, planned version, EAS
 branch, exact update group, and release notes. The staging workflow updates the
 rolling PR only after preparing the candidate, then dispatches verification for
-its new head. Configure required checks and stale-review dismissal on the
-protected branch; an approval of an old PR head must not approve its replacement.
+its new head. Before dispatch, staging dismisses approvals of older heads and
+stops if dismissal fails. Promotion independently rejects any remaining stale
+approval. Configure required checks on the protected branch as well.
 
 Merging freezes the manifest used by promotion. Promotion validates that source,
 runtime, candidate reference, and EAS group agree, changes the TestFlight

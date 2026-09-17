@@ -1,7 +1,7 @@
 name: verity-mobile-ota
 
 # Publishes a patch-versioned EAS Update to an isolated staging branch on every
-# eligible merge to main, then opens a promotion PR. Merging that PR moves the
+# eligible merge to main, then updates one rolling promotion PR per runtime. Merging that PR moves the
 # TestFlight channel to the exact staged branch; this workflow never exposes an
 # unapproved bundle to installed TestFlight builds.
 #
@@ -9,10 +9,11 @@ name: verity-mobile-ota
 # release PR and GitHub-hosted TestFlight build instead. The explicit X.Y.0
 # runtime guarantees that patches only reach their native release line.
 #
-# Each successful publish gets the next patch in the current native line:
+# Each delivered promotion gets the next patch in the current native line:
 # `mobile-v1.4.0` is the TestFlight build, followed by OTA releases
 # `mobile-v1.4.1`, `mobile-v1.4.2`, and so on. The version is stamped into the
-# exported bundle, so the app always displays the exact release it is running.
+# exported bundle. Pending candidates share the planned patch version; their
+# source-specific branches and immutable records distinguish their exact bytes.
 #
 # Requires an EXPO_TOKEN repository secret (an Expo access token from
 # expo.dev -> account settings -> access tokens). The guard step below fails loudly

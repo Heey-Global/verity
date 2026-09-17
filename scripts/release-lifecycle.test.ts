@@ -13,6 +13,8 @@ function run(state: {
   stale?: boolean;
   mismatchedTag?: boolean;
 }) {
+  const train = 'backend';
+  const manifestName = `.release-please-manifest.${train}.json`;
   const cwd = mkdtempSync(join(tmpdir(), 'release-lifecycle-'));
   const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
   git('init', '-q');
@@ -20,19 +22,13 @@ function run(state: {
   git('config', 'user.name', 'Test');
   git('config', 'tag.gpgSign', 'false');
   git('config', 'commit.gpgSign', 'false');
-  writeFileSync(
-    join(cwd, '.release-please-manifest.backend.json'),
-    JSON.stringify({ '.release/backend': '1.2.3' }),
-  );
+  writeFileSync(join(cwd, manifestName), JSON.stringify({ '.release/backend': '1.2.3' }));
   git('add', '.');
   git('commit', '-qm', 'chore: fixture');
   const sha = git('rev-parse', 'HEAD');
   git('tag', 'v1.2.3');
   if (state.mismatchedTag) {
-    writeFileSync(
-      join(cwd, '.release-please-manifest.backend.json'),
-      JSON.stringify({ '.release/backend': '1.2.4' }),
-    );
+    writeFileSync(join(cwd, manifestName), JSON.stringify({ '.release/backend': '1.2.4' }));
     git('add', '.');
     git('commit', '-qm', 'chore: next version');
     git('tag', '--force', 'v1.2.3');
@@ -55,7 +51,7 @@ process.stdout.write(JSON.stringify(result));
   );
   const output = join(cwd, 'output');
   writeFileSync(output, '');
-  const result = spawnSync(process.execPath, [script, 'backend', sha], {
+  const result = spawnSync(process.execPath, [script, train, sha], {
     cwd,
     encoding: 'utf8',
     env: {

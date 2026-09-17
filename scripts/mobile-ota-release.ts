@@ -50,8 +50,14 @@ interface Pull {
   author: { login: string };
 }
 interface AssociatedPull {
+  number: number;
   merged_at: string | null;
   head: { ref: string; sha: string };
+}
+interface Review {
+  id: number;
+  state: string;
+  commit_id: string;
 }
 interface CheckPage {
   check_runs: { id: number; name: string; conclusion: string; app: { slug: string } }[];
@@ -214,6 +220,16 @@ function createPromotionCommit(...args: string[]): CommitResult {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 1000);
     }
   }
+}
+
+function staleApprovals(number: number, head: string): Review[] {
+  return api<Review[][]>(
+    '--paginate',
+    '--slurp',
+    `repos/${repository()}/pulls/${number}/reviews?per_page=100`,
+  )
+    .flat()
+    .filter((review) => review.state === 'APPROVED' && review.commit_id !== head);
 }
 
 function published(runtime: string) {
@@ -389,7 +405,21 @@ function stage(runtime: string) {
   const expectedHead = open[0]?.headRefOid ?? git('rev-parse', commit);
   if (open[0]) {
     git('fetch', 'origin', branch);
-    const previous = validateCandidate(JSON.parse(git('show', `FETCH_HEAD:${manifestPath}`)));
+    // A prior run can stop after resetting this branch to the source but before
+    // GraphQL creates its metadata commit. That source may have no manifest (or
+    // an older schema). Only the immutable artifact record authorizes recovery.
+    const interruptedRecord = `ota-artifact/${candidate.tag}/${expectedHead}`;
+    const recorded = git('for-each-ref', '--format=%(contents)', `refs/tags/${interruptedRecord}`);
+    const previous = validateCandidate(
+      JSON.parse(recorded || git('show', `FETCH_HEAD:${manifestPath}`)),
+    );
+    if (
+      recorded &&
+      (previous.commit !== expectedHead ||
+        previous.runtime !== runtime ||
+        git('rev-list', '-n', '1', interruptedRecord) !== expectedHead)
+    )
+      throw new Error('Interrupted rolling reset does not match its immutable artifact');
     git('merge-base', '--is-ancestor', previous.commit, commit);
   }
   // Reset the rolling branch onto the candidate source before writing metadata;
@@ -467,6 +497,18 @@ function stage(runtime: string) {
         .split('/')
         .at(-1),
     );
+  // The new commit has no CI verdict yet. Clear approvals for earlier candidates
+  // before starting CI so stale approval cannot make this candidate mergeable.
+  for (const review of staleApprovals(number, result.data.createCommitOnBranch.commit.oid)) {
+    gh(
+      'api',
+      '--method',
+      'PUT',
+      `repos/${repository()}/pulls/${number}/reviews/${review.id}/dismissals`,
+      '-f',
+      'message=The OTA candidate changed. Review the current immutable update before approving again.',
+    );
+  }
   gh(
     'workflow',
     'run',
@@ -535,6 +577,10 @@ function promote() {
       value.merged_at && value.head.ref === `automation/promote-mobile-ota-${candidate.runtime}`,
   );
   if (!pr) throw new Error('Promotion requires a merged rolling candidate PR');
+  if (staleApprovals(pr.number, pr.head.sha).length)
+    throw new Error(
+      'A prior candidate approval is still active; the merged candidate requires a fresh review',
+    );
   const checkedManifest = api<{ content: string }>(
     `repos/${repository()}/contents/${manifestPath}?ref=${pr.head.sha}`,
   );

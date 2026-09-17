@@ -97,10 +97,14 @@ export async function compareNativeRefs(baseRef, headRef = 'HEAD') {
       encoding: 'utf8',
     }).trim(),
   );
-  const paths = execFileSync('git', ['diff', '--name-only', '-z', refs[0], refs[1], '--'], {
-    cwd: root,
-    encoding: 'utf8',
-  })
+  const paths = execFileSync(
+    'git',
+    ['diff', '--no-renames', '--name-only', '-z', refs[0], refs[1], '--'],
+    {
+      cwd: root,
+      encoding: 'utf8',
+    },
+  )
     .split('\0')
     .filter(Boolean);
   /** @type {string | undefined} */
