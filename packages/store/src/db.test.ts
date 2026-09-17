@@ -51,6 +51,54 @@ describe('migrateToLatest', () => {
     }
   });
 
+  it('removes retired workflow tables on upgrade without recreating them on fresh installs', async () => {
+    const { db, close } = createRawDb();
+    const workflowTables = async () =>
+      (await db.introspection.getTables()).filter(
+        (table) => table.name === 'workflows' || table.name.startsWith('workflow_'),
+      );
+    try {
+      const migrator = new Migrator({ db, provider: migrationProvider });
+      const beforeRemoval = await migrator.migrateTo('0096_opencode_model_selection');
+      expect(beforeRemoval.error).toBeUndefined();
+      // Fresh installations must not briefly resurrect the abandoned schema.
+      expect(await workflowTables()).toEqual([]);
+
+      // Existing installations require child-first removal despite fresh installs skipping creation.
+      await db.schema
+        .createTable('workflow_services')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .execute();
+      await db.schema
+        .createTable('workflows')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('service_id', 'text', (c) => c.references('workflow_services.id'))
+        .execute();
+      await db.schema
+        .createTable('workflow_steps')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('workflow_id', 'text', (c) => c.references('workflows.id'))
+        .execute();
+      await sql`insert into workflow_services (id) values ('retired-service')`.execute(db);
+      await sql`insert into workflows (id, service_id) values ('retired-workflow', 'retired-service')`.execute(
+        db,
+      );
+      await sql`insert into workflow_steps (id, workflow_id) values ('retired-step', 'retired-workflow')`.execute(
+        db,
+      );
+
+      await migrateToLatest(db);
+      expect(await workflowTables()).toEqual([]);
+      expect((await db.introspection.getTables()).some((table) => table.name === 'sessions')).toBe(
+        true,
+      );
+      await migrateToLatest(db);
+      expect(await workflowTables()).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
   it('throws when a migration fails (never half-migrates)', async () => {
     const { db, close } = createRawDb();
     try {

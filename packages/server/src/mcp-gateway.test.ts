@@ -110,30 +110,6 @@ describe('MCP gateway — handshake and discovery (ADR 0014 D1)', () => {
     expect(tools[1]?.description).toContain('root-owned program');
   });
 
-  it('offers delivery creation only to the Control project identity', async () => {
-    const { gateway } = harness({
-      extraToolsForProject: (projectId) =>
-        projectId === 'verity-control' ? ['verity_create_delivery'] : [],
-    });
-    const list = async (projectId: string): Promise<string[]> => {
-      const response = await gateway.handle({
-        projectId,
-        token: 'session-token',
-        body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
-      });
-      return (response.body as { result: { tools: { name: string }[] } }).result.tools.map(
-        (tool) => tool.name,
-      );
-    };
-
-    await expect(list('project-1')).resolves.toEqual(['verity_http_request', 'verity_secret_run']);
-    await expect(list('verity-control')).resolves.toEqual([
-      'verity_http_request',
-      'verity_secret_run',
-      'verity_create_delivery',
-    ]);
-  });
-
   it('offers the session tools only to the Control project, and refuses them elsewhere', async () => {
     const { gateway, invokeTool } = harness({
       extraToolsForProject: (projectId) =>
@@ -181,6 +157,43 @@ describe('MCP gateway — handshake and discovery (ADR 0014 D1)', () => {
     expect((refusedListing.body as { error: { message: string } }).error.message).toBe(
       'unknown tool verity_list_sessions',
     );
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
+  it('keeps explicitly creating a project session behind handoff approval', async () => {
+    const { gateway, requestApproval, invokeTool } = harness({
+      extraToolsForProject: (projectId) =>
+        projectId === 'verity-control' ? ['verity_session_handoff'] : [],
+    });
+    const request = {
+      target: { newSession: { project: 'acme/website' } },
+      title: 'Investigate worker failure',
+      briefing: 'Reproduce the failure and implement a repair.',
+    };
+    await gateway.handle({
+      projectId: 'verity-control',
+      token: 'session-token',
+      body: call(request, 'verity_session_handoff'),
+    });
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: 'verity_session_handoff', input: request }),
+    );
+    expect(invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: 'verity_session_handoff', request }),
+    );
+  });
+
+  it('refuses the retired delivery tool even for Control', async () => {
+    const { gateway, requestApproval, invokeTool } = harness();
+    const response = await gateway.handle({
+      projectId: 'verity-control',
+      token: 'session-token',
+      body: call({}, 'verity_create_delivery'),
+    });
+    expect((response.body as { error: { message: string } }).error.message).toBe(
+      'unknown tool verity_create_delivery',
+    );
+    expect(requestApproval).not.toHaveBeenCalled();
     expect(invokeTool).not.toHaveBeenCalled();
   });
 

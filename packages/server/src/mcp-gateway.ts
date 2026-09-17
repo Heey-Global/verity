@@ -11,13 +11,11 @@ import {
   type GatewayToolName,
 } from '@verity/secret-contracts';
 import {
-  CREATE_DELIVERY_TOOL_DESCRIPTION,
   LIST_SESSIONS_TOOL_DESCRIPTION,
   SESSION_HANDOFF_TOOL_DESCRIPTION,
   SESSION_PROGRESS_TOOL_DESCRIPTION,
   RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
   PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
-  createDeliveryRequestSchema,
   listSessionsRequestSchema,
   sessionHandoffRequestSchema,
   sessionProgressRequestSchema,
@@ -244,7 +242,6 @@ export interface McpGatewayDeps {
 const TOOL_SCHEMAS = {
   verity_http_request: brokeredHttpRequestSchema,
   verity_secret_run: trustedCliRequestSchema,
-  verity_create_delivery: createDeliveryRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
   verity_session_progress: sessionProgressRequestSchema,
@@ -272,7 +269,6 @@ const TOOL_SCHEMAS = {
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_http_request: BROKERED_HTTP_TOOL_DESCRIPTION,
   verity_secret_run: TRUSTED_CLI_TOOL_DESCRIPTION,
-  verity_create_delivery: CREATE_DELIVERY_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
   verity_session_progress: SESSION_PROGRESS_TOOL_DESCRIPTION,
