@@ -231,9 +231,15 @@ export function trustedCliRetrySafeAfterUnlock(tool: ToolCall): boolean {
  * needs exact sentinels, not the general preview formatter or its regexes. */
 function retryDiagnosticText(result: unknown): string | null {
   if (typeof result === 'string') return result;
-  if (!Array.isArray(result)) return null;
+  if (Array.isArray(result)) return retryDiagnosticTextBlocks(result);
+  if (!result || typeof result !== 'object') return null;
+  const content = (result as { content?: unknown }).content;
+  return Array.isArray(content) ? retryDiagnosticTextBlocks(content) : null;
+}
+
+function retryDiagnosticTextBlocks(blocks: readonly unknown[]): string | null {
   const parts: string[] = [];
-  for (const block of result) {
+  for (const block of blocks) {
     if (
       block &&
       typeof block === 'object' &&

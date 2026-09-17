@@ -228,6 +228,16 @@ describe('toolCallView', () => {
           name: 'verity_secret_run',
           state: 'error',
           input: {},
+          result: { content: [{ type: 'text', text: safe }], isError: true },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({
+          name: 'verity_secret_run',
+          state: 'error',
+          input: {},
           result: [{ type: 'text', text: safe }],
         }),
       ),
