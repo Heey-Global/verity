@@ -172,6 +172,8 @@ export { TASKS_AGENT_SEED_PROMPT } from './ui/tasksAgent.js';
 export { composeTranscript, pickRecognitionLocale, recognitionErrorMessage } from './dictation.js';
 export {
   toolCallView,
+  trustedCliRetrySafeAfterUnlock,
+  trustedCliUnlockCandidate,
   type ToolCallTone,
   type ToolCallView,
   type ToolImage,

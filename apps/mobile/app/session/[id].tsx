@@ -78,6 +78,7 @@ import {
   sessionFilePathFromLocalLink,
   splitRichText,
   toolCallView,
+  trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
   type RestoredQueuedTurn,
@@ -351,12 +352,15 @@ function isSingleInsertedNewline(previous: string, next: string): boolean {
 // in sync with styles.msgNav(Btn).
 const NAV_STACK_HALF = 65;
 const SPLIT_SCREEN_MIN_WIDTH = 900;
+const RETRY_TRUSTED_CLI_AFTER_UNLOCK =
+  'Retry only the trusted CLI call immediately preceding this unlock. The broker response confirmed that the command was not started.';
 
 export default function SessionScreen() {
-  const { id, targetMessageId, targetSearchQuery } = useLocalSearchParams<{
+  const { id, targetMessageId, targetSearchQuery, retrySecret } = useLocalSearchParams<{
     id: string;
     targetMessageId?: string;
     targetSearchQuery?: string;
+    retrySecret?: string;
   }>();
   const client = useMemo(() => createVerityClient(), []);
   const baseUrl = getVerityBaseUrl();
@@ -384,6 +388,7 @@ export default function SessionScreen() {
         id={id}
         targetMessageId={targetMessageId}
         targetSearchQuery={targetSearchQuery}
+        retrySecret={retrySecret}
       />
     );
   }
@@ -395,6 +400,7 @@ export default function SessionScreen() {
       baseUrl={baseUrl}
       initialTargetMessageId={targetMessageId}
       initialTargetSearchQuery={targetSearchQuery}
+      retrySecret={retrySecret}
     />
   );
 }
@@ -412,10 +418,12 @@ function SplitScreenRedirect({
   id,
   targetMessageId,
   targetSearchQuery,
+  retrySecret,
 }: {
   id: string;
   targetMessageId?: string;
   targetSearchQuery?: string;
+  retrySecret?: string;
 }) {
   useFocusEffect(
     useCallback(() => {
@@ -425,9 +433,10 @@ function SplitScreenRedirect({
           selected: id,
           ...(targetMessageId ? { targetMessageId } : {}),
           ...(targetSearchQuery ? { targetSearchQuery } : {}),
+          ...(retrySecret ? { retrySecret } : {}),
         },
       });
-    }, [id, targetMessageId, targetSearchQuery]),
+    }, [id, retrySecret, targetMessageId, targetSearchQuery]),
   );
   return null;
 }
@@ -489,6 +498,7 @@ export function SessionChat({
   embedded,
   initialTargetMessageId,
   initialTargetSearchQuery,
+  retrySecret,
 }: {
   client: VerityClient;
   sessionId: string;
@@ -496,6 +506,7 @@ export function SessionChat({
   embedded?: boolean;
   initialTargetMessageId?: string;
   initialTargetSearchQuery?: string;
+  retrySecret?: string;
 }) {
   const insets = useSafeAreaInsets();
   const { theme } = useUnistyles();
@@ -2171,6 +2182,96 @@ export function SessionChat({
   // A dead session (worktree gone) can't take turns — disable sending proactively
   // (`resumable === false`); `undefined` (detail still loading) stays enabled.
   const dead = resumable === false;
+  const checkedSecretFailuresRef = useRef(new Set<string>());
+  const retriedSecretFailuresRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!loaded || retrySecret) return;
+    const failedCall = trustedCliUnlockCandidate(session.messages);
+    if (!failedCall || checkedSecretFailuresRef.current.has(failedCall.id)) return;
+    checkedSecretFailuresRef.current.add(failedCall.id);
+
+    let active = true;
+    let settled = false;
+    void client
+      .getSecretStatus()
+      .then((status) => {
+        if (!active) return;
+        settled = true;
+        if (status !== 'sealed') return;
+        const returnTo = embedded
+          ? `/?selected=${encodeURIComponent(sessionId)}&retrySecret=${encodeURIComponent(failedCall.id)}`
+          : `/session/${encodeURIComponent(sessionId)}?retrySecret=${encodeURIComponent(failedCall.id)}`;
+        router.push({
+          pathname: '/unlock-device',
+          params: { returnTo, serverSecret: '1' },
+        });
+      })
+      .catch(() => {
+        if (active) checkedSecretFailuresRef.current.delete(failedCall.id);
+      });
+    return () => {
+      active = false;
+      if (!settled) checkedSecretFailuresRef.current.delete(failedCall.id);
+    };
+  }, [client, embedded, loaded, retrySecret, session.messages, sessionId]);
+
+  useEffect(() => {
+    if (!retrySecret || !loaded || sending || busy || dead) return;
+    const failedCall = trustedCliUnlockCandidate(session.messages);
+    if (failedCall?.id !== retrySecret) {
+      router.setParams({ retrySecret: undefined });
+      return;
+    }
+    if (retriedSecretFailuresRef.current.has(retrySecret)) return;
+    retriedSecretFailuresRef.current.add(retrySecret);
+
+    let active = true;
+    let settled = false;
+    void client
+      .getSecretStatus()
+      .then((status) => {
+        if (!active) return;
+        settled = true;
+        if (status === 'sealed') {
+          retriedSecretFailuresRef.current.delete(retrySecret);
+          const returnTo = embedded
+            ? `/?selected=${encodeURIComponent(sessionId)}&retrySecret=${encodeURIComponent(retrySecret)}`
+            : `/session/${encodeURIComponent(sessionId)}?retrySecret=${encodeURIComponent(retrySecret)}`;
+          router.push({
+            pathname: '/unlock-device',
+            params: { returnTo, serverSecret: '1' },
+          });
+          return;
+        }
+        if (status !== 'unlocked') {
+          retriedSecretFailuresRef.current.delete(retrySecret);
+          router.setParams({ retrySecret: undefined });
+          return;
+        }
+        router.setParams({ retrySecret: undefined });
+        sendTurn(RETRY_TRUSTED_CLI_AFTER_UNLOCK);
+      })
+      .catch(() => {
+        if (active) retriedSecretFailuresRef.current.delete(retrySecret);
+      });
+    return () => {
+      active = false;
+      if (!settled) retriedSecretFailuresRef.current.delete(retrySecret);
+    };
+  }, [
+    busy,
+    client,
+    dead,
+    embedded,
+    loaded,
+    retrySecret,
+    sendTurn,
+    sending,
+    session.messages,
+    sessionId,
+  ]);
+
   // Sendable with text OR at least one attachment (a bare screenshot is valid).
   const canSend =
     (draft.trim().length > 0 || attachments.length > 0) &&

@@ -140,10 +140,11 @@ function SessionList({ client }: { client: VerityClient }) {
   // A `selected` route param preselects a session into the right pane — this is how
   // a freshly-started session (new.tsx → /session/[id] → Redirect on wide) and any
   // deep link land in the unified split layout instead of the old per-route sidebar.
-  const { selected, targetMessageId, targetSearchQuery } = useLocalSearchParams<{
+  const { selected, targetMessageId, targetSearchQuery, retrySecret } = useLocalSearchParams<{
     selected?: string;
     targetMessageId?: string;
     targetSearchQuery?: string;
+    retrySecret?: string;
   }>();
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
   const lastSelectedParamRef = useRef(selected);
@@ -734,6 +735,7 @@ function SessionList({ client }: { client: VerityClient }) {
             embedded
             initialTargetMessageId={targetMessageId}
             initialTargetSearchQuery={targetSearchQuery}
+            retrySecret={retrySecret}
           />
         ) : (
           <RightPanePlaceholder />
