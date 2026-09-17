@@ -14,7 +14,6 @@ import {
   type ProjectRecord,
   type ProviderLimitRow,
   type ProviderLimitState,
-  type SandboxUpdate,
   type SessionSummary,
   isServerSecretSealedError,
   markerAttention,
@@ -24,7 +23,7 @@ import {
   quotaMeterLevel,
   projectBadge,
   projectRepoRef,
-  isSecuritySandboxUpdate,
+  sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   subscribeProjectStatusMutations,
   subscribeDevServerStatusMutations,
@@ -413,10 +412,23 @@ function SessionList({ client }: { client: VerityClient }) {
     (project: ProjectRecord) => {
       const update = project.sandboxUpdate;
       if (!sandboxUpdateNeedsAttention(update)) return;
-      Alert.alert('Retry sandbox update?', sandboxUpdateMessage(project, update), [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Update', onPress: () => void updateProjectSandbox(project) },
-      ]);
+      Alert.alert(
+        // "Retry" is a claim about history and only one of these two has any:
+        // a blocked update has never been attempted, it has been held back.
+        update.turnBlocked ? 'Update waiting for a turn' : 'Retry sandbox update?',
+        sandboxUpdateAlertMessage(project, update),
+        // Dismiss-only while the turn holds it off. `updateProjectSandbox` posts
+        // the same recreate the Server refuses for as long as a turn is running
+        // (SBX-1), so an Update button here is an offer that cannot be accepted:
+        // every press returns the 409 and surfaces as "Update failed", which reads
+        // like a broken sandbox rather than a turn the operator has to end first.
+        update.turnBlocked
+          ? [{ text: 'OK', style: 'cancel' }]
+          : [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Update', onPress: () => void updateProjectSandbox(project) },
+            ],
+      );
     },
     [updateProjectSandbox],
   );
@@ -1533,15 +1545,6 @@ async function confirmDeleteSession(
         },
       },
     ],
-  );
-}
-
-function sandboxUpdateMessage(project: ProjectRecord, update: SandboxUpdate): string {
-  const security = isSecuritySandboxUpdate(update);
-  return (
-    `Verity could not update ${project.owner}/${project.repo}'s sandbox on its own — ` +
-    `it is still running the old image${security ? ', which is missing a security fix' : ''}. ` +
-    'This will recreate its container and retry.'
   );
 }
 

@@ -764,15 +764,25 @@ function EnvironmentSection({
 
   const runUpdate = useCallback(() => {
     if (!updateSummary || working !== undefined) return;
+    const blocked = update?.turnBlocked === true;
     Alert.alert(
-      'Update project?',
-      isSecuritySandboxUpdate(update)
-        ? 'This recreates the project environment and applies the pending security update.'
-        : 'This recreates the project environment and applies the pending update.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Update', onPress: () => recreate(false, 'Could not update project') },
-      ],
+      blocked ? 'Update waiting for a turn' : 'Update project?',
+      blocked
+        ? 'A turn is running in this project. Recreating the environment now would end it — cancel the turn first, then update.'
+        : isSecuritySandboxUpdate(update)
+          ? 'This recreates the project environment and applies the pending security update.'
+          : 'This recreates the project environment and applies the pending update.',
+      // No Update button while a turn holds the update off, and not out of
+      // caution: the Server refuses this recreate for as long as the turn runs
+      // (SBX-1), so the button could only ever produce the 409 the message just
+      // explained. An action that cannot be taken is worse than none — it invites
+      // the operator to read the refusal as a fault.
+      blocked
+        ? [{ text: 'OK', style: 'cancel' }]
+        : [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Update', onPress: () => recreate(false, 'Could not update project') },
+          ],
     );
   }, [recreate, update, updateSummary, working]);
 

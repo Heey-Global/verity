@@ -52,6 +52,7 @@ export {
 export { projectDisplayName, projectRepoRef } from './ui/projectName.js';
 export {
   isSecuritySandboxUpdate,
+  sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   type SandboxUpdateIndicator,
   sandboxUpdateNeedsAttention,

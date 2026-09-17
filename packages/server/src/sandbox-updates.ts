@@ -45,6 +45,27 @@ export interface SandboxUpdateStatus {
    *  attempts. The route that serializes a project overlays the verdict from
    *  `Provisioner.unrepairedSandboxes()`. */
   selfRepair: SandboxSelfRepairState;
+  /**
+   * Whether this update is waiting on a turn rather than on Verity.
+   *
+   * The reconciler never recreates a sandbox out from under a live turn, and for
+   * an image update that deferral is unbounded — the sandbox is fully usable, so
+   * nothing justifies killing working agent to swap it. A project that never goes
+   * idle therefore waits forever, and `converging` alone would keep promising a
+   * rebuild that cannot start for as long as it does.
+   *
+   * Set once the wait passes `IMAGE_UPDATE_DEFER_REPORT_AFTER_MS`, so it means "long
+   * enough that someone should know", not merely "deferred this tick". Like
+   * {@link selfRepair} the checker always reports `false` — it compares images
+   * and knows nothing about turns — and the route overlays the answer from
+   * `Provisioner.turnBlockedSandboxes()`.
+   *
+   * Additive rather than a third {@link SandboxSelfRepairState}: the app parses
+   * that field as a closed enum, so a new member would fail the whole project
+   * list on every already-installed client. An older app ignores this field and
+   * still gets the `stalled` the route sets alongside it.
+   */
+  turnBlocked: boolean;
 }
 
 /**
@@ -93,6 +114,7 @@ const CURRENT: SandboxUpdateStatus = {
   targetVersion: null,
   targetRevision: null,
   selfRepair: 'converging',
+  turnBlocked: false,
 };
 
 /**
@@ -329,8 +351,13 @@ export function statusForInspect(
       reason: 'devcontainer toolkit update available',
       current: toolkit,
       target: args.toolkitFeatureRef,
-      kind: updateKind(labels),
-      category: updateCategory(labels),
+      // The target here is a Feature ref, whose labels nothing in this module
+      // resolves — so this is the base image's class, not the toolkit's. Still the
+      // closer of the two available answers: the base image and the toolkit ship
+      // from the same release, while the CONTAINER's labels describe the build
+      // being replaced. Reads `normal` until a Feature-side class exists to ask.
+      kind: updateKind(args.targetLabels),
+      category: updateCategory(args.targetLabels),
       currentVersion: imageVersion(labels),
       currentRevision: imageRevision(labels),
       targetVersion,
@@ -353,7 +380,13 @@ export function statusForInspect(
           ? 'missing signing broker token metadata'
           : 'stale signing broker token',
       target: 'current signing broker token',
-      kind: updateKind(labels),
+      // Not read from any labels, unlike every other branch here. What this one
+      // offers is a re-issued token, not an image, so the target image's class
+      // says nothing about it — inheriting it would let an ordinary token refresh
+      // announce itself as a security update because some unrelated release
+      // happened to be one. The container's own labels, which this used to read,
+      // were no better: they describe the build being replaced.
+      kind: 'normal',
       category: 'configuration',
     });
   }
@@ -385,8 +418,8 @@ export function statusForInspect(
         reason: 'sandbox image update available',
         current: image,
         target: args.defaultProjectImage,
-        kind: updateKind(labels),
-        category: updateCategory(labels),
+        kind: updateKind(args.targetLabels),
+        category: updateCategory(args.targetLabels),
         currentVersion: imageVersion(labels),
         currentRevision: imageRevision(labels),
         targetVersion,
@@ -406,8 +439,8 @@ export function statusForInspect(
         reason: 'sandbox image update available',
         current: image,
         target: args.defaultProjectImage,
-        kind: updateKind(labels),
-        category: updateCategory(labels),
+        kind: updateKind(args.targetLabels),
+        category: updateCategory(args.targetLabels),
         currentVersion: imageVersion(labels),
         currentRevision: imageRevision(labels),
         targetVersion,
@@ -450,11 +483,30 @@ function devcontainerToolkitRef(labels: Record<string, string>): string | null {
   return null;
 }
 
-function updateKind(labels: Record<string, string>): SandboxUpdateKind {
-  return labels['dev.heey.verity.update.kind'] === 'security' ? 'security' : 'normal';
+/**
+ * The security class of the update being OFFERED, read off the target image.
+ *
+ * The labels to ask are the target's, never the running container's. The label is
+ * stamped at build time onto the artifact it describes (ADR 0004), so a container
+ * carrying it is one that already HAS the security fix — reading it there answers
+ * the opposite question and answers it backwards: every sandbox that had been
+ * updated would report a security update pending, and the one still running the
+ * vulnerable image would report a normal one, which is the single case the
+ * distinction exists for.
+ *
+ * Nothing in this repository stamps the label yet (no LABEL in
+ * `deploy/verity-sandbox.Dockerfile` or its workflow), so today every answer here
+ * is `normal`/`software`. That is the honest answer for a fleet whose publisher
+ * does not classify its releases — and it is `undefined`-safe for the same
+ * reason the target itself is optional: a registry that could not be reached
+ * yields no labels, and an unreachable registry is not evidence of a security
+ * release.
+ */
+function updateKind(labels: Record<string, string> | undefined): SandboxUpdateKind {
+  return labels?.['dev.heey.verity.update.kind'] === 'security' ? 'security' : 'normal';
 }
 
-function updateCategory(labels: Record<string, string>): SandboxUpdateCategory {
+function updateCategory(labels: Record<string, string> | undefined): SandboxUpdateCategory {
   return updateKind(labels) === 'security' ? 'security' : 'software';
 }
 
@@ -518,6 +570,7 @@ function available(args: {
     targetVersion: args.targetVersion ?? null,
     targetRevision: args.targetRevision ?? null,
     selfRepair: 'converging',
+    turnBlocked: false,
   };
 }
 
@@ -534,5 +587,6 @@ function unknown(reason: string): SandboxUpdateStatus {
     targetVersion: null,
     targetRevision: null,
     selfRepair: 'converging',
+    turnBlocked: false,
   };
 }

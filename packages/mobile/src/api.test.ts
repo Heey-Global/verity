@@ -2934,4 +2934,22 @@ describe('projectRecordSchema sandbox update', () => {
     });
     expect(parsed.sandboxUpdate?.selfRepair).toBe('stalled');
   });
+
+  it('reads a Server that predates turnBlocked as not blocked', () => {
+    // Same N-1 window, and the reason `turnBlocked` is a boolean rather than a
+    // third `selfRepair` member: this schema uses a closed enum and `.parse()`,
+    // so an installed app meeting an unknown member would throw and lose the
+    // entire project list — not the one badge, the list.
+    expect(
+      projectRecordSchema.parse({ ...project, sandboxUpdate }).sandboxUpdate?.turnBlocked,
+    ).toBe(false);
+  });
+
+  it('keeps the blocked report a newer Server does send', () => {
+    const parsed = projectRecordSchema.parse({
+      ...project,
+      sandboxUpdate: { ...sandboxUpdate, selfRepair: 'stalled', turnBlocked: true },
+    });
+    expect(parsed.sandboxUpdate?.turnBlocked).toBe(true);
+  });
 });

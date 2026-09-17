@@ -666,6 +666,7 @@ const AVAILABLE_SANDBOX_UPDATE: SandboxUpdateStatus = {
   targetVersion: null,
   targetRevision: null,
   selfRepair: 'converging',
+  turnBlocked: false,
 };
 
 /**
@@ -3891,6 +3892,113 @@ describe('GET /projects (#174)', () => {
       ).json();
       expect(patched.sandboxUpdate.selfRepair).toBe(expected);
     }
+    await server.close();
+  });
+
+  it('reports a turn-blocked update on every surface, as stalled AND as blocked', async () => {
+    // Two silent failures meet here. The first: the reconciler defers the
+    // recreate around a live turn forever by design, and without this overlay the
+    // app is told `converging` — "Verity is rebuilding this sandbox" — about a
+    // rebuild that starts only once the operator cancels the turn.
+    //
+    // The second is why `selfRepair` is set as well. Installed apps parse that
+    // field with a closed enum, so the blocked state cannot BE a new member; the
+    // glyph those apps already draw is the `stalled` one, and dropping it here
+    // would leave every app older than this change silent about a wait only the
+    // operator can end. Newer apps read `turnBlocked` and say something truer.
+    for (const id of ['p-blocked', 'p-fine']) {
+      await ctx.store.upsertProject({
+        id,
+        owner: 'heey-global',
+        repo: id,
+        containerName: `dev-heey-global--${id}`,
+        state: 'active',
+      });
+    }
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sandboxUpdates: availableSandboxUpdates(),
+      provisioner: {
+        provision: vi.fn(),
+        unrepairedSandboxes: () => new Set<string>(),
+        turnBlockedSandboxes: () => new Set(['p-blocked']),
+      },
+    });
+
+    const overview: Array<{ id: string; sandboxUpdate: SandboxUpdateStatus }> = (
+      await server.inject({ method: 'GET', url: '/projects' })
+    ).json();
+    expect(
+      Object.fromEntries(
+        overview.map(
+          (project) =>
+            [
+              project.id,
+              [project.sandboxUpdate.selfRepair, project.sandboxUpdate.turnBlocked],
+            ] as const,
+        ),
+      ),
+    ).toEqual({ 'p-blocked': ['stalled', true], 'p-fine': ['converging', false] });
+
+    for (const [id, blocked] of [
+      ['p-blocked', true],
+      ['p-fine', false],
+    ] as const) {
+      const detail: { project: { sandboxUpdate: SandboxUpdateStatus } } = (
+        await server.inject({ method: 'GET', url: `/projects/${id}` })
+      ).json();
+      expect(detail.project.sandboxUpdate.turnBlocked).toBe(blocked);
+
+      const patched: { sandboxUpdate: SandboxUpdateStatus } = (
+        await server.inject({
+          method: 'PATCH',
+          url: `/projects/${id}/setup-status`,
+          payload: { status: 'complete' },
+        })
+      ).json();
+      expect(patched.sandboxUpdate.turnBlocked).toBe(blocked);
+    }
+    await server.close();
+  });
+
+  it('does not report a blocked turn about a sandbox that has nothing to update', async () => {
+    // The reconciler's deferral counter is pruned a tick after the turn ends or
+    // the update lands, so it can still name a project whose update has already
+    // gone through. Overlaying the report onto a `current` sandbox would tell the
+    // operator to cancel a turn to apply an update that is no longer missing.
+    const project = await ctx.store.upsertProject({
+      id: 'p-current',
+      owner: 'heey-global',
+      repo: 'current',
+      containerName: 'dev-heey-global--current',
+      state: 'active',
+    });
+    const current: SandboxUpdateStatus = { ...AVAILABLE_SANDBOX_UPDATE, state: 'current' };
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sandboxUpdates: {
+        status: vi.fn(async () => current),
+        statusAll: vi.fn(async () => new Map([[project.id, current]])),
+      },
+      provisioner: {
+        provision: vi.fn(),
+        unrepairedSandboxes: () => new Set<string>(),
+        turnBlockedSandboxes: () => new Set([project.id]),
+      },
+    });
+
+    const body: Array<{ sandboxUpdate: SandboxUpdateStatus }> = (
+      await server.inject({ method: 'GET', url: '/projects' })
+    ).json();
+    expect(body[0]?.sandboxUpdate).toMatchObject({
+      state: 'current',
+      selfRepair: 'converging',
+      turnBlocked: false,
+    });
     await server.close();
   });
 

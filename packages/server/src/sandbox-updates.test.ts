@@ -121,6 +121,32 @@ describe('statusForInspect', () => {
     // deploy/verity-sandbox.Dockerfile or its workflow — so the test synthesizes
     // it, and posing it on the image Verity actually publishes is what keeps the
     // consumer side honest once the producer lands.
+    //
+    // The label belongs on the TARGET, which is the only image whose publisher
+    // can say anything about the update being offered.
+    expect(
+      statusForInspect(
+        inspect({
+          image: 'ghcr.io/heey-global/verity/verity-sandbox:2026-01-01',
+          labels: { 'org.opencontainers.image.title': 'heey-global/verity-sandbox' },
+        }),
+        {
+          defaultProjectImage: DEFAULT_IMAGE,
+          toolkitFeatureRef: TOOLKIT,
+          targetLabels: { 'dev.heey.verity.update.kind': 'security' },
+        },
+      ),
+    ).toMatchObject({ state: 'available', kind: 'security' });
+  });
+
+  it('does not call an update security because the image being replaced was', () => {
+    // The silent failure this guards: reading the class off the RUNNING container
+    // inverts the question. That label describes the update that produced the
+    // sandbox the project is already on — a fix it HAS, not one it is missing. A
+    // project patched last month would then flag a security update forever, while
+    // the release that actually carries a CVE fix reports `normal` until the
+    // recreate lands and the label rides along one update too late. Both errors
+    // are silent: the state is `available` either way, and only the urgency lies.
     expect(
       statusForInspect(
         inspect({
@@ -132,7 +158,7 @@ describe('statusForInspect', () => {
         }),
         { defaultProjectImage: DEFAULT_IMAGE, toolkitFeatureRef: TOOLKIT },
       ),
-    ).toMatchObject({ state: 'available', kind: 'security' });
+    ).toMatchObject({ state: 'available', kind: 'normal' });
   });
 
   it('marks sandbox image labels as current', () => {
@@ -346,6 +372,7 @@ describe('statusForInspect', () => {
           defaultProjectImage: DEFAULT_IMAGE,
           toolkitFeatureRef: TOOLKIT,
           signingBrokerTokenHash: 'current-token-hash',
+          targetLabels: { 'dev.heey.verity.update.kind': 'security' },
         },
       ),
     ).toMatchObject({
