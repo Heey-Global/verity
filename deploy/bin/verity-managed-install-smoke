@@ -92,35 +92,63 @@ run_driver() {
     --entrypoint node "$digest" /driver.mjs "$1"
 }
 
+run_broker_acceptance() {
+  isolated_docker cp "$repo_root/scripts/fixtures/installed-broker-acceptance.mjs" \
+    verity-managed-control-plane-runner:/tmp/installed-broker-acceptance.mjs
+  isolated_docker exec --user 0:0 --env VERITY_INSTALLED_BROKER_ACCEPTANCE=1 \
+    verity-managed-control-plane-runner node /tmp/installed-broker-acceptance.mjs
+}
+
 echo '--- managed installation: initialize and verify first use'
 run_driver initialize
 # Probe the production supervisor, rather than accepting a merely running Runner.
-runner_ready=0
-for attempt in $(seq 1 120); do
-  if isolated_docker exec verity-managed-control-plane-runner sh -ec \
-    'test ! -e /run/verity-runner-broker/connector-reconcile.failed; VERITY_RUNNER_RUNTIME=/run/verity-runner /usr/local/bin/verity-runner-supervisor --probe' >/dev/null 2>&1; then
-    runner_ready=1
-    break
-  fi
-  sleep 1
-done
-[[ "$runner_ready" == 1 ]] || { echo 'managed control Runner never became usable' >&2; exit 1; }
+wait_for_runner() {
+  runner_ready=0
+  for attempt in $(seq 1 120); do
+    if isolated_docker exec verity-managed-control-plane-runner sh -ec \
+      'test ! -e /run/verity-runner-broker/connector-reconcile.failed; VERITY_RUNNER_RUNTIME=/run/verity-runner /usr/local/bin/verity-runner-supervisor --probe' >/dev/null 2>&1; then
+      runner_ready=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$runner_ready" == 1 ]] || { echo 'managed control Runner never became usable' >&2; exit 1; }
+}
+wait_for_runner
 # This is the real non-root Server identity and its actual mounted data volume.
 isolated_docker exec verity-managed-server sh -ec \
   'test "$(id -u)" != 0; directory=$(mktemp -d /srv/verity/runners/acceptance.XXXXXX); rmdir "$directory"'
 
 # Replace only the ACP provider in this disposable Runner. The real launcher,
 # supervisor, broker, Server and gateway still carry every request.
-isolated_docker exec --user 0:0 verity-managed-control-plane-runner \
-  rm -f /usr/local/bin/claude-agent-acp
-isolated_docker cp "$repo_root/scripts/fixtures/fake-managed-install-acp.mjs" \
-  verity-managed-control-plane-runner:/usr/local/bin/claude-agent-acp
-isolated_docker exec --user 0:0 verity-managed-control-plane-runner sh -ec \
-  'chown 0:0 /usr/local/bin/claude-agent-acp; chmod 0755 /usr/local/bin/claude-agent-acp'
+install_provider_fixture() {
+  isolated_docker exec --user 0:0 verity-managed-control-plane-runner \
+    rm -f /usr/local/bin/claude-agent-acp
+  isolated_docker cp "$repo_root/scripts/fixtures/fake-managed-install-acp.mjs" \
+    verity-managed-control-plane-runner:/usr/local/bin/claude-agent-acp
+  isolated_docker exec --user 0:0 verity-managed-control-plane-runner sh -ec \
+    'chown 0:0 /usr/local/bin/claude-agent-acp; chmod 0755 /usr/local/bin/claude-agent-acp'
+}
+install_provider_fixture
 run_driver exercise
+run_broker_acceptance
 
 echo '--- managed installation: restart and unlock the installed Server'
 isolated_docker restart verity-managed-server >/dev/null
 run_driver verify-restart
+
+echo '--- managed installation: repair missing gateway and stopped Server'
+# A healthy no-op rerun would not prove that the bundled repair restores topology.
+# Keep private identity snapshots inside the already-authorized disposable host.
+inside_host sh -ec 'umask 077; for name in deployment-id compose-project updater-token postgres-password tls-ca-cert.pem; do cp "/etc/verity/$name" "/opt/verity-managed-install-smoke/$name.before-repair"; done'
+isolated_docker rm -f verity-managed-gateway >/dev/null
+isolated_docker stop verity-managed-server >/dev/null
+inside_host sh -c 'umask 077; exec env VERITY_PAIRING_IPS=127.0.0.1 VERITY_API_HOST_PORT=0 /opt/verity-install/deploy/bin/verity-install > /opt/verity-managed-install-smoke/repair.log 2>&1'
+inside_host sh -ec 'for name in deployment-id compose-project updater-token postgres-password tls-ca-cert.pem; do cmp -s "/etc/verity/$name" "/opt/verity-managed-install-smoke/$name.before-repair" || { echo "repair changed persisted $name" >&2; exit 1; }; done'
+[[ "$(isolated_docker inspect --format '{{.Config.Image}}' verity-managed-server)" == "$digest" ]] || { echo 'repair changed the sealed Server image' >&2; exit 1; }
+wait_for_runner
+install_provider_fixture
+run_driver verify-repair
+run_broker_acceptance
 
 echo 'managed installation acceptance passed'

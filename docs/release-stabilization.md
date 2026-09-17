@@ -57,6 +57,17 @@ Required assertions:
 6. Removing managed volume initialization or breaking project/identity startup
    ordering makes this acceptance test fail.
 
+The CI `server-image` job runs `deploy/bin/verity-managed-install-smoke` on its
+isolated daemon. After first use and restart, the smoke removes the Gateway and
+stops the Server, reruns the bundled installer in its default repair mode, and
+checks the original deployment identity, device authorization, settings, transcript
+and a new turn. Private installer logs and identity snapshots stay inside that
+disposable host. This is repair coverage, not a destructive `--reinstall` test.
+Before and after repair, an installed-broker fixture uses synthetic credentials
+and the production privilege drop to check overlapping file reads and cleanup
+after success and child termination. The fixture seeds isolated turn metadata;
+it does not replace end-to-end worker capability/revocation acceptance.
+
 This needs Docker and Compose, disposable privileged DinD, the pinned gVisor
 runtime, a local registry, candidate images and adequate serialized resource
 capacity. The current development sandbox has no Docker CLI. Validation must run

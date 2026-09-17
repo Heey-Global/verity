@@ -132,4 +132,69 @@ describe('managed first-use acceptance evidence', () => {
     };
     await expect(runAcceptance('verify-restart', { state, api })).rejects.toThrow(/not persisted/);
   });
+  it.each(['intact', 'lost-history', 'revoked-device', 'lost-settings'])(
+    'checks persisted state and a new turn after repair: %s',
+    async (scenario) => {
+      const state = {
+        token: 'original-device',
+        password: 'synthetic-password',
+        sessionId: 'saved-session',
+      };
+      const afterRestart = 'managed-install-after-restart';
+      const history = [...completed];
+      const appendTurn = (text: string) => {
+        history.push(
+          event(history.length + 1, { t: 'prompt', text }),
+          event(history.length + 2, {
+            t: 'text',
+            delta: response.replace(prompt, text),
+          }),
+          event(history.length + 3, { t: 'result', stopReason: 'end_turn' }),
+        );
+      };
+      if (scenario !== 'lost-history') appendTurn(afterRestart);
+      const submitted: string[] = [];
+      const api = async (path: string, options: { token?: string; body?: unknown } = {}) => {
+        if (path === '/secret/status') return { status: 200, body: { status: 'sealed' } };
+        if (path === '/secret/unlock')
+          return { status: 200, body: { status: 'unlocked', token: 'new-device' } };
+        if (path === '/settings') {
+          if (scenario === 'revoked-device' && options.token === state.token)
+            return { status: 401, body: {} };
+          return {
+            status: 200,
+            body: { settings: { advancedModeEnabled: scenario !== 'lost-settings' } },
+          };
+        }
+        if (path === `/sessions/${state.sessionId}`)
+          return { status: 200, body: { sessionId: state.sessionId, projectId: 'verity-control' } };
+        if (path === `/sessions/${state.sessionId}/turns`) {
+          const text = (options.body as { prompt: string }).prompt;
+          submitted.push(text);
+          appendTurn(text);
+          return { status: 200, body: {} };
+        }
+        if (path.startsWith(`/sessions/${state.sessionId}/events?`))
+          return { status: 200, body: { events: history, hasMore: false } };
+        throw new Error(`unexpected route: ${path}`);
+      };
+      const result = runAcceptance('verify-repair', { state, api });
+      if (scenario === 'intact') {
+        await expect(result).resolves.toMatchObject({ sessionId: state.sessionId });
+        expect(submitted).toHaveLength(1);
+        expect(submitted[0]).not.toBe(prompt);
+        expect(submitted[0]).not.toBe(afterRestart);
+        expect(() => assertCompletedTurn(history, submitted[0]!)).not.toThrow();
+      } else {
+        await expect(result).rejects.toThrow(
+          scenario === 'lost-history'
+            ? /not persisted/
+            : scenario === 'revoked-device'
+              ? /HTTP 401/
+              : /settings were not persisted/,
+        );
+        expect(submitted).toEqual([]);
+      }
+    },
+  );
 });
