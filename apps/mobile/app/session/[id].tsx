@@ -153,6 +153,7 @@ import {
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
 import { useModels } from '../../hooks/useModels';
+import { isProjectSessionModel } from '../../lib/projectSessionModels';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import { attachMenuRows } from '../../lib/attachMenu';
@@ -484,13 +485,6 @@ const SessionFileImageSourceContext = createContext<
 >(null);
 const SearchHighlightContext = createContext<string | null>(null);
 
-/** Whether a model is routable for a PROJECT session — Claude (bare id) or Codex
- * (`codex/…`). OpenCode's `provider/model` ids are blocked (the server 400s them),
- * so the picker hides them for project sessions. Mirrors new.tsx + the server. */
-function isProjectSessionModel(model: string): boolean {
-  return !model.includes('/') || model.startsWith('codex/');
-}
-
 export function SessionChat({
   client,
   sessionId,
@@ -791,8 +785,8 @@ export function SessionChat({
     },
     [client],
   );
-  // For a project session only Claude/Codex models are routable (the server 400s the
-  // rest), so hide OpenCode ids — mirrors the new-session picker.
+  // Keep configured OpenCode gateway models available in project sessions while
+  // excluding provider IDs that the server cannot route.
   const selectableModels = useMemo(() => {
     return projectId ? models.filter(isProjectSessionModel) : models;
   }, [models, projectId]);
