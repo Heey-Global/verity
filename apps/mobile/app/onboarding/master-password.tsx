@@ -64,7 +64,7 @@ export default function OnboardingMasterPassword() {
 export function MasterPasswordRoute({ returnTo }: { returnTo: Href | null }) {
   const next = returnTo ? ({ href: returnTo, label: 'Continue' } as const) : NEXT;
   const back = returnTo ?? BACK;
-  const client = createVerityClient();
+  const client = useMemo(() => createVerityClient(), []);
   // No server configured → nothing to arm; let the operator move on (mirrors the
   // gate's "let through when client is null" behaviour).
   if (client === null) {

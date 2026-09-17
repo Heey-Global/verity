@@ -1,5 +1,5 @@
 import { extractToolResultImages } from '@verity/events';
-import type { ToolCall } from '../happy/message.js';
+import type { Message, ToolCall, ToolCallMessage } from '../happy/message.js';
 import { spellOutBidiControls } from './bidi.js';
 
 /**
@@ -212,6 +212,52 @@ function summarizeInput(name: string, input: unknown): string | null {
 
 const NATIVE_TOOL_FAILURE_CAUSE =
   / Cause: (?:native (?:Secret Tool (?:requires permission control|approval timed out before broker dispatch|denied)|tool (?:result mailbox timed out|mailbox could not be read|mailbox frame|ready receipt|result hash|receipt acknowledgement|call id|attestation acknowledgement|attestation exceeds)[^.]*|Secret Tool result)|Secret resolution failed during [^.]+\. No secret value was exposed\.|Trusted CLI dispatch failed during (?:runner supervisor connection|runner supervisor response)\. (?:The command was not started\.|Whether the command started is unknown; do not retry a mutating command automatically\.) No secret value was exposed\.|Trusted CLI dispatch failed during spawn broker dispatch\.(?: Broker phase: (validation|materialization|launch-spec|spawn); cause: \1 failed\.)? (?:The command was not started\.|Whether the command started is unknown; do not retry a mutating command automatically\.) No secret value was exposed\.)$/u;
+
+/** Only a materialization failure whose diagnostic confirms no process started is
+ * safe for the app to resume automatically after unlocking. */
+export function trustedCliRetrySafeAfterUnlock(tool: ToolCall): boolean {
+  if (tool.name !== 'verity_secret_run' || tool.state !== 'error') return false;
+  const preview = retryDiagnosticText(tool.result);
+  return (
+    preview !== null &&
+    preview.includes('Trusted CLI dispatch failed during spawn broker dispatch.') &&
+    preview.includes('Broker phase: materialization;') &&
+    preview.includes('The command was not started.') &&
+    !preview.includes('Whether the command started is unknown')
+  );
+}
+
+/** Read only the text shapes emitted by native tool results. Retry eligibility
+ * needs exact sentinels, not the general preview formatter or its regexes. */
+function retryDiagnosticText(result: unknown): string | null {
+  if (typeof result === 'string') return result;
+  if (!Array.isArray(result)) return null;
+  const parts: string[] = [];
+  for (const block of result) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      typeof (block as { text?: unknown }).text === 'string'
+    ) {
+      parts.push((block as { text: string }).text);
+    }
+  }
+  return parts.length > 0 ? parts.join('\n') : null;
+}
+
+/** Return the last retry-safe trusted CLI failure from the current turn. A later
+ * user message means that turn was already superseded and must not be resumed. */
+export function trustedCliUnlockCandidate(messages: readonly Message[]): ToolCallMessage | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message === undefined) continue;
+    if (message.kind === 'user-text') return null;
+    if (message.kind === 'tool-call') {
+      return trustedCliRetrySafeAfterUnlock(message.tool) ? message : null;
+    }
+  }
+  return null;
+}
 
 function previewResult(name: string, result: unknown): string | null {
   if (result === undefined || result === null) return null;

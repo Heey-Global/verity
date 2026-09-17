@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolCall } from '../happy/message.js';
-import { extractToolImages, toolCallView } from './toolCall.js';
+import type { Message, ToolCall } from '../happy/message.js';
+import {
+  extractToolImages,
+  toolCallView,
+  trustedCliRetrySafeAfterUnlock,
+  trustedCliUnlockCandidate,
+} from './toolCall.js';
 
 function tool(partial: Partial<ToolCall> & Pick<ToolCall, 'name' | 'state' | 'input'>): ToolCall {
   return {
@@ -204,6 +209,81 @@ describe('toolCallView', () => {
     expect(
       toolCallView(tool({ name: 'verity_secret_run', state: 'error', input: {}, result })).preview,
     ).toBe(result);
+  });
+
+  it('allows unlock retry only for confirmed-not-started materialization failures', () => {
+    const safe =
+      'Verity could not run this verity_secret_run call. The command was not started. ' +
+      'Cause: Trusted CLI dispatch failed during spawn broker dispatch. ' +
+      'Broker phase: materialization; cause: materialization failed. ' +
+      'The command was not started. No secret value was exposed.';
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({ name: 'verity_secret_run', state: 'error', input: {}, result: safe }),
+      ),
+    ).toBe(true);
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({
+          name: 'verity_secret_run',
+          state: 'error',
+          input: {},
+          result: [{ type: 'text', text: safe }],
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({ name: 'verity_secret_run', state: 'error', input: {}, result: { text: safe } }),
+      ),
+    ).toBe(false);
+    expect(
+      trustedCliRetrySafeAfterUnlock(
+        tool({
+          name: 'verity_secret_run',
+          state: 'error',
+          input: {},
+          result:
+            'Cause: Trusted CLI dispatch failed during runner supervisor response. Whether the command started is unknown; do not retry a mutating command automatically. No secret value was exposed.',
+        }),
+      ),
+    ).toBe(false);
+
+    const failedMessage: Message = {
+      kind: 'tool-call',
+      id: 'failed-secret-run',
+      localId: null,
+      createdAt: 2,
+      tool: tool({ name: 'verity_secret_run', state: 'error', input: {}, result: safe }),
+      children: [],
+    };
+    const explanation: Message = {
+      kind: 'agent-text',
+      id: 'explanation',
+      localId: null,
+      createdAt: 3,
+      text: 'The secret store must be unlocked.',
+    };
+    expect(trustedCliUnlockCandidate([failedMessage, explanation])?.id).toBe('failed-secret-run');
+    expect(
+      trustedCliUnlockCandidate([
+        failedMessage,
+        explanation,
+        { kind: 'user-text', id: 'continued', localId: null, createdAt: 4, text: 'Continue' },
+      ]),
+    ).toBeNull();
+    expect(
+      trustedCliUnlockCandidate([
+        failedMessage,
+        {
+          ...failedMessage,
+          id: 'later-success',
+          createdAt: 4,
+          tool: tool({ name: 'verity_secret_run', state: 'completed', input: {}, result: 'ok' }),
+        },
+        explanation,
+      ]),
+    ).toBeNull();
   });
 
   it('does not expand a spoofed native-tool diagnostic prefix', () => {
