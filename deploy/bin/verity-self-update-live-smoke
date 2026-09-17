@@ -29,8 +29,13 @@ previous_image="${2:-$image}"
 # IMAGE alone cannot answer that: the environment a host seals is written in
 # `deploy/docker-compose.yml`, not in the Server image.
 previous_tag="${3:-}"
+smoke_profile="${VERITY_SMOKE_PROFILE:-full}"
 if [[ -z "$image" ]]; then
   echo 'usage: verity-self-update-live-smoke <target-server-image> <previous-server-image> <previous-release-tag>' >&2
+  exit 2
+fi
+if [[ "$smoke_profile" != 'release' && "$smoke_profile" != 'full' ]]; then
+  echo "invalid VERITY_SMOKE_PROFILE: $smoke_profile (expected release or full)" >&2
   exit 2
 fi
 : "${DOCKER_HOST:?DOCKER_HOST must point at the isolated daemon}"
@@ -1053,9 +1058,13 @@ expect_secret_status "$server" unlocked
 echo '--- stage: prepare a candidate through pull, verify, preflight and standby'
 node packages/server/dist/self-update-live-smoke.js prepare
 
-if [[ "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" == 'true' ]]; then
-  echo '--- irreversible-schema override: exercising the complete forward update path'
-  echo '::warning::N-1 rollback scenarios are intentionally omitted for this maintenance republish.'
+if [[ "$smoke_profile" == 'release' || "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" == 'true' ]]; then
+  if [[ "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" == 'true' ]]; then
+    echo '--- irreversible-schema override: exercising the complete forward update path'
+    echo '::warning::N-1 rollback scenarios are intentionally omitted for this maintenance republish.'
+  else
+    echo '--- release profile: exercising the complete forward update path'
+  fi
 
   echo '--- stage: serve the Updater control socket for the forward handoff'
   seals="$(seal_count)"
