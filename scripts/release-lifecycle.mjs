@@ -5,13 +5,28 @@ import { appendFileSync, readFileSync } from 'node:fs';
 const [train, eventSha] = process.argv.slice(2);
 /** @type {Record<string, {component: string, path: string, prefix: string}>} */
 const trains = {
-  backend: { component: 'server', path: '.release/backend', prefix: 'v' },
+  backend: { component: 'server', path: '.', prefix: 'v' },
   mobile: { component: 'mobile', path: 'apps/mobile', prefix: 'mobile-v' },
   website: { component: 'website', path: 'docs/website', prefix: 'website-v' },
 };
 const spec = trains[train ?? ''];
 if (!spec || !/^[a-f0-9]{40}$/.test(eventSha ?? ''))
   throw new Error('Invalid release lifecycle input');
+/** @param {unknown} raw @param {boolean} historical */
+function manifestVersion(raw, historical = false) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error('Invalid release manifest version');
+  const manifest = /** @type {Record<string, unknown>} */ (raw);
+  const current = manifest[spec.path];
+  const legacy = train === 'backend' ? manifest['.release/backend'] : undefined;
+  if (current !== undefined && legacy !== undefined && current !== legacy)
+    throw new Error('Conflicting release manifest versions');
+  // Published history predates the root package migration; main must use the new key.
+  const version = current ?? (historical ? legacy : undefined);
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version))
+    throw new Error('Invalid release manifest version');
+  return version;
+}
 /** @param {string[]} args @returns {unknown} */
 const gh = (...args) => JSON.parse(execFileSync('gh', args, { encoding: 'utf8' }));
 /** @param {string} path */
@@ -27,9 +42,7 @@ if (main !== eventSha) {
 } else {
   /** @type {unknown} */
   const rawManifest = JSON.parse(readFileSync(`.release-please-manifest.${train}.json`, 'utf8'));
-  const manifest = /** @type {Record<string, string>} */ (rawManifest);
-  const version = manifest[spec.path];
-  if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('Invalid release manifest version');
+  const version = manifestVersion(rawManifest);
   const tag = `${spec.prefix}${version}`;
   // Paginate: a release disappearing from page one must never reset history.
   const releases = /** @type {{tag_name: string, draft: boolean, prerelease: boolean}[][]} */ (
@@ -86,8 +99,7 @@ if (main !== eventSha) {
         encoding: 'utf8',
       }),
     );
-    const pendingManifest = /** @type {Record<string, string>} */ (rawPendingManifest);
-    if (pendingManifest[spec.path] !== version)
+    if (manifestVersion(rawPendingManifest, true) !== version)
       throw new Error('Pending release version differs from main');
     if (releases.some((release) => release.tag_name === tag))
       throw new Error('Pending release label refers to an already published version');
@@ -108,8 +120,7 @@ if (main !== eventSha) {
         encoding: 'utf8',
       }),
     );
-    const boundaryManifest = /** @type {Record<string, string>} */ (rawBoundary);
-    if (boundaryManifest[spec.path] !== version)
+    if (manifestVersion(rawBoundary, true) !== version)
       throw new Error('Published tag does not contain its declared release version');
     output('plan');
   }

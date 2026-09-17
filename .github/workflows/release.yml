@@ -62,9 +62,9 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
-      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs['.release/backend--release_created'] }}
-      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['.release/backend--major'], steps.release-backend.outputs['.release/backend--minor'], steps.release-backend.outputs['.release/backend--patch']) }}
-      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs['.release/backend--sha'] }}
+      backend-release-created: ${{ steps.maintenance.outputs.release_created || steps.release-backend.outputs['release_created'] }}
+      backend-version: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['major'], steps.release-backend.outputs['minor'], steps.release-backend.outputs['patch']) }}
+      backend-sha: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs['sha'] }}
       mobile-release-created: ${{ steps.release-mobile.outputs['apps/mobile--release_created'] }}
       mobile-version: ${{ steps.release-mobile.outputs['apps/mobile--major'] }}.${{ steps.release-mobile.outputs['apps/mobile--minor'] }}.${{ steps.release-mobile.outputs['apps/mobile--patch'] }}
       mobile-sha: ${{ steps.release-mobile.outputs['apps/mobile--sha'] }}
@@ -105,11 +105,11 @@ jobs:
           set -euo pipefail
           merge_policy="$(gh api "repos/${GITHUB_REPOSITORY}" \
             --jq '[.allow_merge_commit, .allow_squash_merge, .allow_rebase_merge] | @tsv')"
-          # An explicit release intent and its product change must reach main as
-          # one commit. A rebase merge can separate them, leaving Release Please
-          # with only the intent commit and the wrong title/version bump.
+          # The reviewed Conventional Commit title and all changed product paths
+          # must reach main together. Rebase merges substitute intermediate
+          # commit subjects for the reviewed release classification.
           if [[ "$merge_policy" != $'false\ttrue\tfalse' ]]; then
-            echo "::error::Under Settings > General > Pull Requests, enable squash merging only. Merge commits can be parsed twice, while rebase merges separate product changes from their release intent."
+            echo "::error::Under Settings > General > Pull Requests, enable squash merging only. Merge commits can be parsed twice, while rebase merges bypass the reviewed pull request title."
             exit 1
           fi
 
@@ -158,7 +158,22 @@ jobs:
           website=false
           while IFS=$'\t' read -r status file; do
             case "$file" in
-              .release-please-manifest.backend.json) backend=true ;;
+              .release-please-manifest.backend.json)
+                # Moving the package key without changing its version is a
+                # source migration, not a release PR ready for publication.
+                previous_manifest="$(git show "$BEFORE:$file")"
+                current_manifest="$(git show "$HEAD_SHA:$file")"
+                if jq -en --argjson before "$previous_manifest" --argjson after "$current_manifest" '
+                  ($before | keys) == [".release/backend"] and
+                  ($after | keys) == ["."] and
+                  ($before[".release/backend"] | type) == "string" and
+                  $before[".release/backend"] == $after["."]
+                ' >/dev/null; then
+                  [[ "$status" == M ]] || exit 1
+                  continue
+                fi
+                backend=true
+                ;;
               .release-please-manifest.mobile.json) mobile=true ;;
               .release-please-manifest.website.json) website=true ;;
               *) continue ;;
@@ -306,7 +321,7 @@ jobs:
           }
 
           pretag_delayed_release "$BACKEND_SELECTED" server \
-            .release-please-manifest.backend.json '.release/backend' v
+            .release-please-manifest.backend.json '.' v
           pretag_delayed_release "$MOBILE_SELECTED" mobile \
             .release-please-manifest.mobile.json 'apps/mobile' mobile-v
           pretag_delayed_release "$WEBSITE_SELECTED" website \
@@ -549,10 +564,10 @@ jobs:
       # Preserve the removed handoff's validation before any backend job can start.
       - name: Validate backend publication identity
         id: validate-backend
-        if: steps.maintenance.outputs.release_created == 'true' || steps.release-backend.outputs['.release/backend--release_created'] == 'true'
+        if: steps.maintenance.outputs.release_created == 'true' || steps.release-backend.outputs['release_created'] == 'true'
         env:
-          VERSION: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['.release/backend--major'], steps.release-backend.outputs['.release/backend--minor'], steps.release-backend.outputs['.release/backend--patch']) }}
-          SHA: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs['.release/backend--sha'] }}
+          VERSION: ${{ steps.maintenance.outputs.version || format('{0}.{1}.{2}', steps.release-backend.outputs['major'], steps.release-backend.outputs['minor'], steps.release-backend.outputs['patch']) }}
+          SHA: ${{ steps.maintenance.outputs.sha || steps.release-backend.outputs['sha'] }}
         shell: bash
         run: |
           set -euo pipefail

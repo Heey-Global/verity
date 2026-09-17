@@ -37,8 +37,9 @@ machine.
   request metadata.
 - Use a Conventional Commit title, such as `fix(server): reject stale tokens`
   or `feat(mobile): show update recovery state`.
-- Add exactly one append-only release intent: `.release/backend/intents/<slug>.md`
-  for a Server product release, or `.release/none/intents/<slug>.md` otherwise.
+- Release membership follows changed paths; the squash PR title controls the
+  version bump. Use `test`, `docs`, or `ci` for release-neutral work, and `!` for
+  breaking changes. No release-intent file is needed. See [Releases](docs/releases.md).
 - Add or update tests for behavior changes.
 - Fix a shared problem at the layer all affected paths pass through.
 - Keep one concern per pull request.

@@ -437,6 +437,63 @@ describe('release merge policy', () => {
     expect(select?.run).toContain('selecting the default trains');
   });
 
+  it.each([
+    { version: '1.2.3', source: true, succeeds: true },
+    { version: '1.2.4', source: true, succeeds: false },
+    { version: '1.2.4', source: false, succeeds: true },
+  ])(
+    'distinguishes package migration from release publication ($version, source=$source)',
+    ({ version, source, succeeds }) => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-release-migration-'));
+      const git = (...args: string[]) => {
+        const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+        expect(result.status, result.stderr).toBe(0);
+        return result.stdout.trim();
+      };
+      try {
+        git('init', '--quiet');
+        git('config', 'user.email', 'test@example.invalid');
+        git('config', 'user.name', 'Release Test');
+        git('config', 'commit.gpgsign', 'false');
+        const manifest = join(root, ['.release-please-manifest', 'backend', 'json'].join('.'));
+        writeFileSync(manifest, JSON.stringify({ '.release/backend': '1.2.3' }));
+        git('add', '.');
+        git('commit', '--quiet', '-m', 'chore: initial');
+        const before = git('rev-parse', 'HEAD');
+        writeFileSync(manifest, JSON.stringify({ '.': version }));
+        if (source) writeFileSync(join(root, 'product.ts'), 'export const migrated = true;');
+        git('add', '.');
+        git('commit', '--quiet', '-m', 'fix: migrate release routing');
+        const output = join(root, 'output');
+        const script = workflow.jobs['release-please'].steps.find(
+          (step) => step.name === 'Select release trains for this push',
+        )!.run!;
+        // A key-only migration used to enter the publication branch and reject
+        // its own source changes, leaving every release train broken after merge.
+        const result = spawnSync('bash', ['-c', script], {
+          cwd: root,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            BEFORE: before,
+            HEAD_SHA: git('rev-parse', 'HEAD'),
+            TRAIN: 'backend',
+            GITHUB_OUTPUT: output,
+          },
+        });
+        expect(result.status === 0, result.stderr).toBe(succeeds);
+        if (succeeds) {
+          expect(readFileSync(output, 'utf8')).toContain('backend=true');
+          expect(readFileSync(output, 'utf8')).toContain(`website=${source}`);
+        } else {
+          expect(result.stderr).toContain('does not belong to the release train');
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('requires a manual tag only for delayed commits whose workflow tree changed', () => {
     const steps = workflow.jobs['release-please'].steps;
     const pretagIndex = steps.findIndex(
@@ -462,7 +519,7 @@ describe('release merge policy', () => {
     expect(pretag?.run).toContain('the workflow token cannot create a tag');
     expect(pretag?.run).toContain('git tag $tag $release_sha');
     expect(pretag?.run).toContain('git push origin refs/tags/$tag');
-    expect(pretag?.run).toContain("'.release/backend' v");
+    expect(pretag?.run).toContain("'.' v");
     expect(pretag?.run).toContain("'apps/mobile' mobile-v");
     expect(pretag?.run).toContain("'docs/website' website-v");
   });

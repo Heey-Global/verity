@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The squash title is Release Please's version and changelog input.
+set -euo pipefail
+
+title="${1:-}"
+pattern='^(feat|fix|perf|revert|build|chore|ci|docs|style|refactor|test)(\([^()[:space:]]+\))?!?: [^[:space:]].*$'
+if [[ "$title" == *$'\n'* || "$title" == *$'\r'* || ! "$title" =~ $pattern ]]; then
+  echo '::error::Use a Conventional Commit PR title, such as fix(server): reject stale tokens. Use ! for breaking changes.' >&2
+  exit 1
+fi
