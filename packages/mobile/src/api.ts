@@ -704,6 +704,7 @@ export const veritySettingsSchema = z.object({
   codexAuthJsonConfigured: z.boolean(),
   opencodeBaseUrl: z.string().nullable().optional(),
   opencodeModels: z.string().nullable().optional(),
+  opencodeDisabledModels: z.string().nullable().optional(),
   opencodeApiKeyConfigured: z.boolean().optional(),
   // Google Drive connection (ADR 0009). The client id + account email are
   // non-secret; `googleDriveConnected` reflects whether a refresh token is held.
@@ -878,6 +879,7 @@ export type VeritySettingsPatch = {
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;
   opencodeApiKey?: string | null | undefined;
+  opencodeDisabledModels?: string | null | undefined;
 };
 
 export const agentLoginProviderSchema = z.enum(['claude', 'codex']);

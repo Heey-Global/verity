@@ -120,8 +120,10 @@ export function registerSettingsRoutes(
     serialize(async () => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
       const patch = deps.parseSettingsPatch(request.body);
-      const changesOpenCode =
+      const changesOpenCodeCredentials =
         patch.opencodeBaseUrl !== undefined || patch.opencodeApiKey !== undefined;
+      const changesOpenCode =
+        changesOpenCodeCredentials || patch.opencodeDisabledModels !== undefined;
       const previousOpenCode = changesOpenCode ? await deps.store().getVeritySettings() : undefined;
       if (patch.transcribeBaseUrl !== undefined && patch.transcribeApiKey === undefined) {
         const current = await deps.store().getVeritySettings();
@@ -135,7 +137,7 @@ export function registerSettingsRoutes(
         const nextBaseUrl = patch.opencodeBaseUrl?.trim() || null;
         if (currentBaseUrl !== nextBaseUrl) patch.opencodeApiKey = null;
       }
-      if (changesOpenCode) {
+      if (changesOpenCodeCredentials) {
         const baseUrl = (
           patch.opencodeBaseUrl !== undefined
             ? patch.opencodeBaseUrl
@@ -149,6 +151,12 @@ export function registerSettingsRoutes(
         try {
           patch.opencodeModels =
             baseUrl && apiKey ? (await fetchOpenCodeModels(baseUrl, apiKey)).join('\n') : null;
+          if (
+            patch.opencodeBaseUrl !== undefined &&
+            patch.opencodeBaseUrl?.trim() !== previousOpenCode?.opencodeBaseUrl?.trim()
+          ) {
+            patch.opencodeDisabledModels = null;
+          }
         } catch (error) {
           throw Object.assign(
             new Error(
@@ -159,6 +167,22 @@ export function registerSettingsRoutes(
             { statusCode: 502 },
           );
         }
+      }
+      if (patch.opencodeDisabledModels !== undefined && patch.opencodeDisabledModels !== null) {
+        const catalog = new Set(
+          (patch.opencodeModels ?? previousOpenCode?.opencodeModels ?? '')
+            .split(/[\n,]/u)
+            .map((model) => model.trim())
+            .filter(Boolean),
+        );
+        patch.opencodeDisabledModels = [
+          ...new Set(
+            patch.opencodeDisabledModels
+              .split(/[\n,]/u)
+              .map((model) => model.trim())
+              .filter((model) => catalog.has(model)),
+          ),
+        ].join('\n');
       }
       const containsAgentCredentials =
         patch.claudeCodeOauthCredentialsJson !== undefined || patch.codexAuthJson !== undefined;
@@ -179,12 +203,14 @@ export function registerSettingsRoutes(
           if (
             current?.opencodeBaseUrl === settings.opencodeBaseUrl &&
             current?.opencodeApiKey === settings.opencodeApiKey &&
-            current?.opencodeModels === settings.opencodeModels
+            current?.opencodeModels === settings.opencodeModels &&
+            current?.opencodeDisabledModels === settings.opencodeDisabledModels
           ) {
             const restored = await deps.store().updateVeritySettings({
               opencodeBaseUrl: previousOpenCode?.opencodeBaseUrl ?? null,
               opencodeApiKey: previousOpenCode?.opencodeApiKey ?? null,
               opencodeModels: previousOpenCode?.opencodeModels ?? null,
+              opencodeDisabledModels: previousOpenCode?.opencodeDisabledModels ?? null,
             });
             if (restored !== undefined) await deps.onOpenCodeSettingsChanged?.(restored);
           }

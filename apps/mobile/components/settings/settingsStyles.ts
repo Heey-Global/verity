@@ -81,6 +81,11 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     lineHeight: 19 * theme.fontScale,
     marginBottom: theme.spacing.xs,
   },
+  linkText: {
+    color: theme.colors.primary,
+    fontSize: theme.text.sm,
+    fontWeight: '700',
+  },
   sectionHeaderRow: {
     minHeight: 32,
     flexDirection: 'row',

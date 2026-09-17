@@ -2808,6 +2808,20 @@ const migrations: Record<string, Migration> = {
         .execute();
     },
   },
+  '0096_opencode_model_selection': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('opencode_disabled_models', 'text')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .dropColumn('opencode_disabled_models')
+        .execute();
+    },
+  },
   '0093_opencode_settings': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema

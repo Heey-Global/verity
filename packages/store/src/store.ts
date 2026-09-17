@@ -622,6 +622,8 @@ export interface VeritySettingsRecord {
   opencodeApiKey?: string | null;
   /** Server-discovered OpenCode model ids, cached as newline-separated values. */
   opencodeModels?: string | null;
+  /** Models hidden by the user. Newly discovered models remain enabled by default. */
+  opencodeDisabledModels?: string | null;
   /** Google connection for Drive imports and Slides editing (ADRs 0009/0016).
    *  Client id + account email are non-secret;
    *  the refresh token is a secret, encrypted at rest and decrypted on read via
@@ -663,6 +665,7 @@ type VeritySettingsKey =
   | 'opencodeBaseUrl'
   | 'opencodeApiKey'
   | 'opencodeModels'
+  | 'opencodeDisabledModels'
   | 'googleDriveClientId'
   | 'googleDriveAccountEmail'
   | 'googleDriveRefreshToken'
@@ -4469,6 +4472,7 @@ export class EventStore implements EventSink {
       opencode_base_url: string | null;
       opencode_api_key: string | null;
       opencode_models: string | null;
+      opencode_disabled_models: string | null;
       google_drive_client_id: string | null;
       google_drive_account_email: string | null;
       google_drive_refresh_token: string | null;
@@ -4521,6 +4525,7 @@ export class EventStore implements EventSink {
       opencodeBaseUrl: row.opencode_base_url,
       opencodeApiKey: decrypt ? this.decryptSecret(row.opencode_api_key) : row.opencode_api_key,
       opencodeModels: row.opencode_models,
+      opencodeDisabledModels: row.opencode_disabled_models,
       googleDriveClientId: row.google_drive_client_id,
       googleDriveAccountEmail: row.google_drive_account_email,
       googleDriveRefreshToken: decrypt
@@ -4560,6 +4565,7 @@ export class EventStore implements EventSink {
     'opencode_base_url',
     'opencode_api_key',
     'opencode_models',
+    'opencode_disabled_models',
     'google_drive_client_id',
     'google_drive_account_email',
     'google_drive_refresh_token',
@@ -4624,6 +4630,7 @@ export class EventStore implements EventSink {
       opencode_base_url: normalizeSetting(patch.opencodeBaseUrl),
       opencode_api_key: this.encryptSecret(normalizeSetting(patch.opencodeApiKey)),
       opencode_models: normalizeSetting(patch.opencodeModels),
+      opencode_disabled_models: normalizeSetting(patch.opencodeDisabledModels),
       google_drive_client_id: normalizeSetting(patch.googleDriveClientId),
       google_drive_account_email: normalizeSetting(patch.googleDriveAccountEmail),
       google_drive_refresh_token: this.encryptSecret(
@@ -4722,6 +4729,9 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.opencodeModels !== undefined
             ? { opencode_models: normalizeSetting(patch.opencodeModels) }
+            : {}),
+          ...(patch.opencodeDisabledModels !== undefined
+            ? { opencode_disabled_models: normalizeSetting(patch.opencodeDisabledModels) }
             : {}),
           ...(patch.googleDriveClientId !== undefined
             ? { google_drive_client_id: normalizeSetting(patch.googleDriveClientId) }

@@ -81,6 +81,7 @@ describe('openCodeSettingsConfig', () => {
       opencodeBaseUrl: 'https://api.example.test/v1',
       opencodeApiKey: 'provider-key-fixture',
       opencodeModels: 'model-a\nmodel-b\nmodel-a',
+      opencodeDisabledModels: 'model-b',
     } as VeritySettingsRecord);
     expect(JSON.parse(config ?? '{}')).toMatchObject({
       provider: {
@@ -89,12 +90,13 @@ describe('openCodeSettingsConfig', () => {
             baseURL: 'http://127.0.0.1:47821/opencode',
             apiKey: 'verity-opencode-gateway-placeholder-v1',
           },
-          models: { 'model-a': { name: 'model-a' }, 'model-b': { name: 'model-b' } },
+          models: { 'model-a': { name: 'model-a' } },
         },
       },
     });
     expect(config).not.toContain('provider-key-fixture');
     expect(config).not.toContain('api.example.test');
+    expect(config).not.toContain('model-b');
   });
 
   it('updates the stable directory mounted by running sandboxes', () => {

@@ -103,6 +103,7 @@ export {
 } from './devcontainer-lifecycle.js';
 import type { GitHubInstallationTokenMint, GitHubProjectTokenMint } from './github-app-token.js';
 import type { ProjectRelayActivation, ProjectRelayBinding } from './project-relay-lifecycle.js';
+import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
 import {
   CONTAINER_GENERATION_LABEL,
@@ -1551,10 +1552,7 @@ export function openCodeSettingsConfig(
 ): string | undefined {
   const baseURL = settings?.opencodeBaseUrl?.trim();
   const apiKey = settings?.opencodeApiKey?.trim();
-  const models = (settings?.opencodeModels ?? '')
-    .split(/[\n,]/)
-    .map((model) => model.trim())
-    .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index);
+  const models = selectedOpenCodeModels(settings);
   if (!baseURL || !apiKey || models.length === 0) return undefined;
   return JSON.stringify(
     {

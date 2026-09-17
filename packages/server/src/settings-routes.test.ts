@@ -57,6 +57,35 @@ describe('automatic OpenCode settings models', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it('stores model exclusions while leaving later discoveries enabled', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(catalog('provider/one', 'provider/two')));
+    const { app, store, changed, refreshOpenCodeModels } = await setup({
+      ...credentials,
+      opencodeModels: 'provider/one\nprovider/two',
+    });
+    changed.mockClear();
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { opencodeDisabledModels: 'provider/two\nunknown/model' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect((await store.getVeritySettings()).opencodeDisabledModels).toBe('provider/two');
+    expect(changed).toHaveBeenCalledWith(
+      expect.objectContaining({ opencodeDisabledModels: 'provider/two' }),
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(catalog('provider/one', 'provider/two', 'provider/new')),
+    );
+    await refreshOpenCodeModels();
+    expect(await store.getVeritySettings()).toMatchObject({
+      opencodeModels: 'provider/one\nprovider/two\nprovider/new',
+      opencodeDisabledModels: 'provider/two',
+    });
+  });
+
   it('keeps endpoint-only setup possible and clears stale models on provider changes', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(catalog('old')));
     const { app, store } = await setup({ ...credentials, opencodeModels: 'old' });

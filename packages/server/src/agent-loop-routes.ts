@@ -11,6 +11,7 @@ import {
 } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { selectedOpenCodeModels } from './opencode-model-selection.js';
 
 const scheduleSchema: z.ZodType<ScheduleConfig> = z.discriminatedUnion('kind', [
   z.object({
@@ -97,10 +98,7 @@ export function registerAgentLoopRoutes(
     if (model == null || !model.startsWith('verity/')) return true;
     const settings = await deps.eventStore.getVeritySettingsRaw();
     if (!settings?.opencodeBaseUrl?.trim() || !settings.opencodeApiKey?.trim()) return false;
-    return (settings.opencodeModels ?? '')
-      .split(/[\n,]/u)
-      .map((entry) => entry.trim())
-      .includes(model.slice('verity/'.length));
+    return selectedOpenCodeModels(settings).includes(model.slice('verity/'.length));
   };
 
   app.get('/projects/:projectId/agent-loops', async (request, reply) => {
