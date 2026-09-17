@@ -4377,7 +4377,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // configured it may sync installation repos into the cache before returning;
   // otherwise the route still returns the local cache so manually-added projects
   // work without GitHub App setup.
-  registerSettingsRoutes(app, {
+  const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
     store: () => veritySettingsStore(deps.eventStore),
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
@@ -4423,7 +4423,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }
       : {}),
-    ...(deps.onSecretUnlocked !== undefined ? { onSecretUnlocked: deps.onSecretUnlocked } : {}),
+    onSecretUnlocked: async () => {
+      await deps.onSecretUnlocked?.();
+      await refreshOpenCodeModels();
+    },
   });
 
   registerGitHubAppRoutes(app, {
@@ -5475,7 +5478,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       .refine((value) => !/[\r\n]/u.test(value))
       .nullable()
       .optional(),
-    opencodeModels: z.string().nullable().optional(),
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
   });
 

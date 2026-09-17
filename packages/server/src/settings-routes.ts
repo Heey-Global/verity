@@ -7,6 +7,7 @@ import type {
 } from '@verity/store';
 import { SealedError } from '@verity/store';
 import type { AgentLoginService } from './agent-login.js';
+import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 
 interface SettingsRouteStore {
   getVeritySettingsRaw(): Promise<VeritySettingsRecord | undefined>;
@@ -41,7 +42,56 @@ const agentLoginSessionParam = z.object({ sessionId: z.string().uuid() });
 const agentLoginCodeBody = z.object({ code: z.string().trim().min(1).max(20_000) });
 
 /** Public settings, transcription selection, and interactive agent-login routes. */
-export function registerSettingsRoutes(app: FastifyInstance, deps: SettingsRouteDeps): void {
+export function registerSettingsRoutes(
+  app: FastifyInstance,
+  deps: SettingsRouteDeps,
+): { refreshOpenCodeModels: () => Promise<void> } {
+  // Discovery and credential edits must commit in order: a slow old-provider
+  // response must never replace the new provider's model cache.
+  let pending: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(action: () => Promise<T>): Promise<T> => {
+    const result = pending.then(action);
+    pending = result.catch(() => undefined);
+    return result;
+  };
+  let closed = false;
+  const refreshOpenCodeModels = (): Promise<void> =>
+    serialize(async () => {
+      if (closed || deps.secretCipher?.isSealed() === true) return;
+      try {
+        const settings = await deps.store().getVeritySettings();
+        const baseUrl = settings?.opencodeBaseUrl?.trim();
+        const apiKey = settings?.opencodeApiKey?.trim();
+        if (!settings || !baseUrl || !apiKey) return;
+        const models = (await fetchOpenCodeModels(baseUrl, apiKey)).join('\n');
+        if (closed || models === (settings.opencodeModels ?? '')) return;
+        const updated = await deps.store().updateVeritySettings({ opencodeModels: models });
+        try {
+          await deps.onOpenCodeSettingsChanged?.(updated);
+        } catch (error) {
+          const restored = await deps.store().updateVeritySettings({
+            opencodeModels: settings.opencodeModels ?? null,
+          });
+          await deps.onOpenCodeSettingsChanged?.(restored);
+          throw error;
+        }
+      } catch {
+        // Keep the last successful catalog during provider outages; never log
+        // upstream errors that could contain credentials or response bodies.
+        app.log.warn('Could not refresh OpenCode models; keeping the saved catalog');
+      }
+    });
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  app.addHook('onReady', async () => {
+    await refreshOpenCodeModels();
+    refreshTimer = setInterval(() => void refreshOpenCodeModels(), 24 * 60 * 60 * 1_000);
+    refreshTimer.unref();
+  });
+  app.addHook('onClose', async () => {
+    closed = true;
+    clearInterval(refreshTimer);
+    await pending;
+  });
   app.get('/settings', async () => {
     const settings = (await deps.store().getVeritySettingsRaw()) ?? null;
     return { settings: settings ? deps.publicSettings(settings) : null };
@@ -66,59 +116,84 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: SettingsRoute
     return { mode };
   });
 
-  app.patch('/settings', async (request) => {
-    if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-    const patch = deps.parseSettingsPatch(request.body);
-    const changesOpenCode =
-      patch.opencodeBaseUrl !== undefined ||
-      patch.opencodeApiKey !== undefined ||
-      patch.opencodeModels !== undefined;
-    const previousOpenCode = changesOpenCode ? await deps.store().getVeritySettings() : undefined;
-    if (patch.transcribeBaseUrl !== undefined && patch.transcribeApiKey === undefined) {
-      const current = await deps.store().getVeritySettings();
-      const currentBaseUrl = current?.transcribeBaseUrl?.trim() || null;
-      const nextBaseUrl = patch.transcribeBaseUrl?.trim() || null;
-      if (currentBaseUrl !== nextBaseUrl) patch.transcribeApiKey = null;
-    }
-    if (patch.opencodeBaseUrl !== undefined && patch.opencodeApiKey === undefined) {
-      const current = await deps.store().getVeritySettings();
-      const currentBaseUrl = current?.opencodeBaseUrl?.trim() || null;
-      const nextBaseUrl = patch.opencodeBaseUrl?.trim() || null;
-      if (currentBaseUrl !== nextBaseUrl) patch.opencodeApiKey = null;
-    }
-    const containsAgentCredentials =
-      patch.claudeCodeOauthCredentialsJson !== undefined || patch.codexAuthJson !== undefined;
-    let settings: VeritySettingsRecord | undefined;
-    if (containsAgentCredentials) {
-      await deps.storeAgentCredentials(patch);
-      settings = await deps.store().getVeritySettings();
-    } else {
-      settings = await deps.store().updateVeritySettings(patch);
-    }
-    if (settings === undefined) throw new Error('Verity settings disappeared after update');
-    if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
-    if (changesOpenCode) {
-      try {
-        await deps.onOpenCodeSettingsChanged?.(settings);
-      } catch (error) {
+  app.patch('/settings', async (request) =>
+    serialize(async () => {
+      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
+      const patch = deps.parseSettingsPatch(request.body);
+      const changesOpenCode =
+        patch.opencodeBaseUrl !== undefined || patch.opencodeApiKey !== undefined;
+      const previousOpenCode = changesOpenCode ? await deps.store().getVeritySettings() : undefined;
+      if (patch.transcribeBaseUrl !== undefined && patch.transcribeApiKey === undefined) {
         const current = await deps.store().getVeritySettings();
-        if (
-          current?.opencodeBaseUrl === settings.opencodeBaseUrl &&
-          current?.opencodeApiKey === settings.opencodeApiKey &&
-          current?.opencodeModels === settings.opencodeModels
-        ) {
-          const restored = await deps.store().updateVeritySettings({
-            opencodeBaseUrl: previousOpenCode?.opencodeBaseUrl ?? null,
-            opencodeApiKey: previousOpenCode?.opencodeApiKey ?? null,
-            opencodeModels: previousOpenCode?.opencodeModels ?? null,
-          });
-          if (restored !== undefined) await deps.onOpenCodeSettingsChanged?.(restored);
-        }
-        throw error;
+        const currentBaseUrl = current?.transcribeBaseUrl?.trim() || null;
+        const nextBaseUrl = patch.transcribeBaseUrl?.trim() || null;
+        if (currentBaseUrl !== nextBaseUrl) patch.transcribeApiKey = null;
       }
-    }
-    return { settings: deps.publicSettings(settings) };
-  });
+      if (patch.opencodeBaseUrl !== undefined && patch.opencodeApiKey === undefined) {
+        const current = await deps.store().getVeritySettings();
+        const currentBaseUrl = current?.opencodeBaseUrl?.trim() || null;
+        const nextBaseUrl = patch.opencodeBaseUrl?.trim() || null;
+        if (currentBaseUrl !== nextBaseUrl) patch.opencodeApiKey = null;
+      }
+      if (changesOpenCode) {
+        const baseUrl = (
+          patch.opencodeBaseUrl !== undefined
+            ? patch.opencodeBaseUrl
+            : previousOpenCode?.opencodeBaseUrl
+        )?.trim();
+        const apiKey = (
+          patch.opencodeApiKey !== undefined
+            ? patch.opencodeApiKey
+            : previousOpenCode?.opencodeApiKey
+        )?.trim();
+        try {
+          patch.opencodeModels =
+            baseUrl && apiKey ? (await fetchOpenCodeModels(baseUrl, apiKey)).join('\n') : null;
+        } catch (error) {
+          throw Object.assign(
+            new Error(
+              error instanceof Error
+                ? error.message
+                : 'Could not load OpenCode models from the provider.',
+            ),
+            { statusCode: 502 },
+          );
+        }
+      }
+      const containsAgentCredentials =
+        patch.claudeCodeOauthCredentialsJson !== undefined || patch.codexAuthJson !== undefined;
+      let settings: VeritySettingsRecord | undefined;
+      if (containsAgentCredentials) {
+        await deps.storeAgentCredentials(patch);
+        settings = await deps.store().getVeritySettings();
+      } else {
+        settings = await deps.store().updateVeritySettings(patch);
+      }
+      if (settings === undefined) throw new Error('Verity settings disappeared after update');
+      if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
+      if (changesOpenCode) {
+        try {
+          await deps.onOpenCodeSettingsChanged?.(settings);
+        } catch (error) {
+          const current = await deps.store().getVeritySettings();
+          if (
+            current?.opencodeBaseUrl === settings.opencodeBaseUrl &&
+            current?.opencodeApiKey === settings.opencodeApiKey &&
+            current?.opencodeModels === settings.opencodeModels
+          ) {
+            const restored = await deps.store().updateVeritySettings({
+              opencodeBaseUrl: previousOpenCode?.opencodeBaseUrl ?? null,
+              opencodeApiKey: previousOpenCode?.opencodeApiKey ?? null,
+              opencodeModels: previousOpenCode?.opencodeModels ?? null,
+            });
+            if (restored !== undefined) await deps.onOpenCodeSettingsChanged?.(restored);
+          }
+          throw error;
+        }
+      }
+      return { settings: deps.publicSettings(settings) };
+    }),
+  );
 
   // Clearing all three stored credentials is the only supported way to reopen
   // GitHub manifest onboarding for a different App. Environment configuration
@@ -163,4 +238,5 @@ export function registerSettingsRoutes(app: FastifyInstance, deps: SettingsRoute
     const { code } = agentLoginCodeBody.parse(request.body);
     return { login: await deps.agentLogin.submitCode(sessionId, code) };
   });
+  return { refreshOpenCodeModels };
 }

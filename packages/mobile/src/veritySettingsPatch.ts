@@ -28,8 +28,7 @@ export type VerityTextSettingKey =
   | 'githubAppInstallationId'
   | 'transcribeBaseUrl'
   | 'transcribeModel'
-  | 'opencodeBaseUrl'
-  | 'opencodeModels';
+  | 'opencodeBaseUrl';
 
 /** A screen's text draft: the subset of {@link VerityTextSettingKey} it renders. */
 export type VerityTextSettingsDraft = Partial<Record<VerityTextSettingKey, string>>;

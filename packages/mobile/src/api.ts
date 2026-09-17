@@ -870,7 +870,6 @@ export type VeritySettingsPatch = {
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;
-  opencodeModels?: string | null | undefined;
   opencodeApiKey?: string | null | undefined;
 };
 

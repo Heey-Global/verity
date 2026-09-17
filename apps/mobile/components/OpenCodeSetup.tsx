@@ -23,14 +23,10 @@ export function OpenCodeSetup({
   const [baseUrl, setBaseUrl] = useState('');
   const [savedBaseUrl, setSavedBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [models, setModels] = useState('');
-  const [savedModels, setSavedModels] = useState('');
   const [error, setError] = useState<string | null>(null);
   const baseUrlChanged = baseUrl.trim() !== savedBaseUrl;
   const ready =
-    baseUrl.trim().length > 0 &&
-    models.trim().length > 0 &&
-    (apiKey.trim().length > 0 || (keyConfigured && !baseUrlChanged));
+    baseUrl.trim().length > 0 && (apiKey.trim().length > 0 || (keyConfigured && !baseUrlChanged));
 
   useEffect(() => {
     onActiveChange(expanded);
@@ -50,8 +46,6 @@ export function OpenCodeSetup({
           nextKeyConfigured && nextBaseUrl.trim().length > 0 && nextModels.trim().length > 0;
         setBaseUrl(nextBaseUrl);
         setSavedBaseUrl(nextBaseUrl.trim());
-        setModels(nextModels);
-        setSavedModels(nextModels);
         setKeyConfigured(nextKeyConfigured);
         setConfigured(nextConfigured);
         onConfiguredChange(nextConfigured);
@@ -75,24 +69,17 @@ export function OpenCodeSetup({
     void client
       .updateVeritySettings({
         opencodeBaseUrl: baseUrl.trim(),
-        opencodeModels: models
-          .split('\n')
-          .map((model) => model.trim())
-          .filter(Boolean)
-          .join('\n'),
         ...(apiKey.trim().length > 0 ? { opencodeApiKey: apiKey.trim() } : {}),
       })
       .then((settings) => {
         const nextBaseUrl = settings?.opencodeBaseUrl ?? baseUrl.trim();
-        const nextModels = settings?.opencodeModels ?? models.trim();
+        const nextModels = settings?.opencodeModels ?? '';
         const nextKeyConfigured = settings?.opencodeApiKeyConfigured ?? apiKey.trim().length > 0;
         const nextConfigured =
           nextKeyConfigured && nextBaseUrl.trim().length > 0 && nextModels.trim().length > 0;
         setApiKey('');
         setBaseUrl(nextBaseUrl);
         setSavedBaseUrl(nextBaseUrl.trim());
-        setModels(nextModels);
-        setSavedModels(nextModels);
         setKeyConfigured(nextKeyConfigured);
         setConfigured(nextConfigured);
         setExpanded(false);
@@ -114,7 +101,6 @@ export function OpenCodeSetup({
 
   const cancel = () => {
     setBaseUrl(savedBaseUrl);
-    setModels(savedModels);
     setApiKey('');
     setError(null);
     setExpanded(false);
@@ -158,8 +144,8 @@ export function OpenCodeSetup({
           <View style={styles.fields}>
             <Text style={styles.stepTitle}>Connect your model provider</Text>
             <Text style={styles.stepDescription}>
-              Enter its API endpoint, a private API key, and the exact model IDs you want Verity to
-              offer.
+              Enter its API endpoint and a private API key. Verity automatically loads all models
+              offered by the provider.
             </Text>
             <TextInput
               style={styles.input}
@@ -182,17 +168,6 @@ export function OpenCodeSetup({
               autoCorrect={false}
               secureTextEntry
               accessibilityLabel="OpenCode API key"
-            />
-            <TextInput
-              style={[styles.input, styles.modelsInput]}
-              value={models}
-              onChangeText={setModels}
-              placeholder={'provider/model-name\nprovider/another-model'}
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              multiline
-              accessibilityLabel="OpenCode models"
             />
             <Pressable
               style={[styles.primaryButton, !ready ? styles.disabled : null]}
@@ -278,7 +253,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.background,
     fontSize: theme.text.sm,
   },
-  modelsInput: { minHeight: 88, textAlignVertical: 'top' },
   primaryButton: {
     minHeight: 48,
     borderRadius: theme.radius.pill,

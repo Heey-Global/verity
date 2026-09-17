@@ -338,7 +338,7 @@ describe('settings/services — AI backends', () => {
     expect(startAgentLogin).not.toHaveBeenCalled();
   });
 
-  it('stores OpenCode endpoint, models, and the write-only API key', async () => {
+  it('stores OpenCode endpoint and API key without manual models', async () => {
     const initial = makeSettings();
     const updateVeritySettings = jest
       .fn()
@@ -356,13 +356,12 @@ describe('settings/services — AI backends', () => {
       await screen.findByLabelText('OpenCode API base URL'),
       'https://api.test/v1',
     );
-    fireEvent.changeText(screen.getByLabelText('OpenCode models'), 'model-a\nmodel-b');
-    fireEvent(screen.getByLabelText('OpenCode models'), 'blur');
+    expect(screen.queryByLabelText('OpenCode models')).toBeNull();
+    fireEvent(screen.getByLabelText('OpenCode API base URL'), 'blur');
 
     await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(1));
     expect(updateVeritySettings.mock.calls[0]?.[0]).toEqual({
       opencodeBaseUrl: 'https://api.test/v1',
-      opencodeModels: 'model-a\nmodel-b',
     });
 
     const key = screen.getByPlaceholderText('Paste the provider API key…');
