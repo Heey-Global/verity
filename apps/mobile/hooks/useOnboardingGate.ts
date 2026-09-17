@@ -86,6 +86,25 @@ export function useOnboardingGate(): OnboardingGateState {
           return;
         }
 
+        // This endpoint distinguishes a configured-but-sealed store from an
+        // uninitialized one directly. Treat it as authoritative for the unlock
+        // decision: onboarding metadata can be absent or redacted after an
+        // update, but a confirmed sealed cipher always requires the existing
+        // master-password route before any secret-backed work can succeed.
+        const secretStatus = await client.getSecretStatus().catch(() => undefined);
+        if (secretStatus === 'sealed') {
+          if (!active) return;
+          if (inUnlockDevice) {
+            setState({ status: 'done' });
+            return;
+          }
+          setState({
+            status: 'done',
+            redirectTo: unlockRoute(currentReturnTo(), { serverSecret: true }),
+          });
+          return;
+        }
+
         const status = await client.fetchOnboardingStatus();
         if (!active) return;
 
@@ -136,11 +155,8 @@ export function useOnboardingGate(): OnboardingGateState {
 
         setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
       } catch (error) {
-        // `/onboarding/status` carries the richer first-run state, but unlocking
-        // must remain reachable if that probe alone regresses or is temporarily
-        // unavailable. `/secret/status` is independently pre-authenticated and
-        // exposes only the cipher state, which is enough to route a sealed store
-        // to the existing unlock form without guessing about setup progress.
+        // A race can seal the store between the first probe and a failed richer
+        // status read. Recheck before preserving the gate's fail-open behavior.
         try {
           const client = createVerityClient();
           if (client && (await client.getSecretStatus()) === 'sealed' && active) {
