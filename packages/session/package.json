@@ -21,6 +21,6 @@
     "@verity/events": "*",
     "@verity/secret-contracts": "*",
     "@verity/store": "*",
-    "zod": "4.6.4"
+    "zod": "4.6.5"
   }
 }
