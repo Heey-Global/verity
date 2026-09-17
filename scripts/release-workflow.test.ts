@@ -1,5 +1,15 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -77,6 +87,7 @@ interface ReleaseWorkflow {
     };
     'finalize-backend-release': {
       needs?: string[];
+      permissions?: Record<string, string>;
       steps: WorkflowStep[];
     };
   };
@@ -606,9 +617,126 @@ describe('signed GitHub release evidence', () => {
     const finalize = workflow.jobs['finalize-backend-release'];
     expect(finalize.env?.GH_REPO).toBe('${{ github.repository }}');
     expect(finalize.needs).toContain('publish-server-release-evidence');
+    expect(finalize.permissions?.issues).toBe('write');
+    expect(finalize.permissions?.['pull-requests']).toBe('read');
     const publish = finalize.steps.find((step) => step.name === 'Publish verified backend release');
     expect(publish?.run).toContain('--json isDraft');
     expect(publish?.run).toContain('--draft=false');
+    expect(publish?.run).toContain('chore(main): release server');
+    expect(publish?.run).toContain('labels[]=autorelease: tagged');
+    expect(publish?.run).toContain('labels/autorelease%3A%20pending');
+    expect(publish?.run).toContain('labels[]=autorelease: pending');
+    expect(publish?.run).toContain('labels/autorelease%3A%20tagged');
+    expect(publish?.run).toContain('Both labels means an earlier attempt stopped');
+    expect(publish?.run).toContain('Leave tagged-only in place');
+    expect(publish?.run).toContain('Release PR has neither pending nor tagged label');
+    expect(publish?.run?.indexOf('labels[]=autorelease: tagged')).toBeLessThan(
+      publish?.run?.indexOf('gh release edit') ?? -1,
+    );
+  });
+
+  it.each([
+    {
+      name: 'pending-only',
+      labels: 'autorelease: pending\n',
+      expectedStatus: 0,
+      expected: 'autorelease: tagged\n',
+    },
+    {
+      name: 'interrupted both-label transition',
+      labels: 'autorelease: pending\nautorelease: tagged\n',
+      expectedStatus: 0,
+      expected: 'autorelease: tagged\n',
+    },
+    {
+      name: 'tagged-only retry',
+      labels: 'autorelease: tagged\n',
+      expectedStatus: 0,
+      expected: 'autorelease: tagged\n',
+    },
+    {
+      name: 'publication failure',
+      labels: 'autorelease: pending\n',
+      failPublish: true,
+      expectedStatus: 1,
+      expected: 'autorelease: pending\n',
+    },
+    {
+      name: 'post-publication lookup failure',
+      labels: 'autorelease: pending\n',
+      failLookup: true,
+      expectedStatus: 1,
+      expected: 'autorelease: tagged\n',
+    },
+  ])('keeps backend recovery retryable from $name', (scenario) => {
+    const finalize = workflow.jobs['finalize-backend-release'];
+    const publish = finalize.steps.find((step) => step.name === 'Publish verified backend release');
+    const root = mkdtempSync(join(tmpdir(), 'verity-backend-release-label-'));
+    try {
+      const bin = join(root, 'bin');
+      const labels = join(root, 'labels');
+      const draft = join(root, 'draft');
+      const views = join(root, 'views');
+      const gh = join(bin, 'gh');
+      mkdirSync(bin);
+      writeFileSync(labels, scenario.labels);
+      writeFileSync(draft, 'true\n');
+      writeFileSync(views, '0\n');
+      writeFileSync(
+        gh,
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1 $2" == "release view" ]]; then
+  count="$(cat "$TEST_VIEWS")"
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$TEST_VIEWS"
+  if [[ "\${FAIL_LOOKUP:-false}" == true && "$count" -gt 1 ]]; then exit 1; fi
+  cat "$TEST_DRAFT"
+elif [[ "$1 $2" == "release edit" ]]; then
+  if [[ "\${FAIL_PUBLISH:-false}" == true ]]; then exit 1; fi
+  printf 'false\\n' > "$TEST_DRAFT"
+elif [[ "$1" == api && " $* " == *" --paginate "* ]]; then
+  printf '406\\n'
+elif [[ "$1" == api && "$2" == */issues/406/labels && " $* " != *" --method "* ]]; then
+  cat "$TEST_LABELS"
+elif [[ "$1 $2" == "api --method" && "$3" == POST ]]; then
+  label="\${*: -1}"
+  label="\${label#labels[]=}"
+  grep -Fxq "$label" "$TEST_LABELS" || printf '%s\\n' "$label" >> "$TEST_LABELS"
+elif [[ "$1 $2" == "api --method" && "$3" == DELETE ]]; then
+  label="\${4##*/}"
+  label="\${label//%3A/:}"
+  label="\${label//%20/ }"
+  grep -Fxv "$label" "$TEST_LABELS" > "$TEST_LABELS.next" || true
+  mv "$TEST_LABELS.next" "$TEST_LABELS"
+else
+  printf 'unexpected gh invocation: %s\\n' "$*" >&2
+  exit 2
+fi
+`,
+      );
+      chmodSync(gh, 0o755);
+
+      const script = publish?.run?.replace('${{ github.event_name }}', 'workflow_dispatch') ?? '';
+      const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          TAG: 'v0.10.4',
+          GITHUB_REPOSITORY: 'Heey-Global/verity',
+          TEST_LABELS: labels,
+          TEST_DRAFT: draft,
+          TEST_VIEWS: views,
+          FAIL_PUBLISH: scenario.failPublish ? 'true' : 'false',
+          FAIL_LOOKUP: scenario.failLookup ? 'true' : 'false',
+        },
+      });
+      expect(result.status, result.stderr).toBe(scenario.expectedStatus);
+      expect(readFileSync(labels, 'utf8')).toBe(scenario.expected);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
