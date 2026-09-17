@@ -1411,6 +1411,11 @@ async function materializeTrustedCliSecrets(request, options) {
   let running;
   const cleanup = () => (running ??= contain());
   try {
+    // Correlated calls chmod only their own child directory. An existing 0700
+    // root still blocks the approved CLI from traversing to its 0600 file.
+    const root = options?.secretDir ?? TRUSTED_CLI_SECRET_DIR;
+    await mkdir(root, { recursive: true, mode: 0o711 });
+    await chmod(root, 0o711);
     for (const secret of fileSecrets) {
       const path = trustedCliSecretPath(secret.name, options, request.correlationId);
       const dir = path.slice(0, path.lastIndexOf('/'));

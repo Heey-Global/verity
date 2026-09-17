@@ -2385,6 +2385,23 @@ describe('verity-runner supervisor runtime', () => {
       }
     };
     try {
+      // A root-owned 0700 parent blocks the CLI even when its per-call directory
+      // is searchable. Same-UID test children otherwise hide this deployment failure.
+      await chmod(secretDir, 0o700);
+      const firstFile = await run({
+        protocolVersion: 1,
+        kind: 'run-trusted-cli',
+        turnId,
+        correlationId: 'first-correlated-file',
+        secrets: [
+          { secretAlias: 'API_KEY', env: 'FIRST_FILE', injection: 'file', secret: 'canary' },
+        ],
+        command: ['/bin/sh', '-c', 'cat "$FIRST_FILE"'],
+      });
+      expect(firstFile).toMatchObject({ ok: true, exitCode: 0, stdout: '[REDACTED]' });
+      expect((await lstat(secretDir)).mode & 0o777).toBe(0o711);
+      await expect(lstat(join(secretDir, 'first-correlated-file'))).rejects.toThrow(/ENOENT/u);
+      spawned.mockClear();
       const result = await run({
         protocolVersion: 1,
         kind: 'run-trusted-cli',
