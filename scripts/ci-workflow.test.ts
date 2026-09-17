@@ -1320,7 +1320,10 @@ describe('self-update release gate', () => {
       push?: { branches?: string[]; paths?: string[] };
       pull_request?: unknown;
       workflow_call?: { inputs?: Record<string, { required?: boolean; type?: string }> };
-      workflow_dispatch?: unknown;
+      workflow_dispatch?: {
+        inputs?: Record<string, { default?: string; options?: string[]; type?: string }>;
+      };
+      schedule?: { cron: string }[];
     };
     concurrency: { group: string };
     jobs: Record<string, { 'timeout-minutes'?: number }>;
@@ -1352,7 +1355,16 @@ describe('self-update release gate', () => {
       default: '',
       type: 'string',
     });
-    expect(workflow.on.workflow_dispatch).toBeDefined();
+    expect(workflow.on.workflow_call?.inputs?.['smoke-profile']).toMatchObject({
+      required: false,
+      type: 'string',
+    });
+    expect(workflow.on.workflow_dispatch?.inputs?.['smoke-profile']).toMatchObject({
+      default: 'full',
+      options: ['full', 'release'],
+      type: 'choice',
+    });
+    expect(workflow.on.schedule).toEqual([{ cron: '17 3 * * 1' }]);
   });
 
   it('checks out and serializes by the exact release candidate', () => {
@@ -1557,12 +1569,13 @@ describe('self-update release gate', () => {
     );
 
     const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
-    const override = smoke.slice(smoke.indexOf('if [[ "${VERITY_SMOKE_ALLOW_NO_ROLLBACK'));
+    const override = smoke.slice(smoke.indexOf(`if [[ "$smoke_profile" == 'release' ||`));
     const exit = override.indexOf('exit 0');
     const forward = override.slice(0, exit);
     expect(forward).toContain('self-update-live-smoke.js cutover');
     expect(forward).toContain('expect_gateway_serving');
     expect(forward).toContain('expect_secret_status "$server" unlocked');
+    expect(forward).toContain("$smoke_profile\" == 'release'");
     expect(forward).toContain('self-update-live-smoke.js companion-handoff');
     expect(forward).toContain('self-update-live-smoke.js updater-restarts');
     expect(override.indexOf('self-update-live-smoke.js cutover-rolls-back')).toBeGreaterThan(exit);

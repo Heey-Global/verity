@@ -20,9 +20,28 @@ on:
         required: false
         default: false
         type: boolean
+      smoke-profile:
+        description: Release gate or complete fault-injection matrix
+        required: false
+        default: release
+        type: string
   # Recovery and deliberate ad-hoc validation remain possible. A manual run
   # checks the ref selected in GitHub's workflow-dispatch UI.
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      smoke-profile:
+        description: Self-update scenarios to exercise
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - release
+  # The complete stateful fault matrix remains an automatic guard, but it no
+  # longer serializes every backend publication. Running it from the default
+  # branch also keeps the workflow-owned harness current.
+  schedule:
+    - cron: '17 3 * * 1'
 
 permissions:
   contents: read
@@ -41,10 +60,9 @@ jobs:
     # second privileged DinD daemon selected through DOCKER_HOST. The smoke script
     # also refuses any daemon it cannot prove is throwaway.
     runs-on: ubuntu-24.04
-    # Raised again with the SIGKILL matrix: the smoke now drives twelve
-    # generations and seventeen cutover runs, five of which wait a bounded window
-    # out on purpose. The budget is a backstop against a hang, not a performance
-    # target.
+    # Manual and scheduled runs drive the twelve-generation SIGKILL matrix. The
+    # release caller selects the bounded forward path below, but shares this
+    # backstop because one reusable job owns both profiles.
     timeout-minutes: 90
     env:
       VERITY_SMOKE_DIND: verity-self-update-dind-${{ github.run_id }}-${{ github.run_attempt }}
@@ -64,6 +82,7 @@ jobs:
       # isolated daemon and the cutover assertions are digest-based.
       VERITY_SMOKE_SERVER_VERSION: 1.0.0
       VERITY_SMOKE_ALLOW_NO_ROLLBACK: ${{ inputs.allow-no-rollback || false }}
+      VERITY_SMOKE_PROFILE: ${{ inputs.smoke-profile || (github.event_name == 'workflow_call' && 'release' || 'full') }}
     steps:
       # Load repository-owned setup from the workflow revision first. A candidate
       # may predate this action and must still be testable by a current workflow.

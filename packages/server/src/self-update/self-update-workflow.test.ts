@@ -90,8 +90,27 @@ describe('self-update workflow image', () => {
 
     expect(triggers).toContain('workflow_call:');
     expect(triggers).toContain('workflow_dispatch:');
+    expect(triggers).toContain('schedule:');
     expect(triggers).not.toContain('push:');
     expect(triggers).not.toContain('pull_request:');
+  });
+
+  it('gates releases on the forward path and reserves the full matrix for deliberate runs', async () => {
+    const workflow = await readFile(resolve(root, '.github/workflows/self-update.yml'), 'utf8');
+    expect(workflow).toContain('default: release');
+    expect(workflow).toContain('default: full\n        type: choice');
+    expect(workflow).toContain(
+      "VERITY_SMOKE_PROFILE: ${{ inputs.smoke-profile || (github.event_name == 'workflow_call' && 'release' || 'full') }}",
+    );
+
+    const smoke = await readFile(resolve(root, 'deploy/bin/verity-self-update-live-smoke'), 'utf8');
+    const profileBranch = smoke.slice(smoke.indexOf(`if [[ "$smoke_profile" == 'release' ||`));
+    const releasePath = profileBranch.slice(0, profileBranch.indexOf('exit 0'));
+    expect(releasePath).toContain('self-update-live-smoke.js cutover');
+    expect(releasePath).toContain('expect_gateway_serving');
+    expect(releasePath).toContain('expect_secret_status "$server" unlocked');
+    expect(releasePath).toContain('self-update-live-smoke.js companion-handoff');
+    expect(releasePath).toContain('self-update-live-smoke.js updater-restarts');
   });
 
   /**
