@@ -15,7 +15,7 @@ import { createConnection, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   agentLaunchSpec,
   PRIVILEGE_DROP_FLAGS,
@@ -850,21 +850,27 @@ describe('agent spawn broker', () => {
   });
 
   it('kills a pending child when its Runner connection detaches before spawn', async () => {
+    // A fabricated PID can belong to the test runner or another live process.
+    const realKill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw new Error('A fake child must not signal operating-system processes');
+    });
+    onTestFinished(() => realKill.mockRestore());
     class DelayedChild extends EventEmitter {
       pid: number | undefined;
+      private spawned = false;
       exitCode: number | null = null;
       signalCode: NodeJS.Signals | null = null;
       stdin = new PassThrough();
       stdout = new PassThrough();
       stderr = new PassThrough();
       readonly kill = vi.fn((signal: NodeJS.Signals) => {
-        if (this.pid === undefined) return false;
+        if (!this.spawned) return false;
         this.signalCode = signal;
         queueMicrotask(() => this.emit('close', null, signal));
         return true;
       });
       spawnNow(): void {
-        this.pid = 4242;
+        this.spawned = true;
         this.emit('spawn');
       }
     }
@@ -903,6 +909,7 @@ describe('agent spawn broker', () => {
     child.spawnNow();
     await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGKILL'));
     await broker.close();
+    expect(realKill).not.toHaveBeenCalled();
   });
 
   it('rejects malformed and oversized frames without spawning', async () => {

@@ -1989,6 +1989,7 @@ describe('buildEmbeddedServer', () => {
   afterEach(async () => {
     await server?.close();
     server = undefined;
+    vi.unstubAllGlobals();
   });
 
   it('rejects project Docker provisioning without a project relay at startup', async () => {
@@ -2452,6 +2453,11 @@ describe('buildEmbeddedServer', () => {
   });
 
   it('wires the OpenCode backend + /models from settings', async () => {
+    const providerModels = ['zai-org/GLM-5.2', 'provider/another-model'];
+    const fetchModels = vi.fn(async () =>
+      Response.json({ data: providerModels.map((id) => ({ id })) }),
+    );
+    vi.stubGlobal('fetch', fetchModels);
     server = await buildTestEmbeddedServer();
     const init = await server.app.inject({
       method: 'POST',
@@ -2459,16 +2465,20 @@ describe('buildEmbeddedServer', () => {
       payload: { password: 'correct horse battery staple', deviceLabel: 'test device' },
     });
     const token = String(init.json().token);
-    await server.app.inject({
+    const settings = await server.app.inject({
       method: 'PATCH',
       url: '/settings',
       headers: { authorization: `Bearer ${token}` },
       payload: {
         opencodeBaseUrl: 'https://api.deepinfra.test/v1',
         opencodeApiKey: 'opencode-key-fixture',
-        opencodeModels: 'zai-org/GLM-5.2',
       },
     });
+    expect(settings.statusCode).toBe(200);
+    expect(fetchModels).toHaveBeenCalledWith(
+      new URL('https://api.deepinfra.test/v1/models'),
+      expect.objectContaining({ method: 'GET', redirect: 'manual' }),
+    );
     const res = await server.app.inject({ method: 'GET', url: '/healthz' });
     expect(res.statusCode).toBe(200);
 
@@ -2482,10 +2492,15 @@ describe('buildEmbeddedServer', () => {
     // OpenCode requires a project sandbox, so it is available for explicit
     // project selection but never becomes the project-less global default.
     expect(body.default).toBeUndefined();
-    expect(body.models).toEqual(['verity/zai-org/GLM-5.2']);
+    expect(body.models).toEqual(providerModels.map((id) => `verity/${id}`).sort());
   });
 
   it('offers Codex and OpenCode models side by side', async () => {
+    const providerModels = ['zai-org/GLM-5.2', 'provider/another-model'];
+    const fetchModels = vi.fn(async () =>
+      Response.json({ data: providerModels.map((id) => ({ id })) }),
+    );
+    vi.stubGlobal('fetch', fetchModels);
     server = await buildTestEmbeddedServer({
       codexEnabled: true,
       codexModels: ['codex/gpt-5.6-sol'],
@@ -2509,7 +2524,6 @@ describe('buildEmbeddedServer', () => {
         codexAuthJson: '{"tokens":{"access_token":"codex-token"}}',
         opencodeBaseUrl: 'https://api.deepinfra.test/v1',
         opencodeApiKey: 'opencode-key-fixture',
-        opencodeModels: 'zai-org/GLM-5.2',
       },
     });
     expect(settings.statusCode).toBe(200);
@@ -2522,7 +2536,9 @@ describe('buildEmbeddedServer', () => {
     expect(models.statusCode).toBe(200);
     const body = models.json<{ models: string[]; default?: string }>();
     expect(body.default).toBe('codex/gpt-5.6-sol');
-    expect(body.models).toEqual(['codex/gpt-5.6-sol', 'verity/zai-org/GLM-5.2']);
+    expect(body.models).toEqual(
+      ['codex/gpt-5.6-sol', ...providerModels.map((id) => `verity/${id}`)].sort(),
+    );
   });
 
   it('refreshes visible Codex models from the credential-free bundled catalog', async () => {
