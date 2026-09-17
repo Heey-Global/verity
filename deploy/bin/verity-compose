@@ -343,6 +343,16 @@ if [ "${1:-}" = "managed-up" ]; then
       if [ "$transition_active" -eq 1 ]; then rollback_managed || exit 71; fi
       exit 70
     fi
+    # The sealed Server is created outside Compose. Recreating the surrounding
+    # services cannot restart an existing stopped Server, including a promoted
+    # generation. Start it only after identity validation and legacy fencing.
+    if [ "$managed_identity" = "$VERITY_MANAGED_DEPLOYMENT_ID server false" ]; then
+      if ! docker start "$managed_server_name" >/dev/null; then
+        printf '%s\n' 'verity-compose: existing managed Server could not be started' >&2
+        if [ "$transition_active" -eq 1 ]; then rollback_managed || exit 71; fi
+        exit 70
+      fi
+    fi
     readiness_attempt=0
     while [ "$readiness_attempt" -lt 30 ]; do
       if compose_managed --profile managed exec -T verity-managed-gateway \

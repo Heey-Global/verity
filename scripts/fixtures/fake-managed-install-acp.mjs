@@ -54,9 +54,11 @@ for await (const line of input) {
       .filter((block) => block.type === 'text' && typeof block.text === 'string')
       .map((block) => block.text)
       .join('\n');
-    const sentinels = ['managed-install-before-restart', 'managed-install-after-restart'].filter(
-      (sentinel) => prompt.includes(sentinel),
-    );
+    const sentinels = [
+      'managed-install-before-restart',
+      'managed-install-after-restart',
+      'managed-install-after-repair',
+    ].filter((sentinel) => prompt.includes(sentinel));
     if (sentinels.length !== 1) {
       refuse(-32602, 'Expected exactly one managed installation prompt sentinel');
       continue;
