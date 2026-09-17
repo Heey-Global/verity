@@ -98,6 +98,30 @@ beforeEach(() => {
 });
 
 describe('NewAgentScreen', () => {
+  it('preserves a configured OpenCode model for session creation and the prepared turn', async () => {
+    const client = makeClient();
+    mockParams = {
+      projectId: 'p/1',
+      model: 'verity/gpt-4.1',
+      prompt: 'Check the project.',
+    };
+    mockCreateVerityClient.mockReturnValue(client);
+
+    render(<NewAgentScreen />);
+
+    await waitFor(() =>
+      expect(client.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: mockParams.projectId, model: mockParams.model }),
+      ),
+    );
+    await waitFor(() =>
+      expect(client.sendTurn).toHaveBeenCalledWith(launchedSessionId(), {
+        prompt: mockParams.prompt,
+        model: mockParams.model,
+      }),
+    );
+  });
+
   it('creates the session it already opened, and auto-starts the prepared prompt', async () => {
     const createSession = jest.fn().mockResolvedValue({ sessionId: 's/1' });
     const sendTurn = jest.fn().mockResolvedValue({ sessionId: 's/1', accepted: true });

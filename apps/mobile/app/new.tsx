@@ -19,16 +19,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '../components/Icon';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
+import { isProjectSessionModel } from '../lib/projectSessionModels';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { SessionChat } from './session/[id]';
 
 // Matches session/[id].tsx: at/above this width the app uses the unified split home,
 // so a new session there redirects into that split rather than taking over the screen.
 const SPLIT_SCREEN_MIN_WIDTH = 900;
-
-function isProjectSessionModel(model: string): boolean {
-  return !model.includes('/') || model.startsWith('codex/');
-}
 
 function param(value: string | string[] | undefined): string | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
