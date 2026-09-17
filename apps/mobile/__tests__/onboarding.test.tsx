@@ -83,8 +83,11 @@ function makeStatus(overrides: Partial<OnboardingStatus> = {}): OnboardingStatus
   };
 }
 
-function makeClient(fetchOnboardingStatus: jest.Mock): VerityClient {
-  return { fetchOnboardingStatus } as unknown as VerityClient;
+function makeClient(
+  fetchOnboardingStatus: jest.Mock,
+  getSecretStatus: jest.Mock = jest.fn().mockResolvedValue('unlocked'),
+): VerityClient {
+  return { fetchOnboardingStatus, getSecretStatus } as unknown as VerityClient;
 }
 
 beforeEach(() => {
@@ -350,6 +353,26 @@ describe('onboarding first-run gate', () => {
     // The gate must resolve (not hang) and must NOT trap the operator in the wizard.
     expect(await screen.findByText('gate:done')).toBeOnTheScreen();
     expect(mockReplace).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('opens server unlock when onboarding status fails but the secret store is sealed', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const getSecretStatus = jest.fn().mockResolvedValue('sealed');
+    mockCreateVerityClient.mockReturnValue(
+      makeClient(
+        jest.fn().mockRejectedValue(new VerityApiError(503, 'unavailable')),
+        getSecretStatus,
+      ),
+    );
+    render(<GateProbe />);
+
+    expect(
+      await screen.findByText('gate:done:/unlock-device?returnTo=%2F&serverSecret=1'),
+    ).toBeOnTheScreen();
+    expect(getSecretStatus).toHaveBeenCalledTimes(1);
+    expect(mockReplace).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 

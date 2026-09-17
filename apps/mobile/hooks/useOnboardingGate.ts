@@ -136,6 +136,28 @@ export function useOnboardingGate(): OnboardingGateState {
 
         setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
       } catch (error) {
+        // `/onboarding/status` carries the richer first-run state, but unlocking
+        // must remain reachable if that probe alone regresses or is temporarily
+        // unavailable. `/secret/status` is independently pre-authenticated and
+        // exposes only the cipher state, which is enough to route a sealed store
+        // to the existing unlock form without guessing about setup progress.
+        try {
+          const client = createVerityClient();
+          if (client && (await client.getSecretStatus()) === 'sealed' && active) {
+            if (inUnlockDevice) {
+              setState({ status: 'done' });
+            } else {
+              setState({
+                status: 'done',
+                redirectTo: unlockRoute(currentReturnTo(), { serverSecret: true }),
+              });
+            }
+            return;
+          }
+        } catch {
+          // Preserve the gate's fail-open contract when neither safe status probe
+          // is available. A connectivity failure must not trap the whole app.
+        }
         console.warn('verity: onboarding status check failed, allowing through', error);
         if (active) {
           setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
