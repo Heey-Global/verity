@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/Heey-Global/verity/compare/v0.10.5...v0.11.0) (2026-09-17)
+
+
+### Features
+
+* **opencode:** discover provider models automatically ([#423](https://github.com/Heey-Global/verity/issues/423)) ([2652974](https://github.com/Heey-Global/verity/commit/2652974c14de601cb907630c471d1491dd6d7d2d))
+
 ## [0.10.5](https://github.com/Heey-Global/verity/compare/v0.10.4...v0.10.5) (2026-09-17)
 
 
