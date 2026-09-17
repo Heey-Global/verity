@@ -16,16 +16,33 @@ const waitingLogin = {
 } as AgentLogin;
 
 describe('AgentLoginPanel polling', () => {
-  it('uses the neutral setup palette for agent login actions', () => {
+  it('uses the shared primary palette for agent login actions', () => {
     const client = {} as VerityClient;
     render(<AgentLoginPanel client={client} configured={{ claude: false, codex: false }} />);
 
     expect(screen.getByLabelText('Connect Claude')).toHaveStyle({
-      backgroundColor: lightTheme.colors.setup.text,
+      backgroundColor: lightTheme.colors.primary,
     });
     expect(screen.getByLabelText('Connect Codex')).toHaveStyle({
-      backgroundColor: lightTheme.colors.setup.text,
+      backgroundColor: lightTheme.colors.primary,
     });
+  });
+
+  it('keeps configured provider actions collapsed in compact settings', () => {
+    render(
+      <AgentLoginPanel
+        client={{} as VerityClient}
+        configured={{ claude: true, codex: true }}
+        compact
+        allowDisconnect
+      />,
+    );
+    expect(screen.queryByLabelText('Logout Claude')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Claude'));
+    expect(screen.getByLabelText('Logout Claude')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Logout Codex')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Claude'));
+    expect(screen.queryByLabelText('Logout Claude')).toBeNull();
   });
 
   it('does not overlap polls for the same login session', async () => {

@@ -48,6 +48,8 @@ describe('settings/maintenance — project containers', () => {
       makeClient('unlocked', { listProjects, recreateProjectContainer }),
     );
     render(<MaintenanceSettingsScreen />);
+    if (screen.queryByLabelText('Running containers'))
+      fireEvent.press(screen.getByLabelText('Running containers'));
 
     fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
 
@@ -64,6 +66,8 @@ describe('settings/maintenance — project containers', () => {
       }),
     );
     render(<MaintenanceSettingsScreen />);
+    if (screen.queryByLabelText('Running containers'))
+      fireEvent.press(screen.getByLabelText('Running containers'));
 
     fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
     expect(await screen.findByText('No running containers to reprovision.')).toBeOnTheScreen();
@@ -81,6 +85,8 @@ describe('settings/maintenance — project containers', () => {
       }),
     );
     render(<MaintenanceSettingsScreen />);
+    if (screen.queryByLabelText('Running containers'))
+      fireEvent.press(screen.getByLabelText('Running containers'));
 
     fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
     // One failure does not abort the run: the second container is still tried.
@@ -107,6 +113,8 @@ describe('settings/maintenance — project containers', () => {
       await saveVeritySettings(client, { gitUserName: 'new-bot' });
     });
     render(<MaintenanceSettingsScreen />);
+    if (screen.queryByLabelText('Running containers'))
+      fireEvent.press(screen.getByLabelText('Running containers'));
 
     expect(
       await screen.findByText('Settings changed since these containers started.'),
@@ -132,6 +140,8 @@ describe('settings/maintenance — project containers', () => {
       await saveVeritySettings(client, { gitUserName: 'new-bot' });
     });
     render(<MaintenanceSettingsScreen />);
+    if (screen.queryByLabelText('Running containers'))
+      fireEvent.press(screen.getByLabelText('Running containers'));
 
     fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
 
@@ -147,6 +157,8 @@ describe('settings/maintenance — project containers', () => {
       }),
     );
     render(<MaintenanceSettingsScreen />);
+    if (screen.queryByLabelText('Running containers'))
+      fireEvent.press(screen.getByLabelText('Running containers'));
 
     fireEvent.press(await screen.findByLabelText('Reprovision running containers now'));
     expect(await screen.findByText('store sealed')).toBeOnTheScreen();
@@ -159,6 +171,8 @@ describe('settings/maintenance — project containers', () => {
   it('renders a not-connected message when no server URL is configured', () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<MaintenanceSettingsScreen />);
+    if (screen.queryByLabelText('Running containers'))
+      fireEvent.press(screen.getByLabelText('Running containers'));
     expect(screen.getByText('Not connected')).toBeOnTheScreen();
   });
 });
@@ -170,6 +184,7 @@ describe('settings/maintenance — server updates', () => {
 
     // The panel is gone, but the screen is not: reprovisioning is available on
     // every deployment.
+    fireEvent.press(await screen.findByLabelText('Running containers'));
     expect(await screen.findByLabelText('Reprovision running containers now')).toBeOnTheScreen();
     expect(screen.queryByText('Updates are managed elsewhere')).toBeNull();
     expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
@@ -246,6 +261,7 @@ describe('settings/maintenance — server updates', () => {
     );
     render(<MaintenanceSettingsScreen />);
 
+    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
 
     await waitFor(() => expect(requestServerUpdate).toHaveBeenCalledTimes(1));
@@ -286,6 +302,7 @@ describe('settings/maintenance — server updates', () => {
     );
     render(<MaintenanceSettingsScreen />);
 
+    fireEvent.press(await screen.findByLabelText('Server update'));
     expect(await screen.findByText('The new version could not be downloaded.')).toBeOnTheScreen();
     fireEvent.press(await screen.findByLabelText('Try again'));
 
@@ -329,6 +346,7 @@ describe('settings/maintenance — server updates', () => {
     );
     render(<MaintenanceSettingsScreen />);
 
+    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
 
     expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
@@ -349,6 +367,7 @@ describe('settings/maintenance — server updates', () => {
     );
     render(<MaintenanceSettingsScreen />);
 
+    fireEvent.press(await screen.findByLabelText('Server update'));
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
 
     expect(

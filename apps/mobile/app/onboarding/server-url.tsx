@@ -352,9 +352,7 @@ export default function OnboardingServerUrl() {
                 accessibilityRole="button"
                 accessibilityLabel="Scan QR code"
               >
-                {testing ? (
-                  <ActivityIndicator size="small" color={theme.colors.background} />
-                ) : null}
+                {testing ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
                 <Text style={styles.primaryButtonLabel}>
                   {testing ? 'Connecting…' : 'Scan QR code'}
                 </Text>
@@ -419,9 +417,7 @@ export default function OnboardingServerUrl() {
                 accessibilityRole="button"
                 accessibilityLabel="Test connection"
               >
-                {testing ? (
-                  <ActivityIndicator size="small" color={theme.colors.background} />
-                ) : null}
+                {testing ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
                 <Text style={styles.primaryButtonLabel}>
                   {testing ? 'Connecting…' : 'Test connection'}
                 </Text>
@@ -576,7 +572,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   field: {
     gap: theme.spacing.xs,
@@ -659,13 +655,13 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   buttonDisabled: {
     opacity: 0.5,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },

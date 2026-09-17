@@ -176,7 +176,7 @@ export function OpenCodeSetup({
               accessibilityRole="button"
               accessibilityLabel="Save OpenCode"
             >
-              {saving ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
+              {saving ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
               <Text style={styles.primaryButtonLabel}>{saving ? 'Saving…' : 'Save OpenCode'}</Text>
             </Pressable>
             <Pressable
@@ -235,9 +235,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 15,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
-  stepBadgeLabel: { color: theme.colors.background, fontSize: theme.text.sm, fontWeight: '600' },
+  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '600' },
   fields: { flex: 1, gap: theme.spacing.sm },
   stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
   stepDescription: { color: theme.colors.setup.textMuted, fontSize: theme.text.xs, lineHeight: 18 },
@@ -254,14 +254,14 @@ const styles = StyleSheet.create((theme) => ({
   primaryButton: {
     minHeight: 44,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: theme.spacing.sm,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },

@@ -17,6 +17,7 @@ import { AgentLoginPanel } from '../../../components/AgentLoginPanel';
 import { SecretStoreSection } from '../../../components/settings/SecretStoreSection';
 import {
   SecretPasteField,
+  SettingsDisclosure,
   SettingsField,
   SettingsGroup,
   SettingsListPanel,
@@ -107,7 +108,7 @@ function ServicesSettingsView({
 
   return (
     <SettingsScaffold
-      title="Connected services"
+      title="Services"
       detail
       onRetry={() => {
         const hasDirtyFields = text.dirty || secrets.dirty;
@@ -123,10 +124,7 @@ function ServicesSettingsView({
       <SecretStoreSection client={client} />
 
       {managed ? (
-        <SettingsGroup
-          title="AI backends"
-          description="Connect Claude and Codex subscriptions or configure an OpenAI-compatible provider for OpenCode."
-        >
+        <SettingsGroup title="AI backends" description="Subscriptions and API providers.">
           {writable ? (
             <View style={styles.panelStack}>
               <AgentLoginPanel
@@ -147,6 +145,7 @@ function ServicesSettingsView({
                   setVeritySettingsError('Unlock the secret store first.');
                   void refreshSecretStatus(client);
                 }}
+                compact
                 showGuidance={false}
                 allowDisconnect
                 autoStartProvider={autoStartLoginProvider(agentLogin)}
@@ -166,15 +165,14 @@ function ServicesSettingsView({
             </SettingsPanel>
           )}
 
-          <SettingsPanel>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.disclosureTitle}>OpenCode</Text>
-              <StatusPill
-                quiet
-                intent={opencodeReady ? 'ready' : 'optional'}
-                label={opencodeReady ? 'Configured' : 'Not configured'}
-              />
-            </View>
+          <SettingsDisclosure
+            onCollapse={() => {
+              text.commit();
+              secrets.commit();
+            }}
+            title="OpenCode"
+            summary={opencodeReady ? 'Configured' : 'Not configured'}
+          >
             <Text style={styles.reproSubtitle}>
               Verity automatically loads all models offered by your OpenAI-compatible API.
             </Text>
@@ -200,13 +198,25 @@ function ServicesSettingsView({
             {!writable ? (
               <Text style={styles.reproHint}>Unlock credentials to configure OpenCode.</Text>
             ) : null}
-          </SettingsPanel>
+          </SettingsDisclosure>
         </SettingsGroup>
       ) : null}
 
       {managed ? (
         <SettingsGroup title="Meeting transcription">
-          <SettingsPanel>
+          <SettingsDisclosure
+            onCollapse={() => {
+              text.commit();
+              secrets.commit();
+            }}
+            title="Transcription"
+            summary={
+              transcriptionBackendStatus(
+                backendMode,
+                settings?.transcribeExternalConfigured === true,
+              ).label
+            }
+          >
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.disclosureTitle}>Backend</Text>
               {/*
@@ -303,7 +313,7 @@ function ServicesSettingsView({
                 ) : null}
               </>
             ) : null}
-          </SettingsPanel>
+          </SettingsDisclosure>
         </SettingsGroup>
       ) : null}
 
@@ -320,15 +330,14 @@ function ServicesSettingsView({
 
       {managed ? (
         <SettingsGroup title="Credentials">
-          <SettingsPanel>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.disclosureTitle}>Doppler</Text>
-              <StatusPill
-                quiet
-                intent={settings?.dopplerServiceTokenConfigured ? 'ready' : 'optional'}
-                label={settings?.dopplerServiceTokenConfigured ? 'Configured' : 'Optional'}
-              />
-            </View>
+          <SettingsDisclosure
+            onCollapse={() => {
+              text.commit();
+              secrets.commit();
+            }}
+            title="Doppler"
+            summary={settings?.dopplerServiceTokenConfigured ? 'Configured' : 'Optional'}
+          >
             <Text style={styles.reproSubtitle}>
               Account token used by project-level Doppler bindings. Stored encrypted and never shown
               again.
@@ -345,17 +354,16 @@ function ServicesSettingsView({
             {!writable ? (
               <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
             ) : null}
-          </SettingsPanel>
+          </SettingsDisclosure>
 
-          <SettingsPanel>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.disclosureTitle}>Public Preview</Text>
-              <StatusPill
-                quiet
-                intent={settings?.uplinkSubscriptionKeyConfigured ? 'ready' : 'optional'}
-                label={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Optional'}
-              />
-            </View>
+          <SettingsDisclosure
+            onCollapse={() => {
+              text.commit();
+              secrets.commit();
+            }}
+            title="Public Preview"
+            summary={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Optional'}
+          >
             <Text style={styles.reproSubtitle}>
               Subscription key for paid public links through Verity Uplink. Stored encrypted and
               never shown again.
@@ -372,7 +380,7 @@ function ServicesSettingsView({
             {!writable ? (
               <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
             ) : null}
-          </SettingsPanel>
+          </SettingsDisclosure>
         </SettingsGroup>
       ) : null}
 

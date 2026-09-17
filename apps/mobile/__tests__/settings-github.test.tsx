@@ -33,6 +33,31 @@ afterEach(() => {
 });
 
 describe('settings/github — commit author', () => {
+  it('keeps controls collapsed and saves author edits when closing', async () => {
+    const initial = makeSettings();
+    const updateVeritySettings = jest
+      .fn()
+      .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch }));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { settings: initial, updateVeritySettings }),
+    );
+    render(<GitHubSettingsScreen />);
+
+    expect(await screen.findByText('Connected')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Manage GitHub connection')).toBeNull();
+    expect(screen.queryByLabelText('Commit name')).toBeNull();
+    expect(screen.queryByLabelText('Open GitHub SSH key settings')).toBeNull();
+    fireEvent.press(screen.getByText('Author identity'));
+    fireEvent.changeText(screen.getByLabelText('Commit name'), 'Draft author');
+    fireEvent.press(screen.getByText('Author identity'));
+    expect(screen.queryByLabelText('Commit name')).toBeNull();
+    fireEvent.press(screen.getByText('Author identity'));
+    expect(screen.getByLabelText('Commit name')).toHaveDisplayValue('Draft author');
+    await waitFor(() =>
+      expect(updateVeritySettings).toHaveBeenCalledWith({ gitUserName: 'Draft author' }),
+    );
+  });
+
   it('auto-saves the author fields on blur, with no Save button anywhere', async () => {
     const initial = makeSettings();
     const updateVeritySettings = jest
@@ -43,6 +68,7 @@ describe('settings/github — commit author', () => {
     );
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Author identity'));
     const name = await screen.findByLabelText('Commit name');
     fireEvent.changeText(name, 'new-bot');
     expect(screen.getByText('Unsaved changes')).toBeOnTheScreen();
@@ -75,6 +101,7 @@ describe('settings/github — commit author', () => {
     );
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Author identity'));
     const email = await screen.findByLabelText('Commit email');
     fireEvent.changeText(email, 'bot@acme.test');
     fireEvent(email, 'blur');
@@ -96,6 +123,7 @@ describe('settings/github — commit author', () => {
     );
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Author identity'));
     const name = await screen.findByLabelText('Commit name');
     fireEvent.changeText(name, 'retry-bot');
     fireEvent(name, 'blur');
@@ -111,6 +139,7 @@ describe('settings/github — commit author', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { updateVeritySettings }));
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Author identity'));
     const name = await screen.findByLabelText('Commit name');
     fireEvent(name, 'blur');
     fireEvent(screen.getByLabelText('Commit email'), 'blur');
@@ -121,13 +150,10 @@ describe('settings/github — commit author', () => {
     expect(updateVeritySettings).not.toHaveBeenCalled();
   });
 
-  // Readiness follows what is on screen, not what was last stored: a pill that
-  // stays red until the blur lands reads as if the typing did not count.
-  it('turns the identity pill ready as soon as both fields are filled', async () => {
+  // A stale summary would conceal draft edits as soon as the author row closes.
+  it('updates the author summary as soon as both fields are filled', async () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
-        // Nothing on this screen is ready yet, so "Ready" appearing at all is
-        // the identity pill and no other.
         settings: makeSettings({
           gitUserName: '',
           gitUserEmail: '',
@@ -138,15 +164,15 @@ describe('settings/github — commit author', () => {
     );
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Author identity'));
     const name = await screen.findByLabelText('Commit name');
     expect(screen.queryByText('Ready')).toBeNull();
 
     fireEvent.changeText(name, 'new-bot');
     fireEvent.changeText(screen.getByLabelText('Commit email'), 'bot@acme.test');
 
-    // Typed, not yet blurred: nothing has been saved, and the pill still agrees
-    // with what the operator can see.
-    await waitFor(() => expect(screen.getByText('Ready')).toBeOnTheScreen());
+    // The summary must update before a save, while the draft is still local.
+    await waitFor(() => expect(screen.getByText('new-bot · bot@acme.test')).toBeOnTheScreen());
   });
 });
 
@@ -155,6 +181,7 @@ describe('settings/github — repository access', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('GitHub connection'));
     const manage = await screen.findByLabelText('Manage GitHub connection');
     // The App id / installation id are plumbing, not settings: they stay off
     // this screen, and the private key is pasted on /github-connect.
@@ -233,11 +260,12 @@ describe('settings/github — verified commits', () => {
     );
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Signing'));
     fireEvent.press(await screen.findByLabelText('Create signing key'));
 
     await waitFor(() => expect(generateSigningKey).toHaveBeenCalledWith(undefined));
     expect(await screen.findByText(publicKey)).toBeOnTheScreen();
-    await waitFor(() => expect(screen.getAllByText('Ready')).toHaveLength(2));
+    await waitFor(() => expect(screen.getByText('Ready')).toBeOnTheScreen());
   });
 
   it('shows the public signing key and offers the GitHub page to paste it into', async () => {
@@ -249,6 +277,7 @@ describe('settings/github — verified commits', () => {
     );
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Signing'));
     expect(await screen.findByText(publicKey)).toBeOnTheScreen();
     fireEvent.press(screen.getByLabelText('Open GitHub SSH key settings'));
     // The key is added on GitHub's own page; the app only takes the operator
@@ -264,6 +293,7 @@ describe('settings/github — verified commits', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { getSigningKey }));
     render(<GitHubSettingsScreen />);
 
+    fireEvent.press(await screen.findByText('Signing'));
     fireEvent.press(await screen.findByLabelText('Retry loading signing key'));
     await waitFor(() => expect(getSigningKey).toHaveBeenCalledTimes(2));
   });

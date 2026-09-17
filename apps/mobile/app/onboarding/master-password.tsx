@@ -408,7 +408,7 @@ function MasterPasswordStep({
         accessibilityRole="button"
         accessibilityLabel={submitA11yLabel}
       >
-        {busy ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
+        {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
         <Text style={styles.primaryButtonLabel}>{submitLabel}</Text>
       </Pressable>
     </View>
@@ -524,8 +524,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   donePill: {
     alignSelf: 'flex-start',
-    color: theme.colors.background,
-    backgroundColor: theme.colors.setup.text,
+    color: theme.colors.onPrimary,
+    backgroundColor: theme.colors.primary,
     fontSize: theme.text.xs,
     fontWeight: '600',
     textTransform: 'uppercase',
@@ -580,13 +580,13 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   buttonDisabled: {
     opacity: 0.5,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },

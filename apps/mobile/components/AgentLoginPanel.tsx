@@ -9,6 +9,8 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { SettingsDisclosure } from './settings/SettingsDisclosure';
+
 type LoginState = {
   login: AgentLogin | null;
   code: string;
@@ -63,6 +65,7 @@ export function AgentLoginPanel({
   showGuidance = true,
   allowDisconnect = false,
   autoStartProvider,
+  compact = false,
 }: {
   client: VerityClient;
   configured: AgentLoginConfiguredState;
@@ -73,6 +76,8 @@ export function AgentLoginPanel({
   allowDisconnect?: boolean;
   /** Starts a fresh provider login once when reached from an auth failure. */
   autoStartProvider?: AgentLoginProvider;
+  /** Settings collapse provider details; onboarding keeps the guided flow visible. */
+  compact?: boolean;
 }) {
   const [logins, setLogins] = useState<Record<AgentLoginProvider, LoginState>>({
     claude: emptyLoginState(),
@@ -305,6 +310,7 @@ export function AgentLoginPanel({
         title="Claude"
         configured={configured.claude}
         state={logins.claude}
+        compact={compact}
         allowDisconnect={allowDisconnect}
         onStart={() => start('claude')}
         onDisconnect={() => disconnect('claude')}
@@ -319,6 +325,7 @@ export function AgentLoginPanel({
         title="Codex"
         configured={configured.codex}
         state={logins.codex}
+        compact={compact}
         allowDisconnect={allowDisconnect}
         onStart={() => start('codex')}
         onDisconnect={() => disconnect('codex')}
@@ -338,6 +345,7 @@ function ProviderCard({
   configured,
   state,
   allowDisconnect,
+  compact,
   onStart,
   onDisconnect,
   onCopyCode,
@@ -351,6 +359,7 @@ function ProviderCard({
   configured: boolean;
   state: LoginState;
   allowDisconnect: boolean;
+  compact: boolean;
   onStart: () => void;
   onDisconnect: () => void;
   onCopyCode: (code: string) => void;
@@ -405,25 +414,27 @@ function ProviderCard({
         ? 'Restart ' + title + ' login'
         : 'Connect ' + title;
 
-  return (
-    <View style={styles.card}>
-      <View style={styles.labelRow}>
-        <View style={styles.providerTitleGroup}>
-          <Text style={styles.label}>{title}</Text>
-          <Text style={styles.providerCopy}>
-            {provider === 'claude'
-              ? 'Connect your Claude subscription to this Verity server.'
-              : 'Connect your Codex subscription to this Verity server.'}
-          </Text>
+  const content = (
+    <View style={compact ? styles.compactCard : styles.card}>
+      {!compact ? (
+        <View style={styles.labelRow}>
+          <View style={styles.providerTitleGroup}>
+            <Text style={styles.label}>{title}</Text>
+            <Text style={styles.providerCopy}>
+              {provider === 'claude'
+                ? 'Connect your Claude subscription to this Verity server.'
+                : 'Connect your Codex subscription to this Verity server.'}
+            </Text>
+          </View>
+          <View style={[styles.pill, ready ? styles.pillReady : null]}>
+            <Text style={[styles.pillText, ready ? styles.pillTextReady : null]}>{statusText}</Text>
+          </View>
         </View>
-        <View style={[styles.pill, ready ? styles.pillReady : null]}>
-          <Text style={[styles.pillText, ready ? styles.pillTextReady : null]}>{statusText}</Text>
-        </View>
-      </View>
+      ) : null}
 
       {ready ? (
         <>
-          <Text style={styles.success}>{title} connected.</Text>
+          {!compact ? <Text style={styles.success}>{title} connected.</Text> : null}
           {allowDisconnect ? (
             <View style={styles.actionRow}>
               <Pressable
@@ -464,7 +475,7 @@ function ProviderCard({
           accessibilityLabel={buttonLabel}
         >
           {isPreparing || isWaitingForCompletion ? (
-            <ActivityIndicator size="small" color={theme.colors.background} />
+            <ActivityIndicator size="small" color={theme.colors.onPrimary} />
           ) : null}
           <Text style={styles.primaryButtonLabel}>{buttonLabel}</Text>
         </Pressable>
@@ -621,6 +632,16 @@ function ProviderCard({
       ) : null}
     </View>
   );
+  if (!compact) return content;
+  return (
+    <SettingsDisclosure
+      title={title}
+      summary={statusText}
+      attention={state.busy || state.error !== null || (login !== null && !ready)}
+    >
+      {content}
+    </SettingsDisclosure>
+  );
 }
 
 function LoginStep({
@@ -663,6 +684,7 @@ function LoginStep({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  compactCard: { gap: theme.spacing.sm },
   guidance: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.lg,
@@ -728,7 +750,7 @@ const styles = StyleSheet.create((theme) => ({
   primaryButton: {
     minHeight: 44,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -736,14 +758,14 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
   submitButton: {
     minHeight: 44,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
@@ -751,18 +773,18 @@ const styles = StyleSheet.create((theme) => ({
   pasteButton: {
     minHeight: 44,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
   },
   pasteButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.sm,
     fontWeight: '600',
   },
   secondaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.sm,
     fontWeight: '600',
   },
@@ -835,13 +857,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   stepBadgeActive: {
     borderColor: theme.colors.setup.text,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   stepBadgeDone: {
     borderColor: theme.colors.tone.done,
     backgroundColor: theme.colors.tone.done,
   },
-  stepBadgeLabel: { color: theme.colors.background, fontSize: theme.text.sm, fontWeight: '600' },
+  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '600' },
   stepBadgeLabelMuted: { color: theme.colors.textFaint },
   stepBody: { flex: 1, gap: theme.spacing.sm },
   stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },

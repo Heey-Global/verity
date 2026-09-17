@@ -50,6 +50,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.setup.surfaceAlt,
   },
   segmentFilled: {
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
 }));

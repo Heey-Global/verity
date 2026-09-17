@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { SettingsDisclosure } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
 
 export function ServerUpdateSection({ client }: { client: VerityClient }) {
@@ -109,8 +110,12 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
   const attempt = view.idempotencyKey;
 
   return (
-    <View style={styles.reproPanel}>
-      <Text style={styles.reproTitle}>{view.title}</Text>
+    <SettingsDisclosure
+      title="Server update"
+      icon="download"
+      summary={view.title}
+      attention={starting || view.progress !== null || actionError !== undefined}
+    >
       <Text style={styles.reproSubtitle}>{view.detail}</Text>
       {view.progress !== null ? (
         <View style={styles.updateProgressRow}>
@@ -137,6 +142,6 @@ export function ServerUpdateSection({ client }: { client: VerityClient }) {
         </Pressable>
       ) : null}
       {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
-    </View>
+    </SettingsDisclosure>
   );
 }

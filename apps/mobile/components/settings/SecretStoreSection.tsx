@@ -107,13 +107,15 @@ export function SecretStoreSection({ client }: { client: VerityClient }) {
         <Text style={styles.disclosureTitle}>Secret store</Text>
         {mode === 'ready' ? <StatusPill quiet intent="ready" label="Unlocked" /> : null}
       </View>
-      <Text style={styles.sectionSubtitle}>
-        {mode === 'set'
-          ? 'Set a master password to protect secrets at rest.'
-          : mode === 'unlock'
-            ? 'Enter the master password to unlock stored secrets after a restart.'
-            : 'Secrets are unlocked and available to project containers.'}
-      </Text>
+      {mode !== 'ready' ? (
+        <Text style={styles.sectionSubtitle}>
+          {mode === 'set'
+            ? 'Set a master password to protect secrets at rest.'
+            : mode === 'unlock'
+              ? 'Enter the master password to unlock stored secrets after a restart.'
+              : 'Secrets are unlocked and available to project containers.'}
+        </Text>
+      ) : null}
 
       {mode === 'set' || mode === 'unlock' ? (
         <View style={styles.secretStoreForm}>
@@ -173,7 +175,7 @@ export function SecretStoreSection({ client }: { client: VerityClient }) {
               accessibilityRole="button"
               accessibilityLabel={mode === 'set' ? 'Set master password' : 'Unlock secret store'}
             >
-              {busy ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
+              {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
               <Text style={styles.primaryButtonLabel}>
                 {mode === 'set' ? 'Set master password' : 'Unlock'}
               </Text>

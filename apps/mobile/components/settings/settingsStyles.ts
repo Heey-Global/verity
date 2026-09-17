@@ -1,11 +1,30 @@
-// Shared Settings sections, fields and actions. Fine rules and neutral setup
-// colors keep the index and detail screens consistent.
+// Shared Settings sections, fields and actions follow the main screen palette.
 import { Platform } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
 export const settingsStyles = StyleSheet.create((theme) => ({
+  disclosure: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  disclosureHeader: {
+    minHeight: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+  },
+  disclosureBody: {
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.border,
+  },
   flex: {
     flex: 1,
     backgroundColor: theme.colors.background,
@@ -84,6 +103,8 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   // Navigation rows share the same fine rules as detail sections.
   listPanel: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.colors.setup.border,
     overflow: 'hidden',
@@ -221,7 +242,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.setup.text,
   },
   avatarText: {
-    color: theme.colors.setup.text,
+    color: theme.colors.primary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
@@ -329,6 +350,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   actionRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'flex-end',
     gap: theme.spacing.sm,
   },
@@ -347,10 +369,10 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.xs,
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   primaryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
@@ -398,7 +420,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.setup.surfaceAlt,
   },
   reproButtonLabel: {
-    color: theme.colors.setup.text,
+    color: theme.colors.primary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
@@ -446,7 +468,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   toggleKnobOn: {
     transform: [{ translateX: 20 }],
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   footnote: {
     color: theme.colors.setup.textMuted,
@@ -477,7 +499,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontSize: theme.text.sm,
   },
   bannerAction: {
-    color: theme.colors.setup.text,
+    color: theme.colors.primary,
     fontSize: theme.text.sm,
     fontWeight: '600',
   },
@@ -503,10 +525,10 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.text,
+    backgroundColor: theme.colors.primary,
   },
   retryButtonLabel: {
-    color: theme.colors.background,
+    color: theme.colors.onPrimary,
     fontSize: theme.text.md,
     fontWeight: '600',
   },
@@ -549,7 +571,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.setup.border,
   },
   signingKeyButtonText: {
-    color: theme.colors.setup.text,
+    color: theme.colors.primary,
     fontSize: theme.text.sm,
     fontWeight: '600',
   },

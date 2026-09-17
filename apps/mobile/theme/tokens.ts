@@ -28,13 +28,13 @@ const shared = { spacing, radius, text: baseText, fontScale: 1 };
 const lightTheme = {
   ...shared,
   colors: {
-    // Settings and setup use a restrained palette independent of session accents.
+    // Settings and setup share the main screen surfaces and text colors.
     setup: {
       surface: '#ffffff',
-      surfaceAlt: '#eceef0',
-      border: '#d4d8dc',
-      text: '#202428',
-      textMuted: '#626970',
+      surfaceAlt: '#eef0f3',
+      border: '#dfe3e8',
+      text: '#11181c',
+      textMuted: '#5b6770',
     },
     background: '#f5f6f8',
     surface: '#ffffff',
@@ -72,11 +72,11 @@ const darkTheme = {
   ...shared,
   colors: {
     setup: {
-      surface: '#101113',
-      surfaceAlt: '#1b1d20',
-      border: '#34373b',
-      text: '#eceef0',
-      textMuted: '#a2a7ad',
+      surface: '#0a0b16',
+      surfaceAlt: '#15132b',
+      border: '#2a2552',
+      text: '#eef0ff',
+      textMuted: '#9a9ec9',
     },
     background: '#000000',
     surface: '#0a0b16',
