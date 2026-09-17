@@ -116,7 +116,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.accent} />
+        <ActivityIndicator color={theme.colors.setup.text} />
       </View>
     );
   }

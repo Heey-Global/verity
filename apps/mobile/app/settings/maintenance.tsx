@@ -122,7 +122,7 @@ function MaintenanceSettingsView({ client }: { client: VerityClient }) {
             accessibilityLabel="Reprovision running containers now"
           >
             {repro.phase === 'running' ? (
-              <ActivityIndicator size="small" color={theme.colors.accent} />
+              <ActivityIndicator size="small" color={theme.colors.setup.text} />
             ) : null}
             <Text style={styles.reproButtonLabel}>
               {repro.phase === 'running' ? 'Reprovisioning…' : 'Reprovision now'}

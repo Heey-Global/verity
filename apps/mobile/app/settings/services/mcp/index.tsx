@@ -139,7 +139,7 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
       >
         {connections === undefined ? (
           <View style={styles.signingKeyLoadingRow}>
-            <ActivityIndicator size="small" color={theme.colors.accent} />
+            <ActivityIndicator size="small" color={theme.colors.setup.text} />
             <Text style={styles.disclosureSummary}>Loading connections…</Text>
           </View>
         ) : null}
@@ -152,6 +152,7 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
               <Text style={styles.disclosureTitle}>{connection.name}</Text>
               {connection.authType === 'oauth' ? (
                 <StatusPill
+                  quiet
                   intent={connection.oauthConnected ? 'ready' : 'needsSetup'}
                   label={connection.oauthConnected ? 'Authorized' : 'Not authorized'}
                 />

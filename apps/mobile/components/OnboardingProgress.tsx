@@ -34,7 +34,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   label: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -47,9 +47,9 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     height: 4,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceAlt,
+    backgroundColor: theme.colors.setup.surfaceAlt,
   },
   segmentFilled: {
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.setup.text,
   },
 }));

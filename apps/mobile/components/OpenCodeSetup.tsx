@@ -122,7 +122,7 @@ export function OpenCodeSetup({
         </View>
       </View>
 
-      {loading ? <ActivityIndicator size="small" color={theme.colors.primary} /> : null}
+      {loading ? <ActivityIndicator size="small" color={theme.colors.setup.text} /> : null}
       {!loading && !expanded ? (
         <Pressable
           style={configured ? styles.secondaryButton : styles.primaryButton}
@@ -176,7 +176,7 @@ export function OpenCodeSetup({
               accessibilityRole="button"
               accessibilityLabel="Save OpenCode"
             >
-              {saving ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+              {saving ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
               <Text style={styles.primaryButtonLabel}>{saving ? 'Saving…' : 'Save OpenCode'}</Text>
             </Pressable>
             <Pressable
@@ -203,25 +203,23 @@ export function OpenCodeSetup({
 const styles = StyleSheet.create((theme) => ({
   card: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
   titleGroup: { flex: 1, gap: 6 },
-  title: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '800' },
-  description: { color: theme.colors.textMuted, fontSize: theme.text.sm, lineHeight: 20 },
+  title: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  description: { color: theme.colors.setup.textMuted, fontSize: theme.text.sm, lineHeight: 20 },
   pill: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 4,
     borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
   },
   pillReady: { borderColor: theme.colors.tone.done },
-  pillLabel: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '800' },
+  pillLabel: { color: theme.colors.setup.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
   pillLabelReady: { color: theme.colors.tone.done },
   setupBlock: {
     flexDirection: 'row',
@@ -229,7 +227,7 @@ const styles = StyleSheet.create((theme) => ({
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.setup.border,
   },
   stepBadge: {
     width: 30,
@@ -237,42 +235,46 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 15,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.setup.text,
   },
-  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '900' },
+  stepBadgeLabel: { color: theme.colors.background, fontSize: theme.text.sm, fontWeight: '600' },
   fields: { flex: 1, gap: theme.spacing.sm },
-  stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '900' },
-  stepDescription: { color: theme.colors.textMuted, fontSize: theme.text.xs, lineHeight: 18 },
+  stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+  stepDescription: { color: theme.colors.setup.textMuted, fontSize: theme.text.xs, lineHeight: 18 },
   input: {
-    minHeight: 48,
+    minHeight: 44,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
     color: theme.colors.text,
     backgroundColor: theme.colors.background,
     fontSize: theme.text.sm,
   },
   primaryButton: {
-    minHeight: 48,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    minHeight: 44,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: theme.spacing.sm,
   },
-  primaryButtonLabel: { color: theme.colors.onPrimary, fontSize: theme.text.md, fontWeight: '900' },
+  primaryButtonLabel: {
+    color: theme.colors.background,
+    fontSize: theme.text.md,
+    fontWeight: '600',
+  },
   secondaryButton: {
     minHeight: 44,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
   secondaryButtonLabel: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     fontWeight: '700',
   },

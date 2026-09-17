@@ -276,7 +276,7 @@ function MasterPasswordStep({
             </Pressable>
           </>
         ) : (
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={theme.colors.setup.text} />
         )}
       </View>
     );
@@ -475,15 +475,15 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: theme.spacing.xl,
   },
   authEyebrow: {
-    color: theme.colors.accent,
+    color: theme.colors.setup.text,
     fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
   title: {
     color: theme.colors.text,
     fontSize: theme.text.xl,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   center: {
     flex: 1,
@@ -493,7 +493,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   fetchError: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     textAlign: 'center',
   },
@@ -501,8 +501,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
   },
   retryText: {
     color: theme.colors.text,
@@ -510,26 +510,24 @@ const styles = StyleSheet.create((theme) => ({
   },
   card: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   doneCard: {
     gap: theme.spacing.sm,
     padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.setup.surface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.setup.border,
   },
   donePill: {
     alignSelf: 'flex-start',
     color: theme.colors.background,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.setup.text,
     fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontWeight: '600',
     textTransform: 'uppercase',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.xs,
@@ -542,7 +540,7 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 22 * theme.fontScale,
   },
   guidance: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     lineHeight: 20 * theme.fontScale,
   },
@@ -550,23 +548,23 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.xs,
   },
   label: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     fontWeight: '700',
   },
   sectionTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   input: {
-    minHeight: 48,
+    minHeight: 44,
     color: theme.colors.text,
     fontSize: theme.text.md,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
     backgroundColor: theme.colors.background,
   },
   error: {
@@ -575,36 +573,36 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
   },
   primaryButton: {
-    minHeight: 48,
+    minHeight: 44,
     flexDirection: 'row',
     gap: theme.spacing.sm,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
   },
   buttonDisabled: {
     opacity: 0.5,
   },
   primaryButtonLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.background,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   secondaryButton: {
-    minHeight: 48,
+    minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
   },
   secondaryButtonLabel: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   pressed: {
     opacity: 0.62,

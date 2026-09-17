@@ -170,6 +170,7 @@ function ServicesSettingsView({
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.disclosureTitle}>OpenCode</Text>
               <StatusPill
+                quiet
                 intent={opencodeReady ? 'ready' : 'optional'}
                 label={opencodeReady ? 'Configured' : 'Not configured'}
               />
@@ -219,6 +220,7 @@ function ServicesSettingsView({
                 comes from the deployment environment rather than these fields.
               */}
               <StatusPill
+                quiet
                 {...transcriptionBackendStatus(
                   backendMode,
                   settings?.transcribeExternalConfigured === true,
@@ -322,6 +324,7 @@ function ServicesSettingsView({
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.disclosureTitle}>Doppler</Text>
               <StatusPill
+                quiet
                 intent={settings?.dopplerServiceTokenConfigured ? 'ready' : 'optional'}
                 label={settings?.dopplerServiceTokenConfigured ? 'Configured' : 'Optional'}
               />
@@ -348,6 +351,7 @@ function ServicesSettingsView({
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.disclosureTitle}>Public Preview</Text>
               <StatusPill
+                quiet
                 intent={settings?.uplinkSubscriptionKeyConfigured ? 'ready' : 'optional'}
                 label={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Optional'}
               />

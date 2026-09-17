@@ -127,7 +127,7 @@ const styles = StyleSheet.create((theme) => ({
   title: {
     color: theme.colors.text,
     fontSize: theme.text.xl,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   body: {
     flex: 1,
@@ -135,11 +135,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   note: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   noteText: {
     color: theme.colors.text,
@@ -147,7 +145,7 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 22 * theme.fontScale,
   },
   noteTag: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -156,8 +154,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    borderTopColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.setup.surface,
   },
   footerInner: {
     width: '100%',
@@ -172,34 +170,34 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 88,
   },
   backButton: {
-    minHeight: 48,
+    minHeight: 44,
     minWidth: 88,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
+    borderRadius: theme.radius.sm,
   },
   backLabel: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.md,
     fontWeight: '700',
   },
   nextButton: {
-    minHeight: 48,
+    minHeight: 44,
     minWidth: 120,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
   },
   nextButtonDisabled: {
     opacity: 0.45,
   },
   nextLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.background,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   pressed: {
     opacity: 0.62,

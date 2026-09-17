@@ -50,7 +50,7 @@ export function SettingsScaffold({
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
       {saving > 0 ? (
         <View style={styles.autoSaveBanner} accessibilityLiveRegion="polite">
-          <ActivityIndicator size="small" color={theme.colors.primary} />
+          <ActivityIndicator size="small" color={theme.colors.setup.text} />
           <Text style={styles.autoSaveBannerText}>Saving changes…</Text>
         </View>
       ) : null}
@@ -92,12 +92,12 @@ export function SettingsGroup({
   );
 }
 
-/** A card. One subject per card — that is the unit the status pill describes. */
+/** One subject per section, with readiness shown beside its heading. */
 export function SettingsPanel({ children }: { children: ReactNode }) {
   return <View style={styles.panel}>{children}</View>;
 }
 
-/** A grouped list of rows inside one bordered card, hairline-separated. The
+/** A grouped list of rows, hairline-separated. The
  *  separators are inserted here so a screen cannot forget one (or leave a
  *  dangling one behind a row it conditionally hides). */
 export function SettingsListPanel({ children }: { children: ReactNode }) {
@@ -158,7 +158,9 @@ export function SettingsNavRow({
             {value}
           </Text>
         ) : null}
-        {status !== undefined ? <StatusPill intent={status.intent} label={status.label} /> : null}
+        {status !== undefined ? (
+          <StatusPill quiet intent={status.intent} label={status.label} />
+        ) : null}
         <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
       </View>
     </Pressable>
@@ -273,6 +275,7 @@ export function SecretPasteField({
       <View style={styles.secretLabelRow}>
         <Text style={styles.pathLabel}>{label}</Text>
         <StatusPill
+          quiet
           intent={configured ? 'ready' : 'optional'}
           label={configured ? 'Configured' : 'Not configured'}
         />

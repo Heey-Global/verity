@@ -2,7 +2,7 @@
 // freshly minted device token: the master-password step, and the pairing flow
 // that enrolls a second device without ever asking for that password.
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 export function BiometricConsent({
   busy,
@@ -13,6 +13,7 @@ export function BiometricConsent({
   onEnable: () => void;
   onSkip: () => void;
 }) {
+  const { theme } = useUnistyles();
   return (
     <View style={styles.card}>
       <Text style={styles.sectionTitle}>Use Face ID or Touch ID?</Text>
@@ -31,7 +32,7 @@ export function BiometricConsent({
         accessibilityRole="button"
         accessibilityLabel="Use Face ID"
       >
-        {busy ? <ActivityIndicator size="small" color="#05050a" /> : null}
+        {busy ? <ActivityIndicator size="small" color={theme.colors.background} /> : null}
         <Text style={styles.primaryButtonLabel}>Use Face ID</Text>
       </Pressable>
       <Pressable
@@ -56,14 +57,14 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     padding: theme.spacing.md,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.setup.surface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.setup.border,
   },
   sectionTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   intro: {
     color: theme.colors.text,
@@ -71,36 +72,36 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 22 * theme.fontScale,
   },
   primaryButton: {
-    minHeight: 48,
+    minHeight: 44,
     flexDirection: 'row',
     gap: theme.spacing.sm,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
   },
   buttonDisabled: {
     opacity: 0.5,
   },
   primaryButtonLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.background,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   secondaryButton: {
-    minHeight: 48,
+    minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
   },
   secondaryButtonLabel: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   pressed: {
     opacity: 0.62,

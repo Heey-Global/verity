@@ -1,10 +1,5 @@
-// The one stylesheet behind every Settings screen.
-//
-// Settings is a stack of sibling routes rather than one file, and a card on the
-// GitHub screen has to be indistinguishable from a card on the services screen —
-// same corner radius, same padding, same hairline. Per-screen copies drift the
-// first time someone tunes a value, so the tokens live here and the screens
-// import them.
+// Shared Settings sections, fields and actions. Fine rules and neutral setup
+// colors keep the index and detail screens consistent.
 import { Platform } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -25,22 +20,25 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   centerTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.text.md,
+    fontWeight: '600',
     textAlign: 'center',
   },
   centerSubtitle: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.md,
     textAlign: 'center',
   },
   content: {
-    padding: theme.spacing.md,
+    padding: theme.spacing.lg,
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
     gap: theme.spacing.xl,
   },
   detailContent: {
     width: '100%',
-    maxWidth: 1040,
+    maxWidth: 760,
     alignSelf: 'center',
     gap: theme.spacing.lg,
   },
@@ -52,14 +50,14 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   groupHeader: {
     flexShrink: 1,
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
   groupDescription: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     lineHeight: 19 * theme.fontScale,
     marginBottom: theme.spacing.xs,
@@ -72,27 +70,22 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   sectionSubtitle: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     lineHeight: 19 * theme.fontScale,
     marginBottom: theme.spacing.xs,
   },
-  // Generic card panel.
+  // Open sections keep forms aligned without nesting filled cards.
   panel: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
-  // A list card: rows meet edge to edge, separated by hairlines they draw
-  // themselves, so the group reads as one object rather than stacked cards.
+  // Navigation rows share the same fine rules as detail sections.
   listPanel: {
-    borderRadius: theme.radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
     overflow: 'hidden',
   },
   // 56pt, comfortably past the 44pt minimum target: these are the primary
@@ -110,7 +103,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   rowSeparator: {
     height: StyleSheet.hairlineWidth,
     marginLeft: theme.spacing.md,
-    backgroundColor: theme.colors.border,
+    backgroundColor: theme.colors.setup.border,
   },
   navRowIcon: {
     width: 30,
@@ -126,18 +119,19 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontWeight: '600',
   },
   navRowSubtitle: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     lineHeight: 16 * theme.fontScale,
   },
   navRowValue: {
     flexShrink: 1,
-    maxWidth: '45%',
-    color: theme.colors.textMuted,
+    maxWidth: 100,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     textAlign: 'right',
   },
   navRowTrailing: {
+    flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.xs,
@@ -145,23 +139,20 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   // Setup checklist header.
   checklistPanel: {
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.accent,
-    backgroundColor: `${theme.colors.accent}0f`,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.text,
   },
   checklistPanelDone: {
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    borderTopColor: theme.colors.setup.border,
   },
   checklistHeadline: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '800',
+    fontSize: theme.text.md,
+    fontWeight: '600',
   },
   checklistSubtitle: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     lineHeight: 17 * theme.fontScale,
   },
@@ -179,16 +170,16 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   checklistRowTitle: {
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   checklistRowTitleDone: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontWeight: '600',
   },
   checklistMark: {
     width: 22,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
     textAlign: 'center',
   },
   backendChoices: {
@@ -198,12 +189,12 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.xs,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
   },
   backendChoiceSelected: {
-    borderColor: theme.colors.accent,
-    backgroundColor: `${theme.colors.accent}12`,
+    borderColor: theme.colors.setup.text,
+    backgroundColor: `${theme.colors.setup.text}12`,
   },
   backendChoiceDisabled: {
     opacity: 0.5,
@@ -211,7 +202,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   backendChoiceTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   // Identity profile block.
   identityRow: {
@@ -220,19 +211,19 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   avatar: {
-    width: 52,
-    height: 52,
+    width: 36,
+    height: 36,
     borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: `${theme.colors.accent}26`,
+    backgroundColor: `${theme.colors.setup.text}26`,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.accent,
+    borderColor: theme.colors.setup.text,
   },
   avatarText: {
-    color: theme.colors.accent,
-    fontSize: theme.text.lg,
-    fontWeight: '800',
+    color: theme.colors.setup.text,
+    fontSize: theme.text.md,
+    fontWeight: '600',
   },
   identityCol: {
     flex: 1,
@@ -240,28 +231,28 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   identityName: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.text.md,
+    fontWeight: '600',
     paddingVertical: theme.spacing.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
+    borderBottomColor: theme.colors.setup.border,
   },
   identityEmail: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
     paddingVertical: theme.spacing.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
+    borderBottomColor: theme.colors.setup.border,
   },
   disclosureTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   disclosureSummary: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   serviceStatusRow: {
     flexDirection: 'row',
@@ -273,13 +264,13 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   connectedServiceSubsection: {
     gap: theme.spacing.md,
     paddingTop: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
+    borderTopColor: theme.colors.setup.border,
   },
   signingKeySection: {
     gap: theme.spacing.sm,
@@ -289,15 +280,15 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.xs,
   },
   pathLabel: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   pathInput: {
     minHeight: 44,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.setup.border,
     backgroundColor: theme.colors.background,
     color: theme.colors.text,
     paddingHorizontal: theme.spacing.md,
@@ -316,7 +307,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     minHeight: 88,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.setup.border,
     backgroundColor: theme.colors.background,
     color: theme.colors.text,
     paddingHorizontal: theme.spacing.md,
@@ -334,7 +325,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   fieldError: {
     color: theme.colors.tone.danger,
     fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   actionRow: {
     flexDirection: 'row',
@@ -342,7 +333,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   settingsSaveState: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     textAlign: 'center',
     paddingVertical: theme.spacing.xs,
@@ -355,13 +346,13 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     gap: theme.spacing.xs,
     paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
   },
   primaryButtonLabel: {
     color: theme.colors.background,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   buttonDisabled: {
     opacity: 0.45,
@@ -373,19 +364,17 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   reproPanel: {
     marginTop: theme.spacing.xs,
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
+    paddingVertical: theme.spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
   },
   reproTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   reproSubtitle: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     lineHeight: 17 * theme.fontScale,
   },
@@ -396,22 +385,22 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   },
   reproButton: {
     minHeight: 44,
-    minWidth: 168,
+    minWidth: 0,
     alignSelf: 'flex-start',
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: theme.spacing.xs,
     paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
+    borderRadius: theme.radius.sm,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
+    borderColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.setup.surfaceAlt,
   },
   reproButtonLabel: {
-    color: theme.colors.accent,
+    color: theme.colors.setup.text,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   reproHint: {
     color: theme.colors.textFaint,
@@ -434,7 +423,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   toggleTrack: {
     width: 46,
@@ -442,25 +431,25 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     padding: 3,
     borderRadius: theme.radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
+    borderColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.setup.surfaceAlt,
   },
   toggleTrackOn: {
-    borderColor: theme.colors.accent,
-    backgroundColor: `${theme.colors.accent}33`,
+    borderColor: theme.colors.setup.text,
+    backgroundColor: `${theme.colors.setup.text}33`,
   },
   toggleKnob: {
     width: 20,
     height: 20,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.textMuted,
+    backgroundColor: theme.colors.setup.textMuted,
   },
   toggleKnobOn: {
     transform: [{ translateX: 20 }],
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.setup.text,
   },
   footnote: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     lineHeight: 17 * theme.fontScale,
   },
@@ -479,8 +468,8 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
+    borderBottomColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.setup.surfaceAlt,
   },
   bannerText: {
     flex: 1,
@@ -488,9 +477,9 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontSize: theme.text.sm,
   },
   bannerAction: {
-    color: theme.colors.accent,
+    color: theme.colors.setup.text,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   autoSaveBanner: {
     minHeight: 36,
@@ -499,12 +488,12 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
-    backgroundColor: theme.colors.surfaceAlt,
+    backgroundColor: theme.colors.setup.surfaceAlt,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
+    borderBottomColor: theme.colors.setup.border,
   },
   autoSaveBannerText: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
     fontWeight: '600',
   },
@@ -513,13 +502,13 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.setup.text,
   },
   retryButtonLabel: {
     color: theme.colors.background,
     fontSize: theme.text.md,
-    fontWeight: '800',
+    fontWeight: '600',
   },
   signingKeyLoadingRow: {
     flexDirection: 'row',
@@ -530,8 +519,8 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     marginTop: theme.spacing.xs,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
     backgroundColor: theme.colors.background,
   },
   signingKeyText: {
@@ -551,17 +540,17 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   // where an undersized target gets mis-tapped.
   signingKeyButton: {
     minHeight: 44,
-    minWidth: 144,
+    minWidth: 0,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.setup.border,
   },
   signingKeyButtonText: {
-    color: theme.colors.accent,
+    color: theme.colors.setup.text,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 }));

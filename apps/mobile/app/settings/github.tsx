@@ -100,6 +100,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
           <View style={styles.serviceStatusRow}>
             <Text style={styles.serviceStatusLabel}>GitHub connection</Text>
             <StatusPill
+              quiet
               intent={connected ? 'ready' : 'needsSetup'}
               label={connected ? 'Connected' : 'Not connected'}
             />
@@ -125,6 +126,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
           <View style={styles.serviceStatusRow}>
             <Text style={styles.serviceStatusLabel}>Author identity</Text>
             <StatusPill
+              quiet
               intent={identityReady ? 'ready' : 'needsSetup'}
               label={identityReady ? 'Ready' : 'Needs setup'}
             />
@@ -174,6 +176,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
           <View style={styles.serviceStatusRow}>
             <Text style={styles.serviceStatusLabel}>Signing</Text>
             <StatusPill
+              quiet
               intent={signingReady ? 'ready' : 'needsSetup'}
               label={signingReady ? 'Ready' : 'Needs setup'}
             />
