@@ -36,6 +36,7 @@ import {
   gitAuthHeader,
   resolveImage,
   devcontainerContentHash,
+  devcontainerBuildInputsConfined,
   devcontainerImageTag,
   DEVCONTAINER_IMAGE_PREFIX,
   projectNetworkName,
@@ -5296,6 +5297,88 @@ describe('devcontainerContentHash / devcontainerImageTag (ADR 0003 R3.1)', () =>
   });
 });
 
+describe('devcontainerBuildInputsConfined', () => {
+  /** Write `devcontainer.json` into a throwaway `.devcontainer/` and answer the
+   *  predicate for it. */
+  function confined(json: string): boolean {
+    const root = mkdtempSync(join(tmpdir(), 'verity-devc-confined-'));
+    try {
+      const dir = join(root, '.devcontainer');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'devcontainer.json'), json);
+      return devcontainerBuildInputsConfined(dir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('accepts what the content hash actually covers', () => {
+    // These read nothing the `.devcontainer/` hash does not already see, so the
+    // derived-tag cache is sound for them and they must keep skipping the build.
+    expect(confined('{ "image": "node:24-bookworm" }')).toBe(true);
+    expect(confined('{ "build": { "dockerfile": "Dockerfile" } }')).toBe(true);
+    expect(confined('{ "build": { "dockerfile": "Dockerfile", "context": "." } }')).toBe(true);
+    expect(confined('{ "build": { "context": "./sub", "dockerfile": "sub/Dockerfile" } }')).toBe(
+      true,
+    );
+    expect(confined('{ "features": { "ghcr.io/devcontainers/features/git:1": {} } }')).toBe(true);
+    expect(confined('{ "features": { "./features/local": {} } }')).toBe(true);
+    // JSONC: the repo's own file carries comments, and a scanner that choked on
+    // them would report every commented devcontainer as escaping.
+    expect(confined('{\n  // the usual\n  "build": { "dockerfile": "Dockerfile" }\n}')).toBe(true);
+  });
+
+  it('rejects a build that reads bytes outside .devcontainer/', () => {
+    // Each of these keeps its hash — and so its cached tag — while the files it
+    // builds from change. Reported as confined, they cache a stale image
+    // forever; that is the failure being guarded, not the extra build.
+    expect(confined('{ "build": { "dockerfile": "Dockerfile", "context": ".." } }')).toBe(false);
+    expect(confined('{ "build": { "dockerfile": "../Dockerfile" } }')).toBe(false);
+    expect(confined('{ "build": { "context": "/etc" } }')).toBe(false);
+    // Legacy top-level spelling the devcontainer CLI still honours.
+    expect(confined('{ "dockerFile": "../Dockerfile" }')).toBe(false);
+    expect(confined('{ "context": "..", "dockerFile": "Dockerfile" }')).toBe(false);
+    // Compose names files and services this runtime does not model at all.
+    expect(confined('{ "dockerComposeFile": "../compose.yaml", "service": "dev" }')).toBe(false);
+    // Raw build arguments can name a Dockerfile or additional context anywhere.
+    expect(confined('{ "build": { "options": ["-f", "../Dockerfile"] } }')).toBe(false);
+    // Relative Feature refs are local build inputs too.
+    expect(confined('{ "features": { "../tools/my-feature": {} } }')).toBe(false);
+    expect(confined('{ "features": { "/opt/features/local": {} } }')).toBe(false);
+  });
+
+  it('treats an unresolvable build declaration as unconfined', () => {
+    // "Cannot tell" has to fall on the side that rebuilds. The alternative is a
+    // stale image that nothing reports.
+    expect(confined('{ "build": "Dockerfile" }')).toBe(false);
+    expect(confined('{ "build": { "dockerfile": ["Dockerfile"] } }')).toBe(false);
+    expect(confined('{ "build": { "context": "${localWorkspaceFolder}" } }')).toBe(false);
+    expect(confined('{ "features": { "${localWorkspaceFolder}/feature": {} } }')).toBe(false);
+  });
+
+  it('ignores path-like keys nested outside their supported location', () => {
+    // Only top-level `features` and fields directly inside top-level `build`
+    // affect the devcontainer build. A recursive scan would reject harmless
+    // application metadata and put sound cached images on the rebuild path.
+    expect(confined('{ "customizations": { "build": { "context": ".." } } }')).toBe(true);
+    expect(confined('{ "customizations": { "features": { "../elsewhere": {} } } }')).toBe(true);
+  });
+
+  it('accepts a clone with no devcontainer.json at all', () => {
+    // `.devcontainer/` can hold only a Dockerfile; there is then no declaration
+    // naming anything outside it.
+    const root = mkdtempSync(join(tmpdir(), 'verity-devc-confined-empty-'));
+    try {
+      const dir = join(root, '.devcontainer');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'Dockerfile'), 'FROM node:24-bookworm\n');
+      expect(devcontainerBuildInputsConfined(dir)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('devcontainerBuildArgs (R3.1/#299)', () => {
   it('omits --additional-features entirely when no feature ref is present', () => {
     expect(devcontainerBuildArgs({ workspaceFolder: '/work', imageName: 'tag:1' })).toEqual([
@@ -5585,6 +5668,104 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
 
       expect(buildCalls).toHaveLength(2);
       expect(buildCalls[0]).not.toBe(buildCalls[1]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(d2) a build context outside .devcontainer/ → builds every provision despite the cached tag', async () => {
+    // The silent failure this guards: the derived tag is hashed over
+    // `.devcontainer/` only, so a repository that COPYs a checked-in file from
+    // OUTSIDE that directory (`"context": ".."`) keeps its tag when that file
+    // changes. The cache check finds the tag, no build runs, and the container
+    // comes up carrying the file as it was at some older commit. A repository
+    // that verifies the baked copy against the checkout in `postCreateCommand`
+    // then fails every provision AND every repair with nothing naming the cache
+    // — the shape that took out the k8s project. Note the asserted tags are
+    // IDENTICAL: the hash cannot see the change, so re-tagging in place is the
+    // whole remedy, and a test demanding a new tag would be testing the bug.
+    const { root, clonePath } = makeCloneRoot(true);
+    try {
+      writeFileSync(
+        join(clonePath, '.devcontainer', 'devcontainer.json'),
+        '{ "build": { "dockerfile": "Dockerfile", "context": ".." } }',
+      );
+      writeFileSync(
+        join(clonePath, '.devcontainer', 'Dockerfile'),
+        'FROM node:24-bookworm\nCOPY tools/bootstrap.sh /usr/local/bin/bootstrap\n',
+      );
+      mkdirSync(join(clonePath, 'tools'), { recursive: true });
+      writeFileSync(join(clonePath, 'tools', 'bootstrap.sh'), '#!/bin/sh\necho v1\n');
+
+      const buildCalls: string[] = [];
+      const build = vi.fn<DevcontainerBuildSpawner>(async ({ imageName }) => {
+        buildCalls.push(imageName);
+        return { stdout: '', stderr: '' };
+      });
+      // The daemon already carries the derived tag — exactly the state in which
+      // the old code skipped the build and ran the stale image.
+      const imageExists = vi.fn(async () => true);
+      const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      const id = await seedProject();
+      await provisioner.provision(id);
+
+      // The repository's bootstrap changes; `.devcontainer/` does not.
+      writeFileSync(join(clonePath, 'tools', 'bootstrap.sh'), '#!/bin/sh\necho v2\n');
+      await ctx.store.updateProjectState(id, 'container_starting');
+      await provisioner.provision(id);
+
+      expect(buildCalls).toHaveLength(2);
+      expect(buildCalls[0]).toBe(buildCalls[1]);
+      const created = dockerCalls.filter((c) => c.method === 'createContainer');
+      expect((created.at(-1)?.payload as ContainerSpec).image).toBe(buildCalls[1]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(d3) a build confined to .devcontainer/ keeps the cache hit', async () => {
+    // The other half of (d2): making the escaping shape rebuild must not put
+    // every ordinary devcontainer on a build-per-provision path. A Dockerfile
+    // beside devcontainer.json with the spec's default context is fully covered
+    // by the content hash, so the cached tag still stands.
+    const { root, clonePath } = makeCloneRoot(true);
+    try {
+      writeFileSync(
+        join(clonePath, '.devcontainer', 'devcontainer.json'),
+        '{ "build": { "dockerfile": "Dockerfile" } }',
+      );
+      writeFileSync(join(clonePath, '.devcontainer', 'Dockerfile'), 'FROM node:24-bookworm\n');
+
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const imageExists = vi.fn(async () => true);
+      const { client: docker } = fakeDocker({ imageExists });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      await provisioner.provision(await seedProject());
+      expect(imageExists).toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -8732,5 +8913,16 @@ describe('this repository’s own .devcontainer', () => {
     const dir = join(import.meta.dirname, '..', '..', '..', '.devcontainer');
     expect(existsSync(join(dir, 'devcontainer.json'))).toBe(true);
     expect(unsupportedDevcontainerRuntimeKeys(dir)).toEqual([]);
+  });
+
+  it('builds from this directory alone, so its image stays cacheable', () => {
+    // Pointing this file's build at the repository root (`"context": ".."`)
+    // would be accepted and would work — and would silently cost every session
+    // in this repo a devcontainer build per provision, because the derived-tag
+    // cache is only sound while the build reads nothing outside this directory.
+    // The build would still be layer-cached, so nothing would look broken; the
+    // signal would be provisions that got slower and no reason why.
+    const dir = join(import.meta.dirname, '..', '..', '..', '.devcontainer');
+    expect(devcontainerBuildInputsConfined(dir)).toBe(true);
   });
 });
