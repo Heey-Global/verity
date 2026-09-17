@@ -1,0 +1,1 @@
+Automate managed installation repair and installed broker acceptance in CI. This changes test coverage and release verification documentation only; it does not change shipped Server behavior or require a product release.
