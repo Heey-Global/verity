@@ -20,12 +20,13 @@ describe('automatic backend release membership', () => {
     }
   });
 
+  // Synthetic paths exercise ownership without reading product/UI files.
   it.each([
-    ['apps/mobile/app/index.tsx'],
-    ['packages/mobile/src/settings.ts'],
-    ['docs/website/src/App.tsx'],
-    ['docs/releases.md'],
-    ['.github/workflows/ci.yml'],
+    ['apps/mobile/release-routing-fixture.tsx'],
+    ['packages/mobile/src/release-routing-fixture.ts'],
+    ['docs/website/src/release-routing-fixture.tsx'],
+    ['docs/release-routing-fixture.md'],
+    ['.github/workflows/release-routing-fixture.yml'],
     ['.release/backend/intents/historical.md'],
   ])('keeps independent products and release infrastructure out: %j', (file) => {
     expect(included([file])).toBe(false);
@@ -36,8 +37,8 @@ describe('automatic backend release membership', () => {
     ['packages/session/src/supervisor.ts'],
     ['features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs'],
     ['deploy/docker-compose.yml'],
-    ['package-lock.json', 'apps/mobile/package.json'],
-    ['packages/server/src/app.ts', 'docs/website/src/App.tsx'],
+    ['package-lock.json', 'apps/mobile/release-routing-fixture.json'],
+    ['packages/server/src/app.ts', 'docs/website/src/release-routing-fixture.tsx'],
   ])('retains product and shared build inputs: %j', (...files) => {
     expect(included(files)).toBe(true);
   });
