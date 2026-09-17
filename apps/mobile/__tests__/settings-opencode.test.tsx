@@ -84,6 +84,49 @@ describe('settings/services/opencode', () => {
     await waitFor(() => expect(screen.getByText('0 of 3 enabled')).toBeOnTheScreen());
   });
 
+  it.each([1, 2])('reconciles queued edits when save %s fails', async (failedSave) => {
+    let current = makeSettings({ opencodeModels: 'provider/one\nprovider/two' });
+    const complete: (() => void)[] = [];
+    let attempts = 0;
+    const updateVeritySettings = jest.fn().mockImplementation((patch) => {
+      const attempt = ++attempts;
+      return new Promise((resolve, reject) => {
+        complete.push(() => {
+          if (attempt === failedSave) reject(new Error('offline'));
+          else {
+            current = { ...current, ...patch };
+            resolve(current);
+          }
+        });
+      });
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getVeritySettings: jest.fn(async () => current),
+        updateVeritySettings,
+      }),
+    );
+    render(<OpenCodeSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('provider/one'));
+    await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(1));
+    fireEvent.press(screen.getByLabelText('provider/two'));
+    await act(async () => complete.shift()!());
+    await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText('provider/two').props.accessibilityState.checked).toBe(false);
+    await act(async () => complete.shift()!());
+    if (failedSave === 2) {
+      expect(current.opencodeDisabledModels).toBe('provider/one');
+      expect(screen.getByLabelText('provider/one').props.accessibilityState.checked).toBe(false);
+      expect(screen.getByLabelText('provider/two').props.accessibilityState.checked).toBe(true);
+      fireEvent.press(screen.getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(3));
+      await act(async () => complete.shift()!());
+    }
+    expect(current.opencodeDisabledModels).toBe('provider/one\nprovider/two');
+    expect(screen.queryByText('Could not save settings')).toBeNull();
+    expect(screen.getByText('0 of 2 enabled')).toBeOnTheScreen();
+  });
+
   it('restores confirmed choices after a failed save and retries the requested selection', async () => {
     let current = makeSettings({ opencodeModels: 'provider/one\nprovider/two' });
     const updateVeritySettings = jest
