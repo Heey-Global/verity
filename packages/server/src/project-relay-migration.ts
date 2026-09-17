@@ -345,8 +345,8 @@ export type MigrationAction = 'none' | 'migrate' | 'defer' | 'skip-foreign';
 export const ORPHAN_DEFER_TICK_LIMIT = 5;
 
 /**
- * How many CONSECUTIVE reconcile ticks may defer a sandbox IMAGE update around a
- * live turn before the wait is worth reporting.
+ * How long an UNBROKEN run of deferrals of a sandbox IMAGE update around a live
+ * turn may last before the wait is worth reporting.
  *
  * Deliberately not a limit on the recreate: unlike an orphan, a sandbox that is
  * merely behind is fully usable, so nothing here ever interrupts a turn (see the
@@ -360,12 +360,22 @@ export const ORPHAN_DEFER_TICK_LIMIT = 5;
  * A project running an agent loop never goes idle on its own, so without this the
  * wait, and the reassuring label on it, last forever.
  *
- * Thirty ticks is thirty minutes at the reconcile cadence. Long enough that no
- * ordinary turn — including the slow ones, a full test suite or a large rebase —
- * ever produces the report, short enough that a stuck fleet is visible within the
- * hour rather than at the next Server update.
+ * Elapsed time rather than a tick count, which is why it is a duration and its
+ * neighbours above are counts. Those bound things measured in reconciles — failed
+ * recreates, chances to catch an orphan idle — and a tick is their natural unit.
+ * This one makes a claim about the operator's turn, and the tick rate is not
+ * constant: `startProjectRelayMigrationScheduler` runs every two seconds for the
+ * first thirty after a Server handoff before settling to the minute cadence, so a
+ * tick count would be silently spent about fifteen times faster during exactly
+ * the window in which the whole fleet is behind and every busy project is
+ * deferring.
+ *
+ * Thirty minutes is long enough that no ordinary turn — including the slow ones,
+ * a full test suite or a large rebase — ever produces the report, short enough
+ * that a stuck fleet is visible within the hour rather than at the next Server
+ * update.
  */
-export const IMAGE_UPDATE_DEFER_TICK_LIMIT = 30;
+export const IMAGE_UPDATE_DEFER_REPORT_AFTER_MS = 30 * 60_000;
 
 /**
  * How many CONSECUTIVE failed automatic recreates make a sandbox's self-repair

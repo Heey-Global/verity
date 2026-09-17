@@ -5294,12 +5294,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // remedy. `available` only: a blocked update the checker cannot even see is
     // not something to report a turn about.
     const blocked = status.state === 'available' && verdicts.turnBlocked.has(project.id);
-    if (
+    const unrepaired =
       verdicts.unrepaired.has(project.id) &&
-      (status.state === 'available' || (project.state === 'failed' && status.state === 'unknown'))
-    )
-      return { ...status, selfRepair: 'stalled', turnBlocked: blocked };
-    return blocked ? { ...status, selfRepair: 'stalled', turnBlocked: true } : status;
+      (status.state === 'available' || (project.state === 'failed' && status.state === 'unknown'));
+    // One expression for both reasons, deliberately: they set the SAME two fields,
+    // and split branches drifting apart is how a sandbox ends up reported as
+    // blocked without the `stalled` that older clients read.
+    if (!unrepaired && !blocked) return status;
+    return { ...status, selfRepair: 'stalled', turnBlocked: blocked };
   };
   const sandboxRepairVerdicts = (): SandboxRepairVerdicts => ({
     unrepaired: deps.provisioner?.unrepairedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,

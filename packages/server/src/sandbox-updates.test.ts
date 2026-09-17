@@ -372,6 +372,7 @@ describe('statusForInspect', () => {
           defaultProjectImage: DEFAULT_IMAGE,
           toolkitFeatureRef: TOOLKIT,
           signingBrokerTokenHash: 'current-token-hash',
+          targetLabels: { 'dev.heey.verity.update.kind': 'security' },
         },
       ),
     ).toMatchObject({

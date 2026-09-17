@@ -65,7 +65,7 @@ import {
   CONTAINER_GENERATION_LABEL,
   ENV_DRIFT_RECREATE_LIMIT,
   ENV_DRIFT_RECREATES_PER_TICK,
-  IMAGE_UPDATE_DEFER_TICK_LIMIT,
+  IMAGE_UPDATE_DEFER_REPORT_AFTER_MS,
   ORPHAN_DEFER_TICK_LIMIT,
   PROJECT_ID_LABEL,
   SANDBOX_ENV_COHORTS,
@@ -134,6 +134,27 @@ describe('openCodeSettingsConfig', () => {
  * and an assertion that looked the variables up by name directly would still be
  * green. A later entry wins, matching git's last-one-wins precedence.
  */
+/** A fixed wall-clock start for the deferral-report tests. Any value does; a
+ *  round one keeps a failure message readable. */
+const START_MS = Date.parse('2026-09-17T12:00:00.000Z');
+
+/**
+ * Run `body` against a controllable `Date.now()`, starting at `from`.
+ *
+ * Stub only the clock read: database socket I/O must retain real timers.
+ */
+async function withClockFrom(
+  from: number,
+  body: (advanceTo: (at: number) => void) => Promise<void>,
+): Promise<void> {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(from);
+  try {
+    await body((at) => void now.mockReturnValue(at));
+  } finally {
+    now.mockRestore();
+  }
+}
+
 function gitConfigEnv(env: string[]): Record<string, string> {
   const byName = new Map(
     env
@@ -7919,8 +7940,8 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(deferred).toHaveBeenCalledTimes(ORPHAN_DEFER_TICK_LIMIT + 2);
     expect(recreate).not.toHaveBeenCalled();
     expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
-    // Waiting is not yet worth reporting: the orphan window is far shorter than
-    // the image-update one, so a wait this long is still an ordinary turn.
+    // Waiting is not yet worth reporting: these ticks take no measurable time, and
+    // the report is spent by the clock rather than by the tick count.
     expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
   });
 
@@ -7935,14 +7956,28 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const provisioner = makeProvisioner(client);
     provisioner.attachProjectBusyProbe(async () => true);
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
-
-    for (let tick = 0; tick < IMAGE_UPDATE_DEFER_TICK_LIMIT - 1; tick++) {
+    const tick = async (): Promise<void> => {
       await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
-    }
-    expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+    };
 
-    await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
-    expect([...provisioner.turnBlockedSandboxes()]).toEqual([p.id]);
+    await withClockFrom(START_MS, async (advanceTo) => {
+      // A burst first, and the second half of what this guards: the scheduler runs
+      // every two seconds for the first thirty after a Server handoff, which is
+      // exactly when every busy project in the fleet is deferring. A tick count
+      // would be most of the way through its window before a turn had been waiting
+      // a minute.
+      for (let burst = 0; burst < 20; burst++) await tick();
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+
+      advanceTo(START_MS + IMAGE_UPDATE_DEFER_REPORT_AFTER_MS - 1_000);
+      await tick();
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+
+      advanceTo(START_MS + IMAGE_UPDATE_DEFER_REPORT_AFTER_MS);
+      await tick();
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([p.id]);
+    });
+
     // The whole point of the report is that the repair still has not run: the flag
     // must never be the observable half of a recreate that killed a turn.
     expect(recreate).not.toHaveBeenCalled();
@@ -7958,16 +7993,57 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     let busy = true;
     provisioner.attachProjectBusyProbe(async () => busy);
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
-
-    for (let tick = 0; tick < IMAGE_UPDATE_DEFER_TICK_LIMIT; tick++) {
+    const tick = async (): Promise<void> => {
       await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
-    }
-    expect([...provisioner.turnBlockedSandboxes()]).toEqual([p.id]);
+    };
 
-    busy = false;
-    await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
-    expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
-    expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+    await withClockFrom(START_MS, async (advanceTo) => {
+      await tick();
+      advanceTo(START_MS + IMAGE_UPDATE_DEFER_REPORT_AFTER_MS);
+      await tick();
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([p.id]);
+
+      busy = false;
+      await tick();
+      expect(recreate).toHaveBeenCalledWith(p.id, { confirmWarnings: true });
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+    });
+  });
+
+  it('restarts the clock when a turn ends and another begins', async () => {
+    // What "consecutive" has to mean for the report to be honest. Two ordinary
+    // turns back to back are not one long wait: the update had its chance between
+    // them, and if it did not take it that is a different fault. Keeping the
+    // original stamp would let a busy project accumulate the report across turns
+    // that each ended well inside the window.
+    const p = await seedActive('restreaked-update', 'dev-restreaked-update');
+    const { client } = dockerInspecting({ 'dev-restreaked-update': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    let busy = true;
+    provisioner.attachProjectBusyProbe(async () => busy);
+    // The recreate between the two turns must not resolve the drift for this test —
+    // the point is the second turn starting a fresh wait for the SAME update.
+    vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+    const tick = async (): Promise<void> => {
+      await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
+    };
+
+    await withClockFrom(START_MS, async (advanceTo) => {
+      await tick();
+      advanceTo(START_MS + IMAGE_UPDATE_DEFER_REPORT_AFTER_MS - 60_000);
+      busy = false;
+      await tick();
+
+      busy = true;
+      await tick();
+      advanceTo(START_MS + IMAGE_UPDATE_DEFER_REPORT_AFTER_MS + 60_000);
+      await tick();
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+
+      advanceTo(START_MS + 2 * IMAGE_UPDATE_DEFER_REPORT_AFTER_MS);
+      await tick();
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([p.id]);
+    });
   });
 
   it('does not spend the blocked-report window on a busy state it could not confirm', async () => {
@@ -7981,11 +8057,12 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     provisioner.attachProjectBusyProbe(() => Promise.reject(new Error('probe unreachable')));
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
 
-    for (let tick = 0; tick < IMAGE_UPDATE_DEFER_TICK_LIMIT + 2; tick++) {
+    await withClockFrom(START_MS, async (advanceTo) => {
       await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
-    }
-
-    expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+      advanceTo(START_MS + 4 * IMAGE_UPDATE_DEFER_REPORT_AFTER_MS);
+      await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
+      expect([...provisioner.turnBlockedSandboxes()]).toEqual([]);
+    });
     expect(recreate).not.toHaveBeenCalled();
   });
 

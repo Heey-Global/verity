@@ -87,6 +87,40 @@ export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string 
       : 'Update pending — Verity is rebuilding this sandbox';
 }
 
+/**
+ * The body of the overview's confirmation dialog for a sandbox that stopped
+ * updating itself.
+ *
+ * Here rather than in the screen because the two sentences are a decision, not
+ * presentation: whether Verity failed at something or is deliberately waiting is
+ * the same distinction {@link sandboxUpdateSummary} draws, and keeping them apart
+ * is how they drift. The caller supplies the buttons — a blocked update is
+ * dismiss-only, since the Server refuses the recreate for as long as the turn
+ * runs.
+ */
+export function sandboxUpdateAlertMessage(
+  project: { owner: string; repo: string },
+  update: SandboxUpdate,
+): string {
+  const security = isSecuritySandboxUpdate(update);
+  const image = `it is still running the old image${security ? ', which is missing a security fix' : ''}`;
+  // A blocked update is not a failure and must not be described as one: Verity is
+  // holding the recreate off on purpose because recreating the container kills the
+  // turn inside it. Saying so is also what makes the outcome predictable — the
+  // Server refuses this request while the turn runs, so an operator told "retry"
+  // would just collect a 409 without learning why.
+  if (update.turnBlocked) {
+    return (
+      `${project.owner}/${project.repo} has a turn in flight, so Verity is not replacing its ` +
+      `sandbox — ${image}. Cancel the turn first; recreating the container now would end it.`
+    );
+  }
+  return (
+    `Verity could not update ${project.owner}/${project.repo}'s sandbox on its own — ` +
+    `${image}. This will recreate its container and retry.`
+  );
+}
+
 /** The overview glyph for a sandbox that will not update itself. `tone` is
  *  semantic, resolved to a theme color by the RN layer, matching how
  *  {@link AttentionFlag} and {@link projectBadge} hand off. */
@@ -117,7 +151,7 @@ export function sandboxUpdateIndicator(
 ): SandboxUpdateIndicator | undefined {
   if (!sandboxUpdateNeedsAttention(update)) return undefined;
   const security = isSecuritySandboxUpdate(update);
-  if (update?.turnBlocked === true) {
+  if (update.turnBlocked) {
     return security
       ? { label: 'Security update waiting for a turn', icon: 'shield', tone: 'danger' }
       : { label: 'Update waiting for a turn', icon: 'clock', tone: 'attention' };

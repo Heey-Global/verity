@@ -734,6 +734,56 @@ describe('ProjectDetailScreen — project settings', () => {
     ).toBeOnTheScreen();
   });
 
+  it('offers no Update button for an update a turn is holding off', async () => {
+    // The silent failure this guards: the Server refuses this recreate for as long
+    // as a turn runs (SBX-1), so an Update button here can only return a 409 that
+    // surfaces as "Could not update project" — the operator reads a fault where
+    // there is a turn, and pressing it again never helps. The dialog has to say
+    // what would move it and then offer nothing that would not.
+    const base = makeDetail();
+    const detail: ProjectDetail = {
+      ...base,
+      project: {
+        ...base.project,
+        state: 'active',
+        sandboxUpdate: {
+          state: 'available',
+          kind: 'normal',
+          category: 'software',
+          reason: null,
+          current: null,
+          target: null,
+          currentVersion: '1.22.1',
+          currentRevision: null,
+          targetVersion: '2.9.2',
+          targetRevision: null,
+          selfRepair: 'stalled',
+          turnBlocked: true,
+        },
+      },
+    };
+    const recreateProjectContainer = jest.fn();
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail, recreateProjectContainer }));
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    render(<ProjectDetailScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Project settings'));
+    expect(
+      await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
+    ).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Update project environment'));
+
+    const [title, message, buttons] = alert.mock.calls[0];
+    expect(title).toBe('Update waiting for a turn');
+    expect(message).toContain('cancel the turn first');
+    expect(buttons?.map((button) => button.text)).toEqual(['OK']);
+    // Nothing on this path may reach the route that would 409 — or, if SBX-1 ever
+    // stopped holding, kill the turn the message just promised was safe.
+    buttons?.forEach((button) => button.onPress?.());
+    expect(recreateProjectContainer).not.toHaveBeenCalled();
+    alert.mockRestore();
+  });
+
   // The Environment panel is where Start/Repair/Update live, so the finding and
   // the action that answers it are on the same surface. `ProjectFields` at the
   // bottom keeps its own copy as the detail view.

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { SandboxUpdate } from '../api.js';
 import {
   isSecuritySandboxUpdate,
+  sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   sandboxUpdateNeedsAttention,
   sandboxUpdateSummary,
@@ -177,5 +178,40 @@ describe('sandboxUpdateIndicator', () => {
         update({ turnBlocked: true, selfRepair: 'stalled', category: 'security' }),
       ),
     ).toEqual({ label: 'Security update waiting for a turn', icon: 'shield', tone: 'danger' });
+  });
+});
+
+describe('sandboxUpdateAlertMessage', () => {
+  const project = { owner: 'heey-global', repo: 'verity' };
+
+  it('describes a stalled update as something Verity failed to do', () => {
+    const message = sandboxUpdateAlertMessage(project, update({ selfRepair: 'stalled' }));
+    expect(message).toContain('could not update heey-global/verity');
+    expect(message).toContain('recreate its container and retry');
+  });
+
+  it('does not blame Verity for an update a turn is holding off', () => {
+    // The silent failure this guards: the Server raises `stalled` for a blocked
+    // update too, so the untouched wording would tell the operator that the
+    // rebuild failed and offer a retry — of a request the Server refuses for as
+    // long as the turn runs. Both halves are wrong, and neither one shows up as an
+    // error anywhere.
+    const message = sandboxUpdateAlertMessage(
+      project,
+      update({ turnBlocked: true, selfRepair: 'stalled' }),
+    );
+    expect(message).toContain('has a turn in flight');
+    expect(message).toContain('Cancel the turn first');
+    expect(message).toContain('recreating the container now would end it');
+    expect(message).not.toContain('could not update');
+    expect(message).not.toContain('retry');
+  });
+
+  it('names a missing security fix in either case', () => {
+    for (const overrides of [{}, { turnBlocked: true }]) {
+      expect(
+        sandboxUpdateAlertMessage(project, update({ category: 'security', ...overrides })),
+      ).toContain('missing a security fix');
+    }
   });
 });

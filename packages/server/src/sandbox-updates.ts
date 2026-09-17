@@ -54,7 +54,7 @@ export interface SandboxUpdateStatus {
    * idle therefore waits forever, and `converging` alone would keep promising a
    * rebuild that cannot start for as long as it does.
    *
-   * Set once the wait passes `IMAGE_UPDATE_DEFER_TICK_LIMIT`, so it means "long
+   * Set once the wait passes `IMAGE_UPDATE_DEFER_REPORT_AFTER_MS`, so it means "long
    * enough that someone should know", not merely "deferred this tick". Like
    * {@link selfRepair} the checker always reports `false` — it compares images
    * and knows nothing about turns — and the route overlays the answer from
@@ -380,7 +380,13 @@ export function statusForInspect(
           ? 'missing signing broker token metadata'
           : 'stale signing broker token',
       target: 'current signing broker token',
-      kind: updateKind(args.targetLabels),
+      // Not read from any labels, unlike every other branch here. What this one
+      // offers is a re-issued token, not an image, so the target image's class
+      // says nothing about it — inheriting it would let an ordinary token refresh
+      // announce itself as a security update because some unrelated release
+      // happened to be one. The container's own labels, which this used to read,
+      // were no better: they describe the build being replaced.
+      kind: 'normal',
       category: 'configuration',
     });
   }

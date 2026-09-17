@@ -14,7 +14,6 @@ import {
   type ProjectRecord,
   type ProviderLimitRow,
   type ProviderLimitState,
-  type SandboxUpdate,
   type SessionSummary,
   isServerSecretSealedError,
   markerAttention,
@@ -24,7 +23,7 @@ import {
   quotaMeterLevel,
   projectBadge,
   projectRepoRef,
-  isSecuritySandboxUpdate,
+  sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   subscribeProjectStatusMutations,
   subscribeDevServerStatusMutations,
@@ -417,11 +416,18 @@ function SessionList({ client }: { client: VerityClient }) {
         // "Retry" is a claim about history and only one of these two has any:
         // a blocked update has never been attempted, it has been held back.
         update.turnBlocked ? 'Update waiting for a turn' : 'Retry sandbox update?',
-        sandboxUpdateMessage(project, update),
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Update', onPress: () => void updateProjectSandbox(project) },
-        ],
+        sandboxUpdateAlertMessage(project, update),
+        // Dismiss-only while the turn holds it off. `updateProjectSandbox` posts
+        // the same recreate the Server refuses for as long as a turn is running
+        // (SBX-1), so an Update button here is an offer that cannot be accepted:
+        // every press returns the 409 and surfaces as "Update failed", which reads
+        // like a broken sandbox rather than a turn the operator has to end first.
+        update.turnBlocked
+          ? [{ text: 'OK', style: 'cancel' }]
+          : [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Update', onPress: () => void updateProjectSandbox(project) },
+            ],
       );
     },
     [updateProjectSandbox],
@@ -1539,26 +1545,6 @@ async function confirmDeleteSession(
         },
       },
     ],
-  );
-}
-
-function sandboxUpdateMessage(project: ProjectRecord, update: SandboxUpdate): string {
-  const security = isSecuritySandboxUpdate(update);
-  const image = `it is still running the old image${security ? ', which is missing a security fix' : ''}`;
-  // A blocked update is not a failure and must not be described as one: Verity is
-  // holding the recreate off on purpose because recreating the container kills the
-  // turn inside it. Saying so is also what makes the outcome predictable — the
-  // Server refuses this request while the turn runs, so an operator told "retry"
-  // would just collect a 409 without learning why.
-  if (update.turnBlocked) {
-    return (
-      `${project.owner}/${project.repo} has a turn in flight, so Verity is not replacing its ` +
-      `sandbox — ${image}. Cancel the turn first; recreating the container now would end it.`
-    );
-  }
-  return (
-    `Verity could not update ${project.owner}/${project.repo}'s sandbox on its own — ` +
-    `${image}. This will recreate its container and retry.`
   );
 }
 

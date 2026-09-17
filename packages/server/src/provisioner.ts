@@ -114,7 +114,7 @@ import {
   ENV_DRIFT_RECREATE_LIMIT,
   ENV_DRIFT_RECREATES_PER_TICK,
   envDriftIsSoleReason,
-  IMAGE_UPDATE_DEFER_TICK_LIMIT,
+  IMAGE_UPDATE_DEFER_REPORT_AFTER_MS,
   type ProjectContainerClass,
 } from './project-relay-migration.js';
 
@@ -1392,8 +1392,8 @@ export interface Provisioner {
    * it unions two sets and so allocates per call. It is what lets a client tell a
    * sandbox that is merely waiting its turn from one nothing is going to fix. */
   unrepairedSandboxes?(): ReadonlySet<string>;
-  /** Projects whose sandbox update has been deferred behind a live turn for
-   * {@link IMAGE_UPDATE_DEFER_TICK_LIMIT} consecutive reconcile ticks. The other
+  /** Projects whose sandbox update has been deferred behind a live turn for an
+   * unbroken {@link IMAGE_UPDATE_DEFER_REPORT_AFTER_MS}. The other
    * half of the distinction {@link unrepairedSandboxes} draws: not "nothing is
    * going to fix this" but "nothing except the end of that turn will". Absent on
    * provisioners that do not implement relay migration. */
@@ -2181,16 +2181,20 @@ export class ProvisionerImpl implements Provisioner {
    *  so a stale deferral count would carry no useful evidence across a restart. */
   private readonly orphanDeferrals = new Map<string, number>();
 
-  /** Per project, how many consecutive reconcile ticks have deferred a sandbox
-   *  IMAGE update because the project was busy. Maintained exactly like
+  /** Per project, when the current unbroken run of sandbox IMAGE update deferrals
+   *  began, as an epoch milliseconds stamp. Maintained like
    *  {@link orphanDeferrals} — rewritten each pass to the projects that deferred
-   *  on it against a CONFIRMED turn — and read for the opposite purpose: the
-   *  orphan count bounds a repair, this one bounds only what is REPORTED about a
-   *  repair that keeps waiting (see `IMAGE_UPDATE_DEFER_TICK_LIMIT`). Nothing
-   *  derived from it ever recreates a sandbox, because the turn it would
-   *  interrupt is working and the update it is holding off is not urgent enough
-   *  to be worth that. */
-  private readonly imageUpdateDeferrals = new Map<string, number>();
+   *  on it against a CONFIRMED turn — but holding a start time rather than a
+   *  count, because the reconcile cadence is not constant and what this measures
+   *  is how long the OPERATOR has been waiting (see
+   *  `IMAGE_UPDATE_DEFER_REPORT_AFTER_MS`).
+   *
+   *  Read for the opposite purpose to the orphan count, too: that one bounds a
+   *  repair, this one bounds only what is REPORTED about a repair that keeps
+   *  waiting. Nothing derived from it ever recreates a sandbox, because the turn
+   *  it would interrupt is working and the update it is holding off is not urgent
+   *  enough to be worth that. */
+  private readonly imageUpdateDeferralsSince = new Map<string, number>();
 
   /** Per project, how many recreates this process has already spent on env drift
    *  ALONE. Bounds that recreate (see `ENV_DRIFT_RECREATE_LIMIT`), because it is
@@ -2562,8 +2566,8 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   /**
-   * Projects whose sandbox update has been waiting on an in-flight turn for
-   * {@link IMAGE_UPDATE_DEFER_TICK_LIMIT} consecutive passes.
+   * Projects whose sandbox update has been waiting on an in-flight turn for an
+   * unbroken {@link IMAGE_UPDATE_DEFER_REPORT_AFTER_MS}.
    *
    * Deliberately NOT folded into {@link unrepairedSandboxes}. That set means the
    * automatic repair is not coming; this one means it is coming and cannot start,
@@ -2571,14 +2575,15 @@ export class ProvisionerImpl implements Provisioner {
    * turn that is holding it off. A client that cannot tell them apart can only
    * offer the wrong advice to one of them.
    *
-   * Everything above the threshold is reported, including a project that has been
+   * Everything past the threshold is reported, including a project that has been
    * waiting for days: the wait is unbounded by design, so nothing else ever
    * retracts it except the turn ending.
    */
   turnBlockedSandboxes(): ReadonlySet<string> {
     const blocked = new Set<string>();
-    for (const [projectId, deferrals] of this.imageUpdateDeferrals) {
-      if (deferrals >= IMAGE_UPDATE_DEFER_TICK_LIMIT) blocked.add(projectId);
+    const now = Date.now();
+    for (const [projectId, since] of this.imageUpdateDeferralsSince) {
+      if (now - since >= IMAGE_UPDATE_DEFER_REPORT_AFTER_MS) blocked.add(projectId);
     }
     return blocked;
   }
@@ -2749,23 +2754,26 @@ export class ProvisionerImpl implements Provisioner {
               this.orphanDeferrals.set(project.id, (this.orphanDeferrals.get(project.id) ?? 0) + 1);
               deferredThisPass.add(project.id);
             }
-            // Counted on the same terms, and for a report rather than a recreate:
-            // past `IMAGE_UPDATE_DEFER_TICK_LIMIT` this project stops claiming that
-            // Verity is about to rebuild it. An unconfirmed busy state is excluded
-            // for a reason of its own here — a probe that cannot answer says nothing
-            // about a turn existing, and telling an operator to end a turn that may
-            // not exist sends them looking for something that is not there.
+            // Tracked on the same terms, and for a report rather than a recreate:
+            // past `IMAGE_UPDATE_DEFER_REPORT_AFTER_MS` this project stops claiming
+            // that Verity is about to rebuild it. Only the FIRST tick of a run
+            // stamps the clock, so the answer is how long the wait has lasted
+            // rather than how often it was sampled. An unconfirmed busy state is
+            // excluded for a reason of its own here — a probe that cannot answer
+            // says nothing about a turn existing, and telling an operator to end a
+            // turn that may not exist sends them looking for something that is not
+            // there.
             if (imageUpdate && confirmed) {
-              this.imageUpdateDeferrals.set(
-                project.id,
-                (this.imageUpdateDeferrals.get(project.id) ?? 0) + 1,
-              );
+              if (!this.imageUpdateDeferralsSince.has(project.id)) {
+                this.imageUpdateDeferralsSince.set(project.id, Date.now());
+              }
               imageDeferredThisPass.add(project.id);
             }
-            // A deferral is the repair working as designed — it waits for the turn
-            // and the wait is bounded. Whatever this project reported before, it is
-            // converging again, so retract both verdicts rather than leaving a stale
-            // "stuck" up for the whole life of the turn.
+            // A deferral is the repair working as designed — it is waiting for the
+            // turn, and for everything except the image-update report that wait is
+            // bounded. Whatever this project reported before, it is converging
+            // again, so retract both verdicts rather than leaving a stale "stuck"
+            // up for the whole life of the turn.
             this.sandboxRepairFailures.delete(project.id);
             this.settledSandboxes.delete(project.id);
             callbacks.onDeferred?.(project.id, { imageUpdate });
@@ -2892,8 +2900,8 @@ export class ProvisionerImpl implements Provisioner {
     // the pass — deprovisioned, no longer active, a provision in flight — also
     // clears, which is the conservative direction for a claim that an operator has
     // to act on.
-    for (const projectId of this.imageUpdateDeferrals.keys()) {
-      if (!imageDeferredThisPass.has(projectId)) this.imageUpdateDeferrals.delete(projectId);
+    for (const projectId of this.imageUpdateDeferralsSince.keys()) {
+      if (!imageDeferredThisPass.has(projectId)) this.imageUpdateDeferralsSince.delete(projectId);
     }
     // Drop reports for projects this pass no longer reconciles at all — deleted,
     // deprovisioned, or no longer `active`. Unlike `orphanDeferrals` the entries
