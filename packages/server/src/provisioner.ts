@@ -103,6 +103,7 @@ export {
 } from './devcontainer-lifecycle.js';
 import type { GitHubInstallationTokenMint, GitHubProjectTokenMint } from './github-app-token.js';
 import type { ProjectRelayActivation, ProjectRelayBinding } from './project-relay-lifecycle.js';
+import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
 import {
   CONTAINER_GENERATION_LABEL,
@@ -1551,10 +1552,7 @@ export function openCodeSettingsConfig(
 ): string | undefined {
   const baseURL = settings?.opencodeBaseUrl?.trim();
   const apiKey = settings?.opencodeApiKey?.trim();
-  const models = (settings?.opencodeModels ?? '')
-    .split(/[\n,]/)
-    .map((model) => model.trim())
-    .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index);
+  const models = selectedOpenCodeModels(settings);
   if (!baseURL || !apiKey || models.length === 0) return undefined;
   return JSON.stringify(
     {
@@ -1580,12 +1578,16 @@ export function openCodeSettingsConfig(
 function openCodeSettingsBind(
   settings: VeritySettingsRecord | undefined,
   secretRoot: string | undefined,
-  mode: 'home' | 'neutral',
   connectorPort: number | undefined,
 ): string[] {
   if (secretRoot === undefined || connectorPort === undefined) return [];
   const directory = materializeOpenCodeSettings(settings, secretRoot, connectorPort);
-  const target = mode === 'neutral' ? '/run/verity/xdg/opencode' : '/home/dev/.config/opencode';
+  // OpenCode writes its own .gitignore beside the ordinary XDG config on startup.
+  // Keep that directory writable and load Verity's server-owned config from a
+  // separate read-only directory through OPENCODE_CONFIG instead. The directory
+  // bind is intentional: atomic replacements of opencode.json then remain visible
+  // in already-running sandboxes.
+  const target = '/run/verity/opencode-config';
   return [`${directory}:${target}:ro`];
 }
 
@@ -4169,6 +4171,11 @@ export class ProvisionerImpl implements Provisioner {
     // The private signing key is NEVER mounted (broker-only, H4/H5) — gitSettingsBinds
     // only mounts the non-secret public key + known_hosts + allowed_signers.
     const gitBinds = gitSettingsBinds(veritySettings, this.opts.gitSecretRoot, pathMode);
+    const openCodeBinds = openCodeSettingsBind(
+      veritySettings,
+      this.opts.gitSecretRoot,
+      this.opts.claudeConnectorPort,
+    );
     const gitEnv = gitSettingsEnv(veritySettings);
     // The sandbox authenticates to the broker with a token derived from the signing
     // key, delivered as a read-only FILE mount (#662) — NOT env, so it never shows up
@@ -4444,12 +4451,7 @@ export class ProvisionerImpl implements Provisioner {
         ...ghTokenBrokerBinds,
         ...claudeEgressBinds,
         ...agentConfigBinds(this.opts, pathMode),
-        ...openCodeSettingsBind(
-          veritySettings,
-          this.opts.gitSecretRoot,
-          pathMode,
-          this.opts.claudeConnectorPort,
-        ),
+        ...openCodeBinds,
         ...gitBinds,
         ...signingBrokerBinds,
         ...codexGatewayConfigBind(
@@ -4548,6 +4550,9 @@ export class ProvisionerImpl implements Provisioner {
         ...egressConnectorEnv,
         ...(pathMode === 'neutral'
           ? ['XDG_CONFIG_HOME=/run/verity/xdg', 'PI_CONFIG_DIR=/run/verity/pi']
+          : []),
+        ...(openCodeBinds.length > 0
+          ? ['OPENCODE_CONFIG=/run/verity/opencode-config/opencode.json']
           : []),
         'PATH=/opt/agent-seed/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         // Commit-signing broker (audit H1): the endpoint URL is env, while the

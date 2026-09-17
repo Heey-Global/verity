@@ -44,13 +44,8 @@ import { useSettingsFields } from '../../../lib/useSettingsFields';
 
 // Module-level: these arrays' identity drives the field hooks, and they are the
 // complete list of keys a save from this screen may contain.
-const TEXT_FIELDS = ['transcribeBaseUrl', 'transcribeModel', 'opencodeBaseUrl'] as const;
-const SECRET_FIELDS = [
-  'uplinkSubscriptionKey',
-  'transcribeApiKey',
-  'opencodeApiKey',
-  'dopplerServiceToken',
-] as const;
+const TEXT_FIELDS = ['transcribeBaseUrl', 'transcribeModel'] as const;
+const SECRET_FIELDS = ['uplinkSubscriptionKey', 'transcribeApiKey', 'dopplerServiceToken'] as const;
 
 /**
  * Which login the `?agentLogin=` deep link should open on arrival, if any.
@@ -103,7 +98,7 @@ function ServicesSettingsView({
   const backendMode = settings?.transcribeBackendMode ?? null;
   const opencodeReady =
     (settings?.opencodeApiKeyConfigured ?? false) &&
-    text.values.opencodeBaseUrl.trim() !== '' &&
+    (settings?.opencodeBaseUrl ?? '').trim() !== '' &&
     (settings?.opencodeModels ?? '').trim() !== '';
 
   return (
@@ -165,40 +160,18 @@ function ServicesSettingsView({
             </SettingsPanel>
           )}
 
-          <SettingsDisclosure
-            onCollapse={() => {
-              text.commit();
-              secrets.commit();
-            }}
-            title="OpenCode"
-            summary={opencodeReady ? 'Configured' : 'Not configured'}
-          >
-            <Text style={styles.reproSubtitle}>
-              Verity automatically loads all models offered by your OpenAI-compatible API.
-            </Text>
-            <SettingsField
-              label="API base URL"
-              value={text.values.opencodeBaseUrl}
-              onChangeText={(value) => text.set('opencodeBaseUrl', value)}
-              onBlur={text.commit}
-              placeholder="https://api.example.com/v1"
-              accessibilityLabel="OpenCode API base URL"
-              keyboardType="url"
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="terminal"
+              title="OpenCode"
+              subtitle="Provider connection and available models"
+              status={{
+                intent: opencodeReady ? 'ready' : 'needsSetup',
+                label: opencodeReady ? 'Configured' : 'Not configured',
+              }}
+              onPress={() => router.push('/settings/services/opencode')}
             />
-            <SecretPasteField
-              label="API key"
-              placeholder="Paste the provider API key…"
-              value={secrets.values.opencodeApiKey}
-              onChangeText={(value) => secrets.set('opencodeApiKey', value)}
-              configured={settings?.opencodeApiKeyConfigured ?? false}
-              editable={writable}
-              onBlur={secrets.commit}
-              masked
-            />
-            {!writable ? (
-              <Text style={styles.reproHint}>Unlock credentials to configure OpenCode.</Text>
-            ) : null}
-          </SettingsDisclosure>
+          </SettingsListPanel>
         </SettingsGroup>
       ) : null}
 

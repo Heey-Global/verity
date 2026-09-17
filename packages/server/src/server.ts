@@ -178,6 +178,7 @@ import { registerGitHubManifestRoutes } from './github-manifest-routes.js';
 import type { SshKeygenSpawner } from './signing-key.js';
 import { registerSigningKeyRoutes } from './signing-key-routes.js';
 import { createProcessAgentLoginService, type AgentLoginService } from './agent-login.js';
+import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import type { SshSignSpawner } from './git-signer.js';
 import { registerGitSignRoute } from './git-sign-route.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
@@ -5504,6 +5505,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       .refine((value) => !/[\r\n]/u.test(value))
       .nullable()
       .optional(),
+    opencodeDisabledModels: z.string().max(100_000).nullable().optional(),
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
   });
 
@@ -6244,10 +6246,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (model === undefined || !model.startsWith('verity/')) return true;
     const settings = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
     if (!settings?.opencodeBaseUrl?.trim() || !settings.opencodeApiKey?.trim()) return false;
-    const configured = (settings.opencodeModels ?? '')
-      .split(/[\n,]/u)
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+    const configured = selectedOpenCodeModels(settings);
     return configured.includes(model.slice('verity/'.length));
   };
 

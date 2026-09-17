@@ -135,6 +135,27 @@ else
   as_agent ln -sfn "$CODEX_SESSIONS_DIR" "$CODEX_DIR/sessions"
 fi
 
+# OpenCode writes bookkeeping files under its ordinary XDG config directory.
+# Verity's provider configuration is mounted elsewhere and selected through
+# OPENCODE_CONFIG, so this directory must remain writable by the agent.
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  OPENCODE_USER_CONFIG_DIR="$XDG_CONFIG_HOME/opencode"
+  if [ -L "$OPENCODE_USER_CONFIG_DIR" ]; then
+    echo 'invalid OpenCode user config directory' >&2
+    exit 1
+  fi
+  if [ "$(stat -c '%u' /run/verity)" = "$AGENT_UID" ]; then
+    as_agent mkdir -p "$OPENCODE_USER_CONFIG_DIR"
+  else
+    mkdir -p "$OPENCODE_USER_CONFIG_DIR"
+  fi
+  if [ -L "$OPENCODE_USER_CONFIG_DIR" ] || [ ! -d "$OPENCODE_USER_CONFIG_DIR" ]; then
+    echo 'invalid OpenCode user config directory' >&2
+    exit 1
+  fi
+  chown "$AGENT_UID:$AGENT_GID" "$OPENCODE_USER_CONFIG_DIR"
+fi
+
 # OpenCode's non-config state: session storage, locks and its helper-binary cache,
 # which the spawn broker points XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME at
 # (verity-agent-spawn-broker.mjs, OPENCODE_STATE_DIR). Without them `opencode acp`

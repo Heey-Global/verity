@@ -704,6 +704,7 @@ describe('verity-runner supervisor runtime', () => {
         connectorUrl: 'http://127.0.0.1:47821',
         env: {
           XDG_CONFIG_HOME: '/run/verity/xdg',
+          OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
           OPENAI_API_KEY: 'must-not-cross',
           DOPPLER_TOKEN: 'must-not-cross',
           GITHUB_TOKEN: 'must-not-cross',
@@ -714,10 +715,13 @@ describe('verity-runner supervisor runtime', () => {
     // command name reaching it would let the request's argv pick the subcommand.
     expect(spec.args).toContain('/usr/local/bin/opencode-acp');
     expect(spec.args).not.toContain('/usr/local/bin/opencode');
-    // OpenCode reads plain XDG and its provider config lives in the mounted volume
-    // under it; without this the child finds an empty config dir and the turn dies
-    // on the first prompt with no provider.
-    expect(spec.spawnOptions.env).toMatchObject({ XDG_CONFIG_HOME: '/run/verity/xdg' });
+    // OpenCode keeps its own writable files under XDG and reads Verity's provider
+    // config from a separate read-only mount. Without either path the turn dies on
+    // the first prompt or while OpenCode initializes its config directory.
+    expect(spec.spawnOptions.env).toMatchObject({
+      XDG_CONFIG_HOME: '/run/verity/xdg',
+      OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
+    });
     expect(spec.spawnOptions.env).not.toHaveProperty('OPENAI_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('DOPPLER_TOKEN');
     expect(spec.spawnOptions.env).not.toHaveProperty('GITHUB_TOKEN');
@@ -730,9 +734,9 @@ describe('verity-runner supervisor runtime', () => {
 
   it('leaves the home-mode image on the HOME fallback OpenCode resolves itself', () => {
     // The forward above is the devcontainer half. On a Verity base image the
-    // provisioner uses `home` path mode: it mounts the config volume at
-    // `/home/dev/.config/opencode` and sets no `XDG_CONFIG_HOME` at all, leaving
-    // OpenCode's own `$HOME/.config` fallback to find it. That only works because
+    // provisioner uses `home` path mode and sets no `XDG_CONFIG_HOME`, leaving
+    // OpenCode's writable files under its `$HOME/.config` fallback while the
+    // server-owned provider config has its own read-only path. That only works because
     // the broker pins `HOME` to `/home/dev` rather than to the per-turn runtime
     // directory — pointing it at the latter would start every OpenCode turn on
     // those images with no provider configured, and the failure would surface as a
@@ -743,10 +747,16 @@ describe('verity-runner supervisor runtime', () => {
         agentUid: 1000,
         agentGid: 1000,
         connectorUrl: 'http://127.0.0.1:47821',
-        env: { PATH: '/usr/bin' },
+        env: {
+          PATH: '/usr/bin',
+          OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
+        },
       },
     );
-    expect(spec.spawnOptions.env).toMatchObject({ HOME: '/home/dev' });
+    expect(spec.spawnOptions.env).toMatchObject({
+      HOME: '/home/dev',
+      OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
+    });
     // Not invented when the container has none: an XDG root the image never set
     // would point the child at a directory nothing mounts.
     expect(spec.spawnOptions.env).not.toHaveProperty('XDG_CONFIG_HOME');
@@ -783,6 +793,7 @@ describe('verity-runner supervisor runtime', () => {
       'utf8',
     );
     expect(launcher).toContain('OPENCODE_STATE_DIR=/run/verity/opencode');
+    expect(launcher).toContain('OPENCODE_USER_CONFIG_DIR="$XDG_CONFIG_HOME/opencode"');
     // Create as the agent when it owns /run/verity, else as root — never a blind
     // root mkdir that assumes CAP_DAC_OVERRIDE.
     expect(launcher).toMatch(/stat -c '%u' \/run\/verity/);

@@ -186,6 +186,7 @@ import {
   type DevcontainerFeatureSource,
 } from './provisioner.js';
 import { trustedToolkitIdentity } from './runner-boundary-attestation.js';
+import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
@@ -2386,11 +2387,7 @@ export async function buildEmbeddedServer(
     ) {
       return [];
     }
-    return settings.opencodeModels
-      .split(/[\n,]/)
-      .map((model) => model.trim())
-      .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index)
-      .map((model) => `verity/${model}`);
+    return selectedOpenCodeModels(settings).map((model) => `verity/${model}`);
   };
 
   // Multi-repo fleet-registry provisioning (concept §19.3/#19.8, #174):

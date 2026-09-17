@@ -36,30 +36,6 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-describe('settings/services — compact details', () => {
-  it('saves an endpoint when its details collapse without an input blur', async () => {
-    const client = makeClient('unlocked');
-    mockCreateVerityClient.mockReturnValue(client);
-    render(<ServicesSettingsScreen />);
-    const toggle = await screen.findByLabelText('OpenCode');
-    expect(screen.queryByLabelText('OpenCode API base URL')).toBeNull();
-    fireEvent.press(toggle);
-    fireEvent.changeText(screen.getByLabelText('OpenCode API base URL'), 'https://draft.test/v1');
-    fireEvent.press(toggle);
-    expect(screen.queryByLabelText('OpenCode API base URL')).toBeNull();
-    await waitFor(() =>
-      expect(client.updateVeritySettings).toHaveBeenCalledWith({
-        opencodeBaseUrl: 'https://draft.test/v1',
-      }),
-    );
-    fireEvent.press(toggle);
-    expect(screen.getByLabelText('OpenCode API base URL')).toHaveProp(
-      'value',
-      'https://draft.test/v1',
-    );
-  });
-});
-
 describe('settings/services — secret store onboarding', () => {
   it('renders the "set master password" UI when the store is uninitialized', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('uninitialized'));
@@ -368,42 +344,11 @@ describe('settings/services — AI backends', () => {
     expect(startAgentLogin).not.toHaveBeenCalled();
   });
 
-  it('stores OpenCode endpoint and API key without manual models', async () => {
-    const initial = makeSettings();
-    const updateVeritySettings = jest
-      .fn()
-      .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch }));
-    mockCreateVerityClient.mockReturnValue(
-      makeClient('unlocked', { settings: initial, updateVeritySettings }),
-    );
+  it('opens OpenCode connection and model settings on its own page', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ServicesSettingsScreen />);
     fireEvent.press(await screen.findByLabelText('OpenCode'));
-
-    await waitFor(() =>
-      expect(screen.getByPlaceholderText('Paste the provider API key…').props.editable).toBe(true),
-    );
-
-    fireEvent.changeText(
-      await screen.findByLabelText('OpenCode API base URL'),
-      'https://api.test/v1',
-    );
-    expect(screen.queryByLabelText('OpenCode models')).toBeNull();
-    fireEvent(screen.getByLabelText('OpenCode API base URL'), 'blur');
-
-    await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(1));
-    expect(updateVeritySettings.mock.calls[0]?.[0]).toEqual({
-      opencodeBaseUrl: 'https://api.test/v1',
-    });
-
-    const key = screen.getByPlaceholderText('Paste the provider API key…');
-    fireEvent.changeText(key, 'provider-key-fixture');
-    fireEvent(key, 'blur');
-
-    await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(2));
-    // The key travels in its own request, and takes nothing else with it.
-    expect(updateVeritySettings.mock.calls[1]?.[0]).toEqual({
-      opencodeApiKey: 'provider-key-fixture',
-    });
+    expect(mockPush).toHaveBeenCalledWith('/settings/services/opencode');
   });
 });
 
