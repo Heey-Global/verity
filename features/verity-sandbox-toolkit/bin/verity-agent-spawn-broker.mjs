@@ -596,14 +596,12 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
           INITIAL_AGENT_MODE: 'agent-full-access',
         }
       : {}),
-    // OpenCode has no config-dir variable of its own; it reads plain XDG. The
-    // provisioner mounts the shared opencode config volume at
-    // `$XDG_CONFIG_HOME/opencode` and sets that variable for devcontainer images,
-    // whose home directory is not `/home/dev` (provisioner.ts, `pathMode`). Without
-    // it the child falls back to `$HOME/.config/opencode`, which on those images is
-    // an empty directory — so the agent starts with no provider configured and the
-    // turn fails on the first prompt rather than at spawn. Copied, never accepted
-    // from a request, and only for the one command that reads it.
+    // Verity's server-owned provider config lives outside OpenCode's writable XDG
+    // directory. OpenCode creates files such as .gitignore under the latter during
+    // startup, so mounting the whole directory read-only makes every turn crash.
+    // OPENCODE_CONFIG points at the separate read-only directory bind while
+    // XDG_CONFIG_HOME keeps OpenCode's own files writable. Both are copied, never
+    // accepted from a request, and only for the one command that reads them.
     //
     // `copy` reads THIS process's environment, which is the container's: the
     // provisioner puts the variable in the container `Env`, and the stack launcher
@@ -619,6 +617,7 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     ...(command === 'opencode-acp'
       ? {
           ...copy('XDG_CONFIG_HOME'),
+          ...copy('OPENCODE_CONFIG'),
           XDG_DATA_HOME: `${OPENCODE_STATE_DIR}/data`,
           XDG_STATE_HOME: `${OPENCODE_STATE_DIR}/state`,
           XDG_CACHE_HOME: `${OPENCODE_STATE_DIR}/cache`,

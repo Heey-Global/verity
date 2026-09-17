@@ -2780,8 +2780,18 @@ describe('ProvisionerImpl (#174)', () => {
           `${caPath}:/run/verity/claude-egress/ca.crt:ro`,
           `${certPath}:/run/verity/claude-egress/client.crt:ro`,
           `${keyPath}:/run/verity/claude-egress/client.key:ro`,
+          `${join(secretRoot, 'opencode')}:/run/verity/opencode-config:ro`,
         ]),
       );
+      // OpenCode writes .gitignore under its ordinary config directory. Mount only
+      // Verity's separate OPENCODE_CONFIG directory read-only so that write remains possible.
+      expect(
+        (spec.binds ?? []).some(
+          (bind) =>
+            bind.endsWith(':/home/dev/.config/opencode:ro') ||
+            bind.endsWith(':/run/verity/xdg/opencode:ro'),
+        ),
+      ).toBe(false);
       // The six connector coordinates (non-secret) are env; the optional SNI too.
       expect(spec.env).toEqual(
         expect.arrayContaining([
@@ -2792,6 +2802,7 @@ describe('ProvisionerImpl (#174)', () => {
           'VERITY_CLAUDE_EGRESS_CERT=/run/verity/claude-egress/client.crt',
           'VERITY_CLAUDE_EGRESS_KEY=/run/verity/claude-egress/client.key',
           'VERITY_CLAUDE_EGRESS_SERVERNAME=verity-agent-gateway',
+          'OPENCODE_CONFIG=/run/verity/opencode-config/opencode.json',
         ]),
       );
       expect(spec.labels?.[CLAUDE_EGRESS_GATEWAY_URL_LABEL]).toBe('https://relay:8443');
