@@ -43,7 +43,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  FlatList,
   type GestureResponderEvent,
   Keyboard,
   type LayoutChangeEvent,
@@ -58,12 +57,15 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import Reanimated, { useReducedMotion } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AttentionMarkers } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
 import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
+import { useProjectReorderMotion } from '../components/useProjectReorderMotion';
+import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
 import { ProjectStatusDot } from '../components/ProjectStatusDot';
 import { ServerAttentionBanner, StaleBanner } from '../components/ServerAttentionBanner';
 import { UnreadDot } from '../components/UnreadDot';
@@ -74,6 +76,7 @@ import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
+import { projectDragOffsets, projectDragTargetIndex } from '../lib/projectReorder';
 import { prefetchBranches } from '../lib/branchesPrefetch';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { devServerUrl } from '../lib/devServerUrl';
@@ -218,9 +221,19 @@ function SessionList({ client }: { client: VerityClient }) {
     () => projectGroups(projects, sessions, devServersByProject, detectionsByProject, baseUrl),
     [baseUrl, detectionsByProject, devServersByProject, projects, sessions],
   );
+  const reducedMotion = useReducedMotion();
+  const dragTranslation = useRef(new Animated.Value(0)).current;
+  const droppingProject = useRef(false);
+  useEffect(() => () => dragTranslation.stopAnimation(), [dragTranslation]);
+  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
+  const dragInitialOrder = useRef<string[]>([]);
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const dragOrderRef = useRef<string[] | null>(null);
-  const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
+  const orderedGroups = useMemo(
+    () =>
+      applyProjectOrder(groups, draggingProjectId === null ? dragOrder : dragInitialOrder.current),
+    [groups, dragOrder, draggingProjectId],
+  );
   const activeGroups = useMemo(
     () => orderedGroups.filter((group) => !isPausedProjectGroup(group)),
     [orderedGroups],
@@ -256,9 +269,40 @@ function SessionList({ client }: { client: VerityClient }) {
       return changed ? next : current;
     });
   }, [projects]);
-  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const dragHeights = useRef(new Map<string, number>());
-  const dragStartIndex = useRef<number | null>(null);
+  const reorderSaving = useRef(false);
+  const previewOffsets = useMemo(
+    () => projectDragOffsets(dragInitialOrder.current, dragOrder ?? [], dragHeights.current),
+    [dragOrder],
+  );
+  const [dragSettling, setDragSettling] = useState(false);
+  const listHeight = useRef(0);
+  const [dragListHeight, setDragListHeight] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (draggingProjectId !== null) return;
+    const timer = setTimeout(() => setDragListHeight(undefined), 200);
+    return () => clearTimeout(timer);
+  }, [draggingProjectId]);
+  useEffect(() => {
+    if (!dragSettling) return;
+    const timer = setTimeout(() => setDragSettling(false), 200);
+    return () => clearTimeout(timer);
+  }, [dragSettling]);
+  // Keep the optimistic order until a poll actually confirms it. Refresh can
+  // fail silently, so completion of its promise does not prove reconciliation.
+  useEffect(() => {
+    if (draggingProjectId !== null || dragOrder === null) return;
+    const expected = new Set(dragOrder);
+    const actual = projects
+      .filter((project) => expected.has(project.id))
+      .map((project) => project.id);
+    if (
+      actual.length === dragOrder.length &&
+      actual.every((id, index) => id === dragOrder[index])
+    ) {
+      setDragOrder(null);
+    }
+  }, [projects, draggingProjectId, dragOrder]);
   const dragStartPageY = useRef<number | null>(null);
   const [refreshingOverview, setRefreshingOverview] = useState(false);
   const [updatingProjectIds, setUpdatingProjectIds] = useState<Set<string>>(() => new Set());
@@ -494,14 +538,18 @@ function SessionList({ client }: { client: VerityClient }) {
           onLongPressProject={
             reorderable
               ? (pageY) => {
+                  if (reorderSaving.current || droppingProject.current) return;
+                  dragTranslation.setValue(0);
                   const projectIds = activeGroups.flatMap((group) =>
                     group.project && !isVerityControlPlaneProject(group.project)
                       ? [group.project.id]
                       : [],
                   );
                   dragOrderRef.current = projectIds;
-                  dragStartIndex.current = projectIds.indexOf(item.project!.id);
+                  dragInitialOrder.current = projectIds;
                   dragStartPageY.current = pageY;
+                  setDragListHeight(listHeight.current);
+                  setDragSettling(true);
                   setDragOrder(projectIds);
                   setDraggingProjectId(item.project!.id);
                 }
@@ -517,15 +565,19 @@ function SessionList({ client }: { client: VerityClient }) {
           onProjectDragMove={
             reorderable && item.project && draggingProjectId === item.project.id
               ? (_projectId, pageY) => {
-                  const height = dragHeights.current.get(item.project!.id) ?? 56;
-                  const startIndex = dragStartIndex.current;
                   const startPageY = dragStartPageY.current;
-                  if (startIndex === null || startPageY === null) return;
-                  const offsetRows = Math.round((pageY - startPageY) / height);
+                  if (startPageY === null || droppingProject.current) return;
+                  dragTranslation.setValue(pageY - startPageY);
+                  const targetIndex = projectDragTargetIndex(
+                    dragInitialOrder.current,
+                    item.project!.id,
+                    pageY - startPageY,
+                    dragHeights.current,
+                  );
                   const next = moveProjectIdToIndex(
                     dragOrderRef.current,
                     item.project!.id,
-                    startIndex + offsetRows,
+                    targetIndex,
                   );
                   if (next === dragOrderRef.current) return;
                   dragOrderRef.current = next;
@@ -536,6 +588,8 @@ function SessionList({ client }: { client: VerityClient }) {
           onProjectDragEnd={
             reorderable && item.project && draggingProjectId === item.project.id
               ? () => {
+                  if (reorderSaving.current || droppingProject.current) return;
+                  droppingProject.current = true;
                   const ids =
                     dragOrderRef.current ??
                     activeGroups.flatMap((group) =>
@@ -543,25 +597,51 @@ function SessionList({ client }: { client: VerityClient }) {
                         ? [group.project.id]
                         : [],
                     );
-                  setDraggingProjectId(null);
-                  setDragOrder(null);
-                  dragOrderRef.current = null;
-                  dragStartIndex.current = null;
-                  dragStartPageY.current = null;
-                  void client
-                    .reorderProjects(ids)
-                    .then(() => refreshProjects())
-                    .catch((caught) => {
-                      Alert.alert(
-                        'Reorder failed',
-                        caught instanceof VerityApiError
-                          ? caught.message
-                          : 'Could not save project order.',
-                      );
+                  const finishDrop = () => {
+                    droppingProject.current = false;
+                    setDragSettling(false);
+                    setDraggingProjectId(null);
+                    reorderSaving.current = true;
+                    dragOrderRef.current = null;
+                    dragInitialOrder.current = [];
+                    dragStartPageY.current = null;
+                    void client
+                      .reorderProjects(ids)
+                      .then(() => refreshProjects())
+                      .catch((caught) => {
+                        Alert.alert(
+                          'Reorder failed',
+                          caught instanceof VerityApiError
+                            ? caught.message
+                            : 'Could not save project order.',
+                        );
+                        setDragOrder(null);
+                      })
+                      .finally(() => {
+                        reorderSaving.current = false;
+                      });
+                  };
+                  const target =
+                    projectDragOffsets(dragInitialOrder.current, ids, dragHeights.current).get(
+                      item.project!.id,
+                    ) ?? 0;
+                  if (reducedMotion) {
+                    dragTranslation.setValue(target);
+                    finishDrop();
+                  } else {
+                    Animated.timing(dragTranslation, {
+                      toValue: target,
+                      duration: 160,
+                      useNativeDriver: true,
+                    }).start(({ finished }) => {
+                      if (finished) finishDrop();
                     });
+                  }
                 }
               : undefined
           }
+          dragTranslation={dragTranslation}
+          dragOffset={item.project ? (previewOffsets.get(item.project.id) ?? 0) : 0}
           dragging={item.project?.id === draggingProjectId}
           reordering={draggingProjectId !== null}
           onRenameSession={setRenaming}
@@ -584,6 +664,10 @@ function SessionList({ client }: { client: VerityClient }) {
       collapsedOverride,
       client,
       draggingProjectId,
+      dragSettling,
+      dragTranslation,
+      previewOffsets,
+      reducedMotion,
       wide,
       selectedId,
       unread,
@@ -660,18 +744,40 @@ function SessionList({ client }: { client: VerityClient }) {
       {projectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
       ) : null}
-      <FlatList
+      <Reanimated.FlatList
+        CellRendererComponentStyle={({ item }) => ({
+          zIndex: item.project?.id === draggingProjectId ? 1 : 0,
+        })}
+        removeClippedSubviews={draggingProjectId === null}
+        onContentSizeChange={(_width, height) => {
+          listHeight.current = height;
+        }}
+        scrollEnabled={draggingProjectId === null}
         data={activeGroups}
         keyExtractor={(g) => g.id}
         renderItem={renderItem}
         // Dev-server polling can add a port chip after the process starts, which
         // changes a project row's height. Keep the first visible project anchored
         // across that relayout instead of letting the virtualized list jump upward.
-        maintainVisibleContentPosition={PROJECT_LIST_VISIBLE_CONTENT_POSITION}
+        maintainVisibleContentPosition={
+          dragSettling
+            ? {
+                minIndexForVisible: Math.max(
+                  0,
+                  activeGroups.findIndex((group) => group.project?.id === draggingProjectId),
+                ),
+              }
+            : dragOrder === null
+              ? PROJECT_LIST_VISIBLE_CONTENT_POSITION
+              : undefined
+        }
         refreshControl={
           <RefreshControl refreshing={refreshingOverview} onRefresh={onRefreshOverview} />
         }
-        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: insets.bottom + 16, minHeight: dragListHeight },
+        ]}
         ItemSeparatorComponent={GroupSeparator}
         ListHeaderComponent={
           providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null
@@ -1067,14 +1173,16 @@ function applyProjectOrder(
   if (!orderedProjectIds) return groups;
   const rank = new Map(orderedProjectIds.map((id, index) => [id, index]));
   const sortable = groups
-    .filter((group) => group.project)
+    .filter((group) => group.project && rank.has(group.project.id))
     .sort((a, b) => {
       const aRank = rank.get(a.project!.id) ?? Number.MAX_SAFE_INTEGER;
       const bRank = rank.get(b.project!.id) ?? Number.MAX_SAFE_INTEGER;
       return aRank - bRank;
     });
   let sortableIndex = 0;
-  return groups.map((group) => (group.project ? sortable[sortableIndex++]! : group));
+  return groups.map((group) =>
+    group.project && rank.has(group.project.id) ? sortable[sortableIndex++]! : group,
+  );
 }
 
 function moveProjectIdToIndex(
@@ -1107,6 +1215,8 @@ function ProjectGroup({
   onProjectDragMove,
   onProjectDragEnd,
   dragging,
+  dragTranslation,
+  dragOffset,
   reordering,
   onRenameSession,
   onSelectSession,
@@ -1130,6 +1240,8 @@ function ProjectGroup({
   onProjectDragMove?: ((projectId: string, pageY: number) => void) | undefined;
   onProjectDragEnd?: (() => void) | undefined;
   dragging?: boolean | undefined;
+  dragTranslation: Animated.Value;
+  dragOffset: number;
   reordering?: boolean | undefined;
   onRenameSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
@@ -1147,6 +1259,12 @@ function ProjectGroup({
   repairingProjectIds?: ReadonlySet<string>;
 }) {
   const { theme } = useUnistyles();
+  const translation = useProjectReorderMotion({
+    dragging,
+    reordering,
+    offset: dragOffset,
+    dragTranslation,
+  });
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
   // orphan (including soft-deleted projects, which are not repairable) or the
@@ -1181,21 +1299,22 @@ function ProjectGroup({
     onProjectDragMove(group.project.id, event.nativeEvent.pageY);
   };
   const onLayout = (event: LayoutChangeEvent) => {
-    onProjectLayout?.(event.nativeEvent.layout.height);
+    onProjectLayout?.(event.nativeEvent.layout.height + theme.spacing.md + (wide ? 2 : 0));
   };
   return (
-    <View
+    <Animated.View
       style={[
         styles.projectGroup,
         !wide && styles.projectGroupFlat,
         dragging ? styles.projectGroupDragging : null,
+        { transform: [{ translateY: translation }] },
       ]}
-      onLayout={onLayout}
       onTouchMove={dragging ? onTouchMove : undefined}
       onTouchEnd={dragging ? onProjectDragEnd : undefined}
       onTouchCancel={dragging ? onProjectDragEnd : undefined}
     >
       <View
+        onLayout={onLayout}
         style={[
           styles.projectHeader,
           headerHovered ? styles.projectHeaderHovered : null,
@@ -1426,30 +1545,32 @@ function ProjectGroup({
           ) : null}
         </View>
       </View>
-      {!reordering && !collapsed && group.sessions.length > 0 ? (
-        <View style={styles.projectSessions}>
-          {group.sessions.map((session, index) => (
-            <Fragment key={session.sessionId}>
-              {/* Quiet inset hairline between sessions (never above the first — the
+      {group.sessions.length > 0 ? (
+        <ProjectSessionsCollapse collapsed={collapsed}>
+          <View style={styles.projectSessions}>
+            {group.sessions.map((session, index) => (
+              <Fragment key={session.sessionId}>
+                {/* Quiet inset hairline between sessions (never above the first — the
                   project header already draws its own bottom border). Inset to start
                   under the session title, leaving the dot gutter clear (iOS-style
                   leading inset), so adjacent session blocks read as separate without
                   the restless full-width line grid the group had before. */}
-              {index > 0 ? <View style={styles.sessionDivider} /> : null}
-              <SessionRow
-                session={session}
-                onRename={() => onRenameSession(session)}
-                onSelect={onSelectSession ? () => onSelectSession(session.sessionId) : undefined}
-                onOpen={() => onOpenSession(session)}
-                unread={unread.has(session.sessionId)}
-                selected={selectedId === session.sessionId}
-                renaming={renamingId === session.sessionId}
-              />
-            </Fragment>
-          ))}
-        </View>
+                {index > 0 ? <View style={styles.sessionDivider} /> : null}
+                <SessionRow
+                  session={session}
+                  onRename={() => onRenameSession(session)}
+                  onSelect={onSelectSession ? () => onSelectSession(session.sessionId) : undefined}
+                  onOpen={() => onOpenSession(session)}
+                  unread={unread.has(session.sessionId)}
+                  selected={selectedId === session.sessionId}
+                  renaming={renamingId === session.sessionId}
+                />
+              </Fragment>
+            ))}
+          </View>
+        </ProjectSessionsCollapse>
       ) : null}
-    </View>
+    </Animated.View>
   );
 }
 
