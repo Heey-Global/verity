@@ -444,7 +444,7 @@ async function validateSpawnRequest(raw, options) {
         // Same `options` materialization and injection use: a validator reading
         // the default directory while the file lands in an overridden one would
         // reject the very path the command is about to be handed.
-        .map((secret) => trustedCliSecretPath(secret.name, options)),
+        .map((secret) => trustedCliSecretPath(secret.name, options, raw.correlationId)),
       approvedEntryScript,
     );
     return {
@@ -1286,9 +1286,10 @@ export async function validateTrustedCliArguments(
 
 const TRUSTED_CLI_SECRET_DIR = '/run/verity-runner/secrets';
 
-function trustedCliSecretPath(name, options) {
+function trustedCliSecretPath(name, options, correlationId) {
   if (!isSafeTrustedCliEnvName(name)) throw new Error('unsafe trusted CLI environment variable');
-  return `${options?.secretDir ?? TRUSTED_CLI_SECRET_DIR}/${name}`;
+  const root = options?.secretDir ?? TRUSTED_CLI_SECRET_DIR;
+  return correlationId === undefined ? `${root}/${name}` : `${root}/${correlationId}/${name}`;
 }
 
 const TRUSTED_CLI_SECRET_LEAK_ERROR = 'trusted CLI secret file could not be removed';
@@ -1347,6 +1348,22 @@ async function containTrustedCliSecretFile(path) {
   return true;
 }
 
+async function removeLegacyTrustedCliSecretFiles(options) {
+  const root = options?.secretDir ?? TRUSTED_CLI_SECRET_DIR;
+  const entries = await readdir(root, { withFileTypes: true }).catch((error) => {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    // Current calls own one directory per correlation ID. Only non-directories
+    // can belong to the old flat layout, and its names were restricted to the
+    // same environment-variable grammar.
+    if (entry.isDirectory() || !isSafeTrustedCliEnvName(entry.name)) continue;
+    const contained = await containTrustedCliSecretFile(`${root}/${entry.name}`);
+    if (!contained) throw new Error(TRUSTED_CLI_SECRET_LEAK_ERROR);
+  }
+}
+
 /**
  * Write every file-injected secret where the command can read it, and hand back
  * their removal. The directory stays root-owned at 0711 so the broker — which holds
@@ -1362,6 +1379,10 @@ async function materializeTrustedCliSecrets(request, options) {
   if (fileSecrets.length === 0) return { cleanup: async () => true };
   const { uid, gid } = validateIdentity(options);
   const written = [];
+  const invocationDir =
+    request.correlationId === undefined
+      ? undefined
+      : `${options?.secretDir ?? TRUSTED_CLI_SECRET_DIR}/${request.correlationId}`;
   // Resolves to false rather than rejecting when a secret is still readable by
   // the agent. The child-exit path has no rejection handler on it, and an
   // unhandled rejection there takes the whole broker down — with it the socket
@@ -1375,7 +1396,11 @@ async function materializeTrustedCliSecrets(request, options) {
         return false;
       }),
     );
-    return contained.every(Boolean);
+    const fullyContained = contained.every(Boolean);
+    if (fullyContained && invocationDir !== undefined) {
+      await rm(invocationDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return fullyContained;
   };
   // A child that never starts emits `error` and then `close`, so the spawn-error
   // path and the child-exit path both reach this, concurrently, over the same
@@ -1387,7 +1412,7 @@ async function materializeTrustedCliSecrets(request, options) {
   const cleanup = () => (running ??= contain());
   try {
     for (const secret of fileSecrets) {
-      const path = trustedCliSecretPath(secret.name, options);
+      const path = trustedCliSecretPath(secret.name, options, request.correlationId);
       const dir = path.slice(0, path.lastIndexOf('/'));
       await mkdir(dir, { recursive: true, mode: 0o711 });
       await chmod(dir, 0o711);
@@ -1526,7 +1551,7 @@ export function trustedCliLaunchSpec(request, options) {
             : []),
           ...request.secrets.flatMap((secret) =>
             secret.injection === 'file'
-              ? ['--secret', trustedCliSecretPath(secret.name, options)]
+              ? ['--secret', trustedCliSecretPath(secret.name, options, request.correlationId)]
               : [],
           ),
           '--',
@@ -1560,7 +1585,9 @@ export function trustedCliLaunchSpec(request, options) {
         ...Object.fromEntries(
           request.secrets.map((secret) => [
             secret.name,
-            secret.injection === 'file' ? trustedCliSecretPath(secret.name, options) : secret.value,
+            secret.injection === 'file'
+              ? trustedCliSecretPath(secret.name, options, request.correlationId)
+              : secret.value,
           ]),
         ),
       },
@@ -1926,6 +1953,7 @@ export async function runAgentSpawnBroker(options = {}) {
   }
   validateRunnerRuntimeStats(stats, options);
   const lock = await acquireLock(join(controlDir, 'agent-spawn-broker.lock'));
+  await removeLegacyTrustedCliSecretFiles(options);
   const socketPath = join(controlDir, 'agent-spawn-broker.sock');
   await rm(socketPath, { force: true });
   const children = new Map();
