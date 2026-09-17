@@ -2348,6 +2348,8 @@ describe('verity-runner supervisor runtime', () => {
         trustedCliExecution: true,
       })}\n`,
     );
+    await mkdir(secretDir, { recursive: true });
+    await writeFile(join(secretDir, 'STALE_LEGACY_FILE'), 'stale-secret', { mode: 0o600 });
     const broker = await runAgentSpawnBroker({
       runtimeDir,
       enforceRoot: false,
@@ -2359,6 +2361,7 @@ describe('verity-runner supervisor runtime', () => {
       secretDir,
       spawnChild: (_command, args, options) => spawn(args[7]!, args.slice(8), options),
     });
+    await expect(readFile(join(secretDir, 'STALE_LEGACY_FILE'))).rejects.toThrow(/ENOENT/u);
     const previousBrokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
     process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET = broker.socketPath;
     const spawned = vi.fn();
@@ -2483,6 +2486,29 @@ describe('verity-runner supervisor runtime', () => {
         command: ['/bin/cat', `${secretDir}/ASC_KEY_FILE`],
       });
       expect(named).toMatchObject({ ok: true, exitCode: 0, stdout: '[REDACTED]' });
+      const concurrent = await Promise.all(
+        ['concurrent-file-1', 'concurrent-file-2'].map((correlationId) =>
+          run({
+            protocolVersion: 1,
+            kind: 'run-trusted-cli',
+            turnId,
+            correlationId,
+            secrets: [
+              {
+                secretAlias: 'ASC_API_KEY_P8',
+                env: 'SHARED_KEY_FILE',
+                injection: 'file',
+                secret: `${correlationId}-marker`,
+              },
+            ],
+            command: ['/bin/sh', '-c', 'sleep 0.1; cat "$SHARED_KEY_FILE"'],
+          }),
+        ),
+      );
+      expect(concurrent).toEqual([
+        expect.objectContaining({ ok: true, exitCode: 0, stdout: '[REDACTED]' }),
+        expect.objectContaining({ ok: true, exitCode: 0, stdout: '[REDACTED]' }),
+      ]);
       // Removal can fail, and the file it leaves behind is a live credential at a
       // path the agent already knows. Take the directory's write bit away mid-run
       // so the unlink hits EACCES: the run has to come back as a failure naming
@@ -2513,7 +2539,9 @@ describe('verity-runner supervisor runtime', () => {
       // as live as what a finished run leaves behind. Plant a leftover so the
       // second secret trips the `wx` guard: the run fails, but the first secret's
       // file has to be gone, or the next run trips over that one instead.
-      await writeFile(`${secretDir}/PARTIAL_SECOND`, 'stale', { mode: 0o600 });
+      const failedInvocationDir = `${secretDir}/call-materialization-1`;
+      await mkdir(failedInvocationDir, { recursive: true });
+      await writeFile(`${failedInvocationDir}/PARTIAL_SECOND`, 'stale', { mode: 0o600 });
       const partial = await run({
         protocolVersion: 1,
         kind: 'run-trusted-cli',
@@ -2552,8 +2580,29 @@ describe('verity-runner supervisor runtime', () => {
       for (const value of ['first-file-marker', 'second-file-marker']) {
         expect(JSON.stringify(partial)).not.toContain(value);
       }
-      await expect(readFile(`${secretDir}/PARTIAL_FIRST`)).rejects.toThrow(/ENOENT/u);
-      await rm(`${secretDir}/PARTIAL_SECOND`, { force: true });
+      await expect(readFile(`${failedInvocationDir}/PARTIAL_FIRST`)).rejects.toThrow(/ENOENT/u);
+
+      // A stranded file belongs only to the invocation that created it. A later
+      // approved call using the same environment name must get its own directory
+      // instead of failing over an unrelated run's credential.
+      const recovered = await run({
+        protocolVersion: 1,
+        kind: 'run-trusted-cli',
+        turnId,
+        correlationId: 'call-materialization-2',
+        secrets: [
+          {
+            secretAlias: 'ASC_API_KEY_ID',
+            env: 'PARTIAL_SECOND',
+            injection: 'file',
+            secret: 'replacement-marker',
+          },
+        ],
+        command: ['/bin/sh', '-c', 'cat "$PARTIAL_SECOND"'],
+      });
+      expect(recovered).toMatchObject({ ok: true, stdout: '[REDACTED]' });
+      await expect(readFile(`${secretDir}/call-materialization-2`)).rejects.toThrow(/ENOENT/u);
+      await rm(failedInvocationDir, { recursive: true, force: true });
       // The server and this image deploy separately, so a rollout always has a
       // window where an older server still sends the flat single-secret shape.
       // Rejecting it would make "ship the image first" unserviceable in both
