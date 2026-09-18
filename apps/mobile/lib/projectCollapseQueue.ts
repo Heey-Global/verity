@@ -1,4 +1,4 @@
-export type ProjectCollapseWriteResult = { collapsed?: boolean };
+type ProjectCollapseWriteResult = { collapsed?: boolean };
 
 type ProjectCollapseWrite = (
   projectId: string,
