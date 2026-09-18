@@ -264,6 +264,10 @@ it('keeps the latest submitted draft when an earlier refresh lands and the later
   fireEvent(field, 'focus');
   fireEvent.changeText(field, 'Desk iPad');
   fireEvent(field, 'blur');
+  // Blurring the already queued target is a no-op at the network boundary, but
+  // it must not clear the marker that protects this newer draft from A's reload.
+  fireEvent(field, 'focus');
+  fireEvent(field, 'blur');
   await act(async () => finishFirst());
   await waitFor(() => expect(mockRename).toHaveBeenCalledTimes(2));
   await act(async () => rejectSecond(new Error('device not found')));
@@ -301,6 +305,70 @@ it('does not call the server for a blur that changes nothing', async () => {
 
   expect(mockRename).not.toHaveBeenCalled();
   expect(screen.getByLabelText('Rename iPad').props.value).toBe('iPad');
+});
+
+it('adopts an external rename after an unchanged blur', async () => {
+  render(<DevicesScreen />);
+  const unchanged = await screen.findByLabelText('Rename iPad');
+  fireEvent(unchanged, 'blur');
+  mockList.mockResolvedValue([
+    {
+      id: 'current',
+      label: 'Office iPhone',
+      createdAt: PAIRED_AT,
+      lastSeenAt: null,
+      isCurrent: true,
+    },
+    {
+      id: 'other',
+      label: 'Kitchen iPad',
+      createdAt: PAIRED_AT,
+      lastSeenAt: null,
+      isCurrent: false,
+    },
+  ]);
+
+  const current = screen.getByLabelText('Rename iPhone');
+  fireEvent.changeText(current, 'Office iPhone');
+  await act(async () => fireEvent(current, 'blur'));
+
+  expect((await screen.findByLabelText('Rename Kitchen iPad')).props.value).toBe('Kitchen iPad');
+});
+
+it('adopts an external rename after a rejected draft is reset', async () => {
+  mockRename.mockRejectedValueOnce(new Error('device not found'));
+  render(<DevicesScreen />);
+  const field = await screen.findByLabelText('Rename iPad');
+  fireEvent.changeText(field, 'Kitchen iPad');
+  await act(async () => fireEvent(field, 'blur'));
+  expect(await screen.findByText('device not found')).toBeOnTheScreen();
+
+  fireEvent.changeText(field, 'iPad');
+  fireEvent(field, 'blur');
+  mockRename.mockResolvedValue(undefined);
+  mockList.mockResolvedValue([
+    {
+      id: 'current',
+      label: 'Office iPhone',
+      createdAt: PAIRED_AT,
+      lastSeenAt: null,
+      isCurrent: true,
+    },
+    {
+      id: 'other',
+      label: 'Living Room iPad',
+      createdAt: PAIRED_AT,
+      lastSeenAt: null,
+      isCurrent: false,
+    },
+  ]);
+  const current = screen.getByLabelText('Rename iPhone');
+  fireEvent.changeText(current, 'Office iPhone');
+  await act(async () => fireEvent(current, 'blur'));
+
+  expect((await screen.findByLabelText('Rename Living Room iPad')).props.value).toBe(
+    'Living Room iPad',
+  );
 });
 
 it('shows real activity once the server has stamped a device', async () => {

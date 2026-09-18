@@ -38,6 +38,8 @@ function iconForDevice(label: string | null): IconName {
   return 'smartphone';
 }
 
+type RenameOutcome = 'submitted' | 'pending' | 'noop';
+
 export default function DevicesScreen() {
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
@@ -150,10 +152,12 @@ function DevicesView({ client }: { client: VerityClient }) {
   // says it did not land. The list reloads either way: on success so the row's
   // icon and Remove label follow the new name, on failure so the rest of the row
   // still reflects the server.
-  const rename = (device: PairedDevice, label: string): void => {
+  const rename = (device: PairedDevice, label: string): RenameOutcome => {
     const next = label.trim();
-    const previous = renameTargets.current.get(device.id) ?? device.label ?? '';
-    if (next === '' || next === previous) return;
+    if (next === '') return 'noop';
+    const pending = renameTargets.current.get(device.id);
+    if (next === pending) return 'pending';
+    if (pending === undefined && next === (device.label ?? '')) return 'noop';
     renameTargets.current.set(device.id, next);
     const save = async (): Promise<void> => {
       setVeritySettingsError(undefined);
@@ -183,6 +187,7 @@ function DevicesView({ client }: { client: VerityClient }) {
         renameQueues.current.delete(device.id);
       }
     });
+    return 'submitted';
   };
 
   const revoke = (device: PairedDevice): void => {
@@ -294,7 +299,7 @@ function DeviceRow({
   onRemove,
 }: {
   device: PairedDevice;
-  onRename: (label: string) => void;
+  onRename: (label: string) => RenameOutcome;
   onRemove: () => void;
 }): ReactElement {
   const { theme } = useUnistyles();
@@ -329,9 +334,8 @@ function DeviceRow({
           // padded copy standing in as the row's apparent name.
           onBlur={() => {
             setFocused(false);
-            submitted.current = draft.trim() || null;
-            onRename(draft);
             const next = draft.trim();
+            submitted.current = onRename(draft) === 'noop' ? null : next;
             if (next === '' || next === stored) setDraft(stored);
           }}
           placeholder="Verity device"
