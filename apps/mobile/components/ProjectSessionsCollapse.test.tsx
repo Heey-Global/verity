@@ -28,6 +28,11 @@ it('follows every collapse value immediately while retaining session state', () 
   expect(wrapper().props.pointerEvents).toBe('none');
   expect(screen.queryByLabelText('Session draft')).toBeNull();
 
+  // A poll confirming the optimistic target rerenders with the same value.
+  // It must remain settled instead of starting another transition.
+  view.rerender(content(true));
+  expect(StyleSheet.flatten(wrapper().props.style).height).toBe(0);
+
   view.rerender(content(false));
   expect(StyleSheet.flatten(wrapper().props.style).height).toBeUndefined();
   expect(wrapper().props.pointerEvents).toBe('auto');
