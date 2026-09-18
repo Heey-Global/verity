@@ -203,6 +203,30 @@ describe('SessionModel — stream', () => {
     expect(model.state.hasOlder).toBe(true);
   });
 
+  it('falls back to a full replay when the bounded tail scan finds no messages', async () => {
+    const { connect, sockets } = recordingConnect();
+    const getHistory = vi.fn().mockImplementation((_id: string, opts?: { beforeSeq?: number }) => {
+      const seq = (opts?.beforeSeq ?? 1_001) - 100;
+      return Promise.resolve({ events: [metadataHistoryEvent(seq)], hasMore: true });
+    });
+    const client = {
+      sendTurn: vi.fn(),
+      getSession: vi.fn().mockResolvedValue({ resumable: true }),
+      getHistory,
+      getActivity: vi.fn().mockResolvedValue({ busy: false, queued: [] }),
+    } as unknown as VerityClient;
+    const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+
+    model.start();
+    await flush();
+
+    // Skipping past a metadata-only tail would leave an intact session with an empty
+    // transcript. The bounded optimization must yield to correctness in that case.
+    expect(getHistory).toHaveBeenCalledTimes(5);
+    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0');
+    expect(model.state.hasOlder).toBe(false);
+  });
+
   it('uses the detail rate-limit state when the tail replay skipped the event', async () => {
     const { connect, sockets } = recordingConnect();
     const client = {

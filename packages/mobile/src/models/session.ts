@@ -653,7 +653,16 @@ export class SessionModel {
         oldest = page.events[0]?.seq;
         pages += 1;
       }
-      if (page.hasMore && oldest !== undefined && oldest > 1) {
+      // The bounded scan is only an optimization when its replay window can
+      // actually reconstruct a transcript. Otherwise skipping the older log would
+      // open an intact session as empty, with every reconnect resuming from the same
+      // high cursor and no way for the missing messages to enter the reducer.
+      if (
+        page.hasMore &&
+        oldest !== undefined &&
+        oldest > 1 &&
+        this.historyPageRendersMessages(page.events)
+      ) {
         this.stream.setSinceSeq(oldest - 1);
         this._hasOlder = true; // older turns exist before the tail → scroll-up loads them
       }
