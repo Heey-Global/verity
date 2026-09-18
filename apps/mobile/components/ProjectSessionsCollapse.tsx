@@ -32,9 +32,15 @@ export function ProjectSessionsCollapse({
   phaseRef.current = phase;
   const contentHeight = useRef<number | null>(null);
   const folded = useRef(collapsed);
+  const animationGeneration = useRef(0);
 
   useEffect(() => {
-    if (folded.current === collapsed) return;
+    if (folded.current === collapsed) {
+      // A reduced-motion change can restart this effect while an animation is
+      // active. Its cleanup invalidates that animation, so settle explicitly.
+      if (phaseRef.current === 'folding') setPhase(collapsed ? 'closed' : 'open');
+      return;
+    }
     folded.current = collapsed;
     const content = contentHeight.current;
     // Nothing to animate between: settle straight into the target phase rather
@@ -53,11 +59,21 @@ export function ProjectSessionsCollapse({
       easing: Easing.inOut(Easing.ease),
       useNativeDriver: false,
     });
+    const generation = ++animationGeneration.current;
     // Commit on any outcome. An animation that ends without reporting success
     // would otherwise leave the group stranded at the height it stopped at —
     // for an opening group, that height is the fold it was meant to undo.
-    animation.start(() => setPhase(collapsed ? 'closed' : 'open'));
-    return () => animation.stop();
+    animation.start(() => {
+      if (animationGeneration.current === generation) {
+        setPhase(collapsed ? 'closed' : 'open');
+      }
+    });
+    return () => {
+      // `stop()` may invoke the old callback after the opposite animation has
+      // started. Invalidate it first so it cannot restore the superseded phase.
+      if (animationGeneration.current === generation) animationGeneration.current += 1;
+      animation.stop();
+    };
   }, [collapsed, height, reducedMotion]);
 
   return (
