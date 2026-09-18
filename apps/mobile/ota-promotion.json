@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.10",
+  "version": "1.33.11",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "9a3c2170a9d3c454b490807b038c6fd77bfe3cb5",
-  "tag": "mobile-v1.33.10",
-  "branch": "staging-mobile-v1.33.10-9a3c2170a9d3c454b490807b038c6fd77bfe3cb5",
-  "baseline": "mobile-v1.33.9",
-  "group": "a517a0f7-c05c-4890-9dad-465ad95a976c",
+  "commit": "bc4c5380572f83f8e0f4f7055a912a7e930f18e3",
+  "tag": "mobile-v1.33.11",
+  "branch": "staging-mobile-v1.33.11-bc4c5380572f83f8e0f4f7055a912a7e930f18e3",
+  "baseline": "mobile-v1.33.10",
+  "group": "059fb6d5-7b70-448e-92ca-2a654e339542",
   "notes": [
-    "support generic credential headers (#481)",
-    "ignore stale project fold animations (#479)"
+    "render project folds immediately (#483)",
+    "support generic credential headers (#481)"
   ]
 }
