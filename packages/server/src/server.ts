@@ -3696,7 +3696,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
       WS_STREAM_PATH.test(pathname);
     const token = bearerToken(request.headers.authorization);
-    if (registry.verify(token)) return;
+    if (registry.verify(token)) {
+      // Last-seen is stamped here rather than per route because this is the one
+      // place every authenticated request passes through. It is throttled and
+      // fire-and-forget inside the registry, so the gate stays synchronous.
+      registry.touch(token);
+      return;
+    }
     // A genuine WebSocket upgrade to the live-stream route cannot take a normal HTTP
     // 401 from here — reply.send() on an in-flight `@fastify/websocket` handshake
     // does not abort it cleanly (it hangs). That ONE route's handler enforces the

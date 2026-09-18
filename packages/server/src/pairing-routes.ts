@@ -19,6 +19,9 @@ const pairingEnrollBody = z
   })
   .strict();
 const deviceParams = z.object({ id: z.string().min(1).max(128) });
+// Same bound as the label a device supplies at enrollment, so a rename cannot
+// produce a name that pairing itself would have refused.
+const deviceRenameBody = z.object({ label: z.string().trim().min(1).max(100) }).strict();
 
 /** Installer pairing and signed Server-identity challenge routes. */
 export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDeps): void {
@@ -134,6 +137,25 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
       return reply.code(409).send({ error: 'device pairing is not configured' });
     }
     return deps.devicePairing.issueInvitation();
+  });
+
+  // Rename any paired device, this one included: the label is set once at
+  // enrollment from the platform's generic device name, so a household of iPads
+  // is four identical rows until the operator can tell them apart.
+  app.patch('/devices/:id', { bodyLimit: 1_024 }, async (request, reply) => {
+    const registry = deps.authRegistry;
+    if (registry === undefined || !registry.isEnabled()) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    if (registry.resolveId(bearerToken(request.headers.authorization)) === undefined) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const { id } = deviceParams.parse(request.params);
+    const { label } = deviceRenameBody.parse(request.body);
+    if (!(await registry.rename(id, label))) {
+      return reply.code(404).send({ error: 'device not found' });
+    }
+    return reply.code(204).send();
   });
 
   app.delete('/devices/:id', async (request, reply) => {

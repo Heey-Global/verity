@@ -384,6 +384,10 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   buttonDisabled: {
     opacity: 0.45,
   },
+  // Keeps a button at its own width instead of stretching across the panel.
+  selfStart: {
+    alignSelf: 'flex-start',
+  },
   pressed: {
     opacity: 0.7,
   },
@@ -579,5 +583,42 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     color: theme.colors.primary,
     fontSize: theme.text.sm,
     fontWeight: '600',
+  },
+  // A destructive inline action sitting at the trailing edge of a list row.
+  // Same 44pt target as the other small buttons; only the tone differs.
+  dangerButton: {
+    minHeight: 44,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.tone.danger,
+  },
+  dangerButtonLabel: {
+    color: theme.colors.tone.danger,
+    fontSize: theme.text.sm,
+    fontWeight: '600',
+  },
+  // An editable name in the title slot of a list row. Reads as the row's title
+  // until tapped, so the underline is the only hint that it is a field — the
+  // same treatment as the commit identity on the GitHub screen.
+  deviceNameInput: {
+    minHeight: 32,
+    paddingVertical: theme.spacing.xs,
+    color: theme.colors.text,
+    fontSize: theme.text.md,
+    fontWeight: '600',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.setup.border,
+  },
+  // A QR code needs a white quiet zone to stay scannable, so this block keeps
+  // its literal white on both themes rather than following the surface color.
+  qrFrame: {
+    alignSelf: 'center',
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: '#ffffff',
   },
 }));

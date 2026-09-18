@@ -1617,6 +1617,12 @@ const pairedDeviceSchema = z.object({
   id: z.string().min(1),
   label: z.string().nullable(),
   createdAt: z.number(),
+  // Optional on the wire: the app updates over the air and can reach a server
+  // that predates last-seen stamping. Absent and "never seen" both read as null.
+  lastSeenAt: z
+    .number()
+    .nullish()
+    .transform((value) => value ?? null),
   isCurrent: z.boolean(),
 });
 export type PairedDevice = z.infer<typeof pairedDeviceSchema>;
@@ -2115,6 +2121,16 @@ export class VerityClient {
 
   async revokePairedDevice(id: string): Promise<void> {
     await this.request(`/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  /** Give a paired device a new display name. The server trims and bounds it to
+   *  the same 1–100 characters a device may supply when it enrolls. */
+  async renamePairedDevice(id: string, label: string): Promise<void> {
+    await this.request(`/devices/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
   }
 
   /** First-run: set the master password (derives + stores the key, unlocks) and

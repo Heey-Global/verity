@@ -53,10 +53,18 @@ export function wsOriginAllowed(
  *  is trivially unit-testable without a real database. */
 export interface AuthTokenStore {
   listAuthTokens(): Promise<
-    Array<{ id: string; tokenHash: string; label?: string | null; createdAt?: number }>
+    Array<{
+      id: string;
+      tokenHash: string;
+      label?: string | null;
+      createdAt?: number;
+      lastSeenAt?: number | null;
+    }>
   >;
   insertAuthToken(record: { id: string; tokenHash: string; label?: string | null }): Promise<void>;
   deleteAuthToken(id: string): Promise<boolean>;
+  renameAuthToken(id: string, label: string): Promise<boolean>;
+  touchAuthToken(id: string): Promise<void>;
 }
 
 interface MintedAuthToken {
@@ -70,7 +78,18 @@ interface PairedDevice {
   id: string;
   label: string | null;
   createdAt: number;
+  /** When this device last made an authenticated request, to within
+   *  {@link TOUCH_INTERVAL_MS}. Null for a device that has not been seen since
+   *  the server learned to stamp it — including one paired but never used. */
+  lastSeenAt: number | null;
 }
+
+/** How stale a device's `last_seen_at` may get before the gate writes it again.
+ *  The gate runs on EVERY authenticated request, so an unthrottled stamp would
+ *  put a row update behind each one; five minutes keeps the display honest at
+ *  the granularity it is read ("Active 10 minutes ago") for at most a dozen
+ *  writes an hour per device. */
+const TOUCH_INTERVAL_MS = 5 * 60_000;
 
 export interface AuthTokenRegistry {
   /** True when the gate should ENFORCE auth. Off until a master password exists
@@ -89,6 +108,12 @@ export interface AuthTokenRegistry {
   mint(label?: string | null): Promise<MintedAuthToken>;
   register(token: string, id: string, label?: string | null): Promise<MintedAuthToken>;
   list(): Promise<PairedDevice[]>;
+  /** Give a paired device a new display name. False when no such device. */
+  rename(id: string, label: string): Promise<boolean>;
+  /** Record that this token was just used. Fire-and-forget and throttled to one
+   *  write per {@link TOUCH_INTERVAL_MS} per device: an activity timestamp is
+   *  never worth delaying or failing the request it belongs to. */
+  touch(token: string | undefined | null): void;
   revoke(id: string): Promise<boolean>;
   /** Drop a single hash from the in-memory set (after the row is deleted). */
   forget(tokenHash: string): void;
@@ -107,6 +132,10 @@ export async function createAuthTokenRegistry(
   const tokenIdsByHash = new Map(
     (await store.listAuthTokens()).map((record) => [record.tokenHash, record.id]),
   );
+  // Device id → when its `last_seen_at` was last written, so `touch` can skip
+  // the write for the rest of the interval. In memory only: after a restart the
+  // first request from each device pays one update, which is the point.
+  const touchedAt = new Map<string, number>();
   let enabled = opts.enabled;
   return {
     isEnabled: (): boolean => enabled,
@@ -149,19 +178,42 @@ export async function createAuthTokenRegistry(
         id: record.id,
         label: record.label ?? null,
         createdAt: record.createdAt ?? 0,
+        lastSeenAt: record.lastSeenAt ?? null,
       }));
+    },
+    async rename(id, label): Promise<boolean> {
+      return await store.renameAuthToken(id, label);
+    },
+    touch(token): void {
+      if (token === undefined || token === null || token.length === 0) return;
+      const id = tokenIdsByHash.get(hashAuthToken(token));
+      if (id === undefined) return;
+      const now = Date.now();
+      if (now - (touchedAt.get(id) ?? 0) < TOUCH_INTERVAL_MS) return;
+      // Claim the interval BEFORE awaiting, so the requests arriving while this
+      // write is in flight do not each start one of their own.
+      touchedAt.set(id, now);
+      void store.touchAuthToken(id).catch(() => {
+        // The stamp is diagnostic, not load-bearing. Re-open the interval so the
+        // next request retries rather than waiting out a write that never landed.
+        touchedAt.delete(id);
+      });
     },
     async revoke(id): Promise<boolean> {
       const record = (await store.listAuthTokens()).find((candidate) => candidate.id === id);
       if (record === undefined || !(await store.deleteAuthToken(id))) return false;
       tokenIdsByHash.delete(record.tokenHash);
+      touchedAt.delete(id);
       return true;
     },
     forget(tokenHash): void {
+      const id = tokenIdsByHash.get(tokenHash);
       tokenIdsByHash.delete(tokenHash);
+      if (id !== undefined) touchedAt.delete(id);
     },
     clear(): void {
       tokenIdsByHash.clear();
+      touchedAt.clear();
     },
   };
 }

@@ -3,7 +3,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   bearerToken,
   createAuthTokenRegistry,
@@ -18,25 +18,63 @@ import { buildServer } from './server.js';
 const conductor = {} as unknown as Conductor;
 const PASSWORD = 'correct-horse-battery';
 
-/** An in-memory {@link AuthTokenStore} so the registry unit tests need no DB. */
+interface FakeRow {
+  id: string;
+  tokenHash: string;
+  label: string | null;
+  createdAt: number;
+  lastSeenAt: number | null;
+}
+
+/** An in-memory {@link AuthTokenStore} so the registry unit tests need no DB.
+ *  `touches` counts the writes the registry actually issued — the throttle has
+ *  no other observable effect. */
 function fakeStore(): AuthTokenStore & {
-  rows: { id: string; tokenHash: string; label: string | null; createdAt: number }[];
+  rows: FakeRow[];
+  touches: string[];
+  failTouch?: boolean;
 } {
-  const rows: { id: string; tokenHash: string; label: string | null; createdAt: number }[] = [];
-  return {
+  const rows: FakeRow[] = [];
+  const store = {
     rows,
+    touches: [] as string[],
+    failTouch: false,
     listAuthTokens: () => Promise.resolve([...rows]),
-    insertAuthToken: (r): Promise<void> => {
-      rows.push({ id: r.id, tokenHash: r.tokenHash, label: r.label ?? null, createdAt: 1 });
+    insertAuthToken: (r: {
+      id: string;
+      tokenHash: string;
+      label?: string | null;
+    }): Promise<void> => {
+      rows.push({
+        id: r.id,
+        tokenHash: r.tokenHash,
+        label: r.label ?? null,
+        createdAt: 1,
+        lastSeenAt: null,
+      });
       return Promise.resolve();
     },
-    deleteAuthToken: (id): Promise<boolean> => {
+    deleteAuthToken: (id: string): Promise<boolean> => {
       const index = rows.findIndex((row) => row.id === id);
       if (index < 0) return Promise.resolve(false);
       rows.splice(index, 1);
       return Promise.resolve(true);
     },
+    renameAuthToken: (id: string, label: string): Promise<boolean> => {
+      const row = rows.find((candidate) => candidate.id === id);
+      if (row === undefined) return Promise.resolve(false);
+      row.label = label;
+      return Promise.resolve(true);
+    },
+    touchAuthToken: (id: string): Promise<void> => {
+      if (store.failTouch) return Promise.reject(new Error('write failed'));
+      store.touches.push(id);
+      const row = rows.find((candidate) => candidate.id === id);
+      if (row !== undefined) row.lastSeenAt = Date.now();
+      return Promise.resolve();
+    },
   };
+  return store;
 }
 
 describe('bearerToken parsing', () => {
@@ -130,6 +168,87 @@ describe('paired device management', () => {
         ]),
       );
       const secondId = enrollment.json().tokenId as string;
+
+      // A household of identically-named iPads is the whole reason rename
+      // exists, so the list must show the new name, not the enrollment one.
+      expect(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: `/devices/${secondId}`,
+            headers: { authorization },
+            payload: { label: '  Studio Mac  ' },
+          })
+        ).statusCode,
+      ).toBe(204);
+      expect(
+        (await app.inject({ method: 'GET', url: '/devices', headers: { authorization } })).json()
+          .devices,
+      ).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: secondId, label: 'Studio Mac' })]),
+      );
+      // Renaming this device is allowed — unlike revoking it, it cannot lock the
+      // operator out.
+      expect(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: `/devices/${current.id}`,
+            headers: { authorization },
+            payload: { label: 'Desk iPad' },
+          })
+        ).statusCode,
+      ).toBe(204);
+      expect(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: '/devices/never-paired',
+            headers: { authorization },
+            payload: { label: 'Ghost' },
+          })
+        ).statusCode,
+      ).toBe(404);
+      // A label the schema refuses has to come back as a 400 the app can show,
+      // not as the 500 an unhandled ZodError would produce — and an empty or
+      // over-long name must not reach the column at all.
+      for (const label of ['', '   ', 'x'.repeat(101)]) {
+        expect(
+          (
+            await app.inject({
+              method: 'PATCH',
+              url: `/devices/${secondId}`,
+              headers: { authorization },
+              payload: { label },
+            })
+          ).statusCode,
+        ).toBe(400);
+      }
+      expect(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: `/devices/${secondId}`,
+            headers: { authorization },
+            payload: { label: 'Studio Mac', admin: true },
+          })
+        ).statusCode,
+      ).toBe(400);
+
+      // The device id is a public handle, so an unauthenticated PATCH would let
+      // anyone on the LAN relabel devices. This is refused by the global gate
+      // rather than by the handler, which is exactly what makes it worth
+      // pinning: declaring this route pre-auth would leave no other trace.
+      expect(
+        (
+          await app.inject({
+            method: 'PATCH',
+            url: `/devices/${secondId}`,
+            payload: { label: 'Intruder' },
+          })
+        ).statusCode,
+      ).toBe(401);
+
       expect(
         (
           await app.inject({
@@ -149,6 +268,43 @@ describe('paired device management', () => {
           })
         ).statusCode,
       ).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('stamps last-seen through the gate, so the list can show real activity', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const current = await registry.mint('iPad');
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    try {
+      const authorization = `Bearer ${current.token}`;
+      // Before any authenticated request the column is null — which the app
+      // renders as the pairing date, not as activity.
+      expect((await store.listAuthTokens())[0]?.lastSeenAt).toBeNull();
+
+      await app.inject({ method: 'GET', url: '/devices', headers: { authorization } });
+      // The stamp is fire-and-forget, so it may land after the response. Poll
+      // the row rather than assuming the write raced ahead of the reply.
+      await vi.waitFor(async () =>
+        expect((await store.listAuthTokens())[0]?.lastSeenAt).toEqual(expect.any(Number)),
+      );
+
+      // And the gate's stamp has to survive the trip through the list route —
+      // a column written but never serialized leaves the app showing "Paired"
+      // forever with nothing in the server to point at.
+      const listed = (
+        await app.inject({ method: 'GET', url: '/devices', headers: { authorization } })
+      ).json<{ devices: Array<{ id: string; lastSeenAt: number | null }> }>();
+      expect(listed.devices.find((device) => device.id === current.id)?.lastSeenAt).toEqual(
+        expect.any(Number),
+      );
     } finally {
       await app.close();
     }
@@ -238,13 +394,81 @@ describe('auth token registry', () => {
     const first = await registry.mint('iPad');
     const second = await registry.mint('Mac');
     expect(await registry.list()).toEqual([
-      { id: first.id, label: 'iPad', createdAt: 1 },
-      { id: second.id, label: 'Mac', createdAt: 1 },
+      { id: first.id, label: 'iPad', createdAt: 1, lastSeenAt: null },
+      { id: second.id, label: 'Mac', createdAt: 1, lastSeenAt: null },
     ]);
     expect(await registry.revoke(first.id)).toBe(true);
     expect(registry.verify(first.token)).toBe(false);
     expect(registry.verify(second.token)).toBe(true);
     expect(await registry.revoke(first.id)).toBe(false);
+  });
+
+  it('renames a known device and refuses an id it does not hold', async () => {
+    const registry = await createAuthTokenRegistry(fakeStore(), { enabled: true });
+    const device = await registry.mint('iPad');
+    expect(await registry.rename(device.id, 'Kitchen iPad')).toBe(true);
+    expect(await registry.list()).toEqual([
+      expect.objectContaining({ id: device.id, label: 'Kitchen iPad' }),
+    ]);
+    // An unknown id has to come back false rather than succeed silently: the
+    // route turns this into a 404, which is how a phone learns the device it
+    // was renaming was revoked from somewhere else in the meantime.
+    expect(await registry.rename('not-a-device', 'Nope')).toBe(false);
+  });
+
+  it('stamps last-seen once per interval, not once per request', async () => {
+    // Move the clock rather than installing fake timers: the throttle only reads
+    // Date.now() and schedules nothing, and this file also drives the shared
+    // PostgreSQL harness, which fake timers cannot serve (see
+    // scripts/test-db-harness.test.ts).
+    const clock = vi.spyOn(Date, 'now');
+    const startedAt = Date.now();
+    clock.mockReturnValue(startedAt);
+    try {
+      const store = fakeStore();
+      const registry = await createAuthTokenRegistry(store, { enabled: true });
+      const device = await registry.mint('iPad');
+
+      // The gate calls touch() on EVERY authenticated request. A row update per
+      // request is the failure this throttle exists to prevent, and nothing else
+      // about the system would look wrong if it regressed.
+      for (let i = 0; i < 50; i += 1) registry.touch(device.token);
+      await Promise.resolve();
+      expect(store.touches).toEqual([device.id]);
+
+      clock.mockReturnValue(startedAt + 5 * 60_000);
+      registry.touch(device.token);
+      await Promise.resolve();
+      expect(store.touches).toEqual([device.id, device.id]);
+
+      // An unknown token resolves to no device, so there is nothing to stamp.
+      registry.touch('not-a-token');
+      registry.touch(undefined);
+      await Promise.resolve();
+      expect(store.touches).toHaveLength(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('re-opens the interval when the stamp write fails, and never throws', async () => {
+    const store = fakeStore();
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('iPad');
+
+    store.failTouch = true;
+    // A rejected write inside a fire-and-forget call is an unhandled rejection
+    // unless it is caught — which would take the whole process down in prod.
+    expect(() => registry.touch(device.token)).not.toThrow();
+    await Promise.resolve();
+    expect(store.touches).toEqual([]);
+
+    // Without re-opening, the device would show no activity for five minutes
+    // after a single transient write failure.
+    store.failTouch = false;
+    registry.touch(device.token);
+    await Promise.resolve();
+    expect(store.touches).toEqual([device.id]);
   });
 });
 

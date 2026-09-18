@@ -686,12 +686,15 @@ export interface SecretKeyMetaRecord {
 
 /** A minted per-device API token as stored: an opaque public `id` (for listing/
  *  revoking), the SHA-256 `tokenHash` the gate matches against, and an optional
- *  human `label`. The raw token itself is never persisted. */
+ *  human `label`. The raw token itself is never persisted. `lastSeenAt` is null
+ *  until the device makes its first authenticated request after the server
+ *  learned to stamp it. */
 export interface AuthTokenRecord {
   id: string;
   tokenHash: string;
   label: string | null;
   createdAt: number;
+  lastSeenAt: number | null;
 }
 
 export interface DevicePushTokenRecord {
@@ -5605,12 +5608,12 @@ export class EventStore implements EventSink {
     return rows.map((r) => r.token_hash);
   }
 
-  /** Tokens as records (id + label + createdAt), newest first — for a future
+  /** Tokens as records (id + label + createdAt + lastSeenAt), newest first — the
    *  device-management view. Never exposes the token or its hash's usefulness. */
   async listAuthTokens(): Promise<AuthTokenRecord[]> {
     const rows = await this.db
       .selectFrom('auth_tokens')
-      .select(['id', 'token_hash', 'label', 'created_at'])
+      .select(['id', 'token_hash', 'label', 'created_at', 'last_seen_at'])
       .orderBy('created_at', 'desc')
       .execute();
     return rows.map((r) => ({
@@ -5618,7 +5621,29 @@ export class EventStore implements EventSink {
       tokenHash: r.token_hash,
       label: r.label,
       createdAt: new Date(r.created_at).getTime(),
+      lastSeenAt: r.last_seen_at === null ? null : new Date(r.last_seen_at).getTime(),
     }));
+  }
+
+  /** Rename a paired device. Returns false when the id matches no row — a device
+   *  revoked from another phone while this one had the rename field open. */
+  async renameAuthToken(id: string, label: string): Promise<boolean> {
+    const res = await this.db
+      .updateTable('auth_tokens')
+      .set({ label })
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return (res?.numUpdatedRows ?? 0n) > 0n;
+  }
+
+  /** Stamp a device's last authenticated request. Called off the request's
+   *  critical path and throttled by the registry, never per request. */
+  async touchAuthToken(id: string): Promise<void> {
+    await this.db
+      .updateTable('auth_tokens')
+      .set({ last_seen_at: new Date().toISOString() })
+      .where('id', '=', id)
+      .execute();
   }
 
   /** Revoke a single device token by its public id. Returns true if a row went. */
