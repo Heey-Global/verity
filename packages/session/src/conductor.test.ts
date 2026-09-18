@@ -8998,7 +8998,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
   });
 
   it('never consults a grant for a tool that resolves no secret, flag or no flag', async () => {
-    await createProjectSession('x4-delivery');
+    await createProjectSession('x4-handoff');
     const check = vi.fn(async () => true);
     const persist = vi.fn(async (): Promise<void> => undefined);
     const conductor = new Conductor({
@@ -9011,23 +9011,27 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     // any tool outside the brokered pair, so the gateway route may set it from the tool name
     // without changing what the control-plane tools do. A grant is neither read nor written.
     const answered = conductor.requestExternalPermission({
-      sessionId: 'x4-delivery',
-      toolUseId: 'toolu_delivery',
-      toolName: 'verity_create_delivery',
-      input: { sourceProjectId: 'website' },
+      sessionId: 'x4-handoff',
+      toolUseId: 'toolu_handoff',
+      toolName: 'verity_session_handoff',
+      input: {
+        target: { newSession: { project: 'website' } },
+        title: 'Update',
+        briefing: 'Update the website',
+      },
       channel: 'acp',
       allowStandingGrant: true,
     });
     await vi.waitFor(() =>
-      expect(conductor.pendingPermissions('x4-delivery')).toEqual(['toolu_delivery']),
+      expect(conductor.pendingPermissions('x4-handoff')).toEqual(['toolu_handoff']),
     );
     expect(check).not.toHaveBeenCalled();
 
     const onScopeSaved = vi.fn();
     await expect(
       conductor.decidePermission(
-        'x4-delivery',
-        'toolu_delivery',
+        'x4-handoff',
+        'toolu_handoff',
         { behavior: 'allow' },
         { scope: 'forever', onScopeSaved },
       ),

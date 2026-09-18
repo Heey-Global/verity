@@ -67,11 +67,6 @@ export { TERMINOLOGY_SYSTEM_PROMPT } from './terminology.js';
 export { VISIBLE_MEDIA_SYSTEM_PROMPT } from './visible-media.js';
 export { appendExternalPromptData } from './external-content.js';
 export {
-  CREATE_DELIVERY_TOOL_DESCRIPTION,
-  createDeliveryRequestSchema,
-  type CreateDeliveryRequest,
-} from './delivery-tool.js';
-export {
   isDeceptiveInARenderedLine,
   LIST_SESSIONS_FIELD_SENTENCE,
   LIST_SESSIONS_FIELDS,

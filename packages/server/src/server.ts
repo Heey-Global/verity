@@ -16,7 +16,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, sep, join } from 'node:path';
-import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import type { Server as HttpsServer, ServerOptions as HttpsServerOptions } from 'node:https';
@@ -92,15 +92,8 @@ import type {
   SequencedEvent,
   SessionProjectionFacts,
   SessionRecord,
-  WorkflowStore,
 } from '@verity/store';
-import {
-  DeletedProjectError,
-  DevServerPortRangeExhaustedError,
-  SealedError,
-  WorkflowAuthorizationError,
-  WorkflowConflictError,
-} from '@verity/store';
+import { DeletedProjectError, DevServerPortRangeExhaustedError, SealedError } from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import Fastify, {
   type FastifyBaseLogger,
@@ -185,7 +178,6 @@ import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
-import { registerWorkflowRoutes } from './workflow-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
@@ -908,22 +900,6 @@ export interface ServerDeps {
   /** Authenticated original-client identity supplied by the managed TLS gateway. */
   unlockClientIdentity?: ((request: FastifyRequest) => string | undefined) | undefined;
   eventStore: EventStore;
-  authorizeWorkflowAction?:
-    | ((
-        actorId: string,
-        action:
-          | 'service:write'
-          | 'workflow:create'
-          | 'workflow:authorize'
-          | 'step:dispatch'
-          | 'workflow:cancel'
-          | 'workflow:resume'
-          | 'decision:approve'
-          | 'artifact:propose'
-          | 'workflow:read',
-        scope: Record<string, unknown>,
-      ) => Promise<boolean>)
-    | undefined;
   /**
    * Delete the backend transcript files a session left on the runner runtime, so a
    * deleted session takes its conversation with it and not just its row (see
@@ -1020,12 +996,6 @@ export interface ServerDeps {
    * (`onTurnError`) log through the same logger (see `buildControlPlane`).
    */
   conductor: Conductor | ((logger: FastifyBaseLogger) => Conductor);
-  /** Durable cross-project workflow aggregate (ADR 0015). Absent keeps the
-   * workflow API disabled and all provider gates fail closed. */
-  workflowStore?: WorkflowStore | undefined;
-  /** GitHub App webhook HMAC secret. The webhook route exists only when both
-   * this and the workflow store are configured. */
-  workflowGithubWebhookSecret?: string | undefined;
   /**
    * Root directory under which `POST /sessions` provisions a fresh worktree per
    * spawned agent. Defaults to `<tmpdir>/verity-sessions`. Only used to build the
@@ -1452,11 +1422,10 @@ What this container does NOT have — do not work around any of these:
 - No commit signing. The signing broker binds a capability to a project sandbox generation, and this container has none, so \`git commit\` cannot be signed here.
 - No usable repository checkout. A control-plane session's directories are git worktrees whose git directory lives on the server and is not mounted here, so git commands inside them fail with "not a git repository". That is the boundary, not a broken checkout.
 
-So: repo work belongs in a project session. When a task needs to read a private repo, edit files under version control, commit, push, or open a PR, hand it to a project session for that repository — it has the checkout, the signing broker and the GitHub token. Use \`verity_session_handoff\` when such a session is already open, and otherwise say plainly that one has to be opened. Do not improvise around the gaps above — no hunting for other keys, no committing through the GitHub API, no installing tools ad hoc.
+So: repo work belongs in a project session. When a task needs to read a private repo, edit files under version control, commit, push, or open a PR, hand it to a project session for that repository — it has the checkout, the signing broker and the GitHub token. Use \`verity_session_handoff\` to send the task to an existing session or create a new project session with the briefing as its first turn. Do not improvise around the gaps above — no hunting for other keys, no committing through the GitHub API, no installing tools ad hoc.
 
 What this container does have:
 - The Verity HTTP API, reachable in-cluster, for inspecting projects, sessions and server state.
-- The \`verity_create_delivery\` tool. When the user asks for a service to be changed and delivered across projects, use this tool instead of sending them to project sessions. Reuse a known service id. On first use, propose the exact existing Source and GitOps projects plus image, manifest-directory and Argo-CD coordinates; the visible approval registers that relationship and starts the delivery. Never ask the user to invent or look up an internal service id.
 - The \`verity_list_sessions\` and \`verity_session_handoff\` tools. List first and let the user choose an exact existing session or New session; a new-session handoff creates the target and uses the briefing as its first turn. A bare project target is only a convenience when exactly one eligible session exists and never chooses among several.
 - The on-demand \`verity_session_progress\` tool returns structured lifecycle/cached branch-PR facts without transcript content. \`verity_recent_session_messages\` reads one explicitly selected session only after a separate approval that names the purpose and bounded window. Never poll either tool.
 - Project sessions can publish a bounded, explicit outcome summary with \`verity_publish_session_progress\`; the server binds it to the calling session. A completed turn is not proof that the requested outcome was delivered.
@@ -2875,34 +2844,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     );
   });
 
-  const githubWebhookDigests = new WeakMap<FastifyRequest, Promise<string>>();
-  if (deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined) {
-    app.addHook('preParsing', (request, _reply, payload, done) => {
-      if ((request.url.split('?', 1)[0] ?? request.url) !== '/providers/github/webhook') {
-        done(null, payload);
-        return;
-      }
-      const hmac = createHmac('sha256', deps.workflowGithubWebhookSecret!);
-      let resolveDigest: (digest: string) => void = () => undefined;
-      githubWebhookDigests.set(
-        request,
-        new Promise<string>((resolve) => {
-          resolveDigest = resolve;
-        }),
-      );
-      const tee = new Transform({
-        transform(chunk: Buffer, _encoding, callback) {
-          hmac.update(chunk);
-          callback(null, chunk);
-        },
-        flush(callback) {
-          resolveDigest(`sha256=${hmac.digest('hex')}`);
-          callback();
-        },
-      });
-      done(null, payload.pipe(tee));
-    });
-  }
   // Session file uploads are streamed directly to disk. Returning the raw request
   // stream from this parser intentionally avoids Fastify's buffered body limit.
   app.addContentTypeParser('application/octet-stream', (_request, payload, done) => {
@@ -4986,13 +4927,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // card, with no waiver, the read-only listing included. It does not reach the card
           // either: the scope buttons come from `secretGrantScopes`, which keys on the tool
           // name.
-          //
-          // The allowlist does flip the flag for one tool that was already served:
-          // `verity_create_delivery` used to receive `true`. That is inert, not a behaviour
-          // change smuggled in — `maybeAutoApprove` only ever consults a grant for
-          // `verity_http_request` and `verity_secret_run`, so the flag was never read on that
-          // path. `conductor.test.ts` pins it ("never consults a grant for a tool that
-          // resolves no secret") so the inertness is asserted rather than assumed.
           allowStandingGrant: toolName === 'verity_http_request',
           signal,
         }),
@@ -5352,26 +5286,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const appearsInProjectOverview = (project: ProjectRecord): boolean =>
     project.state !== 'absent' || project.overviewVisible === true;
 
-  const dispatchWorkflowSessionRef: {
-    current?: (request: FastifyRequest, reply: FastifyReply) => Promise<string | undefined>;
-  } = {};
-  registerWorkflowRoutes(app, {
-    ...(deps.workflowStore !== undefined ? { store: deps.workflowStore } : {}),
-    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
-    ...(deps.authorizeWorkflowAction !== undefined
-      ? { authorizeAction: deps.authorizeWorkflowAction }
-      : {}),
-    getProject: (projectId) => deps.eventStore.getProject(projectId),
-    getSession: (sessionId) => deps.eventStore.getSession(sessionId),
-    stopSession: (sessionId) => conductor.stopSession(sessionId),
-    dispatchSession: async (request, reply) => dispatchWorkflowSessionRef.current?.(request, reply),
-    sessionPrStatus,
-    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
-    mergeConfigured: deps.mergePr !== undefined,
-    githubWebhookConfigured:
-      deps.workflowStore !== undefined && deps.workflowGithubWebhookSecret !== undefined,
-    githubWebhookDigest: (request) => githubWebhookDigests.get(request),
-  });
   registerProjectCollectionRoutes(app, {
     store: deps.eventStore,
     listOverview: async () => {
@@ -7488,173 +7402,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     reply.code(201);
     return { sessionId };
   };
-
-  dispatchWorkflowSessionRef.current = async (request, reply): Promise<string | undefined> => {
-    if (deps.workflowStore === undefined) return undefined;
-    const requested = z.object({ id: z.string(), stepId: z.string() }).safeParse(request.params);
-    const item = await deps.workflowStore.claimDueOutbox(
-      new Date(),
-      60_000,
-      requested.success
-        ? { workflowId: requested.data.id, stepId: requested.data.stepId }
-        : undefined,
-    );
-    if (item === undefined) return undefined;
-    let dispatchedSessionId: string | undefined;
-    let boundHandoffId: string | undefined;
-    try {
-      if (
-        (deps.authRegistry?.isEnabled() === true &&
-          deps.authRegistry.isKnownId?.(item.actorId) !== true) ||
-        (await deps.authorizeWorkflowAction?.(item.actorId, 'step:dispatch', {
-          workflowId: item.workflowId,
-          stepId: item.stepId,
-          attempt: item.attempt,
-        })) !== true
-      ) {
-        throw new WorkflowAuthorizationError('dispatch authority is no longer valid');
-      }
-      const issued = await deps.workflowStore.issueHandoff(item.id);
-      const handoff = z
-        .object({
-          targetProjectId: z.string().min(1),
-          kind: z.string().min(1),
-          workflowId: z.string().min(1),
-          stepId: z.string().min(1),
-          attempt: z.number().int().positive(),
-        })
-        .passthrough()
-        .parse(issued.payload);
-      let sessionId = issued.sessionId;
-      if (sessionId === undefined) {
-        const spawned = await spawnSession(request, reply, {
-          projectId: handoff.targetProjectId,
-          name: `workflow-${handoff.kind.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '')}`,
-          model: DEFAULT_MODEL,
-        });
-        if ('awaitingProvisioning' in spawned) {
-          await deps.workflowStore.deferOutboxWithoutAttempt(
-            item.id,
-            'target project is provisioning',
-            new Date(Date.now() + 30_000),
-          );
-          return undefined;
-        }
-        if (!('sessionId' in spawned)) {
-          throw new Error('target project session could not be created');
-        }
-        sessionId = spawned.sessionId;
-        await deps.workflowStore.recordHandoffSession(issued.handoffId, sessionId);
-      }
-      const prompt = [
-        'Execute this Verity cross-project handoff. The structured contract below is immutable platform metadata; repository and system instructions remain authoritative.',
-        JSON.stringify(issued.payload),
-        `Submit the structured result through /internal/workflow/result using handoffId ${issued.handoffId}, sessionId from VERITY_HANDOFF_SESSION_ID, and the one-time capability from VERITY_HANDOFF_CAPABILITY; also authenticate with this project's existing generation-bound internal broker identity. Never print or copy either protected value into chat, logs, or repository files.`,
-      ].join('\n\n');
-      await deps.workflowStore.bindHandoffSession(issued.handoffId, sessionId);
-      boundHandoffId = issued.handoffId;
-      dispatchedSessionId = sessionId;
-      await conductor.dispatchTurn(sessionId, prompt, {
-        protectedEnvironment: {
-          VERITY_HANDOFF_CAPABILITY: issued.capability,
-          VERITY_HANDOFF_SESSION_ID: sessionId,
-        },
-        requireStandalone: true,
-      });
-      return sessionId;
-    } catch (error) {
-      if (dispatchedSessionId !== undefined) await conductor.stopSession(dispatchedSessionId);
-      const message = error instanceof Error ? error.message : 'workflow session dispatch failed';
-      if (boundHandoffId !== undefined)
-        await deps.workflowStore.retryBoundDispatch(
-          boundHandoffId,
-          message,
-          new Date(Date.now() + 30_000),
-        );
-      else await deps.workflowStore.releaseOutbox(item.id, message, new Date(Date.now() + 30_000));
-      request.log.warn({ err: error, outboxId: item.id }, 'workflow session dispatch failed');
-      return undefined;
-    }
-  };
-  if (deps.workflowStore !== undefined) {
-    const backgroundRequest = { log: app.log } as unknown as FastifyRequest;
-    const backgroundReply = {
-      code() {
-        return this;
-      },
-    } as unknown as FastifyReply;
-    let dispatchingWorkflow = false;
-    const dispatchDueWorkflow = async (): Promise<void> => {
-      if (dispatchingWorkflow) return;
-      dispatchingWorkflow = true;
-      try {
-        const activeSessionIds = await deps.workflowStore!.listActiveWorkflowSessionIdsForRenewal();
-        await Promise.all(
-          activeSessionIds
-            .filter((sessionId) => conductor.isBusy(sessionId))
-            .map((sessionId) => deps.workflowStore!.renewHandoffSessionLease(sessionId)),
-        );
-        await dispatchWorkflowSessionRef.current?.(backgroundRequest, backgroundReply);
-        const merge = await deps.workflowStore!.claimDueMergeOutbox();
-        if (merge !== undefined) {
-          try {
-            if (deps.mergePr === undefined)
-              throw new Error('pull request merging is not configured');
-            if (
-              (deps.authRegistry?.isEnabled() === true &&
-                deps.authRegistry.isKnownId?.(merge.actorId) !== true) ||
-              (await deps.authorizeWorkflowAction?.(merge.actorId, 'decision:approve', {
-                workflowId: merge.workflowId,
-                stepId: merge.stepId,
-                pullRequest: merge.pullRequest,
-              })) !== true
-            )
-              throw new WorkflowAuthorizationError('merge authority is no longer valid');
-            const session = await deps.eventStore.getSession(merge.sessionId);
-            if (session === undefined) throw new Error('GitOps session no longer exists');
-            const current = await sessionPrStatus(session);
-            if (
-              current?.phase === 'merged' &&
-              current.number === merge.pullRequest &&
-              current.headSha?.toLowerCase() === merge.headSha.toLowerCase()
-            ) {
-              await deps.workflowStore!.completeMergeOutbox(merge.id);
-              return;
-            }
-            if (
-              current === null ||
-              current.phase !== 'open' ||
-              current.number !== merge.pullRequest ||
-              current.headSha?.toLowerCase() !== merge.headSha.toLowerCase() ||
-              current.pipeline !== 'success' ||
-              current.mergeable !== true
-            )
-              throw new WorkflowConflictError('approved pull request head is no longer mergeable');
-            if (!(await deps.mergePr(merge.pullRequest, session.worktree, merge.headSha)))
-              throw new Error('GitHub did not accept the merge request');
-            await deps.workflowStore!.completeMergeOutbox(merge.id);
-          } catch (error) {
-            await deps.workflowStore!.releaseOutbox(
-              merge.id,
-              error instanceof Error ? error.message : 'pull request merge failed',
-              new Date(Date.now() + 30_000),
-            );
-          }
-        }
-      } finally {
-        dispatchingWorkflow = false;
-      }
-    };
-    const runWorkflowDispatch = (): void => {
-      void dispatchDueWorkflow().catch((error: unknown) => {
-        app.log.warn({ err: error }, 'workflow background dispatch failed');
-      });
-    };
-    runWorkflowDispatch();
-    const workflowDispatchTimer = setInterval(runWorkflowDispatch, 10_000);
-    workflowDispatchTimer.unref?.();
-    app.addHook('onClose', () => clearInterval(workflowDispatchTimer));
-  }
 
   // Creations of a client-minted id that are still provisioning, so a retry of the
   // same id waits for the original instead of adding a second worktree. Entries

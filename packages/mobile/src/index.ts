@@ -319,8 +319,6 @@ export {
   type SessionListEnvelope,
   type AttentionSignal,
   type SpawnRequest,
-  type Workflow,
-  type CreateWorkflowRequest,
   type TaskBoard,
   type TaskItem,
   type TaskFieldValue,

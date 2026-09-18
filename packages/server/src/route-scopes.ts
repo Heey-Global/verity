@@ -40,7 +40,6 @@ type RouteScope =
   | 'onboarding'
   | 'device-pairing'
   | 'github-app-manifest'
-  | 'github-webhook'
   | 'signing-broker'
   | 'container-capability'
   | 'gateway-turn';
@@ -74,8 +73,7 @@ const declare = (
  * the stale-declaration test.
  *
  * One behaviour difference against the old conditional list, deliberate and
- * checked route by route. Four of these — `/pair/identity`, `/pair/redeem`,
- * `/providers/github/webhook`, `/internal/workflow/result` — are registered
+ * checked route by route. Two of these — `/pair/identity`, `/pair/redeem` — are registered
  * unconditionally and refuse themselves inside the handler when their deps are
  * absent, while the old list made their exemption conditional on those same
  * deps. Deriving from registration therefore exempts them in a deployment where
@@ -124,12 +122,6 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   declare('GET', '/github/app/manifest/start', 'github-app-manifest', 'single-use CSRF state'),
   declare('GET', '/github/app/manifest/callback', 'github-app-manifest', 'single-use CSRF state'),
   declare('GET', '/github/app/manifest/installed', 'github-app-manifest', 'single-use CSRF state'),
-  declare(
-    'POST',
-    '/providers/github/webhook',
-    'github-webhook',
-    'GitHub HMAC signature over the delivery body',
-  ),
   // Where an internal listener is wired, the `/internal/*` routes are
   // additionally unreachable off it: the network-origin guard in the gate 404s
   // them on the public/LAN port, putting the broker off the LAN entirely on top
@@ -152,12 +144,6 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     '/internal/project/memory',
     'container-capability',
     'per-container capability, presented by the sandbox `verity-memory` wrapper (ADR 0008)',
-  ),
-  declare(
-    'POST',
-    '/internal/workflow/result',
-    'container-capability',
-    'per-container capability, presented by a workflow step reporting its result',
   ),
   // Both methods: the MCP endpoint answers POST for calls and GET for the
   // server-sent event stream, and the same per-turn bearer covers both.

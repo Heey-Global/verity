@@ -164,6 +164,31 @@ describe('migrateToLatest', () => {
       }
     });
 
+    it('serves core data after the 0.14 forward batch when released as its bridge', async () => {
+      const ctx = await createIsolatedTestDb();
+      try {
+        // Reproduce the exact generations 0.14 applies. The nullable settings
+        // column is additive, while the retired workflow tables are absent from
+        // this bridge's runtime surface and may be removed without affecting it.
+        await ctx.db.schema
+          .alterTable('verity_settings')
+          .addColumn('opencode_disabled_models', 'text')
+          .execute();
+        await recordAhead(ctx.db, '0096_opencode_model_selection');
+        await recordAhead(ctx.db, '0097_remove_cross_project_workflows');
+
+        await expect(
+          migrateToLatest(ctx.db, migrationProvider, {
+            forwardMax: '0097_remove_cross_project_workflows',
+          }),
+        ).resolves.toBeUndefined();
+        await ctx.store.createSession({ sessionId: 'bridge-session', worktree: '/wt', model: 'm' });
+        expect(await ctx.store.getSession('bridge-session')).toBeDefined();
+      } finally {
+        await ctx.close();
+      }
+    });
+
     it('refuses a generation past the promise', async () => {
       const ctx = await createIsolatedTestDb();
       try {

@@ -192,8 +192,8 @@ implementation rather than a default: dev-server routes, which already separate
 "container exists" from "container running" and must place sleeping on the
 correct side of each; project-scoped maintenance and relay-repair sweeps, which
 filter to active projects and should continue to leave sleepers alone; branch and
-repository reads that reach into the Sandbox; and cross-project workflow
-dispatch, whose target may be asleep.
+repository reads that reach into the Sandbox; and cross-project session
+handoffs, whose target may be asleep.
 
 Session-level health signalling needs the same treatment: a sleeping project must
 not raise the `sandbox_disconnected` attention marker on its sessions. A sleeping
