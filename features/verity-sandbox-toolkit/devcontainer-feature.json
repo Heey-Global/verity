@@ -5,6 +5,11 @@
   "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + claude-code + codex + opencode + pi CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
   "documentationURL": "https://github.com/Heey-Global/verity/tree/main/features/verity-sandbox-toolkit",
   "installsAfter": ["ghcr.io/devcontainers/features/node"],
+  "customizations": {
+    "verity": {
+      "sourceRevision": "0000000000000000000000000000000000000000"
+    }
+  },
   "options": {
     "tz": {
       "type": "string",
