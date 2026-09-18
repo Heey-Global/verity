@@ -1260,11 +1260,20 @@ jobs:
 
       # Stamp the shared release version into the manifest BEFORE devcontainers/action
       # reads it (the Feature publish tags from the manifest `version`).
+      #
+      # The provenance revision goes under `customizations`, the one free-form
+      # object the Feature schema permits: devcontainers/action validates this
+      # file against a schema with `additionalProperties: false`, so a top-level
+      # key of our own fails the publish outright ("Failed to validate Feature
+      # metadata") and takes the whole backend release down with it. Everything
+      # in this file — `customizations` included — is serialized verbatim into
+      # the published `dev.containers.metadata` annotation, which is what the
+      # channel-tag step below reads back.
       - name: Stamp release version into manifest
         shell: bash
         run: |
           set -euo pipefail
-          node -e 'const f="features/verity-sandbox-toolkit/devcontainer-feature.json";const j=require("./"+f);j.version=process.argv[1];j["x-verity-source-revision"]=process.argv[2];require("node:fs").writeFileSync(f,JSON.stringify(j,null,2)+"\n")' "$VERSION" "$(git rev-parse HEAD)"
+          node -e 'const f="features/verity-sandbox-toolkit/devcontainer-feature.json";const j=require("./"+f);j.version=process.argv[1];j.customizations={...j.customizations,verity:{...j.customizations?.verity,sourceRevision:process.argv[2]}};require("node:fs").writeFileSync(f,JSON.stringify(j,null,2)+"\n")' "$VERSION" "$(git rev-parse HEAD)"
           echo "stamped toolkit version = $VERSION"
 
       # THE canonical note for why release.yml keeps the DEFAULT ephemeral
@@ -1325,7 +1334,7 @@ jobs:
           numeric="${image}:${VERSION}"
           source_sha="$(git rev-parse HEAD)"
           docker buildx imagetools inspect --raw "$numeric" | \
-            jq -e --arg sha "$source_sha" '.annotations["dev.containers.metadata"] | fromjson | .["x-verity-source-revision"] == $sha' >/dev/null
+            jq -e --arg sha "$source_sha" '.annotations["dev.containers.metadata"] | fromjson | .customizations.verity.sourceRevision == $sha' >/dev/null
           digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$numeric")"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           if existing="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${image}:v${VERSION}" 2>&1)"; then

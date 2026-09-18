@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -836,6 +836,75 @@ describe('release toolkit trust ledger', () => {
       expect(assemble?.run).toBe('node scripts/update-toolkit-ledger.mjs');
     },
   );
+});
+
+describe('toolkit Feature manifest stamping', () => {
+  const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as ReleaseWorkflow;
+  const manifestPath = 'features/verity-sandbox-toolkit/devcontainer-feature.json';
+  const steps = workflow.jobs['publish-toolkit'].steps;
+  const stampStep = steps.find((step) => step.name === 'Stamp release version into manifest');
+  const channelStep = steps.find((step) => step.name === 'Publish toolkit channel tags');
+
+  // Run the release's OWN stamping command over the committed manifest, so the
+  // test sees the file devcontainers/action would be handed, not a copy of it.
+  function stamp(): { manifest: Record<string, unknown>; sha: string } {
+    const cwd = mkdtempSync(join(tmpdir(), 'toolkit-stamp-'));
+    mkdirSync(join(cwd, 'features/verity-sandbox-toolkit'), { recursive: true });
+    writeFileSync(join(cwd, manifestPath), readFileSync(manifestPath, 'utf8'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.invalid');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgSign', 'false');
+    git('add', '.');
+    git('commit', '-qm', 'chore: fixture');
+    const result = spawnSync('bash', ['-c', stampStep?.run ?? 'exit 1'], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, VERSION: '9.9.9' },
+    });
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    return {
+      manifest: JSON.parse(readFileSync(join(cwd, manifestPath), 'utf8')),
+      sha: git('rev-parse', 'HEAD'),
+    };
+  }
+
+  it('adds no property the published Feature schema would reject', () => {
+    // devcontainers/action validates devcontainer-feature.json against a schema
+    // whose Feature definition is `additionalProperties: false`. A property the
+    // release invents at publish time exists in no committed file, so every
+    // local check stays green and the publish fails inside the release train —
+    // after the sibling artifacts are pushed and the draft release is waiting on
+    // a Server that now never builds. Stamping may only overwrite values that
+    // the committed, schema-shaped manifest already declares.
+    const committed = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    expect(Object.keys(stamp().manifest)).toEqual(Object.keys(committed));
+  });
+
+  it('writes the revision where the channel-tag step reads it back', () => {
+    // The two halves are edited apart: one writes the annotation, the other
+    // gates the immutable channel tags on it. Disagreeing about the JSON path
+    // fails only in the release, and only after the Feature is already pushed.
+    const { manifest, sha } = stamp();
+    expect((manifest as { version: string }).version).toBe('9.9.9');
+    const filter = /jq -e --arg sha "\$source_sha" '([^']+)'/.exec(channelStep?.run ?? '')?.[1];
+    expect(filter).toBeDefined();
+    const inspected = JSON.stringify({
+      annotations: { 'dev.containers.metadata': JSON.stringify(manifest) },
+    });
+    const accepted = spawnSync('jq', ['-e', '--arg', 'sha', sha, filter ?? ''], {
+      input: inspected,
+      encoding: 'utf8',
+    });
+    expect(accepted.status).toBe(0);
+    const rejected = spawnSync('jq', ['-e', '--arg', 'sha', 'f'.repeat(40), filter ?? ''], {
+      input: inspected,
+      encoding: 'utf8',
+    });
+    expect(rejected.status).toBe(1);
+  });
 });
 
 describe('release immutability lifecycle', () => {
