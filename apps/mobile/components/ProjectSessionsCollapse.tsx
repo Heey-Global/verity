@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Easing, View } from 'react-native';
 import { useReducedMotion } from 'react-native-reanimated';
 
+export const PROJECT_SESSIONS_COLLAPSE_DURATION_MS = 180;
+
 /** Retain session rows while folding so dragging cannot discard their local state. */
 export function ProjectSessionsCollapse({
   collapsed,
@@ -25,7 +27,7 @@ export function ProjectSessionsCollapse({
     }
     const animation = Animated.timing(height, {
       toValue: target,
-      duration: 180,
+      duration: PROJECT_SESSIONS_COLLAPSE_DURATION_MS,
       easing: Easing.inOut(Easing.ease),
       useNativeDriver: false,
     });
