@@ -3,12 +3,13 @@
   "version": "1.33.8",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "f16b76de124619b75a689a668d16bd4122e544cb",
+  "commit": "65d73663df99a5775e8476a12725de079b0e7d5f",
   "tag": "mobile-v1.33.8",
-  "branch": "staging-mobile-v1.33.8-f16b76de124619b75a689a668d16bd4122e544cb",
+  "branch": "staging-mobile-v1.33.8-65d73663df99a5775e8476a12725de079b0e7d5f",
   "baseline": "mobile-v1.33.7",
-  "group": "10677f2e-cf10-4426-b3ba-21ee2379dfa4",
+  "group": "d9aa8672-6091-453a-bd44-1f00e05ef340",
   "notes": [
+    "recover empty transcript tail scans (#474)",
     "improve paired device management (#469)",
     "prevent overscroll during project reordering (#468)"
   ]
