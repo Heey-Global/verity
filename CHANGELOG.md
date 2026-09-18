@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.0](https://github.com/Heey-Global/verity/compare/v0.14.0...v0.15.0) (2026-09-18)
+
+
+### Features
+
+* **mobile:** improve paired device management ([#469](https://github.com/Heey-Global/verity/issues/469)) ([f16b76d](https://github.com/Heey-Global/verity/commit/f16b76de124619b75a689a668d16bd4122e544cb))
+* **secrets:** support generic credential headers ([#481](https://github.com/Heey-Global/verity/issues/481)) ([9a3c217](https://github.com/Heey-Global/verity/commit/9a3c2170a9d3c454b490807b038c6fd77bfe3cb5))
+
+
+### Bug Fixes
+
+* **release:** preserve toolkit provenance in valid metadata ([#471](https://github.com/Heey-Global/verity/issues/471)) ([d01f7e1](https://github.com/Heey-Global/verity/commit/d01f7e1d7d32594ac37c4bfb7a045e88967dfe98))
+
 ## [0.14.0](https://github.com/Heey-Global/verity/compare/v0.13.2...v0.14.0) (2026-09-18)
 
 
