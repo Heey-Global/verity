@@ -23,7 +23,6 @@ import { engineLabel } from '../ui/modelPicker.js';
  * turns — enough context on open while skipping the bulk of a long backlog. Older
  * turns load on scroll-up. Stays within the server's 200 page cap. */
 const HISTORY_PAGE = 150;
-const TAIL_OPEN_MAX_PAGES = 5;
 const HISTORY_VISIBLE_SCAN_MAX_PAGES = 5;
 
 /**
@@ -629,45 +628,38 @@ export class SessionModel {
   }
 
   /**
-   * Open the live stream from the session's TAIL: fetch the most recent history
-   * page to learn its oldest seq, then resume the WS from just before it so a long
-   * session opens without replaying its whole backlog (only the tail + live). On
-   * any failure — or a short session with nothing older — fall back to a full
-   * replay from seq 0 (correctness over speed).
+   * Open the live stream from the session's TAIL: fetch recent history until it
+   * contains a visible message, seed the reducer from those REST pages, then resume
+   * the WS after the newest snapshot event. This keeps both large histories and
+   * long metadata-only tails out of the socket backlog while preserving the race:
+   * anything persisted after the REST snapshot is replayed by the stream.
+   * On any failure before a snapshot is seeded, fall back to a full replay.
    */
   private async openStreamFromTail(): Promise<void> {
     try {
       let page = await this.opts.client.getHistory(this.opts.sessionId, { limit: HISTORY_PAGE });
+      const pages = [page.events];
+      const newest = page.events.at(-1)?.seq;
       let oldest = page.events[0]?.seq;
-      let pages = 1;
       while (
         page.hasMore &&
         oldest !== undefined &&
-        pages < TAIL_OPEN_MAX_PAGES &&
         !this.historyPageRendersMessages(page.events)
       ) {
         page = await this.opts.client.getHistory(this.opts.sessionId, {
           beforeSeq: oldest,
           limit: HISTORY_PAGE,
         });
+        pages.push(page.events);
         oldest = page.events[0]?.seq;
-        pages += 1;
       }
-      // The bounded scan is only an optimization when its replay window can
-      // actually reconstruct a transcript. Otherwise skipping the older log would
-      // open an intact session as empty, with every reconnect resuming from the same
-      // high cursor and no way for the missing messages to enter the reducer.
-      if (
-        page.hasMore &&
-        oldest !== undefined &&
-        oldest > 1 &&
-        this.historyPageRendersMessages(page.events)
-      ) {
-        this.stream.setSinceSeq(oldest - 1);
-        this._hasOlder = true; // older turns exist before the tail → scroll-up loads them
+      if (newest !== undefined) {
+        this.stream.seedHistory(pages.reverse().flat());
+        this.stream.setSinceSeq(newest);
+        this._hasOlder = page.hasMore;
       }
     } catch {
-      // fall back to a full replay from 0 (no older page to fetch)
+      // No complete REST snapshot was installed, so seq 0 remains the safe cursor.
     }
     if (!this._running) return;
     // Register the start even in background: the stream defers its socket until
