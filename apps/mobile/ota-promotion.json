@@ -3,12 +3,13 @@
   "version": "1.33.10",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "b1571929a7929195f0b4923ed529c0d1539f28ba",
+  "commit": "9a3c2170a9d3c454b490807b038c6fd77bfe3cb5",
   "tag": "mobile-v1.33.10",
-  "branch": "staging-mobile-v1.33.10-b1571929a7929195f0b4923ed529c0d1539f28ba",
+  "branch": "staging-mobile-v1.33.10-9a3c2170a9d3c454b490807b038c6fd77bfe3cb5",
   "baseline": "mobile-v1.33.9",
-  "group": "005937d8-6e84-4f3b-83f1-6a0b71a2afbf",
+  "group": "a517a0f7-c05c-4890-9dad-465ad95a976c",
   "notes": [
+    "support generic credential headers (#481)",
     "ignore stale project fold animations (#479)"
   ]
 }
