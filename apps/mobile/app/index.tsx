@@ -74,18 +74,20 @@ import { useIssues } from '../hooks/useIssues';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
+import { prefetchBranches } from '../lib/branchesPrefetch';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
+import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
 import {
   projectDragOffsets,
   projectDragStartOffset,
   projectDragTargetIndex,
   settleProjectDrop,
 } from '../lib/projectReorder';
-import { prefetchBranches } from '../lib/branchesPrefetch';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
+import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
 import {
   hasPendingProjectSetup,
   projectOverviewSetupLabel,
@@ -255,6 +257,13 @@ function SessionList({ client }: { client: VerityClient }) {
   // default-repo row, orphan rows) have no server row, so their override simply
   // lives for the session — matching the previous device-local behavior.
   const [collapsedOverride, setCollapsedOverride] = useState<Map<string, boolean>>(() => new Map());
+  const enqueueProjectCollapse = useMemo(
+    () =>
+      createProjectCollapseQueue((projectId, collapsed) =>
+        client.setProjectCollapsed(projectId, collapsed),
+      ),
+    [client],
+  );
   // Once the polled project list reports the same value an optimistic override
   // holds, drop the override so the server (including changes made on another
   // device) is the source of truth again.
@@ -494,25 +503,16 @@ function SessionList({ client }: { client: VerityClient }) {
             });
             const project = item.project;
             if (!project) return;
-            void client
-              .setProjectCollapsed(project.id, nextValue)
-              .then((updated) => {
-                // Reconcile the override with what the server actually stored for
-                // this write. Two rapid toggles whose PATCHes resolve out of order
-                // would otherwise leave the override stuck at a value the server
-                // never ended on (the clear-on-poll effect only drops an override
-                // that already equals `project.collapsed`); pinning it to the
-                // response makes the last-resolving write win and stay consistent
-                // with every other device.
-                const serverValue = updated.collapsed ?? false;
+            enqueueProjectCollapse(project.id, nextValue, {
+              success: (serverValue) => {
                 setCollapsedOverride((current) => {
                   const next = new Map(current);
                   next.set(item.id, serverValue);
                   return next;
                 });
                 void refreshProjects();
-              })
-              .catch((caught) => {
+              },
+              failure: (caught) => {
                 // Roll the override back to server truth so a failed write doesn't
                 // strand the group in the wrong state.
                 setCollapsedOverride((current) => {
@@ -526,7 +526,8 @@ function SessionList({ client }: { client: VerityClient }) {
                     ? caught.message
                     : 'Could not save the collapse state.',
                 );
-              });
+              },
+            });
           }}
           onLongPressProject={
             reorderable
@@ -674,8 +675,8 @@ function SessionList({ client }: { client: VerityClient }) {
     [
       activeGroups,
       collapsedOverride,
-      client,
       draggingProjectId,
+      enqueueProjectCollapse,
       refreshingOverview,
       dragTranslation,
       previewOffsets,
@@ -891,15 +892,16 @@ function useProjects(client: VerityClient) {
   useEffect(
     () =>
       subscribeProjectStatusMutations((updated) => {
-        pendingProjectMutations.current.set(updated.id, {
-          project: updated,
-          generation: loadGeneration.current,
-        });
         setProjects((current) => {
-          const found = current.some((project) => project.id === updated.id);
-          return found
-            ? current.map((project) => (project.id === updated.id ? updated : project))
-            : [...current, updated];
+          const existing = current.find((project) => project.id === updated.id);
+          const merged = mergeProjectStatusMutation(existing, updated);
+          pendingProjectMutations.current.set(updated.id, {
+            project: merged,
+            generation: loadGeneration.current,
+          });
+          return existing
+            ? current.map((project) => (project.id === updated.id ? merged : project))
+            : [...current, merged];
         });
       }),
     [],
