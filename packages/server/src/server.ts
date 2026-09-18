@@ -95,6 +95,7 @@ import type {
 } from '@verity/store';
 import { DeletedProjectError, DevServerPortRangeExhaustedError, SealedError } from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
+import rateLimitPlugin from '@fastify/rate-limit';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -2844,6 +2845,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           ),
     );
   });
+  // Install the limiter's manual API. The auth hook below invokes it only after
+  // a protected request has failed bearer-token verification.
+  app.register(rateLimitPlugin, { global: false });
+  let checkInvalidBearer: ReturnType<FastifyInstance['createRateLimit']> | undefined;
 
   // Session file uploads are streamed directly to disk. Returning the raw request
   // stream from this parser intentionally avoids Fastify's buffered body limit.
@@ -3696,7 +3701,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (request.headers.upgrade ?? '').toLowerCase() === 'websocket' &&
       WS_STREAM_PATH.test(pathname);
     const token = bearerToken(request.headers.authorization);
-    if (registry.verify(token)) return;
+    if (registry.verify(token)) {
+      return;
+    }
     // A genuine WebSocket upgrade to the live-stream route cannot take a normal HTTP
     // 401 from here — reply.send() on an in-flight `@fastify/websocket` handshake
     // does not abort it cleanly (it hangs). That ONE route's handler enforces the
@@ -3706,11 +3713,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (websocketStream) {
       return;
     }
+    checkInvalidBearer ??= app.createRateLimit({ max: 100, timeWindow: '1 minute' });
+    const limit = await checkInvalidBearer(request);
+    if (!limit.isAllowed && limit.isExceeded) {
+      reply.header('retry-after', String(limit.ttlInSeconds));
+      return reply.code(429).send({ error: 'too many unauthorized requests' });
+    }
     // send()+return — a bare `return { error }` from an async onRequest hook is
     // DISCARDED by Fastify (the route handler still runs and its body is sent with
     // this 401 status, a full auth bypass). Only reply.send() sets reply.sent and
     // actually short-circuits the lifecycle. See the /internal guard above.
     return reply.code(401).send({ error: 'unauthorized' });
+  });
+
+  // Record activity after the response, outside the authorization hook. `touch`
+  // resolves the bearer token through the registry and ignores unknown values;
+  // its per-device throttle keeps this universal lifecycle hook to at most one
+  // database write every five minutes for each paired device.
+  app.addHook('onResponse', (request, _reply, done) => {
+    deps.authRegistry?.touch(bearerToken(request.headers.authorization));
+    done();
   });
 
   registerHealthRoute(app, {
