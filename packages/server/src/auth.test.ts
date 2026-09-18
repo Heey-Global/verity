@@ -273,7 +273,7 @@ describe('paired device management', () => {
     }
   });
 
-  it('stamps last-seen through the gate, so the list can show real activity', async () => {
+  it('stamps last-seen after an authenticated response, so the list can show real activity', async () => {
     const store = new EventStore(ctx.db);
     const registry = await createAuthTokenRegistry(store, { enabled: true });
     const current = await registry.mint('iPad');
@@ -296,7 +296,7 @@ describe('paired device management', () => {
         expect((await store.listAuthTokens())[0]?.lastSeenAt).toEqual(expect.any(Number)),
       );
 
-      // And the gate's stamp has to survive the trip through the list route —
+      // And the response hook's stamp has to survive the trip through the list route —
       // a column written but never serialized leaves the app showing "Paired"
       // forever with nothing in the server to point at.
       const listed = (

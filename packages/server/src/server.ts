@@ -3697,10 +3697,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       WS_STREAM_PATH.test(pathname);
     const token = bearerToken(request.headers.authorization);
     if (registry.verify(token)) {
-      // Last-seen is stamped here rather than per route because this is the one
-      // place every authenticated request passes through. It is throttled and
-      // fire-and-forget inside the registry, so the gate stays synchronous.
-      registry.touch(token);
       return;
     }
     // A genuine WebSocket upgrade to the live-stream route cannot take a normal HTTP
@@ -3717,6 +3713,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // this 401 status, a full auth bypass). Only reply.send() sets reply.sent and
     // actually short-circuits the lifecycle. See the /internal guard above.
     return reply.code(401).send({ error: 'unauthorized' });
+  });
+
+  // Record activity after the response, outside the authorization hook. `touch`
+  // resolves the bearer token through the registry and ignores unknown values;
+  // its per-device throttle keeps this universal lifecycle hook to at most one
+  // database write every five minutes for each paired device.
+  app.addHook('onResponse', (request, _reply, done) => {
+    deps.authRegistry?.touch(bearerToken(request.headers.authorization));
+    done();
   });
 
   registerHealthRoute(app, {
