@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.6",
+  "version": "1.33.7",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "26756cb32055be34af8d6a823cb7ecf53e2eab5f",
-  "tag": "mobile-v1.33.6",
-  "branch": "staging-mobile-v1.33.6-26756cb32055be34af8d6a823cb7ecf53e2eab5f",
-  "baseline": "mobile-v1.33.5",
-  "group": "e330cc27-d627-449c-b7d6-1b931bd2c2c0",
+  "commit": "a008217f4140fc659b97ca7a587dd5b3a3709ead",
+  "tag": "mobile-v1.33.7",
+  "branch": "staging-mobile-v1.33.7-a008217f4140fc659b97ca7a587dd5b3a3709ead",
+  "baseline": "mobile-v1.33.6",
+  "group": "50263c60-1a2a-4dd6-a392-cbd906bd8947",
   "notes": [
-    "search OpenCode models and preserve availability selections (#462)",
-    "ignore stale server release drafts (#461)"
+    "keep project reordering from stranding collapsed groups (#466)"
   ]
 }
