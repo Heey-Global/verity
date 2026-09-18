@@ -149,6 +149,21 @@ export class SessionStream {
   prependHistory(
     events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
   ): void {
+    this.installHistory(events, true);
+  }
+
+  /** Install the initial REST tail before the socket opens. The first visible
+   * snapshot remains gated on `caught_up`, matching a stream-replayed backlog. */
+  seedHistory(
+    events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
+  ): void {
+    this.installHistory(events, false);
+  }
+
+  private installHistory(
+    events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
+    notify: boolean,
+  ): void {
     const head = this.eventFrames[0]?.seq ?? Number.POSITIVE_INFINITY;
     const fresh: StreamEventFrame[] = events
       .filter((e) => e.seq < head)
@@ -175,7 +190,7 @@ export class SessionStream {
     // Replaying the frames re-raises every `permission` in them. Re-settle the ones
     // the server already answered so scroll-up can't resurrect a dismissed card.
     for (const toolUseId of this.resolvedPermissions) this.reducer.resolvePermission(toolUseId);
-    this.opts.onUpdate?.(this.reducer.state);
+    if (notify) this.opts.onUpdate?.(this.reducer.state);
   }
 
   /** Open the stream. No-op if already started (call-once) or stopped. */

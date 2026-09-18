@@ -114,12 +114,12 @@ describe('SessionModel — stream', () => {
         await flush();
         expect(sockets).toHaveLength(1);
         expect(sockets[0]?.url).toBe(
-          `ws://host/sessions/s1/stream?sinceSeq=${outcome === 'resolve' ? 99 : 0}`,
+          `ws://host/sessions/s1/stream?sinceSeq=${outcome === 'resolve' ? 100 : 0}`,
         );
-        sockets[0]?.emitEvent(100, { t: 'text', delta: 'loaded' });
+        if (outcome === 'reject') sockets[0]?.emitEvent(100, { t: 'text', delta: 'loaded' });
         sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
         expect(model.state.loaded).toBe(true);
-        expect(agentTexts(model.state)).toEqual(['loaded']);
+        expect(agentTexts(model.state)).toEqual([outcome === 'resolve' ? 'tail' : 'loaded']);
       } finally {
         model.stop();
       }
@@ -161,8 +161,10 @@ describe('SessionModel — stream', () => {
     const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
     model.start();
     await flush();
-    // Resumes from just before the tail's first event → the older backlog is skipped.
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=99');
+    // REST seeds the tail; the socket only replays events persisted afterwards.
+    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
+    expect(agentTexts(model.state)).toEqual(['x']);
   });
 
   it('opens far enough back when the latest tail page has no renderable messages', async () => {
@@ -199,15 +201,25 @@ describe('SessionModel — stream', () => {
     await flush();
 
     expect(getHistory).toHaveBeenNthCalledWith(2, 's1', { beforeSeq: 100, limit: 150 });
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=49');
+    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
+    expect(agentTexts(model.state)).toEqual(['visible tail']);
     expect(model.state.hasOlder).toBe(true);
   });
 
-  it('falls back to a full replay when the bounded tail scan finds no messages', async () => {
+  it('scans past a long metadata-only tail without replaying it over the socket', async () => {
     const { connect, sockets } = recordingConnect();
-    const getHistory = vi.fn().mockImplementation((_id: string, opts?: { beforeSeq?: number }) => {
-      const seq = (opts?.beforeSeq ?? 1_001) - 100;
-      return Promise.resolve({ events: [metadataHistoryEvent(seq)], hasMore: true });
+    let pages = 0;
+    const getHistory = vi.fn().mockImplementation(() => {
+      pages += 1;
+      const seq = 1_001 - pages * 100;
+      return Promise.resolve({
+        events:
+          pages === 6
+            ? [{ seq, event: { t: 'text', delta: 'recovered' } }]
+            : [metadataHistoryEvent(seq)],
+        hasMore: true,
+      });
     });
     const client = {
       sendTurn: vi.fn(),
@@ -220,11 +232,14 @@ describe('SessionModel — stream', () => {
     model.start();
     await flush();
 
-    // Skipping past a metadata-only tail would leave an intact session with an empty
-    // transcript. The bounded optimization must yield to correctness in that case.
-    expect(getHistory).toHaveBeenCalledTimes(5);
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=0');
-    expect(model.state.hasOlder).toBe(false);
+    // Five pages was the former cutoff. Keep walking REST history until the snapshot
+    // can render, then connect after its newest event instead of bursting the entire
+    // session through the WebSocket.
+    expect(getHistory).toHaveBeenCalledTimes(6);
+    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=901');
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 901 }));
+    expect(agentTexts(model.state)).toEqual(['recovered']);
+    expect(model.state.hasOlder).toBe(true);
   });
 
   it('uses the detail rate-limit state when the tail replay skipped the event', async () => {
@@ -1225,7 +1240,7 @@ describe('SessionModel — switchModel (engine switch)', () => {
     const getHistory = vi
       .fn()
       .mockResolvedValueOnce({
-        events: [{ seq: 100, event: { t: 'text', delta: 'tail A' } }],
+        events: [{ seq: 99, event: { t: 'text', delta: 'tail A' } }],
         hasMore: true,
       })
       .mockResolvedValueOnce({
@@ -1499,9 +1514,8 @@ describe('SessionModel — loadOlder (backward pagination)', () => {
 
     model.start();
     await flush();
-    // Tail opened past the older backlog; emit the tail event so the stream has a cursor.
-    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=99');
-    sockets[0]?.emitEvent(100, { t: 'text', delta: 'tail A' });
+    // Tail was seeded by REST; the stream resumes after that snapshot.
+    expect(sockets[0]?.url).toBe('ws://host/sessions/s1/stream?sinceSeq=100');
     sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 100 }));
     expect(model.state.hasOlder).toBe(true);
 
