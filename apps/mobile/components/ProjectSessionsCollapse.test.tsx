@@ -163,3 +163,21 @@ it('uses auto height without animation when reduced motion is enabled', () => {
   expect(StyleSheet.flatten(wrapper().props.style).height).toBe(0);
   expect(timing).not.toHaveBeenCalled();
 });
+
+it('settles an active fold when reduced motion changes', () => {
+  const animations = captureAnimations();
+  const view = render(content(false));
+  const measurement = view.UNSAFE_getAllByType(View).find((node) => node.props.onLayout)!;
+  const wrapper = () => view.UNSAFE_getAllByType(View).find((node) => node.props.pointerEvents)!;
+  fireEvent(measurement, 'layout', { nativeEvent: { layout: { height: 240 } } });
+
+  view.rerender(content(true));
+  const stoppedFold = animations.at(-1)!;
+  jest.mocked(useReducedMotion).mockReturnValue(true);
+  view.rerender(content(true));
+
+  expect(stoppedFold.stop).toHaveBeenCalled();
+  expect(StyleSheet.flatten(wrapper().props.style).height).toBe(0);
+  act(() => stoppedFold.start.mock.calls.at(-1)?.[0]?.({ finished: false }));
+  expect(StyleSheet.flatten(wrapper().props.style).height).toBe(0);
+});

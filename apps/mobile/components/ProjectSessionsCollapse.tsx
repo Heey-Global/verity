@@ -35,7 +35,12 @@ export function ProjectSessionsCollapse({
   const animationGeneration = useRef(0);
 
   useEffect(() => {
-    if (folded.current === collapsed) return;
+    if (folded.current === collapsed) {
+      // A reduced-motion change can restart this effect while an animation is
+      // active. Its cleanup invalidates that animation, so settle explicitly.
+      if (phaseRef.current === 'folding') setPhase(collapsed ? 'closed' : 'open');
+      return;
+    }
     folded.current = collapsed;
     const content = contentHeight.current;
     // Nothing to animate between: settle straight into the target phase rather
