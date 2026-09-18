@@ -127,6 +127,28 @@ it('ignores a stopped unfold callback after a newer fold starts', () => {
   expect(StyleSheet.flatten(wrapper().props.style).height).toBe(0);
 });
 
+it('ignores a stopped fold callback after a newer unfold starts', () => {
+  const animations = captureAnimations();
+  const view = render(content(false));
+  const measurement = view.UNSAFE_getAllByType(View).find((node) => node.props.onLayout)!;
+  const wrapper = () => view.UNSAFE_getAllByType(View).find((node) => node.props.pointerEvents)!;
+  fireEvent(measurement, 'layout', { nativeEvent: { layout: { height: 240 } } });
+
+  view.rerender(content(true));
+  const stoppedFold = animations.at(-1)!;
+  act(() => stoppedFold.value.setValue(80));
+  view.rerender(content(false));
+  const latestUnfold = animations.at(-1)!;
+
+  // A late close callback must not hide a group whose current state is open.
+  act(() => stoppedFold.start.mock.calls.at(-1)?.[0]?.({ finished: false }));
+  expect(wrapper().props.pointerEvents).toBe('auto');
+  expect(StyleSheet.flatten(wrapper().props.style).height).toBe(80);
+
+  act(() => latestUnfold.start.mock.calls.at(-1)?.[0]?.({ finished: true }));
+  expect(StyleSheet.flatten(wrapper().props.style).height).toBeUndefined();
+});
+
 it('uses auto height without animation when reduced motion is enabled', () => {
   jest.mocked(useReducedMotion).mockReturnValue(true);
   const timing = jest.spyOn(Animated, 'timing');
