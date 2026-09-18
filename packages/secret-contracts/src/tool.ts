@@ -152,11 +152,39 @@ export const brokeredJwtValueSchema = z.union([
 ]);
 export type BrokeredJwtValue = z.infer<typeof brokeredJwtValueSchema>;
 
-/** `authorization: <scheme> <value>` or `x-api-key: <value>` — the secret IS the credential. */
+const FORBIDDEN_BROKERED_AUTH_HEADERS = new Set([
+  'connection',
+  'content-length',
+  'host',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
+/**
+ * A credential header supplied by the model. HTTP field names are case-insensitive, but the
+ * spelling is preserved for the approval card. Framing, routing, hop-by-hop and proxy credential
+ * fields stay server-owned: putting a secret in one could change how the request is delivered
+ * instead of merely authenticating it to the approved destination.
+ */
+export const brokeredStaticAuthHeaderSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/, { message: 'must be a valid HTTP header name' })
+  .refine((header) => !FORBIDDEN_BROKERED_AUTH_HEADERS.has(header.toLowerCase()), {
+    message: 'header is reserved for HTTP transport',
+  });
+
+/** `<header>: <value>` or `authorization: <scheme> <value>` — the secret IS the credential. */
 const brokeredStaticAuthSchema = z
   .object({
     kind: z.literal('static').optional(),
-    header: z.enum(['authorization', 'x-api-key']),
+    header: brokeredStaticAuthHeaderSchema,
     scheme: z.enum(['Bearer', 'Basic']).nullable(),
   })
   .strict();
@@ -224,7 +252,7 @@ export const brokeredHttpRequestSchema = z
     auth: z
       .union([brokeredStaticAuthSchema, brokeredJwtAuthSchema])
       .describe(
-        'How the secret authenticates the request. Default (`static`): the secret IS the credential — `authorization` requires a scheme (`Bearer`/`Basic`), `x-api-key` requires `scheme: null`. ' +
+        'How the secret authenticates the request. Default (`static`): the secret IS the credential — any safe HTTP header name is accepted; `authorization` requires a scheme (`Bearer`/`Basic`) and every other header requires `scheme: null`. ' +
           'With `kind: "jwt"` the secret is a private key and Verity signs a short-lived JWT with it, sending `authorization: Bearer <JWT>`. The key never leaves the server.',
       ),
     body: z.json().optional().describe('JSON body. GET and DELETE must omit it.'),
@@ -245,7 +273,7 @@ export const brokeredHttpRequestSchema = z
     }
     if (
       request.auth.kind !== 'jwt' &&
-      (request.auth.header === 'authorization') !== (request.auth.scheme !== null)
+      (request.auth.header.toLowerCase() === 'authorization') !== (request.auth.scheme !== null)
     ) {
       ctx.addIssue({ code: 'custom', path: ['auth'], message: 'invalid auth scheme' });
     }

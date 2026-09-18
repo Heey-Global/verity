@@ -179,6 +179,13 @@ describe('brokered secret catalog contracts', () => {
     });
     expect(staticRequest.auth.kind).toBeUndefined();
     expect(brokeredHttpRequestAliases(staticRequest)).toEqual(['EXAMPLE_TOKEN']);
+    expect(
+      brokeredHttpRequestSchema.parse({
+        url: 'https://api.openwearables.io/v1/things',
+        secretAlias: 'OPEN_WEARABLES_API_KEY',
+        auth: { header: 'X-Open-Wearables-API-Key', scheme: null },
+      }).auth,
+    ).toEqual({ header: 'X-Open-Wearables-API-Key', scheme: null });
     // The scheme rule must not silently stop applying to static requests now
     // that `auth` is a union.
     expect(() =>
@@ -186,6 +193,13 @@ describe('brokered secret catalog contracts', () => {
         url: 'https://api.example.com/v1/things',
         secretAlias: 'EXAMPLE_TOKEN',
         auth: { header: 'x-api-key', scheme: 'Bearer' },
+      }),
+    ).toThrow();
+    expect(() =>
+      brokeredHttpRequestSchema.parse({
+        url: 'https://api.example.com/v1/things',
+        secretAlias: 'EXAMPLE_TOKEN',
+        auth: { header: 'Host', scheme: null },
       }),
     ).toThrow();
     // An assertion that outlives the turn it was minted for is a token in all

@@ -128,7 +128,7 @@ function parseAuth(raw: unknown): BrokeredAuthSummary | null {
   const header = cardText(auth['header']);
   const rawScheme = auth['scheme'];
   if (header === null) return null;
-  // `null` is the meaningful "no scheme" spelling for x-api-key, not a failure.
+  // `null` is the meaningful "no scheme" spelling for a custom credential header, not a failure.
   const scheme = rawScheme === null ? null : cardText(rawScheme);
   if (rawScheme !== null && scheme === null) return null;
   return { kind: 'static', header, scheme };
