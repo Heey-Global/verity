@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.9",
+  "version": "1.33.10",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "62a0bb9902ac5beb1c707758f7649d5849a98798",
-  "tag": "mobile-v1.33.9",
-  "branch": "staging-mobile-v1.33.9-62a0bb9902ac5beb1c707758f7649d5849a98798",
-  "baseline": "mobile-v1.33.8",
-  "group": "835407dd-515d-4da3-956c-3f071dab0d97",
+  "commit": "b1571929a7929195f0b4923ed529c0d1539f28ba",
+  "tag": "mobile-v1.33.10",
+  "branch": "staging-mobile-v1.33.10-b1571929a7929195f0b4923ed529c0d1539f28ba",
+  "baseline": "mobile-v1.33.9",
+  "group": "005937d8-6e84-4f3b-83f1-6a0b71a2afbf",
   "notes": [
-    "seed long session tails over REST (#477)",
-    "keep projects collapsed during sync (#476)"
+    "ignore stale project fold animations (#479)"
   ]
 }
