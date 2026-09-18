@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.7",
+  "version": "1.33.8",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "a008217f4140fc659b97ca7a587dd5b3a3709ead",
-  "tag": "mobile-v1.33.7",
-  "branch": "staging-mobile-v1.33.7-a008217f4140fc659b97ca7a587dd5b3a3709ead",
-  "baseline": "mobile-v1.33.6",
-  "group": "50263c60-1a2a-4dd6-a392-cbd906bd8947",
+  "commit": "f16b76de124619b75a689a668d16bd4122e544cb",
+  "tag": "mobile-v1.33.8",
+  "branch": "staging-mobile-v1.33.8-f16b76de124619b75a689a668d16bd4122e544cb",
+  "baseline": "mobile-v1.33.7",
+  "group": "10677f2e-cf10-4426-b3ba-21ee2379dfa4",
   "notes": [
-    "keep project reordering from stranding collapsed groups (#466)"
+    "improve paired device management (#469)",
+    "prevent overscroll during project reordering (#468)"
   ]
 }
