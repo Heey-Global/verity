@@ -4,7 +4,18 @@ import { useReducedMotion } from 'react-native-reanimated';
 
 export const PROJECT_SESSIONS_COLLAPSE_DURATION_MS = 180;
 
-/** Retain session rows while folding so dragging cannot discard their local state. */
+/**
+ * Fold the session rows of a project group without unmounting them, so a drag
+ * — which collapses every group for as long as it runs — cannot discard their
+ * local state.
+ *
+ * An open group lays out at `auto` height, never at the measured number: a
+ * height measured while the rows were clipped, or one that went stale while the
+ * group was folded, would otherwise become the group's open height and keep the
+ * sessions invisible with no way to get them back. The measurement only ever
+ * feeds the fold animation, which is decoration: a stale or clipped number
+ * costs one off transition, not a group that cannot be opened.
+ */
 export function ProjectSessionsCollapse({
   collapsed,
   children,
@@ -14,32 +25,46 @@ export function ProjectSessionsCollapse({
 }) {
   const reducedMotion = useReducedMotion();
   const height = useRef(new Animated.Value(0)).current;
-  const [contentHeight, setContentHeight] = useState<number | null>(null);
-  const measured = useRef(false);
+  // 'open' lays out at auto height and 'closed' at zero; 'folding' hands the
+  // height to the animated value for the length of the transition only.
+  const [phase, setPhase] = useState<'open' | 'closed' | 'folding'>(collapsed ? 'closed' : 'open');
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const contentHeight = useRef<number | null>(null);
+  const folded = useRef(collapsed);
 
   useEffect(() => {
-    if (contentHeight === null) return;
-    const target = collapsed ? 0 : contentHeight;
-    if (!measured.current || reducedMotion) {
-      measured.current = true;
-      height.setValue(target);
+    if (folded.current === collapsed) return;
+    folded.current = collapsed;
+    const content = contentHeight.current;
+    // Nothing to animate between: settle straight into the target phase rather
+    // than fold towards a height that was never measured.
+    if (reducedMotion || content === null) {
+      setPhase(collapsed ? 'closed' : 'open');
       return;
     }
+    // A reversal continues from the height the interrupted fold reached; a fold
+    // starting from a settled phase starts at that phase's own height.
+    if (phaseRef.current !== 'folding') height.setValue(collapsed ? content : 0);
+    setPhase('folding');
     const animation = Animated.timing(height, {
-      toValue: target,
+      toValue: collapsed ? 0 : content,
       duration: PROJECT_SESSIONS_COLLAPSE_DURATION_MS,
       easing: Easing.inOut(Easing.ease),
       useNativeDriver: false,
     });
-    animation.start();
+    // Commit on any outcome. An animation that ends without reporting success
+    // would otherwise leave the group stranded at the height it stopped at —
+    // for an opening group, that height is the fold it was meant to undo.
+    animation.start(() => setPhase(collapsed ? 'closed' : 'open'));
     return () => animation.stop();
-  }, [collapsed, contentHeight, height, reducedMotion]);
+  }, [collapsed, height, reducedMotion]);
 
   return (
     <Animated.View
       style={{
         overflow: 'hidden',
-        height: contentHeight === null && !collapsed ? undefined : height,
+        height: phase === 'open' ? undefined : phase === 'closed' ? 0 : height,
       }}
       pointerEvents={collapsed ? 'none' : 'auto'}
       accessibilityElementsHidden={collapsed}
@@ -47,7 +72,9 @@ export function ProjectSessionsCollapse({
     >
       <View
         style={{ flexShrink: 0 }}
-        onLayout={(event) => setContentHeight(event.nativeEvent.layout.height)}
+        onLayout={(event) => {
+          contentHeight.current = event.nativeEvent.layout.height;
+        }}
       >
         {children}
       </View>

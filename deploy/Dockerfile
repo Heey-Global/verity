@@ -215,9 +215,9 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # renovate: datasource=npm depName=@devcontainers/cli
 RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.270
+RUN npm install -g @anthropic-ai/claude-code@2.1.272
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.76.0
+RUN npm install -g @agentclientprotocol/claude-agent-acp@0.77.0
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —

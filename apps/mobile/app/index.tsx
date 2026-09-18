@@ -76,7 +76,12 @@ import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
-import { projectDragOffsets, projectDragTargetIndex } from '../lib/projectReorder';
+import {
+  projectDragOffsets,
+  projectDragStartOffset,
+  projectDragTargetIndex,
+  settleProjectDrop,
+} from '../lib/projectReorder';
 import { prefetchBranches } from '../lib/branchesPrefetch';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { devServerUrl } from '../lib/devServerUrl';
@@ -268,6 +273,9 @@ function SessionList({ client }: { client: VerityClient }) {
     });
   }, [projects]);
   const dragHeights = useRef(new Map<string, number>());
+  const compactProjectGroupHeights = useRef(new Map<string, number>());
+  const projectGroupHeights = useRef(new Map<string, number>());
+  const dragStartOffset = useRef(0);
   const reorderSaving = useRef(false);
   const previewOffsets = useMemo(
     () => projectDragOffsets(dragInitialOrder.current, dragOrder ?? [], dragHeights.current),
@@ -525,24 +533,49 @@ function SessionList({ client }: { client: VerityClient }) {
               ? (pageY) => {
                   if (refreshingOverview || reorderSaving.current || droppingProject.current)
                     return;
-                  dragTranslation.setValue(0);
                   const projectIds = activeGroups.flatMap((group) =>
                     group.project && !isVerityControlPlaneProject(group.project)
                       ? [group.project.id]
                       : [],
                   );
-                  dragOrderRef.current = projectIds;
+                  const startOffset = projectDragStartOffset(
+                    projectIds,
+                    item.project!.id,
+                    projectGroupHeights.current,
+                    compactProjectGroupHeights.current,
+                  );
+                  const initialOrder = moveProjectIdToIndex(
+                    projectIds,
+                    item.project!.id,
+                    projectDragTargetIndex(
+                      projectIds,
+                      item.project!.id,
+                      startOffset,
+                      dragHeights.current,
+                    ),
+                  );
+                  dragStartOffset.current = startOffset;
+                  dragTranslation.setValue(startOffset);
+                  dragOrderRef.current = initialOrder;
                   dragInitialOrder.current = projectIds;
                   dragStartPageY.current = pageY;
-                  setDragOrder(projectIds);
+                  setDragOrder(initialOrder);
                   setDraggingProjectId(item.project!.id);
                 }
               : undefined
           }
           onProjectLayout={
             reorderable
+              ? (height, reorderHeight) => {
+                  compactProjectGroupHeights.current.set(item.project!.id, height);
+                  dragHeights.current.set(item.project!.id, reorderHeight);
+                }
+              : undefined
+          }
+          onProjectGroupLayout={
+            reorderable && draggingProjectId === null
               ? (height) => {
-                  dragHeights.current.set(item.project!.id, height);
+                  projectGroupHeights.current.set(item.project!.id, height);
                 }
               : undefined
           }
@@ -551,11 +584,12 @@ function SessionList({ client }: { client: VerityClient }) {
               ? (_projectId, pageY) => {
                   const startPageY = dragStartPageY.current;
                   if (startPageY === null || droppingProject.current) return;
-                  dragTranslation.setValue(pageY - startPageY);
+                  const translation = dragStartOffset.current + pageY - startPageY;
+                  dragTranslation.setValue(translation);
                   const targetIndex = projectDragTargetIndex(
                     dragInitialOrder.current,
                     item.project!.id,
-                    pageY - startPageY,
+                    translation,
                     dragHeights.current,
                   );
                   const next = moveProjectIdToIndex(
@@ -588,6 +622,7 @@ function SessionList({ client }: { client: VerityClient }) {
                     dragOrderRef.current = null;
                     dragInitialOrder.current = [];
                     dragStartPageY.current = null;
+                    dragStartOffset.current = 0;
                     void client
                       .reorderProjects(ids)
                       .then(() => refreshProjects())
@@ -608,18 +643,12 @@ function SessionList({ client }: { client: VerityClient }) {
                     projectDragOffsets(dragInitialOrder.current, ids, dragHeights.current).get(
                       item.project!.id,
                     ) ?? 0;
-                  if (reducedMotion) {
-                    dragTranslation.setValue(target);
-                    finishDrop();
-                  } else {
-                    Animated.timing(dragTranslation, {
-                      toValue: target,
-                      duration: 160,
-                      useNativeDriver: true,
-                    }).start(({ finished }) => {
-                      if (finished) finishDrop();
-                    });
-                  }
+                  settleProjectDrop({
+                    translation: dragTranslation,
+                    target,
+                    reducedMotion,
+                    settle: finishDrop,
+                  });
                 }
               : undefined
           }
@@ -1169,6 +1198,7 @@ function ProjectGroup({
   onToggle,
   onLongPressProject,
   onProjectLayout,
+  onProjectGroupLayout,
   onProjectDragMove,
   onProjectDragEnd,
   dragging,
@@ -1193,7 +1223,8 @@ function ProjectGroup({
   collapsed: boolean;
   onToggle: () => void;
   onLongPressProject?: ((pageY: number) => void) | undefined;
-  onProjectLayout?: ((height: number) => void) | undefined;
+  onProjectLayout?: ((height: number, reorderHeight: number) => void) | undefined;
+  onProjectGroupLayout?: ((height: number) => void) | undefined;
   onProjectDragMove?: ((projectId: string, pageY: number) => void) | undefined;
   onProjectDragEnd?: (() => void) | undefined;
   dragging?: boolean | undefined;
@@ -1256,7 +1287,8 @@ function ProjectGroup({
     onProjectDragMove(group.project.id, event.nativeEvent.pageY);
   };
   const onLayout = (event: LayoutChangeEvent) => {
-    onProjectLayout?.(event.nativeEvent.layout.height + theme.spacing.md + (wide ? 2 : 0));
+    const height = event.nativeEvent.layout.height;
+    onProjectLayout?.(height, height + theme.spacing.md + (wide ? 2 : 0));
   };
   return (
     <Animated.View
@@ -1269,6 +1301,7 @@ function ProjectGroup({
       onTouchMove={dragging ? onTouchMove : undefined}
       onTouchEnd={dragging ? onProjectDragEnd : undefined}
       onTouchCancel={dragging ? onProjectDragEnd : undefined}
+      onLayout={(event) => onProjectGroupLayout?.(event.nativeEvent.layout.height)}
     >
       <View
         onLayout={onLayout}

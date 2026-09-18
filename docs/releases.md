@@ -18,17 +18,29 @@ Backend, native mobile, and website retain separate Release Please configuration
 and version manifests. Their generated files are disjoint, so one product's
 version change does not create a conflict in another product's release PR.
 
-Every ordinary PR adds one unique, append-only Markdown release intent:
+Release membership comes from changed paths; the Conventional Commit squash title
+controls the version bump and changelog. `feat` produces a minor release and
+`fix`/`perf` a patch; `!` marks a breaking change. Use release-neutral types such
+as `test`, `docs`, `ci`, and `chore` when no product behavior changes. CI validates
+the PR title for every author, including automation. No intent file is required.
 
-- `.release/backend/intents/<slug>.md` includes its changes in the Server release.
-- `.release/none/intents/<slug>.md` records why no Server release is needed.
+The Server package is rooted at `.` and excludes `.github`, historical `.release`
+metadata, `apps/mobile`, `packages/mobile`, and `docs`. Mobile and website keep
+their own configurations and path ownership. A mixed PR can affect several
+products. Co-located tests and root documentation must use the appropriate
+release-neutral title; Release Please exclusions are directory prefixes, not
+file globs.
 
-`none` applies to the Server train only; it does not prevent mobile or website
-releases. Mobile and website retain their own path-based ownership. A mixed PR
-can affect more than one product. Use an English Conventional Commit PR title:
-squash merging keeps that title, the changes, and their intent in one commit.
-Only the existing `renovate[bot]` and `github-actions[bot]` automation is exempt
-from the intent requirement.
+The shared root lockfile remains a Server build input. A `fix(deps)` changing it
+can therefore produce a Server patch even when the dependency is mobile-only.
+This conservative policy avoids suppressing dependency-only Server security
+fixes; it does not claim dependency-level release isolation.
+
+Squash-only merging preserves one authoritative title per product change.
+Migration from the former `.release/backend` package keeps the same manifest
+version, `server` release branch, `v` tags, root changelog and version file.
+Historical release boundaries remain readable; migration never bootstraps a new
+history or publishes a release by itself.
 
 ## Planning and publication are separate
 
@@ -48,7 +60,7 @@ The first release of a product needs an explicit bootstrap decision rather than
 an implicit fallback from an unknown boundary. A delayed trigger must not
 replace a newer plan with an older source snapshot.
 
-Server changes are collected through the backend intent component. Website
+Server changes are collected from its configured root package. Website
 changes are collected from `docs/website`; its `concept.md` and `landing-copy.md`
 are excluded. Shared deployment or test scripts are not automatically new
 website product changes.

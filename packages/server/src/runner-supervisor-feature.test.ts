@@ -2361,6 +2361,7 @@ describe('verity-runner supervisor runtime', () => {
     );
     await mkdir(secretDir, { recursive: true });
     await writeFile(join(secretDir, 'STALE_LEGACY_FILE'), 'stale-secret', { mode: 0o600 });
+    const childSignals: Array<NodeJS.Signals | null> = [];
     const broker = await runAgentSpawnBroker({
       runtimeDir,
       enforceRoot: false,
@@ -2370,7 +2371,11 @@ describe('verity-runner supervisor runtime', () => {
       // The real directory is root-owned under /run/verity-runner; the test runs
       // unprivileged, so file injection needs a writable one.
       secretDir,
-      spawnChild: (_command, args, options) => spawn(args[7]!, args.slice(8), options),
+      spawnChild: (_command, args, options) => {
+        const child = spawn(args[7]!, args.slice(8), options);
+        child.on('exit', (_code, signal) => childSignals.push(signal));
+        return child;
+      },
     });
     await expect(readFile(join(secretDir, 'STALE_LEGACY_FILE'))).rejects.toThrow(/ENOENT/u);
     const previousBrokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
@@ -2514,29 +2519,90 @@ describe('verity-runner supervisor runtime', () => {
         command: ['/bin/cat', `${secretDir}/ASC_KEY_FILE`],
       });
       expect(named).toMatchObject({ ok: true, exitCode: 0, stdout: '[REDACTED]' });
-      const concurrent = await Promise.all(
-        ['concurrent-file-1', 'concurrent-file-2'].map((correlationId) =>
-          run({
-            protocolVersion: 1,
-            kind: 'run-trusted-cli',
-            turnId,
-            correlationId,
-            secrets: [
-              {
-                secretAlias: 'ASC_API_KEY_P8',
-                env: 'SHARED_KEY_FILE',
-                injection: 'file',
-                secret: `${correlationId}-marker`,
-              },
-            ],
-            command: ['/bin/sh', '-c', 'sleep 0.1; cat "$SHARED_KEY_FILE"'],
-          }),
-        ),
+      const correlationIds = ['concurrent-file-1', 'concurrent-file-2'];
+      const releasePath = join(runtimeDir, 'release-concurrent-files');
+      const concurrentRuns = correlationIds.map((correlationId) =>
+        run({
+          protocolVersion: 1,
+          kind: 'run-trusted-cli',
+          turnId,
+          correlationId,
+          secrets: [
+            {
+              secretAlias: 'VERITY_CANARY_SECRET',
+              env: 'SHARED_KEY_FILE',
+              injection: 'file',
+              secret: `${correlationId}-marker`,
+            },
+          ],
+          command: [
+            '/bin/sh',
+            '-c',
+            `test -r "$SHARED_KEY_FILE" || exit 41; touch ${JSON.stringify(join(runtimeDir, `${correlationId}.ready`))}; attempts=0; while [ ! -f ${JSON.stringify(releasePath)} ]; do attempts=$((attempts + 1)); [ "$attempts" -lt 500 ] || exit 42; sleep 0.01; done; cat "$SHARED_KEY_FILE"`,
+          ],
+        }),
       );
-      expect(concurrent).toEqual([
+      try {
+        // Promise.all alone can pass with serialized calls. Both children must
+        // hold readable files before either may finish and trigger cleanup.
+        await vi.waitFor(
+          async () => {
+            for (const correlationId of correlationIds) {
+              await lstat(join(runtimeDir, `${correlationId}.ready`));
+              expect(
+                await readFile(join(secretDir, correlationId, 'SHARED_KEY_FILE'), 'utf8'),
+              ).toBe(`${correlationId}-marker`);
+            }
+          },
+          { timeout: 3000 },
+        );
+      } finally {
+        await writeFile(releasePath, 'release');
+        await Promise.all(concurrentRuns);
+      }
+      expect(await Promise.all(concurrentRuns)).toEqual([
         expect.objectContaining({ ok: true, exitCode: 0, stdout: '[REDACTED]' }),
         expect.objectContaining({ ok: true, exitCode: 0, stdout: '[REDACTED]' }),
       ]);
+      for (const correlationId of correlationIds) {
+        await expect(lstat(join(secretDir, correlationId))).rejects.toThrow(/ENOENT/u);
+      }
+      const terminatedRequest = {
+        protocolVersion: 1,
+        kind: 'run-trusted-cli',
+        turnId,
+        correlationId: 'terminated-file',
+        secrets: [
+          {
+            secretAlias: 'VERITY_CANARY_SECRET',
+            env: 'SHARED_KEY_FILE',
+            injection: 'file',
+            secret: 'terminated-file-marker',
+          },
+        ],
+        command: ['/bin/sh', '-c', 'cat "$SHARED_KEY_FILE"; kill -TERM $$'],
+      };
+      const terminated = await run(terminatedRequest);
+      expect(terminated).toMatchObject({ ok: true, exitCode: 1, stdout: '[REDACTED]' });
+      expect(childSignals.at(-1)).toBe('SIGTERM');
+      await expect(lstat(join(secretDir, 'terminated-file'))).rejects.toThrow(/ENOENT/u);
+      const retry = await run({
+        ...terminatedRequest,
+        correlationId: 'retry-after-terminated-file',
+        secrets: [
+          {
+            secretAlias: 'VERITY_CANARY_SECRET',
+            env: 'SHARED_KEY_FILE',
+            injection: 'file',
+            secret: 'retry-marker',
+          },
+        ],
+        command: ['/bin/sh', '-c', 'cat "$SHARED_KEY_FILE"'],
+      });
+      expect(retry).toMatchObject({ ok: true, exitCode: 0, stdout: '[REDACTED]' });
+      await expect(lstat(join(secretDir, 'retry-after-terminated-file'))).rejects.toThrow(
+        /ENOENT/u,
+      );
       // Removal can fail, and the file it leaves behind is a live credential at a
       // path the agent already knows. Take the directory's write bit away mid-run
       // so the unlink hits EACCES: the run has to come back as a failure naming

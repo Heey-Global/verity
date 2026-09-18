@@ -2360,243 +2360,10 @@ const migrations: Record<string, Migration> = {
     },
   },
 
+  // Kysely rejects already-applied migration IDs that disappear from the provider.
   '0084_cross_project_workflows': {
-    async up(db: Kysely<unknown>): Promise<void> {
-      await db.schema
-        .createTable('workflow_services')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('source_project_id', 'text', (c) =>
-          c.notNull().references('projects.id').onDelete('restrict'),
-        )
-        .addColumn('source_repository', 'text', (c) => c.notNull())
-        .addColumn('image_repository', 'text', (c) => c.notNull())
-        .addColumn('deployments', 'jsonb', (c) => c.notNull())
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addColumn('updated_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .execute();
-      await db.schema
-        .createTable('workflows')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('version', 'integer', (c) => c.notNull().defaultTo(1))
-        .addColumn('template_kind', 'text', (c) => c.notNull())
-        .addColumn('template_version', 'integer', (c) => c.notNull())
-        .addColumn('control_project_id', 'text', (c) =>
-          c.notNull().references('projects.id').onDelete('restrict'),
-        )
-        .addColumn('root_session_id', 'text', (c) =>
-          c.references('sessions.session_id').onDelete('set null'),
-        )
-        .addColumn('created_by_actor_id', 'text', (c) => c.notNull())
-        .addColumn('objective', 'text', (c) => c.notNull())
-        .addColumn('environment', 'text', (c) => c.notNull())
-        .addColumn('service_id', 'text', (c) =>
-          c.notNull().references('workflow_services.id').onDelete('restrict'),
-        )
-        .addColumn('state', 'text', (c) => c.notNull())
-        .addColumn('blocker', 'jsonb')
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addColumn('updated_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addCheckConstraint(
-          'workflows_state_check',
-          sql`state in ('draft','awaiting_authorization','running','awaiting_decision','blocked','succeeded','failed','cancelled','rolled_back')`,
-        )
-        .execute();
-      await db.schema
-        .createTable('workflow_steps')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('workflow_id', 'text', (c) =>
-          c.notNull().references('workflows.id').onDelete('cascade'),
-        )
-        .addColumn('ordinal', 'integer', (c) => c.notNull())
-        .addColumn('kind', 'text', (c) => c.notNull())
-        .addColumn('target_project_id', 'text', (c) =>
-          c.references('projects.id').onDelete('restrict'),
-        )
-        .addColumn('depends_on', sql`text[]`, (c) => c.notNull().defaultTo(sql`array[]::text[]`))
-        .addColumn('state', 'text', (c) => c.notNull())
-        .addColumn('attempt', 'integer', (c) => c.notNull().defaultTo(0))
-        .addColumn('max_attempts', 'integer', (c) => c.notNull().defaultTo(2))
-        .addColumn('input_artifact_refs', sql`text[]`, (c) =>
-          c.notNull().defaultTo(sql`array[]::text[]`),
-        )
-        .addColumn('completion_gate', 'text', (c) => c.notNull())
-        .addColumn('lease_expires_at', 'timestamptz')
-        .addColumn('next_reconcile_at', 'timestamptz')
-        .addColumn('expected_evidence', 'jsonb', (c) => c.notNull().defaultTo(sql`'{}'::jsonb`))
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addColumn('updated_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addUniqueConstraint('workflow_steps_workflow_ordinal_unique', ['workflow_id', 'ordinal'])
-        .addCheckConstraint(
-          'workflow_steps_state_check',
-          sql`state in ('pending','ready','dispatching','running','result_submitted','waiting_for_gate','completed','retryable_failed','permanently_failed','cancelled')`,
-        )
-        .execute();
-      await db.schema
-        .createTable('workflow_handoffs')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('workflow_id', 'text', (c) =>
-          c.notNull().references('workflows.id').onDelete('cascade'),
-        )
-        .addColumn('step_id', 'text', (c) =>
-          c.notNull().references('workflow_steps.id').onDelete('cascade'),
-        )
-        .addColumn('attempt', 'integer', (c) => c.notNull())
-        .addColumn('target_project_id', 'text', (c) =>
-          c.notNull().references('projects.id').onDelete('restrict'),
-        )
-        .addColumn('kind', 'text', (c) => c.notNull())
-        .addColumn('payload', 'jsonb', (c) => c.notNull())
-        .addColumn('capability_hash', 'text', (c) => c.notNull().unique())
-        .addColumn('expires_at', 'timestamptz', (c) => c.notNull())
-        .addColumn('session_id', 'text', (c) =>
-          c.references('sessions.session_id').onDelete('set null'),
-        )
-        .addColumn('previous_handoff_id', 'text', (c) =>
-          c.references('workflow_handoffs.id').onDelete('set null'),
-        )
-        .addColumn('dispatched_at', 'timestamptz')
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addUniqueConstraint('workflow_handoffs_attempt_unique', ['step_id', 'attempt'])
-        .execute();
-      await db.schema
-        .createTable('workflow_results')
-        .addColumn('handoff_id', 'text', (c) =>
-          c.primaryKey().references('workflow_handoffs.id').onDelete('cascade'),
-        )
-        .addColumn('attempt', 'integer', (c) => c.notNull())
-        .addColumn('status', 'text', (c) => c.notNull())
-        .addColumn('summary', 'text', (c) => c.notNull())
-        .addColumn('outputs', 'jsonb', (c) => c.notNull())
-        .addColumn('evidence', 'jsonb', (c) => c.notNull())
-        .addColumn('blocker', 'jsonb')
-        .addColumn('submitted_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addCheckConstraint(
-          'workflow_results_status_check',
-          sql`status in ('completed','blocked','failed','cancelled')`,
-        )
-        .execute();
-      await db.schema
-        .createTable('workflow_artifacts')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('workflow_id', 'text', (c) =>
-          c.notNull().references('workflows.id').onDelete('cascade'),
-        )
-        .addColumn('producer_step_id', 'text', (c) =>
-          c.notNull().references('workflow_steps.id').onDelete('restrict'),
-        )
-        .addColumn('type', 'text', (c) => c.notNull())
-        .addColumn('uri', 'text', (c) => c.notNull())
-        .addColumn('digest', 'text')
-        .addColumn('metadata', 'jsonb', (c) => c.notNull())
-        .addColumn('verified_at', 'timestamptz')
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .execute();
-      await db.schema
-        .createTable('workflow_policy_decisions')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('workflow_id', 'text', (c) =>
-          c.notNull().references('workflows.id').onDelete('cascade'),
-        )
-        .addColumn('transition', 'text', (c) => c.notNull())
-        .addColumn('actor_id', 'text', (c) => c.notNull())
-        .addColumn('authorization_hash', 'text', (c) => c.notNull())
-        .addColumn('decision', 'text', (c) => c.notNull())
-        .addColumn('reason', 'text', (c) => c.notNull())
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .execute();
-      await db.schema
-        .createTable('workflow_events')
-        .addColumn('id', 'bigserial', (c) => c.primaryKey())
-        .addColumn('workflow_id', 'text', (c) =>
-          c.notNull().references('workflows.id').onDelete('cascade'),
-        )
-        .addColumn('event_id', 'text', (c) => c.notNull().unique())
-        .addColumn('kind', 'text', (c) => c.notNull())
-        .addColumn('actor_type', 'text', (c) => c.notNull())
-        .addColumn('actor_id', 'text', (c) => c.notNull())
-        .addColumn('previous_state', 'text')
-        .addColumn('new_state', 'text')
-        .addColumn('policy_decision_id', 'text', (c) =>
-          c.references('workflow_policy_decisions.id').onDelete('restrict'),
-        )
-        .addColumn('payload', 'jsonb', (c) => c.notNull())
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .execute();
-      await db.schema
-        .createTable('workflow_provider_inbox')
-        .addColumn('id', 'bigserial', (c) => c.primaryKey())
-        .addColumn('provider', 'text', (c) => c.notNull())
-        .addColumn('delivery_id', 'text', (c) => c.notNull())
-        .addColumn('event_type', 'text', (c) => c.notNull())
-        .addColumn('payload', 'jsonb', (c) => c.notNull())
-        .addColumn('received_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addColumn('processed_at', 'timestamptz')
-        .addColumn('error', 'text')
-        .addUniqueConstraint('workflow_provider_inbox_delivery_unique', ['provider', 'delivery_id'])
-        .execute();
-      await db.schema
-        .createTable('workflow_dispatch_outbox')
-        .addColumn('id', 'text', (c) => c.primaryKey())
-        .addColumn('workflow_id', 'text', (c) =>
-          c.notNull().references('workflows.id').onDelete('cascade'),
-        )
-        .addColumn('step_id', 'text', (c) =>
-          c.notNull().references('workflow_steps.id').onDelete('cascade'),
-        )
-        .addColumn('attempt', 'integer', (c) => c.notNull())
-        .addColumn('kind', 'text', (c) => c.notNull())
-        .addColumn('payload', 'jsonb', (c) => c.notNull())
-        .addColumn('available_at', 'timestamptz', (c) => c.notNull())
-        .addColumn('claimed_until', 'timestamptz')
-        .addColumn('completed_at', 'timestamptz')
-        .addColumn('attempts', 'integer', (c) => c.notNull().defaultTo(0))
-        .addColumn('last_error', 'text')
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addUniqueConstraint('workflow_dispatch_outbox_attempt_unique', [
-          'step_id',
-          'attempt',
-          'kind',
-        ])
-        .execute();
-      await db.schema
-        .createTable('workflow_commands')
-        .addColumn('actor_id', 'text', (c) => c.notNull())
-        .addColumn('idempotency_key', 'text', (c) => c.notNull())
-        .addColumn('workflow_id', 'text', (c) => c.references('workflows.id').onDelete('cascade'))
-        .addColumn('command_kind', 'text', (c) => c.notNull())
-        .addColumn('request_hash', 'text', (c) => c.notNull())
-        .addColumn('response', 'jsonb', (c) => c.notNull())
-        .addColumn('created_at', 'timestamptz', (c) => c.notNull().defaultTo(sql`now()`))
-        .addPrimaryKeyConstraint('workflow_commands_pkey', ['actor_id', 'idempotency_key'])
-        .execute();
-      await db.schema
-        .createIndex('workflow_steps_due_idx')
-        .on('workflow_steps')
-        .columns(['state', 'next_reconcile_at'])
-        .execute();
-      await db.schema
-        .createIndex('workflow_outbox_due_idx')
-        .on('workflow_dispatch_outbox')
-        .columns(['completed_at', 'available_at'])
-        .execute();
-    },
-    async down(db: Kysely<unknown>): Promise<void> {
-      for (const table of [
-        'workflow_commands',
-        'workflow_dispatch_outbox',
-        'workflow_provider_inbox',
-        'workflow_events',
-        'workflow_policy_decisions',
-        'workflow_artifacts',
-        'workflow_results',
-        'workflow_handoffs',
-        'workflow_steps',
-        'workflows',
-        'workflow_services',
-      ]) {
-        await db.schema.dropTable(table).execute();
-      }
-    },
+    async up(): Promise<void> {},
+    async down(): Promise<void> {},
   },
 
   '0086_events_session_id_type_id_idx': {
@@ -2836,6 +2603,27 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('verity_settings').dropColumn('opencode_api_key').execute();
       await db.schema.alterTable('verity_settings').dropColumn('opencode_base_url').execute();
     },
+  },
+  '0097_remove_cross_project_workflows': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      for (const table of [
+        'workflow_commands',
+        'workflow_dispatch_outbox',
+        'workflow_provider_inbox',
+        'workflow_events',
+        'workflow_policy_decisions',
+        'workflow_artifacts',
+        'workflow_results',
+        'workflow_handoffs',
+        'workflow_steps',
+        'workflows',
+        'workflow_services',
+      ]) {
+        await db.schema.dropTable(table).ifExists().execute();
+      }
+    },
+    // Removal is permanent; rolling back must not recreate the retired feature.
+    async down(): Promise<void> {},
   },
 };
 

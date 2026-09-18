@@ -131,15 +131,15 @@ describe('release-please train isolation', () => {
     expect(existsSync('.release-please-manifest.json')).toBe(false);
   });
 
-  it('reads backend action outputs from the non-root intent component', () => {
+  it('reads backend action outputs from the root product package', () => {
     const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
       jobs: Record<string, { outputs?: Record<string, string>; steps?: WorkflowStep[] }>;
     };
     const job = release.jobs['release-please'];
     for (const output of ['release_created', 'major', 'minor', 'patch', 'sha']) {
-      expect(JSON.stringify(job), output).toContain(`.release/backend--${output}`);
+      expect(JSON.stringify(job), output).toContain(`release-backend.outputs['${output}']`);
     }
-    expect(JSON.stringify(job)).not.toMatch(/release-backend\.outputs\.(release_created|sha)/u);
+    expect(JSON.stringify(job)).not.toContain('.release/backend--');
   });
 
   it('dispatches each generated PR with its owning train', () => {
@@ -193,6 +193,8 @@ describe('release-please train isolation', () => {
           'if [[ "$1" == diff && "$2" == --no-renames ]]; then\n' +
           '  [[ "$RELEASE_DIFF_FAIL" != true ]] || exit 1\n' +
           '  printf "%s\\n" "$RELEASE_DIFF"\n' +
+          'elif [[ "$1" == show ]]; then\n' +
+          `  printf '%s\\n' '{".":"1.2.3"}'\n` +
           'elif [[ "$1" == tag ]]; then\n' +
           '  printf "%s\\n" "$RELEASE_NATIVE_TAG"\n' +
           'elif [[ "$1" == diff && "$2" == --name-only ]]; then\n' +
@@ -257,6 +259,7 @@ describe('release-please train isolation', () => {
             string,
             {
               'changelog-path'?: string;
+              'exclude-paths'?: string[];
               'version-file'?: string;
               'extra-files'?: Array<{ path: string } | string>;
             }
@@ -509,7 +512,7 @@ describe('Verity website publication smoke', () => {
     // The publish job reads `website-*` outputs and tags `v${VERSION}`; both are
     // downstream of four properties in one file, none of which fails loudly.
     // A root backend component would collect website commits as well; the
-    // explicit intent directory keeps those histories disjoint by construction.
+    // root exclusions keep website-only commits out of the Server train.
     const config = JSON.parse(readFileSync('release-please-config.website.json', 'utf8')) as {
       packages: Record<
         string,
@@ -521,6 +524,7 @@ describe('Verity website publication smoke', () => {
           'tag-separator'?: string;
           'version-file'?: string;
           'changelog-path'?: string;
+          'exclude-paths'?: string[];
         }
       >;
     };
@@ -530,14 +534,14 @@ describe('Verity website publication smoke', () => {
       readFileSync('release-please-config.backend.json', 'utf8'),
     ) as typeof config;
     expect(path, 'the website has no package in the release config').toBeDefined();
-    const backendPath = '.release/backend';
+    const backendPath = '.';
     const backend = backendConfig.packages[backendPath];
-    expect(backendConfig.packages['.']).toBeUndefined();
-    expect(path?.startsWith(`${backendPath}/`) || backendPath.startsWith(`${path}/`)).toBe(false);
-    // These are Release Please's documented root-relative form, not filesystem
-    // absolutes: BaseStrategy.addPath strips the leading slash before joining
-    // the component path. Losing it silently creates private release metadata
-    // under `.release/backend` while every publisher keeps reading the root.
+    expect(
+      backend?.['exclude-paths']?.some(
+        (excluded) => path === excluded || path?.startsWith(`${excluded}/`),
+      ),
+    ).toBe(true);
+    // Publishers still consume the established root metadata after migration.
     expect(backend?.['version-file']).toBe(`/${['version', '.txt'].join('')}`);
     expect(backend?.['changelog-path']).toBe(`/${['CHANGE', 'LOG.md'].join('')}`);
     expect(backend?.['package-name']).toBe('server');
@@ -1325,7 +1329,7 @@ describe('self-update release gate', () => {
     const backendRelease = JSON.parse(
       readFileSync('release-please-config.backend.json', 'utf8'),
     ) as { packages: Record<string, { 'initial-version'?: string } | undefined> };
-    const bootstrapVersion = backendRelease.packages['.release/backend']?.['initial-version'];
+    const bootstrapVersion = backendRelease.packages['.']?.['initial-version'];
     // Both sides are optional lookups, so a bare equality is also satisfied by
     // both being absent — which is either the bootstrap correctly retired or a
     // key typed wrong on one side, and those must not read alike. Retirement is
@@ -3582,19 +3586,21 @@ describe('changed-area detector', () => {
     const backend = JSON.parse(readFileSync('release-please-config.backend.json', 'utf8')) as {
       packages: Record<string, unknown>;
     };
-    expect(Object.keys(backend.packages)).toEqual(['.release/backend']);
-    expect(classifier?.startsWith('.release/backend/')).toBe(false);
+    expect(Object.keys(backend.packages)).toEqual(['.']);
+    expect(classifier?.startsWith('.release/')).toBe(false);
     // GitHub wraps interpolated `run` blocks in one expression with a hard
     // 21,000-character ceiling. Crossing it creates a zero-job failure with no
     // logs, so keep enough room that a useful comment cannot silently break CI.
     expect(detect?.run?.length).toBeLessThan(20_500);
     expect(detect?.run).toContain('&event=push&');
     expect(workflow.concurrency?.group).toContain('${{ github.event_name }}');
-    const intent = workflow.jobs.changes.steps.find(
-      (step) => step.name === 'Validate explicit release intent',
+    const title = workflow.jobs.changes.steps.find(
+      (step) => step.name === 'Validate Conventional Commit title',
     );
-    expect(intent?.if).toBe("github.event_name == 'pull_request'");
-    expect(intent?.run).toContain('.github/scripts/validate-release-intent');
+    expect(title?.if).toBe("github.event_name == 'pull_request'");
+    expect(title?.run).toContain('.github/scripts/validate-release-title');
+    expect(title?.env?.PR_TITLE).toBe('${{ github.event.pull_request.title }}');
+    expect(JSON.stringify(workflow)).not.toContain('validate-release-intent');
   });
 
   it('offers the full manual run and every isolated release train', () => {

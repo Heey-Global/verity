@@ -1,6 +1,14 @@
 {
-  "branch": "staging-mobile-v1.33.3",
-  "commit": "bb1651df966ca9e747f36fecde0c601eee157073",
-  "tag": "mobile-v1.33.3",
-  "version": "1.33.3"
+  "schema": 1,
+  "version": "1.33.7",
+  "runtime": "1.33.0",
+  "channel": "testflight",
+  "commit": "a008217f4140fc659b97ca7a587dd5b3a3709ead",
+  "tag": "mobile-v1.33.7",
+  "branch": "staging-mobile-v1.33.7-a008217f4140fc659b97ca7a587dd5b3a3709ead",
+  "baseline": "mobile-v1.33.6",
+  "group": "50263c60-1a2a-4dd6-a392-cbd906bd8947",
+  "notes": [
+    "keep project reordering from stranding collapsed groups (#466)"
+  ]
 }

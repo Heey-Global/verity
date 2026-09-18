@@ -31,6 +31,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const firstPrompt = 'managed-install-before-restart';
 const secondPrompt = 'managed-install-after-restart';
+const repairPrompt = 'managed-install-after-repair';
 const responsePrefix = 'Verity managed install: Grüße — größer 🚀\n';
 
 // Responses can contain credentials. Diagnostics identify the route and status,
@@ -130,7 +131,10 @@ export function assertCompletedTurn(events, prompt) {
     ({ event }) => event.t === 'prompt' && event.text.includes(prompt),
   );
   assert.ok(start >= 0, 'submitted prompt was not persisted');
-  const turn = events.slice(start + 1).map(({ event }) => event);
+  const nextPrompt = events.findIndex(({ event }, index) => index > start && event.t === 'prompt');
+  const turn = events
+    .slice(start + 1, nextPrompt < 0 ? undefined : nextPrompt)
+    .map(({ event }) => event);
   assert.equal(
     turn.some((event) => event.t === 'error'),
     false,
@@ -239,7 +243,7 @@ export async function runAcceptance(phase, { api, state, pairingCode, pause = de
     await runTurn(api, state, firstPrompt, pause);
     return state;
   }
-  assert.equal(phase, 'verify-restart', 'unknown acceptance phase');
+  assert.ok(['verify-restart', 'verify-repair'].includes(phase), 'unknown acceptance phase');
   assert.equal((await json(api, '/secret/status')).status, 'sealed', 'restart must seal the store');
   const auth = await json(api, '/secret/unlock', {
     method: 'POST',
@@ -252,13 +256,17 @@ export async function runAcceptance(phase, { api, state, pairingCode, pause = de
     'unlock did not return a device token',
   );
   const resumed = { ...state, token: auth.token };
-  const settings = await json(api, '/settings', { token: resumed.token });
+  // Repair must preserve existing device authorization, not only allow new pairing.
+  const settings = await json(api, '/settings', { token: state.token });
   assert.equal(settings.settings?.advancedModeEnabled, true, 'settings were not persisted');
   const session = await json(api, `/sessions/${state.sessionId}`, { token: resumed.token });
   assert.equal(session.sessionId, state.sessionId, 'session identity changed after restart');
   assert.equal(session.projectId, 'verity-control');
   assertCompletedTurn(await readHistory(api, resumed.token, state.sessionId), firstPrompt);
-  await runTurn(api, resumed, secondPrompt, pause);
+  if (phase === 'verify-repair') {
+    assertCompletedTurn(await readHistory(api, resumed.token, state.sessionId), secondPrompt);
+  }
+  await runTurn(api, resumed, phase === 'verify-repair' ? repairPrompt : secondPrompt, pause);
   return resumed;
 }
 
@@ -266,7 +274,7 @@ async function main() {
   const phase = process.argv[2];
   assert.ok(typeof phase === 'string', 'expected an acceptance phase');
   assert.ok(
-    ['initialize', 'exercise', 'verify-restart'].includes(phase),
+    ['initialize', 'exercise', 'verify-restart', 'verify-repair'].includes(phase),
     'expected an acceptance phase',
   );
   const statePath = process.env.VERITY_SMOKE_STATE_PATH ?? '/state/state.json';

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.0](https://github.com/Heey-Global/verity/compare/v0.13.2...v0.14.0) (2026-09-18)
+
+
+### Features
+
+* **opencode:** add reliable model selection ([#453](https://github.com/Heey-Global/verity/issues/453)) ([12e715e](https://github.com/Heey-Global/verity/commit/12e715e41d5859a91b96afa8465caf5d39b1251e))
+
+
+### Bug Fixes
+
+* **installer:** repair stopped servers and automate installed acceptance ([#458](https://github.com/Heey-Global/verity/issues/458)) ([851159f](https://github.com/Heey-Global/verity/commit/851159fb95d074fcc3fb3a9d16261ce3364f8f47))
+* **mobile:** search OpenCode models and preserve availability selections ([#462](https://github.com/Heey-Global/verity/issues/462)) ([56d8a94](https://github.com/Heey-Global/verity/commit/56d8a94a1aa41d9e14ccaf1fb4aa8918f536d2c1))
+* **release:** ignore stale server release drafts ([#461](https://github.com/Heey-Global/verity/issues/461)) ([2f9e12a](https://github.com/Heey-Global/verity/commit/2f9e12a32997af3da1664ed34e57d4906f9630a4))
+* **release:** separate planning and batch immutable OTA candidates ([#454](https://github.com/Heey-Global/verity/issues/454)) ([16d7c27](https://github.com/Heey-Global/verity/commit/16d7c27d0ed534e873f02fb8f29a49a6e68b9fe0))
+
 ## [0.13.2](https://github.com/Heey-Global/verity/compare/v0.13.1...v0.13.2) (2026-09-17)
 
 

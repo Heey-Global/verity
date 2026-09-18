@@ -14,15 +14,6 @@ export function createMcpGatewayToolExecutor(options: {
   /** Root containing one supervisor runtime directory per project. */
   runnerRoot?: string | undefined;
   runTrustedCli?: typeof runSupervisorTrustedCli | undefined;
-  createDelivery?:
-    | ((input: {
-        projectId: string;
-        sessionId: string;
-        turnId: string;
-        invocationId: string;
-        request: unknown;
-      }) => Promise<unknown>)
-    | undefined;
   googleSlides?:
     | ((input: {
         projectId: string;
@@ -51,16 +42,6 @@ export function createMcpGatewayToolExecutor(options: {
         id: callId,
         name: 'verity_http_request',
         input: request,
-      });
-    }
-    if (toolName === 'verity_create_delivery') {
-      if (options.createDelivery === undefined) throw new Error('delivery creation is unavailable');
-      return options.createDelivery({
-        projectId,
-        sessionId,
-        turnId,
-        invocationId,
-        request,
       });
     }
     if (toolName === 'verity_google_slides') {

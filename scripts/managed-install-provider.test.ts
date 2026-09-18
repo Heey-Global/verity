@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -5,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-managed-install-acp.mjs', import.meta.url));
 
-async function exercise(resume?: string) {
+async function exercise(prompt: string, resume?: string) {
   const child = spawn(process.execPath, [fixture], { env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
   const lines = createInterface({ input: child.stdout });
   const iterator = lines[Symbol.asyncIterator]();
@@ -29,8 +30,6 @@ async function exercise(resume?: string) {
     expect(sessionId).toEqual(expect.any(String));
     send(3, 'session/set_mode', { sessionId, modeId: 'auto' });
     expect(await read()).toMatchObject({ id: 3, result: {} });
-    const prompt =
-      resume === undefined ? 'managed-install-before-restart' : 'managed-install-after-restart';
     send(4, 'session/prompt', {
       sessionId,
       prompt: [{ type: 'text', text: `Project context: café 日本語\nUser prompt: ${prompt}\n` }],
@@ -70,7 +69,16 @@ describe('managed installation deterministic provider', () => {
   // A restarted provider must answer the new prompt, not replay a fixed success
   // marker that could let a broken post-restart turn pass the acceptance gate.
   it('executes fresh and resumed ACP turns with distinct Unicode output and no credentials', async () => {
-    const sessionId = await exercise();
-    await exercise(sessionId);
+    // Derive phases from the driver so a new acceptance turn cannot silently
+    // outgrow the provider fixture's supported prompts.
+    const driver = readFileSync(
+      new URL('./managed-install-acceptance.mjs', import.meta.url),
+      'utf8',
+    );
+    const prompts = [...driver.matchAll(/const \w+Prompt = '([^']+)'/gu)].map((match) => match[1]!);
+    expect(prompts.length).toBeGreaterThan(0);
+    expect(new Set(prompts).size).toBe(prompts.length);
+    let sessionId: string | undefined;
+    for (const prompt of prompts) sessionId = await exercise(prompt, sessionId);
   });
 });

@@ -8,10 +8,14 @@ import { parse } from 'yaml';
 const script = resolve('scripts/release-lifecycle.mjs');
 function run(state: {
   draft?: boolean;
+  unrelatedDraft?: boolean;
+  newerDraft?: boolean;
   pending?: boolean;
   missing?: boolean;
   stale?: boolean;
   mismatchedTag?: boolean;
+  historicalManifest?: unknown;
+  mainManifest?: unknown;
 }) {
   const train = 'backend';
   const manifestName = `.release-please-manifest.${train}.json`;
@@ -22,28 +26,40 @@ function run(state: {
   git('config', 'user.name', 'Test');
   git('config', 'tag.gpgSign', 'false');
   git('config', 'commit.gpgSign', 'false');
-  writeFileSync(join(cwd, manifestName), JSON.stringify({ '.release/backend': '1.2.3' }));
+  writeFileSync(
+    join(cwd, manifestName),
+    JSON.stringify(state.historicalManifest ?? { '.': '1.2.3' }),
+  );
   git('add', '.');
   git('commit', '-qm', 'chore: fixture');
-  const sha = git('rev-parse', 'HEAD');
+  const boundarySha = git('rev-parse', 'HEAD');
   git('tag', 'v1.2.3');
   if (state.mismatchedTag) {
-    writeFileSync(join(cwd, manifestName), JSON.stringify({ '.release/backend': '1.2.4' }));
+    writeFileSync(join(cwd, manifestName), JSON.stringify({ '.': '1.2.4' }));
     git('add', '.');
     git('commit', '-qm', 'chore: next version');
     git('tag', '--force', 'v1.2.3');
-    git('reset', '--hard', sha);
+    git('reset', '--hard', boundarySha);
   }
+  writeFileSync(join(cwd, manifestName), JSON.stringify(state.mainManifest ?? { '.': '1.2.3' }));
+  git('add', '.');
+  git('commit', '--allow-empty', '-qm', 'chore: migrate manifest');
+  const sha = git('rev-parse', 'HEAD');
   mkdirSync(join(cwd, 'bin'));
   writeFileSync(
     join(cwd, 'bin/gh'),
     `#!/usr/bin/env node
 const args = process.argv.slice(2).join(' ');
-const fixture = ${JSON.stringify({ sha, state })};
+const fixture = ${JSON.stringify({ sha, boundarySha, state })};
 let result;
 if (args.includes('git/ref/heads/main')) result = {object:{sha:fixture.state.stale ? 'f'.repeat(40) : fixture.sha}};
-else if (args.includes('/releases?')) result = [(fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:'v1.2.3', draft:!!fixture.state.draft, prerelease:false}]];
-else if (args.startsWith('pr list')) result = fixture.state.pending ? [{number:1,author:{login:'github-actions'},mergeCommit:{oid:fixture.sha}}] : [];
+else if (args.includes('/releases?')) {
+  const releases = (fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:'v1.2.3', draft:!!fixture.state.draft, prerelease:false}];
+  if (fixture.state.unrelatedDraft) releases.push({tag_name:'v0.9.0', draft:true, prerelease:false});
+  if (fixture.state.newerDraft) releases.push({tag_name:'v1.3.0', draft:true, prerelease:false});
+  result = [releases];
+}
+else if (args.startsWith('pr list')) result = fixture.state.pending ? [{number:1,author:{login:'github-actions'},mergeCommit:{oid:fixture.boundarySha}}] : [];
 else throw new Error(args);
 process.stdout.write(JSON.stringify(result));
 `,
@@ -68,6 +84,40 @@ describe('release lifecycle reconciliation', () => {
   it('plans only against a published boundary', () => {
     expect(run({})).toMatchObject({ status: 0, output: 'mode=plan\n' });
   });
+  it.each([false, true])(
+    'retains legacy history across the root migration (pending=%s)',
+    (pending) => {
+      expect(run({ pending, historicalManifest: { '.release/backend': '1.2.3' } })).toMatchObject({
+        status: 0,
+        output: pending ? 'mode=release\n' : 'mode=plan\n',
+      });
+    },
+  );
+  it.each([false, true])('rejects mismatched historical versions (pending=%s)', (pending) => {
+    const result = run({ pending, historicalManifest: { '.release/backend': '1.2.2' } });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      pending ? 'Pending release version differs' : 'Published tag does not contain',
+    );
+  });
+  it.each([
+    {},
+    { '.release/backend': '1.2.3' },
+    { '.': 'invalid' },
+    { '.': 123 },
+    { '.': '1.2.3', '.release/backend': '1.2.2' },
+  ])('rejects invalid or unmigrated main manifests: %j', (mainManifest) => {
+    expect(run({ mainManifest }).status).not.toBe(0);
+  });
+  it.each([false, true])('rejects invalid historical manifests (pending=%s)', (pending) => {
+    for (const historicalManifest of [
+      {},
+      { '.release/backend': 'invalid' },
+      { '.': '1.2.3', '.release/backend': '1.2.2' },
+    ]) {
+      expect(run({ pending, historicalManifest }).status).not.toBe(0);
+    }
+  });
   it('never bootstraps history when the expected release disappears', () => {
     const result = run({ missing: true });
     expect(result.status).not.toBe(0);
@@ -78,6 +128,14 @@ describe('release lifecycle reconciliation', () => {
   });
   it('does not create the next PR while publication is pending', () => {
     const result = run({ draft: true, pending: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('publication is pending');
+  });
+  it('ignores abandoned drafts from older release versions', () => {
+    expect(run({ unrelatedDraft: true })).toMatchObject({ status: 0, output: 'mode=plan\n' });
+  });
+  it('rejects drafts newer than the manifest version', () => {
+    const result = run({ newerDraft: true });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('publication is pending');
   });

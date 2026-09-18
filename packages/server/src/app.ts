@@ -1,10 +1,5 @@
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
-import type {
-  VeritySettingsPatch,
-  EventStore,
-  SealableSecretCipher,
-  WorkflowStore,
-} from '@verity/store';
+import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
   VERITY_CONTROL_PROJECT_ID,
@@ -53,9 +48,6 @@ export interface ControlPlaneDeps {
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
   /** Installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
-  workflowStore?: WorkflowStore | undefined;
-  workflowGithubWebhookSecret?: string | undefined;
-  authorizeWorkflowAction?: ServerDeps['authorizeWorkflowAction'];
   /** Remove a session's backend transcript files from the runner runtime as part of
    *  deleting it. Forwarded verbatim to {@link buildServer}; see the same field on
    *  `ServerDeps`. Omit on deployments without the runner supervisor. */
@@ -299,13 +291,6 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { unlockClientIdentity: deps.unlockClientIdentity }
       : {}),
     ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
-    ...(deps.workflowStore !== undefined ? { workflowStore: deps.workflowStore } : {}),
-    ...(deps.workflowGithubWebhookSecret !== undefined
-      ? { workflowGithubWebhookSecret: deps.workflowGithubWebhookSecret }
-      : {}),
-    ...(deps.authorizeWorkflowAction !== undefined
-      ? { authorizeWorkflowAction: deps.authorizeWorkflowAction }
-      : {}),
     bus: deps.bus,
     ...(deps.purgeSessionArtifacts !== undefined
       ? { purgeSessionArtifacts: deps.purgeSessionArtifacts }

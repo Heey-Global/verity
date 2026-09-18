@@ -95,12 +95,12 @@ describe('secretGrantScopes', () => {
     expect(secretGrantScopes('verity_list_sessions')).toEqual([]);
   });
 
-  it('offers no standing grant for the delivery tool either', () => {
+  it('offers no standing grant for the session handoff tool either', () => {
     // The allowlist that made the two above un-grantable also flipped this one's
     // `allowStandingGrant` from true to false — it is the only tool on the gateway whose flag
     // the change actually altered, and it had no assertion on this side. Inert server-side,
     // since a grant is only ever consulted for a tool that resolves a secret, but the client
     // half is what stops a "don't ask again" button appearing if that ever changes.
-    expect(secretGrantScopes('verity_create_delivery')).toEqual([]);
+    expect(secretGrantScopes('verity_session_handoff')).toEqual([]);
   });
 });

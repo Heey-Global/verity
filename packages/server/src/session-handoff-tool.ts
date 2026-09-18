@@ -16,10 +16,8 @@ import type { SessionStatus } from './status.js';
 /**
  * The two control-plane session tools: `verity_list_sessions` and `verity_session_handoff`.
  *
- * A Verity Control session can read the fleet but has no way to hand what it found to the
- * session that must act on it. `verity_create_delivery` is not that rail — it always spawns
- * a session, carries no free text and runs a fixed step chain. These two are the missing
- * pair: one to address a session, one to write a briefing into it.
+ * A Verity Control session can address an existing project session or explicitly create
+ * a new one, then deliver a written briefing as a turn.
  *
  * Everything here is deliberately narrow, because the capability is not:
  *
@@ -29,9 +27,9 @@ import type { SessionStatus } from './status.js';
  *   draw from, and the response is built field by field from it. No message, no transcript,
  *   no branch diff, no file path can reach the caller through this module — reading another
  *   session's work is not what it is for.
- * - **No spawn, no authority.** The target must already exist and be able to take a turn. The
- *   handoff passes no capability and no protected environment, so it grants the target
- *   nothing it did not already have.
+ * - **No additional authority.** The target is an eligible existing session or an explicitly
+ *   selected new session in a known project. The handoff passes no capability and no
+ *   protected environment, so it grants the target no additional authority.
  * - **Approval-gated.** Not enforced here: both tools ride the MCP gateway, where every call
  *   raises a card with no configuration waiver (ADR 0014 D2). The card shows the resolved
  *   parameters, including the full briefing text.
