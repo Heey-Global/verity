@@ -762,6 +762,7 @@ function SessionList({ client }: { client: VerityClient }) {
         refreshing={refreshingOverview}
         onRefresh={onRefreshOverview}
         data={activeGroups}
+        extraData={collapsedOverride}
         keyExtractor={(g) => g.id}
         renderItem={renderItem}
         contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
