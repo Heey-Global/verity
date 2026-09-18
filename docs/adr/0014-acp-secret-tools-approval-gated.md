@@ -380,15 +380,11 @@ fails provisioning before advertising brokered tools when the enforcement primit
 
 ## Amendment 2 (2026-08-26) — the control-plane session tools ride this gateway under D2
 
-This ADR's decisions name three tools: `verity_http_request`,
-`verity_secret_run`, `verity_secret_job`. The gateway's served set has since
-drifted from that list in both directions, and this amendment is where it is
-reconciled. `verity_secret_job` is not on `gatewayToolNameSchema`;
-`verity_create_delivery` is, and this ADR never named it. Two more are added
-now — `verity_list_sessions` and `verity_session_handoff`, the Verity Control
-tools that let one session read the fleet's metadata and hand a briefing to
-another session. The served set is therefore five, as the Consequences below
-count it.
+This amendment extended the gateway to `verity_list_sessions` and
+`verity_session_handoff`, allowing Verity Control to read fleet metadata and send
+briefings to project sessions. Handoffs also support explicitly creating a new
+session in the target project. These tools remain available after the retirement
+of `verity_create_delivery` and the workflow engine (ADR 0015).
 
 The two new ones are not secret tools. They land here anyway, because they land
 on this gateway, and D2 is a property of the channel rather than of the three

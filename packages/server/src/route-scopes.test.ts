@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import { join } from 'node:path';
@@ -104,16 +104,20 @@ const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
 }).trim();
 
 function routeSourceFiles(): readonly string[] {
-  return execFileSync(
-    'git',
-    // A directory pathspec, not a glob: whether `*` crosses `/` depends on
-    // pathspec magic and on --literal-pathspecs being absent. Filter here instead.
-    ['ls-files', '--cached', '--others', '--exclude-standard', 'packages/server/src'],
-    { encoding: 'utf8', cwd: REPO_ROOT },
-  )
-    .split('\n')
-    .filter((path) => path.endsWith('.ts') && !path.endsWith('.test.ts'))
-    .map((path) => join(REPO_ROOT, path));
+  return (
+    execFileSync(
+      'git',
+      // A directory pathspec, not a glob: whether `*` crosses `/` depends on
+      // pathspec magic and on --literal-pathspecs being absent. Filter here instead.
+      ['ls-files', '--cached', '--others', '--exclude-standard', 'packages/server/src'],
+      { encoding: 'utf8', cwd: REPO_ROOT },
+    )
+      .split('\n')
+      .filter((path) => path.endsWith('.ts') && !path.endsWith('.test.ts'))
+      .map((path) => join(REPO_ROOT, path))
+      // Unstaged deletions remain in the index but no longer register runtime routes.
+      .filter((path) => existsSync(path))
+  );
 }
 
 function registeredRouteKeys(): readonly string[] {

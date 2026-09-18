@@ -1413,58 +1413,6 @@ export interface SpawnRequest {
   issue?: number;
 }
 
-const workflowStepSchema = z.object({
-  id: z.string(),
-  ordinal: z.number().int().nonnegative(),
-  kind: z.string(),
-  state: z.enum([
-    'pending',
-    'ready',
-    'dispatching',
-    'running',
-    'result_submitted',
-    'waiting_for_gate',
-    'completed',
-    'retryable_failed',
-    'permanently_failed',
-    'cancelled',
-  ]),
-  attempt: z.number().int().nonnegative(),
-  maxAttempts: z.number().int().positive(),
-  targetProjectId: z.string().nullable(),
-  completionGate: z.string(),
-});
-
-const workflowSchema = z.object({
-  id: z.string(),
-  version: z.number().int().positive(),
-  state: z.enum([
-    'draft',
-    'awaiting_authorization',
-    'running',
-    'awaiting_decision',
-    'blocked',
-    'succeeded',
-    'failed',
-    'cancelled',
-    'rolled_back',
-  ]),
-  objective: z.string(),
-  environment: z.string(),
-  serviceId: z.string(),
-  steps: z.array(workflowStepSchema),
-});
-export type Workflow = z.infer<typeof workflowSchema>;
-
-export interface CreateWorkflowRequest {
-  idempotencyKey: string;
-  controlProjectId: string;
-  rootSessionId?: string;
-  objective: string;
-  environment: string;
-  serviceId: string;
-}
-
 /** Body for `POST /projects`. Two shapes: an existing GitHub repository as
  * `owner/repo` (plus the GitHub URL forms the server canonicalises through its
  * shared project parser), or a project with NO GitHub repository behind it,
@@ -2942,76 +2890,6 @@ export class VerityClient {
       this.uploadFetchImpl,
     );
     return meetingTranscriptCreatedSchema.parse(await res.json());
-  }
-
-  async listWorkflows(): Promise<Workflow[]> {
-    const res = await this.request('/workflows', { method: 'GET' });
-    return z.array(workflowSchema).parse(await res.json());
-  }
-
-  async getWorkflow(id: string): Promise<Workflow> {
-    const res = await this.request(`/workflows/${encodeURIComponent(id)}`, { method: 'GET' });
-    return workflowSchema.parse(await res.json());
-  }
-
-  async createWorkflow(body: CreateWorkflowRequest): Promise<Workflow> {
-    const res = await this.request('/workflows', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return workflowSchema.parse(await res.json());
-  }
-
-  async authorizeWorkflow(id: string, version: number): Promise<Workflow> {
-    const res = await this.request(`/workflows/${encodeURIComponent(id)}/authorize`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ version }),
-    });
-    return workflowSchema.parse(await res.json());
-  }
-
-  async dispatchWorkflowStep(id: string, stepId: string, version: number): Promise<void> {
-    await this.request(
-      `/workflows/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}/dispatch`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ version }),
-      },
-    );
-  }
-
-  async cancelWorkflow(id: string): Promise<Workflow> {
-    const res = await this.request(`/workflows/${encodeURIComponent(id)}/cancel`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '{}',
-    });
-    return workflowSchema.parse(await res.json());
-  }
-
-  async approveWorkflowDecision(id: string, stepId: string, version: number): Promise<Workflow> {
-    const res = await this.request(`/workflows/${encodeURIComponent(id)}/decisions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ stepId, version, approved: true }),
-    });
-    return workflowSchema.parse(await res.json());
-  }
-
-  async recordWorkflowImage(id: string, digest: string, version: number): Promise<Workflow> {
-    const res = await this.request(`/workflows/${encodeURIComponent(id)}/image-candidate`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        digest,
-        version,
-        idempotencyKey: `image-${version}-${digest}`,
-      }),
-    });
-    return workflowSchema.parse(await res.json());
   }
 
   /** Spawn a NEW agent: provision a worktree + start a fresh session, returning

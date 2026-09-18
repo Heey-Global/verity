@@ -210,7 +210,6 @@ function HydratedRoot() {
             />
             <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
             <Stack.Screen name="devices" options={{ title: 'Devices' }} />
-            <Stack.Screen name="workflows" options={{ title: 'Workflows' }} />
             <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
             <Stack.Screen name="unlock-device" options={{ headerShown: false }} />
             <Stack.Screen name="secure-device" options={{ headerShown: false }} />
@@ -404,17 +403,6 @@ function AppHeader({
                   </Pressable>
                 </Link>
               ) : null}
-              <Link href="/workflows" accessibilityLabel="Cross-project workflows" asChild>
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.headerIconButton,
-                    pressed ? styles.headerPressed : null,
-                  ]}
-                  accessibilityRole="button"
-                >
-                  <Icon name="git-merge" size={19} color={theme.colors.textMuted} />
-                </Pressable>
-              </Link>
             </>
           ) : null}
         </View>

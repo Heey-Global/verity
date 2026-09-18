@@ -983,20 +983,6 @@ async function main(): Promise<void> {
       // Git committer identity is NOT configured via env — it is derived from the
       // GitHub App installation during signing-key onboarding (see
       // resolveGitHubAppIdentity), so no VERITY_GIT_USER_NAME/EMAIL knobs exist.
-      workflowGithubWebhookSecret: process.env.VERITY_GITHUB_WEBHOOK_SECRET,
-      authorizeWorkflowAction:
-        process.env.VERITY_WORKFLOW_ALLOW_PAIRED_DEVICES === '1' ||
-        process.env.VERITY_WORKFLOW_ALLOW_PAIRED_DEVICES === 'true'
-          ? (actorId, action) =>
-              Promise.resolve(
-                actorId !== 'local-control-plane' &&
-                  (action !== 'service:write' ||
-                    process.env.VERITY_WORKFLOW_ALLOW_REGISTRY_WRITES === '1' ||
-                    process.env.VERITY_WORKFLOW_ALLOW_REGISTRY_WRITES === 'true'),
-              )
-          : undefined,
-      workflowArgoCdBaseUrl: process.env.VERITY_ARGOCD_BASE_URL,
-      workflowArgoCdToken: process.env.VERITY_ARGOCD_TOKEN,
       // HTTP socket-proxy URL (`http://127.0.0.1:9234/v1.41`) OR, for a standalone
       // runner with the host socket mounted, `unix:///var/run/docker.sock`
       // (optionally `…:/v1.41`). A `unix://` value selects the mounted-socket
