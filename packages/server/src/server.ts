@@ -3671,7 +3671,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // Bearer tokens are random 256-bit values checked with one SHA-256 hash and an
   // in-memory lookup. Unlike the rate-limited password and pairing-code routes,
   // this gate exposes no practical guessing oracle or expensive work per miss.
-  // codeql[js/missing-rate-limiting] -- high-entropy bearer-token verification
+  // codeql[js/missing-rate-limiting]
   app.addHook('onRequest', async (request, reply) => {
     // Match on the concrete pathname (query stripped) plus the request method; no
     // pre-auth route carries a path param, so an exact-set lookup is sufficient
