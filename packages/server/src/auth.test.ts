@@ -484,6 +484,51 @@ describe('global auth gate (onRequest)', () => {
     await truncateAll(ctx.db);
   });
 
+  it('rate-limits invalid bearer probing without throttling valid devices', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const current = await registry.mint('iPad');
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    try {
+      let limited;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const response = await app.inject({
+          method: 'GET',
+          url: '/settings',
+          headers: { authorization: 'Bearer invalid' },
+        });
+        if (response.statusCode === 429) {
+          limited = response;
+          break;
+        }
+      }
+      expect(limited?.statusCode).toBe(429);
+      expect(limited?.headers['retry-after']).toBeDefined();
+      const websocketUpgrade = await app.inject({
+        method: 'GET',
+        url: '/sessions/not-found/stream',
+        headers: { upgrade: 'websocket', connection: 'upgrade' },
+      });
+      expect(websocketUpgrade.statusCode).not.toBe(429);
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/devices',
+            headers: { authorization: `Bearer ${current.token}` },
+          })
+        ).statusCode,
+      ).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('is off until a master password is set, then protects every non-allowlisted route', async () => {
     const cipher = createSealableSecretCipher();
     const store = new EventStore(ctx.db, cipher);

@@ -95,6 +95,7 @@ import type {
 } from '@verity/store';
 import { DeletedProjectError, DevServerPortRangeExhaustedError, SealedError } from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
+import rateLimitPlugin from '@fastify/rate-limit';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -2844,6 +2845,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           ),
     );
   });
+  // Install the limiter's manual API. The auth hook below invokes it only after
+  // a protected request has failed bearer-token verification.
+  app.register(rateLimitPlugin, { global: false });
+  let checkInvalidBearer: ReturnType<FastifyInstance['createRateLimit']> | undefined;
 
   // Session file uploads are streamed directly to disk. Returning the raw request
   // stream from this parser intentionally avoids Fastify's buffered body limit.
@@ -3668,10 +3673,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // It is now `preAuthKeys`, derived from the routes this instance actually
   // registers by the `onRoute` hook attached next to the Fastify constructor
   // above — see there for why it cannot live at this point in the file.
-  // Bearer tokens are random 256-bit values checked with one SHA-256 hash and an
-  // in-memory lookup. Unlike the rate-limited password and pairing-code routes,
-  // this gate exposes no practical guessing oracle or expensive work per miss.
-  // codeql[js/missing-rate-limiting]
   app.addHook('onRequest', async (request, reply) => {
     // Match on the concrete pathname (query stripped) plus the request method; no
     // pre-auth route carries a path param, so an exact-set lookup is sufficient
@@ -3711,6 +3712,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // `Upgrade: websocket` header on any other route still gets the 401 below.
     if (websocketStream) {
       return;
+    }
+    checkInvalidBearer ??= app.createRateLimit({ max: 100, timeWindow: '1 minute' });
+    const limit = await checkInvalidBearer(request);
+    if (!limit.isAllowed && limit.isExceeded) {
+      reply.header('retry-after', String(limit.ttlInSeconds));
+      return reply.code(429).send({ error: 'too many unauthorized requests' });
     }
     // send()+return — a bare `return { error }` from an async onRequest hook is
     // DISCARDED by Fastify (the route handler still runs and its body is sent with
