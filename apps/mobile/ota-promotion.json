@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.9",
+  "version": "1.33.10",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "62a0bb9902ac5beb1c707758f7649d5849a98798",
-  "tag": "mobile-v1.33.9",
-  "branch": "staging-mobile-v1.33.9-62a0bb9902ac5beb1c707758f7649d5849a98798",
-  "baseline": "mobile-v1.33.8",
-  "group": "835407dd-515d-4da3-956c-3f071dab0d97",
+  "commit": "9a3c2170a9d3c454b490807b038c6fd77bfe3cb5",
+  "tag": "mobile-v1.33.10",
+  "branch": "staging-mobile-v1.33.10-9a3c2170a9d3c454b490807b038c6fd77bfe3cb5",
+  "baseline": "mobile-v1.33.9",
+  "group": "a517a0f7-c05c-4890-9dad-465ad95a976c",
   "notes": [
-    "seed long session tails over REST (#477)",
-    "keep projects collapsed during sync (#476)"
+    "support generic credential headers (#481)",
+    "ignore stale project fold animations (#479)"
   ]
 }
