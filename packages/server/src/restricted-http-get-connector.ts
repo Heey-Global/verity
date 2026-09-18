@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 
 import { z } from 'zod';
+import { brokeredStaticAuthHeaderSchema } from '@verity/secret-contracts';
 
 import {
   createNodeRestrictedHttpJsonTransport,
@@ -49,7 +50,7 @@ export const restrictedHttpGetProfileSchema = z
     auth: z
       .object({
         secretAlias: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-        header: z.enum(['authorization', 'x-api-key']),
+        header: brokeredStaticAuthHeaderSchema,
         scheme: z.enum(['Bearer', 'Basic']).nullable(),
       })
       .strict(),
@@ -64,18 +65,18 @@ export const restrictedHttpGetProfileSchema = z
     if (new Set(profile.allowedQueryKeys).size !== profile.allowedQueryKeys.length) {
       ctx.addIssue({ code: 'custom', path: ['allowedQueryKeys'], message: 'keys must be unique' });
     }
-    if (profile.auth.header === 'authorization' && profile.auth.scheme === null) {
+    if (profile.auth.header.toLowerCase() === 'authorization' && profile.auth.scheme === null) {
       ctx.addIssue({
         code: 'custom',
         path: ['auth', 'scheme'],
         message: 'authorization requires a fixed scheme',
       });
     }
-    if (profile.auth.header === 'x-api-key' && profile.auth.scheme !== null) {
+    if (profile.auth.header.toLowerCase() !== 'authorization' && profile.auth.scheme !== null) {
       ctx.addIssue({
         code: 'custom',
         path: ['auth', 'scheme'],
-        message: 'x-api-key forbids a scheme',
+        message: 'custom credential headers forbid a scheme',
       });
     }
   });

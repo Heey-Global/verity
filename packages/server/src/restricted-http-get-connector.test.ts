@@ -17,6 +17,19 @@ const profile = restrictedHttpGetProfileSchema.parse({
 });
 
 describe('restricted HTTP GET compatibility API', () => {
+  it('accepts safe custom credential headers in compatibility profiles', () => {
+    expect(
+      restrictedHttpGetProfileSchema.parse({
+        ...profile,
+        auth: {
+          secretAlias: 'OPEN_WEARABLES_API_KEY',
+          header: 'X-Open-Wearables-API-Key',
+          scheme: null,
+        },
+      }).auth.header,
+    ).toBe('X-Open-Wearables-API-Key');
+  });
+
   it('preserves request shape, auth header, pins, and secret zeroization', async () => {
     const secrets: Buffer[] = [];
     const transport = vi.fn().mockResolvedValue({ status: 200, body: { data: [] } });

@@ -675,7 +675,7 @@ describe('restricted HTTP JSON connector', () => {
     });
   });
 
-  // `x-api-key` takes the credential verbatim: a scheme prefix would be sent as part
+  // Custom API-key headers take the credential verbatim: a scheme prefix would be sent as part
   // of the key and the call would fail for a reason the agent cannot see.
   it('sends a scheme-less credential verbatim in the header the request named', async () => {
     let headers: Readonly<Record<string, string>> = {};
@@ -689,9 +689,9 @@ describe('restricted HTTP JSON connector', () => {
       },
     });
     await expect(
-      connector.execute(request({ auth: { header: 'x-api-key', scheme: null } })),
+      connector.execute(request({ auth: { header: 'X-Vendor-Credential', scheme: null } })),
     ).resolves.toEqual({ status: 200, body: null });
-    expect(headers['x-api-key']).toBe('sk_test_marker');
+    expect(headers['X-Vendor-Credential']).toBe('sk_test_marker');
     expect(headers['authorization']).toBeUndefined();
   });
 

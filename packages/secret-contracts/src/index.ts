@@ -39,6 +39,7 @@ export {
   actionSecretRunRequestSchema,
   brokeredHttpRequestAliases,
   brokeredHttpRequestSchema,
+  brokeredStaticAuthHeaderSchema,
   brokeredJwtValueSchema,
   BROKERED_HTTP_TOOL_DESCRIPTION,
   BROKERED_JWT_DEFAULT_LIFETIME_SECONDS,
