@@ -102,6 +102,31 @@ it('opens even when the unfold animation never reports success', () => {
   expect(screen.getByLabelText('Session draft')).toBeTruthy();
 });
 
+it('ignores a stopped unfold callback after a newer fold starts', () => {
+  const animations = captureAnimations();
+  const view = render(content(false));
+  const measurement = view.UNSAFE_getAllByType(View).find((node) => node.props.onLayout)!;
+  const wrapper = () => view.UNSAFE_getAllByType(View).find((node) => node.props.pointerEvents)!;
+  fireEvent(measurement, 'layout', { nativeEvent: { layout: { height: 240 } } });
+
+  view.rerender(content(true));
+  act(() => animations.at(-1)!.start.mock.calls.at(-1)?.[0]?.({ finished: true }));
+  view.rerender(content(false));
+  const stoppedUnfold = animations.at(-1)!;
+  act(() => stoppedUnfold.value.setValue(80));
+  view.rerender(content(true));
+  const latestFold = animations.at(-1)!;
+
+  // Native Animated can report the stopped transition after its replacement
+  // has started. That stale callback used to put the content back at auto height.
+  act(() => stoppedUnfold.start.mock.calls.at(-1)?.[0]?.({ finished: false }));
+  expect(wrapper().props.pointerEvents).toBe('none');
+  expect(StyleSheet.flatten(wrapper().props.style).height).toBe(80);
+
+  act(() => latestFold.start.mock.calls.at(-1)?.[0]?.({ finished: true }));
+  expect(StyleSheet.flatten(wrapper().props.style).height).toBe(0);
+});
+
 it('uses auto height without animation when reduced motion is enabled', () => {
   jest.mocked(useReducedMotion).mockReturnValue(true);
   const timing = jest.spyOn(Animated, 'timing');
