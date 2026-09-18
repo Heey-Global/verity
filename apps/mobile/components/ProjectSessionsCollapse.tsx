@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Easing, View } from 'react-native';
 import { useReducedMotion } from 'react-native-reanimated';
 
+export const PROJECT_SESSIONS_COLLAPSE_DURATION_MS = 180;
+
 /**
  * Fold the session rows of a project group without unmounting them, so a drag
  * — which collapses every group for as long as it runs — cannot discard their
@@ -47,7 +49,7 @@ export function ProjectSessionsCollapse({
     setPhase('folding');
     const animation = Animated.timing(height, {
       toValue: collapsed ? 0 : content,
-      duration: 180,
+      duration: PROJECT_SESSIONS_COLLAPSE_DURATION_MS,
       easing: Easing.inOut(Easing.ease),
       useNativeDriver: false,
     });

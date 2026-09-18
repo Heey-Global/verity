@@ -50,14 +50,13 @@ import {
   type ListRenderItemInfo,
   Modal,
   Pressable,
-  RefreshControl,
   ScrollView,
   Text,
   TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
-import Reanimated, { useReducedMotion } from 'react-native-reanimated';
+import { useReducedMotion } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -65,6 +64,7 @@ import { AttentionMarkers } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
 import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
 import { useProjectReorderMotion } from '../components/useProjectReorderMotion';
+import { ProjectOverviewList } from '../components/ProjectOverviewList';
 import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
 import { ProjectStatusDot } from '../components/ProjectStatusDot';
 import { ServerAttentionBanner, StaleBanner } from '../components/ServerAttentionBanner';
@@ -111,8 +111,6 @@ type SessionProjectGroup = {
   inactiveProjectId?: string;
   sessions: SessionSummary[];
 };
-
-const PROJECT_LIST_VISIBLE_CONTENT_POSITION = { minIndexForVisible: 0 };
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -283,19 +281,6 @@ function SessionList({ client }: { client: VerityClient }) {
     () => projectDragOffsets(dragInitialOrder.current, dragOrder ?? [], dragHeights.current),
     [dragOrder],
   );
-  const [dragSettling, setDragSettling] = useState(false);
-  const listHeight = useRef(0);
-  const [dragListHeight, setDragListHeight] = useState<number | undefined>(undefined);
-  useEffect(() => {
-    if (draggingProjectId !== null) return;
-    const timer = setTimeout(() => setDragListHeight(undefined), 200);
-    return () => clearTimeout(timer);
-  }, [draggingProjectId]);
-  useEffect(() => {
-    if (!dragSettling) return;
-    const timer = setTimeout(() => setDragSettling(false), 200);
-    return () => clearTimeout(timer);
-  }, [dragSettling]);
   // Keep the optimistic order until a poll actually confirms it. Refresh can
   // fail silently, so completion of its promise does not prove reconciliation.
   useEffect(() => {
@@ -546,7 +531,8 @@ function SessionList({ client }: { client: VerityClient }) {
           onLongPressProject={
             reorderable
               ? (pageY) => {
-                  if (reorderSaving.current || droppingProject.current) return;
+                  if (refreshingOverview || reorderSaving.current || droppingProject.current)
+                    return;
                   const projectIds = activeGroups.flatMap((group) =>
                     group.project && !isVerityControlPlaneProject(group.project)
                       ? [group.project.id]
@@ -573,8 +559,6 @@ function SessionList({ client }: { client: VerityClient }) {
                   dragOrderRef.current = initialOrder;
                   dragInitialOrder.current = projectIds;
                   dragStartPageY.current = pageY;
-                  setDragListHeight(listHeight.current);
-                  setDragSettling(true);
                   setDragOrder(initialOrder);
                   setDraggingProjectId(item.project!.id);
                 }
@@ -633,7 +617,6 @@ function SessionList({ client }: { client: VerityClient }) {
                     );
                   const finishDrop = () => {
                     droppingProject.current = false;
-                    setDragSettling(false);
                     setDraggingProjectId(null);
                     reorderSaving.current = true;
                     dragOrderRef.current = null;
@@ -693,7 +676,7 @@ function SessionList({ client }: { client: VerityClient }) {
       collapsedOverride,
       client,
       draggingProjectId,
-      dragSettling,
+      refreshingOverview,
       dragTranslation,
       previewOffsets,
       reducedMotion,
@@ -773,40 +756,14 @@ function SessionList({ client }: { client: VerityClient }) {
       {projectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
       ) : null}
-      <Reanimated.FlatList
-        CellRendererComponentStyle={({ item }) => ({
-          zIndex: item.project?.id === draggingProjectId ? 1 : 0,
-        })}
-        removeClippedSubviews={draggingProjectId === null}
-        onContentSizeChange={(_width, height) => {
-          listHeight.current = height;
-        }}
-        scrollEnabled={draggingProjectId === null}
+      <ProjectOverviewList
+        draggingProjectId={draggingProjectId}
+        refreshing={refreshingOverview}
+        onRefresh={onRefreshOverview}
         data={activeGroups}
         keyExtractor={(g) => g.id}
         renderItem={renderItem}
-        // Dev-server polling can add a port chip after the process starts, which
-        // changes a project row's height. Keep the first visible project anchored
-        // across that relayout instead of letting the virtualized list jump upward.
-        maintainVisibleContentPosition={
-          dragSettling
-            ? {
-                minIndexForVisible: Math.max(
-                  0,
-                  activeGroups.findIndex((group) => group.project?.id === draggingProjectId),
-                ),
-              }
-            : dragOrder === null
-              ? PROJECT_LIST_VISIBLE_CONTENT_POSITION
-              : undefined
-        }
-        refreshControl={
-          <RefreshControl refreshing={refreshingOverview} onRefresh={onRefreshOverview} />
-        }
-        contentContainerStyle={[
-          styles.listContent,
-          { paddingBottom: insets.bottom + 16, minHeight: dragListHeight },
-        ]}
+        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
         ItemSeparatorComponent={GroupSeparator}
         ListHeaderComponent={
           providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null
