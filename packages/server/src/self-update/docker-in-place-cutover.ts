@@ -323,6 +323,7 @@ export async function dockerStandbyPromotion(
     host: string,
     image: string,
     baseUrl: string = probeUrl,
+    schemaDatabaseUrl?: string,
   ): Promise<void> => {
     const name = `verity-managed-probe-${role}-g${String(state.candidateGeneration)}`;
     const labels = {
@@ -349,15 +350,27 @@ export async function dockerStandbyPromotion(
       image,
       name,
       labels,
-      command: ['readiness-probe'],
-      env: [
-        `${READINESS_PROBE_URL_ENV}=${(() => {
-          const url = new URL(baseUrl);
-          url.hostname = host;
-          return url.toString();
-        })()}`,
-        `${READINESS_PROBE_TIMEOUT_ENV}=${String(timeoutMs)}`,
-      ],
+      ...(schemaDatabaseUrl === undefined
+        ? { command: ['readiness-probe'] }
+        : {
+            entrypoint: ['node'],
+            command: [
+              '--input-type=module',
+              '--eval',
+              "import { createPostgresDb } from '/app/packages/store/dist/index.js'; import { SERVER_COMPAT } from '/app/packages/server/dist/self-update/compat.js'; const db = createPostgresDb(process.env.DATABASE_URL); try { const rows = await db.selectFrom('kysely_migration').select('name').execute(); const current = rows.map(row => row.name).sort().at(-1); process.exitCode = typeof current === 'string' && current >= SERVER_COMPAT.schema.min && current <= SERVER_COMPAT.schema.max ? 0 : 1; } catch { process.exitCode = 1; } finally { await db.destroy(); }",
+            ],
+          }),
+      env:
+        schemaDatabaseUrl === undefined
+          ? [
+              `${READINESS_PROBE_URL_ENV}=${(() => {
+                const url = new URL(baseUrl);
+                url.hostname = host;
+                return url.toString();
+              })()}`,
+              `${READINESS_PROBE_TIMEOUT_ENV}=${String(timeoutMs)}`,
+            ]
+          : [`DATABASE_URL=${schemaDatabaseUrl}`],
       user: `${String(deployment.spec.user.uid)}:${String(deployment.spec.user.gid)}`,
       groupAdd: [],
       binds: [],
@@ -382,15 +395,19 @@ export async function dockerStandbyPromotion(
         // the caller must roll back either way.
         throw new CandidateReadinessError(
           `candidate readiness probe (${role}) did not finish within ${String(deadlineMs)}ms`,
-          await docker.containerLogs!(created.id, 50).catch(
-            () => 'the probe container produced no logs',
-          ),
+          schemaDatabaseUrl === undefined
+            ? await docker.containerLogs!(created.id, 50).catch(
+                () => 'the probe container produced no logs',
+              )
+            : 'The retained image could not verify the database schema; maintenance remains active.',
         );
       }
       if (exitCode !== 0)
         throw new CandidateReadinessError(
           `candidate readiness probe (${role}) failed with exit code ${String(exitCode)}`,
-          await docker.containerLogs!(created.id, 50),
+          schemaDatabaseUrl === undefined
+            ? await docker.containerLogs!(created.id, 50)
+            : 'The retained image rejected the database schema or could not reach the database; maintenance remains active.',
         );
     } finally {
       await ignoreMissing(() => docker.removeContainer(created.id));
@@ -659,6 +676,22 @@ export async function dockerStandbyPromotion(
      * start it would have done all along.
      */
     activateOld: async (state) => {
+      // A forward migration can outgrow the retained image while it is quiesced.
+      // Never restore authority or resume its writers until that image proves
+      // it can read the actual database, including after an interrupted rollback.
+      const retained = await docker.inspectContainer(state.oldContainerId);
+      const database = retained.env?.find((entry) => entry.startsWith('DATABASE_URL='));
+      if (!database || database === 'DATABASE_URL=')
+        throw new Error('rollback schema proof requires the retained Server database');
+      await probe(
+        state,
+        'rollback-schema',
+        rollbackReadinessTimeoutMs,
+        oldHost,
+        journal.previousDigest,
+        rollbackProbeUrl,
+        database.slice('DATABASE_URL='.length),
+      );
       await advanceManagedDeploymentImage({
         root: options.managedRoot,
         deploymentId: journal.deploymentId,

@@ -215,7 +215,13 @@ done
 # otherwise reject a published release on every installation. This is mandatory
 # even for the release profile and the emergency rollback-scenario override.
 echo '--- stage: verify the released predecessor can update to the candidate'
-node packages/server/dist/self-update-release-compat.js "$previous_image" "$image"
+if [[ "${VERITY_SMOKE_BOOTSTRAP:-false}" == true ]]; then
+  # The workflow permits bootstrap only when no published predecessor exists.
+  [[ "$(docker inspect --format '{{.Id}}' "$previous_image")" == \
+     "$(docker inspect --format '{{.Id}}' "$image")" ]] || exit 1
+else
+  node packages/server/dist/self-update-release-compat.js "$previous_image" "$image"
+fi
 
 # Seven digests from one build. The generations must differ by digest — that is
 # what the journal fences on — but not by behaviour, or a failure would not say
@@ -1061,6 +1067,13 @@ wait_for_healthy "$server" 'the serving generation did not survive a refused pre
 expect_gateway_serving 'the Gateway stopped serving over a refused preparation'
 expect_secret_status "$server" unlocked
 
+# Data is written by the predecessor's shipped store before candidate activation.
+upgrade_data_probe() {
+  node packages/server/dist/self-update-data-probe.js "$1" | \
+    docker exec -i "$server" node --input-type=module
+}
+upgrade_data_probe seed
+
 echo '--- stage: prepare a candidate through pull, verify, preflight and standby'
 node packages/server/dist/self-update-live-smoke.js prepare
 
@@ -1094,6 +1107,8 @@ if [[ "$smoke_profile" == 'release' || "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}
     exit 1
   fi
 
+  upgrade_data_probe verify
+
   echo '--- stage: reconcile every managed companion after the commit'
   node packages/server/dist/self-update-live-smoke.js companion-handoff
   expect_agent_seed "$server" "$VERITY_SMOKE_SERVER_VERSION" "$target_digest" \
@@ -1103,6 +1118,7 @@ if [[ "$smoke_profile" == 'release' || "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}
   node packages/server/dist/self-update-live-smoke.js updater-restarts
   wait_for_healthy "$server" 'the forward-only restart did not restore a healthy Server'
   expect_gateway_serving 'the Gateway did not keep serving after the forward-only restart'
+  upgrade_data_probe verify
   echo 'forward update, handoff, routing, companion reconciliation and restart passed'
   exit 0
 fi

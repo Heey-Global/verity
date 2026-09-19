@@ -1,4 +1,4 @@
-import { isCompatible, parseServerCompat, type ServerCompat } from './compat.js';
+import { isUpgradeCompatible, parseServerCompat, type ServerCompat } from './compat.js';
 
 export const RELEASE_CHANNEL_SCHEMA_VERSION = 1 as const;
 export const OFFICIAL_SERVER_IMAGE = 'ghcr.io/heey-global/verity/verity-server';
@@ -298,7 +298,10 @@ export function createReleaseChannelResolver(
             lastGood = channel.metadata;
             return { state: 'current', release: channel.metadata, operation: null };
           }
-          const compatibility = isCompatible(options.current, channel.metadata.compatibility);
+          const compatibility = isUpgradeCompatible(
+            options.current,
+            channel.metadata.compatibility,
+          );
           if (!compatibility.compatible) {
             lastGood = channel.metadata;
             return {

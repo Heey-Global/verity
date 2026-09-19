@@ -51,6 +51,27 @@ describe('runPreflight (hermetic pglite)', () => {
     for (const cleanup of cleanups.splice(0)) await cleanup();
   });
 
+  it('rejects a database migrated beyond the retained build without modifying it', async () => {
+    const db = createEmbeddedDb();
+    cleanups.push(() => db.destroy());
+    const future = `${latestMigrationKey()}_future`;
+    const migrator = new Migrator({
+      db,
+      provider: {
+        getMigrations: async () => ({
+          ...(await migrationProvider.getMigrations()),
+          [future]: { up: async () => undefined },
+        }),
+      },
+    });
+    const migrated = await migrator.migrateToLatest();
+    expect(migrated.error).toBeUndefined();
+    const report = await runPreflight({}, inject(db));
+    expect(report.ok).toBe(false);
+    expect(report.schema).toMatchObject({ executed: future, compatible: false });
+    expect(await executedSchemaGeneration(db)).toBe(future);
+  });
+
   it('passes database + schema checks against a migrated store', async () => {
     const db = createEmbeddedDb();
     cleanups.push(() => db.destroy());
