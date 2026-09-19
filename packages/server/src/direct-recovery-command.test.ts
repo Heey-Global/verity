@@ -164,15 +164,24 @@ beforeEach(async () => {
           },
         ]),
       };
+    if (command[0] === 'ps') return { stdout: `${'c'.repeat(64)}\n` };
+    if (command[0] === 'inspect' && command[1] === '--format')
+      return { stdout: '/verity-managed-server-g14\n' };
     if (command[0] === 'exec' && command[1] === 'b'.repeat(64)) return { stdout: '1' };
     if (command[0] === 'inspect' && command[1] === '--type=container')
       return {
         stdout: JSON.stringify([
           {
-            Id: 'running-server',
+            Id: 'c'.repeat(64),
             Image: 'current-image-id',
             State: { Running: true },
-            Config: { Image: image('a') },
+            Config: {
+              Image: image('a'),
+              Labels: {
+                'verity.managed-deployment-id': 'deployment-1',
+                'verity.managed-role': 'server',
+              },
+            },
           },
         ]),
       };
@@ -207,6 +216,45 @@ describe('direct recovery host command', () => {
     await runDirectRecoveryCommand(args);
     expect(mocks.admit).not.toHaveBeenCalled();
     expect(mocks.request).not.toHaveBeenCalled();
+  });
+  it('also accepts the initial managed Server name', async () => {
+    const original = mocks.exec.getMockImplementation()! as (
+      file: string,
+      argv: string[],
+    ) => Promise<{ stdout: string }>;
+    mocks.exec.mockImplementation(async (file: string, argv: string[]) =>
+      argv[1] === 'inspect' && argv[2] === '--format'
+        ? { stdout: '/verity-managed-server\n' }
+        : original(file, argv),
+    );
+    await runDirectRecoveryCommand(args);
+    expect(mocks.output).toHaveBeenCalledWith(expect.stringContaining('"targetVersion": "0.16.0"'));
+  });
+  it('rejects ambiguous running managed Servers', async () => {
+    const original = mocks.exec.getMockImplementation()! as (
+      file: string,
+      argv: string[],
+    ) => Promise<{ stdout: string }>;
+    mocks.exec.mockImplementation(async (file: string, argv: string[]) =>
+      argv[1] === 'ps'
+        ? { stdout: `${'c'.repeat(64)}\n${'d'.repeat(64)}\n` }
+        : original(file, argv),
+    );
+    await expect(runDirectRecoveryCommand(args)).rejects.toThrow('exactly one');
+    expect(mocks.admit).not.toHaveBeenCalled();
+  });
+  it('rejects a labelled Server with a malformed generation name', async () => {
+    const original = mocks.exec.getMockImplementation()! as (
+      file: string,
+      argv: string[],
+    ) => Promise<{ stdout: string }>;
+    mocks.exec.mockImplementation(async (file: string, argv: string[]) =>
+      argv[1] === 'inspect' && argv[2] === '--format'
+        ? { stdout: '/verity-managed-server-g14-copy\n' }
+        : original(file, argv),
+    );
+    await expect(runDirectRecoveryCommand(args)).rejects.toThrow('invalid identity');
+    expect(mocks.admit).not.toHaveBeenCalled();
   });
   it('submits after signed image and new updater verification', async () => {
     await runDirectRecoveryCommand(apply());
