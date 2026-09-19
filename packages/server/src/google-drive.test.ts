@@ -503,6 +503,54 @@ describe('createCachedGoogleAccessToken', () => {
     expect(refreshes).toBe(2);
   });
 
+  it('busts the cache when reconnect expands scopes without changing the refresh token', async () => {
+    let refreshes = 0;
+    const provider = createCachedGoogleAccessToken(
+      () => Promise.resolve({ clientId: 'cid', refreshToken: 'same-rt' }),
+      {
+        fetch: () =>
+          Promise.resolve(jsonRes({ access_token: `t${String(++refreshes)}`, expires_in: 3599 })),
+        now: () => 1_000,
+      },
+    );
+
+    await expect(provider()).resolves.toBe('t1');
+    provider.invalidate();
+    await expect(provider()).resolves.toBe('t2');
+    expect(refreshes).toBe(2);
+  });
+
+  it('does not let an invalidated in-flight refresh repopulate the cache', async () => {
+    let refreshes = 0;
+    let releaseOld!: () => void;
+    let markOldStarted!: () => void;
+    const oldBlocked = new Promise<void>((resolve) => (releaseOld = resolve));
+    const oldStarted = new Promise<void>((resolve) => (markOldStarted = resolve));
+    const provider = createCachedGoogleAccessToken(
+      () => Promise.resolve({ clientId: 'cid', refreshToken: 'same-rt' }),
+      {
+        fetch: async () => {
+          refreshes += 1;
+          const attempt = refreshes;
+          if (attempt === 1) {
+            markOldStarted();
+            await oldBlocked;
+          }
+          return jsonRes({ access_token: `t${String(attempt)}`, expires_in: 3599 });
+        },
+      },
+    );
+
+    const old = provider();
+    await oldStarted;
+    provider.invalidate();
+    await expect(provider()).resolves.toBe('t2');
+    releaseOld();
+    await expect(old).resolves.toBe('t1');
+    await expect(provider()).resolves.toBe('t2');
+    expect(refreshes).toBe(2);
+  });
+
   it('does not join an in-flight refresh for different credentials', async () => {
     let refreshToken = 'rt-old';
     let releaseOld!: () => void;

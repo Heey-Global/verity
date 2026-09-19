@@ -138,6 +138,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         googleDriveRefreshToken: tokens.refreshToken,
         googleDriveAccountEmail: accountEmail ?? null,
       });
+      // Google may return the same refresh-token string when consent expands an
+      // existing grant. Its server-side scopes still changed, so keying only on
+      // that string would keep serving the cached read-only access token.
+      accessToken.invalidate();
       return { connected: true as const, accountEmail: accountEmail ?? null };
     },
   );
@@ -149,6 +153,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       googleDriveRefreshToken: null,
       googleDriveAccountEmail: null,
     });
+    accessToken.invalidate();
     return { connected: false as const };
   });
 
