@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/Heey-Global/verity/compare/v0.16.0...v0.16.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **release:** gate updates on image schema compatibility ([#507](https://github.com/Heey-Global/verity/issues/507)) ([03eebe6](https://github.com/Heey-Global/verity/commit/03eebe690897bf5cf36a8413a0b7bc518bdccd95))
+
 ## [0.16.0](https://github.com/Heey-Global/verity/compare/v0.15.1...v0.16.0) (2026-09-19)
 
 
