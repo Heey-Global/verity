@@ -32,6 +32,8 @@ export {
   type SessionProjectionFacts,
   type SessionRecord,
   type SessionSlideDeckRecord,
+  type SessionWorkspaceFileRecord,
+  type GoogleWorkspaceFileKind,
   type GoogleSlideImageCleanupRecord,
   type SessionInput,
   type RunningTurnRecord,

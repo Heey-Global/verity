@@ -82,6 +82,40 @@ describe('EventStore — session Google Slides assignment', () => {
     expect(await ctx.store.listRecentGoogleSlideDeckFileIds()).toContain('deck-2');
   });
 
+  it('replaces the active Workspace file across Google file kinds', async () => {
+    await ctx.store.createSession(session);
+    await ctx.store.setSessionWorkspaceFile({
+      sessionId: 's1',
+      kind: 'docs',
+      fileId: 'doc-1',
+      name: 'Plan',
+      webViewLink: 'https://docs.google.com/document/d/doc-1/edit',
+      revisionId: 'rev-doc',
+    });
+    await ctx.store.setSessionWorkspaceFile({
+      sessionId: 's1',
+      kind: 'sheets',
+      fileId: 'sheet-1',
+      name: 'Budget',
+      webViewLink: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    });
+
+    await expect(ctx.store.getSessionWorkspaceFile('s1')).resolves.toMatchObject({
+      kind: 'sheets',
+      fileId: 'sheet-1',
+      revisionId: null,
+    });
+    await expect(ctx.store.getSessionSlideDeck('s1')).resolves.toBeUndefined();
+    await ctx.store.clearSessionSlideDeck('s1');
+    await expect(ctx.store.getSessionWorkspaceFile('s1')).resolves.toMatchObject({
+      kind: 'sheets',
+      fileId: 'sheet-1',
+    });
+    await expect(ctx.store.listRecentGoogleWorkspaceFileIds()).resolves.toEqual(
+      expect.arrayContaining(['sheet-1', 'doc-1']),
+    );
+  });
+
   it('keeps image cleanup durable until Drive deletion succeeds', async () => {
     await ctx.store.createGoogleSlideImageCleanup({
       id: 'cleanup-1',

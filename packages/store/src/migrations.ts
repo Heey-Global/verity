@@ -2625,6 +2625,22 @@ const migrations: Record<string, Migration> = {
     // Removal is permanent; rolling back must not recreate the retired feature.
     async down(): Promise<void> {},
   },
+  '0098_google_workspace_files': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('session_slide_decks')
+        .addColumn('kind', 'text', (c) => c.notNull().defaultTo('slides'))
+        .execute();
+      await db.schema
+        .alterTable('recent_google_slide_decks')
+        .addColumn('kind', 'text', (c) => c.notNull().defaultTo('slides'))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('recent_google_slide_decks').dropColumn('kind').execute();
+      await db.schema.alterTable('session_slide_decks').dropColumn('kind').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

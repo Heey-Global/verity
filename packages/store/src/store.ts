@@ -52,15 +52,21 @@ export interface SessionRecord {
   lastSeenEventCount: number | null;
 }
 
-export interface SessionSlideDeckRecord {
+export type GoogleWorkspaceFileKind = 'slides' | 'docs' | 'sheets';
+
+export interface SessionWorkspaceFileRecord {
   sessionId: string;
   assignmentId: string;
+  kind: GoogleWorkspaceFileKind;
   fileId: string;
   name: string;
   webViewLink: string;
   revisionId: string | null;
   assignedAt: Date;
 }
+
+/** @deprecated Use SessionWorkspaceFileRecord. */
+export type SessionSlideDeckRecord = SessionWorkspaceFileRecord;
 
 export interface GoogleSlideImageCleanupRecord {
   id: string;
@@ -1288,7 +1294,9 @@ export class EventStore implements EventSink {
     };
   }
 
-  async getSessionSlideDeck(sessionId: string): Promise<SessionSlideDeckRecord | undefined> {
+  async getSessionWorkspaceFile(
+    sessionId: string,
+  ): Promise<SessionWorkspaceFileRecord | undefined> {
     const row = await this.db
       .selectFrom('session_slide_decks')
       .selectAll()
@@ -1298,6 +1306,7 @@ export class EventStore implements EventSink {
     return {
       sessionId: row.session_id,
       assignmentId: row.assignment_id,
+      kind: row.kind,
       fileId: row.file_id,
       name: row.name,
       webViewLink: row.web_view_link,
@@ -1306,19 +1315,26 @@ export class EventStore implements EventSink {
     };
   }
 
-  async setSessionSlideDeck(input: {
+  async getSessionSlideDeck(sessionId: string): Promise<SessionSlideDeckRecord | undefined> {
+    const file = await this.getSessionWorkspaceFile(sessionId);
+    return file?.kind === 'slides' ? file : undefined;
+  }
+
+  async setSessionWorkspaceFile(input: {
     sessionId: string;
+    kind: GoogleWorkspaceFileKind;
     fileId: string;
     name: string;
     webViewLink: string;
     revisionId?: string | null;
-  }): Promise<SessionSlideDeckRecord> {
+  }): Promise<SessionWorkspaceFileRecord> {
     const row = await this.db.transaction().execute(async (trx) => {
       const assigned = await trx
         .insertInto('session_slide_decks')
         .values({
           session_id: input.sessionId,
           assignment_id: randomUUID(),
+          kind: input.kind,
           file_id: input.fileId,
           name: input.name,
           web_view_link: input.webViewLink,
@@ -1327,6 +1343,7 @@ export class EventStore implements EventSink {
         .onConflict((conflict) =>
           conflict.column('session_id').doUpdateSet({
             assignment_id: randomUUID(),
+            kind: input.kind,
             file_id: input.fileId,
             name: input.name,
             web_view_link: input.webViewLink,
@@ -1338,9 +1355,11 @@ export class EventStore implements EventSink {
         .executeTakeFirstOrThrow();
       await trx
         .insertInto('recent_google_slide_decks')
-        .values({ file_id: input.fileId })
+        .values({ file_id: input.fileId, kind: input.kind })
         .onConflict((conflict) =>
-          conflict.column('file_id').doUpdateSet({ last_assigned_at: sql`now()` }),
+          conflict
+            .column('file_id')
+            .doUpdateSet({ kind: input.kind, last_assigned_at: sql`now()` }),
         )
         .execute();
       return assigned;
@@ -1348,6 +1367,7 @@ export class EventStore implements EventSink {
     return {
       sessionId: row.session_id,
       assignmentId: row.assignment_id,
+      kind: row.kind,
       fileId: row.file_id,
       name: row.name,
       webViewLink: row.web_view_link,
@@ -1356,13 +1376,27 @@ export class EventStore implements EventSink {
     };
   }
 
-  async clearSessionSlideDeck(sessionId: string): Promise<void> {
+  async setSessionSlideDeck(
+    input: Omit<Parameters<EventStore['setSessionWorkspaceFile']>[0], 'kind'>,
+  ): Promise<SessionSlideDeckRecord> {
+    return this.setSessionWorkspaceFile({ ...input, kind: 'slides' });
+  }
+
+  async clearSessionWorkspaceFile(sessionId: string): Promise<void> {
     await this.db.deleteFrom('session_slide_decks').where('session_id', '=', sessionId).execute();
+  }
+
+  async clearSessionSlideDeck(sessionId: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_slide_decks')
+      .where('session_id', '=', sessionId)
+      .where('kind', '=', 'slides')
+      .execute();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.
    * A clear or replacement racing an API call must never be undone by its stale response. */
-  async updateSessionSlideDeckRevision(
+  async updateSessionWorkspaceRevision(
     sessionId: string,
     assignmentId: string,
     revisionId: string,
@@ -1376,10 +1410,29 @@ export class EventStore implements EventSink {
     return Number(result.numUpdatedRows) === 1;
   }
 
+  async updateSessionSlideDeckRevision(
+    sessionId: string,
+    assignmentId: string,
+    revisionId: string,
+  ): Promise<boolean> {
+    return this.updateSessionWorkspaceRevision(sessionId, assignmentId, revisionId);
+  }
+
+  async listRecentGoogleWorkspaceFileIds(limit = 8): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('recent_google_slide_decks')
+      .select('file_id')
+      .orderBy('last_assigned_at', 'desc')
+      .limit(limit)
+      .execute();
+    return rows.map((row) => row.file_id);
+  }
+
   async listRecentGoogleSlideDeckFileIds(limit = 8): Promise<string[]> {
     const rows = await this.db
       .selectFrom('recent_google_slide_decks')
       .select('file_id')
+      .where('kind', '=', 'slides')
       .orderBy('last_assigned_at', 'desc')
       .limit(limit)
       .execute();
@@ -1488,6 +1541,16 @@ export class EventStore implements EventSink {
       .set({ result_json: resultJson })
       .where('invocation_id', '=', invocationId)
       .execute();
+  }
+
+  async claimGoogleWorkspaceInvocation(
+    input: Parameters<EventStore['claimGoogleSlideInvocation']>[0],
+  ): ReturnType<EventStore['claimGoogleSlideInvocation']> {
+    return this.claimGoogleSlideInvocation(input);
+  }
+
+  async completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void> {
+    await this.completeGoogleSlideInvocation(invocationId, result);
   }
 
   async pruneGoogleSlideInvocations(olderThan: Date): Promise<void> {

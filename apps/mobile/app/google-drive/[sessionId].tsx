@@ -1,5 +1,5 @@
 // Google Drive picker (ADRs 0009/0016): browse the connected account to import a
-// reference file or assign one native Slides deck to the session. Reached from
+// reference file or assign one native Workspace file to the session. Reached from
 // the corresponding composer attach-menu row. If no account is connected yet,
 // this screen runs the native OAuth (PKCE) connect first.
 import {
@@ -36,7 +36,7 @@ export default function GoogleDrivePickerScreen() {
   const { theme } = useUnistyles();
   const { sessionId, purpose } = useLocalSearchParams<{
     sessionId: string;
-    purpose?: 'import' | 'slides';
+    purpose?: 'import' | 'workspace';
   }>();
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
@@ -61,7 +61,7 @@ function GoogleDrivePicker({
 }: {
   client: VerityClient;
   sessionId: string;
-  purpose: 'import' | 'slides';
+  purpose: 'import' | 'workspace';
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
@@ -243,29 +243,34 @@ function GoogleDrivePicker({
     [client, importingId, sessionId],
   );
 
-  const assignDeck = useCallback(
+  const assignWorkspaceFile = useCallback(
     (file: DriveFile) => {
       if (importingId !== null) return;
-      if (file.mimeType !== 'application/vnd.google-apps.presentation') {
+      const nativeTypes = new Set([
+        'application/vnd.google-apps.document',
+        'application/vnd.google-apps.spreadsheet',
+        'application/vnd.google-apps.presentation',
+      ]);
+      if (!nativeTypes.has(file.mimeType)) {
         Alert.alert(
-          'Convert this PowerPoint file first',
-          'Open it in Google Slides and choose File → Save as Google Slides. The converted deck has a new link.',
+          'Convert this file first',
+          'Open it in Google Docs, Sheets, or Slides and save it in the matching Google format. The converted file has a new link.',
         );
         return;
       }
       if (file.canEdit === false) {
-        Alert.alert('Edit access required', 'Ask the deck owner to give you edit access first.');
+        Alert.alert('Edit access required', 'Ask the file owner to give you edit access first.');
         return;
       }
       setImportingId(file.id);
       void (async () => {
         try {
-          await client.assignSessionSlideDeck(sessionId, file.id);
+          await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
           router.back();
         } catch (err) {
           const message =
-            err instanceof VerityApiError ? err.message : 'Could not assign this presentation.';
-          Alert.alert('Could not assign deck', message);
+            err instanceof VerityApiError ? err.message : 'Could not assign this Workspace file.';
+          Alert.alert('Could not assign file', message);
         } finally {
           setImportingId(null);
         }
@@ -277,13 +282,13 @@ function GoogleDrivePicker({
   const onPressItem = useCallback(
     (file: DriveFile) => {
       if (isDriveFolder(file)) openFolder(file);
-      else if (purpose === 'slides') assignDeck(file);
+      else if (purpose === 'workspace') assignWorkspaceFile(file);
       else importFile(file);
     },
-    [assignDeck, importFile, openFolder, purpose],
+    [assignWorkspaceFile, importFile, openFolder, purpose],
   );
 
-  const rootTitle = purpose === 'slides' ? 'Choose Google Slides' : 'Google Drive';
+  const rootTitle = purpose === 'workspace' ? 'Choose Workspace file' : 'Google Drive';
   const title = path.length > 0 ? (path[path.length - 1]?.name ?? rootTitle) : rootTitle;
 
   return (
@@ -317,8 +322,8 @@ function GoogleDrivePicker({
           <Icon name="cloud" size={40} color={theme.colors.textMuted} />
           <Text style={styles.emptyTitle}>Connect Google Drive</Text>
           <Text style={styles.emptyBody}>
-            Google grants Verity read and write access to every presentation in this account. Verity
-            only edits the native Google Slides deck you explicitly assign to a session. You can
+            Google grants Verity access to Workspace files in this account. Verity only edits the
+            native Google Docs, Sheets, or Slides file you explicitly assign to a session. You can
             disconnect at any time.
           </Text>
           <Pressable
@@ -423,7 +428,7 @@ function GoogleDrivePicker({
                   accessibilityLabel={
                     isDriveFolder(item)
                       ? `Open folder ${item.name}`
-                      : purpose === 'slides'
+                      : purpose === 'workspace'
                         ? `Assign ${item.name}`
                         : `Import ${item.name}`
                   }

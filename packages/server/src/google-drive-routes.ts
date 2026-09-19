@@ -18,6 +18,8 @@ import {
   type DriveFileList,
 } from './google-drive.js';
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
+import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
+import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
 import { ensureReferenceDirectory, writeReferenceDocFile } from './reference-docs.js';
 import { sessionFilePath } from './session-files.js';
 
@@ -37,13 +39,22 @@ const filesQuery = z.object({
   query: z.string().trim().min(1).max(200).optional(),
   sharedWithMe: z.enum(['true']).optional(),
   pageToken: z.string().trim().min(1).max(4096).optional(),
-  purpose: z.enum(['import', 'slides']).optional(),
+  purpose: z.enum(['import', 'slides', 'workspace']).optional(),
 });
 const importBody = z.object({ fileId: z.string().trim().min(1).max(512) });
 const SLIDES_PICKER_MIME_TYPES = [
   'application/vnd.google-apps.folder',
   'application/vnd.google-apps.presentation',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+] as const;
+const WORKSPACE_PICKER_MIME_TYPES = [
+  'application/vnd.google-apps.folder',
+  'application/vnd.google-apps.presentation',
+  'application/vnd.google-apps.document',
+  'application/vnd.google-apps.spreadsheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ] as const;
 
 type SettingsStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'>;
@@ -56,6 +67,10 @@ interface GoogleDriveRouteDeps {
       | 'setSessionSlideDeck'
       | 'clearSessionSlideDeck'
       | 'listRecentGoogleSlideDeckFileIds'
+      | 'getSessionWorkspaceFile'
+      | 'setSessionWorkspaceFile'
+      | 'clearSessionWorkspaceFile'
+      | 'listRecentGoogleWorkspaceFileIds'
     >;
   googleDriveClientId?: string;
   secretCipher?: SealableSecretCipher;
@@ -153,14 +168,17 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           query: query.query,
           sharedWithMe: query.sharedWithMe === 'true',
           pageToken: query.pageToken,
-          ...(query.purpose === 'slides'
+          ...(query.purpose === 'slides' || query.purpose === 'workspace'
             ? {
-                mimeTypes: SLIDES_PICKER_MIME_TYPES,
+                mimeTypes:
+                  query.purpose === 'workspace'
+                    ? WORKSPACE_PICKER_MIME_TYPES
+                    : SLIDES_PICKER_MIME_TYPES,
               }
             : {}),
         });
         if (
-          query.purpose !== 'slides' ||
+          (query.purpose !== 'slides' && query.purpose !== 'workspace') ||
           query.parentId !== undefined ||
           query.query !== undefined ||
           query.sharedWithMe !== undefined ||
@@ -168,17 +186,19 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         ) {
           return page;
         }
-        const recentIds = await deps.eventStore.listRecentGoogleSlideDeckFileIds();
+        const recentIds =
+          query.purpose === 'workspace'
+            ? await deps.eventStore.listRecentGoogleWorkspaceFileIds()
+            : await deps.eventStore.listRecentGoogleSlideDeckFileIds();
+        const pickerMimeTypes: readonly string[] =
+          query.purpose === 'workspace' ? WORKSPACE_PICKER_MIME_TYPES : SLIDES_PICKER_MIME_TYPES;
         const recent = (
           await Promise.all(
             recentIds.map((fileId) => getDriveFile(token, fileId).catch(() => undefined)),
           )
         ).filter(
           (file): file is NonNullable<typeof file> =>
-            file !== undefined &&
-            SLIDES_PICKER_MIME_TYPES.includes(
-              file.mimeType as (typeof SLIDES_PICKER_MIME_TYPES)[number],
-            ),
+            file !== undefined && pickerMimeTypes.includes(file.mimeType),
         );
         const recentSet = new Set(recent.map((file) => file.id));
         return {
@@ -193,6 +213,100 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       }
     },
   );
+
+  app.get('/sessions/:id/google-workspace/file', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    if ((await deps.eventStore.getSession(id)) === undefined) {
+      reply.code(404);
+      return { error: `session ${id} not found` };
+    }
+    return { file: (await deps.eventStore.getSessionWorkspaceFile(id)) ?? null };
+  });
+
+  app.put('/sessions/:id/google-workspace/file', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    const { fileId } = importBody.parse(request.body);
+    if ((await deps.eventStore.getSession(id)) === undefined) {
+      reply.code(404);
+      return { error: `session ${id} not found` };
+    }
+    const token = await accessToken();
+    if (token === undefined) {
+      reply.code(409);
+      return { error: 'Google Drive is not connected' };
+    }
+    try {
+      const driveFile = await getDriveFile(token, fileId);
+      const kind =
+        driveFile.mimeType === 'application/vnd.google-apps.presentation'
+          ? 'slides'
+          : driveFile.mimeType === 'application/vnd.google-apps.document'
+            ? 'docs'
+            : driveFile.mimeType === 'application/vnd.google-apps.spreadsheet'
+              ? 'sheets'
+              : undefined;
+      if (kind === undefined) {
+        reply.code(415);
+        return { error: 'Only native Google Slides, Docs, and Sheets files can be assigned' };
+      }
+      if (driveFile.canEdit !== true) {
+        reply.code(403);
+        return { error: 'You need edit access to assign this Google Workspace file' };
+      }
+      let name = driveFile.name;
+      let revisionId: string | null = null;
+      let canonicalId = fileId;
+      if (kind === 'slides') {
+        const presentation = await getSlidesPresentation(token, fileId);
+        canonicalId = presentation.presentationId;
+        name = presentation.title;
+        revisionId = presentation.revisionId;
+      } else if (kind === 'docs') {
+        const document = await getDocsDocumentMetadata(token, fileId);
+        canonicalId = document.documentId;
+        name = document.title;
+        revisionId = document.revisionId;
+      } else {
+        const spreadsheet = await getSheetsSpreadsheet(token, fileId);
+        canonicalId = spreadsheet.spreadsheetId;
+        name = spreadsheet.title;
+      }
+      const path =
+        kind === 'slides' ? 'presentation' : kind === 'docs' ? 'document' : 'spreadsheets';
+      const file = await deps.eventStore.setSessionWorkspaceFile({
+        sessionId: id,
+        kind,
+        fileId: canonicalId,
+        name,
+        webViewLink: `https://docs.google.com/${path}/d/${encodeURIComponent(canonicalId)}/edit`,
+        revisionId,
+      });
+      return { file };
+    } catch (error) {
+      const reason =
+        error instanceof GoogleSlidesError ||
+        error instanceof GoogleDocsError ||
+        error instanceof GoogleSheetsError
+          ? error.reason
+          : 'assignment_failed';
+      if (reason.startsWith('http_403')) {
+        reply.code(403);
+        return { error: 'Reconnect Google Drive to grant Workspace editing access' };
+      }
+      reply.code(reason.startsWith('http_400') ? 415 : 502);
+      return { error: `Could not assign this Google Workspace file (${reason})` };
+    }
+  });
+
+  app.delete('/sessions/:id/google-workspace/file', async (request, reply) => {
+    const { id } = sessionParams.parse(request.params);
+    if ((await deps.eventStore.getSession(id)) === undefined) {
+      reply.code(404);
+      return { error: `session ${id} not found` };
+    }
+    await deps.eventStore.clearSessionWorkspaceFile(id);
+    reply.code(204);
+  });
 
   app.get('/sessions/:id/google-slides/deck', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);

@@ -314,7 +314,7 @@ export {
   type SessionFileEntry,
   type SessionHistoryPage,
   type SessionStatus,
-  type SessionSlideDeck,
+  type SessionGoogleWorkspaceFile,
   type SessionSummary,
   type SessionListEnvelope,
   type AttentionSignal,
