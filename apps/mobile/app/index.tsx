@@ -659,6 +659,8 @@ function SessionList({ client }: { client: VerityClient }) {
           the one thing on this screen that must not scroll, drag or fold away. */}
       {providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null}
       <ProjectOverviewList
+        onScroll={reorder.onScroll}
+        scrollEventThrottle={16}
         draggingProjectId={draggingProjectId}
         refreshing={refreshingOverview}
         onRefresh={onRefreshOverview}
