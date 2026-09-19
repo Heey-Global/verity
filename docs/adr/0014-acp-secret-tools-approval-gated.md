@@ -630,6 +630,23 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   to keep working. A boundary version the operator can read is the part that is
   genuinely missing today; recovery therefore ends with a check against the
   installed supervisor itself, which is the artifact the question is about.
+- **The project's secret NAMES now reach whichever model provider the OpenCode
+  session is configured with.** `carriesBrokeredSecretTools` lists the aliases in
+  the system prompt, so admitting OpenCode also discloses them — and that lands
+  differently here than on the other two adapters. Claude and Codex each speak to
+  one vendor, chosen by choosing the agent; OpenCode speaks to an API base URL and
+  key the operator supplies (ADR 0012 Amendment 5), which may be any provider at
+  all. The exposure is names, never values — no value resolves without a D2
+  approval covering the call, and an alias without the gateway behind it buys a
+  reader nothing, which is ADR 0011 D3's position that secret names are not
+  secret — but "the names of this project's secrets" still describes the project,
+  and an operator who picked a provider for model access did not pick it for
+  this. The names go anyway, because they are what makes the tools usable: an
+  agent that cannot name an alias cannot ask for an approval, which is the
+  tool-less-but-admitted dead end this amendment removes everywhere else. The
+  control is therefore which adapter a project's sessions run on, and which
+  provider that adapter is pointed at — not a per-backend name filter, since the
+  aliases are the project's bindings and a project has one set of them.
 - **A Server composed without `mcpGatewayTokens` now refuses OpenCode turns that
   it previously ran tool-less.** The registry is mandatory for every named
   brokered-tool backend, and OpenCode joins that requirement here rather than
