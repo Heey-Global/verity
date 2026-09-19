@@ -107,6 +107,17 @@ describe('changedTextSettings', () => {
     ).toEqual({ gitUserName: 'Grace', gitUserEmail: 'grace@example.com' });
   });
 
+  it('saves the Google OAuth client ID without requiring a container reprovision', () => {
+    const clientId = '123456789-example.apps.googleusercontent.com';
+
+    expect(changedTextSettings({ googleDriveClientId: `  ${clientId}  ` }, makeSettings())).toEqual(
+      {
+        googleDriveClientId: clientId,
+      },
+    );
+    expect(requiresContainerApply({ googleDriveClientId: clientId })).toBe(false);
+  });
+
   it('has no stored value to compare against before settings load', () => {
     expect(changedTextSettings({ gitUserName: 'Ada' }, null)).toEqual({ gitUserName: 'Ada' });
     expect(changedTextSettings({ gitUserName: '' }, null)).toEqual({});
