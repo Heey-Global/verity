@@ -1,139 +1,105 @@
-import { Animated } from 'react-native';
-
 import {
-  PROJECT_DROP_DURATION,
-  projectDragOffsets,
+  FALLBACK_ROW_HEIGHT,
+  moveProjectIdToIndex,
+  projectDragBounds,
   projectDragStartOffset,
   projectDragTargetIndex,
-  settleProjectDrop,
+  projectRowPosition,
+  projectRowTarget,
+  projectRowTranslation,
+  projectSortableRange,
+  type ProjectDrag,
 } from '../lib/projectReorder';
 
-describe('project drag targets', () => {
-  const ids = ['a', 'b', 'c'];
-  const heights = new Map([
-    ['a', 60],
-    ['b', 100],
-    ['c', 80],
-  ]);
+const order = ['control', 'a', 'b', 'c', 'orphan'];
+const sortable = ['a', 'b', 'c'];
+const heights = { control: 50, a: 60, b: 100, c: 80, orphan: 70 };
+const range = projectSortableRange(order, sortable, 'a');
 
-  it('crosses each neighbouring row at its midpoint, including unequal heights', () => {
-    expect(projectDragTargetIndex(ids, 'a', 49, heights)).toBe(0);
-    expect(projectDragTargetIndex(ids, 'a', 50, heights)).toBe(1);
-    expect(projectDragTargetIndex(ids, 'a', 139, heights)).toBe(1);
-    expect(projectDragTargetIndex(ids, 'a', 140, heights)).toBe(2);
-    expect(projectDragTargetIndex(ids, 'c', -49, heights)).toBe(2);
-    expect(projectDragTargetIndex(ids, 'c', -50, heights)).toBe(1);
-    expect(projectDragTargetIndex(ids, 'c', -130, heights)).toBe(0);
+describe('sortable range', () => {
+  // A drag that could cross the control plane or an orphan row would reorder
+  // rows the server has no slot for; the target index has to stop at them.
+  it('boxes a drag in between the pinned rows around it', () => {
+    expect(range).toEqual({ min: 1, max: 3 });
+    expect(projectSortableRange(['a', 'x', 'b'], ['a', 'b'], 'b')).toEqual({ min: 2, max: 2 });
+    expect(projectSortableRange(order, sortable, 'missing')).toEqual({ min: 0, max: -1 });
   });
 
-  it('opens exactly one compact slot while keeping the original touch target mounted', () => {
-    const offsets = projectDragOffsets(ids, ['b', 'c', 'a'], heights);
-    expect(offsets.get('a')).toBe(180);
-    expect(offsets.get('b')).toBe(-60);
-    expect(offsets.get('c')).toBe(-60);
-    expect([...projectDragOffsets(ids, ids, heights).values()]).toEqual([0, 0, 0]);
-    const upward = projectDragOffsets(ids, ['c', 'a', 'b'], heights);
-    expect(upward.get('c')).toBe(-160);
-    expect(upward.get('a')).toBe(80);
-    expect(upward.get('b')).toBe(80);
-  });
-
-  it('returns to the original slot and clamps movement at list boundaries', () => {
-    expect(projectDragTargetIndex(ids, 'b', 0, heights)).toBe(1);
-    expect(projectDragTargetIndex(ids, 'b', 10000, heights)).toBe(2);
-    expect(projectDragTargetIndex(ids, 'b', -10000, heights)).toBe(0);
-    expect(projectDragTargetIndex(ids, 'b', NaN, heights)).toBe(1);
-  });
-
-  it('keeps the grabbed row under the finger when expanded rows above it collapse', () => {
-    const expanded = new Map([
-      ['a', 240],
-      ['b', 100],
-      ['c', 180],
-    ]);
-    expect(projectDragStartOffset(ids, 'c', expanded, heights)).toBe(180);
-    expect(projectDragStartOffset(ids, 'a', expanded, heights)).toBe(0);
-    expect(projectDragStartOffset(ids, 'missing', expanded, heights)).toBe(0);
+  it('keeps the dragged row inside its run however far the finger goes', () => {
+    expect(projectDragBounds(order, 'a', heights, range)).toEqual({ min: 0, max: 180 });
+    expect(projectDragBounds(order, 'c', heights, range)).toEqual({ min: -160, max: 0 });
+    expect(projectDragBounds(order, 'b', heights, range)).toEqual({ min: -60, max: 80 });
   });
 });
 
-// The overview renders every group collapsed and its fold toggle inert for as
-// long as a drag is in flight, so a drop that never settles is not a lost
-// animation — it is an overview whose projects stay collapsed and cannot be
-// expanded again until the app is restarted.
-describe('project drop settling', () => {
-  const startCallback = (): ((result: { finished: boolean }) => void) => {
-    const start = jest.mocked(Animated.timing).mock.results.at(-1)!.value.start as jest.Mock;
-    return start.mock.calls.at(-1)![0] as (result: { finished: boolean }) => void;
+describe('drag targets', () => {
+  it('crosses each neighbouring row at its midpoint, including unequal heights', () => {
+    expect(projectDragTargetIndex(order, 'a', 49, heights, range)).toBe(1);
+    expect(projectDragTargetIndex(order, 'a', 50, heights, range)).toBe(2);
+    expect(projectDragTargetIndex(order, 'a', 139, heights, range)).toBe(2);
+    expect(projectDragTargetIndex(order, 'a', 140, heights, range)).toBe(3);
+    expect(projectDragTargetIndex(order, 'c', -49, heights, range)).toBe(3);
+    expect(projectDragTargetIndex(order, 'c', -50, heights, range)).toBe(2);
+    expect(projectDragTargetIndex(order, 'c', -130, heights, range)).toBe(1);
+  });
+
+  it('never leaves the sortable run and tolerates a non-finite offset', () => {
+    expect(projectDragTargetIndex(order, 'b', 0, heights, range)).toBe(2);
+    expect(projectDragTargetIndex(order, 'b', 10000, heights, range)).toBe(3);
+    expect(projectDragTargetIndex(order, 'b', -10000, heights, range)).toBe(1);
+    expect(projectDragTargetIndex(order, 'b', NaN, heights, range)).toBe(2);
+  });
+
+  it('falls back to a nominal height for a row that has not laid out yet', () => {
+    expect(projectRowPosition(['x', 'y'], 'y', {})).toBe(FALLBACK_ROW_HEIGHT);
+  });
+
+  it('moves an id and returns the same array when nothing changes', () => {
+    expect(moveProjectIdToIndex(order, 'a', 3)).toEqual(['control', 'b', 'c', 'a', 'orphan']);
+    expect(moveProjectIdToIndex(order, 'a', 1)).toBe(order);
+    expect(moveProjectIdToIndex(order, 'missing', 0)).toBe(order);
+  });
+
+  it('keeps the grabbed row under the finger when expanded rows above it collapse', () => {
+    const expanded = { control: 50, a: 240, b: 100, c: 180 };
+    expect(projectDragStartOffset(order, 'c', expanded, heights)).toBe(180);
+    expect(projectDragStartOffset(order, 'a', expanded, heights)).toBe(0);
+    expect(projectDragStartOffset(order, 'missing', expanded, heights)).toBe(0);
+  });
+});
+
+describe('row transforms', () => {
+  const drag: ProjectDrag = {
+    id: 'a',
+    startOrder: order,
+    order: ['control', 'b', 'c', 'a', 'orphan'],
+    range,
   };
 
-  beforeEach(() => {
-    jest.useFakeTimers();
-    jest.spyOn(Animated, 'timing').mockImplementation(
-      () =>
-        ({
-          start: jest.fn(),
-          stop: jest.fn(),
-          reset: jest.fn(),
-        }) as unknown as Animated.CompositeAnimation,
-    );
+  it('pins the grabbed row to the finger and opens exactly one slot for it', () => {
+    const targets = order.map((id) => projectRowTarget(drag, id, heights, 173));
+    expect(targets).toEqual([0, 173, -60, -60, 0]);
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
-    jest.restoreAllMocks();
+  // The rows are painted in the start order for the whole drag, so the
+  // transform is the target itself; nothing here depends on React.
+  it('translates each row by its target while the start order is rendered', () => {
+    for (const id of order) {
+      const target = projectRowTarget(drag, id, heights, 173);
+      expect(projectRowTranslation(drag, id, heights, target, order)).toBe(target);
+    }
   });
 
-  const drop = (settle: jest.Mock, reducedMotion = false) => {
-    settleProjectDrop({
-      translation: new Animated.Value(40),
-      target: 120,
-      reducedMotion,
-      settle,
-    });
-  };
-
-  it('settles once when the drop animation completes', () => {
-    const settle = jest.fn();
-    drop(settle);
-    expect(settle).not.toHaveBeenCalled();
-    startCallback()({ finished: true });
-    jest.advanceTimersByTime(PROJECT_DROP_DURATION + 1000);
-    expect(settle).toHaveBeenCalledTimes(1);
-  });
-
-  it('settles when the drop animation is interrupted instead of finished', () => {
-    const settle = jest.fn();
-    drop(settle);
-    startCallback()({ finished: false });
-    expect(settle).toHaveBeenCalledTimes(1);
-  });
-
-  it('settles when the drop animation never reports back at all', () => {
-    const settle = jest.fn();
-    drop(settle);
-    jest.advanceTimersByTime(PROJECT_DROP_DURATION + 200);
-    expect(settle).toHaveBeenCalledTimes(1);
-    startCallback()({ finished: true });
-    expect(settle).toHaveBeenCalledTimes(1);
-  });
-
-  it('settles when the drop animation cannot be started', () => {
-    jest.mocked(Animated.timing).mockImplementation(() => {
-      throw new Error('Unable to locate attached view in the native tree');
-    });
-    const settle = jest.fn();
-    drop(settle);
-    expect(settle).toHaveBeenCalledTimes(1);
-  });
-
-  it('settles immediately and without animating under reduced motion', () => {
-    const settle = jest.fn();
-    const translation = new Animated.Value(40);
-    const setValue = jest.spyOn(translation, 'setValue');
-    settleProjectDrop({ translation, target: 120, reducedMotion: true, settle });
-    expect(settle).toHaveBeenCalledTimes(1);
-    expect(Animated.timing).not.toHaveBeenCalled();
-    expect(setValue).toHaveBeenCalledWith(120);
+  // The guard that matters: once the drop commits and React paints the preview
+  // order, every settled transform must be zero in that same commit. A non-zero
+  // value here is the frame where the rows appear twice-moved or snap back
+  // before the drag state is cleared.
+  it('collapses every transform to zero the moment the dropped order is rendered', () => {
+    const settledOffset = 180;
+    for (const id of order) {
+      const settled = projectRowTarget(drag, id, heights, settledOffset);
+      expect(projectRowTranslation(drag, id, heights, settled, drag.order)).toBe(0);
+    }
+    expect(projectRowTranslation(null, 'a', heights, 0, drag.order)).toBe(0);
   });
 });
