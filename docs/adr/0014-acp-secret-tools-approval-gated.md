@@ -570,13 +570,18 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   opaque words (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`),
   which also keeps the supervisor's gate order from being load-bearing. It states
   the cause outright, because it can: a current supervisor emits the bearer
-  refusal for one other reason — an EMPTY bearer, a Server composition defect
-  that no reprovisioning fixes — and the two are indistinguishable from the
-  message but not to the client that minted it. It reads the value it sent and
-  gives each cause its own remedy, telling the defect case explicitly that
-  recreating the container will not help. That defect arm is the one thing here
-  not narrowed to OpenCode: the registry is shared, so the same empty bearer on
-  Claude or Codex is the same defect. The operator-facing procedure is
+  refusal for two further reasons of its own — a bearer that is EMPTY, and one
+  over its 512-byte shape bound, both Server composition defects that no
+  reprovisioning fixes. All three are indistinguishable from the message, and
+  none of them are to the client that minted the bearer. It reads the value it
+  sent, and explains container age only for a bearer the supervisor would have
+  accepted on shape; the defect cases are told outright that recreating the
+  container will not help. That defect arm is the one thing here not narrowed to
+  OpenCode: the registry is shared, so the same malformed bearer on Claude or
+  Codex is the same defect. The mirrored shape bound is the fragile part of that
+  — the supervisor is a boundary binary with nothing to import — so the bound and
+  its comparison are pinned against the supervisor's own source rather than
+  restated. The operator-facing procedure is
   `docs/runbooks/opencode-brokered-tools-container-refresh.md`.
 
   Detecting this BEFORE the turn was considered and rejected on two counts. The

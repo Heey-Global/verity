@@ -562,6 +562,16 @@ describe('SupervisorRunnerClient', () => {
     );
     expect(bound?.[1]).toBeDefined();
     expect(Number(bound?.[1])).toBe(MCP_GATEWAY_BEARER_MAX_BYTES);
+    // The number alone is half a mirror. Which side of it is admissible, and what is
+    // being counted, decide how a bearer AT the bound is classified — and that is the
+    // classification with a harmful wrong answer, since it sends a live Server defect
+    // to the container-recreation runbook. So pin the comparison itself: exclusive,
+    // and in BYTES, which is what `admissibleGatewayBearer` mirrors with `<=` on
+    // `Buffer.byteLength`. A supervisor switching to `>=`, or to UTF-16 units, changes
+    // the answer for exactly one bearer length and nothing else would notice.
+    expect(supervisor).toContain(
+      "if (typeof value !== 'string' || Buffer.byteLength(value) > maxBytes)",
+    );
   });
 
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
@@ -738,9 +748,13 @@ describe('SupervisorRunnerClient', () => {
 
   // The refusal a turn with NO bearer actually gets, and the reason recognizing the
   // bearer refusal alone was not enough: `trustedCliExecution` rides on backend
-  // identity, not on whether a bearer was minted, so the ephemeral/meta-query path
-  // (`sessionId: null`) sails past the bearer gate and is refused at the second one.
-  // Those turns are the ones an operator meets while trying to diagnose the first.
+  // identity, not on whether a bearer was minted, so a turn that mints none sails past
+  // the bearer gate and is refused at the second one. This client is exercised at the
+  // shape that produces it — no registry, hence no bearer on the wire. In production
+  // that shape is a turn with no session to attribute to (`sessionId: null`), which is
+  // the only way `embedded.ts` composes a supervisor client without the registry; the
+  // same file now throws for a session-attributed turn that lacks one. That path is
+  // the ephemeral/meta-query one an operator uses while diagnosing the first failure.
   it('explains a stale refusal that lands on the trusted-CLI gate instead', async () => {
     const frames: Array<{ kind?: unknown; trustedCliExecution?: unknown }> = [];
     const error = await refusedStart(

@@ -31,13 +31,24 @@ Which of the two you see depends only on which gate the old supervisor reached
 first; the cause and the remedy are the same. That sentence is the Server's own
 diagnosis
 (`explainStaleGatewayRefusal`, `packages/session/src/runner-supervisor-client.ts`),
-and it is specific: a current supervisor emits the same bare
-`invalid mcpGatewayToken` when the Server mints an **empty** bearer, which is a
-Server composition defect and not a stale container. The Server distinguishes the
-two itself — it minted the bearer, so it knows which it sent — and says
-`Server composition defect` instead when that is the case, on any backend. That
-message is not this runbook's: do not recreate a container for it, since nothing
-about reprovisioning changes it.
+and it is specific, because those bare words are not specific at all. A CURRENT
+supervisor answers `invalid mcpGatewayToken` for two further reasons of its own —
+a bearer that is empty, and one over the 512-byte limit — and both are Server
+composition defects rather than stale containers. The Server tells them apart
+itself, on any backend, since it minted the bearer and knows what it sent:
+
+```
+invalid mcpGatewayToken — the Server sent a malformed MCP gateway bearer for
+this turn (empty) … This is a Server composition defect …
+
+invalid mcpGatewayToken — the Server sent a malformed MCP gateway bearer for
+this turn (713 bytes, over the 512-byte limit) … This is a Server composition
+defect …
+```
+
+Neither of those is this runbook's: do not recreate a container for a
+`Server composition defect` message, since nothing about reprovisioning changes
+it. Match on that phrase, not on the words before it.
 
 ## Recover
 
