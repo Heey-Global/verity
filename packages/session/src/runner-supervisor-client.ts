@@ -769,7 +769,18 @@ export class SupervisorRunnerClient implements RunnerClient {
    * it. Minting for a backend the supervisor's `ACP_WORKER_BACKENDS` does not know
    * does not widen that backend's authority, it breaks it: the supervisor answers
    * `invalid mcpGatewayToken` and the turn dies at start-turn. The two lists move
-   * together or not at all. */
+   * together or not at all.
+   *
+   * It carries `trustedCliExecution` with it, which is worth stating because no line
+   * that mentions that field changed when OpenCode was admitted — the coupling is
+   * invisible in the diff and only a test expectation moves. They ride together on
+   * purpose: the supervisor's trusted-CLI endpoint is not a shell, it is the
+   * execution half of the brokered `verity_secret_run` tool, reachable only through
+   * `mcp-gateway-tools.ts` and approval-gated by ADR 0014 D2 exactly like the other
+   * two. A backend admitted to spend secrets but refused this flag would see that one
+   * of the three D1 tools fail at the point of use, which is a worse answer than
+   * either whole posture. Split them only if some future backend should get the
+   * gateway without `verity_secret_run`, and give that its own predicate. */
   private readonly acpBackend: boolean;
   /** Turn starts in flight through THIS client — the number that says whether a slow
    * start is one turn being slow or a queue of them piling up. */
@@ -1192,15 +1203,30 @@ export class SupervisorRunnerClient implements RunnerClient {
    * by the same path, with the supervisor's own error kept as `cause`. Deliberately a
    * plain Error rather than a {@link RunnerWorkerStartFailure}: this is the same
    * refusal it was before, and promoting it to a type callers branch on would change
-   * recovery behaviour to improve a sentence. Narrowed to the backend whose admission
-   * is new, so a genuine bearer defect on Claude or Codex keeps its own error rather
-   * than being explained away as an outdated container.
+   * recovery behaviour to improve a sentence. Nothing is lost by not preserving
+   * `cause`'s own type either — the only thing that reaches here is the plain Error
+   * built from the supervisor's wire refusal, since the other thing `cause` can be on
+   * this path is a socket error (`connect ENOENT`), which never carries this message.
+   * Narrowed to the backend whose admission is new, so a genuine bearer defect on
+   * Claude or Codex keeps its own error rather than being explained away as an
+   * outdated container.
+   *
+   * The sentence is CONDITIONAL, and that is the finding a review caught rather than
+   * a hedge. A current supervisor emits this same message for one other reason — the
+   * bearer is an empty string (`verity-runner-supervisor.mjs`, where the two
+   * conditions sit in one `if`) — which would be a Server defect, not an old
+   * container. It cannot say which it is from the message alone, and the action it
+   * was about to assert, recreating the project container, destroys that container's
+   * state. So it offers the diagnosis and names the cheap check first. Note that no
+   * bearer-RESOLUTION failure can arrive here: the supervisor only bounds the
+   * bearer's shape and never resolves it, so a revoked or unknown token fails later,
+   * at the gateway, with its own error.
    */
   private explainStaleGatewayRefusal(cause: Error): Error {
     if (this.workerBackend !== 'opencode-acp' || !cause.message.includes('invalid mcpGatewayToken'))
       return cause;
     return new Error(
-      `${cause.message} — this Sandbox predates OpenCode's admission to the brokered Verity tools (ADR 0014 Amendment 4), so its supervisor refuses the per-turn gateway bearer the Server now mints for OpenCode. Recreate the project container on a current toolkit, or run this session on Claude or Codex.`,
+      `${cause.message} — the Sandbox supervisor refused the per-turn gateway bearer the Server mints for OpenCode. Most likely this Sandbox predates OpenCode's admission to the brokered Verity tools (ADR 0014 Amendment 4): retry the turn first, and if it fails the same way, recreate the project container on a current toolkit or run this session on Claude or Codex.`,
       { cause },
     );
   }

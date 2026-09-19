@@ -299,16 +299,22 @@ describe('agent spawn broker', () => {
     // starts a turn on import, so there is nothing to call. What can be pinned is the
     // shape of its two fail-closed re-checks, and they are worth pinning: the Server
     // decides which backends get a gateway bearer, and these are the Sandbox-side
-    // re-checks that refuse one that arrives anyway. `opencode-acp` is an ACP backend
-    // that is deliberately not admitted (ADR 0014 D1), so the day someone rewrites
-    // either gate as "is this ACP" it silently starts accepting a bearer for OpenCode
-    // turns. That edit has to fail here instead.
+    // re-checks that refuse one that arrives anyway.
+    //
+    // All three ACP adapters are admitted since ADR 0014 Amendment 4, which is what
+    // makes the shape rather than the membership the thing to guard: "is this ACP" is
+    // now a predicate with the same answer, so a rewrite to it would pass every
+    // behavioural test in the repo while quietly admitting the fourth adapter nobody
+    // has decided about. Requiring the members to be named one at a time is what
+    // keeps that decision explicit — and the trailing `)` matters, because without it
+    // this regex matches a prefix and a dropped member reads as a pass.
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
     for (const field of ['trustedCliExecution === true', 'mcpGatewayToken !== undefined']) {
       expect(text).toMatch(
         new RegExp(
           `request\\.${field} &&\\s*request\\.backend !== 'claude-acp' &&\\s*` +
-            `request\\.backend !== 'codex-acp'`,
+            `request\\.backend !== 'codex-acp' &&\\s*` +
+            `request\\.backend !== 'opencode-acp'\\s*\\)`,
           'u',
         ),
       );

@@ -509,6 +509,17 @@ identity, and — unlike either of them — under `openCodeMode`, which collapse
 every Verity posture into `build` or `plan`. An unattended OpenCode turn therefore
 gets fewer tools than the same turn on Claude, never more.
 
+**`trustedCliExecution` is part of this decision, not a side effect of it.** It
+rides the same flag as the bearer, and no line mentioning it changed, so it is
+worth saying what it grants: not a shell, but the execution half of
+`verity_secret_run`, one of the three D1 tools. It is reachable only through the
+gateway (`mcp-gateway-tools.ts`), under the same D2 approval and the same
+root-owned-executable allowlist as on Claude and Codex. Admitting an agent to the
+gateway and withholding this would mean one of the three tools failing at the
+point of use rather than a narrower posture. A future backend that should get the
+gateway *without* `verity_secret_run` is possible, and needs its own predicate
+rather than a reinterpretation of this one.
+
 **D3 is unchanged and already correct for it.** `brokeredGrantChannel` has
 answered `acp` for `opencode-acp` since before this amendment, so a standing grant
 created on the restricted channel is what an OpenCode turn redeems against, and a
@@ -533,7 +544,11 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   recoverable at runtime: the fix is to recreate the project container on a
   current toolkit. The Server recognizes this one refusal and says so rather than
   passing on four words about a bearer
-  (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`).
+  (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`). It offers that
+  as the likely cause rather than asserting it, and names a retry first: a
+  current supervisor emits the same message for an empty bearer, the two are
+  indistinguishable from the message alone, and recreating a container is
+  destructive of its state.
 - Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
   Amendment 4's, for a different reason — the fixed control-plane Runner carries
   no OpenCode configuration or egress material — and this amendment does not

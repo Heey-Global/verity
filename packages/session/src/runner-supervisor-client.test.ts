@@ -577,7 +577,16 @@ describe('SupervisorRunnerClient', () => {
 
     expect(error.message).toMatch(/invalid mcpGatewayToken/u);
     expect(error.message).toMatch(/predates OpenCode's admission/u);
-    expect(error.message).toMatch(/Recreate the project container/u);
+    expect(error.message).toMatch(/recreate the project container/u);
+    // The cheap, non-destructive check has to come FIRST. A current supervisor emits
+    // this same message for an empty bearer — a Server defect, not an old container —
+    // and the message cannot tell the two apart, so an unconditional "recreate the
+    // project container" would direct the operator to destroy that container's state
+    // to fix something a retry would have cleared.
+    expect(error.message).toMatch(/retry the turn first/u);
+    expect(error.message.indexOf('retry the turn first')).toBeLessThan(
+      error.message.indexOf('recreate the project container'),
+    );
     // The supervisor's own words stay reachable; only the sentence around them is new.
     expect((error.cause as Error | undefined)?.message).toMatch(/invalid mcpGatewayToken/u);
   });
@@ -604,6 +613,74 @@ describe('SupervisorRunnerClient', () => {
 
     expect(error.message).toMatch(/supervisor is busy/u);
     expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // There are TWO throw sites for a decided refusal, and the tests above only reach
+  // the first. The second is the one a stale Sandbox is most likely to be met at in
+  // practice: an overloaded old supervisor that drops the first answer sends the
+  // client through reconcile and a re-send, and the refusal lands on the second frame.
+  // Explaining one site and not the other would leave the operator reading four
+  // opaque words in exactly the deployment this explanation exists for.
+  it('explains the same stale refusal when it lands on the re-sent frame', async () => {
+    const runtime = join(dir, 'stale-opencode-resend-runtime');
+    await mkdir(runtime, { recursive: true });
+    const kinds: string[] = [];
+    const server = createServer((peer) => {
+      sockets.add(peer);
+      peer.once('close', () => sockets.delete(peer));
+      peer.once('data', (chunk: Buffer) => {
+        const kind = String((JSON.parse(chunk.toString('utf8')) as { kind?: unknown }).kind);
+        kinds.push(kind);
+        // Swallow the FIRST start-turn: unacknowledged, so the client may re-send.
+        if (kind === 'start-turn' && kinds.filter((k) => k === 'start-turn').length === 1) return;
+        // `get-turn` with no state is "nothing ever claimed this turn", which is what
+        // makes the re-send safe — the client will not send a second frame without it.
+        if (kind === 'get-turn') {
+          peer.end(`${JSON.stringify({ ok: true })}\n`);
+          return;
+        }
+        peer.end(`${JSON.stringify({ ok: false, error: 'invalid mcpGatewayToken' })}\n`);
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const client = new SupervisorRunnerClient(
+      { runnerSupervisorBackend: 'opencode-acp' } as Backend,
+      {
+        runtimeDir: runtime,
+        store,
+        bus: new InMemoryEventBus(),
+        // The real 15 s "did you hear me" bound is not what this test is about; it
+        // only has to be crossed. The reconcile floor
+        // (START_TURN_MISSING_STATE_MIN_MS) is fixed and still runs for real.
+        startAcceptTimeoutMs: 50,
+      },
+    );
+    const turn = client.startTurn(
+      {
+        store: {} as never,
+        worktree: '/work/project',
+        cwd: '/work/project',
+        storeSessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+        prompt: 'hello',
+      },
+      {},
+    );
+    const error = await turn.result.then(
+      () => {
+        throw new Error('start was expected to fail');
+      },
+      (thrown: Error) => thrown,
+    );
+
+    // Proves the refusal really arrived on the SECOND frame; without this the test
+    // would pass against a client that never re-sent at all.
+    expect(kinds.filter((kind) => kind === 'start-turn')).toHaveLength(2);
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect((error.cause as Error | undefined)?.message).toMatch(/invalid mcpGatewayToken/u);
   });
 
   it('carries proxy-bound MCP descriptors and a separate bearer for OpenCode', async () => {
