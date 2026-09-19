@@ -555,6 +555,12 @@ describe('SupervisorRunnerClient', () => {
     error: string,
     supervisorBackend: RunnerSupervisorBackend,
     kinds: string[] = [],
+    // A bearer registry, because a supervisor cannot refuse a bearer it was never
+    // sent: without one these fakes would exercise the no-bearer path and never
+    // reach the case they are named for. The value matters — the explanation reads
+    // it to tell an unadmitted backend from an empty token — so each caller states
+    // the one its scenario would really have carried.
+    bearer: string = 'gateway-token-1',
   ): Promise<Error> {
     const runtime = join(dir, runtimeName);
     await mkdir(runtime, { recursive: true });
@@ -570,7 +576,12 @@ describe('SupervisorRunnerClient', () => {
     await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
     const client = new SupervisorRunnerClient(
       { runnerSupervisorBackend: supervisorBackend } as Backend,
-      { runtimeDir: runtime, store, bus: new InMemoryEventBus() },
+      {
+        runtimeDir: runtime,
+        store,
+        bus: new InMemoryEventBus(),
+        mcpGatewayTokens: { issue: () => bearer, release: () => {} },
+      },
     );
     const turn = client.startTurn(
       {
@@ -611,18 +622,31 @@ describe('SupervisorRunnerClient', () => {
     expect(kinds).toEqual(['start-turn']);
     expect(error.message).toMatch(/invalid mcpGatewayToken/u);
     expect(error.message).toMatch(/predates OpenCode's admission/u);
-    expect(error.message).toMatch(/recreate the project container/u);
-    // The cheap, non-destructive check has to come FIRST. A current supervisor emits
-    // this same message for an empty bearer — a Server defect, not an old container —
-    // and the message cannot tell the two apart, so an unconditional "recreate the
-    // project container" would direct the operator to destroy that container's state
-    // to fix something a retry would have cleared.
-    expect(error.message).toMatch(/retry the turn first/u);
-    expect(error.message.indexOf('retry the turn first')).toBeLessThan(
-      error.message.indexOf('recreate the project container'),
-    );
+    expect(error.message).toMatch(/Recreate the project container/u);
     // The supervisor's own words stay reachable; only the sentence around them is new.
     expect((error.cause as Error | undefined)?.message).toMatch(/invalid mcpGatewayToken/u);
+  });
+
+  // The OTHER cause of the same four words, and the reason the explanation reads the
+  // bearer instead of guessing: a Server that mints an empty one is refused by EVERY
+  // supervisor, current or stale. Neither cause is transient, so a single hedged
+  // message cannot serve both — it would send a Server composition defect to a
+  // remediation that reprovisions a container and still does not fix it.
+  it('names a Server defect rather than an old container when the bearer is empty', async () => {
+    const error = await refusedStart(
+      'empty-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      [],
+      '',
+    );
+
+    expect(error.message).toMatch(/Server composition defect/u);
+    expect(error.message).toMatch(/mcpGatewayTokens/u);
+    // The load-bearing half: this operator must NOT be sent to recreate a container
+    // that was never the problem.
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+    expect(error.message).toMatch(/recreating the project container will not change it/u);
   });
 
   // The other half: the explanation must not swallow a real one. A Claude or Codex
@@ -698,6 +722,9 @@ describe('SupervisorRunnerClient', () => {
         // only has to be crossed. The reconcile floor
         // (START_TURN_MISSING_STATE_MIN_MS) is fixed and still runs for real.
         startAcceptTimeoutMs: 50,
+        // Non-empty, so this exercises the unadmitted-backend branch rather than the
+        // empty-bearer one — the re-send carries the same frame as the first attempt.
+        mcpGatewayTokens: { issue: () => 'gateway-token-1', release: () => {} },
       },
     );
     const turn = client.startTurn(

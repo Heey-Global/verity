@@ -536,7 +536,8 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
 
 ### Consequences
 
-- **A Sandbox older than this release refuses every OpenCode turn.** ADR 0006 D9
+- **A Sandbox older than this release refuses every session-attributed OpenCode
+  turn.** (A turn with `sessionId: null` mints no bearer and still starts.) ADR 0006 D9
   has such a container attesting cleanly — a Server outliving a Sandbox is the
   normal case — but its supervisor's `ACP_WORKER_BACKENDS` predates the decision
   and answers `invalid mcpGatewayToken` to the bearer the Server now mints. That
@@ -546,9 +547,11 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   passing on four words about a bearer
   (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`). It offers that
   as the likely cause rather than asserting it, and names a retry first: a
-  current supervisor emits the same message for an empty bearer, the two are
-  indistinguishable from the message alone, and recreating a container is
-  destructive of its state. The operator-facing procedure is
+  current supervisor emits the same message for an empty bearer — a Server
+  composition defect, which no amount of reprovisioning fixes. The two are
+  indistinguishable from the message, but not to the client that minted the
+  bearer, so it reads the value it sent and gives each case its own remedy.
+  The operator-facing procedure is
   `docs/runbooks/opencode-brokered-tools-container-refresh.md`.
   Detecting this BEFORE the turn was considered and rejected: the supervisor's
   status handshake carries `protocolVersion` and `runnerInstanceId` and names no

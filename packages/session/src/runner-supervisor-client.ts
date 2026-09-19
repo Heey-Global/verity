@@ -1211,22 +1211,37 @@ export class SupervisorRunnerClient implements RunnerClient {
    * Claude or Codex keeps its own error rather than being explained away as an
    * outdated container.
    *
-   * The sentence is CONDITIONAL, and that is the finding a review caught rather than
-   * a hedge. A current supervisor emits this same message for one other reason — the
-   * bearer is an empty string (`verity-runner-supervisor.mjs`, where the two
-   * conditions sit in one `if`) — which would be a Server defect, not an old
-   * container. It cannot say which it is from the message alone, and the action it
-   * was about to assert, recreating the project container, destroys that container's
-   * state. So it offers the diagnosis and names the cheap check first. Note that no
-   * bearer-RESOLUTION failure can arrive here: the supervisor only bounds the
-   * bearer's shape and never resolves it, so a revoked or unknown token fails later,
-   * at the gateway, with its own error.
+   * The message is not the same in both cases, and that took two review rounds to get
+   * right. A current supervisor emits this refusal for one other reason: the bearer
+   * is an EMPTY STRING (`verity-runner-supervisor.mjs`, where the two conditions sit
+   * in one `if`) — a Server composition defect, not an old container. Hedging between
+   * them with "retry first" was the wrong answer, because neither cause is transient:
+   * both fail identically forever, so the retry disambiguates nothing while still
+   * pointing a Server-side defect at a remediation that reprovisions a container.
+   *
+   * There is no need to guess. THIS client minted the bearer, so it knows which case
+   * it is, and `bearer` is that value straight off the frame that was refused: a
+   * non-empty string can only have been refused by a supervisor that does not admit
+   * this backend, and an empty one was never admissible anywhere. Each case gets the
+   * remedy that fits it, and the Server defect is never told to recreate anything.
+   *
+   * Note that no bearer-RESOLUTION failure can arrive here: the supervisor only
+   * bounds the bearer's shape and never resolves it, so a revoked or unknown token
+   * fails later, at the gateway, with its own error.
    */
-  private explainStaleGatewayRefusal(cause: Error): Error {
+  private explainStaleGatewayRefusal(cause: Error, bearer: unknown): Error {
     if (this.workerBackend !== 'opencode-acp' || !cause.message.includes('invalid mcpGatewayToken'))
       return cause;
+    // Absent is not a case the supervisor can refuse — it only rejects a bearer it was
+    // given — so anything but a non-empty string is treated as the composition defect.
+    if (typeof bearer !== 'string' || bearer === '') {
+      return new Error(
+        `${cause.message} — the Server sent an empty MCP gateway bearer for this OpenCode turn, which no supervisor accepts. This is a Server composition defect (the per-turn bearer registry, \`mcpGatewayTokens\`), not an outdated Sandbox; recreating the project container will not change it.`,
+        { cause },
+      );
+    }
     return new Error(
-      `${cause.message} — the Sandbox supervisor refused the per-turn gateway bearer the Server mints for OpenCode. Most likely this Sandbox predates OpenCode's admission to the brokered Verity tools (ADR 0014 Amendment 4): retry the turn first, and if it fails the same way, recreate the project container on a current toolkit or run this session on Claude or Codex.`,
+      `${cause.message} — this Sandbox predates OpenCode's admission to the brokered Verity tools (ADR 0014 Amendment 4), so its supervisor refuses the per-turn gateway bearer the Server mints for OpenCode. Recreate the project container on a current toolkit, or run this session on Claude or Codex. See docs/runbooks/opencode-brokered-tools-container-refresh.md.`,
       { cause },
     );
   }
@@ -1291,7 +1306,8 @@ export class SupervisorRunnerClient implements RunnerClient {
       // re-read the state it already told us about. Note this deliberately does NOT
       // cover an oversize RESPONSE: that is an answer we failed to read, so the
       // start may well have succeeded and reconciliation is exactly right for it.
-      if (error.decided) throw this.explainStaleGatewayRefusal(error.cause);
+      if (error.decided)
+        throw this.explainStaleGatewayRefusal(error.cause, request.mcpGatewayToken);
       // An unacknowledged start may still be one a supervisor that predates
       // `startAck` is quietly working on — it answers only once, at the end, so its
       // silence is not a symptom. Give reconciliation the rest of the start budget
@@ -1334,7 +1350,8 @@ export class SupervisorRunnerClient implements RunnerClient {
         // exists so this method can read `accepted`, and letting it escape would give
         // callers two different error types for one condition.
         if (!(resent instanceof SupervisorStartRequestError)) throw resent;
-        if (resent.decided) throw this.explainStaleGatewayRefusal(resent.cause);
+        if (resent.decided)
+          throw this.explainStaleGatewayRefusal(resent.cause, request.mcpGatewayToken);
         // A lost answer to the SECOND frame is the dangerous one: the turn may now be
         // running under a worker nobody is tailing, and unlike the first attempt there
         // is no third send to fall back on. So ask the same question again — the state
