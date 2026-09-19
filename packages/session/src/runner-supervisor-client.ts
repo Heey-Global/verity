@@ -1229,12 +1229,18 @@ export class SupervisorRunnerClient implements RunnerClient {
    * bounds the bearer's shape and never resolves it, so a revoked or unknown token
    * fails later, at the gateway, with its own error.
    */
-  private explainStaleGatewayRefusal(cause: Error, bearer: unknown): Error {
+  private explainStaleGatewayRefusal(cause: Error, request: Record<string, unknown>): Error {
     if (this.workerBackend !== 'opencode-acp' || !cause.message.includes('invalid mcpGatewayToken'))
       return cause;
-    // Absent is not a case the supervisor can refuse — it only rejects a bearer it was
-    // given — so anything but a non-empty string is treated as the composition defect.
-    if (typeof bearer !== 'string' || bearer === '') {
+    // Read from the frame that was actually sent, since that is the evidence: the
+    // frame is built above and either carries a string or omits the field, so a
+    // non-string here means the turn sent no bearer at all. That is not a case the
+    // supervisor can refuse — the gate throwing these words is reached only for a
+    // bearer that WAS sent — so neither sentence below describes it. Say nothing
+    // rather than invent a cause; the supervisor's own words remain the best evidence.
+    const bearer = request.mcpGatewayToken;
+    if (typeof bearer !== 'string') return cause;
+    if (bearer === '') {
       return new Error(
         `${cause.message} — the Server sent an empty MCP gateway bearer for this OpenCode turn, which no supervisor accepts. This is a Server composition defect (the per-turn bearer registry, \`mcpGatewayTokens\`), not an outdated Sandbox; recreating the project container will not change it.`,
         { cause },
@@ -1306,8 +1312,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       // re-read the state it already told us about. Note this deliberately does NOT
       // cover an oversize RESPONSE: that is an answer we failed to read, so the
       // start may well have succeeded and reconciliation is exactly right for it.
-      if (error.decided)
-        throw this.explainStaleGatewayRefusal(error.cause, request.mcpGatewayToken);
+      if (error.decided) throw this.explainStaleGatewayRefusal(error.cause, request);
       // An unacknowledged start may still be one a supervisor that predates
       // `startAck` is quietly working on — it answers only once, at the end, so its
       // silence is not a symptom. Give reconciliation the rest of the start budget
@@ -1350,8 +1355,7 @@ export class SupervisorRunnerClient implements RunnerClient {
         // exists so this method can read `accepted`, and letting it escape would give
         // callers two different error types for one condition.
         if (!(resent instanceof SupervisorStartRequestError)) throw resent;
-        if (resent.decided)
-          throw this.explainStaleGatewayRefusal(resent.cause, request.mcpGatewayToken);
+        if (resent.decided) throw this.explainStaleGatewayRefusal(resent.cause, request);
         // A lost answer to the SECOND frame is the dangerous one: the turn may now be
         // running under a worker nobody is tailing, and unlike the first attempt there
         // is no third send to fall back on. So ask the same question again — the state

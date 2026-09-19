@@ -545,19 +545,24 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   recoverable at runtime: the fix is to recreate the project container on a
   current toolkit. The Server recognizes this one refusal and says so rather than
   passing on four words about a bearer
-  (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`). It offers that
-  as the likely cause rather than asserting it, and names a retry first: a
-  current supervisor emits the same message for an empty bearer — a Server
-  composition defect, which no amount of reprovisioning fixes. The two are
-  indistinguishable from the message, but not to the client that minted the
-  bearer, so it reads the value it sent and gives each case its own remedy.
+  (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`). It states that
+  cause outright, because it can: a current supervisor emits the same four words
+  for an EMPTY bearer — a Server composition defect that no reprovisioning fixes
+  — and the two are indistinguishable from the message but not to the client that
+  minted it. It reads the value it sent and gives each cause its own remedy,
+  telling the defect case explicitly that recreating the container will not help.
   The operator-facing procedure is
   `docs/runbooks/opencode-brokered-tools-container-refresh.md`.
-  Detecting this BEFORE the turn was considered and rejected: the supervisor's
-  status handshake carries `protocolVersion` and `runnerInstanceId` and names no
-  backends, so the Server would have to infer staleness from a new field's
-  absence — which is what the refusal already reports — by changing the very
-  boundary binary the affected containers do not have.
+
+  Detecting this BEFORE the turn was considered and rejected on two counts. The
+  status handshake names no backends, so a Server would have to infer staleness
+  from a new field's ABSENCE — which is what the refusal already reports — by
+  changing the very boundary binary the affected containers do not have. The
+  `protocolVersion` it does carry is not a substitute: it is the WIRE dialect,
+  and this amendment changes no frame. Bumping it to signal a policy change would
+  make every older supervisor look wire-incompatible and refuse ALL of its turns,
+  Claude and Codex included, turning a failure confined to one backend into a
+  total one. Failing per-backend, at the turn, is the smaller blast radius.
 - Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
   Amendment 4's, for a different reason — the fixed control-plane Runner carries
   no OpenCode configuration or egress material — and this amendment does not

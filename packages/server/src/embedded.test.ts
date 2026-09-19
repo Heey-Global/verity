@@ -1733,10 +1733,15 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
 
     // A turn with no session to attribute to has no gateway context to begin with, so
     // the missing registry is not its problem — that is the ephemeral/meta-query case,
-    // and it must keep starting.
-    await expect(
-      wiring.runner?.(claudeAcpBackend, { sessionId: null, projectId, worktree: '/wt' }),
-    ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    // and it must keep starting. Per backend again, and for the same reason the
+    // refusal is: the escape is a hand-written condition beside a hand-written member
+    // list, so a Server that admitted OpenCode to one and not the other would refuse
+    // every OpenCode meta query on a deployment that composes no registry.
+    for (const acpBackend of [claudeAcpBackend, codexAcpBackend, openCodeAcpBackend]) {
+      await expect(
+        wiring.runner?.(acpBackend, { sessionId: null, projectId, worktree: '/wt' }),
+      ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    }
 
     // The other direction, for the same three. Asserting only the refusal would leave
     // a gate that rejects EVERY ACP turn looking correct here, and `opencode-acp` is

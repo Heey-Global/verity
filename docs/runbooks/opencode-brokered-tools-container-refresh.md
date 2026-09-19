@@ -52,8 +52,15 @@ Until the container is recreated, run affected sessions on Claude or Codex.
 The supervisor's status handshake carries `protocolVersion` and
 `runnerInstanceId`, and neither names the admitted backends. Nothing this Server
 can ask distinguishes a stale supervisor from a current one before the turn, so
-the refusal is the first available signal. Adding a backend list to that
-handshake was considered and rejected: a Server would have to infer staleness
-from the field's ABSENCE, which is what the refusal already reports, and it would
-mean changing a boundary binary that the affected containers, by definition, do
-not have. ADR 0014 Amendment 4 records the trade under Consequences.
+the refusal is the first available signal.
+
+Adding a backend list to that handshake was considered and rejected: a Server
+would have to infer staleness from the field's ABSENCE, which is what the refusal
+already reports, and it would mean changing a boundary binary that the affected
+containers, by definition, do not have.
+
+Bumping `protocolVersion` instead was also rejected, and for a sharper reason: it
+is the wire dialect, and this change alters no frame. A supervisor refuses any
+Server dialect below its minimum, so bumping it would make every older container
+reject **all** its turns — Claude and Codex too — rather than only the OpenCode
+ones actually affected. ADR 0014 Amendment 4 records both under Consequences.

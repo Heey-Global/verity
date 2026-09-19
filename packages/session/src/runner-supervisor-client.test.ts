@@ -543,24 +543,38 @@ describe('SupervisorRunnerClient', () => {
       'utf8',
     );
     expect(client).toContain("cause.message.includes('invalid mcpGatewayToken')");
+    // A stale supervisor rejects an OpenCode start on TWO counts — the bearer and
+    // `trustedCliExecution` — and answers with whichever gate it reaches first. Only
+    // the bearer refusal is one the explanation recognizes, so swapping the gates
+    // would leave the operator reading `invalid trustedCliExecution` with every test
+    // above still green: they assert against their own fake's literal, and the fake
+    // has no gates to reorder.
+    expect(supervisor).toContain("throw new Error('invalid trustedCliExecution')");
+    expect(supervisor.indexOf("throw new Error('invalid mcpGatewayToken')")).toBeLessThan(
+      supervisor.indexOf("throw new Error('invalid trustedCliExecution')"),
+    );
   });
 
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
-   *  admit, and return what the launch threw. Records the frame kinds it answered so
-   *  callers can prove the refusal landed on a `start-turn` — without that, a client
-   *  that opened with some other frame would send these tests green for the wrong
-   *  reason, since this fake refuses whatever arrives first. */
+   *  admit, and return what the launch threw. Records the frames it answered so
+   *  callers can prove the refusal landed on a `start-turn` carrying the bearer their
+   *  scenario is named for — without that, a client that opened with some other frame,
+   *  or dropped the bearer on its way to the wire, would send these tests green for
+   *  the wrong reason, since this fake refuses whatever arrives first. */
   async function refusedStart(
     runtimeName: string,
     error: string,
     supervisorBackend: RunnerSupervisorBackend,
-    kinds: string[] = [],
+    frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [],
     // A bearer registry, because a supervisor cannot refuse a bearer it was never
     // sent: without one these fakes would exercise the no-bearer path and never
     // reach the case they are named for. The value matters — the explanation reads
     // it to tell an unadmitted backend from an empty token — so each caller states
-    // the one its scenario would really have carried.
-    bearer: string = 'gateway-token-1',
+    // the one its scenario would really have carried. `null` means no registry at
+    // all, which is the one case that really does put no bearer on the wire; it
+    // cannot be spelled `undefined`, which a default parameter would swallow back
+    // into the token below.
+    bearer: string | null = 'gateway-token-1',
   ): Promise<Error> {
     const runtime = join(dir, runtimeName);
     await mkdir(runtime, { recursive: true });
@@ -568,7 +582,7 @@ describe('SupervisorRunnerClient', () => {
       sockets.add(peer);
       peer.once('close', () => sockets.delete(peer));
       peer.once('data', (chunk: Buffer) => {
-        kinds.push(String((JSON.parse(chunk.toString('utf8')) as { kind?: unknown }).kind));
+        frames.push(JSON.parse(chunk.toString('utf8')) as { kind?: unknown });
         peer.end(`${JSON.stringify({ ok: false, error })}\n`);
       });
     });
@@ -580,7 +594,9 @@ describe('SupervisorRunnerClient', () => {
         runtimeDir: runtime,
         store,
         bus: new InMemoryEventBus(),
-        mcpGatewayTokens: { issue: () => bearer, release: () => {} },
+        ...(bearer === null
+          ? {}
+          : { mcpGatewayTokens: { issue: () => bearer, release: () => {} } }),
       },
     );
     const turn = client.startTurn(
@@ -611,15 +627,16 @@ describe('SupervisorRunnerClient', () => {
   // combination. Silence here is the silent failure: every OpenCode turn in that
   // deployment dies at start-turn and the operator reads it as a broken Server.
   it('explains an OpenCode start refused by a Sandbox older than the gateway decision', async () => {
-    const kinds: string[] = [];
+    const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
     const error = await refusedStart(
       'stale-opencode-runtime',
       'invalid mcpGatewayToken',
       'opencode-acp',
-      kinds,
+      frames,
     );
 
-    expect(kinds).toEqual(['start-turn']);
+    expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
+    expect(frames[0]?.mcpGatewayToken).toBe('gateway-token-1');
     expect(error.message).toMatch(/invalid mcpGatewayToken/u);
     expect(error.message).toMatch(/predates OpenCode's admission/u);
     expect(error.message).toMatch(/Recreate the project container/u);
@@ -633,14 +650,20 @@ describe('SupervisorRunnerClient', () => {
   // message cannot serve both — it would send a Server composition defect to a
   // remediation that reprovisions a container and still does not fix it.
   it('names a Server defect rather than an old container when the bearer is empty', async () => {
+    const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
     const error = await refusedStart(
       'empty-bearer-runtime',
       'invalid mcpGatewayToken',
       'opencode-acp',
-      [],
+      frames,
       '',
     );
 
+    // The premise of the whole branch: an empty bearer is a value the Server SENT,
+    // not one it omitted. A client that dropped the field instead would be describing
+    // a different frame than the one the supervisor refused, and every assertion
+    // below would still pass.
+    expect(frames[0]).toHaveProperty('mcpGatewayToken', '');
     expect(error.message).toMatch(/Server composition defect/u);
     expect(error.message).toMatch(/mcpGatewayTokens/u);
     // The load-bearing half: this operator must NOT be sent to recreate a container
@@ -654,31 +677,53 @@ describe('SupervisorRunnerClient', () => {
   // been admitted for releases — explaining it as an outdated container would send
   // the operator to recreate a container that was never the problem.
   it('leaves the same refusal alone on a backend that was already admitted', async () => {
-    const kinds: string[] = [];
+    const frames: Array<{ kind?: unknown }> = [];
     const error = await refusedStart(
       'stale-claude-runtime',
       'invalid mcpGatewayToken',
       'claude-acp',
-      kinds,
+      frames,
     );
 
-    expect(kinds).toEqual(['start-turn']);
+    expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
     expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // Neither explanation fits a turn that carried NO bearer: the gate that produces
+  // these four words is reached only for a bearer that was sent, so a supervisor
+  // answering them anyway is doing something neither sentence describes. The one
+  // wrong move is to fold it into the empty-bearer branch — `undefined` and `''` are
+  // not the same claim, and reporting a Server composition defect that did not happen
+  // is a diagnosis the operator cannot disprove from the message.
+  it('adds nothing when the refusal arrives for a turn that carried no bearer', async () => {
+    const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
+    const error = await refusedStart(
+      'absent-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      frames,
+      null,
+    );
+
+    expect(frames[0]).not.toHaveProperty('mcpGatewayToken');
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).not.toMatch(/Server composition defect/u);
     expect(error.message).not.toMatch(/predates OpenCode/u);
   });
 
   // Recognition is by message text, so pin that it is narrow: an unrelated refusal on
   // the SAME backend keeps its own words rather than being dressed up as container age.
   it('leaves an unrelated OpenCode refusal alone', async () => {
-    const kinds: string[] = [];
+    const frames: Array<{ kind?: unknown }> = [];
     const error = await refusedStart(
       'busy-opencode-runtime',
       'supervisor is busy',
       'opencode-acp',
-      kinds,
+      frames,
     );
 
-    expect(kinds).toEqual(['start-turn']);
+    expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
     expect(error.message).toMatch(/supervisor is busy/u);
     expect(error.message).not.toMatch(/predates OpenCode/u);
   });
