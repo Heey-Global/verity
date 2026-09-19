@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1](https://github.com/Heey-Global/verity/compare/v0.15.0...v0.15.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency kysely to v0.29.6 ([#488](https://github.com/Heey-Global/verity/issues/488)) ([5c45bb6](https://github.com/Heey-Global/verity/commit/5c45bb62d8e4406918b29bd9c5d5db64e083c8d0))
+* **secrets:** accept approved dynamic directory arguments and expose validation rules ([#495](https://github.com/Heey-Global/verity/issues/495)) ([127d6df](https://github.com/Heey-Global/verity/commit/127d6df24a5bca1ded72e60100849ad48cba5ff4))
+
 ## [0.15.0](https://github.com/Heey-Global/verity/compare/v0.14.0...v0.15.0) (2026-09-18)
 
 
