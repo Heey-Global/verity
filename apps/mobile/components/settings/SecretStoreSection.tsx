@@ -16,6 +16,7 @@ import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-nativ
 import { useUnistyles } from 'react-native-unistyles';
 
 import { StatusPill } from '../StatusPill';
+import { Icon } from '../Icon';
 import { setAuthToken } from '../../lib/authToken';
 import { getVerityBaseUrl } from '../../lib/client';
 import {
@@ -104,7 +105,12 @@ export function SecretStoreSection({ client }: { client: VerityClient }) {
   return (
     <View style={styles.panel}>
       <View style={styles.sectionHeaderRow}>
-        <Text style={styles.disclosureTitle}>Secret store</Text>
+        <View style={styles.sectionHeaderLabel}>
+          <View style={styles.navRowIcon}>
+            <Icon name="lock" size={18} color={theme.colors.primary} />
+          </View>
+          <Text style={styles.disclosureTitle}>Secret store</Text>
+        </View>
         {mode === 'ready' ? <StatusPill quiet intent="ready" label="Unlocked" /> : null}
       </View>
       {mode !== 'ready' ? (

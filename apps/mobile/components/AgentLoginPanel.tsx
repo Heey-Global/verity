@@ -636,6 +636,7 @@ function ProviderCard({
   return (
     <SettingsDisclosure
       title={title}
+      icon={provider === 'claude' ? 'message-circle' : 'code'}
       summary={statusText}
       attention={state.busy || state.error !== null || (login !== null && !ready)}
     >

@@ -38,7 +38,11 @@ export function SettingsDisclosure({
         accessibilityState={{ expanded: open, disabled: attention }}
         disabled={attention}
       >
-        {icon ? <Icon name={icon} size={18} color={theme.colors.primary} /> : null}
+        {icon ? (
+          <View style={styles.navRowIcon}>
+            <Icon name={icon} size={18} color={theme.colors.primary} />
+          </View>
+        ) : null}
         <View style={styles.navRowBody}>
           <Text style={styles.navRowTitle}>{title}</Text>
           {summary ? <Text style={styles.navRowSubtitle}>{summary}</Text> : null}

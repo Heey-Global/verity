@@ -94,6 +94,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Repository">
         <SettingsDisclosure
           title="GitHub connection"
+          icon="github"
           summary={connected ? 'Connected' : 'Not connected'}
         >
           <Text style={styles.reproSubtitle}>
@@ -118,6 +119,7 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Commits">
         <SettingsDisclosure
           title="Author identity"
+          icon="user"
           onCollapse={author.commit}
           summary={
             identityReady
@@ -163,7 +165,11 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
             </View>
           </View>
         </SettingsDisclosure>
-        <SettingsDisclosure title="Signing" summary={signingReady ? 'Ready' : 'Needs setup'}>
+        <SettingsDisclosure
+          title="Signing"
+          icon="edit-3"
+          summary={signingReady ? 'Ready' : 'Needs setup'}
+        >
           <SigningKeyDisplay
             client={client}
             onGenerated={() => {
