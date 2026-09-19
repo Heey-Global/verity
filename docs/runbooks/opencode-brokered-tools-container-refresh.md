@@ -15,6 +15,29 @@ query path) are **not** exempt. They mint no bearer, so they clear the bearer
 gate, but the same stale backend list gates `trustedCliExecution`, which the
 Server sends for every ACP turn regardless, and they are refused there instead.
 
+## Avoid it: deploy the toolkit first
+
+This page exists for containers that were missed. The failure is preventable at
+deploy time, and the prevention is an ordering, not a flag.
+
+Only one pairing breaks. Both supervisor gates fire on a field being PRESENT, so
+a **current** supervisor under an **older** Server is fine: that Server sends
+neither `mcpGatewayToken` nor `trustedCliExecution` for OpenCode, and the
+recreated container serves its turns exactly as before. It is the other order —
+a current Server against a stale supervisor — that fails every OpenCode turn.
+
+So, when rolling out the release carrying ADR 0014 Amendment 4:
+
+1. Publish the `verity-sandbox-toolkit` release first.
+2. Recreate the project containers of every project running OpenCode sessions,
+   by the procedure in "Recover" below.
+3. Deploy the Server that admits OpenCode.
+
+Between steps 1 and 3 nothing is broken; in the reverse order, everything
+OpenCode is. There is no flag to withhold the bearer in the meantime — by
+decision, recorded in ADR 0014 Amendment 4 under Consequences — so the ordering
+is the whole mitigation, and the release notes have to carry it.
+
 ## Recognize it
 
 The turn fails to start with a message containing one of:

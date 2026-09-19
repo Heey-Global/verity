@@ -593,6 +593,23 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   make every older supervisor look wire-incompatible and refuse ALL of its turns,
   Claude and Codex included, turning a failure confined to one backend into a
   total one. Failing per-backend, at the turn, is the smaller blast radius.
+- **This release is order-dependent, and the order is toolkit first.** The two
+  sides roll independently (ADR 0006 D9), and only one direction breaks: a
+  CURRENT supervisor paired with an older Server is fine, because both of its
+  gates fire on a field being PRESENT — an old Server sends neither field for
+  OpenCode, so a recreated container keeps serving it exactly as before. The
+  reverse is the failure above. So publish the toolkit and recreate the project
+  containers running OpenCode BEFORE the Server release that admits it; the
+  window between the two is then a window in which nothing is broken, rather than
+  one in which every OpenCode turn fails.
+
+  There is deliberately no rollout flag — no switch that withholds the bearer
+  while the Server otherwise ships this. A flag would be a second answer to "may
+  OpenCode spend the operator's secrets", sitting outside this document and
+  outgrowing it, which is the coupling the hand-named gates above exist to
+  prevent. Deploy ordering is a release-note obligation instead: the release that
+  carries this amendment must state the container-refresh requirement, because a
+  runbook is only reachable by an operator who has already hit the failure.
 - Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
   Amendment 4's, for a different reason — the fixed control-plane Runner carries
   no OpenCode configuration or egress material — and this amendment does not
