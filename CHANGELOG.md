@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.16.3](https://github.com/Heey-Global/verity/compare/v0.16.2...v0.16.3) (2026-09-19)
+
+
+### Bug Fixes
+
+* **update:** permit verified forward schema upgrades ([#516](https://github.com/Heey-Global/verity/issues/516)) ([163568a](https://github.com/Heey-Global/verity/commit/163568a971eeae500e8622ac40786adaeb2ccc45))
+* **update:** recover blocked updates through verified schema bridges ([#513](https://github.com/Heey-Global/verity/issues/513)) ([140a89f](https://github.com/Heey-Global/verity/commit/140a89ff90cb2141bb116ccd2103173ea0cdf179))
+* **workspace:** use shared Google OAuth client ([#515](https://github.com/Heey-Global/verity/issues/515)) ([3f16de1](https://github.com/Heey-Global/verity/commit/3f16de1c80543c75d4e5b48fde0add8e81214b7e))
+
 ## [0.16.2](https://github.com/Heey-Global/verity/compare/v0.16.1...v0.16.2) (2026-09-19)
 
 
