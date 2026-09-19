@@ -624,7 +624,9 @@ export function Library({
                             expectedPolicyToken: preview.policyToken,
                           });
                         setMoving(false);
-                        await refresh();
+                        // Document moves change folderId; its effect loads the destination.
+                        // Refreshing here would publish the captured source-folder listing.
+                        if (!document) await refresh();
                       });
                     },
                   );

@@ -201,6 +201,10 @@ test('moving a document updates its folder and permits moving back', async () =>
       alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Continue')?.onPress?.();
     });
     expect(client.moveKnowledgeDocument).toHaveBeenCalledWith('doc', 'root', 'policy');
+    expect(
+      client.listKnowledgeDocuments.mock.calls.filter(([folder]) => folder === 'child'),
+    ).toHaveLength(1);
+    expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith('root', undefined);
     fireEvent.press(screen.getByLabelText('Move document'));
     expect(await screen.findByLabelText('Move to Engineering')).toBeTruthy();
     expect(screen.queryByLabelText('Move to Company')).toBeNull();
