@@ -4451,8 +4451,11 @@ describe('Conductor.startSession', () => {
   // value that crossed a process boundary or a cast reaches the `default:` arm at
   // runtime, and that arm is the only thing standing between an undecided backend and
   // a list of the operator's secret names. Every other test here names an admitted
-  // member, so nothing else exercises it. Cast deliberately: this asserts what happens
-  // when the types have already been bypassed.
+  // member, so nothing else exercises it — and no honest member is available to use
+  // instead, since `RUNNER_SUPERVISOR_BACKENDS` has exactly three and all three are
+  // admitted. Cast deliberately, therefore: this asserts what happens when the types
+  // have already been bypassed. It compiles because an assertion widens the literal on
+  // the source side, so the compiler is not being silenced here either.
   it('omits the project secret names for a supervised backend nobody has admitted', async () => {
     const brokeredSecretAliases = vi.fn(() => Promise.resolve(['ASC_API_KEY', 'EXAMPLE_TOKEN']));
 
