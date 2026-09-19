@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.17",
+  "version": "1.33.18",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "85828d48f92667096109ab285bedd12b6e3fde86",
-  "tag": "mobile-v1.33.17",
-  "branch": "staging-mobile-v1.33.17-85828d48f92667096109ab285bedd12b6e3fde86",
-  "baseline": "mobile-v1.33.16",
-  "group": "9005f88a-8533-4852-aae7-ee418800b05f",
+  "commit": "5a8b5162866a05503285e2ee3b0bafb2686c7c3b",
+  "tag": "mobile-v1.33.18",
+  "branch": "staging-mobile-v1.33.18-5a8b5162866a05503285e2ee3b0bafb2686c7c3b",
+  "baseline": "mobile-v1.33.17",
+  "group": "8bbe1684-0c04-4a0a-b27b-8089eca53712",
   "notes": [
-    "reconnect Google Drive from workspace picker (#519)",
-    "use shared Google OAuth client (#515)"
+    "move linked Google file below session header (#522)"
   ]
 }
