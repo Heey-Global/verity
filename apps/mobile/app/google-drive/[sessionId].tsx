@@ -156,33 +156,33 @@ function GoogleDrivePicker({
     void loadFiles(parentId, debouncedQuery, driveView === 'shared-with-me', false);
   }, [connected, debouncedQuery, driveView, loadFiles, parentId]);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async (): Promise<boolean> => {
     if (clientId.length === 0) {
       Alert.alert(
         'Google Drive not set up',
         'This Verity server does not provide Google Workspace sign-in. Update the server or configure GOOGLE_AUTH_ID on a custom deployment.',
       );
-      return;
+      return false;
     }
     setConnecting(true);
-    void (async () => {
-      try {
-        const result = await runGoogleDriveAuth(clientId);
-        if (result.kind === 'cancelled') return;
-        await client.connectGoogleDrive({
-          code: result.code,
-          codeVerifier: result.codeVerifier,
-          redirectUri: result.redirectUri,
-        });
-        await loadSettings();
-      } catch (err) {
-        const message =
-          err instanceof VerityApiError ? err.message : 'Google sign-in failed. Please try again.';
-        Alert.alert('Could not connect', message);
-      } finally {
-        setConnecting(false);
-      }
-    })();
+    try {
+      const result = await runGoogleDriveAuth(clientId);
+      if (result.kind === 'cancelled') return false;
+      await client.connectGoogleDrive({
+        code: result.code,
+        codeVerifier: result.codeVerifier,
+        redirectUri: result.redirectUri,
+      });
+      await loadSettings();
+      return true;
+    } catch (err) {
+      const message =
+        err instanceof VerityApiError ? err.message : 'Google sign-in failed. Please try again.';
+      Alert.alert('Could not connect', message);
+      return false;
+    } finally {
+      setConnecting(false);
+    }
   }, [client, clientId, loadSettings]);
 
   const openFolder = useCallback(
@@ -270,13 +270,48 @@ function GoogleDrivePicker({
         } catch (err) {
           const message =
             err instanceof VerityApiError ? err.message : 'Could not assign this Workspace file.';
-          Alert.alert('Could not assign file', message);
+          if (
+            err instanceof VerityApiError &&
+            err.status === 403 &&
+            message === 'Reconnect Google Drive to grant Workspace editing access'
+          ) {
+            Alert.alert(
+              'Reconnect Google Drive',
+              'Google needs your approval for Workspace editing access. Reconnect, then Verity will assign this file automatically.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Reconnect',
+                  onPress: () => {
+                    setImportingId(file.id);
+                    void (async () => {
+                      try {
+                        if (!(await connect())) return;
+                        await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
+                        router.back();
+                      } catch (retryError) {
+                        const retryMessage =
+                          retryError instanceof VerityApiError
+                            ? retryError.message
+                            : 'Could not assign this Workspace file.';
+                        Alert.alert('Could not assign file', retryMessage);
+                      } finally {
+                        setImportingId(null);
+                      }
+                    })();
+                  },
+                },
+              ],
+            );
+          } else {
+            Alert.alert('Could not assign file', message);
+          }
         } finally {
           setImportingId(null);
         }
       })();
     },
-    [client, importingId, sessionId],
+    [client, connect, importingId, sessionId],
   );
 
   const onPressItem = useCallback(
@@ -328,7 +363,7 @@ function GoogleDrivePicker({
           </Text>
           <Pressable
             style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
-            onPress={connect}
+            onPress={() => void connect()}
             disabled={connecting}
             accessibilityRole="button"
             accessibilityLabel="Connect Google Drive"
