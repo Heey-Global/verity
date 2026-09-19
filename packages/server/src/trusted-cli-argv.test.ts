@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX,
   loadTrustedCliArgvPolicy,
   matchesTrustedCliArgvPolicy,
   TRUSTED_CLI_ARGV_POLICY_SUFFIX,
@@ -202,6 +203,51 @@ describe('trusted CLI argv integrity', () => {
           { loadArgvPolicy: async () => policy },
         ),
       ).rejects.toThrow(/trusted CLI argv is not allowed by executable policy/u);
+    });
+  });
+
+  it('applies an installed Breeze policy before classifying identifier collisions as files', async () => {
+    const command = '/usr/local/bin/heey-cluster-inspect';
+    const policyPath = `${command}${LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX}`;
+    const inspected: string[] = [];
+    const policy = await loadTrustedCliArgvPolicy(command, {
+      lstat: async (path) => {
+        inspected.push(path);
+        if (path !== policyPath) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return { isFile: () => true, size: 512 };
+      },
+      validateImmutablePath: async (path) => {
+        expect(path).toBe(policyPath);
+      },
+      readFile: async () =>
+        JSON.stringify({
+          version: 1,
+          routes: [
+            [
+              'database',
+              { kind: 'identifier' },
+              { kind: 'identifier' },
+              { kind: 'identifier' },
+              'roles',
+            ],
+          ],
+        }),
+    });
+    expect(inspected).toEqual([`${command}${TRUSTED_CLI_ARGV_POLICY_SUFFIX}`, policyPath]);
+
+    await withWorktree('installed-policy', async (root) => {
+      await mkdir(join(root, 'roles'));
+      await expect(
+        validateTrustedCliArguments(
+          command,
+          ['database', 'deep-ocr-api-prod', 'deep-ocr-pg', 'deepocr', 'roles'],
+          root,
+          undefined,
+          [],
+          undefined,
+          { loadArgvPolicy: async () => policy },
+        ),
+      ).resolves.toBeUndefined();
     });
   });
 
