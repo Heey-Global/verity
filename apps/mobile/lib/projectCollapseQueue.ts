@@ -1,12 +1,7 @@
-type ProjectCollapseWriteResult = { collapsed?: boolean };
-
-type ProjectCollapseWrite = (
-  projectId: string,
-  collapsed: boolean,
-) => Promise<ProjectCollapseWriteResult>;
+type ProjectCollapseWrite = (projectId: string, collapsed: boolean) => Promise<unknown>;
 
 type ProjectCollapseCallbacks = {
-  success: (collapsed: boolean) => void;
+  success: () => void;
   failure: (error: unknown) => void;
 };
 
@@ -27,10 +22,8 @@ export function createProjectCollapseQueue(write: ProjectCollapseWrite) {
       .catch(() => undefined)
       .then(async () => {
         try {
-          const updated = await write(projectId, collapsed);
-          if (generations.get(projectId) === generation) {
-            callbacks.success(updated.collapsed ?? false);
-          }
+          await write(projectId, collapsed);
+          if (generations.get(projectId) === generation) callbacks.success();
         } catch (error) {
           if (generations.get(projectId) === generation) callbacks.failure(error);
         }

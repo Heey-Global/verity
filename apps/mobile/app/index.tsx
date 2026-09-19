@@ -504,14 +504,11 @@ function SessionList({ client }: { client: VerityClient }) {
             const project = item.project;
             if (!project) return;
             enqueueProjectCollapse(project.id, nextValue, {
-              success: (serverValue) => {
-                setCollapsedOverride((current) => {
-                  const next = new Map(current);
-                  next.set(item.id, serverValue);
-                  return next;
-                });
-                void refreshProjects();
-              },
+              // The override keeps holding the tapped value: the write's
+              // response is not adopted, so a server answering from a list
+              // memoised before the write cannot fold the group back. The
+              // polled list clears the override once it reports the same value.
+              success: () => void refreshProjects(),
               failure: (caught) => {
                 // Roll the override back to server truth so a failed write doesn't
                 // strand the group in the wrong state.

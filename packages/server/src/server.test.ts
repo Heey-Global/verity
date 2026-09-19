@@ -4410,6 +4410,40 @@ describe('GET /projects (#174)', () => {
     expect(listedProjects.find((project) => project.id === 'p-collapse')?.collapsed).toBe(true);
   });
 
+  it('answers a collapse write from the written row while the fleet list is stale', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-collapse-stale',
+      owner: 'heey-global',
+      repo: 'delta',
+      containerName: 'dev-heey-global--delta',
+      state: 'active',
+    });
+    // The memoised fleet list the embedded server serves for its cache window:
+    // taken before the write, it still reports the group as open.
+    const stale = await ctx.store.listProjects();
+    const invalidateProjectList = vi.fn();
+    const withStaleList = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listProjects: () => Promise.resolve(stale),
+      invalidateProjectList,
+    });
+    try {
+      const res = await withStaleList.inject({
+        method: 'PATCH',
+        url: '/projects/p-collapse-stale/collapsed',
+        payload: { collapsed: true },
+      });
+      expect(res.statusCode).toBe(200);
+      // Echoing the stale list here is what folded overview groups back open.
+      expect(res.json()).toMatchObject({ id: 'p-collapse-stale', collapsed: true });
+      expect(invalidateProjectList).toHaveBeenCalledTimes(1);
+    } finally {
+      await withStaleList.close();
+    }
+  });
+
   it('returns 404 when collapsing an unknown project', async () => {
     const res = await app.inject({
       method: 'PATCH',

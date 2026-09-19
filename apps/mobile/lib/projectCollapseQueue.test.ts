@@ -27,7 +27,6 @@ describe('project collapse persistence', () => {
     expect(write).toHaveBeenNthCalledWith(2, 'project-1', true);
     await flushPromises();
 
-    expect(reconcile).toHaveBeenCalledWith(true);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(fail).not.toHaveBeenCalled();
   });

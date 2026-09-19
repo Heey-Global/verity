@@ -64,6 +64,7 @@ export async function resolveRepoWorktreeFetchAuthHeader(
 }
 
 import { buildControlPlane } from './app.js';
+import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
@@ -3672,8 +3673,37 @@ export async function buildEmbeddedServer(
 
   const usesClaudeBackend = (model: string | undefined): boolean =>
     !isCodexModel(model) && !model?.includes('/');
-  let cachedProjects: { at: number; result: ProjectRecord[] } | undefined;
-  let projectsInflight: Promise<ProjectRecord[]> | undefined;
+  // Memoised fleet listing. The routes that write an operator-owned project
+  // field (fold state, order, setup status) invalidate it through
+  // `invalidateProjectList`, or the write would stay invisible to the overview
+  // for the whole window.
+  const projectList =
+    installationService === undefined
+      ? undefined
+      : createProjectListCache(
+          async () => {
+            const projects = await syncProjectsFromInstallation(eventStore, installationService);
+            const reconciled =
+              docker !== undefined
+                ? reconcileProjectContainerStates(
+                    projects,
+                    docker,
+                    (id, state, provisionError, provisionWarning) =>
+                      eventStore.updateProjectState(id, state, provisionError, provisionWarning),
+                    (id) => provisioner?.isProjectProvisioning(id) === true,
+                  )
+                : projects;
+            const result = await reconciled;
+            // Nudge Runner-supervisor reconciliation OFF the hot path: reconcile
+            // fans out a `docker exec` into every active sandbox, so awaiting it
+            // here would add per-container Docker latency to project listing. The
+            // periodic reconciler (below) is the primary driver and surfaces its
+            // own failures; this list-triggered call is best-effort.
+            void provisioner?.reconcileRunnerSupervisors(result).catch(() => undefined);
+            return result;
+          },
+          { ttlMs: 3_000 },
+        );
 
   const app = buildControlPlane({
     eventStore,
@@ -3854,45 +3884,14 @@ export async function buildEmbeddedServer(
     // cache. New repos land as `state='absent'`; Verity-self's row appears after
     // the first `GET /projects` because Verity is itself a normal installation
     // repo (§19.1).
-    ...(installationService !== undefined
+    ...(installationService !== undefined && projectList !== undefined
       ? {
           ...(refreshProjectToken !== undefined ? { refreshProjectToken } : {}),
           listProjects: async () => {
             if (hasMasterPassword && secretCipher.isSealed()) throw new SealedError();
-            if (cachedProjects && Date.now() - cachedProjects.at < 3_000) {
-              return cachedProjects.result;
-            }
-            if (projectsInflight) return projectsInflight;
-            projectsInflight = (async () => {
-              const projects = await syncProjectsFromInstallation(eventStore, installationService);
-              const reconciled =
-                docker !== undefined
-                  ? reconcileProjectContainerStates(
-                      projects,
-                      docker,
-                      (id, state, provisionError, provisionWarning) =>
-                        eventStore.updateProjectState(id, state, provisionError, provisionWarning),
-                      (id) => provisioner?.isProjectProvisioning(id) === true,
-                    )
-                  : projects;
-              const result = await reconciled;
-              // Nudge Runner-supervisor reconciliation OFF the hot path: reconcile
-              // fans out a `docker exec` into every active sandbox, so awaiting it
-              // here would add per-container Docker latency to project listing. The
-              // periodic reconciler (below) is the primary driver and surfaces its
-              // own failures; this list-triggered call is best-effort.
-              void provisioner?.reconcileRunnerSupervisors(result).catch(() => undefined);
-              return result;
-            })()
-              .then((result) => {
-                cachedProjects = { at: Date.now(), result };
-                return result;
-              })
-              .finally(() => {
-                projectsInflight = undefined;
-              });
-            return projectsInflight;
+            return projectList.list();
           },
+          invalidateProjectList: () => projectList.invalidate(),
           listAvailableRepositories: async () => {
             if (hasMasterPassword && secretCipher.isSealed()) throw new SealedError();
             return syncProjectsFromInstallation(eventStore, installationService, {

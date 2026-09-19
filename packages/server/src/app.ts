@@ -205,6 +205,10 @@ export interface ControlPlaneDeps {
    * `GET /projects` 503. Typically syncs the GitHub-App-installation repos
    * into the durable `projects` cache and returns the cache. */
   listProjects?: (() => Promise<ProjectRecord[]>) | undefined;
+  /** Forgets the memoised `listProjects` result after a project row was written,
+   * so neither the write's response nor the next overview poll echoes the state
+   * from before it. Omit when `listProjects` is not memoised. */
+  invalidateProjectList?: (() => void) | undefined;
   /** Every GitHub-App installation repository that could become a project —
    * including `state='absent'` rows `listProjects` leaves out. Omit → the repo
    * picker falls back to the project overview. */
@@ -382,6 +386,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.manifestConvert !== undefined ? { manifestConvert: deps.manifestConvert } : {}),
     ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
     ...(deps.listProjects !== undefined ? { listProjects: deps.listProjects } : {}),
+    ...(deps.invalidateProjectList !== undefined
+      ? { invalidateProjectList: deps.invalidateProjectList }
+      : {}),
     ...(deps.listAvailableRepositories !== undefined
       ? { listAvailableRepositories: deps.listAvailableRepositories }
       : {}),

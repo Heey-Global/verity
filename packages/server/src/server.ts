@@ -1129,6 +1129,14 @@ export interface ServerDeps {
    */
   listProjects?: () => Promise<ProjectRecord[]>;
   /**
+   * Forgets the memoised `listProjects` result. The routes that write an
+   * operator-owned project field (fold state, order, setup status) call it
+   * before answering: the overview polling the list would otherwise echo the
+   * state from before the write for the whole cache window — long enough for a
+   * client to take that echo for the truth.
+   */
+  invalidateProjectList?: () => void;
+  /**
    * Reconciles ONE project's cached lifecycle state against Docker's current
    * container truth and returns the (possibly updated) row. `listProjects` does
    * this for the whole fleet on the overview path; the project detail route needs
@@ -5317,12 +5325,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         : await deps.eventStore.listProjects();
       return publicProjects(await projectsForOverview(projects.filter(appearsInProjectOverview)));
     },
-    reorder: async (ids) =>
-      publicProjects(
-        await projectsForOverview(
-          (await deps.eventStore.reorderProjects(ids)).filter(appearsInProjectOverview),
-        ),
-      ),
+    reorder: async (ids) => {
+      const reordered = await deps.eventStore.reorderProjects(ids);
+      deps.invalidateProjectList?.();
+      return publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview)));
+    },
     listAvailableRepositories: async () =>
       deps.listAvailableRepositories
         ? deps.listAvailableRepositories()
@@ -5376,6 +5383,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
         sandboxRepairVerdicts(),
       );
+      // After the last row write in this handler, so no list started in between
+      // can memoise a state this request is still about to change.
+      deps.invalidateProjectList?.();
       return publicProject(
         resolved.project,
         resolved.release,
@@ -5384,13 +5394,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       );
     },
     setCollapsed: async (id, collapsed) => {
-      if ((await deps.eventStore.setProjectCollapsed(id, collapsed)) === undefined)
-        return undefined;
-      const projects = deps.listProjects
-        ? await deps.listProjects()
-        : await deps.eventStore.listProjects();
-      const project = projects.find((candidate) => candidate.id === id);
-      return project === undefined ? undefined : (await publicProjects([project]))[0];
+      if (!(await deps.eventStore.setProjectCollapsed(id, collapsed))) return undefined;
+      // Answer from the row just written, never from the memoised fleet list:
+      // that list can predate the write by a whole cache window, and a client
+      // trusting the response would fold the group straight back.
+      deps.invalidateProjectList?.();
+      const row = await deps.eventStore.getProject(id);
+      if (row === undefined) return undefined;
+      // The list path reconciles lifecycle state against the container; keep
+      // the response on that footing, as the detail route does. The fold state
+      // is already committed, so a reconciliation failure must not turn into an
+      // error the client would roll its fold back for: answer with the row.
+      const project = deps.reconcileProjectState
+        ? await deps.reconcileProjectState(row).catch(() => row)
+        : row;
+      return (await publicProjects([project]))[0];
     },
     isSealed: () => deps.secretCipher?.isSealed() === true,
     updateSettings: async (id, patch) => {
