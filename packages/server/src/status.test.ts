@@ -9,7 +9,11 @@ import {
   type AgentEventType,
 } from '@verity/events';
 import { describe, expect, it } from 'vitest';
-import { deriveSessionStatus, deriveSessionStatusFromProjection } from './status.js';
+import {
+  deriveSessionStatus,
+  deriveSessionStatusFromProjection,
+  permissionEventAwaitsInput,
+} from './status.js';
 
 const text: AgentEvent = { t: 'text', delta: 'hi' };
 const running: AgentEvent = { t: 'status', state: 'running' };
@@ -29,6 +33,15 @@ const permission: AgentEvent = {
   input: {},
   riskClass: 'ask',
 };
+
+it('attributes awaiting input to a permission across later steered prompts', () => {
+  expect(
+    permissionEventAwaitsInput([permission, { t: 'prompt', text: 'extra context', steered: true }]),
+  ).toBe(true);
+  expect(permissionEventAwaitsInput([permission, { t: 'status', state: 'awaiting_input' }])).toBe(
+    false,
+  );
+});
 
 describe('deriveSessionStatus', () => {
   it('is idle for an empty log', () => {

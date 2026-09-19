@@ -75,6 +75,26 @@ describe('SessionReducer', () => {
     expect(r.status).toBe('awaiting_input');
   });
 
+  it('retires a replayed permission that is absent from the server pending set', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'status', state: 'awaiting_input' });
+    r.apply(2, { t: 'permission', id: 'tool-1', tool: 'Bash', input: {}, riskClass: 'ask' });
+
+    r.reconcilePendingPermissions([]);
+
+    expect(r.pendingPermission).toBeUndefined();
+    expect(r.status).toBe('running');
+  });
+
+  it('keeps a replayed permission while the server still reports it pending', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'permission', id: 'tool-1', tool: 'Bash', input: {}, riskClass: 'ask' });
+
+    r.reconcilePendingPermissions(['tool-1']);
+
+    expect(r.pendingPermission?.toolUseId).toBe('tool-1');
+  });
+
   it('renders an operator prompt as a user-text message and closes the open agent block', () => {
     const r = new SessionReducer();
     r.apply(1, { t: 'text', delta: 'partial agent reply' });

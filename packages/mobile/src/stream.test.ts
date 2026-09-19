@@ -191,7 +191,7 @@ describe('SessionStream', () => {
     s?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 10 }));
     expect(stream.state.pendingPermission?.toolUseId).toBe('tu_1');
 
-    stream.resolvePermission('tu_1');
+    stream.reconcilePendingPermissions([]);
     expect(stream.state.pendingPermission).toBeUndefined();
     // The answered frame is retained: it carries the scroll-up cursor, so dismissing
     // a card must not strand backward pagination.
@@ -225,6 +225,35 @@ describe('SessionStream', () => {
     stream.prependHistory([{ seq: 5, event: { t: 'text', delta: 'dup' } }]); // not older → no-op
     expect(stream.oldestSeq).toBe(5);
     expect(updates.length).toBe(before);
+  });
+
+  it('does not let an older pending snapshot retire a newer streamed permission', () => {
+    const { connect, sockets } = recordingConnect();
+    const updates: Array<string | undefined> = [];
+    const stream = new SessionStream({
+      baseUrl: 'http://host',
+      sessionId: 's1',
+      connect,
+      onUpdate: (state) => updates.push(state.pendingPermission?.toolUseId),
+    });
+    stream.start();
+    sockets[0]?.emitEvent(11, {
+      t: 'permission',
+      id: 'new-permission',
+      tool: 'Bash',
+      input: {},
+      riskClass: 'ask',
+    });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+
+    stream.reconcilePendingPermissions([], 10);
+
+    expect(stream.state.pendingPermission?.toolUseId).toBe('new-permission');
+    const updatesBeforeSettlement = updates.length;
+    stream.reconcilePendingPermissions([], 11);
+    expect(stream.state.pendingPermission).toBeUndefined();
+    expect(updates).toHaveLength(updatesBeforeSettlement + 1);
+    expect(updates.at(-1)).toBeUndefined();
   });
 
   it('ignores duplicate and out-of-order live sequence frames', () => {
