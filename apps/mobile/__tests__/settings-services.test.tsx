@@ -234,6 +234,7 @@ describe('settings/services — Google Workspace', () => {
       makeClient('unmanaged', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Google'));
 
     const clientId = await screen.findByLabelText('Google OAuth client ID');
     fireEvent.changeText(clientId, '123456789-example.apps.googleusercontent.com');
@@ -256,6 +257,7 @@ describe('settings/services — Google Workspace', () => {
       }),
     );
     render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText('Google'));
 
     expect(await screen.findByText('Connected as ada@example.com')).toBeOnTheScreen();
   });

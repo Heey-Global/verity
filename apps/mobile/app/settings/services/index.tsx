@@ -12,8 +12,10 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
 import { Pressable, Text, View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
 
 import { AgentLoginPanel } from '../../../components/AgentLoginPanel';
+import { GoogleIcon } from '../../../components/GoogleIcon';
 import { SecretStoreSection } from '../../../components/settings/SecretStoreSection';
 import {
   SecretPasteField,
@@ -83,6 +85,7 @@ function ServicesSettingsView({
   client: VerityClient;
   agentLogin?: string | string[];
 }) {
+  const { theme } = useUnistyles();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus } = useVeritySettings();
   const text = useSettingsFields(client, TEXT_FIELDS);
@@ -306,7 +309,12 @@ function ServicesSettingsView({
         title="Google Workspace"
         description="Connect Google Drive to open and edit Slides, Docs, and Sheets."
       >
-        <SettingsPanel>
+        <SettingsDisclosure
+          title="Google"
+          summary={settings?.googleDriveClientId ? 'Configured' : 'Not configured'}
+          leadingIcon={<GoogleIcon color={theme.colors.primary} />}
+          onCollapse={text.commit}
+        >
           <SettingsField
             label="Google OAuth client ID"
             value={text.values.googleDriveClientId}
@@ -325,7 +333,7 @@ function ServicesSettingsView({
               {settings.googleDriveAccountEmail ? ` as ${settings.googleDriveAccountEmail}` : ''}
             </Text>
           ) : null}
-        </SettingsPanel>
+        </SettingsDisclosure>
       </SettingsGroup>
 
       {managed ? (
