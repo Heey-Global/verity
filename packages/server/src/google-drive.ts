@@ -19,6 +19,12 @@ import { createHash } from 'node:crypto';
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const GOOGLE_DRIVE_API = 'https://www.googleapis.com/drive/v3';
+const DEFAULT_GOOGLE_OAUTH_CLIENT_ID =
+  '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com';
+
+export function resolveGoogleOAuthClientId(configured: string | undefined): string {
+  return configured?.trim() || DEFAULT_GOOGLE_OAUTH_CLIENT_ID;
+}
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_DOWNLOAD_BYTES = 50_000_000;
 

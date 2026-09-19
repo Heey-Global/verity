@@ -160,7 +160,7 @@ function GoogleDrivePicker({
     if (clientId.length === 0) {
       Alert.alert(
         'Google Drive not set up',
-        'Add your Google OAuth client ID in Settings → Connected services first.',
+        'This Verity server does not provide Google Workspace sign-in. Update the server or configure GOOGLE_AUTH_ID on a custom deployment.',
       );
       return;
     }

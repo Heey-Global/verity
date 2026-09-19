@@ -5097,19 +5097,6 @@ describe('GET/PATCH /settings', () => {
     expect((await ctx.store.getVeritySettings())?.transcribeApiKey).toBeNull();
   });
 
-  it('stores the Google OAuth client ID from settings', async () => {
-    const googleDriveClientId = '123456789-example.apps.googleusercontent.com';
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/settings',
-      payload: { googleDriveClientId },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().settings.googleDriveClientId).toBe(googleDriveClientId);
-    expect((await ctx.store.getVeritySettings())?.googleDriveClientId).toBe(googleDriveClientId);
-  });
-
   it('keeps an atomically replaced transcription API key when the backend URL changes', async () => {
     await ctx.store.updateVeritySettings({
       transcribeBaseUrl: 'https://old-provider.example/v1',

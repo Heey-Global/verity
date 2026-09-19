@@ -224,45 +224,6 @@ describe('settings/services — write-only credentials', () => {
   });
 });
 
-describe('settings/services — Google Workspace', () => {
-  it('shows and saves the Google OAuth client ID', async () => {
-    const initial = makeSettings();
-    const updateVeritySettings = jest
-      .fn()
-      .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch }));
-    mockCreateVerityClient.mockReturnValue(
-      makeClient('unmanaged', { settings: initial, updateVeritySettings }),
-    );
-    render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Google'));
-
-    const clientId = await screen.findByLabelText('Google OAuth client ID');
-    fireEvent.changeText(clientId, '123456789-example.apps.googleusercontent.com');
-    fireEvent(clientId, 'blur');
-
-    await waitFor(() =>
-      expect(updateVeritySettings).toHaveBeenCalledWith({
-        googleDriveClientId: '123456789-example.apps.googleusercontent.com',
-      }),
-    );
-  });
-
-  it('shows the connected Google account', async () => {
-    mockCreateVerityClient.mockReturnValue(
-      makeClient('unmanaged', {
-        settings: makeSettings({
-          googleDriveConnected: true,
-          googleDriveAccountEmail: 'ada@example.com',
-        }),
-      }),
-    );
-    render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Google'));
-
-    expect(await screen.findByText('Connected as ada@example.com')).toBeOnTheScreen();
-  });
-});
-
 describe('settings/services — AI backends', () => {
   const claudeSession = {
     sessionId: '22222222-2222-4222-8222-222222222222',

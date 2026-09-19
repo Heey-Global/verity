@@ -5464,7 +5464,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     githubAppId: z.string().nullable().optional(),
     githubAppInstallationId: z.string().nullable().optional(),
     githubAppPrivateKey: z.string().nullable().optional(),
-    googleDriveClientId: z.string().nullable().optional(),
     dopplerServiceToken: z.string().nullable().optional(),
     transcribeBaseUrl: z.string().nullable().optional(),
     transcribeApiKey: z.string().nullable().optional(),
