@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      backend-artifact-only:
+        description: Publish a reviewed maintenance bridge without promoting channels
+        required: false
+        default: false
+        type: boolean
       backend-schema-forward-max:
         description: Reviewed migration key promised readable by a maintenance bridge
         required: false
@@ -71,6 +76,7 @@ jobs:
       backend-version: ${{ inputs['backend-version'] || '' }}
       backend-ref: ${{ inputs['backend-ref'] || '' }}
       backend-republish: ${{ inputs['backend-republish'] || false }}
+      backend-artifact-only: ${{ matrix.train == 'backend' && inputs['backend-artifact-only'] || false }}
       backend-schema-forward-max: ${{ inputs['backend-schema-forward-max'] || '' }}
       backend-accept-no-rollback: ${{ inputs['backend-accept-no-rollback'] || false }}
       website-version: ${{ inputs['website-version'] || '' }}

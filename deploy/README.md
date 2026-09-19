@@ -179,6 +179,11 @@ paths: repair the current release without changing data, update an installation 
 has not paired its first device yet, or completely replace it. A paired deployment
 updates from the Verity app; the host-side `--update` path is fenced off after pairing.
 
+When a paired installation cannot reach a newer schema through the update channel,
+use the [verified schema-bridge recovery procedure](../docs/runbooks/server-0.15-schema-bridge.md).
+`deploy/bin/verity-recover-bridge` checks signed intermediate-release evidence and
+submits an explicitly approved recovery operation to the existing Updater.
+
 To discard an installation and all of its data, run:
 
 ```sh

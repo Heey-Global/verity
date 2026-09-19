@@ -710,6 +710,13 @@ describe('signed GitHub release evidence', () => {
 
   it.each([
     {
+      name: 'artifact-only bridge without a release PR',
+      artifactOnly: true,
+      labels: '',
+      expectedStatus: 0,
+      expected: '',
+    },
+    {
       name: 'pending-only',
       labels: 'autorelease: pending\n',
       expectedStatus: 0,
@@ -790,7 +797,13 @@ fi
       );
       chmodSync(gh, 0o755);
 
-      const script = publish?.run?.replace('${{ github.event_name }}', 'workflow_dispatch') ?? '';
+      const script =
+        publish?.run
+          ?.replace('${{ github.event_name }}', 'workflow_dispatch')
+          .replace(
+            '${{ inputs.backend-artifact-only }}',
+            scenario.artifactOnly ? 'true' : 'false',
+          ) ?? '';
       const result = spawnSync('bash', ['-c', script], {
         encoding: 'utf8',
         env: {
