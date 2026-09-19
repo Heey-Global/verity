@@ -610,15 +610,15 @@ export function Library({
                     `${changes || 'No project access changes.'}\nCounts include folders and documents. Sessions losing read access will be retired. Move?`,
                     () => {
                       void run(async () => {
-                        if (document)
-                          setDocument(
-                            await client.moveKnowledgeDocument(
-                              document.id,
-                              f.id,
-                              preview.policyToken,
-                            ),
+                        if (document) {
+                          const moved = await client.moveKnowledgeDocument(
+                            document.id,
+                            f.id,
+                            preview.policyToken,
                           );
-                        else if (folderId)
+                          setDocument(moved);
+                          setFolderId(moved.folderId);
+                        } else if (folderId)
                           await client.updateKnowledgeFolder(folderId, {
                             parentId: f.id || null,
                             expectedPolicyToken: preview.policyToken,

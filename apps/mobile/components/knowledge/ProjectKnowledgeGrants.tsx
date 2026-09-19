@@ -16,11 +16,14 @@ export function ProjectKnowledgeGrants({
   const [grants, setGrants] = useState<KnowledgeGrant[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [needsReload, setNeedsReload] = useState(false);
+  const [reload, setReload] = useState(0);
   const lock = useRef(false);
   const generation = useRef(0);
   useEffect(() => {
     const current = ++generation.current;
     let active = true;
+    let loaded = false;
     setFolders([]);
     setGrants([]);
     setError('');
@@ -30,6 +33,8 @@ export function ProjectKnowledgeGrants({
     void Promise.all([client.listKnowledgeFolders(), client.listKnowledgeGrants(projectId)])
       .then(([fs, gs]) => {
         if (active && current === generation.current) {
+          loaded = true;
+          setNeedsReload(false);
           setFolders(fs);
           setGrants(gs);
         }
@@ -39,7 +44,8 @@ export function ProjectKnowledgeGrants({
       })
       .finally(() => {
         if (active && current === generation.current) {
-          lock.current = false;
+          lock.current = !loaded;
+          setNeedsReload(!loaded);
           setBusy(false);
         }
       });
@@ -47,17 +53,21 @@ export function ProjectKnowledgeGrants({
       active = false;
       generation.current++;
     };
-  }, [client, projectId]);
+  }, [client, projectId, reload]);
   const save = (next: KnowledgeGrant[]) => {
     if (lock.current) return;
     const current = generation.current;
+    let authoritative = false;
     lock.current = true;
     setBusy(true);
     setError('');
     void client
       .saveKnowledgeGrants(projectId, next)
       .then((saved) => {
-        if (current === generation.current) setGrants(saved);
+        if (current === generation.current) {
+          authoritative = true;
+          setGrants(saved);
+        }
       })
       .catch(async (failure: unknown) => {
         if (current !== generation.current) return;
@@ -66,14 +76,19 @@ export function ProjectKnowledgeGrants({
         // Reload before another edit so stale UI cannot accidentally restore removed access.
         try {
           const saved = await client.listKnowledgeGrants(projectId);
-          if (current === generation.current) setGrants(saved);
+          if (current === generation.current) {
+            authoritative = true;
+            setGrants(saved);
+          }
         } catch {
-          /* Keep the reported failure; a reload can retry. */
+          if (current === generation.current)
+            setError('Could not reload saved access. Reload before editing.');
         }
       })
       .finally(() => {
         if (current === generation.current) {
-          lock.current = false;
+          lock.current = !authoritative;
+          setNeedsReload(!authoritative);
           setBusy(false);
         }
       });
@@ -118,6 +133,13 @@ export function ProjectKnowledgeGrants({
           {error}
         </Text>
       ) : null}
+      {needsReload ? (
+        <Button
+          label="Reload knowledge access"
+          disabled={busy}
+          onPress={() => setReload((value) => value + 1)}
+        />
+      ) : null}
       {rows.map(({ folder, depth, inherited }) => {
         const direct = grants.find((g) => g.folderId === folder.id);
         const effective =
@@ -137,7 +159,7 @@ export function ProjectKnowledgeGrants({
             <View style={styles.row}>
               <Button
                 label={`${direct ? 'Remove' : 'Allow'} ${folder.name}`}
-                disabled={busy}
+                disabled={busy || needsReload}
                 onPress={() => {
                   const next = direct
                     ? grants.filter((g) => g.folderId !== folder.id)
@@ -157,7 +179,7 @@ export function ProjectKnowledgeGrants({
               {direct ? (
                 <Button
                   label={`${folder.name}: ${direct.mode === 'read' ? 'Read' : 'Read & Write'}`}
-                  disabled={busy}
+                  disabled={busy || needsReload}
                   onPress={() =>
                     save(
                       grants.map((g) =>

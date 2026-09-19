@@ -154,3 +154,57 @@ test('following a link from a draft requires discard and opens the target outsid
     alert.mockRestore();
   }
 });
+
+test('failed grant recovery blocks edits until an authoritative reload succeeds', async () => {
+  const client = {
+    ...fake(),
+    listKnowledgeGrants: jest
+      .fn()
+      .mockResolvedValueOnce([{ folderId: 'root', mode: 'read' }])
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue([]),
+    saveKnowledgeGrants: jest.fn().mockRejectedValue(new Error('Cleanup pending')),
+  };
+  render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
+  fireEvent.press(await screen.findByLabelText('Company: Read'));
+  await screen.findByText('Could not reload saved access. Reload before editing.');
+  fireEvent.press(screen.getByLabelText('Company: Read'));
+  expect(client.saveKnowledgeGrants).toHaveBeenCalledTimes(1);
+  fireEvent.press(screen.getByLabelText('Reload knowledge access'));
+  expect(await screen.findByText('Company — effective: None')).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('Allow Company'));
+  await waitFor(() => expect(client.saveKnowledgeGrants).toHaveBeenCalledTimes(2));
+});
+
+test('moving a document updates its folder and permits moving back', async () => {
+  const client = {
+    ...fake(),
+    previewKnowledgeDocumentMove: jest
+      .fn()
+      .mockResolvedValue({ affectedProjects: [], policyToken: 'policy' }),
+    moveKnowledgeDocument: jest.fn().mockResolvedValue({
+      id: 'doc',
+      folderId: 'root',
+      title: 'Standards',
+      bodyMarkdown: '# Rules',
+      currentRevisionId: 'v1',
+    }),
+  };
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  try {
+    render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+    fireEvent.press(await screen.findByLabelText('Standards'));
+    fireEvent.press(await screen.findByLabelText('Move document'));
+    fireEvent.press(screen.getByLabelText('Move to Company'));
+    await waitFor(() => expect(alert).toHaveBeenCalled());
+    await act(async () => {
+      alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Continue')?.onPress?.();
+    });
+    expect(client.moveKnowledgeDocument).toHaveBeenCalledWith('doc', 'root', 'policy');
+    fireEvent.press(screen.getByLabelText('Move document'));
+    expect(await screen.findByLabelText('Move to Engineering')).toBeTruthy();
+    expect(screen.queryByLabelText('Move to Company')).toBeNull();
+  } finally {
+    alert.mockRestore();
+  }
+});
