@@ -9,6 +9,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { AgentProviderIcon } from './AgentProviderIcon';
 import { SettingsDisclosure } from './settings/SettingsDisclosure';
 
 type LoginState = {
@@ -636,7 +637,7 @@ function ProviderCard({
   return (
     <SettingsDisclosure
       title={title}
-      icon={provider === 'claude' ? 'message-circle' : 'code'}
+      leadingIcon={<AgentProviderIcon provider={provider} color={theme.colors.primary} />}
       summary={statusText}
       attention={state.busy || state.error !== null || (login !== null && !ready)}
     >
