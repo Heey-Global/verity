@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@verity/events": "*",
-    "kysely": "0.29.5",
+    "kysely": "0.29.6",
     "pg": "8.23.0"
   },
   "devDependencies": {
