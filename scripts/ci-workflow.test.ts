@@ -1364,6 +1364,44 @@ describe('self-update release gate', () => {
     }
   });
 
+  it('checks image compatibility before direct preparation in every smoke profile', () => {
+    const smoke = readFileSync('deploy/bin/verity-self-update-live-smoke', 'utf8');
+    const gate =
+      'node packages/server/dist/self-update-release-compat.js "$previous_image" "$image"';
+    expect(smoke).toContain(gate);
+    const beforeGate = smoke.slice(0, smoke.indexOf(gate));
+    expect(beforeGate).not.toContain('self-update-live-smoke.js prepare');
+    expect(beforeGate).not.toContain('VERITY_SMOKE_ALLOW_NO_ROLLBACK');
+    expect(beforeGate).not.toContain(`if [[ "$smoke_profile" == 'release'`);
+
+    const workflow = readFileSync('.github/workflows/self-update.yml', 'utf8');
+    // Old maintenance sources must not restore an older driver without the gate.
+    expect(workflow).toContain('install -m 0644 packages/server/src/self-update-release-compat.ts');
+    expect(workflow).toContain(
+      'install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-release-compat.ts"',
+    );
+    const parsed = parse(workflow) as {
+      on: { workflow_call: { inputs: Record<string, { type: string; default: unknown }> } };
+      jobs: Record<string, { env: Record<string, string> }>;
+    };
+    expect(parsed.on.workflow_call.inputs['schema-forward-max']).toMatchObject({
+      type: 'string',
+      default: '',
+    });
+    expect(parsed.jobs['live-smoke']?.env.VERITY_SMOKE_SCHEMA_FORWARD_MAX).toContain(
+      'inputs.schema-forward-max',
+    );
+    expect(workflow).toContain(
+      '--build-arg "VERITY_SCHEMA_FORWARD_MAX=$VERITY_SMOKE_SCHEMA_FORWARD_MAX"',
+    );
+    const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as {
+      jobs: Record<string, { with?: Record<string, string> }>;
+    };
+    expect(release.jobs['self-update-gate']?.with?.['schema-forward-max']).toContain(
+      "inputs['backend-schema-forward-max']",
+    );
+  });
+
   it('keeps the irreversible-schema override on the forward smoke path', () => {
     const workflow = parse(readFileSync('.github/workflows/self-update.yml', 'utf8')) as {
       on: { workflow_call?: { inputs?: Record<string, { type?: string; default?: unknown }> } };

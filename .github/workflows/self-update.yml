@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      schema-forward-max:
+        description: Reviewed forward schema promise baked into the candidate image
+        required: false
+        default: ''
+        type: string
       smoke-profile:
         description: Release gate or complete fault-injection matrix
         required: false
@@ -81,6 +86,7 @@ jobs:
       # image stamp; the value is synthetic because this image never leaves the
       # isolated daemon and the cutover assertions are digest-based.
       VERITY_SMOKE_SERVER_VERSION: 1.0.0
+      VERITY_SMOKE_SCHEMA_FORWARD_MAX: ${{ inputs.schema-forward-max || '' }}
       VERITY_SMOKE_ALLOW_NO_ROLLBACK: ${{ inputs.allow-no-rollback || false }}
       VERITY_SMOKE_PROFILE: ${{ inputs.smoke-profile || (github.event_name == 'workflow_call' && 'release' || 'full') }}
     steps:
@@ -103,6 +109,8 @@ jobs:
             "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke.ts"
           install -m 0644 packages/server/src/self-update-live-smoke-client.ts \
             "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke-client.ts"
+          install -m 0644 packages/server/src/self-update-release-compat.ts \
+            "$RUNNER_TEMP/verity-self-update-harness/self-update-release-compat.ts"
           # The isolated daemon's own image, staged for the same reason as the two
           # above and one more. Its build is the only one in this job that runs on
           # the SHARED host daemon, and its output is then started `--privileged`
@@ -130,6 +138,9 @@ jobs:
             packages/server/src/self-update-live-smoke.ts
           install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke-client.ts" \
             packages/server/src/self-update-live-smoke-client.ts
+
+          install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-release-compat.ts" \
+            packages/server/src/self-update-release-compat.ts
 
       # Deliberately at the START of the job, not only in the teardown. The
       # teardown removes THIS run's volume, and it is an `if: always()` step — but
@@ -761,6 +772,7 @@ jobs:
             : >"$build_log"
             if docker buildx build \
               --build-arg "VERITY_SERVER_VERSION=$VERITY_SMOKE_SERVER_VERSION" \
+              --build-arg "VERITY_SCHEMA_FORWARD_MAX=$VERITY_SMOKE_SCHEMA_FORWARD_MAX" \
               --cache-from type=gha,scope=verity-server-amd64 \
               --cache-to type=gha,mode=max,scope=verity-server-amd64,ignore-error=true \
               --file deploy/Dockerfile \
