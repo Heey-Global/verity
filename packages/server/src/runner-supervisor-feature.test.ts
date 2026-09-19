@@ -2133,27 +2133,46 @@ describe('verity-runner supervisor runtime', () => {
   });
 
   it('installs the supervisor at the path the refresh runbook tells operators to read', async () => {
-    // That runbook's last step is a `docker exec … grep opencode-acp <path>`, and it is
-    // the only thing separating "the recreation did not take" from "the recreation did
-    // not help" — nothing on the wire carries a boundary-binary version. A grep against
-    // a path the installer no longer writes answers `0` for every container, current or
-    // stale, sending an operator whose recovery WORKED back around the loop. Prose
-    // cannot notice an installer rename; this can.
+    // That runbook's last step is a `docker exec … grep <pattern> <path>`, and it is the
+    // only thing separating "the recreation did not take" from "the recreation did not
+    // help" — nothing on the wire carries a boundary-binary version. Both halves of that
+    // command can rot silently and both rot in the dangerous direction: a path the
+    // installer no longer writes answers `0` for a container that is perfectly current,
+    // and a pattern that is not specific to the ADMISSION list answers non-zero for a
+    // stale one, since a pre-amendment supervisor has spawned OpenCode workers for
+    // releases and names it throughout. Prose notices neither.
     const runbook = await readFile(
       'docs/runbooks/opencode-brokered-tools-container-refresh.md',
       'utf8',
     );
-    const documented = /grep -c opencode-acp (\/\S+)/u.exec(runbook)?.[1];
-    expect(documented).toBeDefined();
+    const command = /grep -c "([^"]+)" (\/\S+)/u.exec(runbook);
+    expect(command).not.toBeNull();
+    const [, pattern, documented] = command!;
+
     const installer = await readFile('features/verity-sandbox-toolkit/install.sh', 'utf8');
-    expect(installer).toContain(`verity-runner-supervisor.mjs" \\\n    ${documented!}`);
-    // And the string the operator greps FOR has to be in the file they grep: the check
-    // reads the admission list itself, not a version stamped beside it.
+    // The path on its own, not the surrounding `install` invocation: pinning the line
+    // continuation and its indent would report a reformat of the installer as a rename.
+    expect(installer).toMatch(
+      new RegExp(`verity-runner-supervisor\\.mjs"\\s*\\\\?\\s*${documented!}(?!\\S)`, 'u'),
+    );
+
+    // The pattern is a BRE and reads as one in JS apart from the literal paren.
+    const check = new RegExp(pattern!.replaceAll('(', '\\('), 'u');
     const supervisor = await readFile(
       'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
       'utf8',
     );
-    expect(supervisor).toContain('opencode-acp');
+    expect(supervisor).toMatch(check);
+    // And that it DISCRIMINATES, which is the property the operator's conclusion rests
+    // on. Take OpenCode back out of the admission list — the pre-amendment supervisor,
+    // which still names it everywhere else — and the command must answer `0`.
+    const stale = supervisor.replace(
+      /(ACP_WORKER_BACKENDS = new Set\(\[[^\]]*), 'opencode-acp'/u,
+      '$1',
+    );
+    expect(stale).not.toBe(supervisor);
+    expect(stale).toContain('opencode-acp');
+    expect(stale).not.toMatch(check);
   });
 
   it('writes the opencode-acp wrapper root-owned and keeps it out of the dev chown', async () => {

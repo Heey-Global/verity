@@ -116,14 +116,20 @@ either — the status handshake carries `protocolVersion` and `runnerInstanceId`
 and no boundary-binary version — so read the binary that decides:
 
 ```
-docker exec <container> grep -c opencode-acp /usr/local/bin/verity-runner-supervisor
+docker exec <container> grep -c "ACP_WORKER_BACKENDS = new Set(\[[^\]]*'opencode-acp'" /usr/local/bin/verity-runner-supervisor
 ```
+
+Read the ADMISSION list, not the file. A stale supervisor mentions `opencode-acp`
+in several places already — it has spawned OpenCode workers since ADR 0012
+Amendment 4 — so a bare `grep -c opencode-acp` answers non-zero on exactly the
+container this check exists to catch. `ACP_WORKER_BACKENDS` is the one list that
+changed.
 
 `0` means the container is still running a supervisor from before this release:
 the recreation did not take, and recreating again from the same toolkit will not
 change it. Check which toolkit the provisioner installed before repeating the
-step. A non-zero count means the boundary admits OpenCode, and the next OpenCode
-turn is the authoritative confirmation.
+step. `1` means the boundary admits OpenCode, and the next OpenCode turn is the
+authoritative confirmation.
 
 **Do not reach for a volume-removing teardown.** `docker compose down -v`,
 `docker rm -v`, or removing the Verity data volume by hand destroys the storage
