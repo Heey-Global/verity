@@ -10,6 +10,7 @@ import { stampFrame } from './runner-transport.js';
 import {
   DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS,
   MAX_SUPERVISOR_REQUEST_BYTES,
+  MCP_GATEWAY_BEARER_MAX_BYTES,
   MIN_SUPPORTED_PROTOCOL_VERSION,
   requestRunnerSupervisor,
   runSupervisorTrustedCli,
@@ -551,6 +552,16 @@ describe('SupervisorRunnerClient', () => {
     // fake has no gates to reorder.
     expect(supervisor).toContain("throw new Error('invalid trustedCliExecution')");
     expect(client).toContain("cause.message.includes('invalid trustedCliExecution')");
+    // The bearer refusal is emitted on THREE counts, not two: `optionalString` answers
+    // the same four words for an oversize token. That is the count the explanation can
+    // get wrong in the dangerous direction — a live Server defect read as container
+    // age — so the bound is taken from the supervisor's own call rather than restated,
+    // and tightening it there without following here fails right here.
+    const bound = /optionalString\(\s*request\.mcpGatewayToken,\s*'mcpGatewayToken',\s*(\d+)/u.exec(
+      supervisor.replaceAll('_', ''),
+    );
+    expect(bound?.[1]).toBeDefined();
+    expect(Number(bound?.[1])).toBe(MCP_GATEWAY_BEARER_MAX_BYTES);
   });
 
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
@@ -663,6 +674,7 @@ describe('SupervisorRunnerClient', () => {
     // below would still pass.
     expect(frames[0]).toHaveProperty('mcpGatewayToken', '');
     expect(error.message).toMatch(/Server composition defect/u);
+    expect(error.message).toMatch(/empty/u);
     expect(error.message).toMatch(/mcpGatewayTokens/u);
     // The load-bearing half: this operator must NOT be sent to recreate a container
     // that was never the problem.
@@ -686,6 +698,42 @@ describe('SupervisorRunnerClient', () => {
     expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
     expect(error.message).toMatch(/invalid mcpGatewayToken/u);
     expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // The THIRD cause of those same four words, and the one that made "non-empty string
+  // means stale container" too strong: the supervisor bounds the bearer's size with the
+  // same message it uses for emptiness. A Server minting an oversize token is refused by
+  // every supervisor that ever shipped, so reading it as container age would send an
+  // operator to reprovision against a defect reprovisioning cannot touch.
+  it('names a Server defect when the bearer is refused for being oversize', async () => {
+    const error = await refusedStart(
+      'oversize-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      [],
+      'x'.repeat(MCP_GATEWAY_BEARER_MAX_BYTES + 1),
+    );
+
+    expect(error.message).toMatch(/Server composition defect/u);
+    expect(error.message).toMatch(/over the 512-byte limit/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // The boundary itself, from the other side: a bearer AT the limit is one the
+  // supervisor would have accepted on shape, so refusing it says something about the
+  // supervisor rather than about the token. An off-by-one in the mirrored bound would
+  // otherwise turn the last admissible bearer into a phantom Server defect.
+  it('still reads a refusal of a bearer at the size limit as an outdated Sandbox', async () => {
+    const error = await refusedStart(
+      'limit-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      [],
+      'x'.repeat(MCP_GATEWAY_BEARER_MAX_BYTES),
+    );
+
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect(error.message).not.toMatch(/Server composition defect/u);
   });
 
   // The refusal a turn with NO bearer actually gets, and the reason recognizing the

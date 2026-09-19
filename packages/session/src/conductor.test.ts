@@ -4445,6 +4445,28 @@ describe('Conductor.startSession', () => {
     expect(brokeredSecretAliases).not.toHaveBeenCalled();
   });
 
+  // "A fourth adapter arrives refused until this document says otherwise" (ADR 0014
+  // Amendment 4) is an invariant the type system alone cannot hold: the gate switches
+  // exhaustively over the union, so a NEW member is caught at compile time — but a
+  // value that crossed a process boundary or a cast reaches the `default:` arm at
+  // runtime, and that arm is the only thing standing between an undecided backend and
+  // a list of the operator's secret names. Every other test here names an admitted
+  // member, so nothing else exercises it. Cast deliberately: this asserts what happens
+  // when the types have already been bypassed.
+  it('omits the project secret names for a supervised backend nobody has admitted', async () => {
+    const brokeredSecretAliases = vi.fn(() => Promise.resolve(['ASC_API_KEY', 'EXAMPLE_TOKEN']));
+
+    const appended = await brokeredTurnSystemPrompt(
+      's-alias-unadmitted',
+      'pi-acp' as RunnerSupervisorBackend,
+      { brokeredSecretAliases },
+    );
+
+    expect(appended).toContain(TERMINOLOGY_SYSTEM_PROMPT); // the turn did reach the backend
+    expect(appended).not.toContain('ASC_API_KEY');
+    expect(brokeredSecretAliases).not.toHaveBeenCalled();
+  });
+
   // An ACP turn reads these rules beside the schema, as the MCP gateway's tool
   // descriptions (ADR 0014). Repeating them in the system prompt would ship a second
   // copy of the same security rules, paid for every turn and free to drift from the

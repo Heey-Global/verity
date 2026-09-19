@@ -60,10 +60,25 @@ Before recreating, so that "process state only" is all you lose:
 3. Confirm the session you are diagnosing really shows a message from "Recognize
    it" above, and not the `Server composition defect` one.
 
-Then recreate the project container on a current toolkit. There is no in-place
-fix: the supervisor is a boundary binary shipped with `verity-sandbox-toolkit`
-and attested by ADR 0006 D9, so it is replaced by reprovisioning, not by updating
-the Server.
+Then recreate the project container through Verity:
+
+```
+POST /concierge/projects/<projectId>/recreate-container
+```
+
+That is the supported path, and the only one this runbook asks for. It replaces
+the container from the current toolkit and re-attaches the same project mounts
+(`recreateContainer`, `packages/server/src/provisioner.ts`).
+
+**Do not reach for a volume-removing teardown.** `docker compose down -v`,
+`docker rm -v`, or removing the Verity data volume by hand destroys the storage
+`/work` is served from — the clone, its uncommitted changes, and every session
+worktree. The survival described above is survival of container replacement, not
+of volume deletion. Nothing in this failure calls for touching the volume.
+
+There is no in-place fix: the supervisor is a boundary binary shipped with
+`verity-sandbox-toolkit` and attested by ADR 0006 D9, so it is replaced by
+reprovisioning, not by updating the Server.
 
 Until the container is recreated, run affected sessions on Claude or Codex.
 

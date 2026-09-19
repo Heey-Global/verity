@@ -74,6 +74,26 @@ function describeBytes(bytes: number): string {
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
 /**
+ * The supervisor's own shape bound on `mcpGatewayToken`, restated because the
+ * supervisor is a boundary binary and there is nothing to import from it. It is not
+ * enforced here — the supervisor enforces it, and this client mints tokens well
+ * inside it. It exists so {@link SupervisorRunnerClient.explainStaleGatewayRefusal}
+ * can tell a bearer the supervisor rejected on SHAPE from one it rejected because it
+ * does not admit the backend: both answer `invalid mcpGatewayToken`, and only the
+ * second is an outdated Sandbox. A restated bound drifts, so the pairing test in
+ * `runner-supervisor-client.test.ts` reads the supervisor's number out of its source
+ * and fails when the two disagree.
+ */
+export const MCP_GATEWAY_BEARER_MAX_BYTES = 512;
+
+/** Would any supervisor accept this bearer's shape? Mirrors the supervisor's
+ *  `optionalString(request.mcpGatewayToken, 'mcpGatewayToken', 512)` plus its
+ *  explicit emptiness check, which share one error message. */
+function admissibleGatewayBearer(bearer: string): boolean {
+  return bearer !== '' && Buffer.byteLength(bearer) <= MCP_GATEWAY_BEARER_MAX_BYTES;
+}
+
+/**
  * One structured observation about a turn start, handed to
  * {@link SupervisorRunnerClientOptions.onTelemetry}.
  *
@@ -1240,7 +1260,11 @@ export class SupervisorRunnerClient implements RunnerClient {
    *
    * Note that no bearer-RESOLUTION failure can arrive here: the supervisor only
    * bounds the bearer's shape and never resolves it, so a revoked or unknown token
-   * fails later, at the gateway, with its own error.
+   * fails later, at the gateway, with its own error. What it does bound is emptiness
+   * and SIZE, both answered with the same four words, which is why the defect arm
+   * asks {@link admissibleGatewayBearer} rather than testing for `''`: a bearer over
+   * the limit is refused by every supervisor that ever shipped, so reading it as
+   * container age would send an operator to reprovision against a live Server defect.
    */
   private explainStaleGatewayRefusal(cause: Error, request: Record<string, unknown>): Error {
     if (!this.acpBackend) return cause;
@@ -1249,9 +1273,9 @@ export class SupervisorRunnerClient implements RunnerClient {
     // than the intent: the frame is built above and either carries a string or omits
     // the field entirely.
     const bearer = request.mcpGatewayToken;
-    if (refusedBearer && bearer === '') {
+    if (refusedBearer && typeof bearer === 'string' && !admissibleGatewayBearer(bearer)) {
       return new Error(
-        `${cause.message} — the Server sent an empty MCP gateway bearer for this turn, which no supervisor accepts. This is a Server composition defect (the per-turn bearer registry, \`mcpGatewayTokens\`), not an outdated Sandbox; recreating the project container will not change it.`,
+        `${cause.message} — the Server sent a malformed MCP gateway bearer for this turn (${bearer === '' ? 'empty' : `${Buffer.byteLength(bearer)} bytes, over the ${MCP_GATEWAY_BEARER_MAX_BYTES}-byte limit`}), which no supervisor accepts. This is a Server composition defect (the per-turn bearer registry, \`mcpGatewayTokens\`), not an outdated Sandbox; recreating the project container will not change it.`,
         { cause },
       );
     }
@@ -1270,9 +1294,11 @@ export class SupervisorRunnerClient implements RunnerClient {
       request.trustedCliExecution === true
     )
       return stale('trusted-CLI execution flag');
-    // A non-string bearer means the turn sent none, and the gate throwing those words
-    // is reached only for a bearer that WAS sent. Nothing here describes that, so say
-    // nothing: the supervisor's own words remain the best evidence there is.
+    // What is left: a bearer the supervisor would have accepted on shape, refused
+    // anyway. Only an unadmitted backend explains that. A non-string means the turn
+    // sent none, and the gates throwing these words are reached only for a bearer that
+    // WAS sent — nothing here describes that, so say nothing and let the supervisor's
+    // own words stand as the best evidence there is.
     if (refusedBearer && typeof bearer === 'string') return stale('per-turn gateway bearer');
     return cause;
   }

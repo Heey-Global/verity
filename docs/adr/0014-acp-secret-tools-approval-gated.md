@@ -526,6 +526,19 @@ created on the restricted channel is what an OpenCode turn redeems against, and 
 native-path `forever` grant does not auto-approve on it. That arm needed no edit;
 it was written for this day.
 
+It does mean OpenCode turns can redeem grants approved during a Claude or Codex
+turn, and that is worth stating rather than leaving to be discovered. Grants are
+keyed by project, binding, secret alias and tool target (ADR 0011 D2) — never by
+backend — so a `project`-scope grant has always covered every session in its
+project, on whichever agent. Admitting OpenCode widens who can redeem one in
+exactly the way starting another Claude session does, which is the reach the
+operator agreed to when they chose `project` over `session`. What does NOT widen
+is the ceiling: those grants are all on the `acp` channel, where `forever` is
+refused at the store and a redemption additionally requires an ACP approval under
+24 hours old. An operator who wants a decision confined to the agent in front of
+them has `session` scope, which binds to the session id and so never crosses to
+another backend's turn.
+
 **The admission is still not "is it ACP".** Four gates name their members by hand
 — `ACP_WORKER_BACKENDS` in the supervisor, the `acpBackend` flag that mints the
 bearer, `carriesBrokeredSecretTools`, and the runner worker's two independent
