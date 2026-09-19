@@ -22,6 +22,27 @@ export function deriveSessionStatus(events: readonly AgentEvent[]): SessionStatu
   return deriveSessionStatusFromProjection(events, events.length);
 }
 
+/** Whether the current `awaiting_input` projection comes from a durable permission
+ * event rather than another kind of question/status. Used with the conductor's
+ * live pending set to retire an answered card without hiding unrelated input. */
+export function permissionEventAwaitsInput(events: readonly AgentEvent[]): boolean {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event === undefined || (event.t === 'prompt' && event.steered === true)) continue;
+    if (event.t === 'permission') return true;
+    if (
+      event.t === 'status' ||
+      event.t === 'result' ||
+      event.t === 'interrupted' ||
+      event.t === 'error' ||
+      event.t === 'prompt'
+    ) {
+      return false;
+    }
+  }
+  return false;
+}
+
 /**
  * {@link deriveSessionStatus} over a log already narrowed to
  * `SESSION_PROJECTION_EVENT_TYPES`, so the overview does not have to hydrate

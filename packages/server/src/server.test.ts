@@ -3072,6 +3072,27 @@ describe('GET /sessions', () => {
     expect(res.json()).toMatchObject([{ sessionId: 's1', status: 'awaiting_input' }]);
   });
 
+  it('retires a historical permission status after the live prompt is answered', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', {
+      t: 'permission',
+      id: 'tool-1',
+      tool: 'verity_trusted_cli',
+      input: {},
+      riskClass: 'ask',
+    });
+    isBusy.mockReturnValue(true);
+
+    const running = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(running.json()).toMatchObject([
+      { sessionId: 's1', status: 'running', pendingPermissions: [] },
+    ]);
+
+    isBusy.mockReturnValue(false);
+    const completed = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(completed.json()).toMatchObject([{ sessionId: 's1', status: 'completed' }]);
+  });
+
   it('keeps awaiting_dependency over running for a busy session', async () => {
     // The other in-flight-but-blocked state: it's likewise more specific than the
     // generic `running` overlay and must be preserved.

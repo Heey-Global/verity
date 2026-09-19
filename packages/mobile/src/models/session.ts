@@ -799,6 +799,9 @@ export class SessionModel {
     try {
       const rateLimitPruned = this.pruneExpiredRateLimit();
       const activity = await this.opts.client.getActivity(this.opts.sessionId);
+      if (activity.pendingPermissions !== undefined) {
+        this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
+      }
       // The poll is now the authoritative `_busy` source — stop `loadDetail` from
       // seeding it. Set BEFORE the no-change short-circuit so a first poll that
       // matches the initial `false` still counts as "landed".
@@ -898,8 +901,12 @@ export class SessionModel {
    * doesn't block sending on a flaky probe — a real dead session still surfaces via
    * a 410 on send, which flips the flag false. */
   private async loadDetail(): Promise<void> {
+    const seqAtRequest = this.stream.newestSeq;
     try {
       const detail = await this.opts.client.getSession(this.opts.sessionId);
+      if (detail.pendingPermissions !== undefined) {
+        this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
+      }
       this._name = detail.name;
       this._projectId = detail.projectId ?? null;
       this._kind = detail.kind ?? 'normal';

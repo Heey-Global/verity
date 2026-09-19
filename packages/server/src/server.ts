@@ -105,7 +105,11 @@ import Fastify, {
   type FastifyHttpsOptions,
 } from 'fastify';
 import { z, ZodError } from 'zod';
-import { deriveSessionStatusFromProjection, type SessionStatus } from './status.js';
+import {
+  deriveSessionStatusFromProjection,
+  permissionEventAwaitsInput,
+  type SessionStatus,
+} from './status.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { httpMcpAuthorization } from './http-mcp-oauth.js';
@@ -4146,8 +4150,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const pr = prSummaryFor(session);
     const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
     const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
-    const status = liveStatusFromProjection(session.sessionId, events, facts.eventCount);
     const pendingPermissions = conductor.pendingPermissions(session.sessionId);
+    const projectedStatus = liveStatusFromProjection(session.sessionId, events, facts.eventCount);
+    // A permission event is durable so reconnect can rebuild its card, but its
+    // answer travels over the live runner channel. Once that channel no longer
+    // reports the prompt, do not let the historical event keep the overview in
+    // "Needs input" while the approved operation continues or settles.
+    const status =
+      projectedStatus === 'awaiting_input' &&
+      permissionEventAwaitsInput(events) &&
+      pendingPermissions.length === 0
+        ? conductor.isBusy(session.sessionId)
+          ? 'running'
+          : 'completed'
+        : projectedStatus;
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
     const attention = sessionAttentionSignals({
@@ -6219,8 +6235,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const events = sequencedEvents.map((event) => event.event);
       const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
       const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
-      const status = liveStatusFromProjection(id, events, facts.eventCount);
       const pendingPermissions = conductor.pendingPermissions(id);
+      const projectedStatus = liveStatusFromProjection(id, events, facts.eventCount);
+      const status =
+        projectedStatus === 'awaiting_input' &&
+        permissionEventAwaitsInput(events) &&
+        pendingPermissions.length === 0
+          ? conductor.isBusy(id)
+            ? 'running'
+            : 'completed'
+          : projectedStatus;
       return {
         ...session,
         status,

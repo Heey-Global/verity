@@ -115,6 +115,24 @@ export class SessionStream {
     if (this.caughtUp) this.opts.onUpdate?.(this.reducer.state);
   }
 
+  reconcilePendingPermissions(toolUseIds: readonly string[], throughSeq = this.newestSeq): void {
+    const pending = this.reducer.pendingPermission;
+    if (pending !== undefined && !toolUseIds.includes(pending.toolUseId)) {
+      const permissionFrame = this.eventFrames.findLast(
+        (frame) => frame.event.t === 'permission' && frame.event.id === pending.toolUseId,
+      );
+      // The HTTP snapshot was taken before this streamed permission arrived. It
+      // cannot say whether the newer prompt is still pending, so leave the card
+      // for a later poll whose request started after the event.
+      if (permissionFrame === undefined || permissionFrame.seq > throughSeq) return;
+      this.resolvedPermissions.add(pending.toolUseId);
+    }
+    this.reducer.reconcilePendingPermissions(toolUseIds);
+    if (pending !== undefined && this.reducer.pendingPermission === undefined && this.caughtUp) {
+      this.opts.onUpdate?.(this.reducer.state);
+    }
+  }
+
   /**
    * Set the resume cursor BEFORE {@link start} — the WS then replays only events
    * with seq > `sinceSeq`. Used to open a long session from its tail (skip the

@@ -649,6 +649,18 @@ export class SessionReducer {
     }
   }
 
+  /** Reconcile a replayed permission card with the server's live pending set.
+   * Permission prompts are durable transcript events, while their decisions are
+   * delivered over the runner control channel. After a remount, replay can
+   * therefore recreate an already-answered card unless the live pending set
+   * explicitly retires it. */
+  reconcilePendingPermissions(toolUseIds: readonly string[]): void {
+    const pending = this._pendingPermission;
+    if (pending !== undefined && !toolUseIds.includes(pending.toolUseId)) {
+      this.resolvePermission(pending.toolUseId);
+    }
+  }
+
   get state(): SessionState {
     return {
       sessionId: this._sessionId,
