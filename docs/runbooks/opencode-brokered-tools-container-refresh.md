@@ -157,6 +157,15 @@ Amendment 4 — so a bare `grep -c opencode-acp` answers non-zero on exactly the
 container this check exists to catch. `ACP_WORKER_BACKENDS` is the one list that
 changed.
 
+The pattern is line-anchored, like every `grep` pattern, and the declaration it
+reads is one line today. Reformat that declaration — or add a fourth member, and
+let Prettier wrap the set — and the command starts answering `0` for a container
+that is perfectly current, which is this check's own failure direction inverted.
+`runner-supervisor-feature.test.ts` runs the command out of this page against
+both a current and a doctored supervisor, so that break surfaces in CI rather
+than here; the command must be edited with the declaration, not after an
+operator reports it.
+
 `0` means the container is still running a supervisor from before this release:
 the recreation did not take, and recreating again from the same toolkit will not
 change it. Check which toolkit the provisioner installed before repeating the

@@ -333,10 +333,12 @@ describe('agent spawn broker', () => {
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
     // Matched loosely on purpose: the condition and the value it produces are the
     // policy, and pinning Prettier's spacing would fire on a rewrap as if the policy
-    // had changed. The `[^)]*` body is what makes the last assertion real — it would
-    // happily match an arm that had grown a backend test.
+    // had changed. The condition is captured lazily up to the `?` rather than by a
+    // character class, so a backend test written inside parentheses lands INSIDE the
+    // capture — which is what makes the last assertion real rather than a way of
+    // ending the match early.
     const arm =
-      /\.\.\.\(request\.mcpGatewayToken !== undefined[^)]*\?\s*\{\s*mcpGateway:\s*\{[^}]*\}/u.exec(
+      /\.\.\.\(request\.mcpGatewayToken !== undefined[\s\S]*?\?\s*\{\s*mcpGateway:\s*\{[^}]*\}/u.exec(
         text,
       );
     expect(arm?.[0]).toBeDefined();
