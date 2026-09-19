@@ -536,22 +536,34 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
 
 ### Consequences
 
-- **A Sandbox older than this release refuses every session-attributed OpenCode
-  turn.** (A turn with `sessionId: null` mints no bearer and still starts.) ADR 0006 D9
+- **A Sandbox older than this release refuses every OpenCode turn.** ADR 0006 D9
   has such a container attesting cleanly — a Server outliving a Sandbox is the
   normal case — but its supervisor's `ACP_WORKER_BACKENDS` predates the decision
   and answers `invalid mcpGatewayToken` to the bearer the Server now mints. That
   is the old boundary failing closed, which is the right direction, and it is not
   recoverable at runtime: the fix is to recreate the project container on a
-  current toolkit. The Server recognizes this one refusal and says so rather than
-  passing on four words about a bearer
-  (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`). It states that
-  cause outright, because it can: a current supervisor emits the same four words
-  for an EMPTY bearer — a Server composition defect that no reprovisioning fixes
-  — and the two are indistinguishable from the message but not to the client that
-  minted it. It reads the value it sent and gives each cause its own remedy,
-  telling the defect case explicitly that recreating the container will not help.
-  The operator-facing procedure is
+  current toolkit.
+
+  That one list gates two fields, so the refusal has two shapes. A turn with
+  `sessionId: null` — the ephemeral/meta-query path — mints no bearer and clears
+  the first gate, but `trustedCliExecution` rides on backend identity rather than
+  on bearer presence, so it is refused at the second one with `invalid
+  trustedCliExecution`. Such turns are NOT exempt, and the field is not gated on
+  the bearer to make them so: it is the execution half of `verity_secret_run` and
+  belongs to the same decision. An older draft of this bullet claimed the
+  exemption and was wrong.
+
+  The Server recognizes both refusals and says so rather than passing on four
+  opaque words (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`),
+  which also keeps the supervisor's gate order from being load-bearing. It states
+  the cause outright, because it can: a current supervisor emits the bearer
+  refusal for one other reason — an EMPTY bearer, a Server composition defect
+  that no reprovisioning fixes — and the two are indistinguishable from the
+  message but not to the client that minted it. It reads the value it sent and
+  gives each cause its own remedy, telling the defect case explicitly that
+  recreating the container will not help. That defect arm is the one thing here
+  not narrowed to OpenCode: the registry is shared, so the same empty bearer on
+  Claude or Codex is the same defect. The operator-facing procedure is
   `docs/runbooks/opencode-brokered-tools-container-refresh.md`.
 
   Detecting this BEFORE the turn was considered and rejected on two counts. The

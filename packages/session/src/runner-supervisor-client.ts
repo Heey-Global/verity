@@ -1197,6 +1197,14 @@ export class SupervisorRunnerClient implements RunnerClient {
    * has that Sandbox attesting cleanly by design, because a container outliving a
    * Server deploy is the normal case, and the refusal is the first and only symptom.
    *
+   * That same list gates a SECOND field, so a stale supervisor has two ways to refuse
+   * the same turn and answers with whichever it reaches first. A turn carrying no
+   * bearer — `sessionId: null`, the ephemeral/meta-query path — sails past the bearer
+   * gate and is refused at `trustedCliExecution` instead, which this client sends for
+   * every ACP backend regardless of whether a bearer was minted. Recognizing only the
+   * bearer refusal would have left exactly those turns undiagnosed, and it made the
+   * gate ORDER load-bearing. Both are recognized, so it no longer is.
+   *
    * Only the MESSAGE changes. Recognition is by text, which the {@link
    * SupervisorStartRequestError.decided} flag deliberately is not — but a miss here
    * costs the explanation and nothing else: a decided refusal still fails the start,
@@ -1207,49 +1215,66 @@ export class SupervisorRunnerClient implements RunnerClient {
    * `cause`'s own type either — the only thing that reaches here is the plain Error
    * built from the supervisor's wire refusal, since the other thing `cause` can be on
    * this path is a socket error (`connect ENOENT`), which never carries this message.
-   * Narrowed to the backend whose admission is new, so a genuine bearer defect on
-   * Claude or Codex keeps its own error rather than being explained away as an
-   * outdated container.
    *
-   * The message is not the same in both cases, and that took two review rounds to get
-   * right. A current supervisor emits this refusal for one other reason: the bearer
-   * is an EMPTY STRING (`verity-runner-supervisor.mjs`, where the two conditions sit
-   * in one `if`) — a Server composition defect, not an old container. Hedging between
-   * them with "retry first" was the wrong answer, because neither cause is transient:
-   * both fail identically forever, so the retry disambiguates nothing while still
-   * pointing a Server-side defect at a remediation that reprovisions a container.
+   * The message is not the same in every case, and that took several review rounds to
+   * get right. A current supervisor emits the bearer refusal for one other reason: the
+   * bearer is an EMPTY STRING (`verity-runner-supervisor.mjs`, where the two
+   * conditions sit in one `if`) — a Server composition defect, not an old container.
+   * Hedging between them with "retry first" was the wrong answer, because neither
+   * cause is transient: both fail identically forever, so the retry disambiguates
+   * nothing while still pointing a Server-side defect at a remediation that
+   * reprovisions a container.
    *
    * There is no need to guess. THIS client minted the bearer, so it knows which case
-   * it is, and `bearer` is that value straight off the frame that was refused: a
+   * it is, and it reads that value straight off the frame that was refused: a
    * non-empty string can only have been refused by a supervisor that does not admit
    * this backend, and an empty one was never admissible anywhere. Each case gets the
    * remedy that fits it, and the Server defect is never told to recreate anything.
+   *
+   * Hence the two scopes below. The stale-container arms are narrowed to the backend
+   * whose admission is new, so a genuine defect on Claude or Codex is never explained
+   * away as an outdated container — those have been admitted for releases. The
+   * empty-bearer arm is not narrowed that way, because nothing about that defect is
+   * OpenCode-specific: the registry is shared, and a Claude turn refused for an empty
+   * bearer has the same cause and the same remedy.
    *
    * Note that no bearer-RESOLUTION failure can arrive here: the supervisor only
    * bounds the bearer's shape and never resolves it, so a revoked or unknown token
    * fails later, at the gateway, with its own error.
    */
   private explainStaleGatewayRefusal(cause: Error, request: Record<string, unknown>): Error {
-    if (this.workerBackend !== 'opencode-acp' || !cause.message.includes('invalid mcpGatewayToken'))
-      return cause;
-    // Read from the frame that was actually sent, since that is the evidence: the
-    // frame is built above and either carries a string or omits the field, so a
-    // non-string here means the turn sent no bearer at all. That is not a case the
-    // supervisor can refuse — the gate throwing these words is reached only for a
-    // bearer that WAS sent — so neither sentence below describes it. Say nothing
-    // rather than invent a cause; the supervisor's own words remain the best evidence.
+    if (!this.acpBackend) return cause;
+    const refusedBearer = cause.message.includes('invalid mcpGatewayToken');
+    // Read from the frame that was actually sent, since that is the evidence rather
+    // than the intent: the frame is built above and either carries a string or omits
+    // the field entirely.
     const bearer = request.mcpGatewayToken;
-    if (typeof bearer !== 'string') return cause;
-    if (bearer === '') {
+    if (refusedBearer && bearer === '') {
       return new Error(
-        `${cause.message} — the Server sent an empty MCP gateway bearer for this OpenCode turn, which no supervisor accepts. This is a Server composition defect (the per-turn bearer registry, \`mcpGatewayTokens\`), not an outdated Sandbox; recreating the project container will not change it.`,
+        `${cause.message} — the Server sent an empty MCP gateway bearer for this turn, which no supervisor accepts. This is a Server composition defect (the per-turn bearer registry, \`mcpGatewayTokens\`), not an outdated Sandbox; recreating the project container will not change it.`,
         { cause },
       );
     }
-    return new Error(
-      `${cause.message} — this Sandbox predates OpenCode's admission to the brokered Verity tools (ADR 0014 Amendment 4), so its supervisor refuses the per-turn gateway bearer the Server mints for OpenCode. Recreate the project container on a current toolkit, or run this session on Claude or Codex. See docs/runbooks/opencode-brokered-tools-container-refresh.md.`,
-      { cause },
-    );
+    if (this.workerBackend !== 'opencode-acp') return cause;
+    const stale = (refused: string): Error =>
+      new Error(
+        `${cause.message} — this Sandbox predates OpenCode's admission to the brokered Verity tools (ADR 0014 Amendment 4), so its supervisor refuses the ${refused} the Server sends for OpenCode. Recreate the project container on a current toolkit, or run this session on Claude or Codex. See docs/runbooks/opencode-brokered-tools-container-refresh.md.`,
+        { cause },
+      );
+    // The second gate, and the only one a turn with no bearer can reach. A current
+    // supervisor cannot answer this for an admitted backend, so unlike the bearer
+    // refusal it needs no disambiguation — but still check what was sent, so the
+    // explanation never describes a field this turn did not carry.
+    if (
+      cause.message.includes('invalid trustedCliExecution') &&
+      request.trustedCliExecution === true
+    )
+      return stale('trusted-CLI execution flag');
+    // A non-string bearer means the turn sent none, and the gate throwing those words
+    // is reached only for a bearer that WAS sent. Nothing here describes that, so say
+    // nothing: the supervisor's own words remain the best evidence there is.
+    if (refusedBearer && typeof bearer === 'string') return stale('per-turn gateway bearer');
+    return cause;
   }
 
   /**

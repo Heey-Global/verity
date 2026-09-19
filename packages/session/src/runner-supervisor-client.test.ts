@@ -544,15 +544,13 @@ describe('SupervisorRunnerClient', () => {
     );
     expect(client).toContain("cause.message.includes('invalid mcpGatewayToken')");
     // A stale supervisor rejects an OpenCode start on TWO counts — the bearer and
-    // `trustedCliExecution` — and answers with whichever gate it reaches first. Only
-    // the bearer refusal is one the explanation recognizes, so swapping the gates
-    // would leave the operator reading `invalid trustedCliExecution` with every test
-    // above still green: they assert against their own fake's literal, and the fake
-    // has no gates to reorder.
+    // `trustedCliExecution` — and answers with whichever gate it reaches first, which
+    // is why BOTH are pinned rather than the order they sit in. Recognizing one would
+    // make a reordering of the other's gate silently fatal to the diagnostic, and no
+    // test above would notice: they assert against their own fake's literal, and the
+    // fake has no gates to reorder.
     expect(supervisor).toContain("throw new Error('invalid trustedCliExecution')");
-    expect(supervisor.indexOf("throw new Error('invalid mcpGatewayToken')")).toBeLessThan(
-      supervisor.indexOf("throw new Error('invalid trustedCliExecution')"),
-    );
+    expect(client).toContain("cause.message.includes('invalid trustedCliExecution')");
   });
 
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
@@ -690,12 +688,63 @@ describe('SupervisorRunnerClient', () => {
     expect(error.message).not.toMatch(/predates OpenCode/u);
   });
 
-  // Neither explanation fits a turn that carried NO bearer: the gate that produces
-  // these four words is reached only for a bearer that was sent, so a supervisor
-  // answering them anyway is doing something neither sentence describes. The one
-  // wrong move is to fold it into the empty-bearer branch — `undefined` and `''` are
-  // not the same claim, and reporting a Server composition defect that did not happen
-  // is a diagnosis the operator cannot disprove from the message.
+  // The refusal a turn with NO bearer actually gets, and the reason recognizing the
+  // bearer refusal alone was not enough: `trustedCliExecution` rides on backend
+  // identity, not on whether a bearer was minted, so the ephemeral/meta-query path
+  // (`sessionId: null`) sails past the bearer gate and is refused at the second one.
+  // Those turns are the ones an operator meets while trying to diagnose the first.
+  it('explains a stale refusal that lands on the trusted-CLI gate instead', async () => {
+    const frames: Array<{ kind?: unknown; trustedCliExecution?: unknown }> = [];
+    const error = await refusedStart(
+      'stale-opencode-trusted-cli-runtime',
+      'invalid trustedCliExecution',
+      'opencode-acp',
+      frames,
+      null,
+    );
+
+    // The premise: no bearer on the wire, so only the second gate could have produced
+    // this — and the flag really was sent, which is what the explanation describes.
+    expect(frames[0]).not.toHaveProperty('mcpGatewayToken');
+    expect(frames[0]).toHaveProperty('trustedCliExecution', true);
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect(error.message).toMatch(/trusted-CLI execution flag/u);
+    expect(error.message).toMatch(/Recreate the project container/u);
+  });
+
+  // The same words on a backend admitted for releases are a real defect, not age.
+  it('leaves a trusted-CLI refusal alone on a backend that was already admitted', async () => {
+    const error = await refusedStart(
+      'trusted-cli-claude-runtime',
+      'invalid trustedCliExecution',
+      'claude-acp',
+    );
+
+    expect(error.message).toMatch(/invalid trustedCliExecution/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // Nothing about an empty bearer is OpenCode-specific — the registry is shared, and
+  // every brokered-tool backend draws from it — so the defect arm is deliberately NOT
+  // narrowed the way the stale-container arms are. A Claude operator meeting this
+  // deserves the same sentence rather than four bare words.
+  it('names the same Server defect for an empty bearer on any brokered-tool backend', async () => {
+    const error = await refusedStart(
+      'empty-bearer-claude-runtime',
+      'invalid mcpGatewayToken',
+      'claude-acp',
+      [],
+      '',
+    );
+
+    expect(error.message).toMatch(/Server composition defect/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // The bearer refusal for a turn that carried no bearer describes nothing real: that
+  // gate is reached only for a bearer that WAS sent. The wrong move is folding it into
+  // the empty-bearer branch — `undefined` and `''` are not the same claim, and a Server
+  // composition defect that did not happen is a diagnosis the operator cannot disprove.
   it('adds nothing when the refusal arrives for a turn that carried no bearer', async () => {
     const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
     const error = await refusedStart(
