@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/Heey-Global/verity/compare/v0.16.1...v0.16.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **workspace:** add Google OAuth client ID setting ([#510](https://github.com/Heey-Global/verity/issues/510)) ([d9c4217](https://github.com/Heey-Global/verity/commit/d9c4217c8ca5ea445915477d49295a889b7ee043))
+
 ## [0.16.1](https://github.com/Heey-Global/verity/compare/v0.16.0...v0.16.1) (2026-09-19)
 
 
