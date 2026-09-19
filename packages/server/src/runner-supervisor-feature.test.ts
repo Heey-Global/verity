@@ -18,7 +18,7 @@ import { EventEmitter } from 'node:events';
 import { createConnection, createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   collectEscapedProcessTree,
   frameBodyHash,
@@ -2156,13 +2156,21 @@ describe('verity-runner supervisor runtime', () => {
       new RegExp(`verity-runner-supervisor\\.mjs"\\s*\\\\?\\s*${documented!}(?!\\S)`, 'u'),
     );
 
-    // The pattern is a BRE and reads as one in JS apart from the literal paren.
-    const check = new RegExp(pattern!.replaceAll('(', '\\('), 'u');
-    const supervisor = await readFile(
-      'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
-      'utf8',
-    );
-    expect(supervisor).toMatch(check);
+    // Run the operator's pattern through the operator's tool. Re-reading a BRE as a JS
+    // regex is not the same language — bracket expressions and line bounding both
+    // differ — and a test that passes on a pattern `grep` rejects would certify the one
+    // command this page cannot afford to have wrong.
+    const supervisorPath = 'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs';
+    const supervisor = await readFile(supervisorPath, 'utf8');
+    const count = async (path: string): Promise<string> => {
+      // grep exits 1 on no match, which execFile reports as a rejection.
+      const run = await execFileAsync('grep', ['-c', pattern!, path]).catch(
+        (error: { stdout?: string }) => ({ stdout: error.stdout ?? '' }),
+      );
+      return run.stdout.trim();
+    };
+    expect(await count(supervisorPath)).toBe('1');
+
     // And that it DISCRIMINATES, which is the property the operator's conclusion rests
     // on. Take OpenCode back out of the admission list — the pre-amendment supervisor,
     // which still names it everywhere else — and the command must answer `0`.
@@ -2172,7 +2180,13 @@ describe('verity-runner supervisor runtime', () => {
     );
     expect(stale).not.toBe(supervisor);
     expect(stale).toContain('opencode-acp');
-    expect(stale).not.toMatch(check);
+    const staleDir = await mkdtemp(join(tmpdir(), 'verity-stale-supervisor-'));
+    onTestFinished(async () => {
+      await rm(staleDir, { recursive: true, force: true });
+    });
+    const stalePath = join(staleDir, 'verity-runner-supervisor');
+    await writeFile(stalePath, stale);
+    expect(await count(stalePath)).toBe('0');
   });
 
   it('writes the opencode-acp wrapper root-owned and keeps it out of the dev chown', async () => {

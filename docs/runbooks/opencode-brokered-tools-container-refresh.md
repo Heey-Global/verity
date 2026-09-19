@@ -103,9 +103,16 @@ Then recreate the project container through Verity:
 POST /concierge/projects/<projectId>/recreate-container
 ```
 
+Authenticated like every other Server API call — `Authorization: Bearer <token>`
+— wherever the token gate is enabled. A `401` here is that gate, not this fault;
+a `503` means the deployment has no container recreation wired at all.
+
 That is the supported path, and the only one this runbook asks for. It replaces
 the container from the current toolkit and re-attaches the same project mounts
-(`recreateContainer`, `packages/server/src/provisioner.ts`).
+(`recreateContainer`, `packages/server/src/provisioner.ts`). The replacement
+attests normally: a container built from the toolkit this Server ships matches the
+Server's own bundle, which ADR 0006 D9 accepts directly, so nothing has to be
+published or regenerated for the recreated container to be admitted.
 
 ### Confirm it took
 
@@ -116,7 +123,7 @@ either — the status handshake carries `protocolVersion` and `runnerInstanceId`
 and no boundary-binary version — so read the binary that decides:
 
 ```
-docker exec <container> grep -c "ACP_WORKER_BACKENDS = new Set(\[[^\]]*'opencode-acp'" /usr/local/bin/verity-runner-supervisor
+docker exec <container> grep -c "ACP_WORKER_BACKENDS.*'opencode-acp'" /usr/local/bin/verity-runner-supervisor
 ```
 
 Read the ADMISSION list, not the file. A stale supervisor mentions `opencode-acp`
