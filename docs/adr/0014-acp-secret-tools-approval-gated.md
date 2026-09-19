@@ -593,15 +593,21 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   make every older supervisor look wire-incompatible and refuse ALL of its turns,
   Claude and Codex included, turning a failure confined to one backend into a
   total one. Failing per-backend, at the turn, is the smaller blast radius.
-- **This release is order-dependent, and the order is toolkit first.** The two
-  sides roll independently (ADR 0006 D9), and only one direction breaks: a
-  CURRENT supervisor paired with an older Server is fine, because both of its
-  gates fire on a field being PRESENT — an old Server sends neither field for
-  OpenCode, so a recreated container keeps serving it exactly as before. The
-  reverse is the failure above. So publish the toolkit and recreate the project
-  containers running OpenCode BEFORE the Server release that admits it; the
-  window between the two is then a window in which nothing is broken, rather than
-  one in which every OpenCode turn fails.
+- **This release is order-dependent, and the order is Server first, then the
+  containers.** As a pairing it looks like the opposite: both supervisor gates
+  fire on a field being PRESENT, so a CURRENT supervisor under an older Server is
+  fine — that Server sends neither field for OpenCode — while the reverse is the
+  failure above. Refreshing the containers first is still wrong, because the
+  toolkit is not independently installable ahead of the Server that ships it. A
+  Server pins the toolkit Feature to its own bundled version, and it attests each
+  Sandbox against the ledger in its own bundle (`published-hashes.json`), which
+  cannot list a release published after it. Forcing the newer toolkit in
+  therefore fails attestation, and a failed attestation disables the Runner
+  supervisor for the whole container (`provisioner.ts`) — trading a failure
+  confined to OpenCode for one that takes Claude and Codex down with it. So:
+  deploy the Server, then recreate the project containers running OpenCode. The
+  window between the two is the one in which those turns fail, and shortening it
+  is the mitigation; Claude and Codex are the workaround inside it.
 
   There is deliberately no rollout flag — no switch that withholds the bearer
   while the Server otherwise ships this. A flag would be a second answer to "may

@@ -15,31 +15,43 @@ query path) are **not** exempt. They mint no bearer, so they clear the bearer
 gate, but the same stale backend list gates `trustedCliExecution`, which the
 Server sends for every ACP turn regardless, and they are refused there instead.
 
-## Avoid it: deploy the toolkit first
+## Plan it: deploy the Server, then recreate, in that order
 
-This page exists for containers that were missed. The failure is preventable at
-deploy time, and the prevention is an ordering, not a flag.
+This page exists for containers that were missed — but on this release *every*
+project running OpenCode needs the refresh, so plan it with the deploy instead of
+discovering it per project.
 
-Only one pairing breaks. Both supervisor gates fire on a field being PRESENT, so
-a **current** supervisor under an **older** Server is fine: that Server sends
-neither `mcpGatewayToken` nor `trustedCliExecution` for OpenCode, and the
-recreated container serves its turns exactly as before. It is the other order —
-a current Server against a stale supervisor — that fails every OpenCode turn.
+The tempting order is the wrong one. Recreating the containers FIRST, on the
+toolkit release that admits OpenCode, would indeed leave a supervisor an old
+Server is happy with: both supervisor gates fire on a field being PRESENT, and an
+old Server sends neither `mcpGatewayToken` nor `trustedCliExecution` for OpenCode.
+It breaks on the other side. The still-running Server attests each Sandbox against
+the ledger in its OWN bundle (`published-hashes.json`, ADR 0006 D9), and a toolkit
+published after that Server's release is not in it — nor does the old Server even
+install it by default, since it pins the toolkit Feature to its own bundled
+version. Force the newer toolkit in and the attestation fails, which disables the
+Runner supervisor for the WHOLE container:
 
-So, when rolling out the release carrying ADR 0014 Amendment 4:
+```
+Runner supervisor is disabled for this Sandbox because the ADR 0006 boundary
+attestation failed: …
+```
 
-1. Publish the `verity-sandbox-toolkit` release first.
+That trades a failure confined to OpenCode for one that takes Claude and Codex
+sessions in the same project down with it. So:
+
+1. Deploy the Server that admits OpenCode. It ships the matching toolkit.
 2. Recreate the project containers of every project running OpenCode sessions,
    by the procedure in "Recover" below.
-3. Deploy the Server that admits OpenCode.
 
-Between steps 1 and 3 nothing is broken; in the reverse order, everything
-OpenCode is. There is no flag to withhold the bearer in the meantime — by
-decision, recorded in ADR 0014 Amendment 4 under Consequences — so the ordering
-is the whole mitigation. It travels with the release rather than only with this
-page: the change ships as a breaking one, whose `BREAKING CHANGE:` footer Release
-Please renders into `CHANGELOG.md` (see "Changes that require operator action" in
-`docs/releases.md`).
+Between the two steps, OpenCode turns in not-yet-recreated projects fail at
+start-turn with the messages under "Recognize it"; Claude and Codex are
+unaffected, and are the workaround for the duration. There is no flag to withhold
+the bearer in the meantime — by decision, recorded in ADR 0014 Amendment 4 under
+Consequences — so keeping that window short is the whole mitigation. It travels
+with the release rather than only with this page: the change ships as a breaking
+one, whose `BREAKING CHANGE:` footer Release Please renders into `CHANGELOG.md`
+(see "Changes that require operator action" in `docs/releases.md`).
 
 ## Recognize it
 
