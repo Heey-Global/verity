@@ -12,7 +12,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:net';
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   deriveKeyFromPassword,
@@ -1753,6 +1753,38 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
         composed.runner?.(acpBackend, { sessionId: 's-acp', projectId, worktree: '/wt' }),
       ).resolves.toBeInstanceOf(SupervisorRunnerClient);
     }
+  });
+
+  // The gate above is a membership list written by hand next to the one in
+  // `SupervisorRunnerClient.acpBackend`, and the two answer the same question from
+  // opposite ends: which backends are handed a per-turn gateway bearer. Every other
+  // pairing in this decision fails loudly when it drifts — an unadmitted backend is
+  // refused — but this one fails QUIETLY in the direction that matters: a backend
+  // admitted in `acpBackend` and forgotten here gets a client composed without the
+  // registry, mints nothing, and starts its agent tool-less with no composition error
+  // to read. The loop above pins today's three; this pins that the two lists are the
+  // same list, so a fourth admitted in one is not silently absent from the other.
+  it('names the same brokered-tool backends the bearer-minting client does', async () => {
+    const members = async (url: URL, gate: RegExp): Promise<string[]> => {
+      const source = await readFile(url, 'utf8');
+      const region = gate.exec(source)?.[0];
+      expect(region).toBeDefined();
+      return [...(region ?? '').matchAll(/'([a-z0-9-]+-acp)'/gu)].map((match) => match[1]!).sort();
+    };
+
+    const here = await members(
+      new URL('./embedded.ts', import.meta.url),
+      /gatewayToolContext !== undefined &&[\s\S]*?\) \{/u,
+    );
+    const client = await members(
+      new URL('../../session/src/runner-supervisor-client.ts', import.meta.url),
+      /this\.acpBackend =[\s\S]*?;/u,
+    );
+
+    expect(here).toEqual(client);
+    // Not a vacuous pass: an empty match on either side would equal an empty match on
+    // the other, and the regexes are the fragile part of this guard.
+    expect(here.length).toBeGreaterThanOrEqual(3);
   });
 
   it('falls back to loopback for backends the native supervisor worker cannot run', async () => {

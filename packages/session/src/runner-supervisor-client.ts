@@ -1273,6 +1273,9 @@ export class SupervisorRunnerClient implements RunnerClient {
     // than the intent: the frame is built above and either carries a string or omits
     // the field entirely.
     const bearer = request.mcpGatewayToken;
+    // Spelled out in bytes rather than through `describeBytes`, which renders MiB for
+    // the multi-MiB frame cap and would report every possible bearer here as `0.0 MiB`
+    // — against a 512-byte bound the exact count is the whole diagnosis.
     if (refusedBearer && typeof bearer === 'string' && !admissibleGatewayBearer(bearer)) {
       return new Error(
         `${cause.message} — the Server sent a malformed MCP gateway bearer for this turn (${bearer === '' ? 'empty' : `${Buffer.byteLength(bearer)} bytes, over the ${MCP_GATEWAY_BEARER_MAX_BYTES}-byte limit`}), which no supervisor accepts. This is a Server composition defect (the per-turn bearer registry, \`mcpGatewayTokens\`), not an outdated Sandbox; recreating the project container will not change it.`,

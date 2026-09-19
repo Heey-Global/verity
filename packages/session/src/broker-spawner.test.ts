@@ -321,6 +321,24 @@ describe('agent spawn broker', () => {
     }
   });
 
+  // Passing the re-check is not the same as being OFFERED the tools, and the gap
+  // between them is the silent failure: a turn whose bearer is admitted and then
+  // dropped before the profile starts its agent with an empty `mcpServers` list — no
+  // `verity_http_request`, no `verity_secret_run`, and nothing saying so, which is
+  // indistinguishable from never having been admitted at all. The arm that carries the
+  // bearer into the profile must therefore stay keyed on the bearer and the container's
+  // endpoint ALONE. A backend named in it would be a sixth membership list, in the one
+  // place where forgetting a member is silent rather than refused.
+  it('hands the admitted bearer to the profile without naming a backend again', async () => {
+    const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
+    const arm =
+      /\.\.\.\(request\.mcpGatewayToken !== undefined && mcpGatewayUrl !== undefined\s*\?\s*\{ mcpGateway: \{ url: mcpGatewayUrl, token: request\.mcpGatewayToken \} \}\s*:\s*\{\}\),/u.exec(
+        text,
+      );
+    expect(arm?.[0]).toBeDefined();
+    expect(arm?.[0]).not.toMatch(/backend/u);
+  });
+
   it('refuses a gateway bearer the container has no endpoint to redeem', async () => {
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
     expect(text).toMatch(

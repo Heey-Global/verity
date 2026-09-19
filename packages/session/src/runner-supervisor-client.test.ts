@@ -572,6 +572,27 @@ describe('SupervisorRunnerClient', () => {
     expect(supervisor).toContain(
       "if (typeof value !== 'string' || Buffer.byteLength(value) > maxBytes)",
     );
+    // The other half of the same mirror, and the half whose absence would be worse:
+    // `admissibleGatewayBearer` treats an empty bearer as a Server defect on the
+    // strength of the supervisor refusing it separately from the backend check. If
+    // that condition ever left this `if`, an empty bearer would mean only "unadmitted
+    // backend" — and a genuinely stale container sent one would be told that
+    // recreating it will not help, which is the misdiagnosis this whole function
+    // exists to prevent, delivered with more confidence than the bare words it
+    // replaced.
+    expect(supervisor).toMatch(
+      /mcpGatewayToken !== undefined &&\s*\(mcpGatewayToken === '' \|\| !ACP_WORKER_BACKENDS\.has\(request\.backend\)\)/u,
+    );
+    // Both gates above open on the field being PRESENT, and that — not the backend
+    // list — is what makes a CURRENT supervisor safe under an OLDER Server, which
+    // sends neither field for OpenCode. The deploy ordering in ADR 0014 Amendment 4
+    // and its runbook ("publish the toolkit first, then the Server") rests entirely
+    // on that asymmetry: a supervisor that started refusing an ABSENT field would
+    // invert it, breaking the containers refreshed early to avoid the outage, and
+    // every test here would still pass because every one of them sends the field.
+    expect(supervisor).toMatch(
+      /if \(request\.trustedCliExecution === true &&\s*!ACP_WORKER_BACKENDS\.has\(request\.backend\)\)/u,
+    );
   });
 
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
