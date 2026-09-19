@@ -8,6 +8,11 @@ import { parseServerCompat } from './self-update/compat.js';
 import { planDirectRecovery } from './self-update/direct-recovery.js';
 import { admitBridgeRecovery } from './self-update/bridge-recovery-admission.js';
 import { readManagedDeployment } from './self-update/managed-deployment.js';
+import {
+  MANAGED_DEPLOYMENT_LABEL,
+  MANAGED_ROLE_LABEL,
+  MANAGED_SERVER_NAME,
+} from './self-update/managed-server-owner.js';
 import { createReleaseChannelVerifier } from './self-update/release-channel-verify.js';
 import {
   readUpdaterDeployment,
@@ -22,7 +27,7 @@ const containerDescription = z.object({
   Id: z.string(),
   Image: z.string(),
   State: z.object({ Running: z.literal(true) }),
-  Config: z.object({ Image: z.string() }),
+  Config: z.object({ Image: z.string(), Labels: z.record(z.string(), z.string()) }),
 });
 const probe =
   "import { SERVER_COMPAT } from '/app/packages/server/dist/self-update/compat.js'; process.stdout.write(JSON.stringify(SERVER_COMPAT));";
@@ -137,15 +142,39 @@ export async function runDirectRecoveryCommand(args: readonly string[]): Promise
   const local = await readManagedDeployment(root);
   if (!isDeepStrictEqual(local, state))
     throw new Error('Local managed volume does not match the running Updater');
+  const serverIds = (
+    await docker([
+      'ps',
+      '--filter',
+      `label=${MANAGED_DEPLOYMENT_LABEL}=${state.marker.deploymentId}`,
+      '--filter',
+      `label=${MANAGED_ROLE_LABEL}=server`,
+      '--format',
+      '{{.ID}}',
+    ])
+  )
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+  if (serverIds.length !== 1 || !/^[a-f0-9]{12,64}$/u.test(serverIds[0]!))
+    throw new Error('Direct recovery requires exactly one running managed Server');
   const running = z
     .array(containerDescription)
     .length(1)
-    .parse(JSON.parse(await docker(['inspect', '--type=container', 'verity-managed-server'])))[0]!;
+    .parse(JSON.parse(await docker(['inspect', '--type=container', serverIds[0]!])))[0]!;
+  const name = await docker(['inspect', '--format', '{{.Name}}', running.Id]);
+  if (!new RegExp(`^/${MANAGED_SERVER_NAME}(?:-g[1-9][0-9]{0,9})?\\n?$`, 'u').test(name))
+    throw new Error('Running managed Server has an invalid identity');
   const currentImage = z
     .array(imageDescription)
     .length(1)
     .parse(JSON.parse(await docker(['inspect', '--type=image', state.spec.image])))[0]!;
-  if (running.Config.Image !== state.spec.image || running.Image !== currentImage.Id)
+  if (
+    running.Config.Image !== state.spec.image ||
+    running.Image !== currentImage.Id ||
+    running.Config.Labels[MANAGED_DEPLOYMENT_LABEL] !== state.marker.deploymentId ||
+    running.Config.Labels[MANAGED_ROLE_LABEL] !== 'server'
+  )
     throw new Error('Running Server does not match the sealed deployment image');
   const current = parseServerCompat(
     JSON.parse(await docker(['exec', running.Id, 'node', '--input-type=module', '--eval', probe])),

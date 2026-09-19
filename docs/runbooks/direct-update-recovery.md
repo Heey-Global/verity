@@ -53,9 +53,10 @@ deploy/bin/verity-recover-update --target release-envelope.json \
 
 Require `updaterReady: true`. The check confirms this deployment's running Updater
 is exactly the signed target image with the safety capability. A false result
-requires fixing the Updater first; `--apply` refuses it. Recovery currently supports
-the initial `verity-managed-server` bootstrap identity; a post-cutover generation
-container is refused rather than guessed.
+requires fixing the Updater first; `--apply` refuses it. The running Server is
+selected only when exactly one container carries this deployment's managed Server
+labels. Both the bootstrap name and a post-cutover generation name such as
+`verity-managed-server-g14` are accepted; ambiguous or malformed identities are refused.
 
 Review the printed deployment ID and digests, then apply the identical plan:
 
