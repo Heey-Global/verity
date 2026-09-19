@@ -700,7 +700,7 @@ describe('AcpOpenCodeBackend', () => {
       cwd: '/work/project',
       prompt: 'Use Verity tools',
       spawner: fake.spawner,
-      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'unused-turn-bearer' },
+      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'opencode-turn-bearer' },
     });
     // The transport CAN carry the gateway — that is what `mcpCapabilities.http`
     // says — and since ADR 0014 Amendment 4 production mints a bearer for OpenCode
@@ -718,7 +718,7 @@ describe('AcpOpenCodeBackend', () => {
             type: 'http',
             name: 'verity',
             url: 'http://relay:8080/internal/mcp',
-            headers: [{ name: 'Authorization', value: 'Bearer unused-turn-bearer' }],
+            headers: [{ name: 'Authorization', value: 'Bearer opencode-turn-bearer' }],
           },
         ],
       },

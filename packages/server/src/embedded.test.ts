@@ -1731,6 +1731,22 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       ).rejects.toThrow('composed without mcpGatewayTokens');
     }
 
+    // This refusal is NEW for OpenCode — a Server missing the registry used to start
+    // its turns tool-less — and it reads enough like the stale-container refusal to be
+    // taken for one. The refresh runbook therefore lists it among the messages that
+    // recreating a container does not fix, and that listing is only useful while it
+    // quotes what is actually thrown.
+    const runbook = await readFile(
+      new URL(
+        '../../../docs/runbooks/opencode-brokered-tools-container-refresh.md',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(runbook.replace(/\n/gu, ' ')).toContain(
+      'the Server was composed without mcpGatewayTokens; a brokered-tool ACP turn cannot start without the per-turn gateway bearer registry',
+    );
+
     // A turn with no session to attribute to has no gateway context to begin with, so
     // the missing registry is not its problem — that is the ephemeral/meta-query case,
     // and it must keep starting. Per backend again, and for the same reason the

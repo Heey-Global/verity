@@ -624,6 +624,16 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   to keep working. A boundary version the operator can read is the part that is
   genuinely missing today; recovery therefore ends with a check against the
   installed supervisor itself, which is the artifact the question is about.
+- **A Server composed without `mcpGatewayTokens` now refuses OpenCode turns that
+  it previously ran tool-less.** The registry is mandatory for every named
+  brokered-tool backend, and OpenCode joins that requirement here rather than
+  being exempted from it: a Server that would start an admitted turn with no
+  tools and no error is the failure that check closes. The production
+  composition always supplies the registry, so this reaches only a partial
+  assembly — but its message (`composed without mcpGatewayTokens`) resembles the
+  stale-container one closely enough to be misread as container age, so the
+  runbook names it under "Recognize it" as a third message that recreating
+  nothing will fix.
 - Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
   Amendment 4's, for a different reason — the fixed control-plane Runner carries
   no OpenCode configuration or egress material — and this amendment does not

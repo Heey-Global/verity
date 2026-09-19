@@ -336,7 +336,7 @@ describe('agent spawn broker', () => {
     // had changed. The `[^)]*` body is what makes the last assertion real — it would
     // happily match an arm that had grown a backend test.
     const arm =
-      /\.\.\.\(request\.mcpGatewayToken !== undefined[^)]*\?\s*\{ mcpGateway: \{[^}]*\}/u.exec(
+      /\.\.\.\(request\.mcpGatewayToken !== undefined[^)]*\?\s*\{\s*mcpGateway:\s*\{[^}]*\}/u.exec(
         text,
       );
     expect(arm?.[0]).toBeDefined();

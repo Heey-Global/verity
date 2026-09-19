@@ -76,6 +76,19 @@ Neither of those is this runbook's: do not recreate a container for a
 `Server composition defect` message, since nothing about reprovisioning changes
 it. Match on that phrase, not on the words before it.
 
+A third message is not this runbook's either, and it is new with the same
+release, so it is worth recognizing by sight:
+
+```
+the Server was composed without mcpGatewayTokens; a brokered-tool ACP turn
+cannot start without the per-turn gateway bearer registry
+```
+
+That is a Server assembled without the bearer registry at all. Before this
+release such a deployment started OpenCode turns tool-less and silent; it now
+refuses them, which is the same fail-closed direction and equally unrelated to
+container age. The fix is in the Server's composition — no container is wrong.
+
 ## Recover
 
 **The project worktree survives this.** `/work` is not container storage — it is
