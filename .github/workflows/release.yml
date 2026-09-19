@@ -25,6 +25,11 @@ on:
         required: false
         default: false
         type: boolean
+      backend-artifact-only:
+        description: Publish a reviewed maintenance bridge without promoting channels
+        required: false
+        default: false
+        type: boolean
       backend-schema-forward-max:
         description: Reviewed migration key promised readable by a maintenance bridge
         required: false
@@ -77,6 +82,29 @@ jobs:
       website-version: ${{ steps.website-recovery.outputs.version || format('{0}.{1}.{2}', steps.release-website.outputs['docs/website--major'], steps.release-website.outputs['docs/website--minor'], steps.release-website.outputs['docs/website--patch']) }}
       website-sha: ${{ steps.website-recovery.outputs.sha || steps.release-website.outputs['docs/website--sha'] }}
     steps:
+      - name: Validate artifact-only maintenance request
+        env:
+          ARTIFACT_ONLY: ${{ inputs.backend-artifact-only }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRAIN: ${{ inputs.train }}
+          VERSION: ${{ inputs.backend-version }}
+          SOURCE_REF: ${{ inputs.backend-ref }}
+          SCHEMA_FORWARD_MAX: ${{ inputs.backend-schema-forward-max }}
+          REPUBLISH: ${{ inputs.backend-republish }}
+          ACCEPT_NO_ROLLBACK: ${{ inputs.backend-accept-no-rollback }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$ARTIFACT_ONLY" == true ]]; then
+            if [[ "$EVENT_NAME" != workflow_dispatch || "$TRAIN" != backend ||
+                  ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || -z "$SOURCE_REF" ||
+                  ! "$SCHEMA_FORWARD_MAX" =~ ^[0-9]{4}_[a-z0-9_]+$ ||
+                  "$REPUBLISH" == true || "$ACCEPT_NO_ROLLBACK" == true ]]; then
+              echo '::error::Artifact-only publication requires a manual backend maintenance draft, version/ref, and reviewed schema-forward-max; republish and no-rollback overrides are forbidden.' >&2
+              exit 1
+            fi
+          fi
+
       - name: Repair workspace ownership
         working-directory: /
         run: |
@@ -881,6 +909,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Artifact-only bridges have no release-please PR; publish their pinned
+          # draft without reconciling labels or marking them as the latest release.
           # release-please normally replaces this label while creating the
           # release. Recovery publishes an already-created draft without running
           # that action. Move the label first, then roll it back if publication
@@ -1317,8 +1347,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The Feature publisher also updates mutable semver aliases. A bridge uses
+      # the locally bundled Feature and must not roll those aliases backward.
       # renovate: datasource=github-actions depName=devcontainers/action
       - name: Publish verity-sandbox-toolkit
+        if: ${{ !inputs['backend-artifact-only'] }}
         uses: devcontainers/action@1082abd5d2bf3a11abccba70eef98df068277772 # v1.4.3
         with:
           publish-features: 'true'
@@ -1328,6 +1361,7 @@ jobs:
           disable-repo-tagging: 'true'
 
       - name: Publish toolkit channel tags
+        if: ${{ !inputs['backend-artifact-only'] }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1626,8 +1660,10 @@ jobs:
           {
             echo "tags<<EOF"
             echo "${REGISTRY}/${IMAGE_NAME}:${IMAGE_VERSION}"
-            echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
-            echo "${REGISTRY}/${IMAGE_NAME}:latest"
+            if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
+              echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
+              echo "${REGISTRY}/${IMAGE_NAME}:latest"
+            fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -1667,8 +1703,10 @@ jobs:
           IMAGE="$image" VERSION="$VERSION" SOURCE_SHA='${{ needs.release-please.outputs.backend-sha }}' \
             node .release-tools/scripts/publish-release-index.mjs \
               "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
-          docker buildx imagetools create \
-            -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+          if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
+            docker buildx imagetools create \
+              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+          fi
           digest="$(docker buildx imagetools inspect "${image}:v${VERSION}" --format '{{ .Manifest.Digest }}')"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
@@ -1824,6 +1862,7 @@ jobs:
           printf '{"payload":"%s","signature":{"kind":"sigstore-bundle","bundle":"%s"}}' \
             "$(base64 -w0 "$workdir/payload.json")" \
             "$(base64 -w0 "$workdir/bundle.json")" > "$workdir/channel.json"
+          cp "$workdir/channel.json" "$workdir/verity-server-v${VERSION}.${ARCHITECTURE}.release-envelope.json"
 
       # renovate: datasource=github-actions depName=actions/upload-artifact
       - name: Upload architecture release evidence
@@ -1843,7 +1882,7 @@ jobs:
         publish-preview-images,
       ]
     if: >-
-      always() && needs.release-please.outputs.backend-release-created == 'true' &&
+      always() && !inputs['backend-artifact-only'] && needs.release-please.outputs.backend-release-created == 'true' &&
       needs.prepare-server-channels.result == 'success' &&
       needs.publish-preview-images.result == 'success' &&
       (needs.publish-server-release-evidence.result == 'success' ||
@@ -1908,12 +1947,14 @@ jobs:
             payload="evidence/verity-server-v${VERSION}.${architecture}.release-channel.json"
             bundle="evidence/verity-server-v${VERSION}.${architecture}.release-channel.sigstore.json"
             provenance="evidence/verity-server-v${VERSION}.${architecture}.intoto.jsonl"
+            envelope="evidence/verity-server-v${VERSION}.${architecture}.release-envelope.json"
             test -s "$payload"
             test -s "$bundle"
             test -s "$provenance"
+            test -s "$envelope"
             jq -e --arg version "$VERSION" --arg architecture "$architecture" \
               '.version == $version and .architecture == $architecture' "$payload" >/dev/null
-            gh release upload "v${VERSION}" "$payload" "$bundle" "$provenance" --clobber
+            gh release upload "v${VERSION}" "$payload" "$bundle" "$provenance" "$envelope" --clobber
           done
 
   build-sandbox:
@@ -2070,8 +2111,10 @@ jobs:
             IMAGE="$image" VERSION="$VERSION" SOURCE_SHA="$SOURCE_REVISION" \
               node .release-tools/scripts/publish-release-index.mjs \
                 "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
-            docker buildx imagetools create \
-              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+            if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
+              docker buildx imagetools create \
+                -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+            fi
           done
 
   build-project-relay:
@@ -2250,8 +2293,10 @@ jobs:
           IMAGE="$image" VERSION="$VERSION" SOURCE_SHA='${{ needs.release-please.outputs.backend-sha }}' \
             node .release-tools/scripts/publish-release-index.mjs \
               "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
-          docker buildx imagetools create \
-            -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+          if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
+            docker buildx imagetools create \
+              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+          fi
 
       - name: Record digest-pinned relay reference
         id: relay-reference
@@ -2446,8 +2491,10 @@ jobs:
           IMAGE="$image" VERSION="$VERSION" SOURCE_SHA='${{ needs.release-please.outputs.backend-sha }}' \
             node .release-tools/scripts/publish-release-index.mjs \
               "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
-          docker buildx imagetools create \
-            -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+          if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
+            docker buildx imagetools create \
+              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+          fi
           digest="$(docker buildx imagetools inspect "${image}:v${VERSION}" --format '{{ .Manifest.Digest }}')"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
@@ -2485,11 +2532,12 @@ jobs:
       - publish-project-relay
       - publish-preview-images
     if: >-
-      needs.release-please.outputs.backend-release-created == 'true' &&
+      always() && needs.release-please.outputs.backend-release-created == 'true' &&
       !inputs['backend-republish'] &&
       needs.publish-server.result == 'success' &&
       needs.publish-server-release-evidence.result == 'success' &&
-      needs.publish-server-channels.result == 'success' &&
+      (needs.publish-server-channels.result == 'success' ||
+      (inputs['backend-artifact-only'] && needs.publish-server-channels.result == 'skipped')) &&
       needs.publish-sandbox.result == 'success' &&
       needs.publish-toolkit.result == 'success' &&
       needs.publish-project-relay.result == 'success' &&
@@ -2510,11 +2558,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+          # Artifact-only bridges have no release-please PR; publish their pinned
+          # draft without reconciling labels or marking them as the latest release.
           # release-please normally replaces this label while creating the
           # release. Recovery publishes an already-created draft without running
           # that action. Move the label first, then roll it back if publication
           # fails so either state remains retryable: pending+draft or tagged+public.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.backend-artifact-only }}" != true ]; then
             version="${TAG#v}"
             pr_numbers="$(gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
