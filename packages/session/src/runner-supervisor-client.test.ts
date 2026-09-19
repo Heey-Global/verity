@@ -1675,6 +1675,30 @@ describe('runSupervisorTrustedCli result validation', () => {
     },
   );
 
+  it('preserves the closed validation rule code while discarding the raw broker reason', async () => {
+    const runtime = join(dir, 'trusted-cli-validation-rule');
+    await serveByKind(join(runtime, 'supervisor.sock'), {
+      'run-trusted-cli': {
+        ok: false,
+        error: 'trusted CLI broker rejected execution: private-secret',
+        trustedCliFailure: {
+          phase: 'validation',
+          cause: 'validation failed',
+          code: 'validation_operand_not_regular_file',
+        },
+      },
+    });
+    const failure = await runSupervisorTrustedCli(runtime, {
+      turnId: 'turn-1',
+      secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'private-secret' }],
+      command: ['/usr/bin/true'],
+    }).catch((error: unknown) => error);
+    expect(trustedCliDispatchMessage(failure as TrustedCliDispatchError)).toContain(
+      'Error code: validation_operand_not_regular_file.',
+    );
+    expect(JSON.stringify(failure)).not.toContain('private-secret');
+  });
+
   it('does not claim pre-start when the supervisor response is lost', async () => {
     const runtime = join(dir, 'lost-trusted-cli-supervisor-response');
     const socket = join(runtime, 'supervisor.sock');

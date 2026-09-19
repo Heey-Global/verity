@@ -339,6 +339,10 @@ allows the broker snapshot, root-owned system paths, and only the exact secret f
 for that invocation, but
 denies the mutable worktree; transitive worktree code therefore cannot ride an old grant. A script
 that imports, sources, or otherwise reads worktree files uses `loading: "dynamic"` and is one-time.
+Directory arguments after that approved script may name directories inside its worktree, such as
+`--input-dir dist` for a prepared deployment bundle. This follows the same dynamic-read boundary:
+the broker resolves symlinks before checking the directory, and directories outside that worktree,
+unattested invocations, and isolated scripts retain the ordinary operand checks.
 Eval/inline code, stdin, module lookup, and preload flags are one-time as well. This is an
 execution-integrity decision, not Doppler secret classification: aliases remain opaque project
 secret names.
