@@ -694,16 +694,21 @@ export function referenceDocFileName(driveName: string, extension: string, fileI
  * refresh-token rotation is ever enabled for this client, the stored token would
  * go stale and the connection would need a reconnect — revisit this then.
  */
+type CachedGoogleAccessTokenProvider = (() => Promise<string | undefined>) & {
+  invalidate(): void;
+};
+
 export function createCachedGoogleAccessToken(
   resolveCreds: () => Promise<{ clientId: string; refreshToken: string } | undefined>,
   opts: { fetch?: GoogleFetch | undefined; now?: (() => number) | undefined; ttlMs?: number } = {},
-): () => Promise<string | undefined> {
+): CachedGoogleAccessTokenProvider {
   const ttlMs = opts.ttlMs ?? 50 * 60_000;
   const now = opts.now ?? ((): number => Date.now());
   let cache:
     { token: string; expiresAt: number; clientId: string; refreshToken: string } | undefined;
   const inflight = new Map<string, Promise<string | undefined>>();
-  return async (): Promise<string | undefined> => {
+  let generation = 0;
+  const provider = async (): Promise<string | undefined> => {
     const creds = await resolveCreds().catch(() => undefined);
     if (creds === undefined) {
       cache = undefined;
@@ -712,6 +717,7 @@ export function createCachedGoogleAccessToken(
     const key = `${creds.clientId}\0${creds.refreshToken}`;
     const existing = inflight.get(key);
     if (existing !== undefined) return existing;
+    const operationGeneration = generation;
     const operation = (async (): Promise<string | undefined> => {
       try {
         if (
@@ -727,12 +733,14 @@ export function createCachedGoogleAccessToken(
           { fetch: opts.fetch },
         );
         const providerTtlMs = Math.max(0, tokens.expiresInSeconds * 1000 - 30_000);
-        cache = {
-          token: tokens.accessToken,
-          expiresAt: now() + Math.min(ttlMs, providerTtlMs),
-          clientId: creds.clientId,
-          refreshToken: creds.refreshToken,
-        };
+        if (operationGeneration === generation) {
+          cache = {
+            token: tokens.accessToken,
+            expiresAt: now() + Math.min(ttlMs, providerTtlMs),
+            clientId: creds.clientId,
+            refreshToken: creds.refreshToken,
+          };
+        }
         return tokens.accessToken;
       } catch {
         return undefined;
@@ -744,4 +752,10 @@ export function createCachedGoogleAccessToken(
     });
     return operation;
   };
+  provider.invalidate = (): void => {
+    generation += 1;
+    cache = undefined;
+    inflight.clear();
+  };
+  return provider;
 }
