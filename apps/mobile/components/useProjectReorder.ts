@@ -28,9 +28,9 @@ import {
 import { PROJECT_SESSIONS_COLLAPSE_DURATION_MS } from './ProjectSessionsCollapse';
 
 /** Hold before a press turns into a drag; a shorter hold reads as a scroll that stuck. */
-export const PROJECT_DRAG_ACTIVATION_MS = 260;
+const PROJECT_DRAG_ACTIVATION_MS = 260;
 /** The released row glides into its slot for this long before the order commits. */
-export const PROJECT_DROP_DURATION_MS = 180;
+const PROJECT_DROP_DURATION_MS = 180;
 /** A drop whose animation never reports back is committed after this instead. */
 export const PROJECT_DROP_WATCHDOG_MS = PROJECT_DROP_DURATION_MS + 200;
 /** Movement before the hold elapses is a scroll, so the drag steps aside for it. */
