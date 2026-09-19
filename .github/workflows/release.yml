@@ -1210,6 +1210,7 @@ jobs:
     uses: ./.github/workflows/self-update.yml
     with:
       candidate-sha: ${{ needs.release-please.outputs.backend-sha }}
+      schema-forward-max: ${{ inputs['backend-schema-forward-max'] || '' }}
       allow-no-rollback: ${{ github.event_name == 'workflow_dispatch' && inputs['backend-accept-no-rollback'] && inputs['backend-republish'] }}
 
   publish-toolkit:

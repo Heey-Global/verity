@@ -211,6 +211,12 @@ for attempt in $(seq 1 60); do
   sleep 0.25
 done
 
+# Preparation below is called directly, bypassing the discovery check that can
+# otherwise reject a published release on every installation. This is mandatory
+# even for the release profile and the emergency rollback-scenario override.
+echo '--- stage: verify the released predecessor can update to the candidate'
+node packages/server/dist/self-update-release-compat.js "$previous_image" "$image"
+
 # Seven digests from one build. The generations must differ by digest — that is
 # what the journal fences on — but not by behaviour, or a failure would not say
 # whether the update path or the new build broke. A label is the smallest
