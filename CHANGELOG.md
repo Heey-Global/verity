@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.16.0](https://github.com/Heey-Global/verity/compare/v0.15.1...v0.16.0) (2026-09-19)
+
+
+### Features
+
+* **workspace:** edit Google Docs and Sheets ([#503](https://github.com/Heey-Global/verity/issues/503)) ([d72ae01](https://github.com/Heey-Global/verity/commit/d72ae0163f5af3a64e448b766bb185ff2a5fd492))
+
+
+### Bug Fixes
+
+* **mobile:** retire answered permission prompts ([#502](https://github.com/Heey-Global/verity/issues/502)) ([2608a21](https://github.com/Heey-Global/verity/commit/2608a213d537cbc2362ede645d03e654c94b104a))
+* **secrets:** load legacy trusted CLI policies ([#504](https://github.com/Heey-Global/verity/issues/504)) ([a728ae8](https://github.com/Heey-Global/verity/commit/a728ae80707af002a1ecc9013412d3b0bffc3f8e))
+* **server:** answer project fold writes from the written row ([#497](https://github.com/Heey-Global/verity/issues/497)) ([d5620ac](https://github.com/Heey-Global/verity/commit/d5620ac6fe6e34a27dc0c16fa4020159ed9fedec))
+
 ## [0.15.1](https://github.com/Heey-Global/verity/compare/v0.15.0...v0.15.1) (2026-09-19)
 
 
