@@ -16,6 +16,7 @@ jest.mock('react-native-reanimated', () => {
   return {
     ...jest.requireActual('react-native-reanimated/mock'),
     useReducedMotion: jest.fn(() => false),
+    useAnimatedScrollHandler: (handlers: { onScroll: unknown }) => handlers.onScroll,
     // The shipped mock creates a fresh shared value on every render, which
     // would hide the drag state from the very re-render that pickup triggers.
     useSharedValue: <T,>(init: T) => useRef({ value: init }).current,
@@ -242,4 +243,40 @@ it('keeps the last row at the finger after expanded groups above collapse', () =
   );
   act(() => row.result.current.gesture.handlers.onUpdate?.({ translationY: 12 } as never));
   expect(hook.result.current.shift.value + hook.result.current.travel.value).toBe(212);
+});
+
+// Native content shrink changes the scroll offset without a pointer move.
+// Ignoring it leaves a bottom-row pickup below the visible viewport.
+it('compensates native scroll clamping while the expanded list folds', () => {
+  const { hook } = controller();
+  const scroll = (y: number) =>
+    act(() => hook.result.current.onScroll({ contentOffset: { y } } as never));
+  scroll(900);
+  act(() => {
+    for (const id of order) hook.result.current.reportCompactHeight(id, 60);
+    hook.result.current.reportExpandedHeight('a', 660);
+    hook.result.current.reportExpandedHeight('b', 360);
+    hook.result.current.begin('c');
+  });
+  const expandedTop = 1080;
+  const compactTop = 180;
+  const pickupScreenY = expandedTop - 900;
+  expect(compactTop + hook.result.current.shift.value - 900).toBe(pickupScreenY);
+  scroll(0);
+  expect(compactTop + hook.result.current.shift.value).toBe(pickupScreenY);
+  act(() => {
+    hook.result.current.travel.value = -45;
+  });
+  scroll(20);
+  expect(compactTop + hook.result.current.shift.value + hook.result.current.travel.value - 20).toBe(
+    pickupScreenY - 45,
+  );
+
+  // Once released, the slot animation owns compensation, not later scrolls.
+  act(() => {
+    hook.result.current.drag.value = { ...hook.result.current.drag.value!, dropping: true };
+  });
+  const dropShift = hook.result.current.shift.value;
+  scroll(0);
+  expect(hook.result.current.shift.value).toBe(dropShift);
 });

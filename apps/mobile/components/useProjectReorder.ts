@@ -6,6 +6,7 @@ import {
   runOnJS,
   useAnimatedReaction,
   useAnimatedStyle,
+  useAnimatedScrollHandler,
   useDerivedValue,
   useReducedMotion,
   useSharedValue,
@@ -45,6 +46,7 @@ export const PROJECT_DRAG_FORGET_MS = 300;
 
 export type ProjectReorderController = {
   drag: SharedValue<ProjectDrag | null>;
+  onScroll: ReturnType<typeof useAnimatedScrollHandler>;
   /** How far the grabbed row sits from its rendered slot: finger travel plus collapse compensation. */
   offset: SharedValue<number>;
   heights: SharedValue<RowHeights>;
@@ -63,7 +65,7 @@ export type ProjectReorderController = {
   cancelPickup: (id: string) => void;
   /** Finger travel since pickup — written by the row gesture on the UI thread. */
   travel: SharedValue<number>;
-  /** Height the groups above lose as they fold, added back so the row stays under the finger. */
+  /** Fold compensation plus native scroll changes, keeping the row under the finger. */
   shift: SharedValue<number>;
 };
 
@@ -89,6 +91,18 @@ export function useProjectReorder({
   const drag = useSharedValue<ProjectDrag | null>(null);
   const travel = useSharedValue(0);
   const shift = useSharedValue(0);
+  const scrollY = useSharedValue(0);
+  const onScroll = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      const next = event.contentOffset.y;
+      const active = drag.value;
+      // Folding can clamp a deep native scroll offset even with scrolling
+      // disabled. Content coordinates must follow that shift to preserve the
+      // grabbed header's screen position; pointer translation alone cannot.
+      if (active && !active.dropping) shift.value += next - scrollY.value;
+      scrollY.value = next;
+    },
+  });
   const offset = useDerivedValue(() => shift.value + travel.value);
   const heights = useSharedValue<RowHeights>({});
   const expandedHeights = useRef<Record<string, number>>({});
@@ -227,6 +241,7 @@ export function useProjectReorder({
   return useMemo(
     () => ({
       drag,
+      onScroll,
       offset,
       travel,
       shift,
@@ -247,6 +262,7 @@ export function useProjectReorder({
       draggingId,
       finish,
       heights,
+      onScroll,
       offset,
       reportCompactHeight,
       reportExpandedHeight,
