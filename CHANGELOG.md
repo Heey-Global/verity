@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.4](https://github.com/Heey-Global/verity/compare/v0.16.3...v0.16.4) (2026-09-19)
+
+
+### Bug Fixes
+
+* **update:** recover generation server deployments ([#517](https://github.com/Heey-Global/verity/issues/517)) ([d946bb7](https://github.com/Heey-Global/verity/commit/d946bb7c6e4647fe7fa5590283a2ca3a77e98dec))
+* **workspace:** invalidate access token after reconnect ([#521](https://github.com/Heey-Global/verity/issues/521)) ([aaa236d](https://github.com/Heey-Global/verity/commit/aaa236d62fe3c72f56c4243c37d27a6f2300b381))
+
 ## [0.16.3](https://github.com/Heey-Global/verity/compare/v0.16.2...v0.16.3) (2026-09-19)
 
 
