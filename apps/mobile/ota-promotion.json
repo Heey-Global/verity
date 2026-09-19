@@ -1,14 +1,16 @@
 {
   "schema": 1,
-  "version": "1.33.14",
+  "version": "1.33.15",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "465b7a1f583899817723a67f8891d9cf6e2eb73a",
-  "tag": "mobile-v1.33.14",
-  "branch": "staging-mobile-v1.33.14-465b7a1f583899817723a67f8891d9cf6e2eb73a",
-  "baseline": "mobile-v1.33.13",
-  "group": "657acaf0-3d82-4629-a380-e3d5dba8a489",
+  "commit": "d72ae0163f5af3a64e448b766bb185ff2a5fd492",
+  "tag": "mobile-v1.33.15",
+  "branch": "staging-mobile-v1.33.15-d72ae0163f5af3a64e448b766bb185ff2a5fd492",
+  "baseline": "mobile-v1.33.14",
+  "group": "bf2997f2-a993-412c-bb8f-fce219f89712",
   "notes": [
-    "preserve project drag position when folding clamps scroll (#500)"
+    "edit Google Docs and Sheets (#503)",
+    "align settings row icons (#506)",
+    "retire answered permission prompts (#502)"
   ]
 }
