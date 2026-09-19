@@ -12,13 +12,9 @@ export interface McpGatewayRouteDeps {
 export function registerMcpGatewayRoutes(app: FastifyInstance, deps: McpGatewayRouteDeps): void {
   app.post(
     '/internal/mcp',
-    // The server-wide limit is ~71 MiB so a turn can carry image attachments. A gateway
-    // call is a JSON-RPC envelope around tool arguments — an HTTP request the operator is
-    // expected to read on a card — so it needs a small fraction of that, and the tool's
-    // `body` is otherwise unbounded JSON that a parked card persists as a permission
-    // event. 256 KiB fits any request worth approving by hand and keeps a caller holding
-    // a valid bearer from making the Server buffer and store tens of MB per call.
-    { bodyLimit: 256 * 1024 },
+    // A 256 KiB Markdown document can expand sixfold under JSON escaping. Bound
+    // the transport envelope separately; the knowledge store enforces UTF-8 bytes.
+    { bodyLimit: 2 * 1024 * 1024 },
     async (request, reply): Promise<unknown> => {
       const socketIdentity = internalConnectionIdentity(request);
       if (socketIdentity === undefined) {
@@ -56,7 +52,7 @@ export function registerMcpGatewayRoutes(app: FastifyInstance, deps: McpGatewayR
     requestArrivedInternally(request) && internalConnectionIdentity(request) === undefined;
   app.post(
     '/internal/control-plane/mcp',
-    { bodyLimit: 256 * 1024 },
+    { bodyLimit: 2 * 1024 * 1024 },
     async (request, reply): Promise<unknown> => {
       if (!controlPlaneConnection(request)) {
         reply.code(401);

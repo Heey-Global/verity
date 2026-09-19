@@ -110,3 +110,9 @@ export {
   externalizeToolResultText,
   toolResultTextLength,
 } from './toolResultText.js';
+
+export {
+  knowledgeToolRequestSchema,
+  KNOWLEDGE_TOOL_DESCRIPTION,
+  KNOWLEDGE_CONTEXT_INSTRUCTIONS,
+} from './knowledge-tool.js';

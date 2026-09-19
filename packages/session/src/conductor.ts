@@ -1,3 +1,4 @@
+import { KNOWLEDGE_CONTEXT_INSTRUCTIONS } from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -323,6 +324,16 @@ class SessionTurnHandle implements RunnerTurn {
 }
 
 /** Raised when a turn is requested for a session id the store doesn't know. */
+export class KnowledgeSessionClosedError extends Error {
+  readonly statusCode = 409;
+  constructor(readonly sessionId: string) {
+    super(
+      'Knowledge access changed. This session is retained as history; start a new session to continue.',
+    );
+    this.name = 'KnowledgeSessionClosedError';
+  }
+}
+
 export class UnknownSessionError extends Error {
   constructor(readonly sessionId: string) {
     super(`unknown session '${sessionId}'`);
@@ -1291,7 +1302,7 @@ export class Conductor {
     if (resumeSessionId === undefined) {
       const sessionSystemPrompt = (await this.deps.sessionSystemPrompt?.(session))?.trim();
       if (sessionSystemPrompt) runOpts.appendSystemPrompt += `\n\n${sessionSystemPrompt}`;
-      runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
+      runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session, backend);
     }
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
@@ -1339,6 +1350,12 @@ export class Conductor {
       projectId: session.projectId,
       worktree: session.worktree,
     });
+    try {
+      await this.assertKnowledgeSessionOpen(sessionId);
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
     const turn = runner.startTurn(dispatchOpts, {
       onSession: (id: string) => {
         backendSessionId = id;
@@ -1386,12 +1403,19 @@ export class Conductor {
     }
   }
 
+  private async assertKnowledgeSessionOpen(sessionId: string): Promise<void> {
+    if (await this.deps.store.knowledge.isSessionInvalidated(sessionId)) {
+      throw new KnowledgeSessionClosedError(sessionId);
+    }
+  }
+
   private async runBackendTurnWithResumeRecovery(
     sessionId: string,
     prompt: string,
     session: SessionRecord,
     opts: TurnOptions,
   ): Promise<RunResult> {
+    await this.assertKnowledgeSessionOpen(sessionId);
     const backendKey = this.backendKey(opts.model ?? session.model);
     // Fold any server-authored pending notes (e.g. the post-merge worktree reset)
     // into THIS turn's model prompt as provenance-labelled data and consume them. They ride the model input
@@ -2969,6 +2993,7 @@ export class Conductor {
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
   ): Promise<{ queued: boolean }> {
+    await this.assertKnowledgeSessionOpen(sessionId);
     const displayPrompt = dispatchOpts.displayPrompt ?? prompt;
     if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
     // Busy → first try to STEER the running turn (#101 Stage B): if it exposes a
@@ -4097,6 +4122,10 @@ export class Conductor {
         ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
       });
       boundHandle.delegate = turn;
+      // A recovered process may outlive a permission change; attach only to stop it.
+      if (await this.deps.store.knowledge.isSessionInvalidated(marker.sessionId)) {
+        await boundHandle.cancel();
+      }
       // Continue tailing in the background; settle when the terminal frame arrives.
       void turn.result.then(
         (result) => this.settleReattachedTurn(marker, boundHandle, result),
@@ -4385,6 +4414,7 @@ export class Conductor {
    * concurrent start for the same worktree rejects with {@link SessionBusyError}.
    */
   async startSession(opts: StartOptions): Promise<{ sessionId: string }> {
+    if (opts.sessionId !== undefined) await this.assertKnowledgeSessionOpen(opts.sessionId);
     if (opts.prompt.trim().length === 0) throw new Error('turn prompt must be non-empty');
     // NB: on this path `SessionBusyError.sessionId` carries the WORKTREE (the
     // session id doesn't exist yet). Server maps it to a generic 409 without
@@ -4490,16 +4520,16 @@ export class Conductor {
         // the backend context starts; a truly fresh, project-less control-plane
         // spawn (e.g. the concierge) has none. Capture it here so the runner
         // context reflects the real project (or `null`).
+        const selected = opts.backend ?? this.modelBackend(runOpts.model);
+        const backend = opts.backendWrapper?.(selected) ?? selected;
         let contextProjectId: string | null = null;
         if (opts.sessionId !== undefined) {
           const session = await this.deps.store.getSession(opts.sessionId);
           if (session !== undefined) {
-            runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
+            runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session, backend);
             contextProjectId = session.projectId;
           }
         }
-        const selected = opts.backend ?? this.modelBackend(runOpts.model);
-        const backend = opts.backendWrapper?.(selected) ?? selected;
         // The fresh-spawn turn resolves its backend here rather than through
         // `backendForSession`, so it has to bind the grant channel here too — before
         // `startTurn` can raise a prompt (ADR 0014 D3). Without it a project-scoped
@@ -4520,6 +4550,12 @@ export class Conductor {
           projectId: contextProjectId,
           worktree: opts.worktree,
         });
+        try {
+          if (opts.sessionId !== undefined) await this.assertKnowledgeSessionOpen(opts.sessionId);
+        } catch (error) {
+          await cleanup();
+          throw error;
+        }
         const turn = runner.startTurn(dispatchOpts, {
           onPermissionRequest: (request) => {
             const id = boundId;
@@ -4632,6 +4668,7 @@ export class Conductor {
     try {
       const session = await this.deps.store.getSession(sessionId);
       if (!session) throw new UnknownSessionError(sessionId);
+      await this.assertKnowledgeSessionOpen(sessionId);
       // Pre-flight the worktree: a resume spawns `claude` with `cwd: worktree`, and
       // a missing dir fails with `spawn ENOENT`. Reject here (lock released below)
       // so a session whose worktree was cleaned up is plainly unresumable, never a
@@ -5134,12 +5171,17 @@ export class Conductor {
    * curated-but-stale context, not authoritative instructions (see ADR 0008
    * "Security").
    */
-  private async projectMemoryPrompt(session: SessionRecord): Promise<string> {
+  private async projectMemoryPrompt(session: SessionRecord, backend: Backend): Promise<string> {
     if (session.projectId === null) return '';
     const settings = await this.deps.store.getProjectSettingsRaw(session.projectId);
     const memory = settings?.memory?.trim();
-    if (memory === undefined || memory.length === 0) return '';
-    return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
+    const knowledge =
+      carriesBrokeredSecretTools(backend) &&
+      (await this.deps.store.knowledge.hasProjectKnowledge(session.projectId))
+        ? `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}`
+        : '';
+    if (memory === undefined || memory.length === 0) return knowledge;
+    return `${knowledge}\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
   }
 
   /** Whether this session's project was created without a GitHub repository, so

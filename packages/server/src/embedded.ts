@@ -1939,6 +1939,7 @@ export async function buildEmbeddedServer(
             'verity_publish_session_progress',
             'verity_google_slides',
             'verity_google_docs',
+            'verity_knowledge',
             'verity_google_sheets',
           ]
         : [
@@ -1946,6 +1947,7 @@ export async function buildEmbeddedServer(
             'verity_publish_session_progress',
             'verity_google_slides',
             'verity_google_docs',
+            'verity_knowledge',
             'verity_google_sheets',
           ],
     // Control-plane session tools are handled in `buildServer`, which owns session

@@ -792,3 +792,29 @@ describe('MCP gateway — the session handoff cannot bypass the card', () => {
     expect(invokeTool).not.toHaveBeenCalled();
   });
 });
+
+it('serves knowledge through standing grants with trusted caller identity and no permission card', async () => {
+  const h = harness({
+    servedTools: ['verity_knowledge'],
+    hasStandingAuthorization: async ({ toolName }) => toolName === 'verity_knowledge',
+  });
+  await h.gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call({ operation: 'read', documentId: 'doc' }, 'verity_knowledge'),
+  });
+  expect(h.invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({
+      projectId: 'p1',
+      sessionId: 'sess-1',
+      turnId: 'turn-1',
+      toolName: 'verity_knowledge',
+      request: { operation: 'read', documentId: 'doc' },
+    }),
+  );
+  expect(h.requestApproval).not.toHaveBeenCalled();
+  expect(h.records.map((record) => record.kind)).toEqual([
+    'gateway_call_received',
+    'gateway_call_served',
+  ]);
+});

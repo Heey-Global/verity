@@ -465,3 +465,11 @@ export {
   type PushOutboxOptions,
   type PushOutboxStorage,
 } from './push/outbox.js';
+
+export {
+  type KnowledgeFolder,
+  type KnowledgeDocument,
+  type KnowledgeRevision,
+  type KnowledgeGrant,
+  type KnowledgeExport,
+} from './api.js';

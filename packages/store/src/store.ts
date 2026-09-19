@@ -13,6 +13,7 @@ export {
   DEV_SERVER_HOST_PORT_RANGES,
   DevServerPortRangeExhaustedError,
 } from './dev-server-ports.js';
+import { KnowledgeStore } from './knowledge.js';
 import { scrubNulEscapes } from './nul-scrub.js';
 import { redactSecrets } from './redact.js';
 import { computeNextRun } from './schedule.js';
@@ -1177,7 +1178,11 @@ export class EventStore implements EventSink {
   constructor(
     private readonly db: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
-  ) {}
+  ) {
+    this.knowledge = new KnowledgeStore(db);
+  }
+
+  readonly knowledge: KnowledgeStore;
 
   /** Encrypt a normalized secret value for storage (null stays null). */
   private encryptSecret(value: string | null): string | null {

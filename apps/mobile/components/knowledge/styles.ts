@@ -1,0 +1,32 @@
+import { StyleSheet } from 'react-native-unistyles';
+export const styles = StyleSheet.create((theme) => ({
+  screen: { flex: 1, backgroundColor: theme.colors.background },
+  content: { padding: 16, gap: 16 },
+  group: { gap: 8 },
+  row: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  text: { color: theme.colors.text, fontSize: 16, lineHeight: 24 },
+  muted: { color: theme.colors.textMuted, fontSize: 13 },
+  heading: { color: theme.colors.text, fontSize: 20, fontWeight: '600' },
+  bold: { fontWeight: '700' },
+  code: { fontFamily: 'monospace', backgroundColor: theme.colors.surface },
+  cell: { flex: 1, minWidth: 70 },
+  button: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  input: {
+    color: theme.colors.text,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 8,
+    minHeight: 44,
+  },
+  editor: { minHeight: 240, textAlignVertical: 'top', fontFamily: 'monospace' },
+  error: { color: theme.colors.text, backgroundColor: theme.colors.surface, padding: 12 },
+}));

@@ -131,3 +131,5 @@ export type {
   UplinkPendingShareRemovalsTable,
   ScheduleConfig,
 } from './schema.js';
+
+export * from './knowledge.js';

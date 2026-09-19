@@ -74,6 +74,9 @@ export function createMcpGatewayToolExecutor(options: {
       if (options.googleSheets === undefined) throw new Error('Google Sheets is unavailable');
       return options.googleSheets({ projectId, sessionId, turnId, invocationId, request });
     }
+    if (toolName === 'verity_knowledge') {
+      throw new Error('knowledge tools are unavailable');
+    }
     if (
       toolName === 'verity_list_sessions' ||
       toolName === 'verity_session_handoff' ||

@@ -82,6 +82,8 @@ function harness(
     createSession?: ControlPlaneSessionToolDeps['createSession'];
     readProgress?: ControlPlaneSessionToolDeps['readProgress'];
     readRecentMessages?: ControlPlaneSessionToolDeps['readRecentMessages'];
+    authorizeKnowledgeCaller?: ControlPlaneSessionToolDeps['authorizeKnowledgeCaller'];
+    canAccessKnowledgeTarget?: ControlPlaneSessionToolDeps['canAccessKnowledgeTarget'];
   } = {},
 ) {
   const dispatchTurn = vi.fn(overrides.dispatchTurn ?? (async () => ({ queued: false })));
@@ -96,6 +98,8 @@ function harness(
   const limits: (number | undefined)[] = [];
   const tools = createControlPlaneSessionTools({
     controlProjectId: CONTROL_PROJECT_ID,
+    authorizeKnowledgeCaller: overrides.authorizeKnowledgeCaller,
+    canAccessKnowledgeTarget: overrides.canAccessKnowledgeTarget,
     getSession: async (sessionId) => {
       if (sessionId === 'control-session') return { projectId: CONTROL_PROJECT_ID };
       // A Control session from before sessions carried a project id.
@@ -615,4 +619,93 @@ describe('Control Plane session observation', () => {
       tools.recentMessages(call({ sessionId: 'sess-web', purpose: 'Too broad', count: 51 })),
     ).rejects.toThrow();
   });
+});
+
+describe('knowledge information-flow boundary', () => {
+  it('excludes protected targets from discovery and blocks direct observation and dispatch', async () => {
+    const readProgress = vi.fn(async () => ({ summary: 'private content' }));
+    const h = harness({
+      canAccessKnowledgeTarget: async ({ projectId, sessionId }) =>
+        projectId !== 'k8s' && sessionId !== 'sess-web',
+      readProgress,
+    });
+    const listed = await h.tools.listSessions(h.call({}));
+    expect(
+      listed.sessions.some(
+        (entry) => entry.sessionId === 'sess-k8s' || entry.sessionId === 'sess-web',
+      ),
+    ).toBe(false);
+    await expect(h.tools.progress(h.call({ sessionId: 'sess-web' }))).rejects.toThrow();
+    await expect(
+      h.tools.handoff(h.call({ target: { sessionId: 'sess-k8s' }, title: 't', briefing: 'b' })),
+    ).rejects.toThrow();
+    expect(readProgress).not.toHaveBeenCalled();
+    expect(h.dispatchTurn).not.toHaveBeenCalled();
+  });
+
+  it('refuses knowledge-bearing callers before discovering any target', async () => {
+    const h = harness({
+      authorizeKnowledgeCaller: async () => {
+        throw new ControlPlaneSessionAuthorityError('knowledge transfer blocked');
+      },
+    });
+    await expect(h.tools.listSessions(h.call({}))).rejects.toThrow('knowledge transfer blocked');
+    expect(h.keeps).toHaveLength(0);
+  });
+
+  it('blocks new-session handoffs before creating a protected target', async () => {
+    const createSession = vi.fn(async () => ({ sessionId: 'new-session' }));
+    const h = harness({ createSession, canAccessKnowledgeTarget: async () => false });
+    await expect(
+      h.tools.handoff(
+        h.call({ target: { newSession: { project: 'k8s' } }, title: 't', briefing: 'b' }),
+      ),
+    ).rejects.toThrow();
+    expect(createSession).not.toHaveBeenCalled();
+  });
+});
+
+it.each(['progress', 'recentMessages'] as const)(
+  'rejects %s snapshots when knowledge access changes during the read',
+  async (operation) => {
+    let allowed = true;
+    const h = harness({
+      canAccessKnowledgeTarget: async () => allowed,
+      readProgress: async () => {
+        allowed = false;
+        return { summary: 'protected content' };
+      },
+      readRecentMessages: async () => {
+        allowed = false;
+        return {
+          messages: [{ role: 'assistant', text: 'protected content', timestamp: 1 }],
+          hasMore: false,
+        };
+      },
+    });
+    await expect(
+      h.tools[operation](
+        h.call({
+          sessionId: 'sess-web',
+          ...(operation === 'recentMessages' ? { purpose: 'inspect' } : {}),
+        }),
+      ),
+    ).rejects.toThrow('unavailable for cross-project access');
+  },
+);
+
+it('rejects a materialized snapshot when the caller becomes knowledge-bearing', async () => {
+  let allowed = true;
+  const h = harness({
+    authorizeKnowledgeCaller: async () => {
+      if (!allowed) throw new ControlPlaneSessionAuthorityError('knowledge transfer blocked');
+    },
+    readProgress: async () => {
+      allowed = false;
+      return { summary: 'content' };
+    },
+  });
+  await expect(h.tools.progress(h.call({ sessionId: 'sess-web' }))).rejects.toThrow(
+    'knowledge transfer blocked',
+  );
 });

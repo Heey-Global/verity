@@ -2641,6 +2641,64 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('session_slide_decks').dropColumn('kind').execute();
     },
   },
+  '0099_managed_knowledge': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table knowledge_folders (
+          id text primary key, parent_id text references knowledge_folders(id) on delete cascade,
+          name text not null, created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now(),
+          check (length(name) between 1 and 200)
+        )`.execute(db);
+      await sql`create unique index knowledge_folder_siblings on knowledge_folders(coalesce(parent_id, ''), name)`.execute(
+        db,
+      );
+      await sql`create table knowledge_documents (
+          id text primary key, folder_id text not null references knowledge_folders(id) on delete cascade,
+          title text not null, current_revision_id text,
+          created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+          unique(folder_id, title)
+        )`.execute(db);
+      await sql`create table knowledge_document_revisions (
+          id text primary key, document_id text not null references knowledge_documents(id) on delete cascade,
+          title text not null, body_markdown text not null,
+          author_identity text not null, project_id text, session_id text, turn_id text,
+          created_at timestamptz not null default now(), unique(document_id, id)
+        )`.execute(db);
+      await sql`alter table knowledge_documents add constraint knowledge_current_revision
+          foreign key (id, current_revision_id) references knowledge_document_revisions(document_id, id)
+          deferrable initially deferred`.execute(db);
+      await sql`create table project_knowledge_grants (
+          project_id text not null references projects(id) on delete cascade,
+          folder_id text not null references knowledge_folders(id) on delete cascade,
+          mode text not null check(mode in ('read', 'read_write')), primary key(project_id, folder_id)
+        )`.execute(db);
+      await sql`create table knowledge_access_events (
+          id text primary key, project_id text not null, session_id text not null,
+          turn_id text not null, operation text not null, target text, revision_id text,
+          outcome text not null check(outcome in ('allow', 'deny', 'conflict')),
+          created_at timestamptz not null default now()
+        )`.execute(db);
+      await sql`create index knowledge_access_session on knowledge_access_events(session_id, outcome)`.execute(
+        db,
+      );
+      await sql`create table knowledge_invalidated_sessions (
+          session_id text primary key references sessions(session_id) on delete cascade,
+          stopped_at timestamptz,
+          created_at timestamptz not null default now()
+        )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table knowledge_invalidated_sessions, knowledge_access_events, project_knowledge_grants`.execute(
+        db,
+      );
+      await sql`alter table knowledge_documents drop constraint knowledge_current_revision`.execute(
+        db,
+      );
+      await sql`drop table knowledge_document_revisions, knowledge_documents, knowledge_folders`.execute(
+        db,
+      );
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

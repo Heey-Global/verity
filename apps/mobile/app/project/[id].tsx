@@ -1,3 +1,4 @@
+import { ProjectKnowledgeGrants } from '../../components/knowledge/ProjectKnowledgeGrants';
 // Project detail: local Verity project metadata plus the sessions bound to this
 // repository. Project operations such as dev servers and Agent Loops live here so
 // the screen stays the stable management surface for per-repo automation.
@@ -2985,6 +2986,7 @@ function ProjectSettingsSection({
         onSaved={onSaved}
       />
       <ProjectMcpBindingsSection client={client} projectId={projectId} />
+      <ProjectKnowledgeGrants client={client} projectId={projectId} />
       <Text style={styles.settingsHint}>
         Verity resolves approved secrets in the central broker. No Doppler credential is stored in
         or injected into the project container.
