@@ -342,7 +342,12 @@ export function useProjectRowDrag({
             runOnJS(cancelPickup)(id);
             return;
           }
-          if (current.dropping) return;
+          if (current.dropping) {
+            // A rapid re-pickup can still see the previous drop on the UI
+            // thread. Always release the JS pickup queued by this gesture.
+            runOnJS(cancelPickup)(id);
+            return;
+          }
           const order = current.order;
           drag.value = { ...current, dropping: true };
           runOnJS(armWatchdog)(order);

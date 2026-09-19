@@ -186,3 +186,29 @@ describe('row gesture', () => {
     expect(latest!.draggingId).toBeNull();
   });
 });
+
+// JS pickup can precede propagation of its shared value to the UI thread.
+// Finalizing against the retained previous drop must still unlock the list.
+it('releases a same-row pickup when finalize still sees the previous drop', () => {
+  const { hook, onDrop } = controller();
+  act(() => hook.result.current.begin('a'));
+  const previous = { ...hook.result.current.drag.value!, dropping: true };
+  act(() => hook.result.current.finish(order));
+  act(() => hook.result.current.begin('a'));
+  const row = renderHook(() =>
+    useProjectRowDrag({
+      id: 'a',
+      reorder: hook.result.current,
+      renderedOrder: order,
+      enabled: true,
+    }),
+  );
+  act(() => {
+    hook.result.current.drag.value = previous;
+    row.result.current.gesture.handlers.onFinalize?.({} as never, true);
+  });
+  expect(hook.result.current.draggingId).toBeNull();
+  expect(onDrop).toHaveBeenCalledTimes(2);
+  act(() => hook.result.current.begin('b'));
+  expect(hook.result.current.draggingId).toBe('b');
+});
