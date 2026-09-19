@@ -406,6 +406,7 @@ export function Library({
                         );
                         setRevisions(null);
                         setRevision(null);
+                        await refresh();
                       }
                     });
                   })

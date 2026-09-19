@@ -212,3 +212,44 @@ test('moving a document updates its folder and permits moving back', async () =>
     alert.mockRestore();
   }
 });
+
+test('restoring a historical title refreshes the current folder listing', async () => {
+  const restored = {
+    id: 'doc',
+    folderId: 'child',
+    title: 'Old title',
+    bodyMarkdown: '# Old',
+    currentRevisionId: 'v3',
+  };
+  const client = {
+    ...fake(),
+    listKnowledgeRevisions: jest.fn().mockResolvedValue([
+      {
+        id: 'v0',
+        documentId: 'doc',
+        title: 'Old title',
+        bodyMarkdown: '# Old',
+        authorIdentity: 'operator',
+        createdAt: '2026-09-19T00:00:00Z',
+      },
+    ]),
+    restoreKnowledgeRevision: jest.fn().mockResolvedValue(restored),
+  };
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  try {
+    render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+    fireEvent.press(await screen.findByLabelText('Standards'));
+    fireEvent.press(await screen.findByLabelText('Revision history'));
+    fireEvent.press(await screen.findByLabelText(/— You/));
+    client.listKnowledgeDocuments.mockResolvedValue([restored]);
+    fireEvent.press(screen.getByLabelText('Restore this revision'));
+    await act(async () => {
+      alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Continue')?.onPress?.();
+    });
+    fireEvent.press(screen.getByLabelText('Engineering'));
+    expect(await screen.findByLabelText('Old title')).toBeTruthy();
+    expect(screen.queryByLabelText('Standards')).toBeNull();
+  } finally {
+    alert.mockRestore();
+  }
+});
