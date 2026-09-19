@@ -2132,6 +2132,30 @@ describe('verity-runner supervisor runtime', () => {
     expect(installer).toContain('install_trusted_cli_ownership /usr/local/lib/verity/gh-real');
   });
 
+  it('installs the supervisor at the path the refresh runbook tells operators to read', async () => {
+    // That runbook's last step is a `docker exec … grep opencode-acp <path>`, and it is
+    // the only thing separating "the recreation did not take" from "the recreation did
+    // not help" — nothing on the wire carries a boundary-binary version. A grep against
+    // a path the installer no longer writes answers `0` for every container, current or
+    // stale, sending an operator whose recovery WORKED back around the loop. Prose
+    // cannot notice an installer rename; this can.
+    const runbook = await readFile(
+      'docs/runbooks/opencode-brokered-tools-container-refresh.md',
+      'utf8',
+    );
+    const documented = /grep -c opencode-acp (\/\S+)/u.exec(runbook)?.[1];
+    expect(documented).toBeDefined();
+    const installer = await readFile('features/verity-sandbox-toolkit/install.sh', 'utf8');
+    expect(installer).toContain(`verity-runner-supervisor.mjs" \\\n    ${documented!}`);
+    // And the string the operator greps FOR has to be in the file they grep: the check
+    // reads the admission list itself, not a version stamped beside it.
+    const supervisor = await readFile(
+      'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+      'utf8',
+    );
+    expect(supervisor).toContain('opencode-acp');
+  });
+
   it('writes the opencode-acp wrapper root-owned and keeps it out of the dev chown', async () => {
     // The wrapper is what turns one fixed command name into one fixed executable
     // for OpenCode (ADR 0012 Amendment 4, security invariant 1) — the broker execs

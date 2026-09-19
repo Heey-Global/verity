@@ -36,7 +36,10 @@ So, when rolling out the release carrying ADR 0014 Amendment 4:
 Between steps 1 and 3 nothing is broken; in the reverse order, everything
 OpenCode is. There is no flag to withhold the bearer in the meantime — by
 decision, recorded in ADR 0014 Amendment 4 under Consequences — so the ordering
-is the whole mitigation, and the release notes have to carry it.
+is the whole mitigation. It travels with the release rather than only with this
+page: the change ships as a breaking one, whose `BREAKING CHANGE:` footer Release
+Please renders into `CHANGELOG.md` (see "Changes that require operator action" in
+`docs/releases.md`).
 
 ## Recognize it
 
@@ -103,6 +106,24 @@ POST /concierge/projects/<projectId>/recreate-container
 That is the supported path, and the only one this runbook asks for. It replaces
 the container from the current toolkit and re-attaches the same project mounts
 (`recreateContainer`, `packages/server/src/provisioner.ts`).
+
+### Confirm it took
+
+Recreating from a toolkit that is not actually current reproduces the identical
+failure, and nothing in the message distinguishes "the recreation did not take"
+from "the recreation did not help". Nothing the Server can ask separates them
+either — the status handshake carries `protocolVersion` and `runnerInstanceId`,
+and no boundary-binary version — so read the binary that decides:
+
+```
+docker exec <container> grep -c opencode-acp /usr/local/bin/verity-runner-supervisor
+```
+
+`0` means the container is still running a supervisor from before this release:
+the recreation did not take, and recreating again from the same toolkit will not
+change it. Check which toolkit the provisioner installed before repeating the
+step. A non-zero count means the boundary admits OpenCode, and the next OpenCode
+turn is the authoritative confirmation.
 
 **Do not reach for a volume-removing teardown.** `docker compose down -v`,
 `docker rm -v`, or removing the Verity data volume by hand destroys the storage

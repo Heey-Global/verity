@@ -607,9 +607,23 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   while the Server otherwise ships this. A flag would be a second answer to "may
   OpenCode spend the operator's secrets", sitting outside this document and
   outgrowing it, which is the coupling the hand-named gates above exist to
-  prevent. Deploy ordering is a release-note obligation instead: the release that
-  carries this amendment must state the container-refresh requirement, because a
+  prevent. Deploy ordering is a release-note obligation instead: this amendment
+  ships as a BREAKING change — `!` on the squash title, a `BREAKING CHANGE:`
+  footer naming the container refresh and the order — so Release Please renders
+  it into `CHANGELOG.md` with the version that needs it. `docs/releases.md`,
+  "Changes that require operator action", is where that rule now lives, because a
   runbook is only reachable by an operator who has already hit the failure.
+
+  Forcing the refresh instead of announcing it was considered, and there is
+  exactly one lever: raising `minimumVersion` in the toolkit's
+  `published-hashes.json`, which would stop older toolkits attesting at all. It is
+  rejected for the reason that rejected a `protocolVersion` bump — attestation is
+  whole-container, so it would strand Claude and Codex sessions in those projects
+  over a change that affects neither — and additionally because ADR 0006 D9 takes
+  a Server outliving a Sandbox as the NORMAL case and requires the previous Runner
+  to keep working. A boundary version the operator can read is the part that is
+  genuinely missing today; recovery therefore ends with a check against the
+  installed supervisor itself, which is the artifact the question is about.
 - Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
   Amendment 4's, for a different reason — the fixed control-plane Runner carries
   no OpenCode configuration or egress material — and this amendment does not

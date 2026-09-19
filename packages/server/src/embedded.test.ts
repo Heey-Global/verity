@@ -1774,7 +1774,11 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
 
     const here = await members(
       new URL('./embedded.ts', import.meta.url),
-      /gatewayToolContext !== undefined &&[\s\S]*?\) \{/u,
+      // Anchored on BOTH conditions of the composition check, because the first alone
+      // is not unique to it: an earlier `gatewayToolContext !== undefined` elsewhere in
+      // the file would silently re-target this region, and a wrong-but-nonempty match
+      // passes the emptiness guard below.
+      /gatewayToolContext !== undefined &&\s*deps\.mcpGatewayTokens === undefined &&[\s\S]*?\) \{/u,
     );
     const client = await members(
       new URL('../../session/src/runner-supervisor-client.ts', import.meta.url),

@@ -17,17 +17,25 @@ describe('project concierge routes', () => {
       ),
       'utf8',
     );
-    const documented =
-      /POST (\/[A-Za-z0-9/<>_-]*recreate-container)/u.exec(runbook)?.[1] ??
-      'no POST route found in the runbook';
+    const documented = /POST (\/[A-Za-z0-9/<>_-]*recreate-container)/u.exec(runbook)?.[1];
+    // Asserted separately from the route comparison: a runbook that stopped naming a
+    // route at all is its own failure, and folding it into the comparison below would
+    // report it as a missing route instead.
+    expect(documented).toBeDefined();
     // The runbook writes the project id as a placeholder; the router writes it as a
-    // Fastify parameter. Compare the shape they agree on.
-    const routed = documented.replace('<projectId>', ':id');
+    // Fastify parameter, whose NAME is the router's business. Everything else — every
+    // literal segment, in order, from the root — is the path an operator types, so it
+    // is compared as written. A registration that moves behind a plugin prefix fails
+    // here, and should: the composed path is what the runbook has to print.
+    const routed = new RegExp(
+      `'${documented!.replace('<projectId>', ':[A-Za-z][A-Za-z0-9_]*')}'`,
+      'u',
+    );
 
     const routes = await readFile(
       new URL('./project-concierge-routes.ts', import.meta.url),
       'utf8',
     );
-    expect(routes).toContain(`'${routed}'`);
+    expect(routes).toMatch(routed);
   });
 });

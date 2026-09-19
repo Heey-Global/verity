@@ -331,12 +331,16 @@ describe('agent spawn broker', () => {
   // place where forgetting a member is silent rather than refused.
   it('hands the admitted bearer to the profile without naming a backend again', async () => {
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
+    // Matched loosely on purpose: the condition and the value it produces are the
+    // policy, and pinning Prettier's spacing would fire on a rewrap as if the policy
+    // had changed. The `[^)]*` body is what makes the last assertion real — it would
+    // happily match an arm that had grown a backend test.
     const arm =
-      /\.\.\.\(request\.mcpGatewayToken !== undefined && mcpGatewayUrl !== undefined\s*\?\s*\{ mcpGateway: \{ url: mcpGatewayUrl, token: request\.mcpGatewayToken \} \}\s*:\s*\{\}\),/u.exec(
+      /\.\.\.\(request\.mcpGatewayToken !== undefined[^)]*\?\s*\{ mcpGateway: \{[^}]*\}/u.exec(
         text,
       );
     expect(arm?.[0]).toBeDefined();
-    expect(arm?.[0]).not.toMatch(/backend/u);
+    expect(arm?.[0]).not.toMatch(/backend/iu);
   });
 
   it('refuses a gateway bearer the container has no endpoint to redeem', async () => {
