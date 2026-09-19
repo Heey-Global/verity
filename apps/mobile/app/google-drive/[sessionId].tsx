@@ -160,7 +160,7 @@ function GoogleDrivePicker({
     if (clientId.length === 0) {
       Alert.alert(
         'Google Drive not set up',
-        'Add your Google Drive client id in Settings → Connected services first.',
+        'Add your Google OAuth client ID in Settings → Connected services first.',
       );
       return;
     }

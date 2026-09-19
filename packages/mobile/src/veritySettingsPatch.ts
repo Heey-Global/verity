@@ -26,6 +26,7 @@ export type VerityTextSettingKey =
   | 'gitAllowedSignersPath'
   | 'githubAppId'
   | 'githubAppInstallationId'
+  | 'googleDriveClientId'
   | 'transcribeBaseUrl'
   | 'transcribeModel'
   | 'opencodeBaseUrl';
@@ -121,7 +122,11 @@ export function changedSecretSettings(draft: SecretPasteDraft): VeritySettingsPa
 
 /** Settings that only steer the app's own UI. They change nothing inside a
  *  project container, so saving one must not ask the operator to reprovision. */
-const APP_ONLY_PATCH_KEYS = new Set<string>(['advancedModeEnabled', 'transcribeBackendMode']);
+const APP_ONLY_PATCH_KEYS = new Set<string>([
+  'advancedModeEnabled',
+  'googleDriveClientId',
+  'transcribeBackendMode',
+]);
 
 /**
  * Whether a saved patch still has to reach ALREADY RUNNING project containers.
