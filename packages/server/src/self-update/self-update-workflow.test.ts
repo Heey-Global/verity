@@ -1043,6 +1043,7 @@ esac
     try {
       const env = {
         VERITY_SMOKE_SERVER_VERSION: '16.4.1',
+        VERITY_SMOKE_SCHEMA_FORWARD_MAX: '',
         VERITY_SMOKE_IMAGE: 'verity-server:candidate',
       };
       const recovered = await runIn(dir, script, { ...env, BUILD_CASE: 'transient-then-success' });
