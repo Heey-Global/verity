@@ -585,14 +585,54 @@ describe('SupervisorRunnerClient', () => {
     );
     // Both gates above open on the field being PRESENT, and that — not the backend
     // list — is what makes a CURRENT supervisor safe under an OLDER Server, which
-    // sends neither field for OpenCode. The deploy ordering in ADR 0014 Amendment 4
-    // and its runbook ("publish the toolkit first, then the Server") rests entirely
-    // on that asymmetry: a supervisor that started refusing an ABSENT field would
-    // invert it, breaking the containers refreshed early to avoid the outage, and
-    // every test here would still pass because every one of them sends the field.
+    // sends neither field for OpenCode. ADR 0014 Amendment 4 and its runbook state
+    // that asymmetry as the reason a refreshed container keeps serving OpenCode on a
+    // Server that has not been deployed yet — or has been rolled back. A supervisor
+    // that started refusing an ABSENT field would invert it, and every test here
+    // would still pass, because every one of them sends the field.
     expect(supervisor).toMatch(
       /if \(request\.trustedCliExecution === true &&\s*!ACP_WORKER_BACKENDS\.has\(request\.backend\)\)/u,
     );
+  });
+
+  // The runbook's "Recognize it" section is a list of messages an operator matches by
+  // sight, and its whole job is to sort a stale container from a Server composition
+  // defect — two failures with opposite remedies. Reword one of these messages here
+  // and the page keeps showing the old wording: the operator finds no match, and the
+  // one page written for this failure stops answering it. Nothing else pairs the two,
+  // since the tests above assert against their own fakes' literals.
+  it('keeps the runbook quoting the refusals this client actually emits', async () => {
+    const runbook = await readFile(
+      new URL(
+        '../../../docs/runbooks/opencode-brokered-tools-container-refresh.md',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    const client = await readFile(
+      new URL('./runner-supervisor-client.ts', import.meta.url),
+      'utf8',
+    );
+    // The page wraps its quotes to prose width and separates them by blank lines, so
+    // read each quoted message as one unwrapped line.
+    const quoted = [...runbook.matchAll(/```\n([\s\S]*?)```/gu)]
+      .flatMap((block) => (block[1] ?? '').split(/\n\s*\n/u))
+      .map((paragraph) => paragraph.replace(/\s+/gu, ' ').trim())
+      .filter((line) => line.startsWith('invalid '));
+    // Two stale-container shapes and two composition defects. A quote deleted from the
+    // page is as much a drift as a quote gone stale.
+    expect(quoted).toHaveLength(4);
+    for (const line of quoted) {
+      // The bare words are what the client matches the supervisor's refusal on; the
+      // sentence after the dash is what it adds. Pin both halves against their source.
+      const [, refusal, explanation] = /^(invalid \w+) — (.+)$/u.exec(line) ?? [];
+      expect(refusal).toBeDefined();
+      expect(client).toContain(`cause.message.includes('${refusal!}')`);
+      // Eight words reaches well into the diagnosis and stops short of the first
+      // interpolated hole (`${…}` for the byte count, the refused field name), which
+      // no quotable page can carry verbatim.
+      expect(client).toContain(explanation!.split(' ').slice(0, 8).join(' '));
+    }
   });
 
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not

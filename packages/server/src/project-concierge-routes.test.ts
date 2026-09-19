@@ -27,8 +27,12 @@ describe('project concierge routes', () => {
     // literal segment, in order, from the root — is the path an operator types, so it
     // is compared as written. A registration that moves behind a plugin prefix fails
     // here, and should: the composed path is what the runbook has to print.
+    // The literal segments are escaped before they become a pattern: they are prose,
+    // and a path that acquired a regex metacharacter would otherwise be compared as a
+    // pattern rather than as the characters an operator types.
+    const escape = (text: string): string => text.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
     const routed = new RegExp(
-      `'${documented!.replace('<projectId>', ':[A-Za-z][A-Za-z0-9_]*')}'`,
+      `'${documented!.split('<projectId>').map(escape).join(':[A-Za-z][A-Za-z0-9_]*')}'`,
       'u',
     );
 

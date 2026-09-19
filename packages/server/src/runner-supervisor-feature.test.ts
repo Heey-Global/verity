@@ -2152,8 +2152,11 @@ describe('verity-runner supervisor runtime', () => {
     const installer = await readFile('features/verity-sandbox-toolkit/install.sh', 'utf8');
     // The path on its own, not the surrounding `install` invocation: pinning the line
     // continuation and its indent would report a reformat of the installer as a rename.
+    // Escaped first — the path comes out of prose, and its `.`-bearing siblings would
+    // otherwise match an installer path that merely looks like the documented one.
+    const escaped = documented!.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
     expect(installer).toMatch(
-      new RegExp(`verity-runner-supervisor\\.mjs"\\s*\\\\?\\s*${documented!}(?!\\S)`, 'u'),
+      new RegExp(`verity-runner-supervisor\\.mjs"\\s*\\\\?\\s*${escaped}(?!\\S)`, 'u'),
     );
 
     // Run the operator's pattern through the operator's tool. Re-reading a BRE as a JS
