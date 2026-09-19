@@ -872,6 +872,7 @@ function trustedCliInterpreterName(token) {
 }
 
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.verity-trusted-cli-policy.json';
+export const LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.breeze-trusted-cli-policy.json';
 const MAX_TRUSTED_CLI_ARGV_POLICY_BYTES = 64 * 1024;
 const TRUSTED_CLI_POLICY_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/u;
 
@@ -917,17 +918,22 @@ export function matchesTrustedCliArgvPolicy(policy, args) {
 }
 
 export async function loadTrustedCliArgvPolicy(resolvedCommand, options = {}) {
-  const path = `${resolvedCommand}${TRUSTED_CLI_ARGV_POLICY_SUFFIX}`;
   const inspect = options.lstat ?? lstat;
   const validatePath = options.validateImmutablePath ?? validateImmutablePath;
   const read = options.readFile ?? readFile;
+  let path;
   let entry;
-  try {
-    entry = await inspect(path);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return undefined;
-    throw error;
+  for (const suffix of [TRUSTED_CLI_ARGV_POLICY_SUFFIX, LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX]) {
+    const candidate = `${resolvedCommand}${suffix}`;
+    try {
+      entry = await inspect(candidate);
+      path = candidate;
+      break;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
   }
+  if (path === undefined || entry === undefined) return undefined;
   if (!entry.isFile() || entry.size > MAX_TRUSTED_CLI_ARGV_POLICY_BYTES) {
     throw new Error('trusted CLI argv policy is invalid');
   }

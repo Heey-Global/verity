@@ -6,6 +6,7 @@ export const DEFAULT_CONTROL_DIR: string;
 export const DEFAULT_WORKTREE_ROOT: string;
 export const SHARED_SESSION_ROOT: string;
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX: string;
+export const LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX: string;
 /** The privilege-reducing `setpriv` flags both launch specs are built from. */
 export const PRIVILEGE_DROP_FLAGS: readonly string[];
 /** {@link PRIVILEGE_DROP_FLAGS}, with `--clear-groups` substituted by

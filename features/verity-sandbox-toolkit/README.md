@@ -30,6 +30,10 @@ at `/usr/local/bin/example-cli`, the policy is
 }
 ```
 
+Images built before the Verity rename may retain the adjacent
+`.breeze-trusted-cli-policy.json` suffix. The broker reads that name only when
+the canonical Verity policy is absent and applies the same integrity checks.
+
 String tokens match exactly. `{ "kind": "identifier" }` matches 1–255
 characters with an alphanumeric first character and only alphanumerics, `.`,
 `_`, or `-` after it. It cannot match paths, options, assignments, URLs, or
