@@ -9,6 +9,7 @@ export function SettingsDisclosure({
   title,
   summary,
   icon,
+  leadingIcon,
   defaultExpanded = false,
   attention = false,
   onCollapse,
@@ -17,6 +18,7 @@ export function SettingsDisclosure({
   title: string;
   summary?: string;
   icon?: IconName;
+  leadingIcon?: ReactNode;
   defaultExpanded?: boolean;
   attention?: boolean;
   onCollapse?: () => void;
@@ -38,9 +40,10 @@ export function SettingsDisclosure({
         accessibilityState={{ expanded: open, disabled: attention }}
         disabled={attention}
       >
-        {icon ? (
+        {icon || leadingIcon ? (
           <View style={styles.navRowIcon}>
-            <Icon name={icon} size={18} color={theme.colors.primary} />
+            {leadingIcon ??
+              (icon ? <Icon name={icon} size={18} color={theme.colors.primary} /> : null)}
           </View>
         ) : null}
         <View style={styles.navRowBody}>
