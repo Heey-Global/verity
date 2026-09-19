@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
@@ -521,19 +521,50 @@ describe('SupervisorRunnerClient', () => {
     });
   });
 
+  // The explanation recognizes the stale Sandbox by substring, against a message
+  // produced in another package with no shared constant — the supervisor is a
+  // boundary binary and importing from it is not the relationship these two have.
+  // So the pairing is what needs pinning: reword the supervisor's refusal and the
+  // only diagnostic this deployment gets for an old container disappears, with every
+  // test above still green, because they assert against their own fake server's
+  // literal rather than against the real emitter.
+  it('keeps the supervisor speaking the refusal the explanation recognizes', async () => {
+    const supervisor = await readFile(
+      new URL(
+        '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(supervisor).toContain("throw new Error('invalid mcpGatewayToken')");
+    // Both ends of the pairing, so this fails whichever one moves.
+    const client = await readFile(
+      new URL('./runner-supervisor-client.ts', import.meta.url),
+      'utf8',
+    );
+    expect(client).toContain("cause.message.includes('invalid mcpGatewayToken')");
+  });
+
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
-   *  admit, and return what the launch threw. */
+   *  admit, and return what the launch threw. Records the frame kinds it answered so
+   *  callers can prove the refusal landed on a `start-turn` — without that, a client
+   *  that opened with some other frame would send these tests green for the wrong
+   *  reason, since this fake refuses whatever arrives first. */
   async function refusedStart(
     runtimeName: string,
     error: string,
     supervisorBackend: RunnerSupervisorBackend,
+    kinds: string[] = [],
   ): Promise<Error> {
     const runtime = join(dir, runtimeName);
     await mkdir(runtime, { recursive: true });
     const server = createServer((peer) => {
       sockets.add(peer);
       peer.once('close', () => sockets.delete(peer));
-      peer.once('data', () => peer.end(`${JSON.stringify({ ok: false, error })}\n`));
+      peer.once('data', (chunk: Buffer) => {
+        kinds.push(String((JSON.parse(chunk.toString('utf8')) as { kind?: unknown }).kind));
+        peer.end(`${JSON.stringify({ ok: false, error })}\n`);
+      });
     });
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
@@ -569,12 +600,15 @@ describe('SupervisorRunnerClient', () => {
   // combination. Silence here is the silent failure: every OpenCode turn in that
   // deployment dies at start-turn and the operator reads it as a broken Server.
   it('explains an OpenCode start refused by a Sandbox older than the gateway decision', async () => {
+    const kinds: string[] = [];
     const error = await refusedStart(
       'stale-opencode-runtime',
       'invalid mcpGatewayToken',
       'opencode-acp',
+      kinds,
     );
 
+    expect(kinds).toEqual(['start-turn']);
     expect(error.message).toMatch(/invalid mcpGatewayToken/u);
     expect(error.message).toMatch(/predates OpenCode's admission/u);
     expect(error.message).toMatch(/recreate the project container/u);
@@ -596,12 +630,15 @@ describe('SupervisorRunnerClient', () => {
   // been admitted for releases — explaining it as an outdated container would send
   // the operator to recreate a container that was never the problem.
   it('leaves the same refusal alone on a backend that was already admitted', async () => {
+    const kinds: string[] = [];
     const error = await refusedStart(
       'stale-claude-runtime',
       'invalid mcpGatewayToken',
       'claude-acp',
+      kinds,
     );
 
+    expect(kinds).toEqual(['start-turn']);
     expect(error.message).toMatch(/invalid mcpGatewayToken/u);
     expect(error.message).not.toMatch(/predates OpenCode/u);
   });
@@ -609,8 +646,15 @@ describe('SupervisorRunnerClient', () => {
   // Recognition is by message text, so pin that it is narrow: an unrelated refusal on
   // the SAME backend keeps its own words rather than being dressed up as container age.
   it('leaves an unrelated OpenCode refusal alone', async () => {
-    const error = await refusedStart('busy-opencode-runtime', 'supervisor is busy', 'opencode-acp');
+    const kinds: string[] = [];
+    const error = await refusedStart(
+      'busy-opencode-runtime',
+      'supervisor is busy',
+      'opencode-acp',
+      kinds,
+    );
 
+    expect(kinds).toEqual(['start-turn']);
     expect(error.message).toMatch(/supervisor is busy/u);
     expect(error.message).not.toMatch(/predates OpenCode/u);
   });

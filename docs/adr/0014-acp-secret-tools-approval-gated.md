@@ -548,7 +548,13 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
   as the likely cause rather than asserting it, and names a retry first: a
   current supervisor emits the same message for an empty bearer, the two are
   indistinguishable from the message alone, and recreating a container is
-  destructive of its state.
+  destructive of its state. The operator-facing procedure is
+  `docs/runbooks/opencode-brokered-tools-container-refresh.md`.
+  Detecting this BEFORE the turn was considered and rejected: the supervisor's
+  status handshake carries `protocolVersion` and `runnerInstanceId` and names no
+  backends, so the Server would have to infer staleness from a new field's
+  absence — which is what the refusal already reports — by changing the very
+  boundary binary the affected containers do not have.
 - Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
   Amendment 4's, for a different reason — the fixed control-plane Runner carries
   no OpenCode configuration or egress material — and this amendment does not

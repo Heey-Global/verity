@@ -1738,10 +1738,16 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       wiring.runner?.(claudeAcpBackend, { sessionId: null, projectId, worktree: '/wt' }),
     ).resolves.toBeInstanceOf(SupervisorRunnerClient);
 
+    // The other direction, for the same three. Asserting only the refusal would leave
+    // a gate that rejects EVERY ACP turn looking correct here, and `opencode-acp` is
+    // the member worth naming: its admission is what this branch changed, so the
+    // positive case is the one that proves the seam swung rather than just closed.
     const composed = buildRunnerConductorWiring({ ...baseDeps(), runnerSupervisor: true });
-    await expect(
-      composed.runner?.(claudeAcpBackend, { sessionId: 's-acp', projectId, worktree: '/wt' }),
-    ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    for (const acpBackend of [claudeAcpBackend, codexAcpBackend, openCodeAcpBackend]) {
+      await expect(
+        composed.runner?.(acpBackend, { sessionId: 's-acp', projectId, worktree: '/wt' }),
+      ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    }
   });
 
   it('falls back to loopback for backends the native supervisor worker cannot run', async () => {
