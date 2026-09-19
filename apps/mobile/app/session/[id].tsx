@@ -3243,6 +3243,45 @@ export function SessionChat({
       keyboardVerticalOffset={0}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
+      {workspaceFile !== null ? (
+        <View style={styles.slideDeckChip}>
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => void Linking.openURL(workspaceFile.webViewLink).catch(() => undefined)}
+            accessibilityRole="link"
+            accessibilityLabel={`${workspaceFile.name}. Open in Google ${
+              workspaceFile.kind === 'slides'
+                ? 'Slides'
+                : workspaceFile.kind === 'sheets'
+                  ? 'Sheets'
+                  : 'Docs'
+            }.`}
+          >
+            <Icon
+              name={
+                workspaceFile.kind === 'slides'
+                  ? 'monitor'
+                  : workspaceFile.kind === 'sheets'
+                    ? 'grid'
+                    : 'file-text'
+              }
+              size={16}
+              color={theme.colors.primary}
+            />
+            <Text style={styles.slideDeckName} numberOfLines={1}>
+              {workspaceFile.name} ↗
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={clearWorkspaceFile}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Stop editing ${workspaceFile.name}`}
+          >
+            <Icon name="x" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
+      ) : null}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
       ) : null}
@@ -3576,45 +3615,6 @@ export function SessionChat({
           base={branches.localMergeBase}
           onMerge={onMergeLocally}
         />
-      ) : null}
-      {workspaceFile !== null ? (
-        <View style={styles.slideDeckChip}>
-          <Pressable
-            style={styles.slideDeckLink}
-            onPress={() => void Linking.openURL(workspaceFile.webViewLink).catch(() => undefined)}
-            accessibilityRole="link"
-            accessibilityLabel={`${workspaceFile.name}. Open in Google ${
-              workspaceFile.kind === 'slides'
-                ? 'Slides'
-                : workspaceFile.kind === 'sheets'
-                  ? 'Sheets'
-                  : 'Docs'
-            }.`}
-          >
-            <Icon
-              name={
-                workspaceFile.kind === 'slides'
-                  ? 'monitor'
-                  : workspaceFile.kind === 'sheets'
-                    ? 'grid'
-                    : 'file-text'
-              }
-              size={16}
-              color={theme.colors.primary}
-            />
-            <Text style={styles.slideDeckName} numberOfLines={1}>
-              {workspaceFile.name} ↗
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={clearWorkspaceFile}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Stop editing ${workspaceFile.name}`}
-          >
-            <Icon name="x" size={16} color={theme.colors.textMuted} />
-          </Pressable>
-        </View>
       ) : null}
       <InputBar
         inputRef={inputRef}
