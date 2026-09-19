@@ -457,7 +457,7 @@ services:
     # no password to store, generate, or configure. The network isolation is the
     # boundary, and Verity's own secrets are additionally encrypted at rest.
     # renovate: datasource=docker depName=postgres
-    image: postgres:18-alpine@sha256:650d7a867dc5336eff67802a1417fcc801821d73d824c608e80afbde792fe6e1
+    image: postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
     restart: unless-stopped
     mem_limit: ${VERITY_POSTGRES_MEMORY:-1g}
     memswap_limit: ${VERITY_POSTGRES_MEMORY_SWAP:-1g}
