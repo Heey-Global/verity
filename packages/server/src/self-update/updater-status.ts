@@ -27,6 +27,7 @@ import {
 } from './update-operation.js';
 import { generationOperationId } from './docker-update-preparation.js';
 import type { ControlPlanePostgresState } from './postgres-image.js';
+import { FORWARD_UPDATE_RECOVERY_VERSION } from './compat.js';
 import {
   createSecretKeyHandoffMailbox,
   type SecretKeyHandoffMailbox,
@@ -771,6 +772,7 @@ async function serveStandbyRequest(
  * `project-network-refusal.test.ts`, which holds it to no network verb.
  */
 export const UPDATER_CONTROL_ROUTES = [
+  'GET /v1/capabilities/forward-update-recovery',
   'GET /v1/deployment',
   'GET /v1/reconcile',
   'GET /v1/update',
@@ -806,6 +808,10 @@ async function serveUpdaterRequest(
   }
   if (path.startsWith('/v1/handoff')) {
     await serveHandoffRequest(req, res, options, mailbox, fence, path);
+    return;
+  }
+  if (path === '/v1/capabilities/forward-update-recovery') {
+    res.writeHead(200).end(JSON.stringify({ version: FORWARD_UPDATE_RECOVERY_VERSION }));
     return;
   }
   if (path === '/v1/standby') {
@@ -988,6 +994,25 @@ export async function readUpdaterDeployment(
   const parsed = parseStatus(value);
   if (parsed === null) throw new Error('updater status returned invalid JSON');
   return parsed;
+}
+
+/** Require the recovery guard implemented by the process that owns the control socket. */
+export async function readUpdaterRecoveryCapability(options: UpdaterCallOptions): Promise<number> {
+  const { status, value } = await call(options, {
+    method: 'GET',
+    path: '/v1/capabilities/forward-update-recovery',
+  });
+  if (status !== 200) throw new UpdaterRequestError(status, errorCode(value));
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    !Object.hasOwn(value, 'version') ||
+    typeof (value as { version?: unknown }).version !== 'number'
+  )
+    throw new Error('updater recovery capability response is invalid');
+  return (value as { version: number }).version;
 }
 
 export interface UpdaterAgentSeed {

@@ -1,5 +1,5 @@
 import { sql, type Kysely } from 'kysely';
-import { Migrator, type Migration, type MigrationProvider } from 'kysely/migration';
+import type { Migration, MigrationProvider } from 'kysely/migration';
 import type { Database } from './schema.js';
 import {
   backfillInlineAttachments,
@@ -2730,9 +2730,15 @@ export function schemaCompatibilityWindow(): SchemaCompatibilityWindow {
  * preflight) that must observe the current generation without advancing it.
  */
 export async function getExecutedMigrations(db: Kysely<Database>): Promise<string[]> {
-  const migrator = new Migrator({ db, provider: migrationProvider });
-  const infos = await migrator.getMigrations();
-  return infos.filter((info) => info.executedAt !== undefined).map((info) => info.name);
+  // Migrator.getMigrations only lists this build's provider: a newer applied
+  // migration disappears from its result and makes unsafe rollback look valid.
+  try {
+    const result = await sql<{ name: string }>`select name from kysely_migration`.execute(db);
+    return result.rows.map((row) => row.name);
+  } catch (error) {
+    if ((error as { code?: string }).code === '42P01') return [];
+    throw error;
+  }
 }
 
 /**

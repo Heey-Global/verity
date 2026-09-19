@@ -123,6 +123,7 @@ describe('a managed deployment refuses project networks', () => {
     // plausibly have: a later `POST /v1/project-network/connect` changes this
     // set and fails here, where guessing at names would have stayed green.
     expect([...UPDATER_CONTROL_ROUTES]).toEqual([
+      'GET /v1/capabilities/forward-update-recovery',
       'GET /v1/deployment',
       // Reports what the startup reconcile concluded about the running Server:
       // `ok`, or `drift` with the sealed names that disagree. Reads a value the

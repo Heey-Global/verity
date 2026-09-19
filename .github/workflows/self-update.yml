@@ -81,11 +81,14 @@ jobs:
       # fixed tag lets the second run retag it between the first run's `docker tag`
       # and its `docker save` — which would silently test the wrong previous release.
       VERITY_SMOKE_PREVIOUS_IMAGE: verity-server:self-update-previous-${{ github.run_id }}-${{ github.run_attempt }}
-      # The production publisher always supplies a released version. The smoke
-      # must do the same now that runtime startup rejects an invalid immutable
-      # image stamp; the value is synthetic because this image never leaves the
-      # isolated daemon and the cutover assertions are digest-based.
+      # A valid fallback keeps local extraction tests and pre-resolution setup
+      # deterministic. The predecessor-selection step replaces it with the
+      # candidate commit's actual version before the image build.
       VERITY_SMOKE_SERVER_VERSION: 1.0.0
+      # Only release.yml supplies this required workflow_call input. GitHub keeps
+      # the caller's event name inside a reusable workflow, so event_name cannot
+      # distinguish publication from an ad-hoc or scheduled snapshot.
+      VERITY_SMOKE_CANDIDATE_SHA: ${{ inputs.candidate-sha || '' }}
       VERITY_SMOKE_SCHEMA_FORWARD_MAX: ${{ inputs.schema-forward-max || '' }}
       VERITY_SMOKE_ALLOW_NO_ROLLBACK: ${{ inputs.allow-no-rollback || false }}
       VERITY_SMOKE_PROFILE: ${{ inputs.smoke-profile || (github.event_name == 'workflow_call' && 'release' || 'full') }}
@@ -111,6 +114,8 @@ jobs:
             "$RUNNER_TEMP/verity-self-update-harness/self-update-live-smoke-client.ts"
           install -m 0644 packages/server/src/self-update-release-compat.ts \
             "$RUNNER_TEMP/verity-self-update-harness/self-update-release-compat.ts"
+          install -m 0644 packages/server/src/self-update-data-probe.ts \
+            "$RUNNER_TEMP/verity-self-update-harness/self-update-data-probe.ts"
           # The isolated daemon's own image, staged for the same reason as the two
           # above and one more. Its build is the only one in this job that runs on
           # the SHARED host daemon, and its output is then started `--privileged`
@@ -141,6 +146,9 @@ jobs:
 
           install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-release-compat.ts" \
             packages/server/src/self-update-release-compat.ts
+
+          install -m 0644 "$RUNNER_TEMP/verity-self-update-harness/self-update-data-probe.ts" \
+            packages/server/src/self-update-data-probe.ts
 
       # Deliberately at the START of the job, not only in the teardown. The
       # teardown removes THIS run's volume, and it is an `if: always()` step — but
@@ -342,6 +350,13 @@ jobs:
             echo "::error::HEAD:version.txt does not name an X.Y.Z version, got '${under_test}'." >&2
             exit 1
           fi
+          smoke_version="$under_test"
+          if [[ -z "${VERITY_SMOKE_CANDIDATE_SHA:-}" ]]; then
+            # Ad-hoc snapshots are not published and may follow the latest release.
+            IFS=. read -r major minor patch <<<"$under_test"
+            smoke_version="$major.$minor.$((10#$patch + 1))"
+          fi
+          printf 'VERITY_SMOKE_SERVER_VERSION=%s\n' "$smoke_version" >>"$GITHUB_ENV"
           parent_version="$(git show 'HEAD^:version.txt' 2>/dev/null | tr -d '[:space:]' || true)"
           bound_inclusive=false
           if [[ "$parent_version" == "$under_test" ]]; then

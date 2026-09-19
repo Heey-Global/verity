@@ -157,6 +157,32 @@ export function isCompatible(a: ServerCompat, b: ServerCompat): CompatResult {
   return { compatible: reasons.length === 0, reasons };
 }
 
+/**
+ * Directional admission for a forward update. The candidate must accept the
+ * installed schema and must not migrate backwards. The old build need not read
+ * the candidate schema: rollback separately probes the actual database before
+ * reactivating the old build.
+ */
+export function isUpgradeCompatible(previous: ServerCompat, candidate: ServerCompat): CompatResult {
+  const reasons = [
+    ...protocolReasons('runner', previous, candidate, (c) => c.runner),
+    ...protocolReasons('event log', previous, candidate, (c) => c.eventLog),
+    ...protocolReasons('gateway', previous, candidate, (c) => c.gateway),
+    ...protocolReasons('updater', previous, candidate, (c) => c.updater),
+  ];
+  if (compareSchemaGenerations(previous.schema.current, candidate.schema.min) < 0) {
+    reasons.push(
+      `installed schema "${previous.schema.current}" is older than the candidate's minimum "${candidate.schema.min}"`,
+    );
+  }
+  if (compareSchemaGenerations(previous.schema.current, candidate.schema.current) > 0) {
+    reasons.push(
+      `schema downgrade from "${previous.schema.current}" to "${candidate.schema.current}" is unsupported`,
+    );
+  }
+  return { compatible: reasons.length === 0, reasons };
+}
+
 // The server's own release version. Mirrors `SERVER_VERSION` in server.ts through
 // the same immutable image stamp, but is read here independently so the
 // lightweight self-update/preflight path never imports the full server module.
@@ -182,6 +208,9 @@ const SERVER_VERSION = runtimeServerVersion();
  * second version exists.
  */
 const SCHEMA_COMPATIBILITY = schemaCompatibilityWindow();
+
+/** Host recovery requires this updater generation before allowing a forward-only migration. */
+export const FORWARD_UPDATE_RECOVERY_VERSION = 1;
 
 export const SERVER_COMPAT: ServerCompat = {
   serverVersion: SERVER_VERSION,

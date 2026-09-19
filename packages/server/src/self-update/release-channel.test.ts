@@ -151,6 +151,20 @@ describe('createReleaseChannelResolver', () => {
     });
   });
 
+  it('offers a schema-advancing release without an old-image rollback promise', async () => {
+    const body = metadata();
+    body.compatibility = {
+      ...compat('2.0.0'),
+      schema: { min: '0040', current: '0043', max: '0043' },
+    };
+    await expect(
+      resolver({ load: vi.fn(async () => envelope(body)) }).resolve(),
+    ).resolves.toMatchObject({
+      state: 'available',
+      release: { version: '2.0.0' },
+    });
+  });
+
   it('reports the stable channel as current when it is not newer', async () => {
     const load = vi.fn(async () => channel('1.0.0'));
     await expect(resolver({ load }).resolve()).resolves.toMatchObject({ state: 'current' });

@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { runInNewContext } from 'node:vm';
+import { describe, expect, it, vi } from 'vitest';
+import { createEmbeddedDb } from '@verity/store/testing';
+import { latestMigrationKey, migrateToLatest } from '@verity/store';
+import { sql } from 'kysely';
+import { SERVER_COMPAT } from './compat.js';
 import type { ContainerSpec } from '../docker.js';
 import { dockerStandbyPromotion } from './docker-in-place-cutover.js';
 import { dockerUpdatePreparation } from './docker-update-preparation.js';
@@ -87,6 +92,86 @@ const cutover = (root: string, daemon: FakeDaemon) =>
   });
 
 describe('standby promotion cutover', () => {
+  it('executes the generated rollback schema probe against actual applied migrations', async () => {
+    const { root, daemon } = await prepared();
+    daemon.exitCodes.set('verity-managed-probe-ready-g1', 1);
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).rejects.toThrow();
+    const spec = vi
+      .mocked(daemon.docker.createContainer)
+      .mock.calls.map(([created]) => created)
+      .find((created) => created.name === 'verity-managed-probe-rollback-schema-g1');
+    expect(spec?.entrypoint).toEqual(['node']);
+    expect(spec?.command?.slice(0, 2)).toEqual(['--input-type=module', '--eval']);
+    const source = spec!.command![2]!;
+    const executable = source.replace(
+      /import \{ ([^}]+) \} from '([^']+)';/g,
+      (_match, names: string, path: string) =>
+        `const { ${names} } = imports[${JSON.stringify(path)}];`,
+    );
+    const db = createEmbeddedDb();
+    const close = vi.fn(async () => undefined);
+    const processStub = {
+      env: { DATABASE_URL: 'test-only' },
+      exitCode: undefined as number | undefined,
+    };
+    const execute = async () => {
+      processStub.exitCode = undefined;
+      await runInNewContext(`(async () => { ${executable} })()`, {
+        process: processStub,
+        imports: {
+          '/app/packages/store/dist/index.js': {
+            createPostgresDb: () => ({ selectFrom: db.selectFrom.bind(db), destroy: close }),
+          },
+          '/app/packages/server/dist/self-update/compat.js': { SERVER_COMPAT },
+        },
+      });
+      return processStub.exitCode;
+    };
+    try {
+      await migrateToLatest(db);
+      expect(await execute()).toBe(0);
+      const future = `${latestMigrationKey()}_future`;
+      await sql`insert into kysely_migration (name, timestamp) values (${future}, ${new Date().toISOString()})`.execute(
+        db,
+      );
+      expect(await execute()).toBe(1);
+      await sql`drop table kysely_migration`.execute(db);
+      expect(await execute()).toBe(1);
+      expect(close).toHaveBeenCalledTimes(3);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  it('keeps maintenance and candidate authority when rollback schema preflight fails', async () => {
+    const { root, daemon } = await prepared();
+    daemon.exitCodes.set('verity-managed-probe-ready-g1', 1);
+    daemon.exitCodes.set('verity-managed-probe-rollback-schema-g1', 1);
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).rejects.toThrow();
+    const state = await readManagedDeployment(root);
+    expect(state.managed && state.spec.image).toBe(newImage);
+    expect(await readUpdateJournal(root)).toMatchObject({ phase: 'rollback-activating-old' });
+    expect(gateways.get(daemon)?.maintenance).toBe(true);
+    expect(daemon.status(MANAGED_SERVER_NAME)).toBe('exited');
+    expect(daemon.names()).not.toContain('verity-managed-probe-rollback-schema-g1');
+    expect(daemon.docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        image: oldImage,
+        name: 'verity-managed-probe-rollback-schema-g1',
+        env: [`DATABASE_URL=${ENVIRONMENT.DATABASE_URL}`],
+        entrypoint: ['node'],
+        readOnlyRootfs: true,
+        binds: [],
+        volumeMounts: [],
+        restartPolicy: 'no',
+      }),
+    );
+    await expect(resumeUpdateCutover(await cutover(root, daemon))).rejects.toThrow();
+    const retried = await readManagedDeployment(root);
+    expect(retried.managed && retried.spec.image).toBe(newImage);
+    expect(gateways.get(daemon)?.maintenance).toBe(true);
+  });
+
   it('promotes the generation-qualified candidate and retires the old Server', async () => {
     const { root, daemon, journal } = await prepared();
     await expect(resumeUpdateCutover(await cutover(root, daemon))).resolves.toMatchObject({

@@ -4,6 +4,7 @@ import {
   SERVER_COMPAT,
   compareSchemaGenerations,
   isCompatible,
+  isUpgradeCompatible,
   isCompatibleWith,
   parseServerCompat,
   type ServerCompat,
@@ -301,4 +302,31 @@ describe('parseServerCompat', () => {
     expect(peer).not.toBeNull();
     expect(isCompatibleWith(peer as ServerCompat).compatible).toBe(true);
   });
+});
+
+describe('forward update compatibility', () => {
+  const previous = baseCompat({ schema: { min: '0090', current: '0097', max: '0097' } });
+  const candidate = baseCompat({ schema: { min: '0090', current: '0098', max: '0098' } });
+  it('admits migration without claiming old-image rollback is compatible', () => {
+    expect(isUpgradeCompatible(previous, candidate)).toEqual({ compatible: true, reasons: [] });
+    expect(isCompatible(previous, candidate).compatible).toBe(false);
+  });
+  it('rejects a reverse migration', () => {
+    expect(isUpgradeCompatible(candidate, previous).compatible).toBe(false);
+  });
+  it('rejects a candidate that has dropped the installed schema', () => {
+    expect(
+      isUpgradeCompatible(previous, { ...candidate, schema: { ...candidate.schema, min: '0098' } })
+        .compatible,
+    ).toBe(false);
+  });
+  it.each(['runner', 'eventLog', 'gateway', 'updater'] as const)(
+    'retains the %s protocol gate',
+    (dimension) => {
+      expect(
+        isUpgradeCompatible(previous, { ...candidate, [dimension]: { min: 3, current: 3 } })
+          .compatible,
+      ).toBe(false);
+    },
+  );
 });
