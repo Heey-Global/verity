@@ -71,7 +71,7 @@ async function envelope(path: string): Promise<unknown> {
   }
 }
 
-export function parseDirectRecoveryArgs(args: readonly string[]): Record<string, string> {
+function parseDirectRecoveryArgs(args: readonly string[]): Record<string, string> {
   const parsed: Record<string, string> = {};
   const names = [
     '--target',
