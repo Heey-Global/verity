@@ -240,18 +240,23 @@ function SessionList({ client }: { client: VerityClient }) {
     () => liveActiveGroups.flatMap((group) => (isReorderableGroup(group) ? [group.id] : [])),
     [liveActiveGroups],
   );
+  // Saves run one after another: a second drag may start while the first is
+  // still saving, and two requests in flight could land in either order.
+  const reorderSave = useRef(Promise.resolve());
   const onDropProject = useCallback(
     (order: readonly string[]) => {
-      const sortable = new Set(sortableGroupIds);
-      const ids = order.filter((id) => sortable.has(id));
-      if (
-        ids.length === sortableGroupIds.length &&
-        ids.every((id, i) => id === sortableGroupIds[i])
-      )
-        return;
+      // The drag saw the rows as they were at pickup; a poll since then may have
+      // added or removed a project. Save the live set, in the dropped order, with
+      // anything the drag never saw appended where a new project lands anyway.
+      const dropped = new Set(order);
+      const ids = [
+        ...order.filter((id) => sortableGroupIds.includes(id)),
+        ...sortableGroupIds.filter((id) => !dropped.has(id)),
+      ];
+      if (ids.every((id, i) => id === sortableGroupIds[i])) return;
       setDragOrder(ids);
-      void client
-        .reorderProjects(ids)
+      reorderSave.current = reorderSave.current
+        .then(() => client.reorderProjects(ids))
         .then(() => refreshProjects())
         .catch((caught) => {
           Alert.alert(
@@ -1164,16 +1169,18 @@ function ProjectGroup({
   const sandboxUpdatePending =
     group.project?.sandboxUpdate?.state === 'available' &&
     group.project.sandboxUpdate.selfRepair === 'converging';
-  // The compact height is the header plus the gap to the next row (and the card
-  // border on wide layouts): what the row occupies once every group is folded.
+  // Both heights are reported as the row's pitch — the measured height plus the
+  // gap to the next row and, on wide layouts, the card border — so that their
+  // difference is exactly the session block a fold removes. The compact one is
+  // the header alone: what the row occupies once every group is folded.
+  const pitch = (height: number) => height + theme.spacing.md + (wide ? 2 : 0);
   const onHeaderLayout = (event: LayoutChangeEvent) => {
-    const height = event.nativeEvent.layout.height;
-    reorder.reportCompactHeight(group.id, height + theme.spacing.md + (wide ? 2 : 0));
+    reorder.reportCompactHeight(group.id, pitch(event.nativeEvent.layout.height));
   };
-  // Measured while idle only: mid-drag the group is folding and its height is
-  // whatever the fold animation is passing through.
+  // Measured while idle only: mid-drag the group is folded, and its height
+  // would say nothing about how far the rows below it moved up.
   const onGroupLayout = (event: LayoutChangeEvent) => {
-    if (!reordering) reorder.reportExpandedHeight(group.id, event.nativeEvent.layout.height);
+    if (!reordering) reorder.reportExpandedHeight(group.id, pitch(event.nativeEvent.layout.height));
   };
   return (
     <Reanimated.View

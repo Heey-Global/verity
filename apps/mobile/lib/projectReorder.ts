@@ -1,11 +1,11 @@
 /**
  * Geometry for dragging a project row to a new slot in the overview.
  *
- * Every function here is a worklet: the pan gesture runs them on the UI thread
- * for each pointer move, so the dragged row tracks the finger and its
- * neighbours make room without a round trip through React. Row heights are a
- * plain record rather than a Map because that is what crosses the thread
- * boundary as a shared value.
+ * Everything the pan gesture needs per pointer move is a worklet, so the
+ * dragged row tracks the finger and its neighbours make room on the UI thread
+ * without a round trip through React. Row heights are a plain record rather
+ * than a Map because that is what crosses the thread boundary as a shared
+ * value.
  */
 export type RowHeights = Readonly<Record<string, number>>;
 

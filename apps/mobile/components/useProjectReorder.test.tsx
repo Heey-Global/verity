@@ -1,6 +1,11 @@
-import { act, renderHook } from '@testing-library/react-native';
+import { act, render, renderHook } from '@testing-library/react-native';
+import * as Haptics from 'expo-haptics';
+import { GestureDetector } from 'react-native-gesture-handler';
+import { fireGestureHandler, getByGestureTestId } from 'react-native-gesture-handler/jest-utils';
+import Reanimated, { useReducedMotion } from 'react-native-reanimated';
 
 import {
+  PROJECT_DRAG_FORGET_MS,
   PROJECT_DROP_WATCHDOG_MS,
   useProjectReorder,
   useProjectRowDrag,
@@ -24,7 +29,10 @@ jest.mock('expo-haptics', () => ({
 const order = ['control', 'a', 'b', 'c'];
 const sortable = ['a', 'b', 'c'];
 
-beforeEach(() => jest.useFakeTimers());
+beforeEach(() => {
+  jest.useFakeTimers();
+  jest.mocked(Haptics.impactAsync).mockClear();
+});
 afterEach(() => jest.useRealTimers());
 
 function controller(onDrop = jest.fn()) {
@@ -48,7 +56,9 @@ it('folds the groups at pickup and commits the dropped order exactly once', () =
   expect(onDrop).toHaveBeenCalledTimes(1);
   expect(onDrop).toHaveBeenCalledWith(dropped);
   expect(hook.result.current.draggingId).toBeNull();
-  // Forgotten only after the commit rendered, never before it.
+  // Forgotten only once the slot springs have settled across the commit.
+  expect(hook.result.current.drag.value).not.toBeNull();
+  act(() => jest.advanceTimersByTime(PROJECT_DRAG_FORGET_MS));
   expect(hook.result.current.drag.value).toBeNull();
 
   act(() => hook.result.current.finish(dropped));
@@ -115,5 +125,64 @@ it('gives every row a gesture and a transform that is idle at rest', () => {
   expect(row.result.current.gesture).toBeDefined();
   expect(row.result.current.style).toEqual({
     transform: [{ translateY: 0 }, { scale: 1 }],
+  });
+});
+
+describe('row gesture', () => {
+  let latest: ReturnType<typeof useProjectReorder> | null = null;
+  function Row({ id, onDrop }: { id: string; onDrop: (order: readonly string[]) => void }) {
+    const reorder = useProjectReorder({ order, sortable, onDrop });
+    latest = reorder;
+    const { gesture, style } = useProjectRowDrag({
+      id,
+      reorder,
+      renderedOrder: order,
+      enabled: true,
+    });
+    return (
+      <GestureDetector gesture={gesture}>
+        <Reanimated.View style={style} />
+      </GestureDetector>
+    );
+  }
+
+  afterEach(() => {
+    latest = null;
+    jest.mocked(useReducedMotion).mockReturnValue(false);
+  });
+
+  // The test driver always releases the finger at the end of a sequence, so
+  // this covers a whole pickup, move and drop through the gesture callbacks.
+  it('picks the row up on activation, glides it into its slot and commits once', () => {
+    const onDrop = jest.fn();
+    render(<Row id="a" onDrop={onDrop} />);
+    act(() => {
+      for (const id of order) latest!.reportCompactHeight(id, 60);
+    });
+    act(() =>
+      fireGestureHandler(getByGestureTestId('project-drag:a'), [
+        { translationY: 0 },
+        { translationY: 500 },
+      ]),
+    );
+    expect(Haptics.impactAsync).toHaveBeenCalledTimes(1);
+    expect(latest!.drag.value).toMatchObject({ id: 'a', dropping: true });
+    expect(latest!.travel.value).toBe(0);
+    expect(onDrop).toHaveBeenCalledTimes(1);
+    expect(onDrop).toHaveBeenCalledWith(order);
+    expect(latest!.draggingId).toBeNull();
+    act(() => jest.advanceTimersByTime(PROJECT_DROP_WATCHDOG_MS));
+    expect(onDrop).toHaveBeenCalledTimes(1);
+    expect(latest!.drag.value).toBeNull();
+  });
+
+  it('drops without a glide when the platform asks for reduced motion', () => {
+    jest.mocked(useReducedMotion).mockReturnValue(true);
+    const onDrop = jest.fn();
+    render(<Row id="b" onDrop={onDrop} />);
+    act(() => fireGestureHandler(getByGestureTestId('project-drag:b'), [{ translationY: 30 }]));
+    expect(onDrop).toHaveBeenCalledWith(order);
+    expect(latest!.travel.value).toBe(0);
+    expect(latest!.draggingId).toBeNull();
   });
 });

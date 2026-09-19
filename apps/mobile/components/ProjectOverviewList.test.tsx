@@ -37,6 +37,7 @@ it('keeps the refresh control mounted and anchoring off from pickup until the gr
   const expectLocked = () => {
     expect(list().maintainVisibleContentPosition).toBeUndefined();
     expect(list().scrollEnabled).toBe(false);
+    expect(list().removeClippedSubviews).toBe(false);
     expect(view.UNSAFE_getByType(RefreshControl).props.enabled).toBe(false);
   };
   expectLocked();
@@ -52,6 +53,7 @@ it('keeps the refresh control mounted and anchoring off from pickup until the gr
   act(() => jest.advanceTimersByTime(40));
   expect(list().maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
   expect(list().scrollEnabled).toBe(true);
+  expect(list().removeClippedSubviews).toBe(true);
   expect(view.UNSAFE_getByType(RefreshControl).props.enabled).toBe(true);
   act(() => view.UNSAFE_getByType(RefreshControl).props.onRefresh());
   expect(onRefresh).toHaveBeenCalledTimes(2);

@@ -69,7 +69,12 @@ export function ProjectOverviewList<T extends { id: string }>({
         zIndex: item.id === draggingProjectId ? 1 : 0,
       })}
       scrollEnabled={!locked}
+      // Android clips by layout frame, which a transform does not move: a row
+      // dragged past where its untransformed frame is visible would vanish.
+      removeClippedSubviews={!locked}
       maintainVisibleContentPosition={locked ? undefined : { minIndexForVisible: 0 }}
+      // `enabled` is honoured on Android; on iOS the scroll lock above is what
+      // keeps a pull from starting, and `refresh` drops one already queued.
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={refresh} enabled={!locked} />
       }

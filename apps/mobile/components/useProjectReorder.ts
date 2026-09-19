@@ -41,6 +41,8 @@ const LIFT_DURATION_MS = 150;
 const LIFT_SCALE = 1.02;
 /** Neighbours slide into their preview slot with a firm, non-overshooting spring. */
 const SLOT_SPRING = { damping: 30, stiffness: 320, mass: 1, overshootClamping: true };
+/** Longer than the slot spring takes to settle from a crossing right before the drop. */
+export const PROJECT_DRAG_FORGET_MS = 300;
 
 export type ProjectReorderController = {
   drag: SharedValue<ProjectDrag | null>;
@@ -195,13 +197,20 @@ export function useProjectReorder({
   );
 
   // The commit re-renders the rows in the dropped order, which zeroes every
-  // transform by construction (see projectRowTranslation). Only then may the
-  // drag be forgotten; clearing it earlier would snap the rows back for a frame.
+  // settled transform by construction (see projectRowTranslation). A neighbour
+  // whose slot spring is still running when the finger lets go finishes that
+  // spring across the commit; forgetting the drag while it runs would snap it.
+  // So the drag is forgotten only once the springs have had time to settle,
+  // and not at all if another pickup has claimed the state by then.
   useEffect(() => {
     if (draggingId !== null) return;
-    drag.value = null;
-    travel.value = 0;
-    shift.value = 0;
+    const forget = setTimeout(() => {
+      if (pending.current) return;
+      drag.value = null;
+      travel.value = 0;
+      shift.value = 0;
+    }, PROJECT_DRAG_FORGET_MS);
+    return () => clearTimeout(forget);
   }, [drag, draggingId, shift, travel]);
   useEffect(
     () => () => {
@@ -309,6 +318,7 @@ export function useProjectRowDrag({
   const gesture = useMemo(
     () =>
       Gesture.Pan()
+        .withTestId(`project-drag:${id}`)
         .enabled(enabled)
         .activateAfterLongPress(PROJECT_DRAG_ACTIVATION_MS)
         .failOffsetX([-PROJECT_DRAG_FAIL_DISTANCE, PROJECT_DRAG_FAIL_DISTANCE])
