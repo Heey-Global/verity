@@ -57,9 +57,9 @@ export type ProjectReorderController = {
   reportExpandedHeight: (id: string, height: number) => void;
   begin: (id: string) => void;
   /** Commit the drop. Runs once per drag however many times it is called. */
-  finish: (order: readonly string[]) => void;
+  finish: (order: readonly string[], token: number) => void;
   /** Commit the drop after `PROJECT_DROP_WATCHDOG_MS` unless `finish` got there first. */
-  armWatchdog: (order: readonly string[]) => void;
+  armWatchdog: (order: readonly string[], token: number) => void;
   /** Let a pickup go whose gesture ended before the pickup reached the JS thread. */
   cancelPickup: (id: string) => void;
   /** Finger travel since pickup — written by the row gesture on the UI thread. */
@@ -98,7 +98,12 @@ export function useProjectReorder({
   latest.current = { order, sortable, onDrop };
   // Set while a drag is live or dropping; cleared by whichever of the drop
   // animation's callback and the watchdog runs first, so a commit happens once.
-  const pending = useRef<{ id: string; watchdog?: ReturnType<typeof setTimeout> } | null>(null);
+  const sequence = useRef(0);
+  const pending = useRef<{
+    id: string;
+    token: number;
+    watchdog?: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   // The preview order follows the grabbed row's offset, whichever of the finger
   // and the collapse compensation moved it: with tall groups folding above, the
@@ -140,7 +145,8 @@ export function useProjectReorder({
       if (pending.current) return;
       const { order: startOrder, sortable: sortableIds } = latest.current;
       if (!startOrder.includes(id)) return;
-      pending.current = { id };
+      const token = ++sequence.current;
+      pending.current = { id, token };
       const range = projectSortableRange(startOrder, sortableIds, id);
       const startShift = projectDragStartOffset(
         startOrder,
@@ -150,7 +156,7 @@ export function useProjectReorder({
       );
       travel.value = 0;
       shift.value = 0;
-      drag.value = { id, startOrder, order: startOrder, range };
+      drag.value = { id, token, startOrder, order: startOrder, range };
       // Runs in step with the fold of the groups above, so the row neither
       // slides up with them nor jumps down ahead of them.
       shift.value =
@@ -166,9 +172,9 @@ export function useProjectReorder({
     [drag, heights, reducedMotion, shift, travel],
   );
 
-  const finish = useCallback((order: readonly string[]) => {
+  const finish = useCallback((order: readonly string[], token: number) => {
     const current = pending.current;
-    if (!current) return;
+    if (!current || current.token !== token) return;
     pending.current = null;
     if (current.watchdog !== undefined) clearTimeout(current.watchdog);
     latest.current.onDrop(order);
@@ -182,16 +188,16 @@ export function useProjectReorder({
   const cancelPickup = useCallback(
     (id: string) => {
       if (pending.current?.id !== id) return;
-      finish(drag.value?.order ?? latest.current.order);
+      finish(latest.current.order, pending.current.token);
     },
     [drag, finish],
   );
 
   const armWatchdog = useCallback(
-    (order: readonly string[]) => {
+    (order: readonly string[], token: number) => {
       const current = pending.current;
-      if (!current || current.watchdog !== undefined) return;
-      current.watchdog = setTimeout(() => finish(order), PROJECT_DROP_WATCHDOG_MS);
+      if (!current || current.token !== token || current.watchdog !== undefined) return;
+      current.watchdog = setTimeout(() => finish(order, token), PROJECT_DROP_WATCHDOG_MS);
     },
     [finish],
   );
@@ -350,7 +356,7 @@ export function useProjectRowDrag({
           }
           const order = current.order;
           drag.value = { ...current, dropping: true };
-          runOnJS(armWatchdog)(order);
+          runOnJS(armWatchdog)(order, current.token!);
           // Freeze a collapse compensation still in flight: the slot below is
           // measured against the compact layout the glide ends in.
           const frozenShift = shift.value;
@@ -360,14 +366,14 @@ export function useProjectRowDrag({
             projectRowPosition(order, id, rows) - projectRowPosition(current.startOrder, id, rows);
           if (reducedMotion) {
             travel.value = slot - frozenShift;
-            runOnJS(finish)(order);
+            runOnJS(finish)(order, current.token!);
             return;
           }
           travel.value = withTiming(
             slot - frozenShift,
             { duration: PROJECT_DROP_DURATION_MS, easing: Easing.out(Easing.cubic) },
             () => {
-              runOnJS(finish)(order);
+              runOnJS(finish)(order, current.token!);
             },
           );
         }),

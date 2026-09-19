@@ -52,7 +52,7 @@ it('folds the groups at pickup and commits the dropped order exactly once', () =
   });
 
   const dropped = ['control', 'b', 'a', 'c'];
-  act(() => hook.result.current.finish(dropped));
+  act(() => hook.result.current.finish(dropped, 1));
   expect(onDrop).toHaveBeenCalledTimes(1);
   expect(onDrop).toHaveBeenCalledWith(dropped);
   expect(hook.result.current.draggingId).toBeNull();
@@ -61,7 +61,7 @@ it('folds the groups at pickup and commits the dropped order exactly once', () =
   act(() => jest.advanceTimersByTime(PROJECT_DRAG_FORGET_MS));
   expect(hook.result.current.drag.value).toBeNull();
 
-  act(() => hook.result.current.finish(dropped));
+  act(() => hook.result.current.finish(dropped, 1));
   act(() => jest.advanceTimersByTime(PROJECT_DROP_WATCHDOG_MS));
   expect(onDrop).toHaveBeenCalledTimes(1);
 });
@@ -71,7 +71,7 @@ it('folds the groups at pickup and commits the dropped order exactly once', () =
 it('commits a drop whose animation never reports back', () => {
   const { hook, onDrop } = controller();
   act(() => hook.result.current.begin('a'));
-  act(() => hook.result.current.armWatchdog(order));
+  act(() => hook.result.current.armWatchdog(order, 1));
   act(() => jest.advanceTimersByTime(PROJECT_DROP_WATCHDOG_MS - 1));
   expect(onDrop).not.toHaveBeenCalled();
   act(() => jest.advanceTimersByTime(1));
@@ -193,7 +193,7 @@ it('releases a same-row pickup when finalize still sees the previous drop', () =
   const { hook, onDrop } = controller();
   act(() => hook.result.current.begin('a'));
   const previous = { ...hook.result.current.drag.value!, dropping: true };
-  act(() => hook.result.current.finish(order));
+  act(() => hook.result.current.finish(order, 1));
   act(() => hook.result.current.begin('a'));
   const row = renderHook(() =>
     useProjectRowDrag({
@@ -211,4 +211,16 @@ it('releases a same-row pickup when finalize still sees the previous drop', () =
   expect(onDrop).toHaveBeenCalledTimes(2);
   act(() => hook.result.current.begin('b'));
   expect(hook.result.current.draggingId).toBe('b');
+});
+
+it('ignores a previous animation completion after the watchdog allows a new pickup', () => {
+  const { hook, onDrop } = controller();
+  act(() => hook.result.current.begin('a'));
+  const token = hook.result.current.drag.value!.token!;
+  act(() => hook.result.current.armWatchdog(order, token));
+  act(() => jest.advanceTimersByTime(PROJECT_DROP_WATCHDOG_MS));
+  act(() => hook.result.current.begin('b'));
+  act(() => hook.result.current.finish(order, token));
+  expect(hook.result.current.draggingId).toBe('b');
+  expect(onDrop).toHaveBeenCalledTimes(1);
 });

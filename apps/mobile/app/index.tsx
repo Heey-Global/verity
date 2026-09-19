@@ -263,7 +263,7 @@ function SessionList({ client }: { client: VerityClient }) {
             'Reorder failed',
             caught instanceof VerityApiError ? caught.message : 'Could not save project order.',
           );
-          setDragOrder(null);
+          setDragOrder((current) => (current === ids ? null : current));
         });
     },
     [client, refreshProjects, sortableGroupIds],
