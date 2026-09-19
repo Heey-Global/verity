@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.16",
+  "version": "1.33.17",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "d9c4217c8ca5ea445915477d49295a889b7ee043",
-  "tag": "mobile-v1.33.16",
-  "branch": "staging-mobile-v1.33.16-d9c4217c8ca5ea445915477d49295a889b7ee043",
-  "baseline": "mobile-v1.33.15",
-  "group": "ca695859-3229-4487-9b8c-761836e1bb17",
+  "commit": "85828d48f92667096109ab285bedd12b6e3fde86",
+  "tag": "mobile-v1.33.17",
+  "branch": "staging-mobile-v1.33.17-85828d48f92667096109ab285bedd12b6e3fde86",
+  "baseline": "mobile-v1.33.16",
+  "group": "9005f88a-8533-4852-aae7-ee418800b05f",
   "notes": [
-    "add Google OAuth client ID setting (#510)",
-    "use provider icons in settings (#509)"
+    "reconnect Google Drive from workspace picker (#519)",
+    "use shared Google OAuth client (#515)"
   ]
 }
