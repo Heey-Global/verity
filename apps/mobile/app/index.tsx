@@ -43,7 +43,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  type GestureResponderEvent,
   Keyboard,
   type LayoutChangeEvent,
   Linking,
@@ -56,16 +55,21 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { useReducedMotion } from 'react-native-reanimated';
+import { GestureDetector } from 'react-native-gesture-handler';
+import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AttentionMarkers } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
 import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
-import { useProjectReorderMotion } from '../components/useProjectReorderMotion';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
 import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
+import {
+  useProjectReorder,
+  useProjectRowDrag,
+  type ProjectReorderController,
+} from '../components/useProjectReorder';
 import { ProjectStatusDot } from '../components/ProjectStatusDot';
 import { ServerAttentionBanner, StaleBanner } from '../components/ServerAttentionBanner';
 import { UnreadDot } from '../components/UnreadDot';
@@ -78,12 +82,6 @@ import { prefetchBranches } from '../lib/branchesPrefetch';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
-import {
-  projectDragOffsets,
-  projectDragStartOffset,
-  projectDragTargetIndex,
-  settleProjectDrop,
-} from '../lib/projectReorder';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
@@ -226,24 +224,64 @@ function SessionList({ client }: { client: VerityClient }) {
     () => projectGroups(projects, sessions, devServersByProject, detectionsByProject, baseUrl),
     [baseUrl, detectionsByProject, devServersByProject, projects, sessions],
   );
-  const reducedMotion = useReducedMotion();
-  const dragTranslation = useRef(new Animated.Value(0)).current;
-  const droppingProject = useRef(false);
-  useEffect(() => () => dragTranslation.stopAnimation(), [dragTranslation]);
-  const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
-  const dragInitialOrder = useRef<string[]>([]);
+  // The order a drop chose, applied until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
-  const dragOrderRef = useRef<string[] | null>(null);
-  const orderedGroups = useMemo(
-    () =>
-      applyProjectOrder(groups, draggingProjectId === null ? dragOrder : dragInitialOrder.current),
-    [groups, dragOrder, draggingProjectId],
-  );
-  const activeGroups = useMemo(
+  const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
+  const liveActiveGroups = useMemo(
     () => orderedGroups.filter((group) => !isPausedProjectGroup(group)),
     [orderedGroups],
   );
   const pausedGroups = useMemo(() => orderedGroups.filter(isPausedProjectGroup), [orderedGroups]);
+  const liveActiveGroupIds = useMemo(
+    () => liveActiveGroups.map((group) => group.id),
+    [liveActiveGroups],
+  );
+  const sortableGroupIds = useMemo(
+    () => liveActiveGroups.flatMap((group) => (isReorderableGroup(group) ? [group.id] : [])),
+    [liveActiveGroups],
+  );
+  // Saves run one after another: a second drag may start while the first is
+  // still saving, and two requests in flight could land in either order.
+  const reorderSave = useRef(Promise.resolve());
+  const onDropProject = useCallback(
+    (order: readonly string[]) => {
+      // The drag saw the rows as they were at pickup; a poll since then may have
+      // added or removed a project. Save the live set, in the dropped order, with
+      // anything the drag never saw appended where a new project lands anyway.
+      const dropped = new Set(order);
+      const ids = [
+        ...order.filter((id) => sortableGroupIds.includes(id)),
+        ...sortableGroupIds.filter((id) => !dropped.has(id)),
+      ];
+      if (ids.every((id, i) => id === sortableGroupIds[i])) return;
+      setDragOrder(ids);
+      reorderSave.current = reorderSave.current
+        .then(() => client.reorderProjects(ids))
+        .then(() => refreshProjects())
+        .catch((caught) => {
+          Alert.alert(
+            'Reorder failed',
+            caught instanceof VerityApiError ? caught.message : 'Could not save project order.',
+          );
+          setDragOrder((current) => (current === ids ? null : current));
+        });
+    },
+    [client, refreshProjects, sortableGroupIds],
+  );
+  const reorder = useProjectReorder({
+    order: liveActiveGroupIds,
+    sortable: sortableGroupIds,
+    onDrop: onDropProject,
+  });
+  const draggingProjectId = reorder.draggingId;
+  // A poll landing mid-drag must not reshuffle the rows under the finger: the
+  // list keeps the groups it was showing at pickup until the drop commits.
+  const frozenActiveGroups = useRef(liveActiveGroups);
+  useEffect(() => {
+    if (draggingProjectId === null) frozenActiveGroups.current = liveActiveGroups;
+  }, [draggingProjectId, liveActiveGroups]);
+  const activeGroups = draggingProjectId === null ? liveActiveGroups : frozenActiveGroups.current;
+  const activeGroupIds = useMemo(() => activeGroups.map((group) => group.id), [activeGroups]);
   const defaultNewSessionProject = useMemo(
     () =>
       projects.find(isVerityControlPlaneProject) ??
@@ -281,15 +319,6 @@ function SessionList({ client }: { client: VerityClient }) {
       return changed ? next : current;
     });
   }, [projects]);
-  const dragHeights = useRef(new Map<string, number>());
-  const compactProjectGroupHeights = useRef(new Map<string, number>());
-  const projectGroupHeights = useRef(new Map<string, number>());
-  const dragStartOffset = useRef(0);
-  const reorderSaving = useRef(false);
-  const previewOffsets = useMemo(
-    () => projectDragOffsets(dragInitialOrder.current, dragOrder ?? [], dragHeights.current),
-    [dragOrder],
-  );
   // Keep the optimistic order until a poll actually confirms it. Refresh can
   // fail silently, so completion of its promise does not prove reconciliation.
   useEffect(() => {
@@ -305,7 +334,6 @@ function SessionList({ client }: { client: VerityClient }) {
       setDragOrder(null);
     }
   }, [projects, draggingProjectId, dragOrder]);
-  const dragStartPageY = useRef<number | null>(null);
   const [refreshingOverview, setRefreshingOverview] = useState(false);
   const [updatingProjectIds, setUpdatingProjectIds] = useState<Set<string>>(() => new Set());
   const updatingProjectIdsRef = useRef(new Set<string>());
@@ -481,10 +509,6 @@ function SessionList({ client }: { client: VerityClient }) {
 
   const renderGroup = useCallback(
     (item: SessionProjectGroup) => {
-      const reorderable =
-        item.project !== undefined &&
-        item.project.state !== 'absent' &&
-        !isVerityControlPlaneProject(item.project);
       return (
         <ProjectGroup
           group={item}
@@ -529,133 +553,10 @@ function SessionList({ client }: { client: VerityClient }) {
               },
             });
           }}
-          onLongPressProject={
-            reorderable
-              ? (pageY) => {
-                  if (refreshingOverview || reorderSaving.current || droppingProject.current)
-                    return;
-                  const projectIds = activeGroups.flatMap((group) =>
-                    group.project && !isVerityControlPlaneProject(group.project)
-                      ? [group.project.id]
-                      : [],
-                  );
-                  const startOffset = projectDragStartOffset(
-                    projectIds,
-                    item.project!.id,
-                    projectGroupHeights.current,
-                    compactProjectGroupHeights.current,
-                  );
-                  const initialOrder = moveProjectIdToIndex(
-                    projectIds,
-                    item.project!.id,
-                    projectDragTargetIndex(
-                      projectIds,
-                      item.project!.id,
-                      startOffset,
-                      dragHeights.current,
-                    ),
-                  );
-                  dragStartOffset.current = startOffset;
-                  dragTranslation.setValue(startOffset);
-                  dragOrderRef.current = initialOrder;
-                  dragInitialOrder.current = projectIds;
-                  dragStartPageY.current = pageY;
-                  setDragOrder(initialOrder);
-                  setDraggingProjectId(item.project!.id);
-                }
-              : undefined
-          }
-          onProjectLayout={
-            reorderable
-              ? (height, reorderHeight) => {
-                  compactProjectGroupHeights.current.set(item.project!.id, height);
-                  dragHeights.current.set(item.project!.id, reorderHeight);
-                }
-              : undefined
-          }
-          onProjectGroupLayout={
-            reorderable && draggingProjectId === null
-              ? (height) => {
-                  projectGroupHeights.current.set(item.project!.id, height);
-                }
-              : undefined
-          }
-          onProjectDragMove={
-            reorderable && item.project && draggingProjectId === item.project.id
-              ? (_projectId, pageY) => {
-                  const startPageY = dragStartPageY.current;
-                  if (startPageY === null || droppingProject.current) return;
-                  const translation = dragStartOffset.current + pageY - startPageY;
-                  dragTranslation.setValue(translation);
-                  const targetIndex = projectDragTargetIndex(
-                    dragInitialOrder.current,
-                    item.project!.id,
-                    translation,
-                    dragHeights.current,
-                  );
-                  const next = moveProjectIdToIndex(
-                    dragOrderRef.current,
-                    item.project!.id,
-                    targetIndex,
-                  );
-                  if (next === dragOrderRef.current) return;
-                  dragOrderRef.current = next;
-                  setDragOrder(next);
-                }
-              : undefined
-          }
-          onProjectDragEnd={
-            reorderable && item.project && draggingProjectId === item.project.id
-              ? () => {
-                  if (reorderSaving.current || droppingProject.current) return;
-                  droppingProject.current = true;
-                  const ids =
-                    dragOrderRef.current ??
-                    activeGroups.flatMap((group) =>
-                      group.project && !isVerityControlPlaneProject(group.project)
-                        ? [group.project.id]
-                        : [],
-                    );
-                  const finishDrop = () => {
-                    droppingProject.current = false;
-                    setDraggingProjectId(null);
-                    reorderSaving.current = true;
-                    dragOrderRef.current = null;
-                    dragInitialOrder.current = [];
-                    dragStartPageY.current = null;
-                    dragStartOffset.current = 0;
-                    void client
-                      .reorderProjects(ids)
-                      .then(() => refreshProjects())
-                      .catch((caught) => {
-                        Alert.alert(
-                          'Reorder failed',
-                          caught instanceof VerityApiError
-                            ? caught.message
-                            : 'Could not save project order.',
-                        );
-                        setDragOrder(null);
-                      })
-                      .finally(() => {
-                        reorderSaving.current = false;
-                      });
-                  };
-                  const target =
-                    projectDragOffsets(dragInitialOrder.current, ids, dragHeights.current).get(
-                      item.project!.id,
-                    ) ?? 0;
-                  settleProjectDrop({
-                    translation: dragTranslation,
-                    target,
-                    reducedMotion,
-                    settle: finishDrop,
-                  });
-                }
-              : undefined
-          }
-          dragTranslation={dragTranslation}
-          dragOffset={item.project ? (previewOffsets.get(item.project.id) ?? 0) : 0}
-          dragging={item.project?.id === draggingProjectId}
+          reorder={reorder}
+          renderedOrder={activeGroupIds}
+          sortable={isReorderableGroup(item)}
+          dragging={draggingProjectId === item.id}
           reordering={draggingProjectId !== null}
           onRenameSession={setRenaming}
           onSelectSession={wide ? setSelectedId : undefined}
@@ -673,14 +574,11 @@ function SessionList({ client }: { client: VerityClient }) {
       );
     },
     [
-      activeGroups,
+      activeGroupIds,
       collapsedOverride,
       draggingProjectId,
       enqueueProjectCollapse,
-      refreshingOverview,
-      dragTranslation,
-      previewOffsets,
-      reducedMotion,
+      reorder,
       wide,
       selectedId,
       unread,
@@ -757,6 +655,9 @@ function SessionList({ client }: { client: VerityClient }) {
       {projectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
       ) : null}
+      {/* Pinned above the list, not rendered as its header: the usage meters are
+          the one thing on this screen that must not scroll, drag or fold away. */}
+      {providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null}
       <ProjectOverviewList
         draggingProjectId={draggingProjectId}
         refreshing={refreshingOverview}
@@ -767,9 +668,6 @@ function SessionList({ client }: { client: VerityClient }) {
         renderItem={renderItem}
         contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
         ItemSeparatorComponent={GroupSeparator}
-        ListHeaderComponent={
-          providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null
-        }
         ListEmptyComponent={
           pausedGroups.length === 0 ? (
             <View style={styles.emptyOverview}>
@@ -1174,24 +1072,17 @@ function applyProjectOrder(
   );
 }
 
-function moveProjectIdToIndex(
-  ids: string[] | null,
-  projectId: string,
-  requestedIndex: number,
-): string[] | null {
-  if (!ids) return ids;
-  const from = ids.indexOf(projectId);
-  if (from < 0) return ids;
-  const to = Math.max(0, Math.min(ids.length - 1, requestedIndex));
-  if (from === to) return ids;
-  const next = [...ids];
-  const [moved] = next.splice(from, 1);
-  next.splice(to, 0, moved!);
-  return next;
-}
-
 function isPausedProjectGroup(group: SessionProjectGroup): boolean {
   return group.project?.state === 'absent' && group.project.setupStatus !== 'pending';
+}
+
+/** A live project row the user may drag; the control plane and non-project rows keep their slot. */
+function isReorderableGroup(group: SessionProjectGroup): boolean {
+  return (
+    group.project !== undefined &&
+    group.project.state !== 'absent' &&
+    !isVerityControlPlaneProject(group.project)
+  );
 }
 
 function ProjectGroup({
@@ -1199,14 +1090,10 @@ function ProjectGroup({
   wide,
   collapsed,
   onToggle,
-  onLongPressProject,
-  onProjectLayout,
-  onProjectGroupLayout,
-  onProjectDragMove,
-  onProjectDragEnd,
+  reorder,
+  renderedOrder,
+  sortable,
   dragging,
-  dragTranslation,
-  dragOffset,
   reordering,
   onRenameSession,
   onSelectSession,
@@ -1225,15 +1112,12 @@ function ProjectGroup({
   wide: boolean;
   collapsed: boolean;
   onToggle: () => void;
-  onLongPressProject?: ((pageY: number) => void) | undefined;
-  onProjectLayout?: ((height: number, reorderHeight: number) => void) | undefined;
-  onProjectGroupLayout?: ((height: number) => void) | undefined;
-  onProjectDragMove?: ((projectId: string, pageY: number) => void) | undefined;
-  onProjectDragEnd?: (() => void) | undefined;
-  dragging?: boolean | undefined;
-  dragTranslation: Animated.Value;
-  dragOffset: number;
-  reordering?: boolean | undefined;
+  reorder: ProjectReorderController;
+  /** The row order the list is painting right now. */
+  renderedOrder: readonly string[];
+  sortable: boolean;
+  dragging: boolean;
+  reordering: boolean;
   onRenameSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
   // Wide layout only: create a session inline for this project (no /new route).
@@ -1250,11 +1134,11 @@ function ProjectGroup({
   repairingProjectIds?: ReadonlySet<string>;
 }) {
   const { theme } = useUnistyles();
-  const translation = useProjectReorderMotion({
-    dragging,
-    reordering,
-    offset: dragOffset,
-    dragTranslation,
+  const { gesture, style: dragStyle } = useProjectRowDrag({
+    id: group.id,
+    reorder,
+    renderedOrder,
+    enabled: sortable,
   });
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
@@ -1285,134 +1169,138 @@ function ProjectGroup({
   const sandboxUpdatePending =
     group.project?.sandboxUpdate?.state === 'available' &&
     group.project.sandboxUpdate.selfRepair === 'converging';
-  const onTouchMove = (event: GestureResponderEvent) => {
-    if (!group.project || !onProjectDragMove) return;
-    onProjectDragMove(group.project.id, event.nativeEvent.pageY);
+  // Both heights are reported as the row's pitch — the measured height plus the
+  // gap to the next row and, on wide layouts, the card border — so that their
+  // difference is exactly the session block a fold removes. The compact one is
+  // the header alone: what the row occupies once every group is folded.
+  const pitch = (height: number) => height + theme.spacing.md + (wide ? 2 : 0);
+  const onHeaderLayout = (event: LayoutChangeEvent) => {
+    reorder.reportCompactHeight(group.id, pitch(event.nativeEvent.layout.height));
   };
-  const onLayout = (event: LayoutChangeEvent) => {
-    const height = event.nativeEvent.layout.height;
-    onProjectLayout?.(height, height + theme.spacing.md + (wide ? 2 : 0));
+  // Measured while idle only: mid-drag the group is folded, and its height
+  // would say nothing about how far the rows below it moved up.
+  const onGroupLayout = (event: LayoutChangeEvent) => {
+    if (!reordering) reorder.reportExpandedHeight(group.id, pitch(event.nativeEvent.layout.height));
   };
   return (
-    <Animated.View
+    <Reanimated.View
       style={[
         styles.projectGroup,
         !wide && styles.projectGroupFlat,
         dragging ? styles.projectGroupDragging : null,
-        { transform: [{ translateY: translation }] },
+        dragStyle,
       ]}
-      onTouchMove={dragging ? onTouchMove : undefined}
-      onTouchEnd={dragging ? onProjectDragEnd : undefined}
-      onTouchCancel={dragging ? onProjectDragEnd : undefined}
-      onLayout={(event) => onProjectGroupLayout?.(event.nativeEvent.layout.height)}
+      onLayout={onGroupLayout}
     >
       <View
-        onLayout={onLayout}
+        onLayout={onHeaderLayout}
         style={[
           styles.projectHeader,
           headerHovered ? styles.projectHeaderHovered : null,
           !collapsed && sessionCount > 0 ? styles.projectHeaderOpen : null,
         ]}
       >
-        <Pressable
-          style={({ pressed }) => [styles.projectToggle, pressed ? styles.rowPressed : null]}
-          onHoverIn={() => setHeaderHovered(true)}
-          onHoverOut={() => setHeaderHovered(false)}
-          onPress={reordering ? undefined : onToggle}
-          onLongPress={(event) => onLongPressProject?.(event.nativeEvent.pageY)}
-          delayLongPress={260}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: !collapsed }}
-          accessibilityLabel={
-            reordering
-              ? `Move ${group.title}`
-              : `${collapsed ? 'Expand' : 'Collapse'} ${group.title}`
-          }
-        >
-          {/* Shared grid: [chevron col] [dot col] [title block]. Sessions reuse the
+        {/* A held press on the header picks the row up; a tap still toggles it,
+            and a swipe before the hold elapses scrolls the list as usual. */}
+        <GestureDetector gesture={gesture}>
+          <Pressable
+            style={({ pressed }) => [styles.projectToggle, pressed ? styles.rowPressed : null]}
+            onHoverIn={() => setHeaderHovered(true)}
+            onHoverOut={() => setHeaderHovered(false)}
+            onPress={reordering ? undefined : onToggle}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: !collapsed }}
+            accessibilityLabel={
+              reordering
+                ? `Move ${group.title}`
+                : `${collapsed ? 'Expand' : 'Collapse'} ${group.title}`
+            }
+          >
+            {/* Shared grid: [chevron col] [dot col] [title block]. Sessions reuse the
               same two leading columns (chevron empty) so dots + titles line up. */}
-          <View style={styles.colChevron}>
-            <Icon
-              name={collapsed ? 'chevron-right' : 'chevron-down'}
-              size={18}
-              color={theme.colors.textMuted}
-            />
-          </View>
-          <View style={styles.colDot}>
-            <ProjectStatusDot badge={badge} />
-          </View>
-          <View style={styles.titleBlock}>
-            <Text style={styles.projectTitle} numberOfLines={1}>
-              {group.title}
-            </Text>
-            {group.portLinks.length > 0 ||
-            group.setupLabel ||
-            group.warningLabel ||
-            group.subtitle ||
-            sandboxUpdatePending ? (
-              <View style={styles.projectMetaRow}>
-                {group.portLinks.map((port) => (
-                  <ProjectPortChip key={port.id} port={port} />
-                ))}
-                {group.setupLabel ? (
-                  group.project?.setupStatus === 'pending' ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Continue setup for ${group.title}`}
-                      onPress={() =>
-                        router.push({
-                          pathname: '/new-project',
-                          params: { projectId: group.project!.id },
-                        })
-                      }
-                    >
-                      <Text style={styles.projectSetupLabel} numberOfLines={1}>
+            <View style={styles.colChevron}>
+              <Icon
+                name={collapsed ? 'chevron-right' : 'chevron-down'}
+                size={18}
+                color={theme.colors.textMuted}
+              />
+            </View>
+            <View style={styles.colDot}>
+              <ProjectStatusDot badge={badge} />
+            </View>
+            <View style={styles.titleBlock}>
+              <Text style={styles.projectTitle} numberOfLines={1}>
+                {group.title}
+              </Text>
+              {group.portLinks.length > 0 ||
+              group.setupLabel ||
+              group.warningLabel ||
+              group.subtitle ||
+              sandboxUpdatePending ? (
+                <View style={styles.projectMetaRow}>
+                  {group.portLinks.map((port) => (
+                    <ProjectPortChip key={port.id} port={port} />
+                  ))}
+                  {group.setupLabel ? (
+                    group.project?.setupStatus === 'pending' ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Continue setup for ${group.title}`}
+                        onPress={() =>
+                          router.push({
+                            pathname: '/new-project',
+                            params: { projectId: group.project!.id },
+                          })
+                        }
+                      >
+                        <Text style={styles.projectSetupLabel} numberOfLines={1}>
+                          {group.setupLabel}
+                        </Text>
+                      </Pressable>
+                    ) : (
+                      <Text
+                        style={[
+                          styles.projectSetupLabel,
+                          badge.needsRepair ? styles.projectSetupLabelBroken : null,
+                        ]}
+                        numberOfLines={1}
+                      >
                         {group.setupLabel}
                       </Text>
-                    </Pressable>
-                  ) : (
+                    )
+                  ) : group.subtitle ? (
                     <Text
                       style={[
-                        styles.projectSetupLabel,
+                        styles.projectSubtitle,
                         badge.needsRepair ? styles.projectSetupLabelBroken : null,
                       ]}
                       numberOfLines={1}
                     >
-                      {group.setupLabel}
+                      {group.subtitle}
                     </Text>
-                  )
-                ) : group.subtitle ? (
-                  <Text
-                    style={[
-                      styles.projectSubtitle,
-                      badge.needsRepair ? styles.projectSetupLabelBroken : null,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {group.subtitle}
-                  </Text>
-                ) : null}
-                {/* Sits alongside the setup label rather than replacing it: a
+                  ) : null}
+                  {/* Sits alongside the setup label rather than replacing it: a
                     project can be mid-setup AND carry a provision warning, and
                     dropping either one loses information the other doesn't
                     carry. */}
-                {group.warningLabel ? (
-                  <Text style={styles.projectWarningLabel} numberOfLines={1}>
-                    {group.warningLabel}
-                  </Text>
-                ) : null}
-                {sandboxUpdatePending ? (
-                  <View style={styles.projectUpdatePending} accessibilityRole="progressbar">
-                    <ActivityIndicator size="small" color={theme.colors.textMuted} />
-                    <Text style={styles.projectSubtitle} numberOfLines={1}>
-                      Waiting to update sandbox…
+                  {group.warningLabel ? (
+                    <Text style={styles.projectWarningLabel} numberOfLines={1}>
+                      {group.warningLabel}
                     </Text>
-                  </View>
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-        </Pressable>
+                  ) : null}
+                  {sandboxUpdatePending ? (
+                    <View style={styles.projectUpdatePending} accessibilityRole="progressbar">
+                      <ActivityIndicator size="small" color={theme.colors.textMuted} />
+                      <Text style={styles.projectSubtitle} numberOfLines={1}>
+                        Waiting to update sandbox…
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+          </Pressable>
+        </GestureDetector>
         <View style={[styles.projectActions, reordering ? styles.projectActionsHidden : null]}>
           {/* Repair is only offered for a live project row whose reconciled state is
               failed. Missing rows may be soft-deleted and cannot use this endpoint. */}
@@ -1563,7 +1451,7 @@ function ProjectGroup({
           </View>
         </ProjectSessionsCollapse>
       ) : null}
-    </Animated.View>
+    </Reanimated.View>
   );
 }
 
@@ -1853,7 +1741,7 @@ const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
 
 function ProviderLimitMeters({ rows }: { rows: ProviderLimitRow[] }) {
   return (
-    <View style={[styles.limitMeters, styles.limitMetersHeader]}>
+    <View style={styles.limitMeters}>
       {rows.map((row) => (
         <View key={row.providerLabel} style={styles.limitMeterRow}>
           <Text style={styles.limitProvider} numberOfLines={1}>
@@ -2264,11 +2152,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surfaceAlt,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.border,
-  },
-  limitMetersHeader: {
-    marginTop: -theme.spacing.md,
-    marginHorizontal: -theme.spacing.lg,
-    marginBottom: theme.spacing.md,
   },
   limitMeterRow: {
     minHeight: 26,
