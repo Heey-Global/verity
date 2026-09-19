@@ -113,19 +113,23 @@ console.warn = (): void => originalConsoleWarn('runner worker dependency reporte
 if (
   request.trustedCliExecution === true &&
   request.backend !== 'claude-acp' &&
-  request.backend !== 'codex-acp'
+  request.backend !== 'codex-acp' &&
+  request.backend !== 'opencode-acp'
 ) {
   throw new Error('trusted CLI execution requires a supported brokered-tool backend');
 }
 // Brokered tools are exposed only through the ACP MCP gateway — and, within ACP,
-// only to the agents admitted to it. `opencode-acp` is an ACP backend and is
-// deliberately not one of them (see `carriesBrokeredSecretTools` in conductor.ts),
-// so both gates above name their members rather than asking whether the transport
-// is ACP: the two questions have the same answer today only by decision.
+// only to the agents admitted to it. `opencode-acp` is one of them since ADR 0014
+// Amendment 4, which is a decision about whose secrets it may spend and not a
+// consequence of it speaking ACP. Both gates therefore still name their members
+// rather than asking whether the transport is ACP: the two questions have the same
+// answer today only because every current member was admitted one at a time. A
+// fourth adapter arrives here refused until that decision is taken for it too.
 if (
   request.mcpGatewayToken !== undefined &&
   request.backend !== 'claude-acp' &&
-  request.backend !== 'codex-acp'
+  request.backend !== 'codex-acp' &&
+  request.backend !== 'opencode-acp'
 ) {
   throw new Error('the MCP gateway bearer is not supported by this runner backend');
 }

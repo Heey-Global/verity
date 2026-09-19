@@ -760,11 +760,16 @@ export class SupervisorRunnerClient implements RunnerClient {
   private readonly resumeOffsets = new Map<string, number>();
   /** True for the ACP transports that carry brokered secret tools, which reach them
    * over the MCP gateway instead of the worker's attested native channel (ADR 0014
-   * D1). Written out by hand rather than derived from the ACP backend list, because
-   * it is not "is this ACP" — `opencode-acp` is an ACP transport and is deliberately
-   * NOT here: it carries no brokered tools, so minting a gateway bearer for it would
-   * hand a credential to a turn with nothing to spend it on. A fourth adapter has to
-   * make that decision for itself, which is the point of listing them. */
+   * D1). Still written out by hand rather than derived from the ACP backend list,
+   * because it is not "is this ACP": `opencode-acp` is here since ADR 0014
+   * Amendment 4 by decision, not because it speaks the protocol. A fourth adapter
+   * has to make that decision for itself, which is the point of listing them.
+   *
+   * This flag is where the decision is ENFORCED — everything downstream re-checks
+   * it. Minting for a backend the supervisor's `ACP_WORKER_BACKENDS` does not know
+   * does not widen that backend's authority, it breaks it: the supervisor answers
+   * `invalid mcpGatewayToken` and the turn dies at start-turn. The two lists move
+   * together or not at all. */
   private readonly acpBackend: boolean;
   /** Turn starts in flight through THIS client — the number that says whether a slow
    * start is one turn being slow or a queue of them piling up. */
@@ -778,7 +783,10 @@ export class SupervisorRunnerClient implements RunnerClient {
       throw new Error('backend does not support the supervisor worker');
     }
     this.workerBackend = backend.runnerSupervisorBackend;
-    this.acpBackend = this.workerBackend === 'claude-acp' || this.workerBackend === 'codex-acp';
+    this.acpBackend =
+      this.workerBackend === 'claude-acp' ||
+      this.workerBackend === 'codex-acp' ||
+      this.workerBackend === 'opencode-acp';
     if (options.onTelemetry !== undefined) processEventLoopDelay.arm();
     const turnsDir = join(options.runtimeDir, 'turns');
     const artifact = (turnId: string | undefined, name: string): string => {
@@ -1166,6 +1174,38 @@ export class SupervisorRunnerClient implements RunnerClient {
   }
 
   /**
+   * Name the one start-turn refusal this deployment cannot explain from the message
+   * it gets: an OpenCode turn rejected by a Sandbox older than OpenCode's admission
+   * to the brokered tools.
+   *
+   * The Server mints a gateway bearer for `opencode-acp` since ADR 0014 Amendment 4.
+   * A supervisor provisioned before that release carries an `ACP_WORKER_BACKENDS`
+   * holding Claude and Codex alone and answers `invalid mcpGatewayToken` — failing
+   * CLOSED, which is the right direction for an old boundary meeting a new policy,
+   * but four words that read like a Server bug. Nothing else catches it: ADR 0006 D9
+   * has that Sandbox attesting cleanly by design, because a container outliving a
+   * Server deploy is the normal case, and the refusal is the first and only symptom.
+   *
+   * Only the MESSAGE changes. Recognition is by text, which the {@link
+   * SupervisorStartRequestError.decided} flag deliberately is not — but a miss here
+   * costs the explanation and nothing else: a decided refusal still fails the start,
+   * by the same path, with the supervisor's own error kept as `cause`. Deliberately a
+   * plain Error rather than a {@link RunnerWorkerStartFailure}: this is the same
+   * refusal it was before, and promoting it to a type callers branch on would change
+   * recovery behaviour to improve a sentence. Narrowed to the backend whose admission
+   * is new, so a genuine bearer defect on Claude or Codex keeps its own error rather
+   * than being explained away as an outdated container.
+   */
+  private explainStaleGatewayRefusal(cause: Error): Error {
+    if (this.workerBackend !== 'opencode-acp' || !cause.message.includes('invalid mcpGatewayToken'))
+      return cause;
+    return new Error(
+      `${cause.message} — this Sandbox predates OpenCode's admission to the brokered Verity tools (ADR 0014 Amendment 4), so its supervisor refuses the per-turn gateway bearer the Server now mints for OpenCode. Recreate the project container on a current toolkit, or run this session on Claude or Codex.`,
+      { cause },
+    );
+  }
+
+  /**
    * Issue `start-turn`, and treat a lost or late RESPONSE as a question about the
    * turn rather than as its death.
    *
@@ -1225,7 +1265,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       // re-read the state it already told us about. Note this deliberately does NOT
       // cover an oversize RESPONSE: that is an answer we failed to read, so the
       // start may well have succeeded and reconciliation is exactly right for it.
-      if (error.decided) throw error.cause;
+      if (error.decided) throw this.explainStaleGatewayRefusal(error.cause);
       // An unacknowledged start may still be one a supervisor that predates
       // `startAck` is quietly working on — it answers only once, at the end, so its
       // silence is not a symptom. Give reconciliation the rest of the start budget
@@ -1268,7 +1308,7 @@ export class SupervisorRunnerClient implements RunnerClient {
         // exists so this method can read `accepted`, and letting it escape would give
         // callers two different error types for one condition.
         if (!(resent instanceof SupervisorStartRequestError)) throw resent;
-        if (resent.decided) throw resent.cause;
+        if (resent.decided) throw this.explainStaleGatewayRefusal(resent.cause);
         // A lost answer to the SECOND frame is the dangerous one: the turn may now be
         // running under a worker nobody is tailing, and unlike the first attempt there
         // is no third send to fall back on. So ask the same question again — the state

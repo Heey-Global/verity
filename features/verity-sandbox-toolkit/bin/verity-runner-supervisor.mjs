@@ -59,16 +59,17 @@ const WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp', 'pi'
 // (ADR 0014 D1). Only these may
 // carry a gateway bearer on start-turn.
 //
-// `opencode-acp` is deliberately absent even though it is an ACP transport and
-// OpenCode advertises `mcpCapabilities.http`: which agents may spend the operator's
-// secrets is a decision, not a side effect of the protocol an agent happens to
-// speak. Admitting it means changing every gate that names the pair by hand, and
-// they are deliberately separate so none can drift into the others by accident:
-// this set, `carriesBrokeredSecretTools` (packages/session/src/conductor.ts), the
+// `opencode-acp` joined them with ADR 0014 Amendment 4: which agents may spend the
+// operator's secrets is a decision, and that decision has now been taken for
+// OpenCode. It is still NOT the same question as "is this ACP" — a fourth adapter
+// has to be admitted here deliberately, not by speaking the protocol. The gates
+// stay separate literals so none can drift into the others by accident: this set,
+// `carriesBrokeredSecretTools` (packages/session/src/turn-system-prompt.ts), the
 // `acpBackend` flag that decides whether a bearer is minted at all
 // (packages/session/src/runner-supervisor-client.ts), and the two independent
-// re-checks in packages/session/src/runner-worker-entry.ts.
-const ACP_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp']);
+// re-checks in packages/session/src/runner-worker-entry.ts. They must agree; a
+// member added to one alone refuses the turn it was meant to admit.
+const ACP_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp']);
 // The subset of WORKER_BACKENDS that the PRODUCTION supervisor actually launches.
 // A start-turn for any backend outside this set is rejected at runtime (see the
 // workerBackends gate below), so it is the real capability boundary — distinct

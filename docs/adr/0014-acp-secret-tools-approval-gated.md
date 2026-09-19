@@ -480,3 +480,64 @@ than returned as fragments that could split one credential across approvals.
 Responses exceeding the bounded raw assembly buffer are likewise represented by
 an omission marker rather than returning a tail that may have lost a credential
 prefix.
+
+## Amendment 4 (2026-09-19) — OpenCode is admitted to the gateway
+
+ADR 0012 Amendment 4 moved OpenCode onto ACP and deliberately left it outside the
+brokered tools, naming the reason: which agents may spend the operator's secrets
+is a decision, not a consequence of the transport an agent happens to speak. This
+amendment takes that decision. `opencode-acp` now carries the same brokered tools
+as `claude-acp` and `codex-acp`: a per-turn gateway bearer is minted for its
+turns, its `session/new` offers the loopback MCP server, `trustedCliExecution` is
+granted to it, and the project's secret NAMES are listed in its system prompt.
+
+**Nothing about the guarantee changes, because there was never an attestation to
+weaken.** D1 already states that the gateway is approval-gated rather than
+attested, on every transport it serves: the bearer identifies the turn, it
+authorizes nothing, and a same-UID workspace process that reads it from `/proc`
+gets a card the operator did not expect. That is the exposure Claude and Codex
+already run with. OpenCode joins a channel whose security rests on D2 — no secret
+resolves without an operator decision covering the call — and D2 is a property of
+the channel, not of the agent on the other end of it.
+
+**What made it a decision anyway** is the other end. The tools are as strong as
+the agent is trustworthy with a card in front of the operator, and admitting an
+agent means accepting that its turns can ask. That question was answered for
+Claude and Codex when D1 shipped and is now answered for OpenCode, which runs
+behind the same spawn broker, in the same Sandbox, under the same per-turn
+identity, and — unlike either of them — under `openCodeMode`, which collapses
+every Verity posture into `build` or `plan`. An unattended OpenCode turn therefore
+gets fewer tools than the same turn on Claude, never more.
+
+**D3 is unchanged and already correct for it.** `brokeredGrantChannel` has
+answered `acp` for `opencode-acp` since before this amendment, so a standing grant
+created on the restricted channel is what an OpenCode turn redeems against, and a
+native-path `forever` grant does not auto-approve on it. That arm needed no edit;
+it was written for this day.
+
+**The admission is still not "is it ACP".** Four gates name their members by hand
+— `ACP_WORKER_BACKENDS` in the supervisor, the `acpBackend` flag that mints the
+bearer, `carriesBrokeredSecretTools`, and the runner worker's two independent
+re-checks — plus the Server's bearer-registry assembly check. They are separate
+literals so none can drift into the others, and they must move together: a member
+added to one alone either refuses the turn it meant to admit or starts it
+tool-less. A fourth adapter arrives refused until this document says otherwise.
+
+### Consequences
+
+- **A Sandbox older than this release refuses every OpenCode turn.** ADR 0006 D9
+  has such a container attesting cleanly — a Server outliving a Sandbox is the
+  normal case — but its supervisor's `ACP_WORKER_BACKENDS` predates the decision
+  and answers `invalid mcpGatewayToken` to the bearer the Server now mints. That
+  is the old boundary failing closed, which is the right direction, and it is not
+  recoverable at runtime: the fix is to recreate the project container on a
+  current toolkit. The Server recognizes this one refusal and says so rather than
+  passing on four words about a bearer
+  (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`).
+- Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
+  Amendment 4's, for a different reason — the fixed control-plane Runner carries
+  no OpenCode configuration or egress material — and this amendment does not
+  touch it.
+- `opencode-mcp` in `@verity/secret-contracts` still names nothing. It is a label
+  for an ATTESTED native relay; gateway calls carry `acp-mcp`, whose premise is
+  that nothing attests them.

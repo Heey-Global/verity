@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Backend } from './backend.js';
+import type { Backend, RunnerSupervisorBackend } from './backend.js';
 import { InMemoryEventBus } from './bus.js';
 import type { RunnerFrameStore } from './file-tail-runner-client.js';
 import { stampFrame } from './runner-transport.js';
@@ -488,7 +488,7 @@ describe('SupervisorRunnerClient', () => {
     });
   });
 
-  it('mints no bearer for an OpenCode ACP turn', async () => {
+  it('mints a bearer for an OpenCode ACP turn', async () => {
     const issued: string[] = [];
     const request = await captureStartRequest(
       'opencode-acp-gateway-runtime',
@@ -507,14 +507,103 @@ describe('SupervisorRunnerClient', () => {
       },
     );
     // This is where the decision is actually enforced — every gate downstream is a
-    // re-check. Minting here would not quietly widen OpenCode's authority, it would
-    // BREAK it: the supervisor answers `invalid mcpGatewayToken` for a bearer on a
-    // backend outside `ACP_WORKER_BACKENDS`, so every OpenCode turn would fail at
-    // start-turn. Both directions of the invariant fail here first (ADR 0014 D1,
-    // ADR 0012 Amendment 4).
-    expect(issued).toEqual([]);
-    expect(request).not.toHaveProperty('mcpGatewayToken');
-    expect(request).toMatchObject({ backend: 'opencode-acp', trustedCliExecution: false });
+    // re-check (ADR 0014 Amendment 4). The failure it guards is not a widened
+    // OpenCode, it is a BROKEN one in either direction: minting for a supervisor
+    // whose `ACP_WORKER_BACKENDS` does not know the backend gets `invalid
+    // mcpGatewayToken` and no turn at all, while withholding the bearer from an
+    // admitted backend starts the agent with an EMPTY `mcpServers` list — no
+    // `verity_secret_run`, no `verity_http_request`, and nothing saying so.
+    expect(issued).toEqual(['turn-1']);
+    expect(request).toMatchObject({
+      backend: 'opencode-acp',
+      trustedCliExecution: true,
+      mcpGatewayToken: 'gateway-token-1',
+    });
+  });
+
+  /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
+   *  admit, and return what the launch threw. */
+  async function refusedStart(
+    runtimeName: string,
+    error: string,
+    supervisorBackend: RunnerSupervisorBackend,
+  ): Promise<Error> {
+    const runtime = join(dir, runtimeName);
+    await mkdir(runtime, { recursive: true });
+    const server = createServer((peer) => {
+      sockets.add(peer);
+      peer.once('close', () => sockets.delete(peer));
+      peer.once('data', () => peer.end(`${JSON.stringify({ ok: false, error })}\n`));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const client = new SupervisorRunnerClient(
+      { runnerSupervisorBackend: supervisorBackend } as Backend,
+      { runtimeDir: runtime, store, bus: new InMemoryEventBus() },
+    );
+    const turn = client.startTurn(
+      {
+        store: {} as never,
+        worktree: '/work/project',
+        cwd: '/work/project',
+        storeSessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+        prompt: 'hello',
+      },
+      {},
+    );
+    return await turn.result.then(
+      () => {
+        throw new Error('start was expected to fail');
+      },
+      (thrown: Error) => thrown,
+    );
+  }
+
+  // The failure mode this deployment creates for itself: ADR 0006 D9 keeps a Sandbox
+  // from an older release attesting cleanly, so admitting OpenCode to the gateway
+  // Server-side meets a supervisor whose `ACP_WORKER_BACKENDS` predates the decision.
+  // It refuses — correctly, failing closed — with four words that describe a bearer
+  // and not the container age that actually caused it, and no other seam sees the
+  // combination. Silence here is the silent failure: every OpenCode turn in that
+  // deployment dies at start-turn and the operator reads it as a broken Server.
+  it('explains an OpenCode start refused by a Sandbox older than the gateway decision', async () => {
+    const error = await refusedStart(
+      'stale-opencode-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+    );
+
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect(error.message).toMatch(/Recreate the project container/u);
+    // The supervisor's own words stay reachable; only the sentence around them is new.
+    expect((error.cause as Error | undefined)?.message).toMatch(/invalid mcpGatewayToken/u);
+  });
+
+  // The other half: the explanation must not swallow a real one. A Claude or Codex
+  // turn refused this way is a bearer defect in a deployment where the backend has
+  // been admitted for releases — explaining it as an outdated container would send
+  // the operator to recreate a container that was never the problem.
+  it('leaves the same refusal alone on a backend that was already admitted', async () => {
+    const error = await refusedStart(
+      'stale-claude-runtime',
+      'invalid mcpGatewayToken',
+      'claude-acp',
+    );
+
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // Recognition is by message text, so pin that it is narrow: an unrelated refusal on
+  // the SAME backend keeps its own words rather than being dressed up as container age.
+  it('leaves an unrelated OpenCode refusal alone', async () => {
+    const error = await refusedStart('busy-opencode-runtime', 'supervisor is busy', 'opencode-acp');
+
+    expect(error.message).toMatch(/supervisor is busy/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
   });
 
   it('carries proxy-bound MCP descriptors and a separate bearer for OpenCode', async () => {

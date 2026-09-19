@@ -271,17 +271,17 @@ describe('verity-runner supervisor runtime', () => {
     // container env through the shared helper, never from an inline literal that only
     // names the broker socket. See the two tests below for what that helper owes.
     expect(source).toContain('workerEnv: supervisorWorkerEnv(process.env)');
-    // Launched, but NOT admitted to the brokered Verity tools. The two sets are
-    // separate on purpose (ADR 0014 D1): being an ACP transport says what an agent
-    // can speak, not whose secrets it may spend. Asserted on the source because
-    // `ACP_WORKER_BACKENDS` is module-private — the gate reads it, nothing exports
-    // it — and a one-word edit here is exactly the drift worth catching.
-    // Matched loosely on purpose: the point is the membership, not the formatting.
-    // Prettier rewraps this literal the moment a third member is added, and a
-    // tripwire that fires on the rewrap would read as a style failure rather than
-    // the policy change it is.
+    // Admitted to the brokered Verity tools — all three since ADR 0014 Amendment 4.
+    // The two sets stay separate on purpose (ADR 0014 D1): being an ACP transport
+    // says what an agent can speak, not whose secrets it may spend, and a fourth
+    // adapter joins `SUPERVISED_WORKER_BACKENDS` without joining this one. Asserted
+    // on the source because `ACP_WORKER_BACKENDS` is module-private — the gate reads
+    // it, nothing exports it — and a one-word edit here is exactly the drift worth
+    // catching. Matched loosely on purpose: the point is the membership, not the
+    // formatting, and a tripwire that fires on Prettier's rewrap would read as a
+    // style failure rather than the policy change it is.
     expect(source).toMatch(
-      /ACP_WORKER_BACKENDS = new Set\(\[\s*'claude-acp',\s*'codex-acp',?\s*\]/,
+      /ACP_WORKER_BACKENDS = new Set\(\[\s*'claude-acp',\s*'codex-acp',\s*'opencode-acp',?\s*\]/,
     );
   });
 

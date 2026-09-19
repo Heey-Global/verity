@@ -1722,18 +1722,20 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       mcpGatewayTokens: undefined,
     });
 
-    for (const acpBackend of [claudeAcpBackend, codexAcpBackend]) {
+    // All three, since ADR 0014 Amendment 4 admitted OpenCode to the gateway. Checked
+    // per backend rather than once: the gate names its members by hand, so a Server
+    // that forgot one would start exactly that backend's turns tool-less and silent.
+    for (const acpBackend of [claudeAcpBackend, codexAcpBackend, openCodeAcpBackend]) {
       await expect(
         wiring.runner?.(acpBackend, { sessionId: 's-acp', projectId, worktree: '/wt' }),
       ).rejects.toThrow('composed without mcpGatewayTokens');
     }
 
+    // A turn with no session to attribute to has no gateway context to begin with, so
+    // the missing registry is not its problem — that is the ephemeral/meta-query case,
+    // and it must keep starting.
     await expect(
       wiring.runner?.(claudeAcpBackend, { sessionId: null, projectId, worktree: '/wt' }),
-    ).resolves.toBeInstanceOf(SupervisorRunnerClient);
-
-    await expect(
-      wiring.runner?.(openCodeAcpBackend, { sessionId: 's-oc', projectId, worktree: '/wt' }),
     ).resolves.toBeInstanceOf(SupervisorRunnerClient);
 
     const composed = buildRunnerConductorWiring({ ...baseDeps(), runnerSupervisor: true });
