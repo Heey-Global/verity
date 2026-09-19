@@ -999,6 +999,7 @@ export async function validateTrustedCliArguments(
   let interpreter = interpreterName.length > 0;
   let inlineCodeFollows = false;
   let remainingAreData = false;
+  let approvedDynamicScriptSeen = false;
   let executableDirectories = executablePath.split(':').map((dir) => resolve(cwd, dir));
   await Promise.all(executableDirectories.map(validateTrustedCliExecutableDirectory));
   const argvPolicy = await (options.loadArgvPolicy ?? loadTrustedCliArgvPolicy)(resolvedCommand);
@@ -1237,6 +1238,16 @@ export async function validateTrustedCliArguments(
         }
         continue;
       }
+      // Dynamic approval already grants this script access to its worktree.
+      // Directory data must not fail solely because it is named in argv.
+      if (
+        stat.isDirectory() &&
+        !interpreter &&
+        !bareExecutableOperand &&
+        approvedDynamicScriptSeen &&
+        withinAgentWorktreeRoots(await realpath(found), [approvedEntryScript.worktreeRoot])
+      )
+        continue;
       // A socket names an endpoint the command talks to, and is judged by whose
       // it is (see validateTrustedCliFileIntegrity). Not so in the one position
       // where a script belongs: an interpreter's operand is read for bytes, so a
@@ -1279,7 +1290,15 @@ export async function validateTrustedCliArguments(
       timeoutDurationSeen = false;
     }
     // An interpreter executes one script operand; later operands are its data.
-    if (interpreter) interpreter = false;
+    if (interpreter) {
+      if (
+        approvedEntryScript?.loading === 'dynamic' &&
+        typeof approvedEntryScript.worktreeRoot === 'string' &&
+        (await realpath(candidate)) === approvedEntryScript.path
+      )
+        approvedDynamicScriptSeen = true;
+      interpreter = false;
+    }
   }
 }
 
@@ -1293,7 +1312,60 @@ function trustedCliSecretPath(name, options, correlationId) {
 
 const TRUSTED_CLI_SECRET_LEAK_ERROR = 'trusted CLI secret file could not be removed';
 
+// Never forward arbitrary exception text: it can contain argv or secret values.
+const TRUSTED_CLI_VALIDATION_CODES = new Map([
+  ['invalid trusted CLI spawn request', 'validation_invalid_request'],
+  ['trusted CLI argv exceeds broker limit', 'validation_argv_too_large'],
+  ['trusted CLI executable must be root-owned and immutable', 'validation_path_not_immutable'],
+  ['trusted CLI command is not an executable file', 'validation_command_not_executable'],
+  ['trusted CLI file operand must be a regular file', 'validation_operand_not_regular_file'],
+  [
+    'trusted CLI PATH entry must be an immutable directory',
+    'validation_path_directory_not_immutable',
+  ],
+  [
+    'isolated trusted CLI interpreter must be installed under /bin or /usr',
+    'validation_isolated_interpreter_location',
+  ],
+  ['trusted CLI cwd escaped the worktree root', 'validation_cwd_outside_worktree'],
+  ['invalid trusted CLI entry-script attestation', 'validation_invalid_entry_attestation'],
+  ['trusted CLI entry script escaped the worktree root', 'validation_entry_outside_worktree'],
+  ['trusted CLI entry script must be a regular file', 'validation_entry_not_regular_file'],
+  ['trusted CLI entry script content hash changed after approval', 'validation_entry_hash_changed'],
+  ['trusted CLI entry script has no worktree', 'validation_entry_missing_worktree'],
+  [
+    'trusted CLI cwd and entry script must share one worktree root',
+    'validation_entry_worktree_mismatch',
+  ],
+  [
+    'trusted CLI entry script project path does not match its worktree',
+    'validation_entry_project_path_mismatch',
+  ],
+  ['trusted CLI argv policy is invalid', 'validation_invalid_argv_policy'],
+  ['trusted CLI argv is not allowed by executable policy', 'validation_argv_policy_denied'],
+  [
+    'trusted CLI interpreter module execution is not immutable',
+    'validation_interpreter_module_mutable',
+  ],
+  [
+    'trusted CLI interpreter option execution is not immutable',
+    'validation_interpreter_option_mutable',
+  ],
+  ['trusted CLI env option execution is not immutable', 'validation_env_option_mutable'],
+  [
+    'trusted CLI code-loading environment is not immutable',
+    'validation_code_loading_environment_mutable',
+  ],
+  ['trusted CLI interpreter operand does not exist', 'validation_interpreter_operand_missing'],
+]);
+
 function trustedCliFailureCode(phase, error) {
+  if (phase === 'validation') {
+    return (
+      TRUSTED_CLI_VALIDATION_CODES.get(error instanceof Error ? error.message : '') ??
+      'validation_failed'
+    );
+  }
   if (phase !== 'materialization') return `${phase.replace('-', '_')}_failed`;
   const code = error && typeof error === 'object' ? error.code : undefined;
   if (code === 'EEXIST') return 'materialization_secret_file_exists';

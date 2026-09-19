@@ -955,6 +955,59 @@ describe('verity-runner supervisor runtime', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('allows directory data only after an approved dynamic script within its worktree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-dynamic-directory-'));
+    const script = join(root, 'deploy.sh');
+    await writeFile(script, 'echo approved\n');
+    await mkdir(join(root, 'dist'));
+    await symlink(tmpdir(), join(root, 'outside'));
+    const approved = {
+      path: script,
+      projectPath: 'deploy.sh',
+      sha256: createHash('sha256').update('echo approved\n').digest('hex'),
+      loading: 'dynamic' as const,
+      worktreeRoot: root,
+    };
+    try {
+      await expect(
+        validateTrustedCliArguments(
+          '/bin/sh',
+          [script, '--input-dir', 'dist'],
+          root,
+          undefined,
+          [],
+          approved,
+        ),
+      ).resolves.toBeUndefined();
+      for (const operand of ['outside', tmpdir()]) {
+        await expect(
+          validateTrustedCliArguments(
+            '/bin/sh',
+            [script, '--input-dir', operand],
+            root,
+            undefined,
+            [],
+            approved,
+          ),
+        ).rejects.toThrow('regular file');
+      }
+      await expect(
+        validateTrustedCliArguments('/bin/sh', ['dist'], root, undefined, [], approved),
+      ).rejects.toThrow('regular file');
+      await expect(
+        validateTrustedCliArguments('/bin/sh', [script, 'dist'], root, undefined, [], {
+          ...approved,
+          loading: 'isolated',
+        }),
+      ).rejects.toThrow('regular file');
+      await expect(validateTrustedCliArguments('/usr/bin/true', ['dist'], root)).rejects.toThrow(
+        'regular file',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('executes an immutable broker snapshot rather than reopening mutable worktree bytes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-trusted-snapshot-'));
     const script = join(root, 'payload.sh');
@@ -2728,6 +2781,22 @@ describe('verity-runner supervisor runtime', () => {
         truncated: true,
       });
       expect(JSON.stringify(truncated)).not.toContain('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+      const directoryRefusal = await run({
+        protocolVersion: 1,
+        kind: 'run-trusted-cli',
+        turnId,
+        secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'directory-secret-marker' }],
+        command: ['/usr/bin/true', '--input-dir', runtimeDir],
+      });
+      expect(directoryRefusal).toMatchObject({
+        ok: false,
+        trustedCliFailure: {
+          phase: 'validation',
+          cause: 'validation failed',
+          code: 'validation_operand_not_regular_file',
+        },
+      });
+      expect(JSON.stringify(directoryRefusal)).not.toContain('directory-secret-marker');
       await expect(
         run({
           protocolVersion: 1,
@@ -2739,7 +2808,11 @@ describe('verity-runner supervisor runtime', () => {
       ).resolves.toMatchObject({
         ok: false,
         error: 'trusted CLI broker rejected execution: invalid trusted CLI spawn request',
-        trustedCliFailure: { phase: 'validation', cause: 'validation failed' },
+        trustedCliFailure: {
+          phase: 'validation',
+          cause: 'validation failed',
+          code: 'validation_invalid_request',
+        },
       });
     } finally {
       await broker.close();

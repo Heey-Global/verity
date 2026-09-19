@@ -371,6 +371,28 @@ export type TrustedCliBrokerFailurePhase =
   'validation' | 'materialization' | 'launch-spec' | 'spawn';
 export type TrustedCliBrokerFailureCode =
   | 'validation_failed'
+  | 'validation_invalid_request'
+  | 'validation_argv_too_large'
+  | 'validation_path_not_immutable'
+  | 'validation_command_not_executable'
+  | 'validation_operand_not_regular_file'
+  | 'validation_path_directory_not_immutable'
+  | 'validation_isolated_interpreter_location'
+  | 'validation_cwd_outside_worktree'
+  | 'validation_invalid_entry_attestation'
+  | 'validation_entry_outside_worktree'
+  | 'validation_entry_not_regular_file'
+  | 'validation_entry_hash_changed'
+  | 'validation_entry_missing_worktree'
+  | 'validation_entry_worktree_mismatch'
+  | 'validation_entry_project_path_mismatch'
+  | 'validation_invalid_argv_policy'
+  | 'validation_argv_policy_denied'
+  | 'validation_interpreter_module_mutable'
+  | 'validation_interpreter_option_mutable'
+  | 'validation_env_option_mutable'
+  | 'validation_code_loading_environment_mutable'
+  | 'validation_interpreter_operand_missing'
   | 'materialization_secret_file_exists'
   | 'materialization_path_permissions'
   | 'materialization_path_missing'
@@ -481,6 +503,28 @@ export async function runSupervisorTrustedCli(
       ];
       const codes: TrustedCliBrokerFailureCode[] = [
         'validation_failed',
+        'validation_invalid_request',
+        'validation_argv_too_large',
+        'validation_path_not_immutable',
+        'validation_command_not_executable',
+        'validation_operand_not_regular_file',
+        'validation_path_directory_not_immutable',
+        'validation_isolated_interpreter_location',
+        'validation_cwd_outside_worktree',
+        'validation_invalid_entry_attestation',
+        'validation_entry_outside_worktree',
+        'validation_entry_not_regular_file',
+        'validation_entry_hash_changed',
+        'validation_entry_missing_worktree',
+        'validation_entry_worktree_mismatch',
+        'validation_entry_project_path_mismatch',
+        'validation_invalid_argv_policy',
+        'validation_argv_policy_denied',
+        'validation_interpreter_module_mutable',
+        'validation_interpreter_option_mutable',
+        'validation_env_option_mutable',
+        'validation_code_loading_environment_mutable',
+        'validation_interpreter_operand_missing',
         'materialization_secret_file_exists',
         'materialization_path_permissions',
         'materialization_path_missing',
