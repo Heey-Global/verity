@@ -1,3 +1,4 @@
+import { googleWorkspaceHttpReason } from './google-workspace-errors.js';
 import type { GoogleFetch, GoogleTransportOptions } from './google-drive.js';
 
 const GOOGLE_DOCS_API = 'https://docs.googleapis.com/v1';
@@ -48,17 +49,11 @@ async function docsRequest(
   } catch {
     throw new GoogleDocsError('could not reach Google Docs', 'network');
   }
-  const payload = (await response.json().catch(() => ({}))) as {
-    error?: { status?: unknown; errors?: { reason?: unknown }[] };
-  };
+  const payload: unknown = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const classic = payload.error?.errors?.[0]?.reason;
-    const modern = payload.error?.status;
-    const raw = typeof classic === 'string' ? classic : typeof modern === 'string' ? modern : '';
-    const slug = raw.replace(/[^A-Za-z0-9]/g, '').slice(0, 40);
     throw new GoogleDocsError(
       `Google Docs returned an unexpected status (${String(response.status)})`,
-      `http_${String(response.status)}${slug.length > 0 ? `_${slug}` : ''}`,
+      googleWorkspaceHttpReason(response.status, payload),
     );
   }
   return payload;

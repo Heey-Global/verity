@@ -20,6 +20,7 @@ import {
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
 import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
+import { workspaceAssignmentError } from './google-workspace-errors.js';
 import { ensureReferenceDirectory, writeReferenceDocFile } from './reference-docs.js';
 import { sessionFilePath } from './session-files.js';
 
@@ -294,12 +295,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         error instanceof GoogleSheetsError
           ? error.reason
           : 'assignment_failed';
-      if (reason.startsWith('http_403')) {
-        reply.code(403);
-        return { error: 'Reconnect Google Drive to grant Workspace editing access' };
-      }
-      reply.code(reason.startsWith('http_400') ? 415 : 502);
-      return { error: `Could not assign this Google Workspace file (${reason})` };
+      const failure = workspaceAssignmentError(reason, 'Workspace');
+      reply.code(failure.status);
+      return { error: failure.error };
     }
   });
 
@@ -356,14 +354,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       return { deck };
     } catch (error) {
       const reason = error instanceof GoogleSlidesError ? error.reason : 'assignment_failed';
-      if (reason.startsWith('http_403')) {
-        reply.code(403);
-        return {
-          error: 'Reconnect Google Drive to grant presentation editing access',
-        };
-      }
-      reply.code(reason.startsWith('http_400') ? 415 : 502);
-      return { error: `Could not assign this Google Slides deck (${reason})` };
+      const failure = workspaceAssignmentError(reason, 'presentation');
+      reply.code(failure.status);
+      return { error: failure.error };
     }
   });
 
