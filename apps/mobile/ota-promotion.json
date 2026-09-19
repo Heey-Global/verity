@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.12",
+  "version": "1.33.13",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "9e4b8cd14cdcb1f36bea49ea449755c30ed86647",
-  "tag": "mobile-v1.33.12",
-  "branch": "staging-mobile-v1.33.12-9e4b8cd14cdcb1f36bea49ea449755c30ed86647",
-  "baseline": "mobile-v1.33.11",
-  "group": "35f57e0e-0043-4e9f-b9f0-4e4490903599",
+  "commit": "d5620ac6fe6e34a27dc0c16fa4020159ed9fedec",
+  "tag": "mobile-v1.33.13",
+  "branch": "staging-mobile-v1.33.13-d5620ac6fe6e34a27dc0c16fa4020159ed9fedec",
+  "baseline": "mobile-v1.33.12",
+  "group": "a870f565-e084-4236-af3e-959017865e68",
   "notes": [
-    "set project fold visibility explicitly (#492)"
+    "answer project fold writes from the written row (#497)",
+    "keep project dragging under the finger and pin usage meters (#496)"
   ]
 }
