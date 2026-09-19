@@ -12,10 +12,8 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
 
 import { AgentLoginPanel } from '../../../components/AgentLoginPanel';
-import { GoogleIcon } from '../../../components/GoogleIcon';
 import { SecretStoreSection } from '../../../components/settings/SecretStoreSection';
 import {
   SecretPasteField,
@@ -46,7 +44,7 @@ import { useSettingsFields } from '../../../lib/useSettingsFields';
 
 // Module-level: these arrays' identity drives the field hooks, and they are the
 // complete list of keys a save from this screen may contain.
-const TEXT_FIELDS = ['googleDriveClientId', 'transcribeBaseUrl', 'transcribeModel'] as const;
+const TEXT_FIELDS = ['transcribeBaseUrl', 'transcribeModel'] as const;
 const SECRET_FIELDS = ['uplinkSubscriptionKey', 'transcribeApiKey', 'dopplerServiceToken'] as const;
 
 /**
@@ -85,7 +83,6 @@ function ServicesSettingsView({
   client: VerityClient;
   agentLogin?: string | string[];
 }) {
-  const { theme } = useUnistyles();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus } = useVeritySettings();
   const text = useSettingsFields(client, TEXT_FIELDS);
@@ -303,37 +300,6 @@ function ServicesSettingsView({
             onPress={() => router.push('/settings/services/mcp')}
           />
         </SettingsListPanel>
-      </SettingsGroup>
-
-      <SettingsGroup
-        title="Google Workspace"
-        description="Connect Google Drive to open and edit Slides, Docs, and Sheets."
-      >
-        <SettingsDisclosure
-          title="Google"
-          summary={settings?.googleDriveClientId ? 'Configured' : 'Not configured'}
-          leadingIcon={<GoogleIcon color={theme.colors.primary} />}
-          onCollapse={text.commit}
-        >
-          <SettingsField
-            label="Google OAuth client ID"
-            value={text.values.googleDriveClientId}
-            onChangeText={(value) => text.set('googleDriveClientId', value)}
-            onBlur={text.commit}
-            placeholder="000000000000-example.apps.googleusercontent.com"
-            accessibilityLabel="Google OAuth client ID"
-          />
-          <Text style={styles.reproHint}>
-            Use an iOS OAuth client ID from Google Cloud. The connected account is shown after you
-            sign in from the file picker.
-          </Text>
-          {settings?.googleDriveConnected ? (
-            <Text style={styles.reproSubtitle}>
-              Connected
-              {settings.googleDriveAccountEmail ? ` as ${settings.googleDriveAccountEmail}` : ''}
-            </Text>
-          ) : null}
-        </SettingsDisclosure>
       </SettingsGroup>
 
       {managed ? (

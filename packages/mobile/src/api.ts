@@ -861,7 +861,6 @@ type VeritySettingsKey =
   | 'gitAllowedSignersPath'
   | 'githubAppId'
   | 'githubAppInstallationId'
-  | 'googleDriveClientId'
   | 'transcribeBaseUrl'
   | 'transcribeModel'
   | 'transcribeBackendMode';

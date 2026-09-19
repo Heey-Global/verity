@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import {
   GoogleDriveError,
@@ -13,12 +14,32 @@ import {
   listDriveFiles,
   planDriveImport,
   referenceDocFileName,
+  resolveGoogleOAuthClientId,
   shareDriveFileWithLink,
   uploadDriveImage,
   refreshGoogleAccessToken,
   type GoogleFetch,
   type GoogleHttpResponse,
 } from './google-drive.js';
+
+describe('resolveGoogleOAuthClientId', () => {
+  it('uses the client compiled into the mobile app by default and allows forks to override it', () => {
+    const mobileConfig = readFileSync(
+      new URL('../../../apps/mobile/app.config.ts', import.meta.url),
+      'utf8',
+    );
+    const mobileDefault = mobileConfig.match(
+      /const officialGoogleOAuthClientId\s*=\s*\n?\s*'([^']+)'/,
+    )?.[1];
+
+    expect(mobileDefault).toBeDefined();
+    expect(resolveGoogleOAuthClientId(undefined)).toBe(mobileDefault);
+    expect(resolveGoogleOAuthClientId('   ')).toBe(mobileDefault);
+    expect(resolveGoogleOAuthClientId('  fork.apps.googleusercontent.com  ')).toBe(
+      'fork.apps.googleusercontent.com',
+    );
+  });
+});
 
 const jsonRes = (body: unknown, init?: { ok?: boolean; status?: number }): GoogleHttpResponse => ({
   ok: init?.ok ?? true,

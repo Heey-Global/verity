@@ -335,8 +335,8 @@ LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}
 # customer deployment cannot reach the vendor Doppler). Non-secret — the same id
 # ships in the mobile app — so baking it into the image ENV is safe; the app reads
 # it from /settings to build the PKCE request. A deploy-time `-e GOOGLE_AUTH_ID=…`
-# overrides this default. Empty on PR/local builds, where the Drive feature simply
-# reports "not configured".
+# overrides this default. PR/local images leave this empty and the server falls
+# back to the same official client ID compiled into the mobile app.
 ARG GOOGLE_AUTH_ID=
 ENV GOOGLE_AUTH_ID=${GOOGLE_AUTH_ID}
 

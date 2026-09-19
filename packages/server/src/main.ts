@@ -19,6 +19,7 @@ import {
   type EmbeddedServer,
 } from './embedded.js';
 import { SERVER_VERSION } from './server.js';
+import { resolveGoogleOAuthClientId } from './google-drive.js';
 import {
   AGENT_SEED_MOUNT_PATH,
   readAgentSeedStamp,
@@ -1110,8 +1111,9 @@ async function main(): Promise<void> {
         'VERITY_RECREATE_ENV_DRIFTED_SANDBOXES',
       ),
       expoAccessToken: process.env.EXPO_ACCESS_TOKEN?.trim() || undefined,
-      // Google Drive OAuth iOS client id (ADR 0009), baked in at image build time.
-      googleDriveClientId: process.env.GOOGLE_AUTH_ID?.trim() || undefined,
+      // Official builds share the iOS OAuth client registered by the mobile app.
+      // Forks can override both sides with GOOGLE_AUTH_ID.
+      googleDriveClientId: resolveGoogleOAuthClientId(process.env.GOOGLE_AUTH_ID),
       // Signed stable release channel (ADR 0008 D4). On a host architecture no
       // release is published for, the resolver reports `unsupported` with that as
       // the reason rather than advertising a release this machine could not run.
