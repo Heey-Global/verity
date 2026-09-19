@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.13",
+  "version": "1.33.14",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "d5620ac6fe6e34a27dc0c16fa4020159ed9fedec",
-  "tag": "mobile-v1.33.13",
-  "branch": "staging-mobile-v1.33.13-d5620ac6fe6e34a27dc0c16fa4020159ed9fedec",
-  "baseline": "mobile-v1.33.12",
-  "group": "a870f565-e084-4236-af3e-959017865e68",
+  "commit": "465b7a1f583899817723a67f8891d9cf6e2eb73a",
+  "tag": "mobile-v1.33.14",
+  "branch": "staging-mobile-v1.33.14-465b7a1f583899817723a67f8891d9cf6e2eb73a",
+  "baseline": "mobile-v1.33.13",
+  "group": "657acaf0-3d82-4629-a380-e3d5dba8a489",
   "notes": [
-    "answer project fold writes from the written row (#497)",
-    "keep project dragging under the finger and pin usage meters (#496)"
+    "preserve project drag position when folding clamps scroll (#500)"
   ]
 }
