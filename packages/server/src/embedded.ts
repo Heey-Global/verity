@@ -71,6 +71,8 @@ import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-p
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
+import { createGoogleDocsTool } from './google-docs-tool.js';
+import { createGoogleSheetsTool } from './google-sheets-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import {
   createGitWorktreeProvisioner,
@@ -1870,6 +1872,8 @@ export async function buildEmbeddedServer(
   });
   const googleSlidesTool = createGoogleSlidesTool({ eventStore, googleAccessToken });
   const invokeGoogleSlides = googleSlidesTool.invoke;
+  const invokeGoogleDocs = createGoogleDocsTool({ eventStore, googleAccessToken }).invoke;
+  const invokeGoogleSheets = createGoogleSheetsTool({ eventStore, googleAccessToken }).invoke;
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
@@ -1931,8 +1935,16 @@ export async function buildEmbeddedServer(
             'verity_secret_run',
             'verity_publish_session_progress',
             'verity_google_slides',
+            'verity_google_docs',
+            'verity_google_sheets',
           ]
-        : ['verity_http_request', 'verity_publish_session_progress', 'verity_google_slides'],
+        : [
+            'verity_http_request',
+            'verity_publish_session_progress',
+            'verity_google_slides',
+            'verity_google_docs',
+            'verity_google_sheets',
+          ],
     // Control-plane session tools are handled in `buildServer`, which owns session
     // creation and dispatch. Keep their advertisement scoped to the control project.
     extraToolsForProject: (projectId) =>
@@ -1955,6 +1967,8 @@ export async function buildEmbeddedServer(
         ? { runnerRoot: join(config.dataVolumeRoot, 'runners') }
         : {}),
       googleSlides: invokeGoogleSlides,
+      googleDocs: invokeGoogleDocs,
+      googleSheets: invokeGoogleSheets,
     }),
     recordCall: async ({ projectId, kind, ...gateway }) => {
       await secretAuditLog.append({

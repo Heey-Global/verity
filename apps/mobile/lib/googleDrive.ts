@@ -1,4 +1,4 @@
-// Native Google Drive/Slides OAuth (PKCE) for the connect flow (ADRs 0009/0016). The Verity
+// Native Google Workspace OAuth (PKCE) for the connect flow (ADRs 0009/0016/0017). The Verity
 // server is never publicly reachable, so the redirect must return into THIS app,
 // not the server: we run the authorization request in the system browser against
 // the iOS OAuth client and hand the resulting one-time `code` + PKCE verifier to
@@ -22,6 +22,8 @@ const SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/presentations',
+  'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/spreadsheets',
 ];
 
 /**

@@ -49,10 +49,11 @@ export interface SessionsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-/** One native Google Slides deck explicitly assigned to a session (ADR 0016). */
+/** One native Google Workspace file explicitly assigned to a session. */
 interface SessionSlideDecksTable {
   session_id: string;
   assignment_id: string;
+  kind: 'slides' | 'docs' | 'sheets';
   file_id: string;
   name: string;
   web_view_link: string;
@@ -60,9 +61,10 @@ interface SessionSlideDecksTable {
   assigned_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-/** Deck ids ordered by their latest explicit assignment, independent of session lifetime. */
+/** Workspace file ids ordered by their latest explicit assignment. */
 interface RecentGoogleSlideDecksTable {
   file_id: string;
+  kind: 'slides' | 'docs' | 'sheets';
   last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 

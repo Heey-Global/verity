@@ -136,6 +136,40 @@ describe('MCP gateway Google Slides integration', () => {
       request,
     });
   });
+
+  it.each([
+    ['verity_google_docs', 'googleDocs', { action: 'inspect_document' }],
+    ['verity_google_sheets', 'googleSheets', { action: 'inspect_spreadsheet' }],
+  ] as const)(
+    'dispatches %s with the authenticated identity',
+    async (toolName, option, request) => {
+      const executor = vi.fn(async () => ({ ok: true }));
+      const invoke = createMcpGatewayToolExecutor({
+        brokeredHttpTool: vi.fn(async () => ({ status: 200, body: null })),
+        trustedCliTool: vi.fn(),
+        [option]: executor,
+      });
+
+      await expect(
+        invoke({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          callId: 'call-1',
+          invocationId: 'invocation-1',
+          toolName,
+          request,
+        }),
+      ).resolves.toEqual({ ok: true });
+      expect(executor).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        invocationId: 'invocation-1',
+        request,
+      });
+    },
+  );
 });
 
 describe('MCP gateway control-plane session tools', () => {

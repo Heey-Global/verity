@@ -4869,12 +4869,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // an operator being asked to read a briefing their answer could not have delivered. The
       // tools re-check it themselves on the way in; this only decides when it is caught.
       authorizeCall: async ({ projectId, sessionId, toolName }) => {
-        if (toolName === 'verity_google_slides') {
+        if (
+          toolName === 'verity_google_slides' ||
+          toolName === 'verity_google_docs' ||
+          toolName === 'verity_google_sheets'
+        ) {
           const session = await deps.eventStore.getSession(sessionId);
-          const deck = await deps.eventStore.getSessionSlideDeck(sessionId);
-          if (session === undefined || session.projectId !== projectId || deck === undefined) {
+          const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
+          const expectedKind = toolName.slice('verity_google_'.length);
+          if (
+            session === undefined ||
+            session.projectId !== projectId ||
+            file === undefined ||
+            file.kind !== expectedKind
+          ) {
             throw new ControlPlaneSessionAuthorityError(
-              'Google Slides requires a deck assigned to the calling session',
+              'Google Workspace requires a matching file assigned to the calling session',
             );
           }
           return;
@@ -4904,10 +4914,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
       hasStandingAuthorization: async ({ projectId, sessionId, toolName }) => {
-        if (toolName !== 'verity_google_slides') return false;
+        if (
+          toolName !== 'verity_google_slides' &&
+          toolName !== 'verity_google_docs' &&
+          toolName !== 'verity_google_sheets'
+        )
+          return false;
         const session = await deps.eventStore.getSession(sessionId);
         if (session === undefined || session.projectId !== projectId) return false;
-        return (await deps.eventStore.getSessionSlideDeck(sessionId)) !== undefined;
+        const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
+        return file?.kind === toolName.slice('verity_google_'.length);
       },
       invokeTool: async (input) => {
         if (input.toolName === 'verity_list_sessions')

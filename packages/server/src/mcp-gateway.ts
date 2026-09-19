@@ -264,6 +264,31 @@ const TOOL_SCHEMAS = {
       height: z.number().finite().positive().optional(),
     })
     .strict(),
+  verity_google_docs: z
+    .object({
+      action: z.enum(['inspect_document', 'read_document', 'edit']),
+      requests: z.array(z.record(z.string(), z.unknown())).min(1).max(50).optional(),
+      revisionId: z.string().min(1).max(512).optional(),
+    })
+    .strict(),
+  verity_google_sheets: z
+    .object({
+      action: z.enum([
+        'inspect_spreadsheet',
+        'read_range',
+        'write_range',
+        'append_rows',
+        'clear_range',
+        'structural_edit',
+      ]),
+      range: z.string().min(1).max(512).optional(),
+      values: z
+        .array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])))
+        .max(500)
+        .optional(),
+      requests: z.array(z.record(z.string(), z.unknown())).min(1).max(25).optional(),
+    })
+    .strict(),
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
@@ -276,6 +301,10 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
   verity_google_slides:
     'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit needs requests and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested.',
+  verity_google_docs:
+    'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; every edit requires the revisionId returned by the read.',
+  verity_google_sheets:
+    'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range or structural operations.',
 };
 
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {

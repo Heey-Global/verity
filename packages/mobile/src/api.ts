@@ -841,15 +841,15 @@ export const googleDriveImportResultSchema = z.object({
 });
 export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSchema>;
 
-const sessionSlideDeckSchema = z.object({
-  sessionId: z.string(),
+const sessionGoogleWorkspaceFileSchema = z.object({
+  assignmentId: z.string(),
+  kind: z.enum(['slides', 'docs', 'sheets']),
   fileId: z.string(),
   name: z.string(),
   webViewLink: z.string().url(),
   revisionId: z.string().nullable(),
-  assignedAt: z.coerce.date(),
 });
-export type SessionSlideDeck = z.infer<typeof sessionSlideDeckSchema>;
+export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
 
 type VeritySettingsKey =
   | 'advancedModeEnabled'
@@ -1969,7 +1969,7 @@ export class VerityClient {
     query?: string;
     sharedWithMe?: boolean;
     pageToken?: string;
-    purpose?: 'import' | 'slides';
+    purpose?: 'import' | 'workspace';
   }): Promise<DriveFileList> {
     const search = new URLSearchParams();
     if (params?.parentId) search.set('parentId', params.parentId);
@@ -2017,29 +2017,36 @@ export class VerityClient {
     return googleDriveImportResultSchema.parse(await res.json());
   }
 
-  async getSessionSlideDeck(sessionId: string): Promise<SessionSlideDeck | null> {
+  async getSessionGoogleWorkspaceFile(
+    sessionId: string,
+  ): Promise<SessionGoogleWorkspaceFile | null> {
     const res = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/google-slides/deck`,
+      `/sessions/${encodeURIComponent(sessionId)}/google-workspace/file`,
       { method: 'GET' },
     );
-    const parsed = z.object({ deck: sessionSlideDeckSchema.nullable() }).parse(await res.json());
-    return parsed.deck;
+    const parsed = z
+      .object({ file: sessionGoogleWorkspaceFileSchema.nullable() })
+      .parse(await res.json());
+    return parsed.file;
   }
 
-  async assignSessionSlideDeck(sessionId: string, fileId: string): Promise<SessionSlideDeck> {
+  async assignSessionGoogleWorkspaceFile(
+    sessionId: string,
+    fileId: string,
+  ): Promise<SessionGoogleWorkspaceFile> {
     const res = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/google-slides/deck`,
+      `/sessions/${encodeURIComponent(sessionId)}/google-workspace/file`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ fileId }),
       },
     );
-    return z.object({ deck: sessionSlideDeckSchema }).parse(await res.json()).deck;
+    return z.object({ file: sessionGoogleWorkspaceFileSchema }).parse(await res.json()).file;
   }
 
-  async clearSessionSlideDeck(sessionId: string): Promise<void> {
-    await this.request(`/sessions/${encodeURIComponent(sessionId)}/google-slides/deck`, {
+  async clearSessionGoogleWorkspaceFile(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/google-workspace/file`, {
       method: 'DELETE',
     });
   }
