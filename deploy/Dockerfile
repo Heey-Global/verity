@@ -215,9 +215,9 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # renovate: datasource=npm depName=@devcontainers/cli
 RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.272
+RUN npm install -g @anthropic-ai/claude-code@2.1.273
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.77.0
+RUN npm install -g @agentclientprotocol/claude-agent-acp@0.78.0
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —
@@ -233,7 +233,7 @@ RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifec
 # renovate: datasource=npm depName=@openai/codex
 RUN npm install -g @openai/codex@0.154.0
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-RUN npm install -g @agentclientprotocol/codex-acp@1.11.0
+RUN npm install -g @agentclientprotocol/codex-acp@1.12.0
 
 # Bundle the shared `verity-sandbox-toolkit` devcontainer Feature (R3.1/#299) so
 # project devcontainer builds can inject it via `--additional-features`. The
