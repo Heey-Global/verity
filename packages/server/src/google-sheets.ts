@@ -1,4 +1,3 @@
-import { googleWorkspaceHttpReason } from './google-workspace-errors.js';
 import type { GoogleFetch, GoogleTransportOptions } from './google-drive.js';
 
 const GOOGLE_SHEETS_API = 'https://sheets.googleapis.com/v4';
@@ -49,11 +48,17 @@ async function sheetsRequest(
   } catch {
     throw new GoogleSheetsError('could not reach Google Sheets', 'network');
   }
-  const payload: unknown = await response.json().catch(() => ({}));
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: { status?: unknown; errors?: { reason?: unknown }[] };
+  };
   if (!response.ok) {
+    const classic = payload.error?.errors?.[0]?.reason;
+    const modern = payload.error?.status;
+    const raw = typeof classic === 'string' ? classic : typeof modern === 'string' ? modern : '';
+    const slug = raw.replace(/[^A-Za-z0-9]/g, '').slice(0, 40);
     throw new GoogleSheetsError(
       `Google Sheets returned an unexpected status (${String(response.status)})`,
-      googleWorkspaceHttpReason(response.status, payload),
+      `http_${String(response.status)}${slug.length > 0 ? `_${slug}` : ''}`,
     );
   }
   return payload;
