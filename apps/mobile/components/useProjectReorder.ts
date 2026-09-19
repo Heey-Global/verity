@@ -16,7 +16,6 @@ import {
 
 import {
   moveProjectIdToIndex,
-  projectDragBounds,
   projectDragStartOffset,
   projectDragTargetIndex,
   projectRowPosition,
@@ -335,12 +334,10 @@ export function useProjectRowDrag({
         .onUpdate((event) => {
           const current = drag.value;
           if (!current || current.id !== id || current.dropping) return;
-          // The row stays inside its sortable run whatever the finger does.
-          const bounds = projectDragBounds(current.startOrder, id, heights.value, current.range);
-          travel.value = Math.min(
-            bounds.max - shift.value,
-            Math.max(bounds.min - shift.value, event.translationY),
-          );
+          // Follow the finger in screen coordinates. Only the destination
+          // slot is bounded: compact-layout bounds would subtract the height
+          // just lost above this row and snap it away from the pickup point.
+          travel.value = event.translationY;
         })
         .onFinalize(() => {
           const current = drag.value;

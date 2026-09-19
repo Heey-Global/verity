@@ -224,3 +224,22 @@ it('ignores a previous animation completion after the watchdog allows a new pick
   expect(hook.result.current.draggingId).toBe('b');
   expect(onDrop).toHaveBeenCalledTimes(1);
 });
+
+it('keeps the last row at the finger after expanded groups above collapse', () => {
+  const { hook } = controller();
+  act(() => {
+    for (const id of order) hook.result.current.reportCompactHeight(id, 60);
+    hook.result.current.reportExpandedHeight('a', 260);
+    hook.result.current.begin('c');
+  });
+  const row = renderHook(() =>
+    useProjectRowDrag({
+      id: 'c',
+      reorder: hook.result.current,
+      renderedOrder: order,
+      enabled: true,
+    }),
+  );
+  act(() => row.result.current.gesture.handlers.onUpdate?.({ translationY: 12 } as never));
+  expect(hook.result.current.shift.value + hook.result.current.travel.value).toBe(212);
+});
