@@ -15,12 +15,12 @@ export function ProjectSessionsCollapse({
 }) {
   return (
     <View
-      style={{ overflow: 'hidden', height: collapsed ? 0 : undefined }}
+      style={{ display: collapsed ? 'none' : 'flex' }}
       pointerEvents={collapsed ? 'none' : 'auto'}
       accessibilityElementsHidden={collapsed}
       importantForAccessibility={collapsed ? 'no-hide-descendants' : 'auto'}
     >
-      <View style={{ flexShrink: 0 }}>{children}</View>
+      {children}
     </View>
   );
 }
