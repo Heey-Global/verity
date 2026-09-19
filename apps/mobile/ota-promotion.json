@@ -1,16 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.15",
+  "version": "1.33.16",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "d72ae0163f5af3a64e448b766bb185ff2a5fd492",
-  "tag": "mobile-v1.33.15",
-  "branch": "staging-mobile-v1.33.15-d72ae0163f5af3a64e448b766bb185ff2a5fd492",
-  "baseline": "mobile-v1.33.14",
-  "group": "bf2997f2-a993-412c-bb8f-fce219f89712",
+  "commit": "d9c4217c8ca5ea445915477d49295a889b7ee043",
+  "tag": "mobile-v1.33.16",
+  "branch": "staging-mobile-v1.33.16-d9c4217c8ca5ea445915477d49295a889b7ee043",
+  "baseline": "mobile-v1.33.15",
+  "group": "ca695859-3229-4487-9b8c-761836e1bb17",
   "notes": [
-    "edit Google Docs and Sheets (#503)",
-    "align settings row icons (#506)",
-    "retire answered permission prompts (#502)"
+    "add Google OAuth client ID setting (#510)",
+    "use provider icons in settings (#509)"
   ]
 }
