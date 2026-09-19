@@ -93,6 +93,12 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
   },
+  sectionHeaderLabel: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
   sectionSubtitle: {
     color: theme.colors.setup.textMuted,
     fontSize: theme.text.sm,

@@ -183,6 +183,7 @@ function ServicesSettingsView({
               secrets.commit();
             }}
             title="Transcription"
+            icon="mic"
             summary={
               transcriptionBackendStatus(
                 backendMode,
@@ -309,6 +310,7 @@ function ServicesSettingsView({
               secrets.commit();
             }}
             title="Doppler"
+            icon="cloud"
             summary={settings?.dopplerServiceTokenConfigured ? 'Configured' : 'Optional'}
           >
             <Text style={styles.reproSubtitle}>
@@ -335,6 +337,7 @@ function ServicesSettingsView({
               secrets.commit();
             }}
             title="Public Preview"
+            icon="globe"
             summary={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Optional'}
           >
             <Text style={styles.reproSubtitle}>
