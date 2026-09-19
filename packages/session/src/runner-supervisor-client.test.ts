@@ -635,6 +635,39 @@ describe('SupervisorRunnerClient', () => {
     }
   });
 
+  // `acpBackend` decides who is MINTED a bearer; `carriesBrokeredSecretTools` decides
+  // who is TOLD the project's secret names. Admitting a backend to the second alone is
+  // the quiet failure: the session is handed a list of aliases and no bearer to spend
+  // them with, which is the dead end that gate's own comment warns about, paid for with
+  // a disclosure. The type system does not catch it — an added `case` is as valid as
+  // any other — and neither does the behavioural suite, which enumerates the admitted
+  // members and so cannot see one too many. So pin that the two lists are one list.
+  it('tells exactly the backends it mints a bearer for which secrets exist', async () => {
+    const members = async (url: URL, gate: RegExp): Promise<string[]> => {
+      const source = await readFile(url, 'utf8');
+      const region = gate.exec(source)?.[0];
+      expect(region).toBeDefined();
+      return [...(region ?? '').matchAll(/'([a-z0-9-]+-acp)'/gu)].map((match) => match[1]!).sort();
+    };
+
+    const minted = await members(
+      new URL('./runner-supervisor-client.ts', import.meta.url),
+      /this\.acpBackend =[\s\S]*?;/u,
+    );
+    const told = await members(
+      new URL('./turn-system-prompt.ts', import.meta.url),
+      // The `true` arm only: the switch's other arms name no backend today, but a
+      // region running to the end of the function would start counting them if one
+      // ever did.
+      /function carriesBrokeredSecretTools[\s\S]*?return true;/u,
+    );
+
+    expect(told).toEqual(minted);
+    // Not a vacuous pass: two empty matches are equal, and the regions are the fragile
+    // part of this guard.
+    expect(told.length).toBeGreaterThanOrEqual(3);
+  });
+
   /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
    *  admit, and return what the launch threw. Records the frames it answered so
    *  callers can prove the refusal landed on a `start-turn` carrying the bearer their
