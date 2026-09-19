@@ -24,7 +24,6 @@ function setup(overrides: Partial<GoogleWorkspaceToolStore> = {}) {
     inspect: vi.fn().mockResolvedValue({ title: 'Sheet' }),
     read: vi.fn().mockResolvedValue({ values: [] }),
     write: vi.fn().mockResolvedValue({ updatedCells: 1 }),
-    append: vi.fn().mockResolvedValue({ updatedCells: 1 }),
     clear: vi.fn().mockResolvedValue({}),
     structuralUpdate: vi.fn().mockResolvedValue({ replies: [] }),
   };
@@ -67,14 +66,8 @@ describe('Google Sheets session tool', () => {
     expect(sheets.write).toHaveBeenCalledWith('token', 'sheet1', 'Sheet1!A1:B1', [[1, 2]]);
   });
 
-  it('fences append and structural edits by invocation', async () => {
+  it('fences structural edits by invocation', async () => {
     const { tool, sheets } = setup();
-    await expect(
-      tool.invoke({
-        ...input,
-        request: { action: 'append_rows', range: 'Sheet1!A1:B10', values: [[1, 2]] },
-      }),
-    ).resolves.toEqual({ result: { updatedCells: 1 } });
     await expect(
       tool.invoke({
         ...input,
@@ -84,7 +77,7 @@ describe('Google Sheets session tool', () => {
         },
       }),
     ).resolves.toEqual({ result: { replies: [] } });
-    expect(sheets.append).toHaveBeenCalledOnce();
+    expect(sheets.structuralUpdate).toHaveBeenCalledOnce();
   });
 
   it('rejects structural requests outside the allowlist', async () => {

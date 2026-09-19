@@ -3,29 +3,15 @@ import type {
   SessionWorkspaceFile,
   WorkspaceInvocationInput,
 } from './google-workspace-tool-types.js';
-import { getDocsDocument, getDocsDocumentMetadata, updateDocsDocument } from './google-docs.js';
+import {
+  docsRequestsAreSupported,
+  getDocsDocument,
+  getDocsDocumentMetadata,
+  updateDocsDocument,
+} from './google-docs.js';
 
 const MAX_REQUESTS = 100;
 const MAX_REQUEST_BYTES = 1_000_000;
-const SUPPORTED_REQUESTS = new Set([
-  'insertText',
-  'deleteContentRange',
-  'replaceAllText',
-  'updateTextStyle',
-  'updateParagraphStyle',
-  'createParagraphBullets',
-  'deleteParagraphBullets',
-  'insertPageBreak',
-  'insertTable',
-  'insertTableRow',
-  'insertTableColumn',
-  'deleteTableRow',
-  'deleteTableColumn',
-  'mergeTableCells',
-  'unmergeTableCells',
-  'updateTableCellStyle',
-]);
-
 type DocsRequest =
   | { action: 'inspect_document' }
   | { action: 'read_document' }
@@ -78,13 +64,16 @@ function validateEdit(requests: unknown): asserts requests is Record<string, unk
     throw new Error('edit payload exceeds 1 MB');
   }
   const candidates: unknown[] = requests;
+  const validated: Record<string, unknown>[] = [];
   for (const candidate of candidates) {
     if (!isUnknownRecord(candidate)) throw new Error('edit contains an unsupported request');
-    const request = candidate;
+    validated.push(candidate);
+  }
+  if (!docsRequestsAreSupported(validated)) {
+    throw new Error('edit contains an unsupported request');
+  }
+  for (const request of validated) {
     const keys = Object.keys(request);
-    if (keys.length !== 1 || !SUPPORTED_REQUESTS.has(keys[0] ?? '')) {
-      throw new Error('edit contains an unsupported request');
-    }
     const operation = request[keys[0]!];
     if (!isUnknownRecord(operation)) {
       throw new Error('edit contains an unsupported request');

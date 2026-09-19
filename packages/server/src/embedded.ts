@@ -1872,8 +1872,11 @@ export async function buildEmbeddedServer(
   });
   const googleSlidesTool = createGoogleSlidesTool({ eventStore, googleAccessToken });
   const invokeGoogleSlides = googleSlidesTool.invoke;
-  const invokeGoogleDocs = createGoogleDocsTool({ eventStore, googleAccessToken }).invoke;
-  const invokeGoogleSheets = createGoogleSheetsTool({ eventStore, googleAccessToken }).invoke;
+  const googleDocsTool = createGoogleDocsTool({ eventStore, googleAccessToken });
+  const invokeGoogleDocs: typeof googleDocsTool.invoke = (input) => googleDocsTool.invoke(input);
+  const googleSheetsTool = createGoogleSheetsTool({ eventStore, googleAccessToken });
+  const invokeGoogleSheets: typeof googleSheetsTool.invoke = (input) =>
+    googleSheetsTool.invoke(input);
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);

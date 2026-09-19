@@ -140,21 +140,6 @@ export async function updateSheetsValues(
   );
 }
 
-export async function appendSheetsValues(
-  accessToken: string,
-  spreadsheetId: string,
-  range: string,
-  values: readonly (readonly unknown[])[],
-  opts: GoogleTransportOptions = {},
-): Promise<unknown> {
-  return sheetsRequest(
-    accessToken,
-    `/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-    { method: 'POST', body: { range, majorDimension: 'ROWS', values } },
-    opts,
-  );
-}
-
 export async function clearSheetsValues(
   accessToken: string,
   spreadsheetId: string,
@@ -190,14 +175,10 @@ const SUPPORTED_STRUCTURAL_REQUESTS = new Set([
   'updateSheetProperties',
   'insertDimension',
   'deleteDimension',
+  'appendDimension',
   'moveDimension',
-  'updateDimensionProperties',
-  'mergeCells',
-  'unmergeCells',
   'autoResizeDimensions',
   'sortRange',
-  'setBasicFilter',
-  'clearBasicFilter',
 ]);
 
 export function sheetsRequestsAreSupported(requests: readonly Record<string, unknown>[]): boolean {

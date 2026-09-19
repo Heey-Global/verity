@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { GoogleFetch, GoogleHttpResponse } from './google-drive.js';
 import {
-  appendSheetsValues,
   clearSheetsValues,
   getSheetsSpreadsheet,
   getSheetsValues,
@@ -78,7 +77,6 @@ describe('Google Sheets client', () => {
       return Promise.resolve(response({}));
     };
     await updateSheetsValues('token', 'sheet-1', 'Data!A1', [['x']], { fetch });
-    await appendSheetsValues('token', 'sheet-1', 'Data!A:A', [['y']], { fetch });
     await clearSheetsValues('token', 'sheet-1', 'Data!B:B', { fetch });
 
     expect(calls[0]).toMatchObject({ method: 'PUT' });
@@ -88,16 +86,19 @@ describe('Google Sheets client', () => {
       majorDimension: 'ROWS',
       values: [['x']],
     });
-    expect(calls[1]).toMatchObject({ method: 'POST' });
-    expect(calls[1]?.url).toContain(
-      ':append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS',
-    );
-    expect(calls[2]).toMatchObject({ method: 'POST', body: '{}' });
-    expect(calls[2]?.url).toContain('Data!B%3AB:clear');
+    expect(calls[1]).toMatchObject({ method: 'POST', body: '{}' });
+    expect(calls[1]?.url).toContain('Data!B%3AB:clear');
   });
 
   it('limits structural batches to conservative request kinds', async () => {
-    expect(sheetsRequestsAreSupported([{ addSheet: {} }, { deleteDimension: {} }])).toBe(true);
+    expect(
+      sheetsRequestsAreSupported([
+        { addSheet: {} },
+        { deleteDimension: {} },
+        { appendDimension: {} },
+      ]),
+    ).toBe(true);
+    expect(sheetsRequestsAreSupported([{ mergeCells: {} }])).toBe(false);
     expect(sheetsRequestsAreSupported([{ findReplace: { find: 'secret' } }])).toBe(false);
     expect(sheetsRequestsAreSupported([{ addSheet: {}, deleteSheet: {} }])).toBe(false);
 

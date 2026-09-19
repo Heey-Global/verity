@@ -1387,7 +1387,11 @@ export class EventStore implements EventSink {
   }
 
   async clearSessionSlideDeck(sessionId: string): Promise<void> {
-    await this.clearSessionWorkspaceFile(sessionId);
+    await this.db
+      .deleteFrom('session_slide_decks')
+      .where('session_id', '=', sessionId)
+      .where('kind', '=', 'slides')
+      .execute();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.

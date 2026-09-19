@@ -106,6 +106,11 @@ describe('EventStore — session Google Slides assignment', () => {
       revisionId: null,
     });
     await expect(ctx.store.getSessionSlideDeck('s1')).resolves.toBeUndefined();
+    await ctx.store.clearSessionSlideDeck('s1');
+    await expect(ctx.store.getSessionWorkspaceFile('s1')).resolves.toMatchObject({
+      kind: 'sheets',
+      fileId: 'sheet-1',
+    });
     await expect(ctx.store.listRecentGoogleWorkspaceFileIds()).resolves.toEqual(
       expect.arrayContaining(['sheet-1', 'doc-1']),
     );

@@ -39,8 +39,10 @@ rejects the batch if the document changed before the write.
 ### Sheets
 
 The Sheets tool reads metadata first and only reads or writes explicit bounded A1 ranges. It
-supports value replacement, row appends, range clearing, and an allowlisted set of sheet and
-dimension changes. Payload size, range size, and request count are capped.
+supports value replacement, range clearing, and an allowlisted set of sheet and dimension changes.
+Google's append API can place values outside the supplied lookup range when it detects an offset
+table, so table appends are deliberately excluded. Payload size, range size, and request count are
+capped.
 
 Sheets has no revision guard equivalent to Slides or Docs. The tool therefore rechecks the active
 assignment immediately before each mutation, uses an invocation fence for retries, and limits its

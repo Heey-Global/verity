@@ -277,7 +277,6 @@ const TOOL_SCHEMAS = {
         'inspect_spreadsheet',
         'read_range',
         'write_range',
-        'append_rows',
         'clear_range',
         'structural_edit',
       ]),
@@ -304,7 +303,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_google_docs:
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; every edit requires the revisionId returned by the read.',
   verity_google_sheets:
-    'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range or structural operations.',
+    'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or structural operations.',
 };
 
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {

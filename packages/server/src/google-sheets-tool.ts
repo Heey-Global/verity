@@ -4,10 +4,10 @@ import type {
   WorkspaceInvocationInput,
 } from './google-workspace-tool-types.js';
 import {
-  appendSheetsValues,
   clearSheetsValues,
   getSheetsSpreadsheet,
   getSheetsValues,
+  sheetsRequestsAreSupported,
   updateSheetsSpreadsheet,
   updateSheetsValues,
 } from './google-sheets.js';
@@ -15,27 +15,10 @@ import {
 const MAX_CELLS = 10_000;
 const MAX_VALUE_BYTES = 1_000_000;
 const MAX_STRUCTURAL_REQUESTS = 50;
-const STRUCTURAL_REQUESTS = new Set([
-  'addSheet',
-  'deleteSheet',
-  'duplicateSheet',
-  'updateSheetProperties',
-  'insertDimension',
-  'deleteDimension',
-  'appendDimension',
-  'moveDimension',
-  'sortRange',
-  'autoResizeDimensions',
-]);
-
+const BOUNDED_A1_RANGE =
+  /^(?:'(?:[^']|''){1,200}'|[^'!]{1,100})!([A-Z]{1,3})([1-9][0-9]{0,6}):([A-Z]{1,3})([1-9][0-9]{0,6})$/;
 type SheetsRequest = {
-  action:
-    | 'inspect_spreadsheet'
-    | 'read_range'
-    | 'write_range'
-    | 'append_rows'
-    | 'clear_range'
-    | 'structural_edit';
+  action: 'inspect_spreadsheet' | 'read_range' | 'write_range' | 'clear_range' | 'structural_edit';
   range?: string;
   values?: unknown[][];
   requests?: Record<string, unknown>[];
@@ -48,7 +31,6 @@ export interface GoogleSheetsToolDeps {
     inspect(token: string, fileId: string): Promise<unknown>;
     read(token: string, fileId: string, range: string): Promise<unknown>;
     write(token: string, fileId: string, range: string, values: unknown[][]): Promise<unknown>;
-    append(token: string, fileId: string, range: string, values: unknown[][]): Promise<unknown>;
     clear(token: string, fileId: string, range: string): Promise<unknown>;
     structuralUpdate(
       token: string,
@@ -78,10 +60,7 @@ function columnNumber(column: string): number {
 function validateRange(value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length > 250)
     throw new Error('action requires a bounded A1 range');
-  const match =
-    /^(?:'(?:[^']|''){1,200}'|[^'!]{1,100})!([A-Z]{1,3})([1-9][0-9]{0,6}):([A-Z]{1,3})([1-9][0-9]{0,6})$/.exec(
-      value,
-    );
+  const match = BOUNDED_A1_RANGE.exec(value);
   if (match === null) throw new Error('action requires a bounded A1 range');
   const columns = columnNumber(match[3]!) - columnNumber(match[1]!) + 1;
   const rows = Number(match[4]) - Number(match[2]) + 1;
@@ -183,12 +162,16 @@ function validateStructural(requests: unknown): asserts requests is Record<strin
   if (requests.length > MAX_STRUCTURAL_REQUESTS)
     throw new Error('structural_edit exceeds 50 requests');
   const candidates: unknown[] = requests;
+  const validated: Record<string, unknown>[] = [];
   for (const request of candidates) {
     if (!isRecord(request)) throw new Error('structural_edit contains an unsupported request');
+    validated.push(request);
+  }
+  if (!sheetsRequestsAreSupported(validated)) {
+    throw new Error('structural_edit contains an unsupported request');
+  }
+  for (const request of validated) {
     const keys = Object.keys(request);
-    if (keys.length !== 1 || !STRUCTURAL_REQUESTS.has(keys[0] ?? '')) {
-      throw new Error('structural_edit contains an unsupported request');
-    }
     validateStructuralBounds(keys[0]!, request[keys[0]!]);
   }
   if (Buffer.byteLength(JSON.stringify(requests)) > MAX_VALUE_BYTES)
@@ -202,7 +185,6 @@ export function createGoogleSheetsTool(deps: GoogleSheetsToolDeps): {
     inspect: getSheetsSpreadsheet,
     read: getSheetsValues,
     write: updateSheetsValues,
-    append: appendSheetsValues,
     clear: clearSheetsValues,
     structuralUpdate: updateSheetsSpreadsheet,
   };
@@ -243,15 +225,12 @@ export function createGoogleSheetsTool(deps: GoogleSheetsToolDeps): {
         await assigned(input.sessionId, file.assignmentId);
         return sheets.read(token, file.fileId, request.range);
       }
-      if (
-        !['write_range', 'append_rows', 'clear_range', 'structural_edit'].includes(request.action)
-      ) {
+      if (!['write_range', 'clear_range', 'structural_edit'].includes(request.action)) {
         throw new Error('Unsupported Google Sheets action');
       }
       if (request.action === 'structural_edit') validateStructural(request.requests);
       else validateRange(request.range);
-      if (request.action === 'write_range' || request.action === 'append_rows')
-        validateValues(request.values);
+      if (request.action === 'write_range') validateValues(request.values);
       await assigned(input.sessionId, file.assignmentId);
       const claim = await deps.eventStore.claimGoogleWorkspaceInvocation(input);
       if (claim.status === 'completed') return claim.result;
@@ -263,8 +242,6 @@ export function createGoogleSheetsTool(deps: GoogleSheetsToolDeps): {
       let result: unknown;
       if (request.action === 'write_range')
         result = await sheets.write(token, file.fileId, request.range!, request.values!);
-      else if (request.action === 'append_rows')
-        result = await sheets.append(token, file.fileId, request.range!, request.values!);
       else if (request.action === 'clear_range')
         result = await sheets.clear(token, file.fileId, request.range!);
       else result = await sheets.structuralUpdate(token, file.fileId, request.requests!);

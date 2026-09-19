@@ -15,7 +15,7 @@ export interface WorkspaceInvocationInput {
   request: unknown;
 }
 
-export type WorkspaceInvocationClaim =
+type WorkspaceInvocationClaim =
   { status: 'claimed' } | { status: 'pending' } | { status: 'completed'; result: unknown };
 
 export interface GoogleWorkspaceToolStore {
