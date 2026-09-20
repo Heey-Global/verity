@@ -184,6 +184,59 @@ reprovisioning, not by updating the Server.
 
 Until the container is recreated, run affected sessions on Claude or Codex.
 
+## The control-plane Runner needs the same refresh, for a different reason
+
+Everything above is about project containers. The dedicated control-plane Runner
+— the one that serves sessions with no project of their own, and sessions whose
+project IS the control plane — is a separate container with its own upgrade step,
+added by ADR 0012 Amendment 6, which admits OpenCode to control-plane turns.
+
+It is not a Sandbox the provisioner composes. It runs the **Server image**, and it
+is created once with its mounts and environment fixed in its spec, so neither
+piece arrives by recreating a project container:
+
+- the image has to contain `/usr/local/bin/opencode-acp` (the broker refuses the
+  name `opencode`), which is new to the Server image with this release;
+- the container spec has to carry the `secrets/opencode` mount at
+  `/run/verity/opencode-config`, `OPENCODE_CONFIG`, and `XDG_CONFIG_HOME`.
+
+**Order: deploy the Server image first, then recreate the Runner.** A Runner
+recreated from an older image starts normally and then fails every OpenCode turn
+at spawn, because the wrapper is not in it. A Runner never recreated runs
+OpenCode without its configuration. Claude and Codex control-plane turns are
+unaffected by either, and are the workaround for the duration.
+
+How you recreate it depends on which of the two Runner definitions your
+deployment uses — they are held equal by `scripts/verity-compose.test.ts`, but
+they are operated differently:
+
+- **Compose overlay** (`deploy/docker-compose.runner-supervisor.yml`, pre-managed
+  deployments): `docker compose … up -d --force-recreate verity-runner`, after
+  the Server image is pulled. Never `down -v` — the warning above applies here
+  with more force, since this Runner's configuration mount is a subpath of the
+  same `verity-data` volume.
+- **Managed control-plane Runner** (`managed-control-plane-runner.ts`): the
+  Server reconciles the container against `desiredSpec` itself, so a Server that
+  has been updated recreates the Runner on its own. Nothing to do by hand.
+
+### Recognize it
+
+An OpenCode control-plane turn against a Runner from an older image fails at
+start-turn, but not with a message the broker composes: the broker maps the
+command name to the fixed path `/usr/local/bin/opencode-acp` and execs it through
+`setpriv` without checking that it exists, so what surfaces is that exec failing —
+a "No such file or directory" naming that path, on the child's stderr. It is none
+of the `mcpGatewayToken` messages above: the turn never gets far enough to
+present a bearer. Against a current image with a stale spec, the turn starts and
+OpenCode reports no provider, because `OPENCODE_CONFIG` names a file that is not
+mounted. Check the spec rather than guessing:
+
+```
+docker inspect <runner-container> --format '{{json .Config.Env}}' | grep -c OPENCODE_CONFIG
+```
+
+`0` means the Runner predates the amendment and has to be recreated.
+
 ## Why the Server does not detect this first
 
 The supervisor's status handshake carries `protocolVersion` and

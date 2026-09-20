@@ -26,6 +26,7 @@ import {
   FileTailRunnerClient,
   InMemoryEventBus,
   LoopbackRunnerClient,
+  RUNNER_SUPERVISOR_BACKENDS,
   SupervisorRunnerClient,
   SupervisorRunnerRecovery,
   type Backend,
@@ -1321,6 +1322,12 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
   const claudeAcpBackend = { runnerSupervisorBackend: 'claude-acp' } as Backend;
   const codexAcpBackend = { runnerSupervisorBackend: 'codex-acp' } as Backend;
   const openCodeAcpBackend = { runnerSupervisorBackend: 'opencode-acp' } as Backend;
+  // Derived from the closed set, not listed: the fail-closed paths below must hold
+  // for every supervised backend, and a hand-written list would keep passing while a
+  // newly admitted backend went through them unchecked.
+  const acpBackends = RUNNER_SUPERVISOR_BACKENDS.map(
+    (runnerSupervisorBackend) => ({ runnerSupervisorBackend }) as Backend,
+  );
   const nonSupervisorBackend = {} as Backend;
   const store: WiringDeps['store'] = {
     ingestRunnerFrame: async () => ({ outcome: 'accepted' }),
@@ -1527,20 +1534,19 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     });
     expect(codexClient).toBeInstanceOf(SupervisorRunnerClient);
 
-    // OpenCode is the ACP backend this runner cannot serve. It is a fixed
-    // deployment-launched container, not a provisioner-composed Sandbox: no
-    // OpenCode config volume, no XDG_CONFIG_HOME, egress certificates for the
-    // Claude and Codex gateways only. Routing a turn there would spawn an agent
-    // with no provider and fail somewhere inside the first prompt, so the refusal
-    // has to name the reason here — and it must be a refusal, because the loopback
-    // is not an alternative for any ACP backend.
-    await expect(
-      wiring.runner?.(openCodeAcpBackend, {
-        sessionId: 'opencode-control-session',
-        projectId: null,
-        worktree: '/srv/verity/sessions/opencode-control-session',
-      }),
-    ).rejects.toThrow(/OpenCode is not available for control-plane sessions/);
+    // OpenCode reaches the same runner as the other two. It used to be refused here,
+    // because the dedicated container is deployment-launched rather than
+    // provisioner-composed and carried none of OpenCode's runtime: the config mount
+    // and `XDG_CONFIG_HOME` now come from both Runner specs (`verity-compose.test.ts`
+    // holds them equal) and its egress always rode the Codex leg. The assertion is
+    // kept pointing at OpenCode specifically — routing it by the closed ACP set is
+    // exactly what a per-backend `if` regressing to the old refusal would undo.
+    const openCodeClient = await wiring.runner?.(openCodeAcpBackend, {
+      sessionId: 'opencode-control-session',
+      projectId: null,
+      worktree: '/srv/verity/sessions/opencode-control-session',
+    });
+    expect(openCodeClient).toBeInstanceOf(SupervisorRunnerClient);
 
     const turn = codexClient!.startTurn(
       {
@@ -1583,21 +1589,21 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
 
     // The other shape a control-plane turn takes: a session that HAS a project, whose
     // project is the control plane. It reaches the same dedicated container as a
-    // project-less one and is refused for the same reason, so the refusal must not be
-    // written as if only project-less sessions could hit it.
-    await expect(
-      wiring.runner?.(openCodeAcpBackend, {
-        sessionId: 'control-session-opencode',
-        projectId: 'persisted-control',
-        worktree: '/srv/verity/workspaces/verity-control/.verity-sessions/control-session-opencode',
-      }),
-    ).rejects.toThrow(/OpenCode is not available for control-plane sessions/);
+    // project-less one, so it must be admitted on the same terms — the decision used
+    // to be written twice, once per shape, and a backend admitted in only one of them
+    // would fail for whichever shape the operator happened to open.
+    const openCodeClient = await wiring.runner?.(openCodeAcpBackend, {
+      sessionId: 'control-session-opencode',
+      projectId: 'persisted-control',
+      worktree: '/srv/verity/workspaces/verity-control/.verity-sessions/control-session-opencode',
+    });
+    expect(openCodeClient).toBeInstanceOf(SupervisorRunnerClient);
   });
 
   it('fails project-less ACP backends closed without the dedicated runner', async () => {
     const wiring = buildRunnerConductorWiring({ ...baseDeps(), runnerSupervisor: true });
 
-    for (const acpBackend of [claudeAcpBackend, codexAcpBackend]) {
+    for (const acpBackend of acpBackends) {
       await expect(
         wiring.runner?.(acpBackend, {
           sessionId: 'control-session',
@@ -1637,7 +1643,7 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       onMissingSupervisorSocket,
     });
 
-    for (const acpBackend of [claudeAcpBackend, codexAcpBackend]) {
+    for (const acpBackend of acpBackends) {
       await expect(
         wiring.runner?.(acpBackend, {
           sessionId: 's-acp',
@@ -1692,7 +1698,7 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     await writeFile(socketPath, '');
     const wiring = buildRunnerConductorWiring({ ...baseDeps(), runnerSupervisor: true });
 
-    for (const acpBackend of [claudeAcpBackend, codexAcpBackend]) {
+    for (const acpBackend of acpBackends) {
       await expect(
         wiring.runner?.(acpBackend, {
           sessionId: 's-acp',

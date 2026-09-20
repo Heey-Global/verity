@@ -660,7 +660,10 @@ tool-less. A fourth adapter arrives refused until this document says otherwise.
 - Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
   Amendment 4's, for a different reason — the fixed control-plane Runner carries
   no OpenCode configuration or egress material — and this amendment does not
-  touch it.
+  touch it. (**Lifted by ADR 0012 Amendment 6, 2026-09-20**: the Runner carries
+  the configuration now, and it never lacked the egress material — OpenCode rides
+  the Codex leg. The brokered tools this amendment admitted reach control-plane
+  OpenCode turns through the same per-turn gateway as the other two.)
 - `opencode-mcp` in `@verity/secret-contracts` still names nothing. It is a label
   for an ATTESTED native relay; gateway calls carry `acp-mcp`, whose premise is
   that nothing attests them.
