@@ -23,7 +23,7 @@ const ANON_LABEL = 'com.docker.volume.anonymous';
 const anonName = (seed: string): string => seed.repeat(64).slice(0, 64);
 
 function image(partial: Partial<DockerImageSummary> & { id: string }): DockerImageSummary {
-  return { repoTags: [], created: 0, size: 0, ...partial };
+  return { repoTags: [], repoDigests: [], labels: {}, created: 0, size: 0, ...partial };
 }
 
 function volume(partial: Partial<DockerVolumeSummary> & { name: string }): DockerVolumeSummary {
@@ -138,6 +138,76 @@ describe('planImageSweep', () => {
       image({ id: 'sha256:untagged', repoTags: [], created: 1 }),
     ];
     expect(planImageSweep({ images, inUseImageIds: new Set(), keepPerRepo: 0 })).toEqual([]);
+  });
+
+  it('keeps two published Verity releases per repository and removes older unused images', () => {
+    const repository = 'ghcr.io/heey-global/verity/verity-server';
+    const images = [
+      image({
+        id: 'sha256:new',
+        repoDigests: [`${repository}@sha256:${'a'.repeat(64)}`],
+        created: 300,
+      }),
+      image({
+        id: 'sha256:rollback',
+        repoDigests: [`${repository}@sha256:${'b'.repeat(64)}`],
+        created: 200,
+      }),
+      image({
+        id: 'sha256:old',
+        repoDigests: [`${repository}@sha256:${'c'.repeat(64)}`],
+        created: 100,
+        size: 42,
+      }),
+    ];
+
+    expect(planImageSweep({ images, inUseImageIds: new Set(), keepPerRepo: 2 })).toEqual([
+      { ref: 'sha256:old', imageId: 'sha256:old', size: 42 },
+    ]);
+  });
+
+  it('never removes an in-use old Verity release', () => {
+    const repository = 'ghcr.io/heey-global/verity/verity-sandbox';
+    const images = [
+      image({ id: 'sha256:new', repoTags: [`${repository}:v3`], created: 300 }),
+      image({ id: 'sha256:rollback', repoTags: [`${repository}:v2`], created: 200 }),
+      image({ id: 'sha256:running', repoTags: [`${repository}:v1`], created: 100 }),
+    ];
+
+    expect(
+      planImageSweep({
+        images,
+        inUseImageIds: new Set(['sha256:running']),
+        keepPerRepo: 2,
+      }),
+    ).toEqual([]);
+  });
+
+  it('removes only old untagged images proven to come from the Verity repository', () => {
+    const source = 'https://github.com/Heey-Global/verity';
+    const images = [
+      image({
+        id: 'sha256:old-verity',
+        labels: { 'org.opencontainers.image.source': source },
+        created: 1,
+      }),
+      image({
+        id: 'sha256:new-verity',
+        labels: { 'org.opencontainers.image.source': source },
+        created: 99,
+      }),
+      image({ id: 'sha256:foreign', labels: {}, created: 1 }),
+    ];
+
+    expect(
+      planImageSweep({
+        images,
+        inUseImageIds: new Set(),
+        keepPerRepo: 2,
+        now: 100_000,
+        untaggedReleaseImageMinAgeMs: 2_000,
+      }),
+    ).toEqual([{ ref: 'sha256:old-verity', imageId: 'sha256:old-verity', size: 0 }]);
   });
 
   it('matches the tags the provisioner actually mints', () => {
@@ -779,6 +849,11 @@ describe('DEFAULT_DOCKER_GC_POLICY', () => {
   it('keeps more than one generation so an in-flight provision still hits cache', () => {
     expect(DEFAULT_DOCKER_GC_POLICY.keepImagesPerRepo).toBeGreaterThan(1);
     expect(DEFAULT_DOCKER_GC_POLICY.lowDiskKeepImagesPerRepo).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keeps a rollback release and gives untagged releases an age grace period', () => {
+    expect(DEFAULT_DOCKER_GC_POLICY.keepReleaseImagesPerRepo).toBeGreaterThan(1);
+    expect(DEFAULT_DOCKER_GC_POLICY.untaggedReleaseImageMinAgeMs).toBeGreaterThan(0);
   });
 
   it('sweeps superseded relays by default, behind a grace period', () => {

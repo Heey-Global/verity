@@ -39,6 +39,11 @@
  *     `deploy/bin/verity-project-relay-cutover-check.mjs` reports as
  *     "relay … has 0 matching sandboxes". Each is small (64 MiB, 0.25 CPU) but the
  *     leak is unbounded, and no other pass reclaims them.
+ *  5. **Published Verity releases.** Digest-pinned Server, Sandbox, and project
+ *     relay images remain after an update. The collector keeps the current and
+ *     previous generation for rollback, then retires older unused releases. An
+ *     untagged image is collectable only when its OCI source label still proves
+ *     that it came from this repository.
  *
  * Design notes:
  *  - The policy decisions are PURE functions ({@link planImageSweep},
@@ -47,8 +52,10 @@
  *    the "never delete the wrong thing" guarantees are unit-testable without a
  *    daemon. {@link runDockerGc} is the thin impure shell around them.
  *  - Deletion is deliberately narrow. Images must carry a
- *    {@link DEVCONTAINER_IMAGE_PREFIX} tag; anonymous volumes must be dangling AND
- *    carry the daemon's anonymous label AND have a daemon-generated 64-hex name;
+ *    {@link DEVCONTAINER_IMAGE_PREFIX} tag, belong to an official Verity release
+ *    repository, or carry Verity's OCI source label; anonymous volumes must be
+ *    dangling AND carry the daemon's anonymous label AND have a daemon-generated
+ *    64-hex name;
  *    builder volumes must be dangling AND match the `buildx_buildkit_builder-*
  *    _state` name; a relay container must carry Verity's own
  *    {@link RELAY_COMPONENT_LABEL} plus both identity labels AND have no sandbox
@@ -114,12 +121,22 @@ function isRelayComponent(component: string | undefined): boolean {
 const PROJECT_ID_LABEL = 'verity.project-id';
 const CONTAINER_GENERATION_LABEL = 'verity.container-generation';
 const COMPONENT_LABEL = 'verity.component';
+const VERITY_IMAGE_SOURCE = 'https://github.com/Heey-Global/verity';
+const VERITY_RELEASE_REPOSITORIES = new Set([
+  'ghcr.io/heey-global/verity/verity-server',
+  'ghcr.io/heey-global/verity/verity-sandbox',
+  'ghcr.io/heey-global/verity/verity-project-relay',
+]);
 
 export interface DockerGcPolicy {
   /** Devcontainer image generations to keep per `<owner>-<repo>`, newest first.
    *  Above 1 so an in-flight provision that resolved the previous hash — or a
    *  quick revert of a `.devcontainer/` edit — still hits a warm cache. */
   keepImagesPerRepo: number;
+  /** Published Verity release generations to keep per image repository. */
+  keepReleaseImagesPerRepo: number;
+  /** Minimum age for an untagged Verity release image before removal. */
+  untaggedReleaseImageMinAgeMs: number;
   /** Grace period before a dangling anonymous volume is swept. Guards the window
    *  between `containers/create` and `containers/start`, where a just-minted
    *  volume is briefly attached to nothing and would otherwise look collectable. */
@@ -153,6 +170,8 @@ export interface DockerGcPolicy {
 
 export const DEFAULT_DOCKER_GC_POLICY: DockerGcPolicy = {
   keepImagesPerRepo: 2,
+  keepReleaseImagesPerRepo: 2,
+  untaggedReleaseImageMinAgeMs: 24 * 60 * 60_000,
   volumeMinAgeMs: 60 * 60_000,
   // 3 days. The original 7-day default was too conservative for a busy build
   // host: one runner churned >60 GB of build cache — all of it younger than a
@@ -211,13 +230,15 @@ export interface DockerGcReport {
  *  registry-qualified tag (`host:5000/name:tag`) still splits correctly, and
  *  returns undefined for a ref with no tag (nothing to group). */
 function repositoryOf(ref: string): string | undefined {
+  const digest = ref.indexOf('@sha256:');
+  if (digest > 0) return ref.slice(0, digest).toLowerCase();
   const colon = ref.lastIndexOf(':');
   if (colon <= 0) return undefined;
   const repo = ref.slice(0, colon);
   // A colon that belongs to a registry host+port has a `/` after it; that is a
   // repository path, not a tag separator.
   if (ref.slice(colon + 1).includes('/')) return undefined;
-  return repo;
+  return repo.toLowerCase();
 }
 
 export interface ImageSweepPlan {
@@ -242,6 +263,9 @@ export function planImageSweep(input: {
   /** Image content ids referenced by any container, running or stopped. */
   inUseImageIds: ReadonlySet<string>;
   keepPerRepo: number;
+  keepReleaseImagesPerRepo?: number;
+  untaggedReleaseImageMinAgeMs?: number;
+  now?: number;
 }): ImageSweepPlan[] {
   const byRepository = new Map<string, Map<string, DockerImageSummary>>();
   for (const image of input.images) {
@@ -266,6 +290,41 @@ export function planImageSweep(input: {
         plan.push({ ref, imageId: image.id, size: image.size });
       }
     }
+  }
+
+  const releaseGroups = new Map<string, Map<string, DockerImageSummary>>();
+  for (const image of input.images) {
+    for (const ref of [...image.repoTags, ...image.repoDigests]) {
+      const repository = repositoryOf(ref);
+      if (repository === undefined || !VERITY_RELEASE_REPOSITORIES.has(repository)) continue;
+      const group = releaseGroups.get(repository) ?? new Map<string, DockerImageSummary>();
+      group.set(image.id, image);
+      releaseGroups.set(repository, group);
+    }
+  }
+  for (const group of releaseGroups.values()) {
+    const ordered = [...group.values()].sort(
+      (a, b) => b.created - a.created || a.id.localeCompare(b.id),
+    );
+    for (const image of ordered.slice(Math.max(0, input.keepReleaseImagesPerRepo ?? 2))) {
+      if (input.inUseImageIds.has(image.id)) continue;
+      plan.push({ ref: image.id, imageId: image.id, size: image.size });
+    }
+  }
+
+  const cutoffSeconds =
+    ((input.now ?? Date.now()) - (input.untaggedReleaseImageMinAgeMs ?? 24 * 60 * 60_000)) / 1000;
+  for (const image of input.images) {
+    if (image.repoTags.length > 0 || image.repoDigests.length > 0) continue;
+    if (
+      image.labels['org.opencontainers.image.source']?.toLowerCase() !==
+      VERITY_IMAGE_SOURCE.toLowerCase()
+    ) {
+      continue;
+    }
+    if (image.created > cutoffSeconds || input.inUseImageIds.has(image.id)) continue;
+    if (plan.some((entry) => entry.imageId === image.id)) continue;
+    plan.push({ ref: image.id, imageId: image.id, size: image.size });
   }
   return plan;
 }
@@ -464,7 +523,14 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
         docker.listContainers(),
       ]);
       const inUseImageIds = new Set(containers.map((container) => container.imageId));
-      const plan = planImageSweep({ images, inUseImageIds, keepPerRepo });
+      const plan = planImageSweep({
+        images,
+        inUseImageIds,
+        keepPerRepo,
+        keepReleaseImagesPerRepo: policy.keepReleaseImagesPerRepo,
+        untaggedReleaseImageMinAgeMs: policy.untaggedReleaseImageMinAgeMs,
+        now: now(),
+      });
       for (const entry of plan) {
         try {
           await docker.removeImage?.(entry.ref);
