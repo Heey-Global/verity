@@ -724,13 +724,15 @@ than as a fraction of Docker's nominal 1024: runc maps 512 to 20 against that
 default of 100. Set it to `0` to opt out and return to one flat weight for
 everything.
 
-The value is passed through as given, so choose it from that conversion rather
-than by feel. Useful settings sit between `2` and roughly `2000`; at about `2600`
-a sandbox draws level with the control plane and above it outranks it, which is
-the opposite of the point. Very large values are worse than merely inverted —
-cgroup v2 caps `cpu.weight` at 10000, and a number that converts past the cap is
-rejected when the container is created, so a fat-fingered extra digit fails
-provisioning rather than quietly doing nothing.
+Choose the value from that conversion rather than by feel. Useful settings sit
+between `2` and roughly `2000`; at about `2600` a sandbox draws level with the
+control plane, and above that it outranks it — which is the opposite of the
+point, and something no amount of range-checking can distinguish from a
+deliberate choice. Verity clamps what it sends to Docker's legal `2`–`262144`,
+because the ends of that range are not merely useless but unusable: the weight
+they convert to would be outside what the kernel accepts, and the container
+would fail to start rather than start mis-weighted. Inside the range you get
+what you asked for, so the inversion above is yours to avoid.
 
 The weight is applied when a sandbox container is **created**, and a changed
 weight is not itself drift: the reconciler compares the memory, swap, CPU and PID

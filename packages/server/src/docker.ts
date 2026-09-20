@@ -1157,8 +1157,17 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         // Emitted only when positive: Docker reads 0 as "unset", so a spec that
         // zeroes this asks for the daemon default weight rather than for a
         // container the scheduler starves.
+        //
+        // Clamped to Docker's legal 2..262144, which is not cosmetic. runc's
+        // `ConvertCPUSharesToCgroupV2Value` takes a uint64 and computes
+        // `1 + ((shares - 2) * 9999) / 262142`, so shares of 1 underflows rather
+        // than going negative and yields a weight far past the 10000 the kernel
+        // accepts — create then fails for EVERY sandbox on the host, from a value
+        // that reads like a typo of the documented `0` opt-out. The same range is
+        // why the top is clamped: those two bounds map exactly onto cgroup v2's
+        // weight 1 and weight 10000, so anything inside them is always writable.
         ...(spec.cpuShares !== undefined && spec.cpuShares > 0
-          ? { CpuShares: spec.cpuShares }
+          ? { CpuShares: Math.min(Math.max(spec.cpuShares, 2), 262_144) }
           : {}),
         ...(ulimits.length
           ? {

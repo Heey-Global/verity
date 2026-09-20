@@ -662,8 +662,9 @@ describe('createDockerClient (#174)', () => {
     // Docker reads CpuShares 0 as "unset", so the two spellings agree here — but
     // only because this is filtered out. Forwarded, a deployment that opts out of
     // sandbox weighting would depend on the daemon reading 0 the same way, and a
-    // value that reached runc literally would convert to weight 1: a container the
-    // scheduler starves, from a setting whose whole purpose was to change nothing.
+    // value that reached runc's uint64 conversion literally would underflow past
+    // every weight the kernel accepts, from a setting whose whole purpose was to
+    // change nothing.
     const fetch = fakeFetch([
       { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'abc123' }) },
     ]);
@@ -672,6 +673,36 @@ describe('createDockerClient (#174)', () => {
     const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
     expect(body.HostConfig.CpuShares).toBeUndefined();
     expect(body.HostConfig.NanoCpus).toBe(2e9);
+  });
+
+  it('holds a CPU weight inside the range runc can convert', async () => {
+    // Both bounds are failure modes, not tidiness. runc converts shares with
+    // `1 + ((shares - 2) * 9999) / 262142` over uint64, so 1 underflows instead of
+    // going negative; and the arithmetic is unbounded above. Either end produces a
+    // `cpu.weight` past the kernel's 10000, which is rejected when the container is
+    // created — so a one-character slip in VERITY_SANDBOX_CPU_SHARES would stop
+    // every sandbox on the host from starting, with the daemon blaming the weight
+    // rather than the deployment that set it. Docker's own 2..262144 maps exactly
+    // onto weight 1..10000, so clamping there is always writable.
+    const fetch = fakeFetch([
+      { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'abc123' }) },
+      { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'def456' }) },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+    await docker.createContainer({ ...sampleSpec, cpuShares: 1 });
+    await docker.createContainer({ ...sampleSpec, cpuShares: 512_000 });
+    const weightOf = (call: number): number => {
+      const body = JSON.parse(fetch.calls[call]?.init?.body ?? '{}') as {
+        HostConfig: { CpuShares: number };
+      };
+      return body.HostConfig.CpuShares;
+    };
+    // Asserted as the weight the kernel will see, not as the shares number: the
+    // shares are only ever a means to that value.
+    const asCgroupV2Weight = (shares: number): number =>
+      1 + Math.trunc(((shares - 2) * 9999) / 262142);
+    expect(asCgroupV2Weight(weightOf(0))).toBe(1);
+    expect(asCgroupV2Weight(weightOf(1))).toBe(10_000);
   });
 
   it('drops a ulimit whose soft/hard is not a usable rlimit value', async () => {
