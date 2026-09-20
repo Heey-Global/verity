@@ -25,17 +25,36 @@ describe('createMcpGatewayTokens', () => {
   // The project comes from the connection the Server accepted, so a token that leaked
   // into another project's container is still inert there.
   it('refuses a token presented on another project connection', () => {
-    const tokens = createMcpGatewayTokens();
+    const rejected: unknown[] = [];
+    const tokens = createMcpGatewayTokens({ onResolveRejected: (input) => rejected.push(input) });
     const token = tokens.issue(caller);
     expect(tokens.resolve({ projectId: 'p2', token })).toBeUndefined();
+    expect(rejected).toEqual([
+      { reason: 'project_mismatch', presentedProjectId: 'p2', mintedProjectId: 'p1' },
+    ]);
   });
 
   it('refuses an unknown or empty bearer', () => {
-    const tokens = createMcpGatewayTokens();
+    const rejected: unknown[] = [];
+    const tokens = createMcpGatewayTokens({ onResolveRejected: (input) => rejected.push(input) });
     tokens.issue(caller);
     expect(tokens.resolve({ projectId: 'p1', token: '' })).toBeUndefined();
     expect(tokens.resolve({ projectId: 'p1', token: 'not-a-token' })).toBeUndefined();
     expect(tokens.resolve({ projectId: 'p1', token: 'x'.repeat(4096) })).toBeUndefined();
+    expect(rejected).toEqual([
+      { reason: 'malformed', presentedProjectId: 'p1' },
+      { reason: 'unknown', presentedProjectId: 'p1' },
+      { reason: 'malformed', presentedProjectId: 'p1' },
+    ]);
+  });
+
+  it('keeps diagnostic failures out of token resolution', () => {
+    const tokens = createMcpGatewayTokens({
+      onResolveRejected: () => {
+        throw new Error('logger unavailable');
+      },
+    });
+    expect(tokens.resolve({ projectId: 'p1', token: 'unknown' })).toBeUndefined();
   });
 
   it('stops resolving a released token', () => {
@@ -77,12 +96,20 @@ describe('createMcpGatewayTokens', () => {
 
   it('expires a token once its TTL has passed', () => {
     let clock = 1_000;
-    const tokens = createMcpGatewayTokens({ now: () => clock, ttlMs: 60_000 });
+    const rejected: unknown[] = [];
+    const tokens = createMcpGatewayTokens({
+      now: () => clock,
+      ttlMs: 60_000,
+      onResolveRejected: (input) => rejected.push(input),
+    });
     const token = tokens.issue(caller);
     clock += 59_999;
     expect(tokens.resolve({ projectId: 'p1', token })).not.toBeUndefined();
     clock += 1;
     expect(tokens.resolve({ projectId: 'p1', token })).toBeUndefined();
+    expect(rejected).toEqual([
+      { reason: 'expired', presentedProjectId: 'p1', mintedProjectId: 'p1' },
+    ]);
   });
 
   // Capacity is a backstop against a Server that never sees a release; expired entries
