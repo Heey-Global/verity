@@ -1785,7 +1785,11 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       const source = await readFile(url, 'utf8');
       const region = gate.exec(source)?.[0];
       expect(region).toBeDefined();
-      return [...(region ?? '').matchAll(/'([a-z0-9-]+-acp)'/gu)].map((match) => match[1]!).sort();
+      // Every quoted literal in the region, not the ones that look like today's
+      // backend ids: an admitted backend named without an `-acp` suffix would be
+      // invisible to a narrower pattern on BOTH sides at once, and two lists that
+      // cannot see the same member still compare equal.
+      return [...(region ?? '').matchAll(/'([^'\n]+)'/gu)].map((match) => match[1]!).sort();
     };
 
     const here = await members(

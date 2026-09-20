@@ -558,7 +558,10 @@ describe('SupervisorRunnerClient', () => {
     // age — so the bound is taken from the supervisor's own call rather than restated,
     // and tightening it there without following here fails right here.
     const bound = /optionalString\(\s*request\.mcpGatewayToken,\s*'mcpGatewayToken',\s*(\d+)/u.exec(
-      supervisor.replaceAll('_', ''),
+      // Numeric separators only, so a bound rewritten as `1_024` still reads as a
+      // number. Stripping every underscore in the file would rename identifiers the
+      // anchor may one day have to match.
+      supervisor.replace(/(?<=\d)_(?=\d)/gu, ''),
     );
     expect(bound?.[1]).toBeDefined();
     expect(Number(bound?.[1])).toBe(MCP_GATEWAY_BEARER_MAX_BYTES);
@@ -602,17 +605,17 @@ describe('SupervisorRunnerClient', () => {
   // one page written for this failure stops answering it. Nothing else pairs the two,
   // since the tests above assert against their own fakes' literals.
   it('keeps the runbook quoting the refusals this client actually emits', async () => {
-    const runbook = await readFile(
-      new URL(
-        '../../../docs/runbooks/opencode-brokered-tools-container-refresh.md',
-        import.meta.url,
-      ),
-      'utf8',
-    );
+    const page = 'docs/runbooks/opencode-brokered-tools-container-refresh.md';
+    const runbook = await readFile(new URL(`../../../${page}`, import.meta.url), 'utf8');
     const client = await readFile(
       new URL('./runner-supervisor-client.ts', import.meta.url),
       'utf8',
     );
+    // The refusal the client composes sends the operator to this page BY PATH. Read
+    // through the same literal the message carries, so a rename cannot leave the
+    // shipped error pointing at a page that no longer exists: it fails here, at the
+    // literal whoever renames it is already editing.
+    expect(client).toContain(page);
     // The page wraps its quotes to prose width and separates them by blank lines, so
     // read each quoted message as one unwrapped line.
     const quoted = [...runbook.matchAll(/```\n([\s\S]*?)```/gu)]
@@ -647,7 +650,11 @@ describe('SupervisorRunnerClient', () => {
       const source = await readFile(url, 'utf8');
       const region = gate.exec(source)?.[0];
       expect(region).toBeDefined();
-      return [...(region ?? '').matchAll(/'([a-z0-9-]+-acp)'/gu)].map((match) => match[1]!).sort();
+      // Every quoted literal in the region, not the ones that look like today's
+      // backend ids: an admitted backend named without an `-acp` suffix would be
+      // invisible to a narrower pattern on BOTH sides at once, and two lists that
+      // cannot see the same member still compare equal.
+      return [...(region ?? '').matchAll(/'([^'\n]+)'/gu)].map((match) => match[1]!).sort();
     };
 
     const minted = await members(

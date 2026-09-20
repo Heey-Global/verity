@@ -17,11 +17,13 @@ describe('project concierge routes', () => {
       ),
       'utf8',
     );
-    const documented = /POST (\/[A-Za-z0-9/<>_-]*recreate-container)/u.exec(runbook)?.[1];
+    const [, method, documented] =
+      /(POST|PUT|PATCH|DELETE|GET) (\/[A-Za-z0-9/<>_-]*recreate-container)/u.exec(runbook) ?? [];
     // Asserted separately from the route comparison: a runbook that stopped naming a
     // route at all is its own failure, and folding it into the comparison below would
     // report it as a missing route instead.
     expect(documented).toBeDefined();
+    expect(method).toBeDefined();
     // The runbook writes the project id as a placeholder; the router writes it as a
     // Fastify parameter, whose NAME is the router's business. Everything else — every
     // literal segment, in order, from the root — is the path an operator types, so it
@@ -30,9 +32,17 @@ describe('project concierge routes', () => {
     // The literal segments are escaped before they become a pattern: they are prose,
     // and a path that acquired a regex metacharacter would otherwise be compared as a
     // pattern rather than as the characters an operator types.
+    // Anchored on the registration, and on the VERB the runbook prints. The bare
+    // path literal is not enough: the same string in a comment, a client call or a
+    // `GET` alias would satisfy it while the POST an operator is told to send has
+    // gone. Prettier moves the path onto its own line once the handler grows, so
+    // the only thing between the two is whitespace.
     const escape = (text: string): string => text.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
     const routed = new RegExp(
-      `'${documented!.split('<projectId>').map(escape).join(':[A-Za-z][A-Za-z0-9_]*')}'`,
+      `app\\.${method!.toLowerCase()}\\(\\s*'${documented!
+        .split('<projectId>')
+        .map(escape)
+        .join(':[A-Za-z][A-Za-z0-9_]*')}'`,
       'u',
     );
 
