@@ -37,6 +37,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
   constants as fsConstants,
+  existsSync,
   fchmodSync,
   fchownSync,
   fstatSync,
@@ -1606,6 +1607,29 @@ export function materializeOpenCodeSettings(
   // only the local gateway address, a fixed placeholder, and model names.
   writeSecretFile(secretRoot, 'opencode.json', config, 'opencode', 0o644, 0o755);
   return join(secretRoot, 'opencode');
+}
+
+/**
+ * Materialize the OpenCode configuration only if the file is not there yet, and
+ * report whether it wrote.
+ *
+ * For the Server's boot path. A Sandbox gets its config as a side effect of being
+ * composed; the control-plane Runner is created once with the mount already in its
+ * spec, so the file has to exist before any turn rather than because of one. The
+ * conditional is the load-bearing part: a sealed boot cannot decrypt the provider
+ * settings, and {@link materializeOpenCodeSettings} answers missing settings with
+ * the credential-free fallback — writing that over a good config would disable
+ * OpenCode until an operator saved its settings again. When nothing is there, the
+ * fallback costs nothing and gives `OPENCODE_CONFIG` a file to name.
+ */
+export function ensureOpenCodeSettingsMaterialized(
+  settings: VeritySettingsRecord | undefined,
+  secretRoot: string,
+  connectorPort = 47_821,
+): boolean {
+  if (existsSync(join(secretRoot, 'opencode', 'opencode.json'))) return false;
+  materializeOpenCodeSettings(settings, secretRoot, connectorPort);
+  return true;
 }
 
 function gitSettingsBinds(

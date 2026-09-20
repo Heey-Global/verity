@@ -214,12 +214,23 @@ function prepareSpec(
     command: [
       [
         'set -eu',
-        'mkdir -p /data/workspaces/verity-control /data/sessions',
+        // `secrets/opencode` is a mount SOURCE for the Runner below, and Docker
+        // refuses to start a container whose volume subpath does not exist — so it is
+        // created here rather than left to the Server, which writes the provider
+        // configuration into it but may do so long after the Runner was expected to
+        // start. Its contents are the Server's; only its existence is ours.
+        'mkdir -p /data/workspaces/verity-control /data/sessions /data/secrets/opencode',
         // This init container is the first process to mount `verity-data`, so Docker
         // initializes the volume from its `/data` path (root-owned), not from the
         // Server image's node-owned `/srv/verity`. The Server must be able to create
         // project clones and session worktrees beside the control-plane checkout.
-        'chown 1000:1000 /data /data/workspaces /data/sessions',
+        // `secrets` is on that list for the same reason and with more at stake: a
+        // root-owned one would fail every later materialization the Server attempts,
+        // brokered git material and signing tokens included, not just OpenCode's.
+        'chown 1000:1000 /data /data/workspaces /data/sessions /data/secrets /data/secrets/opencode',
+        // Matches the mode `materializeOpenCodeSettings` gives the directory when it
+        // creates it first, so neither order leaves the agent unable to read it.
+        'chmod 0755 /data/secrets/opencode',
         'chown -R 1000:1000 /data/workspaces/verity-control',
         // Control sessions use real git worktrees even though they have no
         // product repository. Run every Git command as its uid-1000 owner: an
@@ -350,6 +361,16 @@ export function desiredSpec(
       'VERITY_CLAUDE_EGRESS_SERVERNAME=verity-agent-gateway',
       'VERITY_CODEX_EGRESS_URL=https://verity-agent-gateway:9444',
       'VERITY_CODEX_EGRESS_AUTHORITY=verity-agent-gateway:9444',
+      // OpenCode's provider configuration, exactly as a project Sandbox receives it
+      // (`openCodeSettingsBind` in packages/server/src/provisioner.ts). The file is not
+      // a secret — a loopback address, a fixed placeholder and model names — and the
+      // gateway swaps the placeholder for the operator's key on the way out.
+      // OPENCODE_CONFIG selects it from the READ-ONLY mount below so OpenCode's own XDG
+      // config directory stays writable; `verity-runner-stack-start` creates that one
+      // under XDG_CONFIG_HOME and hands it to the agent. Keep in lockstep with
+      // `deploy/docker-compose.runner-supervisor.yml`.
+      'OPENCODE_CONFIG=/run/verity/opencode-config/opencode.json',
+      'XDG_CONFIG_HOME=/run/verity/xdg',
       'VERITY_CLAUDE_CONNECTOR_RECONCILE_SECONDS=1',
       // ADR 0006 Amendment 1, told to the launcher as a RESOLVED decision rather than as the
       // operator's raw setting. On this topology the mount is dropped outright
@@ -383,6 +404,15 @@ export function desiredSpec(
       },
       { volume: 'verity-data', target: '/work', subpath: 'workspaces/verity-control' },
       { volume: 'verity-data', target: '/srv/verity/sessions', subpath: 'sessions' },
+      // The directory, not the file: the Server replaces opencode.json atomically when
+      // the operator changes provider settings, and a file mount would pin this
+      // container to the inode that existed when it started.
+      {
+        volume: 'verity-data',
+        target: '/run/verity/opencode-config',
+        subpath: 'secrets/opencode',
+        readOnly: true,
+      },
     ],
     restartPolicy: 'unless-stopped',
     network: 'verity-net',

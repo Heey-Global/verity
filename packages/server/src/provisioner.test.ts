@@ -46,6 +46,7 @@ import {
   unsupportedDevcontainerRuntimeKeys,
   runnerSupervisorBoundarySafe,
   openCodeSettingsConfig,
+  ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
   RUNNER_BROKER_CAPABILITIES,
   CLAUDE_EGRESS_GATEWAY_URL_LABEL,
@@ -120,6 +121,40 @@ describe('openCodeSettingsConfig', () => {
       expect(JSON.parse(readFileSync(join(first, 'opencode.json'), 'utf8'))).toHaveProperty(
         'provider.verity.models.model-a',
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a configured provider when boot cannot read the settings', () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-opencode-settings-'));
+    try {
+      // The silent failure: the Server boots sealed, cannot decrypt the provider
+      // settings, and regenerates the config the control-plane Runner mounts. The
+      // Runner keeps starting and every OpenCode turn runs against a config with no
+      // provider in it — an outage that looks like a model problem, not a boot
+      // problem, and that outlives the unseal for as long as nobody re-saves the
+      // settings.
+      materializeOpenCodeSettings(
+        {
+          opencodeBaseUrl: 'https://api.example.test/v1',
+          opencodeApiKey: 'provider-key-fixture',
+          opencodeModels: 'model-a',
+        } as VeritySettingsRecord,
+        root,
+      );
+      expect(ensureOpenCodeSettingsMaterialized(undefined, root)).toBe(false);
+      expect(
+        JSON.parse(readFileSync(join(root, 'opencode', 'opencode.json'), 'utf8')),
+      ).toHaveProperty('provider.verity.models.model-a');
+      // Nothing there is the case the boot write exists for: OPENCODE_CONFIG names
+      // this path in a Runner spec that was fixed at container create, so the file
+      // has to exist before the first turn rather than because of one.
+      rmSync(join(root, 'opencode'), { recursive: true, force: true });
+      expect(ensureOpenCodeSettingsMaterialized(undefined, root)).toBe(true);
+      expect(
+        JSON.parse(readFileSync(join(root, 'opencode', 'opencode.json'), 'utf8')),
+      ).not.toHaveProperty('provider');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

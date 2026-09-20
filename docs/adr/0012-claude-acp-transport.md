@@ -352,6 +352,13 @@ loopback is not an alternative — ACP must never start in the credential-bearin
 Server process. Giving that container OpenCode's configuration is a deployment
 change, and until it is made, a control-plane session stays on Claude or Codex.
 
+> **Superseded by Amendment 6 (2026-09-20).** The deployment change has been
+> made: both control-plane Runner specs carry the OpenCode configuration mount
+> and `XDG_CONFIG_HOME`, and the egress certificates were never the obstacle —
+> OpenCode rides the Codex leg. The paragraph stands as the record of why the
+> transport migration stopped at the Sandbox. Its reasoning about the loopback is
+> unchanged and still binding.
+
 Brokered secret tools stay off this transport. `opencode-acp` does advertise
 `mcpCapabilities.http`, the same hook ADR 0014's approval-gated gateway uses on the
 other two, so this is not a capability gap — it is a decision not yet taken about
@@ -386,3 +393,80 @@ leaves the previous settings intact; a later refresh failure keeps the last
 successful catalog. A successful empty catalog clears the available models.
 Requests use the existing HTTPS egress policy, refuse redirects, and bound both
 response size and request duration.
+
+## Amendment 6 (2026-09-20) — OpenCode runs control-plane turns
+
+Amendment 4 refused OpenCode on control-plane turns because the dedicated Runner
+carried none of its runtime. That gap is closed: the Runner now mounts the
+server-owned OpenCode configuration and sets `XDG_CONFIG_HOME`, and every
+supervised backend reaches it on the same terms. The refusal is gone, from both
+shapes a control-plane turn takes — a session with no project, and a session whose
+project IS the control plane.
+
+One of Amendment 4's three reasons was never true. Egress was not a gap: OpenCode
+rides the Codex leg end to end — the connector routes `/opencode` alongside
+`/codex`, the gateway serves it there, and the Runner has been started with
+`VERITY_CODEX_EGRESS_URL` and the matching certificates all along. Only the
+config mount and `XDG_CONFIG_HOME` were missing. A comment in `embedded.ts`
+claiming the Runner's certificates covered "the Claude and Codex gateways only"
+said otherwise and was wrong.
+
+- **The runtime layer was already agent-agnostic; the container was not.**
+  `verity-runner-stack-start` creates OpenCode's config and state directories and
+  chowns them to the agent, the spawn broker maps each backend name to one fixed
+  executable, and the connector routes all three providers. None of that needed a
+  change. What differed was what the Server put in the container: the image and
+  the container spec. So the fix belongs there, not in a fourth per-backend branch.
+
+- **One wrapper definition, not two.** `opencode-acp` is a root-owned wrapper
+  around `opencode acp` (Amendment 4). It existed only in the devcontainer
+  Feature's `install.sh`, so the Server image — which is what the control-plane
+  Runner runs — had `opencode` but no `opencode-acp`, and the broker refuses the
+  name `opencode`. Both now install it from one script,
+  `features/verity-sandbox-toolkit/bin/verity-opencode-acp-install.sh`, the same
+  shape `verity-claude-acp-harden.mjs` already had. `scripts/agent-cli-pins.test.ts`
+  holds the agent CLI pins equal between the two files and fails if either inlines
+  the wrapper again.
+
+- **Two container definitions, held equal by a test.** The control-plane Runner
+  exists twice — as the Compose overlay `deploy/docker-compose.runner-supervisor.yml`
+  for pre-managed deployments, and as `desiredSpec` in
+  `managed-control-plane-runner.ts` for managed ones. The configuration mount and
+  both environment variables are in both, and `scripts/verity-compose.test.ts` now
+  compares the full environment map and the mount rather than trusting that
+  whoever edits one remembers the other.
+
+- **The directory has to exist before the container does.** Docker refuses to
+  start a container whose volume subpath is missing, and the Server, not the
+  operator, owns the file inside it. So the init step creates and chowns
+  `secrets/opencode` and the Server writes `opencode.json` into it. The Server
+  writes it at boot only when it is absent: a sealed boot cannot decrypt the
+  provider settings, and regenerating unconditionally would replace a working
+  configuration with the credential-free fallback until someone saved the settings
+  again. Unlock re-materializes it from the real settings, and because the Runner
+  mounts the directory rather than the file, a running container sees the
+  replacement.
+
+- **Routing asks the closed set, not the backend.** The two control-plane branches
+  in `embedded.ts` listed Claude and Codex by name, twice. They now ask
+  `isRunnerSupervisorBackend()` — the same `RUNNER_SUPERVISOR_BACKENDS` the broker
+  and the supervisor are keyed on — so a fourth backend arrives routed rather than
+  silently dropped into the loopback fallback. The refusal text still names the
+  backend, through `runnerSupervisorBackendLabel()`; that label decides nothing.
+
+### Consequences
+
+- **The upgrade is ordered, like Amendment 4's.** Deploy the Server image first —
+  it is what the Runner runs, and it is where `opencode-acp` appears — then
+  recreate the control-plane Runner so it picks up the mount and the environment.
+  A Runner recreated from an older image starts fine and refuses OpenCode turns at
+  the spawn broker; a Runner not recreated at all runs OpenCode with no
+  configuration. Both fail at the first OpenCode control-plane turn and neither
+  affects Claude or Codex. `docs/runbooks/opencode-brokered-tools-container-refresh.md`
+  carries the procedure.
+- **Deployments that never enabled OpenCode are unaffected.** No model routes
+  there, and the boot write produces a provider-less configuration file that
+  nothing reads.
+- The review of `verity-code-review` is not in this decision. Its reviewer mapping
+  still sends an `opencode` session to `codex`; a native OpenCode review path is a
+  separate change, with its own risk to the pre-push gate everyone depends on.

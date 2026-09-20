@@ -220,14 +220,12 @@ DOWNLOAD_DIR="$(mktemp -d)"
 # One EXIT trap owns every staged temp path this script creates, rather than each
 # use site cleaning up after itself: under `set -e` any failing command between the
 # stage and its `rm` skips that `rm`, and what leaks is baked into the image layer.
-# Later stages announce themselves by setting their variable; it starts empty because
-# `set -u` makes an unset one fail the trap.
-OPENCODE_ACP_TMP=
+# The opencode-acp wrapper used to stage here too; it moved into
+# `bin/verity-opencode-acp-install.sh`, which arms the same kind of trap for its own
+# temporary — a staged file is the staging script's to clean up, and that one is now
+# run by the Server image build as well, where this trap does not exist.
 cleanup_staging() {
   rm -rf "$DOWNLOAD_DIR"
-  if [ -n "$OPENCODE_ACP_TMP" ]; then
-    rm -f "$OPENCODE_ACP_TMP"
-  fi
 }
 trap cleanup_staging EXIT
 fetch_release_tarball() {
@@ -596,11 +594,10 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     if [ -n "$CLI_BIN" ]; then ln -sfn "$CLI_BIN" "/usr/local/bin/$AGENT_CLI"; fi
   done
 fi
-# OpenCode speaks ACP as a SUBCOMMAND of its own CLI (`opencode acp`) rather than
-# through a separate adapter package the way Claude and Codex do, so there is no
-# `opencode-acp` executable for anything to name. Give it one: the spawn broker maps
-# a fixed command name to a fixed absolute path and passes no shell, so the
-# subcommand has to be baked in on this side of that boundary.
+# The `opencode-acp` executable OpenCode does not ship. Built by a script this
+# Feature shares with `deploy/Dockerfile`, because the Server image needs the same
+# wrapper for the control-plane Runner and two copies of it would drift; the script
+# itself carries the reasoning.
 #
 # Outside the supervisor block on purpose, unlike the symlink loop above. Those
 # symlinks exist only because the broker execs absolute paths, but `opencode-acp` is
@@ -608,87 +605,11 @@ fi
 # that installed opencode without the supervisor still needs the executable, exactly
 # as it gets `claude-agent-acp` and `codex-acp` from their npm packages ungated.
 #
-# Root-owned and written with the interpreter's real path resolved here, not looked
-# up at run time: the child's PATH comes from the broker, so a wrapper that searched
-# it would answer to whatever that PATH happens to resolve first. That is about
-# determinism, not integrity — the resolved target is usually the root-owned npm
-# global, but on an image where opencode came from a user-writable prefix the
-# wrapper faithfully execs that. Pinning the path removes the lookup, not the
-# question of who owns what it finds, which is the same posture as the symlinks.
-#
-# Two consequences worth stating rather than discovering. The root-owned
-# `/usr/local/bin/opencode` symlink is written inside the supervisor block above, so
-# only supervisor images have a stable name to resolve to; elsewhere this bakes in
-# whatever prefix npm used, commonly an nvm path under the dev user. And an nvm path
-# is node-version-scoped: a derived layer that bumps node moves it, and the wrapper
-# then fails at spawn. Neither is specific to the wrapper — the same bump takes the
-# `opencode` shim the agent's own PATH resolves with it — and both are fixed the same
-# way, by re-running this Feature against the new layer, which re-resolves the path.
-#
-# The subcommand is pinned here, and the trailing argv is refused on the other side:
-# the broker appends a request's `args` after the executable for every agent command,
-# and it rejects a non-empty argv for `opencode-acp` specifically. Measured against
-# opencode 1.18.21, `opencode acp` accepts --print-logs, --log-level, --pure, --port,
-# --hostname, --mdns, --mdns-domain, --cors and --cwd — no config-path flag, so argv
-# cannot reach the provider or MCP configuration the way a `--config` would, but
-# `--cwd` would move the working directory the broker had just validated against the
-# worktree roots. Verity's OpenCode profile passes no arguments, so refusing them
-# outright costs nothing; see the comment on that check in
-# verity-agent-spawn-broker.mjs.
-#
-# Written unconditionally rather than skipped when something already answers to the
-# name. The broker execs ONE absolute path, so a PATH-based "already there" check
-# asks the wrong question: an `opencode-acp` further down the path satisfies it while
-# leaving `/usr/local/bin/opencode-acp` missing, and a re-run after the `opencode`
-# binary moved would keep a wrapper pointing at the old location. Overwriting is
-# cheap and makes the file a function of this run's resolution.
+# The wrapper is NOT added to WRITTEN_PATHS: that array drives the F11 chown to the
+# dev user, and handing this file to the identity the agent runs as would undo the
+# root ownership the script installs it with.
 if [ "$INSTALL_OPENCODE" = 'true' ]; then
-  OPENCODE_BIN="$(PATH="$LIFECYCLE_PATH" command -v opencode || command -v opencode || true)"
-  if [ -z "$OPENCODE_BIN" ] && command -v npm >/dev/null 2>&1; then
-    # Ask npm where it put it before concluding it is not there. The install above
-    # succeeded — `set -e` would have stopped the build otherwise — so a miss here
-    # means the global bin directory is simply not on either PATH this script
-    # searched, which is a property of the image, not of the install.
-    NPM_GLOBAL_BIN="$(npm prefix -g 2>/dev/null || true)"
-    if [ -n "$NPM_GLOBAL_BIN" ] && [ -x "$NPM_GLOBAL_BIN/bin/opencode" ]; then
-      OPENCODE_BIN="$NPM_GLOBAL_BIN/bin/opencode"
-    fi
-  fi
-  if [ -z "$OPENCODE_BIN" ]; then
-    # Fail the build, not the first turn. Nothing has a fallback for a missing
-    # executable, so without this the image ships looking complete and every
-    # OpenCode turn dies at spawn with an ENOENT nobody can act on from the chat.
-    #
-    # Reachable only when opencode was requested AND npm was present AND the
-    # install returned success AND the binary is nowhere either PATH or npm's own
-    # prefix names — a broken image, not a configuration choice. The npm-absent
-    # case set INSTALL_OPENCODE=false further up and never arrives here.
-    echo '!! verity-sandbox-toolkit: opencode requested but not found; cannot build opencode-acp' >&2
-    exit 1
-  fi
-  # The path is interpolated into a shell script, so anything needing quoting is
-  # refused rather than escaped: `command -v` on this image returns a plain path, and
-  # a build that somehow produced another one should stop here rather than emit a
-  # wrapper whose meaning depends on getting the escaping right.
-  case "$OPENCODE_BIN" in
-    *[!A-Za-z0-9/._-]*)
-      echo "!! verity-sandbox-toolkit: refusing to wrap unquotable opencode path: $OPENCODE_BIN" >&2
-      exit 1
-      ;;
-  esac
-  # Staged and installed rather than redirected into place: `install` sets owner and
-  # mode atomically, so the file is never briefly present at the umask default.
-  # Assigning this arms the EXIT trap for it (see `cleanup_staging`), so a failing
-  # `install` cannot bake the staged copy into the layer.
-  OPENCODE_ACP_TMP="$(mktemp)"
-  printf '#!/bin/sh\nexec %s acp "$@"\n' "$OPENCODE_BIN" > "$OPENCODE_ACP_TMP"
-  install -o root -g root -m 0755 "$OPENCODE_ACP_TMP" /usr/local/bin/opencode-acp
-  rm -f "$OPENCODE_ACP_TMP"
-  OPENCODE_ACP_TMP=
-  # Deliberately NOT added to WRITTEN_PATHS: that array drives the F11 chown to the
-  # dev user, and handing this file to the identity the agent runs as would undo the
-  # root ownership two lines above — the wrapper is what pins which binary an agent
-  # turn starts, so an agent that can rewrite it can pick that binary itself.
+  LIFECYCLE_PATH="$LIFECYCLE_PATH" sh "$FEATURE_DIR/bin/verity-opencode-acp-install.sh"
 fi
 install -d /usr/local/share/verity-sandbox-toolkit/lifecycle
 install -m 0755 "$FEATURE_DIR/lifecycle/on-create.sh" \

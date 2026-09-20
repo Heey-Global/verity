@@ -54,8 +54,9 @@ services:
     entrypoint: [/bin/sh, -c]
     command:
       - >-
-        mkdir -p /data/workspaces/verity-control /data/sessions /data/runners &&
-        chown 1000:1000 /data /data/workspaces /data/sessions /data/runners &&
+        mkdir -p /data/workspaces/verity-control /data/sessions /data/runners /data/secrets/opencode &&
+        chown 1000:1000 /data /data/workspaces /data/sessions /data/runners /data/secrets /data/secrets/opencode &&
+        chmod 0755 /data/secrets/opencode &&
         chown -R 1000:1000 /data/workspaces/verity-control &&
         if ! setpriv --reuid=1000 --regid=1000 --clear-groups
           git -C /data/workspaces/verity-control rev-parse --verify HEAD >/dev/null 2>&1; then
@@ -134,6 +135,16 @@ services:
       VERITY_CLAUDE_EGRESS_SERVERNAME: verity-agent-gateway
       VERITY_CODEX_EGRESS_URL: https://verity-agent-gateway:9444
       VERITY_CODEX_EGRESS_AUTHORITY: verity-agent-gateway:9444
+      # OpenCode's provider configuration, exactly as a project Sandbox receives it
+      # (`openCodeSettingsBind` in packages/server/src/provisioner.ts). The file is
+      # not a secret — a loopback address, a fixed placeholder and model names — and
+      # the gateway swaps the placeholder for the operator's key on the way out.
+      # OPENCODE_CONFIG selects it from a READ-ONLY directory so OpenCode's own XDG
+      # config directory stays writable; the Runner's launcher creates that one
+      # under XDG_CONFIG_HOME. Must match the managed `desiredSpec` in
+      # packages/server/src/self-update/managed-control-plane-runner.ts.
+      OPENCODE_CONFIG: /run/verity/opencode-config/opencode.json
+      XDG_CONFIG_HOME: /run/verity/xdg
       VERITY_CLAUDE_CONNECTOR_RECONCILE_SECONDS: '1'
     cap_drop:
       - ALL
@@ -178,6 +189,15 @@ services:
         target: /srv/verity/sessions
         volume:
           subpath: sessions
+      # The directory, not the file: the Server replaces opencode.json atomically
+      # when the operator changes provider settings, and a file bind would pin this
+      # container to the inode that existed when it started.
+      - type: volume
+        source: verity-data
+        target: /run/verity/opencode-config
+        read_only: true
+        volume:
+          subpath: secrets/opencode
       # The host Docker daemon socket — ADR 0006 Amendment 1, a deliberate operator decision.
       # The control-plane session is this deployment's fleet diagnostics console,
       # and it lost that job when control-plane turns moved out of the Server

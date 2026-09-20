@@ -14,10 +14,12 @@ import {
   brokeredGrantTarget,
   brokeredGrantToolName,
   encodeCwd,
+  runnerSupervisorBackendLabel,
   type Backend,
   type ConductorDeps,
   type EventBus,
   type RunnerClient,
+  type RunnerSupervisorBackend,
   type SupervisorRunnerClientOptions,
   type SupervisorRunnerRecoveryOptions,
   type TurnPreparationContext,
@@ -174,6 +176,7 @@ import {
   gitAuthHeader,
   defaultDevcontainerBuildSpawner,
   projectNetworkName,
+  ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
   type ProjectRelayControl,
   type ProjectImageRefSource,
@@ -1053,30 +1056,19 @@ export function buildRunnerConductorWiring(deps: {
           (context.projectId === null ||
             (deps.isControlPlaneProject !== undefined &&
               (await deps.isControlPlaneProject(context.projectId))));
-        // …but being routable there is not the same as being runnable there. The
-        // control-plane Runner is a single fixed container built and launched by the
-        // deployment (`deploy/bin/verity-control-plane-runner-start`), not a Sandbox
-        // the provisioner composes per project: it mounts no OpenCode config volume,
-        // sets no `XDG_CONFIG_HOME`, and its egress client certificates address the
-        // Claude and Codex gateways only. An `opencode-acp` turn started there would
-        // spawn an agent with no provider configured and fail somewhere inside the
-        // first prompt. Refuse it here instead, where the reason can be named — the
-        // loopback fallback is not available either (ACP must never start in this
-        // credential-bearing process), so a control-plane session stays on Claude or
-        // Codex until that container is given OpenCode's configuration too.
-        //
-        // Two session shapes reach this, and the message has to fit both: one with no
-        // project at all, and one whose project IS the control plane. Neither runs in a
-        // provisioner-composed project Sandbox, which is where OpenCode's config volume
-        // is mounted — so that, rather than "no project", is what the refusal names. A
-        // project-less session on a deployment with no control-plane container at all
-        // would be caught by the refusal a few lines down anyway; it gets the better
-        // message here, and the wording still holds because the reason is the same.
-        if (controlPlaneTurn && backend.runnerSupervisorBackend === 'opencode-acp') {
-          throw new Error(
-            'OpenCode is not available for control-plane sessions: they run outside the project Sandbox that carries OpenCode’s provider configuration. Choose a Claude or Codex model for this session.',
-          );
-        }
+        // Every ACP backend is runnable there, and that is a property of the container
+        // rather than of this function: the control-plane Runner is a single fixed
+        // container built and launched by the deployment
+        // (`deploy/bin/verity-control-plane-runner-start`) rather than a Sandbox the
+        // provisioner composes per project, so each backend's configuration has to be
+        // put into its spec by hand. OpenCode's was, and is held there by
+        // `scripts/verity-compose.test.ts`: the read-only `secrets/opencode` mount,
+        // `OPENCODE_CONFIG`, `XDG_CONFIG_HOME`, and an egress leg it shares with Codex
+        // (the connector routes /opencode over the Codex gateway, so the certificates
+        // that reach one reach the other). Until that landed this refused
+        // `opencode-acp` here, because a turn started without it spawns an agent with
+        // no provider and fails somewhere inside the first prompt rather than saying
+        // so — and the loopback is not an alternative for any ACP backend.
         const useControlPlaneRunner = controlPlaneTurn;
         const runnerProjectId = useControlPlaneRunner
           ? deps.controlPlaneProjectId
@@ -2341,6 +2333,31 @@ export async function buildEmbeddedServer(
   const secretRoot =
     config.secretMaterializationRoot ??
     join(config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'), 'secrets');
+  // `<secretRoot>/opencode/opencode.json` is the file both control-plane Runner
+  // specs mount and `OPENCODE_CONFIG` names. Until now only an operator saving
+  // settings wrote it (`onOpenCodeSettingsChanged` below), which was enough while
+  // the only reader was a Sandbox — the provisioner materializes it as it composes
+  // the container. The Runner is not composed per turn: it is created once with the
+  // mount already in its spec, so a deployment that never saved OpenCode settings
+  // would hand OpenCode a config path with no file in it.
+  //
+  // Write-if-absent at boot (`ensureOpenCodeSettingsMaterialized` holds that rule
+  // and is tested on it), unconditional once the store is unlocked and the real
+  // settings are readable. Reading settings can itself fail on a sealed store, so
+  // neither path may take the Server down with it.
+  const materializeOpenCodeConfig = async (reason: 'boot' | 'secret unlock'): Promise<void> => {
+    try {
+      const settings = await eventStore.getVeritySettings();
+      if (reason === 'boot') {
+        ensureOpenCodeSettingsMaterialized(settings, secretRoot, config.claudeConnectorPort);
+        return;
+      }
+      materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
+    } catch (error) {
+      console.warn(`verity: OpenCode configuration not materialized (${reason})`, error);
+    }
+  };
+  await materializeOpenCodeConfig('boot');
   const configuredCodexModels =
     config.codexEnabled === true ? (config.codexModels ?? [CODEX_DEFAULT_MODEL]) : [];
   const codexModelCatalog =
@@ -3783,6 +3800,10 @@ export async function buildEmbeddedServer(
       // projection because both mint from the same CA and the gateway is what a
       // Sandbox needs first; the Runner picks its material up by generation file.
       await publishRunnerIdentity('secret unlock');
+      // The provider settings are readable now. A sealed boot can only have written
+      // the credential-free fallback, and the Runner reads the file through a
+      // directory mount, so replacing it here reaches containers already running.
+      await materializeOpenCodeConfig('secret unlock');
       await codexModelCatalog?.refresh();
     },
     authRegistry,
@@ -4180,33 +4201,35 @@ export async function buildEmbeddedServer(
         // restore its supervisor. The runner performs the authoritative reachability
         // check after that repair and fails Claude ACP closed instead of falling back.
         // Project-less control-plane sessions resolve the fixed dedicated runtime
-        // above. Codex uses the same dedicated-runner fail-closed boundary.
+        // above. Every other ACP backend uses the same fail-closed boundary.
         const sessionSelected = selected;
+        // Ask the closed set of supervised backends rather than listing today's three:
+        // each of them runs in the dedicated Runner, needs it prepared, and needs the
+        // gateway synchronized before the turn — and the per-backend disjunction this
+        // replaces had already been written twice, once here and once for projects
+        // below, so a fourth backend would have had to be remembered in four places.
+        // The label only names the backend in the refusal; it decides nothing.
+        const controlPlaneRunnerTurn = async (
+          backend: RunnerSupervisorBackend,
+        ): Promise<typeof sessionSelected> => {
+          if (!(await prepareControlPlaneRunner())) {
+            throw new Error(
+              `${runnerSupervisorBackendLabel(backend)} control-plane turns require the dedicated control-plane runner.`,
+            );
+          }
+          await synchronizeAgentGatewayForTurn();
+          return sessionSelected;
+        };
+        const acpControlPlaneBackend = isRunnerSupervisorBackend(selected.runnerSupervisorBackend)
+          ? selected.runnerSupervisorBackend
+          : undefined;
         if (session.projectId === null) {
-          if (isOpenCodeSession) {
-            throw new Error('OpenCode turns require a project sandbox.');
-          }
-          if (isCodexSession) {
-            if (!(await prepareControlPlaneRunner())) {
-              throw new Error(
-                'Codex control-plane turns require the dedicated control-plane runner.',
-              );
-            }
-            await synchronizeAgentGatewayForTurn();
-            return sessionSelected;
-          }
-          if (isClaudeSession) {
-            if (!(await prepareControlPlaneRunner())) {
-              throw new Error(
-                'Claude ACP control-plane turns require the dedicated control-plane runner.',
-              );
-            }
-            await synchronizeAgentGatewayForTurn();
-            return sessionSelected;
+          if (acpControlPlaneBackend !== undefined) {
+            return await controlPlaneRunnerTurn(acpControlPlaneBackend);
           }
           // Whatever is left is a loopback backend with no Verity-held provider
-          // credential of its own (OpenCode/Pi), so it inherits the control-plane
-          // agent environment and nothing else.
+          // credential of its own (Pi), so it inherits the control-plane agent
+          // environment and nothing else.
           return withControlPlaneAgentCredentials(sessionSelected, async (inherited) =>
             materializeControlPlaneAgentEnv(secretRoot, inherited),
           );
@@ -4220,23 +4243,8 @@ export async function buildEmbeddedServer(
           return undefined;
         }
         if (project.kind === 'control_plane') {
-          if (isCodexSession) {
-            if (!(await prepareControlPlaneRunner())) {
-              throw new Error(
-                'Codex control-plane turns require the dedicated control-plane runner.',
-              );
-            }
-            await synchronizeAgentGatewayForTurn();
-            return sessionSelected;
-          }
-          if (isClaudeSession) {
-            if (!(await prepareControlPlaneRunner())) {
-              throw new Error(
-                'Claude ACP control-plane turns require the dedicated control-plane runner.',
-              );
-            }
-            await synchronizeAgentGatewayForTurn();
-            return sessionSelected;
+          if (acpControlPlaneBackend !== undefined) {
+            return await controlPlaneRunnerTurn(acpControlPlaneBackend);
           }
           return withControlPlaneAgentCredentials(sessionSelected, async (inherited) =>
             materializeControlPlaneAgentEnv(secretRoot, inherited),

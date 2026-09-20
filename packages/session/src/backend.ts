@@ -23,6 +23,32 @@ export function isRunnerSupervisorBackend(value: unknown): value is RunnerSuperv
 }
 
 /**
+ * How a supervised backend is named in an operator-facing message.
+ *
+ * Only for prose. Nothing branches on the answer — the Server decides over
+ * {@link isRunnerSupervisorBackend}, so the label cannot be the thing that admits or
+ * refuses a backend, and a wrong label is a typo rather than a turn that runs in the
+ * wrong place. It lives beside the set so that adding a backend fails the build here
+ * (the switch is exhaustive) instead of producing a refusal that names a protocol id
+ * at an operator.
+ *
+ * The strings are load-bearing in one direction: control-plane refusals embed them,
+ * and those exact sentences are what operators have in runbooks and what the Server
+ * suite pins, so `codex-acp` reads `Codex` and `claude-acp` reads `Claude ACP` rather
+ * than being regularized.
+ */
+export function runnerSupervisorBackendLabel(backend: RunnerSupervisorBackend): string {
+  switch (backend) {
+    case 'claude-acp':
+      return 'Claude ACP';
+    case 'codex-acp':
+      return 'Codex';
+    case 'opencode-acp':
+      return 'OpenCode';
+  }
+}
+
+/**
  * Which transport a brokered-secret decision was made on, or is being redeemed on
  * (ADR 0014 D3). Defined with the `permission` event that carries it to the approval
  * card (`@verity/events`), so the backend, the card, and the grant store all key on
