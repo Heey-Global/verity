@@ -16,6 +16,8 @@ export interface ProjectRelayBinding {
 }
 
 export interface ProjectRelayRuntime {
+  /** Stop serving while retaining the exact container for a later adoption. */
+  quiesce(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -103,8 +105,21 @@ export class ProjectRelayLifecycle {
     return this.serialize(binding.projectId, () => this.resumeExclusive(binding));
   }
 
+  /** Wake a retained relay generation with newly issued capabilities. Unlike
+   * {@link resume}, this follows an intentional sleep that revoked the old ones. */
+  async reactivate(binding: ProjectRelayBinding): Promise<ProjectRelayActivation> {
+    if (this.closed) throw new Error('project relay lifecycle is closed');
+    return this.serialize(binding.projectId, () => this.reactivateExclusive(binding));
+  }
+
   async stop(projectId: string): Promise<void> {
     return this.serialize(projectId, () => this.stopExclusive(projectId));
+  }
+
+  /** Revoke the project's authority and stop its relay without removing the
+   * generation container. A later {@link resume} adopts that same container. */
+  async sleep(projectId: string): Promise<void> {
+    return this.serialize(projectId, () => this.sleepExclusive(projectId));
   }
 
   /**
@@ -237,7 +252,23 @@ export class ProjectRelayLifecycle {
     if (this.active.has(binding.projectId)) return;
     this.starting.set(binding.projectId, binding.containerGeneration);
     try {
-      await this.startClaimed(binding, false);
+      await this.startClaimed(binding, false, true);
+    } finally {
+      this.starting.delete(binding.projectId);
+    }
+  }
+
+  private async reactivateExclusive(binding: ProjectRelayBinding): Promise<ProjectRelayActivation> {
+    validateBinding(binding);
+    if (this.active.has(binding.projectId)) {
+      throw new Error(`project relay already active: ${binding.projectId}`);
+    }
+    this.starting.set(binding.projectId, binding.containerGeneration);
+    try {
+      const activation = await this.startClaimed(binding, true, true);
+      if (activation === undefined)
+        throw new Error('project relay reactivation returned no capabilities');
+      return activation;
     } finally {
       this.starting.delete(binding.projectId);
     }
@@ -246,6 +277,7 @@ export class ProjectRelayLifecycle {
   private async startClaimed(
     binding: ProjectRelayBinding,
     issueCapabilities = true,
+    resumeExisting = false,
   ): Promise<ProjectRelayActivation | void> {
     if (binding.codexGateway !== undefined && this.options.startCodexListener === undefined) {
       throw new Error('project relay Codex gateway has no listener implementation');
@@ -279,7 +311,7 @@ export class ProjectRelayLifecycle {
         brokerSocketPath: brokerListener.socketPath,
         claudeSocketPath: claudeListener.socketPath,
         ...(codexListener === undefined ? {} : { codexSocketPath: codexListener.socketPath }),
-        ...(!issueCapabilities ? { resumeExisting: true } : {}),
+        ...(resumeExisting ? { resumeExisting: true } : {}),
       });
       this.active.set(binding.projectId, {
         containerGeneration: binding.containerGeneration,
@@ -315,6 +347,42 @@ export class ProjectRelayLifecycle {
     const failures = await this.teardown(projectId);
     if (failures.length > 0) {
       throw new AggregateError(failures, `project relay teardown failed: ${projectId}`);
+    }
+  }
+
+  private async sleepExclusive(projectId: string): Promise<void> {
+    const active = this.active.get(projectId);
+    const runtime = active?.runtime;
+    const brokerListener = active?.brokerListener;
+    const claudeListener = active?.claudeListener;
+    const codexListener = active?.codexListener;
+    const results = await Promise.all([
+      runCleanup(() => this.options.signingCapabilities.revokeProject(projectId)),
+      runCleanup(() => this.options.githubCapabilities.revokeProject(projectId)),
+      ...(runtime === undefined ? [] : [runCleanup(() => runtime.quiesce())]),
+      ...(brokerListener === undefined ? [] : [runCleanup(() => brokerListener.close())]),
+      ...(claudeListener === undefined ? [] : [runCleanup(() => claudeListener.close())]),
+      ...(codexListener === undefined ? [] : [runCleanup(() => codexListener.close())]),
+    ]);
+    const failures = results.flatMap((result) => (result.ok ? [] : [result.error]));
+    let resultIndex = 2;
+    if (runtime !== undefined) {
+      if (results[resultIndex]?.ok === true) delete active!.runtime;
+      resultIndex += 1;
+    }
+    if (brokerListener !== undefined) {
+      if (results[resultIndex]?.ok === true) delete active!.brokerListener;
+      resultIndex += 1;
+    }
+    if (claudeListener !== undefined) {
+      if (results[resultIndex]?.ok === true) delete active!.claudeListener;
+      resultIndex += 1;
+    }
+    if (codexListener !== undefined && results[resultIndex]?.ok === true)
+      delete active!.codexListener;
+    if (failures.length === 0) this.active.delete(projectId);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `project relay sleep failed: ${projectId}`);
     }
   }
 

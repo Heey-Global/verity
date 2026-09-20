@@ -330,6 +330,14 @@ export const projectStateSchema = z.enum([
 ]);
 export type ProjectState = z.infer<typeof projectStateSchema>;
 
+const projectLifecycleStateSchema = z.enum([
+  ...projectStateSchema.options,
+  'sleeping_starting',
+  'sleeping',
+  'waking',
+]);
+export type ProjectLifecycleState = z.infer<typeof projectLifecycleStateSchema>;
+
 const sandboxUpdateSchema = z.object({
   state: z.enum(['current', 'available', 'unknown']),
   kind: z.enum(['normal', 'security']).nullable(),
@@ -384,6 +392,9 @@ export const projectRecordSchema = z.object({
   kind: z.enum(['github', 'control_plane', 'local']).default('github'),
   imageRef: z.string().nullable(),
   state: projectStateSchema,
+  // Newer servers preserve the legacy `state` projection for older clients and
+  // expose sleep/wake transitions separately. Optional keeps N-1 servers valid.
+  lifecycleState: projectLifecycleStateSchema.optional(),
   archived: z.boolean().optional(),
   provisionError: z.string().nullable(),
   provisionWarning: z.string().nullable().optional(),
@@ -2695,6 +2706,20 @@ export class VerityClient {
   async deprovisionProject(id: string, opts: { purge?: boolean } = {}): Promise<ProjectRecord> {
     const qs = opts.purge === true ? '?purge=true' : '';
     const res = await this.request(`/projects/${encodeURIComponent(id)}/deprovision${qs}`, {
+      method: 'POST',
+    });
+    return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
+  }
+
+  async sleepProject(id: string): Promise<ProjectRecord> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/sleep`, {
+      method: 'POST',
+    });
+    return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
+  }
+
+  async wakeProject(id: string): Promise<ProjectRecord> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/wake`, {
       method: 'POST',
     });
     return z.object({ project: projectRecordSchema }).parse(await res.json()).project;

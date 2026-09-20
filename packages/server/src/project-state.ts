@@ -13,7 +13,9 @@ export type UpdateProjectState = (
 /**
  * Reconcile stable project states with Docker's current container truth.
  * Provisioning states are worker-owned, so this deliberately avoids touching
- * `cloning` and `container_starting`.
+ * fresh `cloning` and `container_starting` transitions. Sleep transitions are
+ * durable specifically so a restart can settle them from Docker's current
+ * state without mistaking an intentionally stopped Sandbox for a failure.
  *
  * A live project whose container has stopped or vanished is demoted to
  * `failed` (VISIBLE + repairable), NEVER to `absent`. `absent` means "this repo
@@ -29,10 +31,19 @@ export async function reconcileProjectContainerStates(
   docker: DockerClient,
   updateProjectState: UpdateProjectState,
   isProjectProvisioning: (projectId: string) => boolean = () => false,
+  recoverInterruptedSleep?: (projectId: string) => Promise<ProjectRecord>,
+  recoverInterruptedWake?: (projectId: string) => Promise<ProjectRecord>,
 ): Promise<ProjectRecord[]> {
   return Promise.all(
     projects.map((project) =>
-      reconcileProject(project, docker, updateProjectState, isProjectProvisioning),
+      reconcileProject(
+        project,
+        docker,
+        updateProjectState,
+        isProjectProvisioning,
+        recoverInterruptedSleep,
+        recoverInterruptedWake,
+      ),
     ),
   );
 }
@@ -43,6 +54,10 @@ export const CONTAINER_STOPPED_REASON = 'Sandbox container stopped — Repair to
 export const CONTAINER_MISSING_REASON = 'Sandbox container is missing — Repair to recreate it.';
 export const STALE_PROVISIONING_REASON =
   'Project setup did not finish and no Sandbox container is running. Use Repair to retry it.';
+export const INTERRUPTED_SLEEP_REASON =
+  'Sandbox sleep was interrupted before authority cleanup completed. Use Repair to recover it.';
+export const INTERRUPTED_WAKE_REASON =
+  'Sandbox wake was interrupted before authority cleanup completed. Use Repair to recover it.';
 /** Docker keeps a crash-looping container in `restarting`, which can report
  *  `Running: true`. Naming it separately is what tells the
  *  operator the sandbox is failing to come up rather than sitting stopped. */
@@ -64,6 +79,8 @@ async function reconcileProject(
   docker: DockerClient,
   updateProjectState: UpdateProjectState,
   isProjectProvisioning: (projectId: string) => boolean,
+  recoverInterruptedSleep?: (projectId: string) => Promise<ProjectRecord>,
+  recoverInterruptedWake?: (projectId: string) => Promise<ProjectRecord>,
 ): Promise<ProjectRecord> {
   if (project.kind === 'control_plane') return project;
 
@@ -85,6 +102,31 @@ async function reconcileProject(
     // Status must win over `Running`: Docker reports true for paused containers
     // and may do so while a restart is in progress.
     const containerFailure = stoppedReason(inspect.running, inspect.status);
+
+    // A sleeping Sandbox is intentionally stopped. Its retained container is
+    // validated by the wake path, so reconciliation must neither turn the
+    // expected stop into `failed` nor make an unexpectedly running container
+    // active and thereby bypass fresh capability issuance.
+    if (project.state === 'sleeping') return project;
+
+    // These transition states outlive the process that owned the lifecycle
+    // operation. Settle only outcomes Docker makes unambiguous: a completed
+    // stop is safe to retry from `sleeping`, while a running Sandbox means the
+    // stop did not take effect or the wake reached container start.
+    if (project.state === 'sleeping_starting') {
+      if (recoverInterruptedSleep !== undefined) return recoverInterruptedSleep(project.id);
+      if (!containerFailure) await docker.stopContainer(inspect.id);
+      // Docker state cannot prove whether relay and egress authority was revoked
+      // before the old process died. Keep the Sandbox stopped and require the
+      // established repair path instead of claiming that sleep completed.
+      return (await updateProjectState(project.id, 'failed', INTERRUPTED_SLEEP_REASON)) ?? project;
+    }
+    if (project.state === 'waking') {
+      if (recoverInterruptedWake !== undefined) return recoverInterruptedWake(project.id);
+      if (!containerFailure) await docker.stopContainer(inspect.id);
+      return (await updateProjectState(project.id, 'failed', INTERRUPTED_WAKE_REASON)) ?? project;
+    }
+
     if (containerFailure) {
       if (
         project.state === 'active' ||
@@ -117,6 +159,16 @@ async function reconcileProject(
     }
     return project;
   } catch (error) {
+    if (
+      error instanceof DockerError &&
+      error.kind === 'container_not_found' &&
+      project.state === 'sleeping'
+    ) {
+      // Missing retained state is handled by wake's cold fallback. Keeping the
+      // project sleeping avoids turning ordinary queued work into a Repair-only
+      // failure before that path gets a chance to provision it.
+      return project;
+    }
     if (
       error instanceof DockerError &&
       error.kind === 'container_not_found' &&

@@ -3950,6 +3950,8 @@ export async function buildEmbeddedServer(
               (id, state, provisionError, provisionWarning) =>
                 eventStore.updateProjectState(id, state, provisionError, provisionWarning),
               (id) => provisioner?.isProjectProvisioning(id) === true,
+              provisioner?.recoverInterruptedSleep?.bind(provisioner),
+              provisioner?.recoverInterruptedWake?.bind(provisioner),
             );
             return reconciled ?? project;
           },

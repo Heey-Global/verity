@@ -27,6 +27,22 @@ describe('projectBadge', () => {
     }
   });
 
+  it.each([
+    ['sleeping_starting', 'Going to sleep…', 'working', true],
+    ['sleeping', 'Sleeping', 'idle', false],
+    ['waking', 'Waking…', 'working', true],
+  ] as const)(
+    'uses lifecycleState %s instead of its legacy active projection',
+    (lifecycleState, label, tone, pulsing) => {
+      expect(projectBadge({ state: 'active', lifecycleState })).toMatchObject({
+        label,
+        tone,
+        pulsing,
+        needsRepair: false,
+      });
+    },
+  );
+
   it('reports an active project with an image rebuild as working', () => {
     expect(
       projectBadge({

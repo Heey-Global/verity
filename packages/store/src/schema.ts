@@ -162,8 +162,18 @@ export interface ProjectsTable {
    *  NULL for projects last provisioned before this column existed and on
    *  servers that ship no bundle — "unknown", never "matches". */
   toolkit_identity: ColumnType<string | null, string | null | undefined, string | null>;
-  /** `absent` | `cloning` | `container_starting` | `active` | `failed` (§19.3). */
+  /** Durable project lifecycle state, including Sandbox sleep/wake transitions. */
   state: string;
+  /** Runtime-contract fingerprint required before a stopped Sandbox may be reused. */
+  sleep_compatibility_fingerprint: ColumnType<
+    string | null,
+    string | null | undefined,
+    string | null
+  >;
+  /** Completion time of the retained Sandbox's sleep transition. */
+  sleeping_since: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
+  /** Claim time of an in-progress wake attempt, used for crash recovery. */
+  wake_started_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
   /** GitHub repository archive flag from the installation sync. Archived repos
    *  stay cached for state/history, but are not offered by project pickers. */
   archived: ColumnType<boolean, boolean | undefined, boolean>;

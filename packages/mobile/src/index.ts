@@ -301,6 +301,7 @@ export {
   type ProjectRuntimeStarted,
   type ProjectSettings,
   type ProjectSettingsPatch,
+  type ProjectLifecycleState,
   type ProjectState,
   type MessageSearchResult,
   type SandboxUpdate,

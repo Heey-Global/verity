@@ -133,6 +133,28 @@ describe('Docker project relay adapter', () => {
     expect(h.startContainer).not.toHaveBeenCalled();
   });
 
+  it('quiesces without removing and resumes the exact retained generation', async () => {
+    const h = harness();
+    const runtime = await h.start(context);
+
+    await runtime.quiesce();
+    expect(h.stopContainer).toHaveBeenCalledWith('relay-cid');
+    expect(h.removeContainer).not.toHaveBeenCalled();
+
+    vi.mocked(h.docker.inspectContainer).mockResolvedValueOnce({
+      id: 'relay-cid',
+      running: false,
+      labels: {
+        'verity.component': 'project-relay',
+        'verity.project-id': 'p1',
+        'verity.container-generation': 'generation-1',
+      },
+    });
+    await h.start({ ...context, resumeExisting: true });
+    expect(h.createContainer).toHaveBeenCalledOnce();
+    expect(h.startContainer).toHaveBeenLastCalledWith('relay-cid');
+  });
+
   it('runs the fixed relay uid with the configured socket group', async () => {
     const h = harness({ relayGid: 12_345 });
     await h.start(context);

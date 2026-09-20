@@ -100,7 +100,15 @@ export type SessionInput = Omit<
  *   `cloning|container_starting → failed`
  *   `failed → cloning` (retry via deprovision + re-provision, §19.8).
  */
-export type ProjectState = 'absent' | 'cloning' | 'container_starting' | 'active' | 'failed';
+export type ProjectState =
+  | 'absent'
+  | 'cloning'
+  | 'container_starting'
+  | 'active'
+  | 'sleeping_starting'
+  | 'sleeping'
+  | 'waking'
+  | 'failed';
 export type ProjectSetupState = 'pending' | 'secrets_skipped' | 'complete';
 export type ProjectKind = 'github' | 'control_plane' | 'local';
 
@@ -182,6 +190,12 @@ export interface ProjectRecord {
    *  as current — see `projects.toolkit_identity`. */
   toolkitIdentity?: string | null;
   state: ProjectState;
+  /** Fingerprint of the runtime contract retained by a sleeping Sandbox. */
+  sleepCompatibilityFingerprint?: string | null;
+  /** When the Sandbox most recently completed the transition to sleeping. */
+  sleepingSince?: Date | null;
+  /** When the current wake attempt claimed the project. */
+  wakeStartedAt?: Date | null;
   archived?: boolean;
   provisionError: string | null;
   provisionWarning: string | null;
@@ -3275,6 +3289,9 @@ export class EventStore implements EventSink {
     image_override_ref?: string | null;
     toolkit_identity?: string | null;
     state: string;
+    sleep_compatibility_fingerprint?: string | null;
+    sleeping_since?: Date | null;
+    wake_started_at?: Date | null;
     archived?: boolean | null;
     provision_error: string | null;
     provision_warning: string | null;
@@ -3306,6 +3323,9 @@ export class EventStore implements EventSink {
       // which take a {@link ProjectState}. A drift here means a stray writer ATK-
       // bypassed those — assertable by a future CHECK constraint, not in v1.
       state: row.state as ProjectState,
+      sleepCompatibilityFingerprint: row.sleep_compatibility_fingerprint ?? null,
+      sleepingSince: row.sleeping_since ?? null,
+      wakeStartedAt: row.wake_started_at ?? null,
       archived: row.archived ?? false,
       provisionError: row.provision_error,
       provisionWarning: row.provision_warning,
@@ -3339,6 +3359,9 @@ export class EventStore implements EventSink {
     'image_override_ref',
     'toolkit_identity',
     'state',
+    'sleep_compatibility_fingerprint',
+    'sleeping_since',
+    'wake_started_at',
     'archived',
     'provision_error',
     'provision_warning',
@@ -3986,12 +4009,51 @@ export class EventStore implements EventSink {
     provisionError: string | null = null,
     provisionWarning: string | null = null,
   ): Promise<ProjectRecord | undefined> {
+    const leavesSleepLifecycle =
+      state !== 'sleeping_starting' && state !== 'sleeping' && state !== 'waking';
     await this.db
       .updateTable('projects')
       .set({
         state,
+        ...(leavesSleepLifecycle
+          ? {
+              sleep_compatibility_fingerprint: null,
+              sleeping_since: null,
+              wake_started_at: null,
+            }
+          : {}),
         provision_error: provisionError,
         provision_warning: provisionWarning,
+        state_changed_at: sql`now()`,
+        updated_at: sql`now()`,
+      })
+      .where('id', '=', id)
+      .execute();
+    return this.getProject(id);
+  }
+
+  /** Persist a sleep/wake lifecycle transition and its recovery metadata in one
+   * statement. Callers explicitly supply every nullable field so a new state
+   * cannot silently inherit timestamps or a compatibility verdict from an old
+   * transition. */
+  async updateProjectSleepState(
+    id: string,
+    state: Extract<ProjectState, 'sleeping_starting' | 'sleeping' | 'waking' | 'active'>,
+    metadata: {
+      sleepCompatibilityFingerprint: string | null;
+      sleepingSince: Date | null;
+      wakeStartedAt: Date | null;
+    },
+  ): Promise<ProjectRecord | undefined> {
+    await this.db
+      .updateTable('projects')
+      .set({
+        state,
+        sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
+        sleeping_since: metadata.sleepingSince,
+        wake_started_at: metadata.wakeStartedAt,
+        provision_error: null,
+        provision_warning: null,
         state_changed_at: sql`now()`,
         updated_at: sql`now()`,
       })

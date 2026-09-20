@@ -445,6 +445,80 @@ describe('EventStore — projects', () => {
     expect(result).toBeUndefined();
   });
 
+  it('persists sleep and wake recovery metadata with lifecycle state transitions', async () => {
+    const id = sampleProject.id();
+    await ctx.store.upsertProject({
+      id,
+      owner: sampleProject.owner,
+      repo: sampleProject.repo,
+      containerName: sampleProject.containerName,
+      state: 'active',
+    });
+
+    const sleepingSince = new Date('2026-09-20T08:00:00.000Z');
+    const sleeping = await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: 'sha256:sleep-contract',
+      sleepingSince,
+      wakeStartedAt: null,
+    });
+    expect(sleeping).toMatchObject({
+      state: 'sleeping',
+      sleepCompatibilityFingerprint: 'sha256:sleep-contract',
+      sleepingSince,
+      wakeStartedAt: null,
+    });
+
+    const wakeStartedAt = new Date('2026-09-20T09:00:00.000Z');
+    const waking = await ctx.store.updateProjectSleepState(id, 'waking', {
+      sleepCompatibilityFingerprint: 'sha256:sleep-contract',
+      sleepingSince,
+      wakeStartedAt,
+    });
+    expect(waking).toMatchObject({
+      state: 'waking',
+      sleepCompatibilityFingerprint: 'sha256:sleep-contract',
+      sleepingSince,
+      wakeStartedAt,
+    });
+
+    const active = await ctx.store.updateProjectSleepState(id, 'active', {
+      sleepCompatibilityFingerprint: null,
+      sleepingSince: null,
+      wakeStartedAt: null,
+    });
+    expect(active).toMatchObject({
+      state: 'active',
+      sleepCompatibilityFingerprint: null,
+      sleepingSince: null,
+      wakeStartedAt: null,
+    });
+  });
+
+  it('clears sleep recovery metadata when a generic transition leaves the sleep lifecycle', async () => {
+    const id = randomUUID();
+    await ctx.store.upsertProject({
+      id,
+      owner: 'example-org',
+      repo: 'sleep-recovery',
+      containerName: 'dev-example-org-sleep-recovery',
+      state: 'active',
+    });
+    await ctx.store.updateProjectSleepState(id, 'waking', {
+      sleepCompatibilityFingerprint: 'fingerprint',
+      sleepingSince: new Date('2026-09-20T08:00:00.000Z'),
+      wakeStartedAt: new Date('2026-09-20T09:00:00.000Z'),
+    });
+
+    const active = await ctx.store.updateProjectState(id, 'active');
+
+    expect(active).toMatchObject({
+      state: 'active',
+      sleepCompatibilityFingerprint: null,
+      sleepingSince: null,
+      wakeStartedAt: null,
+    });
+  });
+
   it('updateProjectReleaseStatus persists the release cache without touching state', async () => {
     const id = sampleProject.id();
     await ctx.store.upsertProject({

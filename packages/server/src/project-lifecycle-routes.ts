@@ -21,6 +21,7 @@ type RepairOutcome =
   | { code: 200 | 202; project: ProjectRecord }
   | { code: 404 | 503; error: string; status?: 'sealed' }
   | { code: 409; requiresConfirmation: true; warnings: string[] };
+type SleepWakeOutcome = { code: 200; project: object } | { code: 404 | 409 | 503; error: string };
 
 export interface ProjectLifecycleRouteDeps {
   deleteProject: (request: FastifyRequest, projectId: string) => Promise<DeleteOutcome>;
@@ -34,6 +35,8 @@ export interface ProjectLifecycleRouteDeps {
     projectId: string,
     confirmWarnings: boolean,
   ) => Promise<RepairOutcome>;
+  sleep: (request: FastifyRequest, projectId: string) => Promise<SleepWakeOutcome>;
+  wake: (request: FastifyRequest, projectId: string) => Promise<SleepWakeOutcome>;
 }
 
 /** Registers destructive and restorative project lifecycle routes. */
@@ -87,4 +90,19 @@ export function registerProjectLifecycleRoutes(
       };
     },
   );
+
+  for (const [action, run] of [
+    ['sleep', deps.sleep],
+    ['wake', deps.wake],
+  ] as const) {
+    app.post(
+      `/projects/:id/${action}`,
+      async (request, reply): Promise<{ project: object } | { error: string }> => {
+        const { id } = projectParams.parse(request.params);
+        const outcome = await run(request, id);
+        reply.code(outcome.code);
+        return 'project' in outcome ? { project: outcome.project } : { error: outcome.error };
+      },
+    );
+  }
 }
