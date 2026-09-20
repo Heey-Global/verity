@@ -33,6 +33,9 @@ export interface ProjectBadge {
   pulsing: boolean;
   /** Whether the operator must act: surfaces the Repair action wherever the badge is shown. */
   needsRepair: boolean;
+  /** Compact replacement for the dot when a stable lifecycle state has a
+   * familiar symbol. The app maps this semantic value to its icon set. */
+  symbol?: 'sleep';
 }
 
 // Exhaustive over ProjectLifecycleState: if the server's lifecycle union grows, this stops
@@ -47,7 +50,13 @@ const BADGES: Record<ProjectLifecycleState, ProjectBadge> = {
     pulsing: true,
     needsRepair: false,
   },
-  sleeping: { label: 'Sleeping', tone: 'idle', pulsing: false, needsRepair: false },
+  sleeping: {
+    label: 'Sleeping',
+    tone: 'idle',
+    pulsing: false,
+    needsRepair: false,
+    symbol: 'sleep',
+  },
   waking: { label: 'Waking…', tone: 'working', pulsing: true, needsRepair: false },
   // `failed` is the only state the reconciler assigns to a project whose container
   // stopped or vanished, so it is always operator-actionable via Repair.

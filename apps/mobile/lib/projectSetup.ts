@@ -77,6 +77,9 @@ export function projectOverviewSetupLabel(
   const state = projectLifecycleState(project);
   if (state === 'failed') return project.provisionError ?? projectSetupStatus(project).label;
   if (project.setupStatus === 'pending') return projectSetupStatus(project, detection).label;
+  // The grey moon in the shared status gutter already communicates the stable
+  // sleeping state; repeating it as metadata wastes the narrow overview row.
+  if (state === 'sleeping') return undefined;
   if (state !== 'active') return projectSetupStatus(project).label;
   if (hasUnreviewedDevServers(detection)) return projectSetupStatus(project, detection).label;
   return undefined;
