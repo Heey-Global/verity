@@ -1610,24 +1610,30 @@ export function materializeOpenCodeSettings(
 }
 
 /**
- * Materialize the OpenCode configuration only if the file is not there yet, and
- * report whether it wrote.
+ * Materialize the OpenCode configuration for the Server's boot path, and report
+ * whether it wrote.
  *
- * For the Server's boot path. A Sandbox gets its config as a side effect of being
- * composed; the control-plane Runner is created once with the mount already in its
- * spec, so the file has to exist before any turn rather than because of one. The
- * conditional is the load-bearing part: a sealed boot cannot decrypt the provider
- * settings, and {@link materializeOpenCodeSettings} answers missing settings with
- * the credential-free fallback — writing that over a good config would disable
- * OpenCode until an operator saved its settings again. When nothing is there, the
- * fallback costs nothing and gives `OPENCODE_CONFIG` a file to name.
+ * A Sandbox gets its config as a side effect of being composed; the control-plane
+ * Runner is created once with the mount already in its spec, so the file has to
+ * exist before any turn rather than because of one.
+ *
+ * The rule is "never replace a provider with the fallback", which is not the same
+ * as "write only when absent": settings that name a provider are authoritative and
+ * always written, so a file left over from an earlier configuration cannot outlive
+ * it. What is withheld is the credential-free fallback — the answer
+ * {@link materializeOpenCodeSettings} gives when it cannot see a provider, which on
+ * a sealed boot means "the settings are encrypted", not "there is no provider".
+ * Writing that over a good config would disable OpenCode until an operator saved
+ * the settings again. With nothing there it costs nothing and gives
+ * `OPENCODE_CONFIG` a file to name.
  */
 export function ensureOpenCodeSettingsMaterialized(
   settings: VeritySettingsRecord | undefined,
   secretRoot: string,
   connectorPort = 47_821,
 ): boolean {
-  if (existsSync(join(secretRoot, 'opencode', 'opencode.json'))) return false;
+  const configured = openCodeSettingsConfig(settings, connectorPort) !== undefined;
+  if (!configured && existsSync(join(secretRoot, 'opencode', 'opencode.json'))) return false;
   materializeOpenCodeSettings(settings, secretRoot, connectorPort);
   return true;
 }

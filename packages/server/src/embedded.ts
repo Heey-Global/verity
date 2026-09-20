@@ -2341,10 +2341,14 @@ export async function buildEmbeddedServer(
   // mount already in its spec, so a deployment that never saved OpenCode settings
   // would hand OpenCode a config path with no file in it.
   //
-  // Write-if-absent at boot (`ensureOpenCodeSettingsMaterialized` holds that rule
-  // and is tested on it), unconditional once the store is unlocked and the real
-  // settings are readable. Reading settings can itself fail on a sealed store, so
-  // neither path may take the Server down with it.
+  // At boot the write withholds only the credential-free fallback, and only when a
+  // file is already there: a sealed boot cannot tell "no provider configured" from
+  // "the settings are encrypted", and answering the second with the fallback would
+  // disable OpenCode until someone re-saved the settings.
+  // `ensureOpenCodeSettingsMaterialized` holds that rule and is tested on it. Unlock
+  // is unconditional — the settings are authoritative by then, including a provider
+  // that was removed. Reading settings can itself fail on a sealed store, so neither
+  // path may take the Server down with it.
   const materializeOpenCodeConfig = async (reason: 'boot' | 'secret unlock'): Promise<void> => {
     try {
       const settings = await eventStore.getVeritySettings();

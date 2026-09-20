@@ -155,6 +155,23 @@ describe('openCodeSettingsConfig', () => {
       expect(
         JSON.parse(readFileSync(join(root, 'opencode', 'opencode.json'), 'utf8')),
       ).not.toHaveProperty('provider');
+      // Withholding the fallback must not turn into never writing: settings that DO
+      // name a provider are authoritative, so a boot that can read them replaces
+      // whatever the file holds. Otherwise the fallback written during a sealed boot
+      // would outlive the unseal on any deployment whose settings nobody re-saves.
+      expect(
+        ensureOpenCodeSettingsMaterialized(
+          {
+            opencodeBaseUrl: 'https://api.example.test/v1',
+            opencodeApiKey: 'provider-key-fixture',
+            opencodeModels: 'model-b',
+          } as VeritySettingsRecord,
+          root,
+        ),
+      ).toBe(true);
+      expect(
+        JSON.parse(readFileSync(join(root, 'opencode', 'opencode.json'), 'utf8')),
+      ).toHaveProperty('provider.verity.models.model-b');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

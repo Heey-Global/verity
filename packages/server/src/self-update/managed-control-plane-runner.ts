@@ -228,8 +228,13 @@ function prepareSpec(
         // root-owned one would fail every later materialization the Server attempts,
         // brokered git material and signing tokens included, not just OpenCode's.
         'chown 1000:1000 /data /data/workspaces /data/sessions /data/secrets /data/secrets/opencode',
-        // Matches the mode `materializeOpenCodeSettings` gives the directory when it
-        // creates it first, so neither order leaves the agent unable to read it.
+        // Both modes are the ones the Server's own materializer would have applied
+        // had it created these first (`writeSecretFile`: 0700 for the secret root,
+        // 0755 for the OpenCode directory, which holds no secret and is read by the
+        // agent through a read-only mount). Creating them here must not quietly
+        // widen the root that also holds brokered git material and signing tokens,
+        // and must not narrow the child past what the agent can read.
+        'chmod 0700 /data/secrets',
         'chmod 0755 /data/secrets/opencode',
         'chown -R 1000:1000 /data/workspaces/verity-control',
         // Control sessions use real git worktrees even though they have no

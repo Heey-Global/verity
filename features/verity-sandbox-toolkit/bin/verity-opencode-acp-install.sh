@@ -36,7 +36,8 @@
 # The subcommand is pinned here, and the trailing argv is refused on the other side:
 # the broker appends a request's `args` after the executable for every agent command,
 # and it rejects a non-empty argv for `opencode-acp` specifically. Measured against
-# opencode 1.18.21, `opencode acp` accepts --print-logs, --log-level, --pure, --port,
+# opencode 1.18.21 and re-measured unchanged against 1.18.31, the version both callers
+# pin: `opencode acp` accepts --print-logs, --log-level, --pure, --port,
 # --hostname, --mdns, --mdns-domain, --cors and --cwd — no config-path flag, so argv
 # cannot reach the provider or MCP configuration the way a `--config` would, but
 # `--cwd` would move the working directory the broker had just validated against the

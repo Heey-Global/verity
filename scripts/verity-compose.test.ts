@@ -222,8 +222,19 @@ describe('deploy/bin/verity-compose', () => {
       // Created by root, written by the Server as uid 1000. Without the handover the
       // directory exists, the Runner starts, and every later materialization the
       // Server attempts under /data/secrets fails on a directory it cannot write.
+      //
+      // The secret ROOT, not the OpenCode child: `\b` would have accepted
+      // `/data/secrets/opencode` alone, which is the half-done version of exactly
+      // this mistake — and the half that leaves git material and signing tokens
+      // unwritable while OpenCode works.
       expect(source, `${name} leaves /data/secrets root-owned`).toMatch(
-        /chown 1000:1000 [^&'\n]*\/data\/secrets\b/u,
+        /chown 1000:1000 [^&'\n]*\/data\/secrets(?=[ '&\n])/u,
+      );
+      // And not at the init container's umask. This directory is the Server's secret
+      // root; creating it here must reproduce the 0700 `writeSecretFile` would have
+      // given it, or the first process to create it decides how open it is.
+      expect(source, `${name} widens /data/secrets past 0700`).toMatch(
+        /chmod 0700 \/data\/secrets(?=[ '&\n])/u,
       );
     }
   });
