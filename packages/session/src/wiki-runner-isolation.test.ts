@@ -1,5 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, rm, writeFile, readFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,13 +7,13 @@ import { createServer } from 'node:net';
 import { expect, it } from 'vitest';
 import {
   agentLaunchSpec,
-  runAgentSpawnBroker,
+  materializeKnowledgeIsolation,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import {
   handleSupervisorRequest,
   validateStartTurnRequest,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs';
-import { assertBrokerKnowledgeIsolation, createBrokerSpawner } from './broker-spawner.js';
+import { assertBrokerKnowledgeIsolation } from './broker-spawner.js';
 const execFileAsync = promisify(execFile);
 it.each(['claude-agent-acp', 'codex-acp', 'opencode-acp'] as const)(
   'isolates %s reads and homes without inheriting Docker access',
@@ -115,7 +114,7 @@ it('the shipped kernel helper denies another project while retaining the job dir
   }
 });
 
-it('materializes only model gateway settings in a fresh OpenCode home and removes it on exit', async () => {
+it('materializes only model gateway settings in a fresh OpenCode home and removes it on cleanup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wiki-broker-home-'));
   await chmod(root, 0o770);
   const configPath = join(root, 'opencode.json');
@@ -128,45 +127,30 @@ it('materializes only model gateway settings in a fresh OpenCode home and remove
     }),
   );
   await writeFile(join(root, 'egress-connector.url'), 'http://127.0.0.1:47821\n');
-  let home = '';
-  let config = '';
-  const broker = await runAgentSpawnBroker({
-    runtimeDir: root,
-    secretDir: join(root, 'secrets'),
-    worktreeRoot: root,
-    enforceRoot: false,
-    agentUid: process.getuid!(),
-    agentGid: process.getgid!(),
-    env: { OPENCODE_CONFIG: configPath },
-    spawnChild: (_command, _args, opts) => {
-      home = opts.env!.HOME!;
-      // Capture the materialized file before the stand-in exits and triggers
-      // cleanup. Keep it alive long enough for the broker's spawned handshake;
-      // pre-acceptance exits are covered by the broker protocol suite.
-      config = readFileSync(opts.env!.OPENCODE_CONFIG!, 'utf8');
-      return spawn('/usr/bin/sleep', ['0.1'], opts);
+  const isolated = await materializeKnowledgeIsolation(
+    { command: 'opencode-acp' },
+    {
+      runtimeDir: root,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      env: { OPENCODE_CONFIG: configPath },
     },
-  });
+    'http://127.0.0.1:47821',
+  );
   try {
-    await assertBrokerKnowledgeIsolation(broker.socketPath);
-    const child = createBrokerSpawner(broker.socketPath, { knowledgeIsolation: true })(
-      'opencode-acp',
-      [],
-      { cwd: root, env: {} },
-    );
-    // Drain the broker stream so the child lifecycle completes normally.
-    for await (const text of child.stdout) config += text;
-    await child.exited;
+    const config = await readFile(join(isolated.home, 'config', 'opencode.json'), 'utf8');
     expect(config).toContain('test-model');
     expect(config).toContain('verity-opencode-gateway-placeholder-v1');
     expect(config).not.toContain('private-project');
     expect(config).not.toContain('"mcp"');
-    expect(home).toContain('/wiki-homes/job-');
-    await expect(readFile(join(home, 'config', 'opencode.json'))).rejects.toMatchObject({
+    expect(isolated.home).toContain('/wiki-homes/job-');
+    await isolated.cleanup();
+    await expect(readFile(join(isolated.home, 'config', 'opencode.json'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
   } finally {
-    await broker.close();
+    await isolated.cleanup();
     await rm(root, { recursive: true, force: true });
   }
 });

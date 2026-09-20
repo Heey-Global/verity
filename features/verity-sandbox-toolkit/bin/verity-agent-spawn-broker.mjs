@@ -841,6 +841,14 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   }
 }
 
+export async function materializeKnowledgeIsolation(request, options, connectorUrl) {
+  const home = await prepareKnowledgeIsolation(request, options, connectorUrl);
+  return {
+    home,
+    cleanup: () => rm(home, { recursive: true, force: true }),
+  };
+}
+
 export function agentLaunchSpec(request, options) {
   const { uid, gid } = validateIdentity(options);
   const setprivPath = options.setprivPath ?? '/usr/bin/setpriv';
@@ -2272,13 +2280,14 @@ export async function runAgentSpawnBroker(options = {}) {
           // guards the exported function — so they can disagree, and the day they do
           // is the day this matters. Cheap enough to hold the guard open for.
           if (request.kind === 'agent' && request.knowledgeIsolation) {
-            request.knowledgeHome = await prepareKnowledgeIsolation(request, options, connectorUrl);
+            const isolated = await materializeKnowledgeIsolation(request, options, connectorUrl);
+            request.knowledgeHome = isolated.home;
             const cleanup = materialized.cleanup;
             materialized.cleanup = async () => {
               try {
                 return await cleanup();
               } finally {
-                await rm(request.knowledgeHome, { recursive: true, force: true });
+                await isolated.cleanup();
               }
             };
           }

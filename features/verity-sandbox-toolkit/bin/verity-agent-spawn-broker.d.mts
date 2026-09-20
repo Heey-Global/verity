@@ -71,6 +71,12 @@ export function agentLaunchSpec(
   options: AgentSpawnBrokerOptions,
 ): { command: string; args: string[]; spawnOptions: SpawnOptions };
 
+export function materializeKnowledgeIsolation(
+  request: { command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp' },
+  options: AgentSpawnBrokerOptions,
+  connectorUrl: string,
+): Promise<{ home: string; cleanup(): Promise<void> }>;
+
 export function trustedCliLaunchSpec(
   request: {
     kind: 'trusted-cli';
