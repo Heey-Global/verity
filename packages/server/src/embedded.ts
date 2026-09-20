@@ -4313,6 +4313,7 @@ export async function buildEmbeddedServer(
               getProject: (projectId) => store.getProject(projectId),
               canWait: preparation.canWait,
               waitingOn: (message) => preparation.waitingOn(message),
+              requestingSessionIds: queuedSessionIds,
               ...(provisioner?.ensureProjectSandboxAwake === undefined
                 ? {}
                 : {

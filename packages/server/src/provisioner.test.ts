@@ -809,8 +809,14 @@ describe('ProvisionerImpl (#174)', () => {
       projectRelay: relay,
       onSandboxLifecycle: lifecycle,
     });
+    const requestingSessionIds = new Set(['s-sleeping-turn']);
+    const busyProbe = vi.fn(
+      async (_projectId: string, exceptSessionIds?: ReadonlySet<string>) =>
+        !exceptSessionIds?.has('s-sleeping-turn'),
+    );
+    provisioner.attachProjectBusyProbe(busyProbe);
 
-    const result = await provisioner.wakeProject(id);
+    const result = await provisioner.ensureProjectSandboxAwake(id, requestingSessionIds);
 
     expect(result).toMatchObject({
       state: 'active',
@@ -825,6 +831,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(lifecycle).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: id, operation: 'wake', outcome: 'succeeded' }),
     );
+    expect(busyProbe).toHaveBeenCalledWith(id, requestingSessionIds);
   });
 
   it('coalesces concurrent automatic wakes for one sleeping project', async () => {
