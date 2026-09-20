@@ -111,30 +111,6 @@ export function ProjectKnowledge({
         </Text>
       ) : null}
       <View style={styles.row}>
-        {space ? (
-          <Button
-            icon="folder"
-            label="Sources"
-            onPress={() =>
-              router.push({
-                pathname: '/knowledge',
-                params: { projectId, folderId: space.sourcesFolderId },
-              })
-            }
-          />
-        ) : null}
-        {space ? (
-          <Button
-            icon="book-open"
-            label="Wiki"
-            onPress={() =>
-              router.push({
-                pathname: '/knowledge',
-                params: { projectId, folderId: space.wikiFolderId },
-              })
-            }
-          />
-        ) : null}
         <Button
           icon="refresh-cw"
           label="Refresh knowledge"

@@ -522,6 +522,8 @@ test('wiki jobs submit only the selected own source with the selected model', as
       document={{ id: 'source', folderId: 'sources', title: 'Meeting', currentRevisionId: 'v1' }}
     />,
   );
+  expect(screen.queryByLabelText('Sources')).toBeNull();
+  expect(screen.queryByLabelText('Wiki')).toBeNull();
   fireEvent.press(await screen.findByLabelText('Project default model'));
   fireEvent.press(await screen.findByLabelText('provider/model'));
   fireEvent.press(screen.getByLabelText('Incorporate into Wiki'));
