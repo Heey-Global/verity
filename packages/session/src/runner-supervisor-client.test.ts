@@ -572,8 +572,12 @@ describe('SupervisorRunnerClient', () => {
     // and in BYTES, which is what `admissibleGatewayBearer` mirrors with `<=` on
     // `Buffer.byteLength`. A supervisor switching to `>=`, or to UTF-16 units, changes
     // the answer for exactly one bearer length and nothing else would notice.
-    expect(supervisor).toContain(
-      "if (typeof value !== 'string' || Buffer.byteLength(value) > maxBytes)",
+    // Whitespace-tolerant like the two below it: this is the shared `optionalString`
+    // helper, which validates more fields than the bearer, and a Prettier rewrap or a
+    // renamed bound would otherwise fail a test named for the gateway refusal with a
+    // message that points at neither.
+    expect(supervisor).toMatch(
+      /typeof value !== 'string' \|\|\s*Buffer\.byteLength\(value\) > \w+/u,
     );
     // The other half of the same mirror, and the half whose absence would be worse:
     // `admissibleGatewayBearer` treats an empty bearer as a Server defect on the

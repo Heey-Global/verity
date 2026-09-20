@@ -342,6 +342,11 @@ describe('agent spawn broker', () => {
         text,
       );
     expect(arm?.[0]).toBeDefined();
+    // The capture really reaches the payload, and the payload is what the assertion
+    // below is about. `[^}]*` stops at the first `}`, so a `${…}` hole inside the
+    // object would cut the region short and leave that assertion inspecting the
+    // condition alone — passing for the one reason it must never pass.
+    expect(arm?.[0]).toMatch(/token:\s*request\.mcpGatewayToken/u);
     expect(arm?.[0]).not.toMatch(/backend/iu);
   });
 
