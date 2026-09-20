@@ -1158,7 +1158,11 @@ describe('planning resumes after publication', () => {
     // The lifecycle resolves tags and merge bases from a local clone, so the
     // dispatched run needs the same checkout the push path gets. Skipping it
     // leaves the planning run failing on an empty workspace.
-    const checkout = steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+    const checkouts = steps.filter(
+      (step) => step.uses?.startsWith('actions/checkout@') && step.with?.['fetch-depth'] === 0,
+    );
+    expect(checkouts).toHaveLength(1);
+    const [checkout] = checkouts;
     expect(checkout?.if).toContain('backend-replan');
     expect(checkout?.with?.['fetch-depth']).toBe(0);
     const lifecycle = steps.find((step) => step.run?.includes('release-lifecycle.mjs'));
