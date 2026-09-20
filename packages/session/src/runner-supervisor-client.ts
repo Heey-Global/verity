@@ -758,14 +758,9 @@ export class SupervisorRunnerClient implements RunnerClient {
   /** Per-turn resume offset, set in {@link launch} (restore-before-launch) and read
    * by the tail when the claude session id lands. Keyed by turnId; cleared on settle. */
   private readonly resumeOffsets = new Map<string, number>();
-  /** True for the ACP transports that carry brokered secret tools, which reach them
-   * over the MCP gateway instead of the worker's attested native channel (ADR 0014
-   * D1). Written out by hand rather than derived from the ACP backend list, because
-   * it is not "is this ACP" — `opencode-acp` is an ACP transport and is deliberately
-   * NOT here: it carries no brokered tools, so minting a gateway bearer for it would
-   * hand a credential to a turn with nothing to spend it on. A fourth adapter has to
-   * make that decision for itself, which is the point of listing them. */
+  /** Secret execution authority remains separate from knowledge gateway access. */
   private readonly acpBackend: boolean;
+  private readonly gatewayBackend: boolean;
   /** Turn starts in flight through THIS client — the number that says whether a slow
    * start is one turn being slow or a queue of them piling up. */
   private activeStarts = 0;
@@ -779,6 +774,7 @@ export class SupervisorRunnerClient implements RunnerClient {
     }
     this.workerBackend = backend.runnerSupervisorBackend;
     this.acpBackend = this.workerBackend === 'claude-acp' || this.workerBackend === 'codex-acp';
+    this.gatewayBackend = this.acpBackend || this.workerBackend === 'opencode-acp';
     if (options.onTelemetry !== undefined) processEventLoopDelay.arm();
     const turnsDir = join(options.runtimeDir, 'turns');
     const artifact = (turnId: string | undefined, name: string): string => {
@@ -878,7 +874,7 @@ export class SupervisorRunnerClient implements RunnerClient {
   private releaseGatewayTokenOnSettle(turn: RunnerTurn, bearer: GatewayBearerBox): RunnerTurn {
     const tokens = this.options.mcpGatewayTokens;
     const proxyTokens = this.options.mcpProxyTokens;
-    if ((!this.acpBackend || tokens === undefined) && proxyTokens === undefined) return turn;
+    if ((!this.gatewayBackend || tokens === undefined) && proxyTokens === undefined) return turn;
     const release = (): void => {
       const token = bearer.token;
       if (token !== undefined && tokens !== undefined) {
@@ -1025,7 +1021,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       throw new Error('supervisor runner requires MCP proxy token issuance');
     }
     const bearer = (opts as { [GATEWAY_BEARER]?: GatewayBearerBox })[GATEWAY_BEARER];
-    const mcpGatewayToken = this.acpBackend
+    const mcpGatewayToken = this.gatewayBackend
       ? this.options.mcpGatewayTokens?.issue(opts.turnId)
       : undefined;
     if (mcpGatewayToken !== undefined && bearer !== undefined) bearer.token = mcpGatewayToken;

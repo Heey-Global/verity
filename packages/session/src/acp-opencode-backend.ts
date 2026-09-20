@@ -178,12 +178,9 @@ const OPENCODE_ACP_PROFILE: AcpBackendProfile = {
  * permission cards, cancellation, steering and persist-before-publish ordering all
  * come from the shared turn loop instead.
  *
- * Brokered secret tools are deliberately NOT on this transport yet. opencode-acp
- * does advertise `mcpCapabilities.http`, which is the hook ADR 0014's approval-gated
- * gateway uses, but enabling it is a decision about which agents may spend the
- * operator's secrets — not a side effect of changing transport. Until that decision
- * is taken, `opencode-acp` is absent from `ACP_WORKER_BACKENDS` and no gateway bearer
- * is minted for its turns, which is exactly the posture the native path had.
+ * The HTTP MCP gateway carries a server-scoped knowledge-only bearer for this
+ * transport. Brokered secret tools and trusted CLI execution remain unavailable:
+ * knowledge access does not authorize spending secrets.
  */
 export class AcpOpenCodeBackend implements Backend {
   readonly runnerSupervisorBackend = 'opencode-acp' as const;

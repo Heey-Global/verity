@@ -702,13 +702,7 @@ describe('AcpOpenCodeBackend', () => {
       spawner: fake.spawner,
       mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'unused-turn-bearer' },
     });
-    // The transport CAN carry the gateway — that is what `mcpCapabilities.http`
-    // says — and the profile offers it when a caller supplies one. Nothing here
-    // stops that; what stops it in production is upstream: `opencode-acp` is absent
-    // from `ACP_WORKER_BACKENDS`, so no bearer is ever minted for its turns. This
-    // pins the case that a bearer reaching this backend anyway is not an accident
-    // the profile silently absorbs — if this expectation ever has to flip, the
-    // decision to admit OpenCode to the gateway has to be made and written down.
+    // OpenCode receives the scoped knowledge gateway through its HTTP MCP support.
     expect(write(fake.writes, 'session/new')).toMatchObject({
       params: {
         mcpServers: [

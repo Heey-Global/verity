@@ -102,3 +102,19 @@ describe('createMcpGatewayTokens', () => {
     expect(() => createMcpGatewayTokens({ capacity: -1 })).toThrow(/capacity/);
   });
 });
+
+it('preserves a knowledge-only scope without trusting the client request', () => {
+  const tokens = createMcpGatewayTokens();
+  const token = tokens.issue({
+    projectId: 'p1',
+    sessionId: 's1',
+    turnId: 't1',
+    scope: 'knowledge',
+  });
+  expect(tokens.resolve({ projectId: 'p1', token })).toEqual({
+    sessionId: 's1',
+    turnId: 't1',
+    scope: 'knowledge',
+  });
+  expect(tokens.resolve({ projectId: 'p2', token })).toBeUndefined();
+});

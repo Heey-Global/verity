@@ -205,6 +205,7 @@ import {
   EXTERNAL_PERMISSION_ABORT_MESSAGE,
   RESUME_SYSTEM_PROMPT,
   carriesBrokeredSecretTools,
+  carriesKnowledgeTools,
   turnSystemPrompt,
   withBackendSystemPrompt,
   type ExternalPermissionAnswer,
@@ -1302,8 +1303,9 @@ export class Conductor {
     if (resumeSessionId === undefined) {
       const sessionSystemPrompt = (await this.deps.sessionSystemPrompt?.(session))?.trim();
       if (sessionSystemPrompt) runOpts.appendSystemPrompt += `\n\n${sessionSystemPrompt}`;
-      runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session, backend);
+      runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
+    runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session, backend);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
@@ -4526,7 +4528,8 @@ export class Conductor {
         if (opts.sessionId !== undefined) {
           const session = await this.deps.store.getSession(opts.sessionId);
           if (session !== undefined) {
-            runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session, backend);
+            runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
+            runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session, backend);
             contextProjectId = session.projectId;
           }
         }
@@ -5171,17 +5174,24 @@ export class Conductor {
    * curated-but-stale context, not authoritative instructions (see ADR 0008
    * "Security").
    */
-  private async projectMemoryPrompt(session: SessionRecord, backend: Backend): Promise<string> {
+  private async projectMemoryPrompt(session: SessionRecord): Promise<string> {
     if (session.projectId === null) return '';
     const settings = await this.deps.store.getProjectSettingsRaw(session.projectId);
     const memory = settings?.memory?.trim();
-    const knowledge =
-      carriesBrokeredSecretTools(backend) &&
-      (await this.deps.store.knowledge.hasProjectKnowledge(session.projectId))
-        ? `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}`
-        : '';
-    if (memory === undefined || memory.length === 0) return knowledge;
-    return `${knowledge}\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
+    if (memory === undefined || memory.length === 0) return '';
+    return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
+  }
+
+  private async projectKnowledgePrompt(session: SessionRecord, backend: Backend): Promise<string> {
+    if (
+      session.projectId === null ||
+      !carriesKnowledgeTools(backend) ||
+      !(await this.deps.store.knowledge.hasProjectKnowledge(session.projectId))
+    )
+      return '';
+    // Grants may be added after the backend context was created. Keep discovery current
+    // on resumed turns without re-injecting the project's curated memory.
+    return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}`;
   }
 
   /** Whether this session's project was created without a GitHub repository, so

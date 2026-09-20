@@ -31109,7 +31109,7 @@ console.warn = () => originalConsoleWarn("runner worker dependency reported a wa
 if (request.trustedCliExecution === true && request.backend !== "claude-acp" && request.backend !== "codex-acp") {
   throw new Error("trusted CLI execution requires a supported brokered-tool backend");
 }
-if (request.mcpGatewayToken !== void 0 && request.backend !== "claude-acp" && request.backend !== "codex-acp") {
+if (request.mcpGatewayToken !== void 0 && request.backend !== "claude-acp" && request.backend !== "codex-acp" && request.backend !== "opencode-acp") {
   throw new Error("the MCP gateway bearer is not supported by this runner backend");
 }
 if (request.sessionEnv !== void 0) {

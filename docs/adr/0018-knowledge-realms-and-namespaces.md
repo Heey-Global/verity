@@ -149,10 +149,13 @@ remain independent; external knowledge integrations may be added later.
 
 ### D4 — Agents access authorized knowledge through server-mediated tools
 
-The existing Claude and Codex gateway paths expose server-mediated knowledge tools
-to list authorized folders, search documents, read a document, and create or edit
-documents when authorized under D5. OpenCode-specific gateway support is outside
-this implementation; adding it must not widen existing secret-tool authority. The server resolves the project
+All supported model backends (Claude, Codex and OpenCode) expose server-mediated
+knowledge tools to list authorized folders, search documents, read a document, and
+create or edit documents when authorized under D5. OpenCode receives a per-turn
+gateway bearer restricted server-side to `verity_knowledge` for both discovery and
+execution, without secret-tool or trusted CLI authority. Knowledge guidance is
+refreshed on each turn so newly granted folders are discoverable in resumed sessions.
+The server resolves the project
 from a trusted session/turn identity and checks current grants on every operation.
 A request-supplied project id or folder path cannot establish authority.
 
@@ -303,7 +306,7 @@ a folder tree and filtering search results does not complete this decision.
   to authorized readers, and reject stale edits and creation collisions.
 - New descendants, renamed folders, moves, cycle rejection and concurrent mutations.
 - No unauthorized metadata or content through search, counts, listings, ids,
-  revisions, exports or errors, across both supported knowledge gateway backends.
+  revisions, exports or errors, across all supported knowledge gateway backends.
 - Revocation and deletion racing with reads, active turns and scheduled loops;
   old contexts cannot resume or seed a replacement after access is removed.
 - Agent-mediated cross-project paths cannot bypass knowledge authorization.

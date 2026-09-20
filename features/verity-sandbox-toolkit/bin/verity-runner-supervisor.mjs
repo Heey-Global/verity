@@ -55,19 +55,9 @@ const OVERSIZE_DRAIN_GRACE_MS = 2_000;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 const WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp', 'pi']);
-// The transports that reach the brokered Verity tools over the loopback MCP gateway
-// (ADR 0014 D1). Only these may
-// carry a gateway bearer on start-turn.
-//
-// `opencode-acp` is deliberately absent even though it is an ACP transport and
-// OpenCode advertises `mcpCapabilities.http`: which agents may spend the operator's
-// secrets is a decision, not a side effect of the protocol an agent happens to
-// speak. Admitting it means changing every gate that names the pair by hand, and
-// they are deliberately separate so none can drift into the others by accident:
-// this set, `carriesBrokeredSecretTools` (packages/session/src/conductor.ts), the
-// `acpBackend` flag that decides whether a bearer is minted at all
-// (packages/session/src/runner-supervisor-client.ts), and the two independent
-// re-checks in packages/session/src/runner-worker-entry.ts.
+// Knowledge access is available to every ACP backend; secret execution is narrower.
+// The server-side bearer registry enforces which tools each gateway token may call.
+const GATEWAY_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp']);
 const ACP_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp']);
 // The subset of WORKER_BACKENDS that the PRODUCTION supervisor actually launches.
 // A start-turn for any backend outside this set is rejected at runtime (see the
@@ -1463,7 +1453,7 @@ export function validateStartTurnRequest(request) {
   const mcpGatewayToken = optionalString(request.mcpGatewayToken, 'mcpGatewayToken', 512);
   if (
     mcpGatewayToken !== undefined &&
-    (mcpGatewayToken === '' || !ACP_WORKER_BACKENDS.has(request.backend))
+    (mcpGatewayToken === '' || !GATEWAY_WORKER_BACKENDS.has(request.backend))
   ) {
     throw new Error('invalid mcpGatewayToken');
   }

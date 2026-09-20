@@ -6,7 +6,9 @@ They are included in the server database backup.
 
 ## Organize and edit
 
-Create folders and subfolders, then create Markdown documents inside them.
+Browse the expandable folder tree. Use the folder-plus icon to create a folder
+in the current selection; use the file-plus or upload icon to add documents.
+The ellipsis menu contains folder rename, move, delete and bundle actions.
 Open a document to read its formatted content. Choose **Edit** to change the
 Markdown source and preview it before saving. Every save creates a revision;
 history lets you inspect and restore earlier versions. If someone else saved
@@ -25,7 +27,8 @@ Markdown exports preserve current content, not revision history or permissions.
 ## Give a project access
 
 In Project Settings, select knowledge folders and choose **Read** or
-**Read & Write** for each selection. **Open in Knowledge** jumps to that folder.
+**Read & Write** for each selection. Use the checkboxes in the folder tree;
+expand a folder to set additional child permissions. Tap a folder name to open it.
 Your own library management is independent of these agent permissions.
 
 - A selection includes its entire subtree, including future subfolders.
@@ -48,11 +51,13 @@ Revocation does not erase previously copied content from repositories or history
 
 ## Use knowledge in a session
 
-Claude and Codex sessions access documents through the `verity_knowledge` tool.
+All supported model backends — Claude, Codex and OpenCode (including Qwen) —
+access documents through the `verity_knowledge` tool.
 Ask the agent to search the library or work with a particular document. The server
 checks the project's current grants on every call; documents are retrieved on
 demand instead of copied wholesale into the Sandbox or system prompt. OpenCode
-has no separate knowledge gateway integration in this version.
+receives a knowledge-only gateway credential; it does not gain access to secret
+tools. Existing sessions receive the current knowledge guidance on their next turn.
 
 One useful arrangement is a read-only `Sources` folder and a writable `Wiki`
 folder. Ask the agent to read sources and maintain summaries and an index in the

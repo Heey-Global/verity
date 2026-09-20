@@ -366,6 +366,9 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
               settings={settings}
               onSaved={onSettingsSaved}
             />
+            <View style={styles.section}>
+              <ProjectKnowledgeGrants client={client} projectId={project.id} />
+            </View>
             {project.kind === 'local' ? (
               <LinkGitHubSection client={client} project={project} onUpdated={onProjectUpdated} />
             ) : null}
@@ -2986,7 +2989,6 @@ function ProjectSettingsSection({
         onSaved={onSaved}
       />
       <ProjectMcpBindingsSection client={client} projectId={projectId} />
-      <ProjectKnowledgeGrants client={client} projectId={projectId} />
       <Text style={styles.settingsHint}>
         Verity resolves approved secrets in the central broker. No Doppler credential is stored in
         or injected into the project container.

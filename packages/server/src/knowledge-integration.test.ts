@@ -35,11 +35,16 @@ beforeEach(async () => {
   });
 });
 
-async function setup() {
+async function setup(scope?: 'knowledge') {
   const authRegistry = await createAuthTokenRegistry(ctx.store, { enabled: true });
   await authRegistry.register('device-token', 'knowledge-test-device');
   const tokens = createMcpGatewayTokens();
-  const token = tokens.issue({ projectId: 'p', sessionId: 's', turnId: 't' });
+  const token = tokens.issue({
+    projectId: 'p',
+    sessionId: 's',
+    turnId: 't',
+    ...(scope ? { scope } : {}),
+  });
   const permission = vi.fn(async () => ({ decision: { behavior: 'deny' }, decidedBy: 'card' }));
   const fallback = vi.fn(async () => {
     throw new Error('knowledge must use server executor');
@@ -137,59 +142,62 @@ async function setup() {
   };
 }
 
-it('uses project grants without per-call approval and attributes writes to the trusted turn', async () => {
-  const h = await setup();
-  try {
-    const folderResponse = await h.app.inject({
-      method: 'POST',
-      url: '/knowledge/folders',
-      headers: { authorization: 'Bearer device-token' },
-      payload: { name: 'Shared', parentId: null },
-    });
-    expect(folderResponse.statusCode).toBe(200);
-    const { folder } = folderResponse.json();
-    const grantResponse = await h.app.inject({
-      method: 'PUT',
-      url: '/projects/p/knowledge-grants',
-      headers: { authorization: 'Bearer device-token' },
-      payload: { grants: [{ folderId: folder.id, mode: 'read_write' }] },
-    });
-    expect(grantResponse.statusCode).toBe(200);
-    const created = await h.agent({
-      operation: 'create',
-      folderId: folder.id,
-      title: 'Notes.md',
-      bodyMarkdown: '# Shared',
-    });
-    expect(created.isError).toBeUndefined();
-    const doc = JSON.parse(created.content[0]!.text) as { id: string; currentRevisionId: string };
-    const revisions = await ctx.store.knowledge.listRevisions(doc.id);
-    expect(revisions[0]).toMatchObject({ projectId: 'p', sessionId: 's', turnId: 't' });
-    await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read' }]);
-    expect((await h.agent({ operation: 'read', documentId: doc.id })).isError).toBeUndefined();
-    expect(
-      (
-        await h.agent({
-          operation: 'edit',
-          documentId: doc.id,
-          expectedRevisionId: doc.currentRevisionId,
-          title: 'Changed',
-          bodyMarkdown: 'changed',
-        })
-      ).isError,
-    ).toBe(true);
-    expect((await ctx.store.knowledge.getDocument(doc.id)).bodyMarkdown).toBe('# Shared');
-    expect(h.permission).not.toHaveBeenCalled();
-    expect(h.fallback).not.toHaveBeenCalled();
-    await ctx.store.knowledge.setGrants('p', []);
-    await expect(h.agent({ operation: 'read', documentId: doc.id })).rejects.toMatchObject({
-      statusCode: 401,
-    });
-    expect(await ctx.store.knowledge.isSessionInvalidated('s')).toBe(true);
-  } finally {
-    await h.close();
-  }
-});
+it.each([undefined, 'knowledge'] as const)(
+  'uses project grants and trusted write identity with %s scope',
+  async (scope) => {
+    const h = await setup(scope);
+    try {
+      const folderResponse = await h.app.inject({
+        method: 'POST',
+        url: '/knowledge/folders',
+        headers: { authorization: 'Bearer device-token' },
+        payload: { name: 'Shared', parentId: null },
+      });
+      expect(folderResponse.statusCode).toBe(200);
+      const { folder } = folderResponse.json();
+      const grantResponse = await h.app.inject({
+        method: 'PUT',
+        url: '/projects/p/knowledge-grants',
+        headers: { authorization: 'Bearer device-token' },
+        payload: { grants: [{ folderId: folder.id, mode: 'read_write' }] },
+      });
+      expect(grantResponse.statusCode).toBe(200);
+      const created = await h.agent({
+        operation: 'create',
+        folderId: folder.id,
+        title: 'Notes.md',
+        bodyMarkdown: '# Shared',
+      });
+      expect(created.isError).toBeUndefined();
+      const doc = JSON.parse(created.content[0]!.text) as { id: string; currentRevisionId: string };
+      const revisions = await ctx.store.knowledge.listRevisions(doc.id);
+      expect(revisions[0]).toMatchObject({ projectId: 'p', sessionId: 's', turnId: 't' });
+      await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read' }]);
+      expect((await h.agent({ operation: 'read', documentId: doc.id })).isError).toBeUndefined();
+      expect(
+        (
+          await h.agent({
+            operation: 'edit',
+            documentId: doc.id,
+            expectedRevisionId: doc.currentRevisionId,
+            title: 'Changed',
+            bodyMarkdown: 'changed',
+          })
+        ).isError,
+      ).toBe(true);
+      expect((await ctx.store.knowledge.getDocument(doc.id)).bodyMarkdown).toBe('# Shared');
+      expect(h.permission).not.toHaveBeenCalled();
+      expect(h.fallback).not.toHaveBeenCalled();
+      await ctx.store.knowledge.setGrants('p', []);
+      await expect(h.agent({ operation: 'read', documentId: doc.id })).rejects.toMatchObject({
+        statusCode: 401,
+      });
+      expect(await ctx.store.knowledge.isSessionInvalidated('s')).toBe(true);
+    } finally {
+      await h.close();
+    }
+  },
+);
 
 it('keeps management APIs behind device authentication and returns bounded validation errors', async () => {
   const h = await setup();
@@ -229,6 +237,39 @@ it('keeps management APIs behind device authentication and returns bounded valid
       turnId: 'forged-turn',
     });
     expect((await h.agent({ operation: 'list' }, forged)).isError).toBe(true);
+  } finally {
+    await h.close();
+  }
+});
+
+it('keeps knowledge-only bearers inside project folder grants', async () => {
+  const h = await setup();
+  try {
+    const allowed = await ctx.store.knowledge.createFolder({ name: 'Allowed' });
+    const privateFolder = await ctx.store.knowledge.createFolder({ name: 'Private' });
+    await ctx.store.knowledge.setGrants('p', [{ folderId: allowed.id, mode: 'read' }]);
+    const token = h.tokens.issue({
+      projectId: 'p',
+      sessionId: 's',
+      turnId: 'knowledge-turn',
+      scope: 'knowledge',
+    });
+    expect(
+      (await h.agent({ operation: 'list', folderId: allowed.id }, token)).isError,
+    ).toBeUndefined();
+    expect((await h.agent({ operation: 'list', folderId: privateFolder.id }, token)).isError).toBe(
+      true,
+    );
+    expect(
+      (
+        await h.agent(
+          { operation: 'create', folderId: allowed.id, title: 'Forbidden', bodyMarkdown: '' },
+          token,
+        )
+      ).isError,
+    ).toBe(true);
+    expect(h.permission).not.toHaveBeenCalled();
+    expect(h.fallback).not.toHaveBeenCalled();
   } finally {
     await h.close();
   }

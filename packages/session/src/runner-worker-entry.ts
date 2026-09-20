@@ -117,15 +117,13 @@ if (
 ) {
   throw new Error('trusted CLI execution requires a supported brokered-tool backend');
 }
-// Brokered tools are exposed only through the ACP MCP gateway — and, within ACP,
-// only to the agents admitted to it. `opencode-acp` is an ACP backend and is
-// deliberately not one of them (see `carriesBrokeredSecretTools` in conductor.ts),
-// so both gates above name their members rather than asking whether the transport
-// is ACP: the two questions have the same answer today only by decision.
+// Gateway admission does not authorize secret tools: the server binds the bearer
+// to its tool scope. OpenCode receives knowledge access without trusted execution.
 if (
   request.mcpGatewayToken !== undefined &&
   request.backend !== 'claude-acp' &&
-  request.backend !== 'codex-acp'
+  request.backend !== 'codex-acp' &&
+  request.backend !== 'opencode-acp'
 ) {
   throw new Error('the MCP gateway bearer is not supported by this runner backend');
 }
@@ -152,8 +150,8 @@ const usesInternalMcpProxy = request.mcpServers?.some(
 );
 // External MCP bindings are intentionally backend-neutral. Their separate proxy bearer
 // proves only turn/project identity and does not expose the built-in Verity gateway or
-// trusted CLI executor that `mcpGatewayToken` restricts to Claude/Codex above.
-// A bearer is the Server's decision that this turn is entitled to brokered tools.
+// trusted CLI executor. Knowledge-scoped gateway bearers also grant no execution.
+// A bearer is the Server's decision that this turn is entitled to its scoped tools.
 // Without a URL to redeem it against, the container is misprovisioned and no retry or
 // prompt can recover. Fail closed instead of silently starting a tool-less agent;
 // empty counts as absent, matching `supervisorWorkerEnv`.

@@ -23,6 +23,8 @@ import { createHash, randomBytes } from 'node:crypto';
 
 /** Who a presented token was minted for. */
 export interface McpGatewayCaller {
+  /** Restricted bearers never authorize brokered tools or control-plane tools. */
+  readonly scope?: 'knowledge';
   readonly sessionId: string;
   /** The turn the token was minted for. Serving a trusted CLI call needs it: the Sandbox
    *  supervisor only runs one inside a turn that asked for the capability up front. */
@@ -32,7 +34,12 @@ export interface McpGatewayCaller {
 export interface McpGatewayTokens {
   /** Mint this turn's bearer. Called once per turn start, on the Server side of the
    *  Sandbox boundary — the Sandbox never mints its own. */
-  issue(input: { projectId: string; sessionId: string; turnId: string }): string;
+  issue(input: {
+    projectId: string;
+    sessionId: string;
+    turnId: string;
+    scope?: 'knowledge';
+  }): string;
   /**
    * Resolve a presented bearer within the project the connection already proved. Returns
    * undefined for an unknown, expired or foreign-project token; the caller is told the same
@@ -82,6 +89,7 @@ export function createMcpGatewayTokens(options?: {
   }
 
   interface Entry {
+    readonly scope?: 'knowledge';
     readonly projectId: string;
     readonly sessionId: string;
     readonly turnId: string;
@@ -96,7 +104,7 @@ export function createMcpGatewayTokens(options?: {
   };
 
   return {
-    issue({ projectId, sessionId, turnId }) {
+    issue({ projectId, sessionId, turnId, scope }) {
       const instant = now();
       purgeExpired(instant);
       if (byDigest.size >= capacity) {
@@ -107,6 +115,7 @@ export function createMcpGatewayTokens(options?: {
         projectId,
         sessionId,
         turnId,
+        ...(scope === undefined ? {} : { scope }),
         expiresAt: instant + ttlMs,
       });
       return token;
@@ -124,7 +133,11 @@ export function createMcpGatewayTokens(options?: {
       // The project is proved by the connection, not by the body, so a token that escaped
       // into another project's container still cannot act there.
       if (entry.projectId !== projectId) return undefined;
-      return { sessionId: entry.sessionId, turnId: entry.turnId };
+      return {
+        sessionId: entry.sessionId,
+        turnId: entry.turnId,
+        ...(entry.scope === undefined ? {} : { scope: entry.scope }),
+      };
     },
 
     release({ projectId, token }) {

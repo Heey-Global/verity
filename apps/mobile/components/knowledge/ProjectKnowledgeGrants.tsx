@@ -1,9 +1,11 @@
 import type { KnowledgeFolder, KnowledgeGrant, VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 import { KnowledgeButton as Button } from './KnowledgeButton';
 import { styles } from './styles';
+import { Icon } from '../Icon';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 export function ProjectKnowledgeGrants({
   client,
@@ -12,6 +14,8 @@ export function ProjectKnowledgeGrants({
   client: VerityClient;
   projectId: string;
 }) {
+  const { theme } = useUnistyles();
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [folders, setFolders] = useState<KnowledgeFolder[]>([]);
   const [grants, setGrants] = useState<KnowledgeGrant[]>([]);
   const [error, setError] = useState('');
@@ -109,6 +113,7 @@ export function ProjectKnowledgeGrants({
       seen.add(folder.id);
       rows.push({ folder, depth, inherited });
       const direct = grants.find((g) => g.folderId === folder.id)?.mode;
+      if (collapsed.has(folder.id)) continue;
       walk(
         folder.id,
         depth + 1,
@@ -124,9 +129,7 @@ export function ProjectKnowledgeGrants({
     <View style={styles.group}>
       <Text style={styles.heading}>Knowledge access</Text>
       <Text style={styles.muted}>
-        Select folders for agents. Access includes every subfolder. Read & Write permits document
-        creation and edits shared immediately with other authorized projects. Your own library
-        editing is independent.
+        Check folders to share with this project. Subfolders inherit access.
       </Text>
       {error ? (
         <Text accessibilityRole="alert" style={styles.error}>
@@ -149,58 +152,129 @@ export function ProjectKnowledgeGrants({
               ? 'Read'
               : 'None';
         return (
-          <View key={folder.id} style={[styles.group, { paddingLeft: Math.min(depth, 6) * 12 }]}>
-            <Text style={styles.text}>
-              {folder.name} — effective: {effective}
-              {inherited
-                ? ` (inherited ${inherited === 'read_write' ? 'Read & Write' : 'Read'})`
-                : ''}
-            </Text>
-            <View style={styles.row}>
-              <Button
-                label={`${direct ? 'Remove' : 'Allow'} ${folder.name}`}
-                disabled={busy || needsReload}
-                onPress={() => {
-                  const next = direct
-                    ? grants.filter((g) => g.folderId !== folder.id)
-                    : [...grants, { folderId: folder.id, mode: 'read' as const }];
-                  if (direct)
-                    Alert.alert(
-                      'Change knowledge access',
-                      'Removing access may retire affected session contexts.',
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Continue', onPress: () => save(next) },
-                      ],
-                    );
-                  else save(next);
-                }}
-              />
-              {direct ? (
-                <Button
-                  label={`${folder.name}: ${direct.mode === 'read' ? 'Read' : 'Read & Write'}`}
-                  disabled={busy || needsReload}
-                  onPress={() =>
-                    save(
-                      grants.map((g) =>
-                        g.folderId === folder.id
-                          ? { ...g, mode: g.mode === 'read' ? 'read_write' : 'read' }
-                          : g,
-                      ),
-                    )
-                  }
-                />
-              ) : null}
-              <Button
-                label={`Open ${folder.name} in Knowledge`}
-                onPress={() =>
-                  router.push({ pathname: '/knowledge', params: { folderId: folder.id } })
+          <View key={folder.id} style={[tree.row, { paddingLeft: Math.min(depth, 6) * 16 }]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${collapsed.has(folder.id) ? 'Expand' : 'Collapse'} ${folder.name}`}
+              accessibilityState={{ expanded: !collapsed.has(folder.id) }}
+              disabled={!folders.some((f) => f.parentId === folder.id)}
+              style={tree.icon}
+              onPress={() =>
+                setCollapsed((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(folder.id)) next.delete(folder.id);
+                  else next.add(folder.id);
+                  return next;
+                })
+              }
+            >
+              <Icon
+                name={collapsed.has(folder.id) ? 'chevron-right' : 'chevron-down'}
+                size={16}
+                color={
+                  folders.some((f) => f.parentId === folder.id)
+                    ? theme.colors.textMuted
+                    : 'transparent'
                 }
               />
-            </View>
+            </Pressable>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityLabel={`${direct ? 'Remove' : 'Allow'} ${folder.name}`}
+              accessibilityState={{
+                checked: !!(direct || inherited),
+                disabled: busy || needsReload || (!!inherited && !direct),
+              }}
+              disabled={busy || needsReload || (!!inherited && !direct)}
+              style={tree.icon}
+              onPress={() => {
+                const next = direct
+                  ? grants.filter((g) => g.folderId !== folder.id)
+                  : [...grants, { folderId: folder.id, mode: 'read' as const }];
+                if (direct)
+                  Alert.alert(
+                    'Change knowledge access',
+                    'Removing access may retire affected session contexts.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Continue', onPress: () => save(next) },
+                    ],
+                  );
+                else save(next);
+              }}
+            >
+              <Icon
+                name={direct || inherited ? 'check-square' : 'square'}
+                size={18}
+                color={inherited && !direct ? theme.colors.textMuted : theme.colors.text}
+              />
+            </Pressable>
+            <Pressable
+              style={tree.name}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${folder.name} in Knowledge`}
+              onPress={() =>
+                router.push({ pathname: '/knowledge', params: { folderId: folder.id } })
+              }
+            >
+              <Icon name="folder" size={18} color={theme.colors.textMuted} />
+              <Text numberOfLines={1} style={tree.label}>
+                {folder.name}
+              </Text>
+            </Pressable>
+            {(direct || inherited) && inherited !== 'read_write' ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${folder.name}: ${effective}`}
+                accessibilityHint="Change between read and read and write access"
+                disabled={busy || needsReload}
+                style={tree.mode}
+                onPress={() =>
+                  Alert.alert('Folder access', folder.name, [
+                    { text: 'Cancel', style: 'cancel' },
+                    ...(['read', 'read_write'] as const).map((mode) => ({
+                      text: mode === 'read' ? 'Read' : 'Read & Write',
+                      onPress: () =>
+                        save([
+                          ...grants.filter((g) => g.folderId !== folder.id),
+                          { folderId: folder.id, mode },
+                        ]),
+                    })),
+                  ])
+                }
+              >
+                <Text style={styles.muted}>
+                  {effective}
+                  {inherited ? ' · inherited' : ''}
+                </Text>
+                <Icon name="chevron-down" size={12} color={theme.colors.textMuted} />
+              </Pressable>
+            ) : inherited ? (
+              <Text
+                style={tree.inherited}
+                accessibilityLabel={`${folder.name}: inherited ${effective}`}
+              >
+                {effective} · inherited
+              </Text>
+            ) : null}
           </View>
         );
       })}
     </View>
   );
 }
+
+const tree = StyleSheet.create((theme) => ({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 44,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
+  },
+  icon: { width: 32, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  name: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44 },
+  label: { flex: 1, color: theme.colors.text, fontSize: 14 },
+  mode: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 6, minHeight: 44 },
+  inherited: { color: theme.colors.textMuted, fontSize: 11, maxWidth: 105 },
+}));

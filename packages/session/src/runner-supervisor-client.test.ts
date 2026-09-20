@@ -488,7 +488,7 @@ describe('SupervisorRunnerClient', () => {
     });
   });
 
-  it('mints no bearer for an OpenCode ACP turn', async () => {
+  it('mints a knowledge bearer for OpenCode without enabling trusted execution', async () => {
     const issued: string[] = [];
     const request = await captureStartRequest(
       'opencode-acp-gateway-runtime',
@@ -506,14 +506,9 @@ describe('SupervisorRunnerClient', () => {
         },
       },
     );
-    // This is where the decision is actually enforced — every gate downstream is a
-    // re-check. Minting here would not quietly widen OpenCode's authority, it would
-    // BREAK it: the supervisor answers `invalid mcpGatewayToken` for a bearer on a
-    // backend outside `ACP_WORKER_BACKENDS`, so every OpenCode turn would fail at
-    // start-turn. Both directions of the invariant fail here first (ADR 0014 D1,
-    // ADR 0012 Amendment 4).
-    expect(issued).toEqual([]);
-    expect(request).not.toHaveProperty('mcpGatewayToken');
+    // Knowledge must reach OpenCode without granting the privileged executor.
+    expect(issued).toEqual(['turn-1']);
+    expect(request).toHaveProperty('mcpGatewayToken', 'gateway-token-1');
     expect(request).toMatchObject({ backend: 'opencode-acp', trustedCliExecution: false });
   });
 
@@ -562,26 +557,29 @@ describe('SupervisorRunnerClient', () => {
   // Retiring is keyed on the bearer this start attempt minted, never on its turn id:
   // a second attempt for one turn would otherwise cut off a worker still using the
   // first attempt's bearer.
-  it('retires the bearer it minted once the turn settles', async () => {
-    const released: string[] = [];
-    let minted = 0;
-    await captureStartRequest(
-      'acp-gateway-release-runtime',
-      { prompt: 'hello' },
-      {
-        backend: { runnerSupervisorBackend: 'claude-acp' } as Backend,
-        clientOptions: {
-          mcpGatewayTokens: {
-            issue: () => `gateway-token-${(minted += 1)}`,
-            release: (token: string) => released.push(token),
+  it.each(['claude-acp', 'codex-acp', 'opencode-acp'] as const)(
+    'retires the %s bearer it minted once the turn settles',
+    async (backend) => {
+      const released: string[] = [];
+      let minted = 0;
+      await captureStartRequest(
+        'acp-gateway-release-runtime',
+        { prompt: 'hello' },
+        {
+          backend: { runnerSupervisorBackend: backend } as Backend,
+          clientOptions: {
+            mcpGatewayTokens: {
+              issue: () => `gateway-token-${(minted += 1)}`,
+              release: (token: string) => released.push(token),
+            },
           },
         },
-      },
-    );
-    // captureStartRequest settles the turn by rejecting the launch — a failed turn has
-    // to retire its bearer just as a successful one does.
-    expect(released).toEqual(['gateway-token-1']);
-  });
+      );
+      // captureStartRequest settles the turn by rejecting the launch — a failed turn has
+      // to retire its bearer just as a successful one does.
+      expect(released).toEqual(['gateway-token-1']);
+    },
+  );
 
   it('restores Codex rollout state before routing resume through start-turn', async () => {
     const runtime = join(dir, 'codex-runtime');

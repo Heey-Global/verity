@@ -294,25 +294,15 @@ describe('agent spawn broker', () => {
     }
   });
 
-  it('keeps the worker’s brokered-tool gates naming their members', async () => {
-    // `runner-worker-entry.ts` is a top-level script — it reads its request file and
-    // starts a turn on import, so there is nothing to call. What can be pinned is the
-    // shape of its two fail-closed re-checks, and they are worth pinning: the Server
-    // decides which backends get a gateway bearer, and these are the Sandbox-side
-    // re-checks that refuse one that arrives anyway. `opencode-acp` is an ACP backend
-    // that is deliberately not admitted (ADR 0014 D1), so the day someone rewrites
-    // either gate as "is this ACP" it silently starts accepting a bearer for OpenCode
-    // turns. That edit has to fail here instead.
+  it('keeps knowledge gateway admission separate from trusted execution', async () => {
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
-    for (const field of ['trustedCliExecution === true', 'mcpGatewayToken !== undefined']) {
-      expect(text).toMatch(
-        new RegExp(
-          `request\\.${field} &&\\s*request\\.backend !== 'claude-acp' &&\\s*` +
-            `request\\.backend !== 'codex-acp'`,
-          'u',
-        ),
-      );
-    }
+    // Widening the knowledge gate must never silently grant secret execution.
+    expect(text).toMatch(
+      /request\.trustedCliExecution === true &&\s*request\.backend !== 'claude-acp' &&\s*request\.backend !== 'codex-acp'\s*\)/u,
+    );
+    expect(text).toMatch(
+      /request\.mcpGatewayToken !== undefined &&\s*request\.backend !== 'claude-acp' &&\s*request\.backend !== 'codex-acp' &&\s*request\.backend !== 'opencode-acp'\s*\)/u,
+    );
   });
 
   it('refuses a gateway bearer the container has no endpoint to redeem', async () => {

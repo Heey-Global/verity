@@ -3506,6 +3506,21 @@ describe('verity-runner supervisor runtime', () => {
       validateStartTurnRequest({ ...base, backend: 'codex-acp', mcpGatewayToken: 'bearer-2' })
         .mcpGatewayToken,
     ).toBe('bearer-2');
+    expect(
+      validateStartTurnRequest({
+        ...base,
+        backend: 'opencode-acp',
+        mcpGatewayToken: 'knowledge-bearer',
+      }).mcpGatewayToken,
+    ).toBe('knowledge-bearer');
+    expect(() =>
+      validateStartTurnRequest({
+        ...base,
+        backend: 'opencode-acp',
+        mcpGatewayToken: 'knowledge-bearer',
+        trustedCliExecution: true,
+      }),
+    ).toThrow(/trustedCliExecution/u);
     // A turn without a bearer never gains the field.
     expect(validateStartTurnRequest(base)).not.toHaveProperty('mcpGatewayToken');
     // An empty or oversize bearer is a wiring bug, not an absent one.

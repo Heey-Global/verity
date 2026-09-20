@@ -1734,7 +1734,7 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
 
     await expect(
       wiring.runner?.(openCodeAcpBackend, { sessionId: 's-oc', projectId, worktree: '/wt' }),
-    ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    ).rejects.toThrow('composed without mcpGatewayTokens');
 
     const composed = buildRunnerConductorWiring({ ...baseDeps(), runnerSupervisor: true });
     await expect(
@@ -1771,6 +1771,48 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     expect(wiring.serverManagedTranscript).toBeUndefined();
     expect(wiring.runnerRecovery).toBeUndefined();
     expect(wiring.runner).toBeUndefined();
+  });
+
+  it('mints only knowledge authority for OpenCode project turns', async () => {
+    const projectId = 'proj-1';
+    const socket = join(dir, 'runners', projectId, 'supervisor.sock');
+    await mkdir(join(dir, 'runners', projectId), { recursive: true });
+    const server = createServer((peer) => {
+      peer.once('data', () => peer.end(`${JSON.stringify({ ok: true, outcome: 'ambiguous' })}\n`));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    const issue = vi.fn(() => 'restricted-bearer');
+    const wiring = buildRunnerConductorWiring({
+      ...baseDeps(),
+      runnerSupervisor: true,
+      mcpGatewayTokens: { issue, release: () => undefined, resolve: () => undefined },
+    });
+    const client = await wiring.runner?.(openCodeAcpBackend, {
+      sessionId: 'session-1',
+      projectId,
+      worktree: '/work',
+    });
+    const turn = client!.startTurn(
+      {
+        store: {} as never,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'hello',
+        storeSessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+      },
+      {},
+    );
+    await expect(turn.result).rejects.toThrow('invalid start outcome');
+    // A general bearer would let a direct call bypass the runner's discovery restrictions.
+    expect(issue).toHaveBeenCalledWith({
+      projectId,
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      scope: 'knowledge',
+    });
   });
 
   it('binds the project turn to its supervisor socket and accepts the real prod option set', async () => {
