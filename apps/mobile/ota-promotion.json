@@ -1,15 +1,12 @@
 {
   "schema": 1,
-  "version": "1.33.21",
+  "version": "1.33.22",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "5e8054b8f938b20ddc3a7b7ffd57509bdde942de",
-  "tag": "mobile-v1.33.21",
-  "branch": "staging-mobile-v1.33.21-5e8054b8f938b20ddc3a7b7ffd57509bdde942de",
-  "baseline": "mobile-v1.33.20",
-  "group": "6e8eb2df-4f23-4c06-ab86-fc4aced6d048",
-  "notes": [
-    "add project sandbox sleep and wake (#538)",
-    "handle the keyboard through one controller everywhere (#537)"
-  ]
+  "commit": "0b462fa04b5c6213a8f45c44f06e3749b0974e24",
+  "tag": "mobile-v1.33.22",
+  "branch": "staging-mobile-v1.33.22-0b462fa04b5c6213a8f45c44f06e3749b0974e24",
+  "baseline": "mobile-v1.33.21",
+  "group": "08decff6-d178-4f6f-bfd4-0318463bb3d6",
+  "notes": []
 }
