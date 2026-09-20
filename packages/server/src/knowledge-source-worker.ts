@@ -1,14 +1,16 @@
 import { fileURLToPath } from 'node:url';
-import { parentPort, workerData } from 'node:worker_threads';
 import { unzipSync, strFromU8 } from 'fflate';
 import { XMLParser } from 'fast-xml-parser';
 import sharp from 'sharp';
 import type { KnowledgeSourceInput } from '@verity/store';
 
 type Output = Omit<KnowledgeSourceInput, 'bytes' | 'filename'>;
-const input = workerData as { bytes: Uint8Array; filename: string };
-const bytes = Buffer.from(input.bytes);
-const extension = input.filename.toLowerCase().split('.').pop();
+const filename = process.argv[2] ?? '';
+const chunks: Buffer[] = [];
+for await (const chunk of process.stdin as AsyncIterable<Uint8Array>)
+  chunks.push(Buffer.from(chunk));
+const bytes = Buffer.concat(chunks);
+const extension = filename.toLowerCase().split('.').pop();
 const output: Output = {
   mediaType: 'application/octet-stream',
   processingState: 'unsupported',
@@ -247,11 +249,11 @@ async function processSource(): Promise<Output> {
   return output;
 }
 void processSource()
-  .then((result) => parentPort?.postMessage(result))
+  .then((result) => process.stdout.write(JSON.stringify(result)))
   .catch((error: unknown) => {
     output.processingState = 'failed';
     output.processingNote = `Original retained; extraction unavailable: ${error instanceof Error ? error.message.slice(0, 200) : 'processing failed'}`;
     output.locators = [];
     output.previews = [];
-    parentPort?.postMessage(output);
+    process.stdout.write(JSON.stringify(output));
   });
