@@ -210,7 +210,12 @@ describe('deploy/bin/verity-compose', () => {
     // way to see it would be to read a container's cgroup.
     const bootstrap = readFileSync('packages/server/src/self-update/managed-bootstrap.ts', 'utf8');
     expect(bootstrap).toContain("name.startsWith('VERITY_')");
-    const excluded = /!\[([\s\S]*?)\]\.includes\(name\)/.exec(bootstrap)?.[1];
+    // Anchored to the binding rather than to the punctuation: `[...].includes(name)`
+    // is a shape common enough that a second one added above this would silently
+    // become what gets asserted.
+    const excluded = /const forwardedEnvironment[\s\S]*?!\[([\s\S]*?)\]\.includes\(name\)/.exec(
+      bootstrap,
+    )?.[1];
     // Fail loudly if the shape moved rather than passing on an empty match, which
     // would assert nothing at all.
     expect(excluded).toBeDefined();
