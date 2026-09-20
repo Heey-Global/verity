@@ -7,6 +7,8 @@ export interface ProjectIdleSleepScheduler {
   stop(): void;
 }
 
+export const PROJECT_SANDBOX_IDLE_TIMEOUT_MS = 30 * 60_000;
+
 export async function projectHasPersistentSandboxActivity(input: {
   project: ProjectRecord;
   listShares: () => Promise<readonly PublicPreviewShareRecord[]>;
@@ -50,6 +52,7 @@ export function startProjectIdleSleepScheduler(input: {
   now?: () => number;
   onSlept?: (projectId: string) => void;
   onError?: (projectId: string | undefined, error: unknown) => void;
+  onSweep?: (projects: readonly ProjectRecord[]) => void;
   startTimer?: boolean;
 }): ProjectIdleSleepScheduler {
   const now = input.now ?? Date.now;
@@ -62,8 +65,11 @@ export function startProjectIdleSleepScheduler(input: {
     running = true;
     try {
       const projects = await input.listProjects();
+      input.onSweep?.(projects);
       const activeIds = new Set(
-        projects.filter((project) => project.state === 'active').map((project) => project.id),
+        projects
+          .filter((project) => project.kind !== 'control_plane' && project.state === 'active')
+          .map((project) => project.id),
       );
       for (const projectId of idleSince.keys()) {
         if (!activeIds.has(projectId)) idleSince.delete(projectId);

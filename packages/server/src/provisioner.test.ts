@@ -540,6 +540,9 @@ describe('ProvisionerImpl (#174)', () => {
     const relay = defaultProjectRelay();
     relay.sleep = async (projectId) => void slept.push(projectId);
     const egress = fakeEgressIdentity();
+    const lifecycle = vi.fn(() => {
+      throw new Error('telemetry sink unavailable');
+    });
     const provisioner = createProvisioner({
       store: ctx.store,
       db: ctx.db,
@@ -549,6 +552,7 @@ describe('ProvisionerImpl (#174)', () => {
       hostCloneRoot: '/work',
       projectRelay: relay,
       claudeEgressIdentity: egress.service,
+      onSandboxLifecycle: lifecycle,
     });
 
     const result = await provisioner.sleepProject(id);
@@ -558,6 +562,9 @@ describe('ProvisionerImpl (#174)', () => {
     expect(slept).toEqual([id]);
     expect(egress.revoked).toEqual([id]);
     expect(calls.find((call) => call.method === 'stopContainer')).toBeDefined();
+    expect(lifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: id, operation: 'sleep', outcome: 'succeeded' }),
+    );
   });
 
   it('refuses to sleep while a Sandbox activity lease is held', async () => {
@@ -740,6 +747,7 @@ describe('ProvisionerImpl (#174)', () => {
       throw new Error('relay cleanup failed');
     };
     const egress = fakeEgressIdentity();
+    const lifecycle = vi.fn();
     const provisioner = createProvisioner({
       store: ctx.store,
       db: ctx.db,
@@ -749,12 +757,16 @@ describe('ProvisionerImpl (#174)', () => {
       hostCloneRoot: '/work',
       projectRelay: relay,
       claudeEgressIdentity: egress.service,
+      onSandboxLifecycle: lifecycle,
     });
 
     await expect(provisioner.sleepProject(id)).rejects.toThrow('project sleep failed');
     expect(egress.revoked).toEqual([id]);
     expect(calls.find((call) => call.method === 'stopContainer')).toBeDefined();
     expect(await ctx.store.getProject(id)).toMatchObject({ state: 'failed' });
+    expect(lifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: id, operation: 'sleep', outcome: 'failed' }),
+    );
   });
 
   it('wakes the exact retained generation with fresh relay capabilities', async () => {
@@ -778,6 +790,7 @@ describe('ProvisionerImpl (#174)', () => {
     });
     const bindings: ProjectRelayBinding[] = [];
     const relay = defaultProjectRelay();
+    const lifecycle = vi.fn();
     relay.reactivate = async (binding) => {
       bindings.push(binding);
       return {
@@ -794,6 +807,7 @@ describe('ProvisionerImpl (#174)', () => {
       defaultImageRef: 'sandbox:test',
       hostCloneRoot: '/work',
       projectRelay: relay,
+      onSandboxLifecycle: lifecycle,
     });
 
     const result = await provisioner.wakeProject(id);
@@ -808,6 +822,9 @@ describe('ProvisionerImpl (#174)', () => {
       expect.objectContaining({ projectId: id, containerGeneration: 'generation-1' }),
     ]);
     expect(calls).toContainEqual({ method: 'startContainer', payload: 'container-1' });
+    expect(lifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: id, operation: 'wake', outcome: 'succeeded' }),
+    );
   });
 
   it('coalesces concurrent automatic wakes for one sleeping project', async () => {

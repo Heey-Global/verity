@@ -254,9 +254,11 @@ import { detectDevServers } from './dev-server-detection.js';
 import { DevServerDetectionCache } from './dev-server-detection-cache.js';
 import { createAgentLoopExecutor } from './agent-loop-executor.js';
 import {
+  PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
   projectHasPersistentSandboxActivity,
   startProjectIdleSleepScheduler,
 } from './project-idle-sleep.js';
+import type { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telemetry.js';
 import {
   AmbiguousGitPushError,
   ProvisioningError,
@@ -1187,9 +1189,8 @@ export interface ServerDeps {
    * the no-project spawn path).
    */
   provisioner?: Provisioner | undefined;
-  /** Stop active project Sandboxes after this much confirmed inactivity. Zero or
-   *  absent disables automatic sleep. */
-  sandboxIdleTimeoutMs?: number | undefined;
+  /** In-process aggregate and structured transition feed for Sandbox sleep/wake. */
+  projectSandboxLifecycleTelemetry?: ProjectSandboxLifecycleTelemetry | undefined;
   /**
    * Host root containing provisioned project clones. Required alongside
    * `provisioner` for active project spawns so the conductor runs in the
@@ -3409,8 +3410,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     stopProjectRelayMigrationScheduler();
   });
   const idleSleepScheduler =
-    deps.provisioner?.sleepProject !== undefined && (deps.sandboxIdleTimeoutMs ?? 0) > 0
-      ? startProjectIdleSleepScheduler({
+    deps.provisioner?.sleepProject === undefined
+      ? undefined
+      : startProjectIdleSleepScheduler({
           listProjects: () => deps.eventStore.listProjects(),
           isBusy: isProjectBusy,
           ...(deps.provisioner.projectSandboxLastActivityAt === undefined
@@ -3421,7 +3423,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 ),
               }),
           sleepProject: deps.provisioner.sleepProject.bind(deps.provisioner),
-          idleMs: deps.sandboxIdleTimeoutMs!,
+          idleMs: PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
           onSlept: (projectId) => app.log.info({ projectId }, 'idle project Sandbox slept'),
           onError: (projectId, err) =>
             app.log.warn(
@@ -3430,8 +3432,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 ? 'idle project Sandbox sweep failed'
                 : 'idle project Sandbox sleep deferred',
             ),
-        })
-      : undefined;
+          onSweep: (projects) => {
+            const summary = deps.projectSandboxLifecycleTelemetry?.summaryIfDue(projects);
+            if (summary !== undefined) {
+              app.log.info(summary, 'project Sandbox lifecycle summary');
+            }
+          },
+        });
+  deps.projectSandboxLifecycleTelemetry?.attachSink((event) => {
+    app.log.info(event, 'project Sandbox lifecycle transition');
+  });
   app.addHook('onClose', () => idleSleepScheduler?.stop());
   const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
     const persist = async (): Promise<void> => {
