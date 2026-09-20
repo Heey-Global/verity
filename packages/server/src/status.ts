@@ -22,6 +22,33 @@ export function deriveSessionStatus(events: readonly AgentEvent[]): SessionStatu
   return deriveSessionStatusFromProjection(events, events.length);
 }
 
+/**
+ * Whether {@link deriveSessionStatusFromProjection} would return the same status
+ * for this tail as it would for the whole slice it was cut from.
+ *
+ * This is the licence for reading only the end of a long log. It holds because a
+ * non-steered `prompt` is a hard boundary in BOTH passes of the derivation:
+ *
+ * - the forward pass calls `openTasks.clear()` on one, so no `task` before it can
+ *   affect the open set afterwards;
+ * - the backward scan returns `'running'` on one, so it never reads past it.
+ *
+ * So every event preceding the most recent non-steered `prompt` is unreachable,
+ * and a tail containing one carries everything the derivation can observe.
+ *
+ * It is a predicate rather than a length, deliberately: "far enough back" is not
+ * a number of events. One turn can emit an unbounded run of `task`, `status` and
+ * `permission` events, so any fixed window is sometimes short — the caller has to
+ * be able to find out and read more, and a tail that misses the boundary is
+ * indistinguishable from a complete short log without asking.
+ *
+ * If the derivation ever grows a pass that reads past a `prompt`, this stops
+ * being true, and it lives here so that change and this proof are in one file.
+ */
+export function projectionTailIsSelfContained(events: readonly AgentEvent[]): boolean {
+  return events.some((event) => event.t === 'prompt' && event.steered !== true);
+}
+
 /** Whether the current `awaiting_input` projection comes from a durable permission
  * event rather than another kind of question/status. Used with the conductor's
  * live pending set to retire an answered card without hiding unrelated input. */

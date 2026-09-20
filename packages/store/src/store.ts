@@ -3053,6 +3053,79 @@ export class EventStore implements EventSink {
     return slices;
   }
 
+  /**
+   * The TAIL of one session's projection slice — its newest `limit` events, still
+   * ascending by `seq`.
+   *
+   * {@link listSessionProjectionEvents} is linear in log length, and the activity
+   * poll that calls it runs every 1.5 s for every idle session. Measured against a
+   * seeded log, that slice costs ~1.6 KB per event: a session with 800 prompts
+   * spends ~50 MB a minute being asked a question whose answer is at the end of
+   * its log. Nothing retains it, so this is churn rather than a leak — but V8 does
+   * not return the peak to the OS, so the process wears it for good.
+   *
+   * WHY A TAIL IS ENOUGH is a fact about the status derivation, not about this
+   * query, so the caller checks it: see `projectionTailIsSelfContained`. In short,
+   * both passes of `deriveSessionStatusFromProjection` stop at the most recent
+   * non-steered `prompt`, so a tail reaching back past one answers identically to
+   * the whole slice. A tail that does NOT reach one proves nothing, and the caller
+   * falls back to the full read.
+   *
+   * Ordering note: the LIMIT has to apply to a DESCENDING scan or it would return
+   * the OLDEST `limit` events — the same cost, and the wrong half of the log. The
+   * rows are reversed here so callers still see ascending `seq`, which is what
+   * both passes of the derivation assume.
+   */
+  async listRecentSessionProjectionEvents(
+    sessionId: string,
+    limit: number,
+  ): Promise<SequencedEvent[]> {
+    const rows = await this.db
+      .selectFrom('events')
+      .select(['id', 'payload', 'created_at'])
+      .where('session_id', '=', sessionId)
+      .where('type', 'in', [...SESSION_PROJECTION_EVENT_TYPES])
+      .orderBy('id', 'desc')
+      .limit(limit)
+      .execute();
+    const events: SequencedEvent[] = [];
+    for (const row of rows.reverse()) {
+      const parsed = parseAgentEvent(row.payload);
+      // Same contract as the batched slice read below: a payload that does not
+      // parse is a corrupted log, not a row to skip past.
+      if (!parsed.success) {
+        throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
+      }
+      events.push({ seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data });
+    }
+    return events;
+  }
+
+  /**
+   * Whether this session's log holds a `task` event ANYWHERE.
+   *
+   * The companion to {@link listRecentSessionProjectionEvents}, and the one
+   * question a tail cannot answer for itself. The activity poll gates its
+   * log-derived busy state on a task lifecycle existing at all — over the whole
+   * log, not the current turn — so a tail that reaches back far enough for the
+   * status derivation may still be short of this. Asking directly costs one
+   * lookup in `events_session_id_type_id_idx` and fetches no payload, which is
+   * the entire reason the tail is worth reading in the first place.
+   *
+   * `limit(1)` is the point: this is an existence question, and counting the
+   * matching rows instead would restore exactly the full-log scan being avoided.
+   */
+  async sessionHasTaskLifecycleEvent(sessionId: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('events')
+      .select('id')
+      .where('session_id', '=', sessionId)
+      .where('type', '=', 'task')
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
   /** The slice read shared by {@link listSessionProjectionFacts} and
    *  {@link listSessionProjectionEvents}: appends each session's projected events,
    *  in `seq` order, to the array already sitting under its id. */

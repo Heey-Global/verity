@@ -1772,6 +1772,38 @@ describe('EventStore — session projection facts', () => {
     expect(await ctx.store.listSessionProjectionEvents([])).toEqual(new Map());
   });
 
+  it('reads the newest projection events but returns them in ascending order', async () => {
+    const written: AgentEvent[] = [
+      { t: 'prompt', text: 'first' },
+      { t: 'text', delta: 'not projected' },
+      { t: 'status', state: 'running' },
+      { t: 'prompt', text: 'last' },
+      {
+        t: 'result',
+        usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        stopReason: 'end_turn',
+      },
+    ];
+    for (const event of written) await ctx.store.appendEvent('s1', event);
+
+    const full = (await ctx.store.listSessionProjectionEvents(['s1'])).get('s1') ?? [];
+    const tail = await ctx.store.listRecentSessionProjectionEvents('s1', 2);
+    expect(tail).toEqual(full.slice(-2));
+    expect(tail.map(({ seq }) => seq)).toEqual(
+      [...tail.map(({ seq }) => seq)].sort((a, b) => a - b),
+    );
+  });
+
+  it('checks for a task lifecycle without requiring it to be in the recent tail', async () => {
+    await ctx.store.appendEvent('s1', { t: 'task', id: 'old', phase: 'started' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'new turn' });
+    await ctx.store.appendEvent('s2', { t: 'prompt', text: 'no task' });
+
+    expect(await ctx.store.sessionHasTaskLifecycleEvent('s1')).toBe(true);
+    expect(await ctx.store.sessionHasTaskLifecycleEvent('s2')).toBe(false);
+    expect(await ctx.store.sessionHasTaskLifecycleEvent('missing')).toBe(false);
+  });
+
   it('fails the whole list rather than projecting from a log it could not read', async () => {
     // Batching widened the blast radius on purpose: one bad row now fails every
     // requested session instead of one. Events are validated on the way IN, so a
