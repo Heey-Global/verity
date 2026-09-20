@@ -121,6 +121,7 @@ import { z, ZodError } from 'zod';
 import {
   deriveSessionStatusFromProjection,
   permissionEventAwaitsInput,
+  projectionTailIsSelfContained,
   type SessionStatus,
 } from './status.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
@@ -1432,6 +1433,28 @@ const MAX_TURN_ATTACHMENT_BYTES = 50_000_000;
 // capped at 2 MB by its route) are not the thing that has to opt out, and far
 // below what an upload route needs — those declare their own.
 const DEFAULT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+// How many projection events `GET /sessions/:id/activity` reads before falling
+// back to the full slice. Not a correctness bound — `activityProjection` only
+// accepts a tail that provably answers like the whole log — so this trades how
+// often the fallback runs against what a tail costs when it does not. A turn
+// emitting more than this many `task`/`status`/`permission` events is rare; a
+// session whose LOG is longer than this is the ordinary case, and the one the
+// bound exists for.
+const ACTIVITY_PROJECTION_TAIL = 200;
+
+/** The log-derived half of an activity poll: the events the status derivation
+ *  runs over, and whether the session has a task lifecycle at all. */
+interface ActivityProjection {
+  events: AgentEvent[];
+  hasTaskLifecycle: boolean;
+}
+
+/** What a busy session contributes: the conductor already said it is running, so
+ *  the log is never read. Frozen — it is shared across every such poll. */
+const EMPTY_ACTIVITY_PROJECTION: ActivityProjection = Object.freeze({
+  events: [],
+  hasTaskLifecycle: false,
+});
 const DEFAULT_MEETING_AUDIO_STREAM_BYTES = 500_000_000;
 // The streamed upload route acknowledges first; transcription of a two-hour
 // recording is allowed to continue server-side without an HTTP request deadline.
@@ -4264,6 +4287,52 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         summarizeSessionWithFacts(session, facts.get(session.sessionId) ?? emptyProjectionFacts()),
       ),
     );
+  };
+
+  /**
+   * What `GET /sessions/:id/activity` needs out of the log, read as a bounded
+   * tail wherever that is provably enough.
+   *
+   * This is the hottest read in the server — every 1.5 s for every idle session —
+   * and it used to hydrate the session's ENTIRE projection slice to answer one
+   * question about the end of it. Measured on a seeded log the slice runs ~1.6 KB
+   * per event, so an idle 800-prompt session cost ~50 MB a minute. Nothing keeps
+   * the objects, but V8 does not hand the peak back to the OS, so the churn shows
+   * up as resident memory that never falls.
+   *
+   * The tail is only accepted when it answers identically to the full slice, and
+   * `projectionTailIsSelfContained` is where that argument lives. Two ways it can
+   * be enough: the tail reaches back past a non-steered `prompt` (nothing earlier
+   * is observable), or it is short of `ACTIVITY_PROJECTION_TAIL` and is therefore
+   * the whole slice already. Otherwise this falls back to the full read — a
+   * single turn can emit an unbounded run of `task` and `permission` events, and
+   * being slow on one is better than being wrong on it.
+   */
+  const activityProjection = async (id: string): Promise<ActivityProjection> => {
+    const tail = await deps.eventStore.listRecentSessionProjectionEvents(
+      id,
+      ACTIVITY_PROJECTION_TAIL,
+    );
+    const events = tail.map((event) => event.event);
+    // Short of the limit means the query ran out of rows, not out of budget.
+    const truncated = tail.length === ACTIVITY_PROJECTION_TAIL;
+    if (truncated && !projectionTailIsSelfContained(events)) {
+      const full = ((await deps.eventStore.listSessionProjectionEvents([id])).get(id) ?? []).map(
+        (event) => event.event,
+      );
+      return { events: full, hasTaskLifecycle: full.some((event) => event.t === 'task') };
+    }
+    return {
+      events,
+      // Unlike the status derivation, this gate asks about the WHOLE log rather
+      // than the current turn, so a `task` older than the tail still counts and
+      // the tail cannot see it. Only pay for the extra lookup when the tail is
+      // genuinely short of the answer: an untruncated tail IS the whole slice,
+      // and one that already holds a `task` has answered the question itself.
+      hasTaskLifecycle:
+        events.some((event) => event.t === 'task') ||
+        (truncated && (await deps.eventStore.sessionHasTaskLifecycleEvent(id))),
+    };
   };
 
   const summarizeSession = async (session: SessionRecord): Promise<SessionSummary> => {
@@ -7330,21 +7399,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // the display name so the header reflects an auto-generated (or externally
         // renamed) title within a poll, without a remount. `branch` is still gated on
         // the branch-switching dep (a git read).
-        // The read is narrowed to the projection slice: `task` and every kind the
-        // status derivation reads are in it, and nothing else here looks at the
-        // log — so an idle session with a long transcript stops re-hydrating it
-        // once per poll. The SLICE ONLY, deliberately: this response carries
-        // neither `eventCount` nor `lastActivityAt`, and counting a whole log is
-        // the one part of the projection read that is still linear in its length.
-        const events = base.busy
-          ? []
-          : ((await deps.eventStore.listSessionProjectionEvents([id])).get(id) ?? []).map(
-              (event) => event.event,
-            );
+        // The read is narrowed to the projection slice, and then to its tail —
+        // see `activityProjection`. `task` and every kind the status derivation
+        // reads are in the slice, and nothing else here looks at the log, so an
+        // idle session with a long transcript stops re-hydrating it once per
+        // poll. The SLICE ONLY, deliberately: this response carries neither
+        // `eventCount` nor `lastActivityAt`, and counting a whole log is the one
+        // part of the projection read that is still linear in its length.
+        //
         // Log hydration exists specifically for a background task that outlived
         // conductor tracking. Neutral notices (including meeting progress) are
         // not turns and must not make an otherwise-finished session busy forever.
-        const hasTaskLifecycle = events.some((event) => event.t === 'task');
+        const { events, hasTaskLifecycle } = base.busy
+          ? EMPTY_ACTIVITY_PROJECTION
+          : await activityProjection(id);
         // `events.length` stands in for the total count, and only ever behind
         // `hasTaskLifecycle`: the count exists solely to tell an empty log (idle)
         // from one holding nothing the projection reads (running), and a slice
