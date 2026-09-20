@@ -98,7 +98,7 @@ export function ProjectKnowledge({
       setBusy(false);
     }
   };
-  const start = (kind: 'ingest' | 'check', sourceDocumentIds: string[]) => {
+  const start = (kind: KnowledgeWikiJob['kind'], sourceDocumentIds: string[]) => {
     const current = generation.current;
     void run(async () => {
       const job = await client.createKnowledgeWikiJob(projectId, {
