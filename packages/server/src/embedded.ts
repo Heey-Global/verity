@@ -1920,7 +1920,13 @@ export async function buildEmbeddedServer(
   // owns the session's permission cards — see `ServerDeps.mcpGateway`.
   const secretAuditLog = createPostgresSecretAuditLog(db);
   const gatewayRequestMacKeys = createGatewayRequestMacKeyring(db, secretCipher);
-  const mcpGatewayTokens = createMcpGatewayTokens();
+  const mcpGatewayTokens = createMcpGatewayTokens({
+    onResolveRejected: (input) => {
+      // Keep the bearer and its digest out of logs. The reason and the two already-known
+      // project identities are enough to distinguish a stale turn from a relay binding bug.
+      console.warn(`verity: MCP gateway bearer rejected ${JSON.stringify(input)}`);
+    },
+  });
   const mcpProxyTokens = createMcpGatewayTokens();
   const mcpGateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     // Trusted CLI needs the project supervisor: it is the authority that proves this bearer

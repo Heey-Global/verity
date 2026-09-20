@@ -63,6 +63,12 @@ const DEFAULT_CAPACITY = 4_096;
 
 const TOKEN_BYTES = 32;
 
+interface McpGatewayTokenRejection {
+  reason: 'malformed' | 'unknown' | 'expired' | 'project_mismatch';
+  presentedProjectId: string;
+  mintedProjectId?: string;
+}
+
 /** Bearers are matched by digest, never by comparing the presented string against a stored
  *  one: the lookup is a hash plus a map read, so it does no work proportional to how much
  *  of a guess was correct and there is no comparison to leak a prefix through. */
@@ -74,6 +80,8 @@ export function createMcpGatewayTokens(options?: {
   now?: () => number;
   ttlMs?: number;
   capacity?: number;
+  /** Internal diagnostics only. Never receives the bearer or its digest. */
+  onResolveRejected?: (input: McpGatewayTokenRejection) => void;
 }): McpGatewayTokens {
   const now = options?.now ?? (() => Date.now());
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
@@ -90,6 +98,14 @@ export function createMcpGatewayTokens(options?: {
     readonly expiresAt: number;
   }
   const byDigest = new Map<string, Entry>();
+
+  const reportRejected = (input: McpGatewayTokenRejection): void => {
+    try {
+      options?.onResolveRejected?.(input);
+    } catch {
+      // Diagnostics must never change whether a bearer resolves.
+    }
+  };
 
   const purgeExpired = (instant: number): void => {
     for (const [digest, entry] of byDigest) {
@@ -115,17 +131,35 @@ export function createMcpGatewayTokens(options?: {
     },
 
     resolve({ projectId, token }) {
-      if (token === '' || token.length > 512) return undefined;
+      if (token === '' || token.length > 512) {
+        reportRejected({ reason: 'malformed', presentedProjectId: projectId });
+        return undefined;
+      }
       const instant = now();
       const entry = byDigest.get(tokenDigest(token));
-      if (entry === undefined) return undefined;
+      if (entry === undefined) {
+        reportRejected({ reason: 'unknown', presentedProjectId: projectId });
+        return undefined;
+      }
       if (entry.expiresAt <= instant) {
         purgeExpired(instant);
+        reportRejected({
+          reason: 'expired',
+          presentedProjectId: projectId,
+          mintedProjectId: entry.projectId,
+        });
         return undefined;
       }
       // The project is proved by the connection, not by the body, so a token that escaped
       // into another project's container still cannot act there.
-      if (entry.projectId !== projectId) return undefined;
+      if (entry.projectId !== projectId) {
+        reportRejected({
+          reason: 'project_mismatch',
+          presentedProjectId: projectId,
+          mintedProjectId: entry.projectId,
+        });
+        return undefined;
+      }
       return { sessionId: entry.sessionId, turnId: entry.turnId };
     },
 
