@@ -697,6 +697,11 @@ describe('SupervisorRunnerClient', () => {
     // cannot be spelled `undefined`, which a default parameter would swallow back
     // into the token below.
     bearer: string | null = 'gateway-token-1',
+    // Bearers the client retired. A refused start is the NORMAL outcome for every
+    // OpenCode turn in a project waiting for its container refresh, so the window in
+    // which its bearer stays spendable is the deploy window, not one turn — and the
+    // registry's own expiry is the only other thing closing it.
+    released: string[] = [],
   ): Promise<Error> {
     const runtime = join(dir, runtimeName);
     await mkdir(runtime, { recursive: true });
@@ -718,7 +723,12 @@ describe('SupervisorRunnerClient', () => {
         bus: new InMemoryEventBus(),
         ...(bearer === null
           ? {}
-          : { mcpGatewayTokens: { issue: () => bearer, release: () => {} } }),
+          : {
+              mcpGatewayTokens: {
+                issue: () => bearer,
+                release: (token: string) => released.push(token),
+              },
+            }),
       },
     );
     const turn = client.startTurn(
@@ -750,11 +760,14 @@ describe('SupervisorRunnerClient', () => {
   // deployment dies at start-turn and the operator reads it as a broken Server.
   it('explains an OpenCode start refused by a Sandbox older than the gateway decision', async () => {
     const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
+    const released: string[] = [];
     const error = await refusedStart(
       'stale-opencode-runtime',
       'invalid mcpGatewayToken',
       'opencode-acp',
       frames,
+      'gateway-token-1',
+      released,
     );
 
     expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
@@ -764,6 +777,11 @@ describe('SupervisorRunnerClient', () => {
     expect(error.message).toMatch(/Recreate the project container/u);
     // The supervisor's own words stay reachable; only the sentence around them is new.
     expect((error.cause as Error | undefined)?.message).toMatch(/invalid mcpGatewayToken/u);
+    // And the bearer this refused start minted is retired with it. Nothing spends it
+    // — the turn never began — but on this deployment every OpenCode turn takes this
+    // path until the container is recreated, so a refusal that kept its bearer live
+    // would leave one spendable token per failed turn for the whole deploy window.
+    expect(released).toEqual(['gateway-token-1']);
   });
 
   // The OTHER cause of the same four words, and the reason the explanation reads the
