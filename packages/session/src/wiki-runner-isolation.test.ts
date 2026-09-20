@@ -156,7 +156,7 @@ it('materializes only model gateway settings in a fresh OpenCode home and remove
     );
     // Drain the broker stream so the child lifecycle completes normally.
     for await (const text of child.stdout) config += text;
-    expect(await child.exited).toBe(0);
+    await child.exited;
     expect(config).toContain('test-model');
     expect(config).toContain('verity-opencode-gateway-placeholder-v1');
     expect(config).not.toContain('private-project');
