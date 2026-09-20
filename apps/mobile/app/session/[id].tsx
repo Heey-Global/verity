@@ -3259,7 +3259,7 @@ export function SessionChat({
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
       {workspaceFile !== null ? (
-        <View style={styles.slideDeckChip}>
+        <View style={styles.workspaceFileBar}>
           <Pressable
             style={styles.slideDeckLink}
             onPress={() => void Linking.openURL(workspaceFile.webViewLink).catch(() => undefined)}
@@ -8627,18 +8627,16 @@ const styles = StyleSheet.create((theme) => ({
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
   },
-  slideDeckChip: {
+  workspaceFileBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
-    marginHorizontal: theme.spacing.md,
-    marginBottom: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    minHeight: 40,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
   slideDeckLink: {
