@@ -25,7 +25,7 @@ describe('project runtime deployment', () => {
   it('has no deployment switch for the always-on Dev Server runtime', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
     expect(verityEnvironment(compose).has('VERITY_ENABLE_PROJECT_RUNTIME')).toBe(false);
-    expect(await readFile('packages/server/src/main.ts', 'utf8')).toContain(
+    expect(await readFile('packages/server/src/server-main.ts', 'utf8')).toContain(
       'enableProjectRuntime: true',
     );
   });

@@ -85,6 +85,9 @@ export default defineConfig({
         '**/testing.ts',
         'packages/mobile/**',
         'packages/server/src/main.ts',
+        'packages/server/src/server-main.ts',
+        'packages/server/src/managed-gateway-main.ts',
+        'packages/server/src/managed-updater-main.ts',
         // Runs only as the bundled supervisor child process. Its behavior is
         // exercised by runner-supervisor-feature.test.ts, but V8 coverage from
         // that separate process cannot be attributed to the Vitest process.

@@ -14,7 +14,7 @@ import type { AddressInfo, Socket } from 'node:net';
 import { dirname } from 'node:path';
 import type { Duplex } from 'node:stream';
 
-import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from '../mcp-gateway.js';
+import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from '../mcp-gateway-timeout.js';
 import {
   MANAGED_CLIENT_IDENTITY_HEADER,
   signManagedClientIdentity,

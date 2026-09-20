@@ -1956,7 +1956,7 @@ describe('GitHub-hosted runner boundary', () => {
     //
     // Read from `main.ts` rather than assumed: were the requirement ever gated
     // again, this guard is the thing to revisit, not something to skip past.
-    const main = readFileSync('packages/server/src/main.ts', 'utf8');
+    const main = readFileSync('packages/server/src/server-main.ts', 'utf8');
     expect(
       main,
       'the Server no longer requires the runtime unconditionally; re-derive this guard',
@@ -2389,7 +2389,7 @@ describe('live cutover smoke daemon guard', () => {
   // Both sides are read out of the sources here rather than restated, because a
   // restated list is exactly what was already in agreement when this broke.
   it('gives the hand-built deployment every variable the Server refuses to start without', () => {
-    const main = readFileSync('packages/server/src/main.ts', 'utf8');
+    const main = readFileSync('packages/server/src/server-main.ts', 'utf8');
     // A local read from `process.env.NAME` followed by its unconditional falsy
     // guard. Keep formatting and optional trimming out of the extraction, while
     // excluding paired-option validation such as "key without certificate" — in

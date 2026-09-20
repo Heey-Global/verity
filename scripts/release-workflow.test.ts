@@ -372,7 +372,7 @@ describe('multi-architecture runtime image publication', () => {
         String(architecture),
       ),
     );
-    const nodeSource = readFileSync('packages/server/src/main.ts', 'utf8');
+    const nodeSource = readFileSync('packages/server/src/server-main.ts', 'utf8');
     const nodeArchitectures = new Set(
       [...nodeSource.matchAll(/^\s+case '[^']+':\n\s+return '([^']+)';$/gmu)].map(
         ([, architecture]) => architecture,

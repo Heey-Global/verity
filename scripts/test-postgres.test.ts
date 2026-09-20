@@ -458,7 +458,7 @@ describe('the repo devcontainer and this module agree', () => {
       read('packages/server/src/sandbox-artifacts.ts'),
     )?.[1];
     const tag = /const DEFAULT_SANDBOX_IMAGE_TAG = `\$\{SANDBOX_IMAGE_REPO\}:([^`]+)`/u.exec(
-      read('packages/server/src/main.ts'),
+      read('packages/server/src/server-main.ts'),
     )?.[1];
     expect(repo).toBeDefined();
     expect(tag).toBeDefined();
