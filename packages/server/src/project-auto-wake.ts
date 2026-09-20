@@ -6,7 +6,11 @@ export async function ensureProjectSandboxReadyForTurn(input: {
   getProject: (projectId: string) => Promise<ProjectRecord | undefined>;
   canWait: boolean;
   waitingOn: (message: string) => void;
-  ensureAwake?: (projectId: string) => Promise<ProjectRecord>;
+  ensureAwake?: (
+    projectId: string,
+    requestingSessionIds?: ReadonlySet<string>,
+  ) => Promise<ProjectRecord>;
+  requestingSessionIds?: ReadonlySet<string>;
 }): Promise<ProjectRecord> {
   const current = (await input.getProject(input.project.id)) ?? input.project;
   if (current.state === 'active') return current;
@@ -19,7 +23,7 @@ export async function ensureProjectSandboxReadyForTurn(input: {
   input.waitingOn(
     'The project Sandbox is sleeping. Keeping the turn queued while Verity wakes it securely.',
   );
-  const awake = await input.ensureAwake(current.id);
+  const awake = await input.ensureAwake(current.id, input.requestingSessionIds);
   if (awake.state !== 'active') throw new Error(`project Sandbox wake ended in ${awake.state}`);
   return awake;
 }

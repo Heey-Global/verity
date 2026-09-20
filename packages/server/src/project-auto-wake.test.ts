@@ -10,6 +10,7 @@ describe('project Sandbox automatic wake', () => {
   it('keeps a foreground turn queued until the sleeping project is active', async () => {
     const waitingOn = vi.fn();
     const ensureAwake = vi.fn(async () => project('active'));
+    const requestingSessionIds = new Set(['session-1']);
 
     await expect(
       ensureProjectSandboxReadyForTurn({
@@ -18,11 +19,12 @@ describe('project Sandbox automatic wake', () => {
         canWait: true,
         waitingOn,
         ensureAwake,
+        requestingSessionIds,
       }),
     ).resolves.toMatchObject({ state: 'active' });
 
     expect(waitingOn).toHaveBeenCalledWith(expect.stringContaining('Keeping the turn queued'));
-    expect(ensureAwake).toHaveBeenCalledOnce();
+    expect(ensureAwake).toHaveBeenCalledWith('p1', requestingSessionIds);
   });
 
   it('joins a wake that started before the foreground turn reached readiness', async () => {
@@ -38,7 +40,7 @@ describe('project Sandbox automatic wake', () => {
       }),
     ).resolves.toMatchObject({ state: 'active' });
 
-    expect(ensureAwake).toHaveBeenCalledWith('p1');
+    expect(ensureAwake).toHaveBeenCalledWith('p1', undefined);
   });
 
   it('keeps background resolution fail-fast instead of waking a project', async () => {

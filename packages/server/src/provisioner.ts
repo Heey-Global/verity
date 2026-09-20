@@ -1394,7 +1394,10 @@ export interface Provisioner {
   /** Restart a retained Sandbox with freshly issued authority. */
   wakeProject?(projectId: string): Promise<ProjectRecord>;
   /** Readiness gate used by turns and Agent Loops; concurrent callers share one wake. */
-  ensureProjectSandboxAwake?(projectId: string): Promise<ProjectRecord>;
+  ensureProjectSandboxAwake?(
+    projectId: string,
+    requestingSessionIds?: ReadonlySet<string>,
+  ): Promise<ProjectRecord>;
   /** Recreate only the project container using the existing clone path.
    * Does not fetch, reset, delete, or otherwise mutate the project worktree. */
   recreateContainer?(projectId: string, opts?: RecreateContainerOptions): Promise<ProjectRecord>;
@@ -2534,7 +2537,11 @@ export class ProvisionerImpl implements Provisioner {
     );
   }
 
-  async withProjectExclusiveMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+  async withProjectExclusiveMutation<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    exceptSessionIds?: ReadonlySet<string>,
+  ): Promise<T> {
     if (this.turnSandboxRepairs.has(projectId) || this.inFlightProvisions.has(projectId)) {
       throw new ProvisioningError(`project ${projectId} already has a mutation in progress`);
     }
@@ -2552,7 +2559,7 @@ export class ProvisionerImpl implements Provisioner {
       if ((this.projectSandboxActivities.get(projectId) ?? 0) > 0) {
         throw new ProvisioningError(`project ${projectId} has a turn in flight`);
       }
-      if (this.projectBusyProbe && (await this.projectBusyProbe(projectId))) {
+      if (this.projectBusyProbe && (await this.projectBusyProbe(projectId, exceptSessionIds))) {
         throw new ProvisioningError(`project ${projectId} has a turn in flight`);
       }
       return await mutation();
@@ -2743,7 +2750,10 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
-  async ensureProjectSandboxAwake(projectId: string): Promise<ProjectRecord> {
+  async ensureProjectSandboxAwake(
+    projectId: string,
+    requestingSessionIds?: ReadonlySet<string>,
+  ): Promise<ProjectRecord> {
     this.markProjectSandboxActivity(projectId);
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) throw new ProvisioningError(`project ${projectId} not found`);
@@ -2751,14 +2761,17 @@ export class ProvisionerImpl implements Provisioner {
     if (project.state !== 'sleeping' && !this.projectWakeAttempts.has(projectId)) {
       throw new ProvisioningError(`project ${projectId} is ${project.state}`);
     }
-    return this.wakeProject(projectId);
+    return this.wakeProject(projectId, requestingSessionIds);
   }
 
-  async wakeProject(projectId: string): Promise<ProjectRecord> {
+  async wakeProject(
+    projectId: string,
+    requestingSessionIds?: ReadonlySet<string>,
+  ): Promise<ProjectRecord> {
     this.markProjectSandboxActivity(projectId);
     const existing = this.projectWakeAttempts.get(projectId);
     if (existing !== undefined) return existing;
-    const attempt = this.wakeProjectOnce(projectId);
+    const attempt = this.wakeProjectOnce(projectId, requestingSessionIds);
     this.projectWakeAttempts.set(projectId, attempt);
     try {
       return await attempt;
@@ -2769,156 +2782,163 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  private async wakeProjectOnce(projectId: string): Promise<ProjectRecord> {
+  private async wakeProjectOnce(
+    projectId: string,
+    requestingSessionIds?: ReadonlySet<string>,
+  ): Promise<ProjectRecord> {
     const startedAt = Date.now();
     try {
-      const result = await this.withProjectExclusiveMutation(projectId, async () => {
-        const project = await this.opts.store.getProject(projectId);
-        if (project === undefined) throw new ProvisioningError('project gone mid-wake');
-        if (project.state !== 'sleeping' || project.sleepCompatibilityFingerprint == null) {
-          throw new ProvisioningError(`project ${projectId} is not sleeping`);
-        }
-        if (this.opts.projectRelay.reactivate === undefined) {
-          throw new ProvisioningError('project relay does not support wake');
-        }
-        const reactivateRelay = this.opts.projectRelay.reactivate.bind(this.opts.projectRelay);
-        const sleepRelay = this.opts.projectRelay.sleep?.bind(this.opts.projectRelay);
-        await this.opts.store.updateProjectSleepState(project.id, 'waking', {
-          sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
-          sleepingSince: project.sleepingSince ?? null,
-          wakeStartedAt: new Date(),
-        });
-        const inspect = await this.opts.docker
-          .inspectContainer(project.containerName)
-          .catch(() => null);
-        const generation = inspect === null ? undefined : containerGenerationOf(inspect);
-        const compatible =
-          inspect !== null &&
-          !inspect.running &&
-          inspect.labels?.[PROJECT_ID_LABEL] === project.id &&
-          generation !== undefined &&
-          sandboxSleepCompatibilityFingerprint(inspect) === project.sleepCompatibilityFingerprint;
-        if (!compatible) {
-          // The retained object is no longer the exact Sandbox we put to sleep.
-          // Reuse the established replacement path rather than starting unknown
-          // Docker state or trying to repair its mounts in place.
-          return this.recreateContainerOnce(project.id, { confirmWarnings: true });
-        }
+      const result = await this.withProjectExclusiveMutation(
+        projectId,
+        async () => {
+          const project = await this.opts.store.getProject(projectId);
+          if (project === undefined) throw new ProvisioningError('project gone mid-wake');
+          if (project.state !== 'sleeping' || project.sleepCompatibilityFingerprint == null) {
+            throw new ProvisioningError(`project ${projectId} is not sleeping`);
+          }
+          if (this.opts.projectRelay.reactivate === undefined) {
+            throw new ProvisioningError('project relay does not support wake');
+          }
+          const reactivateRelay = this.opts.projectRelay.reactivate.bind(this.opts.projectRelay);
+          const sleepRelay = this.opts.projectRelay.sleep?.bind(this.opts.projectRelay);
+          await this.opts.store.updateProjectSleepState(project.id, 'waking', {
+            sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
+            sleepingSince: project.sleepingSince ?? null,
+            wakeStartedAt: new Date(),
+          });
+          const inspect = await this.opts.docker
+            .inspectContainer(project.containerName)
+            .catch(() => null);
+          const generation = inspect === null ? undefined : containerGenerationOf(inspect);
+          const compatible =
+            inspect !== null &&
+            !inspect.running &&
+            inspect.labels?.[PROJECT_ID_LABEL] === project.id &&
+            generation !== undefined &&
+            sandboxSleepCompatibilityFingerprint(inspect) === project.sleepCompatibilityFingerprint;
+          if (!compatible) {
+            // The retained object is no longer the exact Sandbox we put to sleep.
+            // Reuse the established replacement path rather than starting unknown
+            // Docker state or trying to repair its mounts in place.
+            return this.recreateContainerOnce(project.id, { confirmWarnings: true });
+          }
 
-        let relayAwake = false;
-        try {
-          const activation = await reactivateRelay(this.relayBinding(project, generation));
-          relayAwake = true;
-          if (this.opts.gitSecretRoot !== undefined) {
-            const mountedDestinations = new Set(
-              (inspect.mounts ?? []).map((mount) => mount.destination).filter(Boolean),
-            );
-            const oldSigningDigest = inspect.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL];
-            if (oldSigningDigest !== undefined) {
-              rewriteMountedSecretFile(
-                join(this.opts.gitSecretRoot, 'git', `signing_broker_token.${oldSigningDigest}`),
-                activation.signingCapability,
-                0o644,
+          let relayAwake = false;
+          try {
+            const activation = await reactivateRelay(this.relayBinding(project, generation));
+            relayAwake = true;
+            if (this.opts.gitSecretRoot !== undefined) {
+              const mountedDestinations = new Set(
+                (inspect.mounts ?? []).map((mount) => mount.destination).filter(Boolean),
               );
+              const oldSigningDigest = inspect.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL];
+              if (oldSigningDigest !== undefined) {
+                rewriteMountedSecretFile(
+                  join(this.opts.gitSecretRoot, 'git', `signing_broker_token.${oldSigningDigest}`),
+                  activation.signingCapability,
+                  0o644,
+                );
+              }
+              if (mountedDestinations.has(GH_TOKEN_CAPABILITY_FILE)) {
+                rewriteMountedSecretFile(
+                  join(this.opts.gitSecretRoot, 'git', `gh_token_capability.${project.id}`),
+                  activation.githubCapability,
+                  0o644,
+                );
+              }
+              if (
+                this.opts.claudeEgressIdentity !== undefined &&
+                mountedDestinations.has(CLAUDE_EGRESS_KEY_FILE)
+              ) {
+                const material = await this.opts.claudeEgressIdentity.sandboxMaterial(project.id);
+                rewriteMountedSecretFile(
+                  join(this.opts.gitSecretRoot, 'claude-egress', `egress_ca.${project.id}.crt`),
+                  material.caCertPem,
+                  0o644,
+                );
+                rewriteMountedSecretFile(
+                  join(this.opts.gitSecretRoot, 'claude-egress', `egress_client.${project.id}.crt`),
+                  material.clientCertPem,
+                  0o644,
+                );
+                const keyPath = join(
+                  this.opts.gitSecretRoot,
+                  'claude-egress',
+                  `egress_client.${project.id}.key`,
+                );
+                rewriteMountedSecretFile(keyPath, material.clientKeyPem, 0o600);
+                (this.opts.chownRunnerFile ?? defaultChownRunnerFile)(keyPath, {
+                  uid: this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID,
+                  gid: this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID,
+                });
+              }
             }
-            if (mountedDestinations.has(GH_TOKEN_CAPABILITY_FILE)) {
-              rewriteMountedSecretFile(
-                join(this.opts.gitSecretRoot, 'git', `gh_token_capability.${project.id}`),
-                activation.githubCapability,
-                0o644,
-              );
-            }
-            if (
+            await this.opts.docker.startContainer(inspect.id);
+            const running = await this.opts.docker.inspectContainer(project.containerName);
+            if (!running.running) throw new Error('Docker did not report the Sandbox as running');
+            await this.opts.onContainerStarted?.(project);
+
+            const runnerRuntimePath =
+              this.opts.runnerSupervisor === true && this.opts.dataVolumeRoot !== undefined
+                ? join(this.opts.dataVolumeRoot, 'runners', project.id)
+                : undefined;
+            const connectorEnabled =
               this.opts.claudeEgressIdentity !== undefined &&
-              mountedDestinations.has(CLAUDE_EGRESS_KEY_FILE)
+              this.opts.claudeConnectorPort !== undefined &&
+              this.opts.gitSecretRoot !== undefined;
+            if (
+              (runnerRuntimePath !== undefined || connectorEnabled) &&
+              this.opts.dockerHostForBuild
             ) {
-              const material = await this.opts.claudeEgressIdentity.sandboxMaterial(project.id);
-              rewriteMountedSecretFile(
-                join(this.opts.gitSecretRoot, 'claude-egress', `egress_ca.${project.id}.crt`),
-                material.caCertPem,
-                0o644,
-              );
-              rewriteMountedSecretFile(
-                join(this.opts.gitSecretRoot, 'claude-egress', `egress_client.${project.id}.crt`),
-                material.clientCertPem,
-                0o644,
-              );
-              const keyPath = join(
-                this.opts.gitSecretRoot,
-                'claude-egress',
-                `egress_client.${project.id}.key`,
-              );
-              rewriteMountedSecretFile(keyPath, material.clientKeyPem, 0o600);
-              (this.opts.chownRunnerFile ?? defaultChownRunnerFile)(keyPath, {
-                uid: this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID,
-                gid: this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID,
+              await this.containerCommand({
+                containerName: project.containerName,
+                dockerHost: this.opts.dockerHostForBuild,
+                user:
+                  runnerRuntimePath !== undefined
+                    ? `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`
+                    : `${String(this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID)}:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
+                workdir: runnerRuntimePath !== undefined ? RUNNER_RUNTIME_TARGET : '/',
+                command:
+                  runnerRuntimePath !== undefined
+                    ? 'verity-runner-stack-start'
+                    : 'verity-egress-connector-start --standalone',
               });
             }
-          }
-          await this.opts.docker.startContainer(inspect.id);
-          const running = await this.opts.docker.inspectContainer(project.containerName);
-          if (!running.running) throw new Error('Docker did not report the Sandbox as running');
-          await this.opts.onContainerStarted?.(project);
-
-          const runnerRuntimePath =
-            this.opts.runnerSupervisor === true && this.opts.dataVolumeRoot !== undefined
-              ? join(this.opts.dataVolumeRoot, 'runners', project.id)
-              : undefined;
-          const connectorEnabled =
-            this.opts.claudeEgressIdentity !== undefined &&
-            this.opts.claudeConnectorPort !== undefined &&
-            this.opts.gitSecretRoot !== undefined;
-          if (
-            (runnerRuntimePath !== undefined || connectorEnabled) &&
-            this.opts.dockerHostForBuild
-          ) {
-            await this.containerCommand({
-              containerName: project.containerName,
-              dockerHost: this.opts.dockerHostForBuild,
-              user:
-                runnerRuntimePath !== undefined
-                  ? `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`
-                  : `${String(this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID)}:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
-              workdir: runnerRuntimePath !== undefined ? RUNNER_RUNTIME_TARGET : '/',
-              command:
-                runnerRuntimePath !== undefined
-                  ? 'verity-runner-stack-start'
-                  : 'verity-egress-connector-start --standalone',
+            return (await this.opts.store.updateProjectSleepState(project.id, 'active', {
+              sleepCompatibilityFingerprint: null,
+              sleepingSince: null,
+              wakeStartedAt: null,
+            })) as ProjectRecord;
+          } catch (cause) {
+            const cleanup = await Promise.allSettled([
+              this.opts.docker.stopContainer(project.containerName),
+              ...(relayAwake && sleepRelay !== undefined ? [sleepRelay(project.id)] : []),
+              ...(this.opts.claudeEgressIdentity === undefined
+                ? []
+                : [this.opts.claudeEgressIdentity.revokeProject(project.id)]),
+            ]);
+            const cleanupFailures: unknown[] = [];
+            for (const result of cleanup) {
+              if (result.status === 'rejected') cleanupFailures.push(result.reason as unknown);
+            }
+            if (cleanupFailures.length > 0) {
+              const message = `project wake rollback failed: ${cleanupFailures.map(failureMessage).join('; ')}`;
+              await this.opts.store.updateProjectState(project.id, 'failed', message);
+              throw new ProvisioningError(
+                message,
+                new AggregateError([cause, ...cleanupFailures], message, { cause }),
+              );
+            }
+            await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
+              sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
+              sleepingSince: project.sleepingSince ?? new Date(),
+              wakeStartedAt: null,
             });
+            throw new ProvisioningError(`project wake failed: ${failureMessage(cause)}`, cause);
           }
-          return (await this.opts.store.updateProjectSleepState(project.id, 'active', {
-            sleepCompatibilityFingerprint: null,
-            sleepingSince: null,
-            wakeStartedAt: null,
-          })) as ProjectRecord;
-        } catch (cause) {
-          const cleanup = await Promise.allSettled([
-            this.opts.docker.stopContainer(project.containerName),
-            ...(relayAwake && sleepRelay !== undefined ? [sleepRelay(project.id)] : []),
-            ...(this.opts.claudeEgressIdentity === undefined
-              ? []
-              : [this.opts.claudeEgressIdentity.revokeProject(project.id)]),
-          ]);
-          const cleanupFailures: unknown[] = [];
-          for (const result of cleanup) {
-            if (result.status === 'rejected') cleanupFailures.push(result.reason as unknown);
-          }
-          if (cleanupFailures.length > 0) {
-            const message = `project wake rollback failed: ${cleanupFailures.map(failureMessage).join('; ')}`;
-            await this.opts.store.updateProjectState(project.id, 'failed', message);
-            throw new ProvisioningError(
-              message,
-              new AggregateError([cause, ...cleanupFailures], message, { cause }),
-            );
-          }
-          await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
-            sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
-            sleepingSince: project.sleepingSince ?? new Date(),
-            wakeStartedAt: null,
-          });
-          throw new ProvisioningError(`project wake failed: ${failureMessage(cause)}`, cause);
-        }
-      });
+        },
+        requestingSessionIds,
+      );
       this.observeSandboxLifecycle(projectId, 'wake', 'succeeded', startedAt);
       return result;
     } catch (error) {
