@@ -724,6 +724,14 @@ than as a fraction of Docker's nominal 1024: runc maps 512 to 20 against that
 default of 100. Set it to `0` to opt out and return to one flat weight for
 everything.
 
+The value is passed through as given, so choose it from that conversion rather
+than by feel. Useful settings sit between `2` and roughly `2000`; at about `2600`
+a sandbox draws level with the control plane and above it outranks it, which is
+the opposite of the point. Very large values are worse than merely inverted —
+cgroup v2 caps `cpu.weight` at 10000, and a number that converts past the cap is
+rejected when the container is created, so a fat-fingered extra digit fails
+provisioning rather than quietly doing nothing.
+
 The weight is applied when a sandbox container is **created**, and a changed
 weight is not itself drift: the reconciler compares the memory, swap, CPU and PID
 ceilings, so a sandbox that already exists keeps whatever weight it was created
