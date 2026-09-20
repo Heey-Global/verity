@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/Heey-Global/verity/compare/v1.2.0...v1.3.0) (2026-09-20)
+
+
+### Features
+
+* **knowledge:** add managed project wikis ([#539](https://github.com/Heey-Global/verity/issues/539)) ([f9476a3](https://github.com/Heey-Global/verity/commit/f9476a3b79850d911d2c63bcf363189d450d0f4b))
+* **server:** add operator-only memory diagnostics route ([#551](https://github.com/Heey-Global/verity/issues/551)) ([6f9db14](https://github.com/Heey-Global/verity/commit/6f9db14d006a7ff2b2141eb25e441af55d6644fc))
+
+
+### Bug Fixes
+
+* **server:** make sandbox idle sleep unconditional ([#549](https://github.com/Heey-Global/verity/issues/549)) ([c4bc3c7](https://github.com/Heey-Global/verity/commit/c4bc3c758c48fb42e27a1509024b8f2dc6c1441f))
+
 ## [1.2.0](https://github.com/Heey-Global/verity/compare/v1.1.0...v1.2.0) (2026-09-20)
 
 
