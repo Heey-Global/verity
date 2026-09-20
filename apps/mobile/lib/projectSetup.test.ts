@@ -55,7 +55,9 @@ describe('project setup presentation', () => {
     } as ProjectRecord;
 
     expect(projectSetupStatus(sleepingProject)).toMatchObject({ label, intent });
-    expect(projectOverviewSetupLabel(sleepingProject)).toBe(label);
+    expect(projectOverviewSetupLabel(sleepingProject)).toBe(
+      lifecycleState === 'sleeping' ? undefined : label,
+    );
   });
 
   it('keeps pending setup live on the overview until setup is completed', () => {

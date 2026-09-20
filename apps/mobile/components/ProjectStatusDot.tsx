@@ -10,10 +10,18 @@ import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { WorkingDot } from './WorkingDot';
+import { Icon } from './Icon';
 
 export function ProjectStatusDot({ badge, size = 8 }: { badge: ProjectBadge; size?: number }) {
   const { theme } = useUnistyles();
   if (badge.pulsing) return <WorkingDot size={size + 1} label={badge.label} />;
+  if (badge.symbol === 'sleep') {
+    return (
+      <View accessibilityRole="image" accessibilityLabel={badge.label}>
+        <Icon name="moon" size={size + 5} color={theme.colors.tone.idle} />
+      </View>
+    );
+  }
   const color =
     badge.tone === 'done'
       ? theme.colors.tone.done

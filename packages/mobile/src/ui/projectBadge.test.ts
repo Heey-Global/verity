@@ -43,6 +43,15 @@ describe('projectBadge', () => {
     },
   );
 
+  it('uses a compact sleep symbol for a sleeping project', () => {
+    expect(projectBadge({ state: 'active', lifecycleState: 'sleeping' })).toMatchObject({
+      label: 'Sleeping',
+      symbol: 'sleep',
+      tone: 'idle',
+      pulsing: false,
+    });
+  });
+
   it('reports an active project with an image rebuild as working', () => {
     expect(
       projectBadge({
