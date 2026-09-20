@@ -2056,7 +2056,7 @@ function DevServersSection({
           where React Native's does not: a Modal is its own host view, and only
           React context reaches across it.
         */}
-        <KeyboardAvoidingView style={styles.modalOverlay} behavior="padding">
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior="padding" automaticOffset>
           <View style={styles.modalCard}>
             <Text style={styles.sectionHeader}>
               {editing === 'new' ? 'Add Dev Server' : 'Edit Dev Server'}

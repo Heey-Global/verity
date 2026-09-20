@@ -828,7 +828,14 @@ function ReviewSheet({
         host view; the controller's reads the provider through React context,
         which does cross that boundary.
       */}
-      <KeyboardAvoidingView style={styles.sheetBackdrop} behavior="padding">
+      <KeyboardAvoidingView
+        style={styles.sheetBackdrop}
+        behavior="padding"
+        // Measure this view's own position instead of assuming it starts at the
+        // top of the screen: inside a Modal on Android it does not, and a lift
+        // computed from the wrong origin is off by the status bar.
+        automaticOffset
+      >
         <View style={styles.sheetCard}>
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>Review issue</Text>

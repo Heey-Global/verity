@@ -48,11 +48,13 @@ function tsxFilesIn(dir: string): string[] {
  * renamed import (`ScrollView as Scroller`), a list from another package
  * (FlashList), or a container pulled from reanimated counts — while prose in a
  * comment, a module path such as `./ScrollViewHelpers`, and a type-only import
- * of `FlatListProps` do not.
+ * of `FlatListProps` do not. A clause stops at the first `;`, so a side-effect
+ * `import './ScrollViewHelpers';` cannot bleed its module path into the next
+ * statement's bindings.
  */
 const CONTAINER = /(ScrollView|FlatList|FlashList|SectionList|VirtualizedList)/;
 function mountsOwnScrollContainer(source: string): boolean {
-  const bindings = [...source.matchAll(/^\s*import\s+(?!type\b)([\s\S]*?)\sfrom\s+['"]/gm)].map(
+  const bindings = [...source.matchAll(/^\s*import\s+(?!type\b)([^;]*?)\sfrom\s+['"]/gm)].map(
     ([, clause]) => clause.replace(/\btype\s+\w+/g, ''),
   );
   return (

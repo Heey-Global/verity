@@ -29,9 +29,14 @@ function tsxFilesIn(dir: string): string[] {
 }
 
 /** What a source pulls out of `react-native` itself, with type-only specifiers
- *  dropped — `import type { KeyboardAvoidingViewProps }` costs nothing. */
+ *  dropped — `import type { KeyboardAvoidingViewProps }` costs nothing.
+ *
+ *  The clause cannot contain a `;`, which keeps a match inside one statement:
+ *  spanning them would let the neighbouring
+ *  `import { KeyboardAvoidingView } from 'react-native-keyboard-controller';`
+ *  — the very thing this file asks for — be read as a react-native import. */
 function reactNativeBindings(source: string): string {
-  return [...source.matchAll(/^\s*import\s+(?!type\b)([\s\S]*?)\sfrom\s+'react-native';/gm)]
+  return [...source.matchAll(/^\s*import\s+(?!type\b)([^;]*?)\sfrom\s+'react-native';/gm)]
     .map(([, clause]) => clause.replace(/\btype\s+\w+/g, ''))
     .join('\n');
 }
@@ -47,7 +52,9 @@ describe('keyboard handling', () => {
     // Around the navigator, not beside it: a provider that does not enclose the
     // screens leaves every keyboard-aware view in the app reading a default
     // context — rendering normally and never following the keyboard.
-    const opened = layout.indexOf('<KeyboardProvider>');
+    // Matched without the closing angle bracket so adding a prop (the Android
+    // translucency flags, say) does not fail this for the wrong reason.
+    const opened = layout.indexOf('<KeyboardProvider');
     const navigator = layout.indexOf('<Stack');
     const closed = layout.indexOf('</KeyboardProvider>');
     expect(opened).toBeGreaterThanOrEqual(0);
