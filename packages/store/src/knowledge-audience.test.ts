@@ -11,6 +11,7 @@ it('checks existing destination readers before creating or revising a Wiki page'
         repo: id,
         containerName: id,
         state: 'active',
+        overviewVisible: true,
       });
     const k = ctx.store.knowledge;
     const space = (await k.getProjectSpace('author'))!;
@@ -95,6 +96,7 @@ it('rejects source document and subfolder moves that strand existing Wiki reader
         repo: id,
         containerName: id,
         state: 'active',
+        overviewVisible: true,
       });
     const k = ctx.store.knowledge;
     const space = (await k.getProjectSpace('author'))!;

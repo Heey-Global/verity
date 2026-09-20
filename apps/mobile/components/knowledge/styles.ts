@@ -28,6 +28,19 @@ export const styles = StyleSheet.create((theme) => ({
     gap: 8,
     paddingRight: 8,
   },
+  explorerToggle: {
+    width: 28,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  explorerEntry: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   selectedRow: { backgroundColor: theme.colors.surface, borderRadius: 6 },
   entryText: { color: theme.colors.text, fontSize: 14, flex: 1 },
   toolbar: {
@@ -35,6 +48,20 @@ export const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     borderBottomWidth: 1,
     borderColor: theme.colors.border,
+  },
+  menuBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    padding: 16,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  menuCard: {
+    gap: 8,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   input: {
     color: theme.colors.text,

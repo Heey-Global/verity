@@ -10,7 +10,10 @@ it('backfills stable spaces and preserves legacy memory without adopting a user 
     const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
     const before = await migrator.migrateTo('0099_managed_knowledge');
     if (before.error) throw new Error('Migration failed', { cause: before.error });
-    await sql`insert into projects(id,owner,repo,container_name,state) values('existing','test','existing','existing','absent')`.execute(
+    await sql`insert into projects(id,owner,repo,container_name,state,overview_visible) values('existing','test','existing','existing','absent',true)`.execute(
+      ctx.db,
+    );
+    await sql`insert into projects(id,owner,repo,container_name,state) values('placeholder','test','available','available','absent')`.execute(
       ctx.db,
     );
     await sql`insert into project_settings(project_id,memory) values('existing','Preserve this legacy note')`.execute(
@@ -24,6 +27,7 @@ it('backfills stable spaces and preserves legacy memory without adopting a user 
     const store = new EventStore(ctx.db);
     const space = await store.knowledge.getProjectSpace('existing');
     expect(space).not.toBeNull();
+    expect(await store.knowledge.getProjectSpace('placeholder')).toBeNull();
     expect(space?.generalFolderId).not.toBe('user-general');
     expect(
       await ctx.db

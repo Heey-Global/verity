@@ -704,7 +704,24 @@ export class KnowledgeStore {
       .executeTakeFirst());
   }
   async listFolders(): Promise<KnowledgeFolder[]> {
-    return this.transaction((tx) => this.folders(tx));
+    return this.transaction(async (tx) => {
+      const [folders, visibleProjects] = await Promise.all([
+        this.folders(tx),
+        tx
+          .selectFrom('projects')
+          .select('id')
+          .where('hidden_at', 'is', null)
+          .where('overview_visible', '=', true)
+          .execute(),
+      ]);
+      const visibleProjectIds = new Set(visibleProjects.map((project) => project.id));
+      // Older servers created spaces for GitHub installation placeholders.
+      // Keep those rows intact in case a repository is later adopted, while
+      // excluding their whole managed tree from the user-facing library.
+      return folders.filter(
+        (folder) => folder.projectId === undefined || visibleProjectIds.has(folder.projectId),
+      );
+    });
   }
   private validateTree(folders: KnowledgeFolder[]): void {
     if (folders.length > KNOWLEDGE_MAX_FOLDERS)

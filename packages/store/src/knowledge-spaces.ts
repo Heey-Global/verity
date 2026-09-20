@@ -11,10 +11,13 @@ export async function ensureProjectKnowledgeSpace(
   await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
   const project = await tx
     .selectFrom('projects')
-    .select('hidden_at')
+    .select(['hidden_at', 'overview_visible'])
     .where('id', '=', projectId)
     .executeTakeFirst();
-  if (!project || project.hidden_at !== null) return;
+  // GitHub installation sync creates picker-only placeholder rows for every
+  // repository the App can see. They are not Verity projects until explicitly
+  // added to the overview, so they must not acquire visible Knowledge spaces.
+  if (!project || project.hidden_at !== null || project.overview_visible !== true) return;
   const general = await tx
     .selectFrom('knowledge_folders')
     .select('id')

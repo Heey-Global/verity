@@ -27,6 +27,7 @@ async function setup() {
     repo: 'project',
     containerName: 'project',
     state: 'active',
+    overviewVisible: true,
   });
   const space = (await ctx.store.knowledge.getProjectSpace('project'))!;
   const source = await ctx.store.knowledge.createDocument({

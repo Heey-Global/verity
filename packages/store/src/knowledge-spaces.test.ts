@@ -18,9 +18,30 @@ async function project(id: string) {
     repo: id,
     containerName: id,
     state: 'absent',
+    overviewVisible: true,
   });
   return (await ctx.store.knowledge.getProjectSpace(id))!;
 }
+it('does not expose GitHub installation placeholders as Knowledge projects', async () => {
+  await ctx.store.upsertProject({
+    id: 'placeholder',
+    owner: 'test',
+    repo: 'available-repository',
+    containerName: 'available-repository',
+    state: 'absent',
+  });
+  expect(await ctx.store.knowledge.getProjectSpace('placeholder')).toBeNull();
+
+  const adopted = await project('adopted');
+  await ctx.db
+    .updateTable('projects')
+    .set({ overview_visible: false })
+    .where('id', '=', 'adopted')
+    .execute();
+  expect(
+    (await ctx.store.knowledge.listFolders()).some((folder) => folder.id === adopted.rootFolderId),
+  ).toBe(false);
+});
 async function session(projectId: string, sessionId: string) {
   await ctx.store.createSession({
     projectId,

@@ -17,6 +17,7 @@ it('returns an HTTP conflict for legacy memory appends after overview approval',
       repo: 'memory',
       containerName: 'memory',
       state: 'active',
+      overviewVisible: true,
     });
     await ctx.store.appendProjectMemory('p', 'Legacy note retained');
     const space = (await ctx.store.knowledge.getProjectSpace('p'))!;

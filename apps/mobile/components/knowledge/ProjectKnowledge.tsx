@@ -13,6 +13,13 @@ import { KnowledgeButton as Button } from './KnowledgeButton';
 import { KnowledgeMarkdown } from './KnowledgeMarkdown';
 import { styles } from './styles';
 
+const jobStatusLabel: Record<KnowledgeWikiJob['status'], string> = {
+  pending: 'Starting',
+  running: 'Running',
+  completed: 'Completed',
+  failed: 'Failed',
+};
+
 /** Project guidance is an approved revision, so later wiki edits cannot silently change it. */
 export function ProjectKnowledge({
   client,
@@ -67,6 +74,11 @@ export function ProjectKnowledge({
       generation.current++;
     };
   }, [client, projectId, reload, onSpace]);
+  useEffect(() => {
+    if (!jobs.some((job) => job.status === 'pending' || job.status === 'running')) return;
+    const timer = setTimeout(() => setReload((value) => value + 1), 2_000);
+    return () => clearTimeout(timer);
+  }, [jobs]);
   const run = async (action: () => Promise<void>) => {
     if (lock.current || blocked) return;
     lock.current = true;
@@ -110,58 +122,26 @@ export function ProjectKnowledge({
           {error}
         </Text>
       ) : null}
-      <View style={styles.row}>
-        {space ? (
-          <Button
-            icon="folder"
-            label="Sources"
-            onPress={() =>
-              router.push({
-                pathname: '/knowledge',
-                params: { projectId, folderId: space.sourcesFolderId },
-              })
-            }
-          />
-        ) : null}
-        {space ? (
-          <Button
-            icon="book-open"
-            label="Wiki"
-            onPress={() =>
-              router.push({
-                pathname: '/knowledge',
-                params: { projectId, folderId: space.wikiFolderId },
-              })
-            }
-          />
-        ) : null}
-        <Button
-          icon="refresh-cw"
-          label="Refresh knowledge"
-          disabled={busy || blocked}
-          onPress={() => setReload((value) => value + 1)}
-        />
-      </View>
       {overview ? (
         <View style={styles.group}>
-          <Text style={styles.muted}>Always considered in new sessions · approved version</Text>
+          <Text style={styles.muted}>Used as the project briefing for new sessions</Text>
           <Text style={styles.text}>{overview.title}</Text>
           <Button
-            label={showOverview ? 'Hide overview' : 'Read approved overview'}
+            label={showOverview ? 'Hide project briefing' : 'Read project briefing'}
             onPress={() => setShowOverview((value) => !value)}
           />
           {showOverview ? <KnowledgeMarkdown body={overview.bodyMarkdown} /> : null}
           <Button
-            label="Use legacy memory instead"
+            label="Use the previous project notes instead"
             disabled={busy || blocked}
             onPress={() =>
               Alert.alert(
-                'Project overview',
-                'Restore the preserved legacy memory as session guidance?',
+                'Project briefing',
+                'Use the project notes from Settings for new sessions instead of this Wiki page?',
                 [
                   { text: 'Cancel', style: 'cancel' },
                   {
-                    text: 'Restore legacy memory',
+                    text: 'Use previous notes',
                     onPress: () => {
                       void run(async () => {
                         await client.clearProjectKnowledgeOverview(projectId);
@@ -176,18 +156,18 @@ export function ProjectKnowledge({
         </View>
       ) : (
         <Text style={styles.muted}>
-          Legacy memory remains active until you approve a Wiki page with “Always consider”.
+          New sessions currently use the project notes from Settings.
         </Text>
       )}
       {space && document && inside(document.folderId, space.wikiFolderId) ? (
         <Button
           icon="check"
-          label="Always consider"
+          label="Use as project briefing"
           disabled={busy || blocked}
           onPress={() =>
             Alert.alert(
-              'Always consider this version?',
-              'This exact Wiki revision will guide new sessions. Later edits require approval again.',
+              'Use this page as the project briefing?',
+              'New sessions will receive this exact version. If the page changes later, you can approve the new version separately.',
               [
                 { text: 'Cancel', style: 'cancel' },
                 {
@@ -212,7 +192,7 @@ export function ProjectKnowledge({
         <>
           <View style={styles.row}>
             <Button
-              label={model ?? 'Project default model'}
+              label={model ? `Wiki model: ${model}` : 'Wiki model: project default'}
               disabled={busy || blocked}
               onPress={() => {
                 void run(async () => {
@@ -224,14 +204,14 @@ export function ProjectKnowledge({
             />
             <Button
               icon="check-circle"
-              label={document?.stale ? 'Review stale Wiki' : 'Check Wiki'}
+              label={document?.stale ? 'Review outdated Wiki page' : 'Review Wiki against Sources'}
               disabled={busy || blocked}
               onPress={() => start('check', [])}
             />
             {document && inside(document.folderId, space.sourcesFolderId) ? (
               <Button
                 icon="book-open"
-                label="Incorporate into Wiki"
+                label="Add this Source to the Wiki"
                 disabled={busy || blocked}
                 onPress={() => start('ingest', [document.id])}
               />
@@ -240,7 +220,7 @@ export function ProjectKnowledge({
           {chooseModel ? (
             <View style={styles.group}>
               <Button
-                label="Use project default"
+                label="Use the project default model"
                 onPress={() => {
                   setModel(undefined);
                   setChooseModel(false);
@@ -259,13 +239,14 @@ export function ProjectKnowledge({
             </View>
           ) : null}
           <Text style={styles.muted}>
-            Wiki work uses only this project’s Sources in a fresh session.
+            Review is read-only. It opens a separate session and reports outdated claims,
+            contradictions, missing references and broken links.
           </Text>
           {jobs.slice(0, 10).map((job) => (
             <View key={job.id} style={styles.row}>
               <Button
                 icon="message-circle"
-                label={`${job.kind === 'ingest' ? 'Wiki update' : 'Wiki check'} · ${job.status}`}
+                label={`${job.kind === 'ingest' ? 'Wiki update' : 'Wiki review'} · ${jobStatusLabel[job.status]}`}
                 onPress={() =>
                   router.push({ pathname: '/session/[id]', params: { id: job.sessionId } })
                 }
@@ -273,7 +254,7 @@ export function ProjectKnowledge({
               {job.error ? <Text style={styles.error}>{job.error}</Text> : null}
               {job.status === 'failed' ? (
                 <Button
-                  label="Retry in a new session"
+                  label="Try again"
                   disabled={busy || blocked}
                   onPress={() =>
                     start(

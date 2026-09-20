@@ -400,6 +400,17 @@ test('new folder toolbar opens a compact form and creates inside the selected fo
   await waitFor(() => expect(screen.queryByLabelText('Folder name')).toBeNull());
 });
 
+test('more folder actions open as an overlay from the toolbar', async () => {
+  const client = fake();
+  render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+  fireEvent.press(await screen.findByLabelText('More folder actions'));
+  expect(screen.getByLabelText('Rename folder')).toBeTruthy();
+  expect(screen.getByLabelText('Import source bundle')).toBeTruthy();
+  expect(screen.getByLabelText('Export Markdown bundle')).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('Close folder actions'));
+  expect(screen.queryByLabelText('Rename folder')).toBeNull();
+});
+
 async function chooseWriteAccess(name: string) {
   const alert = jest.spyOn(Alert, 'alert');
   try {
@@ -434,12 +445,13 @@ test('library folders expand and collapse without changing the library', async (
   render(<Library client={client as unknown as VerityClient} initialFolder={null} />);
   await screen.findByLabelText('Folder: Company');
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Folder: Company'));
+  fireEvent.press(screen.getByLabelText('Expand folder: Company'));
   expect(screen.getByLabelText('Folder: Engineering')).toBeTruthy();
+  expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith(undefined, undefined);
+  fireEvent.press(screen.getByLabelText('Expand folder: Engineering'));
   fireEvent.press(screen.getByLabelText('Folder: Engineering'));
   expect(await screen.findByLabelText('Standards')).toBeTruthy();
-  fireEvent.press(screen.getByLabelText('Folder: Company'));
-  fireEvent.press(screen.getByLabelText('Folder: Company'));
+  fireEvent.press(screen.getByLabelText('Collapse folder: Company'));
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
 });
 
@@ -521,9 +533,12 @@ test('wiki jobs submit only the selected own source with the selected model', as
       document={{ id: 'source', folderId: 'sources', title: 'Meeting', currentRevisionId: 'v1' }}
     />,
   );
-  fireEvent.press(await screen.findByLabelText('Project default model'));
+  expect(screen.queryByLabelText('Sources')).toBeNull();
+  expect(screen.queryByLabelText('Wiki')).toBeNull();
+  expect(screen.queryByLabelText('Refresh knowledge')).toBeNull();
+  fireEvent.press(await screen.findByLabelText('Wiki model: project default'));
   fireEvent.press(await screen.findByLabelText('provider/model'));
-  fireEvent.press(screen.getByLabelText('Incorporate into Wiki'));
+  fireEvent.press(screen.getByLabelText('Add this Source to the Wiki'));
   await waitFor(() =>
     expect(client.createKnowledgeWikiJob).toHaveBeenCalledWith('project', {
       kind: 'ingest',
@@ -531,7 +546,41 @@ test('wiki jobs submit only the selected own source with the selected model', as
       model: 'provider/model',
     }),
   );
-  expect(await screen.findByLabelText('Wiki update · pending')).toBeTruthy();
+  expect(await screen.findByLabelText('Wiki update · Starting')).toBeTruthy();
+});
+
+test('running Wiki jobs refresh their status automatically', async () => {
+  jest.useFakeTimers();
+  const pending = {
+    id: 'job',
+    projectId: 'project',
+    sessionId: 'fresh-session',
+    kind: 'check' as const,
+    status: 'running' as const,
+    sourceRevisions: [],
+    createdAt: 1,
+    error: null,
+  };
+  const client = {
+    ...managedClient(),
+    listKnowledgeWikiJobs: jest
+      .fn()
+      .mockResolvedValueOnce([pending])
+      .mockResolvedValue([{ ...pending, status: 'completed' as const }]),
+  };
+  try {
+    render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
+    await act(async () => Promise.resolve());
+    expect(screen.getByLabelText('Wiki review · Running')).toBeTruthy();
+    await act(async () => {
+      jest.advanceTimersByTime(2_000);
+      await Promise.resolve();
+    });
+    expect(screen.getByLabelText('Wiki review · Completed')).toBeTruthy();
+    expect(client.listKnowledgeWikiJobs).toHaveBeenCalledTimes(2);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test('an additional shared source never offers project Wiki ingestion', async () => {
@@ -548,9 +597,9 @@ test('an additional shared source never offers project Wiki ingestion', async ()
       }}
     />,
   );
-  await screen.findByLabelText('Check Wiki');
-  expect(screen.queryByLabelText('Incorporate into Wiki')).toBeNull();
-  expect(screen.queryByLabelText('Always consider')).toBeNull();
+  await screen.findByLabelText('Review Wiki against Sources');
+  expect(screen.queryByLabelText('Add this Source to the Wiki')).toBeNull();
+  expect(screen.queryByLabelText('Use as project briefing')).toBeNull();
 });
 
 test('overview activation requires approval and uses the loaded revision', async () => {
@@ -564,7 +613,7 @@ test('overview activation requires approval and uses the loaded revision', async
         document={{ id: 'overview', folderId: 'wiki', title: 'Overview', currentRevisionId: 'v2' }}
       />,
     );
-    fireEvent.press(await screen.findByLabelText('Always consider'));
+    fireEvent.press(await screen.findByLabelText('Use as project briefing'));
     expect(client.approveProjectKnowledgeOverview).not.toHaveBeenCalled();
     await act(async () => {
       alert.mock.calls
@@ -740,7 +789,7 @@ test('stale Wiki pages offer a fresh check instead of silently accepting old sou
       }}
     />,
   );
-  fireEvent.press(await screen.findByLabelText('Review stale Wiki'));
+  fireEvent.press(await screen.findByLabelText('Review outdated Wiki page'));
   await waitFor(() =>
     expect(client.createKnowledgeWikiJob).toHaveBeenCalledWith('project', {
       kind: 'check',
