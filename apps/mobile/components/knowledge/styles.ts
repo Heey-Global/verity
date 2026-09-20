@@ -28,6 +28,19 @@ export const styles = StyleSheet.create((theme) => ({
     gap: 8,
     paddingRight: 8,
   },
+  explorerToggle: {
+    width: 28,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  explorerEntry: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   selectedRow: { backgroundColor: theme.colors.surface, borderRadius: 6 },
   entryText: { color: theme.colors.text, fontSize: 14, flex: 1 },
   toolbar: {

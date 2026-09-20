@@ -46,6 +46,7 @@ export function Library({
   const [moreActions, setMoreActions] = useState(false);
   const [folders, setFolders] = useState<KnowledgeFolder[]>([]);
   const [folderId, setFolderId] = useState(initialFolder);
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => new Set());
   const activeProjectId = useMemo(() => {
     if (projectId) return projectId;
     let current = folders.find((folder) => folder.id === folderId);
@@ -231,6 +232,21 @@ export function Library({
     path.unshift(ancestor);
     ancestor = folders.find((f) => f.id === ancestor?.parentId);
   }
+  const pathKey = path.map((folder) => folder.id).join('/');
+  useEffect(() => {
+    if (!path.length) return;
+    setExpandedFolderIds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const folder of path) {
+        if (!next.has(folder.id)) {
+          next.add(folder.id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [pathKey]);
   const startEdit = () => {
     setRevisions(null);
     setRevision(null);
@@ -280,35 +296,51 @@ export function Library({
     folders
       .filter((folder) => folder.parentId === parentId)
       .map((folder) => {
-        const isOpen = path.some((item) => item.id === folder.id);
+        const isOpen = expandedFolderIds.has(folder.id);
         return (
           <View key={folder.id}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Folder: ${folder.name}`}
-              accessibilityState={{ expanded: isOpen, selected: folder.id === folderId }}
-              disabled={busy}
-              onPress={() => {
-                if (folderId === folder.id && isOpen) {
-                  openFolder(folder.parentId);
-                } else openFolder(folder.id);
-              }}
+            <View
               style={[
                 styles.explorerRow,
                 folder.id === folderId && styles.selectedRow,
                 { paddingLeft: depth * 16 },
               ]}
             >
-              <Icon
-                name={isOpen ? 'chevron-down' : 'chevron-right'}
-                size={15}
-                color={theme.colors.textMuted}
-              />
-              <Icon name="folder" size={18} color={theme.colors.textMuted} />
-              <Text numberOfLines={1} style={styles.entryText}>
-                {folder.name}
-              </Text>
-            </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${isOpen ? 'Collapse' : 'Expand'} folder: ${folder.name}`}
+                accessibilityState={{ expanded: isOpen }}
+                disabled={busy}
+                onPress={() =>
+                  setExpandedFolderIds((current) => {
+                    const next = new Set(current);
+                    if (isOpen) next.delete(folder.id);
+                    else next.add(folder.id);
+                    return next;
+                  })
+                }
+                style={styles.explorerToggle}
+              >
+                <Icon
+                  name={isOpen ? 'chevron-down' : 'chevron-right'}
+                  size={15}
+                  color={theme.colors.textMuted}
+                />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Folder: ${folder.name}`}
+                accessibilityState={{ selected: folder.id === folderId }}
+                disabled={busy}
+                onPress={() => openFolder(folder.id)}
+                style={styles.explorerEntry}
+              >
+                <Icon name="folder" size={18} color={theme.colors.textMuted} />
+                <Text numberOfLines={1} style={styles.entryText}>
+                  {folder.name}
+                </Text>
+              </Pressable>
+            </View>
             {isOpen ? (
               <>
                 {renderFolders(folder.id, depth + 1)}

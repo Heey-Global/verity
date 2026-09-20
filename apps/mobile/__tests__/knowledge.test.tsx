@@ -434,12 +434,13 @@ test('library folders expand and collapse without changing the library', async (
   render(<Library client={client as unknown as VerityClient} initialFolder={null} />);
   await screen.findByLabelText('Folder: Company');
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Folder: Company'));
+  fireEvent.press(screen.getByLabelText('Expand folder: Company'));
   expect(screen.getByLabelText('Folder: Engineering')).toBeTruthy();
+  expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith(undefined, undefined);
+  fireEvent.press(screen.getByLabelText('Expand folder: Engineering'));
   fireEvent.press(screen.getByLabelText('Folder: Engineering'));
   expect(await screen.findByLabelText('Standards')).toBeTruthy();
-  fireEvent.press(screen.getByLabelText('Folder: Company'));
-  fireEvent.press(screen.getByLabelText('Folder: Company'));
+  fireEvent.press(screen.getByLabelText('Collapse folder: Company'));
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
 });
 

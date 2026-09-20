@@ -21,6 +21,7 @@ async function derivedPage() {
     repo: 'test',
     containerName: 'test',
     state: 'absent',
+    overviewVisible: true,
   });
   const k = ctx.store.knowledge;
   const space = (await k.getProjectSpace('project'))!;
@@ -372,6 +373,7 @@ it('does not retain shared Wiki access when its source grant is revoked', async 
     repo: 'reader',
     containerName: 'reader',
     state: 'absent',
+    overviewVisible: true,
   });
   await k.setGrants('reader', [
     { folderId: space.sourcesFolderId, mode: 'read' },
