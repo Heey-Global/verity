@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ProjectRuntime } from './project-runtime.js';
 import {
+  PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
   projectHasPersistentSandboxActivity,
   startProjectIdleSleepScheduler,
 } from './project-idle-sleep.js';
@@ -11,6 +12,10 @@ const project = (id: string, state: ProjectRecord['state'] = 'active'): ProjectR
   ({ id, state }) as ProjectRecord;
 
 describe('project idle sleep scheduler', () => {
+  it('uses the product idle window of 30 minutes', () => {
+    expect(PROJECT_SANDBOX_IDLE_TIMEOUT_MS).toBe(30 * 60_000);
+  });
+
   it('sleeps an active project only after one complete idle window', async () => {
     let at = 1_000;
     const sleepProject = vi.fn(async () => undefined);

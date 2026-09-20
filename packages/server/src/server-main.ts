@@ -881,8 +881,6 @@ async function main(): Promise<void> {
       // VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION=1 (or add caps via CAP_ADD).
       sandboxPidsLimit: parseNonNegativeInt(process.env.VERITY_SANDBOX_PIDS_LIMIT),
       sandboxMemoryBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY),
-      sandboxIdleTimeoutMs:
-        (parseNonNegativeInt(process.env.VERITY_SANDBOX_IDLE_MINUTES) ?? 30) * 60_000,
       sandboxNanoCpus: parseCpuCores(process.env.VERITY_SANDBOX_CPUS),
       sandboxCapAdd: splitList(process.env.VERITY_SANDBOX_CAP_ADD),
       sandboxAllowPrivilegeEscalation:

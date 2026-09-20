@@ -7,6 +7,8 @@ export interface ProjectIdleSleepScheduler {
   stop(): void;
 }
 
+export const PROJECT_SANDBOX_IDLE_TIMEOUT_MS = 30 * 60_000;
+
 export async function projectHasPersistentSandboxActivity(input: {
   project: ProjectRecord;
   listShares: () => Promise<readonly PublicPreviewShareRecord[]>;
