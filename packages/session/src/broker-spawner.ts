@@ -90,7 +90,43 @@ function send(socket: Socket, frame: object): boolean {
   return true;
 }
 
-export function createBrokerSpawner(socketPath: string): Spawner {
+/** Older brokers silently ignore unknown fields: check their capability before any isolated spawn. */
+export async function assertBrokerKnowledgeIsolation(socketPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    let text = '';
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error('Knowledge isolation broker probe timed out'));
+    }, 5000);
+    socket.once('connect', () =>
+      send(socket, { protocolVersion: PROTOCOL_VERSION, kind: 'status' }),
+    );
+    socket.on('data', (chunk) => {
+      text += String(chunk);
+      if (text.length > 4096) socket.destroy(new Error('Invalid broker status'));
+    });
+    socket.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    socket.once('end', () => {
+      clearTimeout(timer);
+      try {
+        const status = JSON.parse(text) as { knowledgeIsolation?: boolean };
+        if (status.knowledgeIsolation !== true)
+          throw new Error('Spawn broker does not support isolated Wiki jobs');
+        resolve();
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error('Invalid broker status'));
+      }
+    });
+  });
+}
+export function createBrokerSpawner(
+  socketPath: string,
+  policy: { knowledgeIsolation?: boolean } = {},
+): Spawner {
   const spawner: Spawner = (command, args, options): SpawnedProcess => {
     const socket = createConnection(socketPath);
     let processBuffered = (): void => undefined;
@@ -142,6 +178,7 @@ export function createBrokerSpawner(socketPath: string): Spawner {
         command,
         args,
         cwd: options.cwd,
+        ...(policy.knowledgeIsolation ? { knowledgeIsolation: true } : {}),
         ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
       });
     });

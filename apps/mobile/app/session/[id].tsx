@@ -3129,7 +3129,11 @@ export function SessionChat({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Knowledge"
-            onPress={() => router.push('/knowledge')}
+            onPress={() =>
+              router.push(
+                projectId ? { pathname: '/knowledge', params: { projectId } } : '/knowledge',
+              )
+            }
             hitSlop={12}
           >
             <Icon name="book-open" size={20} color={theme.colors.textMuted} />

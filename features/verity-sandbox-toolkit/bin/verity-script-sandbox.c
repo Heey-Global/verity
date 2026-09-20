@@ -22,10 +22,19 @@ static void allow_path(int ruleset, const char *path, __u64 rights) {
   close(parent);
 }
 static void isolate_reads(const char *root, const char *dynamic_root, char **secret_paths,
-                          int secret_count) {
+                          int secret_count, int isolate_writes) {
   const __u64 rights = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE |
                          LANDLOCK_ACCESS_FS_READ_DIR;
-  struct landlock_ruleset_attr attr = {.handled_access_fs = rights};
+  const __u64 write_rights = LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR |
+      LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR |
+      LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO |
+      LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_REFER |
+      LANDLOCK_ACCESS_FS_TRUNCATE;
+  if (isolate_writes) {
+    int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    if (abi < 3) { errno = ENOTSUP; fail("Wiki isolation requires Landlock ABI 3"); }
+  }
+  struct landlock_ruleset_attr attr = {.handled_access_fs = rights | (isolate_writes ? write_rights : 0)};
   int ruleset = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0);
   if (ruleset < 0) fail("landlock_create_ruleset");
   const char *roots[] = {"/usr", "/bin", "/lib", "/lib64"};
@@ -45,9 +54,9 @@ static void isolate_reads(const char *root, const char *dynamic_root, char **sec
   const char *devices[] = {"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom", "/dev/tty"};
   for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++)
     if (access(devices[i], F_OK) == 0)
-      allow_path(ruleset, devices[i], LANDLOCK_ACCESS_FS_READ_FILE);
-  allow_path(ruleset, root, rights);
-  if (dynamic_root != NULL) allow_path(ruleset, dynamic_root, rights);
+      allow_path(ruleset, devices[i], LANDLOCK_ACCESS_FS_READ_FILE | (isolate_writes ? LANDLOCK_ACCESS_FS_WRITE_FILE : 0));
+  allow_path(ruleset, root, rights | (isolate_writes ? write_rights : 0));
+  if (dynamic_root != NULL) allow_path(ruleset, dynamic_root, rights | (isolate_writes ? write_rights : 0));
   for (int i = 0; i < secret_count; i++)
     allow_path(ruleset, secret_paths[i * 2], LANDLOCK_ACCESS_FS_READ_FILE);
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) fail("PR_SET_NO_NEW_PRIVS");
@@ -61,12 +70,12 @@ int main(int argc, char **argv) {
     /* This process is disposable: apply the real policy too, so an ABI that is
        reported but unusable under the host's LSM/container settings fails the
        Runner startup probe rather than the first approved command. */
-    isolate_reads("/usr", NULL, NULL, 0);
+    isolate_reads("/usr", NULL, NULL, 0, 0);
     return 0;
   }
   if (argc < 9 || strcmp(argv[1], "--root") || strcmp(argv[3], "--cwd") ||
       strcmp(argv[5], "--loading")) {
-    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--secret PATH] -- COMMAND\n",
+    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated] [--secret PATH] -- COMMAND\n",
           stderr);
     return 126;
   }
@@ -85,6 +94,11 @@ int main(int argc, char **argv) {
     dynamic_root = argv[command + 1];
     command += 2;
   }
+  int isolate_writes = 0;
+  if (command < argc && !strcmp(argv[command], "--write-isolated")) {
+    isolate_writes = 1;
+    command++;
+  }
   int secret_start = command;
   while (command + 1 < argc && !strcmp(argv[command], "--secret")) {
     if (argv[command + 1][0] != '/') { errno = EINVAL; fail("invalid secret path"); }
@@ -98,7 +112,7 @@ int main(int argc, char **argv) {
     errno = EINVAL;
     fail("missing dynamic root");
   }
-  isolate_reads(argv[2], dynamic_root, &argv[secret_start + 1], (command - secret_start) / 2);
+  isolate_reads(argv[2], dynamic_root, &argv[secret_start + 1], (command - secret_start) / 2, isolate_writes);
   if (chdir(argv[4]) < 0) fail("chdir");
   execv(argv[command + 1], &argv[command + 1]);
   fail("execv");

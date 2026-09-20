@@ -1005,6 +1005,7 @@ export function buildRunnerConductorWiring(deps: {
   mcpGatewayTokens?: McpGatewayTokens | undefined;
   /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
   mcpProxyTokens?: McpGatewayTokens | undefined;
+  isKnowledgeWikiSession?: ((sessionId: string) => Promise<boolean>) | undefined;
   listProjectHttpMcpServers?:
     ((projectId: string) => Promise<readonly { id: string; name: string }[]>) | undefined;
   /** ADR 0011 D2: resolve a standing grant before a prompt becomes a card + push.
@@ -1043,6 +1044,10 @@ export function buildRunnerConductorWiring(deps: {
           : { controlPlaneProjectId: deps.controlPlaneProjectId }),
       }),
       runner: async (backend, context) => {
+        const knowledgeOnly =
+          context.sessionId !== null && !!(await deps.isKnowledgeWikiSession?.(context.sessionId));
+        if (knowledgeOnly && !isRunnerSupervisorBackend(backend.runnerSupervisorBackend))
+          throw new Error('Wiki maintenance requires an isolated supervised backend');
         // Every supervised backend is an ACP one and vice versa (see
         // `RUNNER_SUPERVISOR_BACKENDS`), so ask the closed set rather than restating
         // its members here — a third and fourth agent were exactly the drift this
@@ -1135,7 +1140,10 @@ export function buildRunnerConductorWiring(deps: {
         }
         const ephemeral = context.ephemeralEventSink !== undefined;
         const projectHttpMcpServers =
-          ephemeral || context.projectId === null || deps.listProjectHttpMcpServers === undefined
+          ephemeral ||
+          context.projectId === null ||
+          deps.listProjectHttpMcpServers === undefined ||
+          knowledgeOnly
             ? []
             : await deps.listProjectHttpMcpServers(context.projectId);
         const gatewayToolContext =
@@ -1249,7 +1257,7 @@ export function buildRunnerConductorWiring(deps: {
                   })),
                 }),
           }),
-          ...(ephemeral || deps.autoApprovePermission === undefined
+          ...(ephemeral || knowledgeOnly || deps.autoApprovePermission === undefined
             ? {}
             : { autoApprovePermission: deps.autoApprovePermission }),
           ...(deps.mcpGatewayTokens === undefined || gatewayToolContext === undefined
@@ -1269,7 +1277,7 @@ export function buildRunnerConductorWiring(deps: {
                     }),
                 },
               }),
-          ...(deps.mcpProxyTokens === undefined || gatewayToolContext === undefined
+          ...(knowledgeOnly || deps.mcpProxyTokens === undefined || gatewayToolContext === undefined
             ? {}
             : {
                 mcpProxyTokens: {
@@ -4106,6 +4114,8 @@ export async function buildEmbeddedServer(
         // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
         mcpProxyTokens,
+        isKnowledgeWikiSession: async (sessionId) =>
+          !!(await eventStore.knowledge.getWikiJobForSession(sessionId)),
         listProjectHttpMcpServers: async (projectId) => {
           const [bindings, connections] = await Promise.all([
             eventStore.listProjectMcpBindings(projectId),

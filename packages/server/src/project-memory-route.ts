@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  KnowledgeError,
   PROJECT_MEMORY_MAX_CHARS,
   ProjectMemoryTooLargeError,
   type EventStore,
@@ -62,6 +63,8 @@ export function registerProjectMemoryRoute(
           );
           return { ok: true, length: settings.memory?.length ?? 0 };
         } catch (error) {
+          if (error instanceof KnowledgeError)
+            return reply.code(error.statusCode).send({ error: error.message });
           if (error instanceof ProjectMemoryTooLargeError) {
             reply.code(413);
             return {

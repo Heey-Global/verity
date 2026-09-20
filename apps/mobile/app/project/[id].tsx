@@ -1,3 +1,4 @@
+import { ProjectKnowledge } from '../../components/knowledge/ProjectKnowledge';
 import { ProjectKnowledgeGrants } from '../../components/knowledge/ProjectKnowledgeGrants';
 // Project detail: local Verity project metadata plus the sessions bound to this
 // repository. Project operations such as dev servers and Agent Loops live here so
@@ -337,7 +338,12 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
         {activeTab === 'dev-server' ? (
           <DevServersSection client={client} project={project} onUpdated={onProjectUpdated} />
         ) : null}
-        {activeTab === 'memory' ? <MemorySection form={settingsForm} /> : null}
+        {activeTab === 'memory' ? (
+          <>
+            <ProjectKnowledge client={client} projectId={project.id} />
+            <MemorySection form={settingsForm} />
+          </>
+        ) : null}
         {activeTab === 'automations' ? (
           <AgentLoopsSection
             client={client}
@@ -400,7 +406,7 @@ function ProjectTabs({
   const { theme } = useUnistyles();
   const tabs: { key: ProjectTab; label: string }[] = [
     { key: 'dev-server', label: 'Dev Server' },
-    { key: 'memory', label: 'Memory' },
+    { key: 'memory', label: 'Knowledge' },
     { key: 'automations', label: 'Automations' },
   ];
   return (
@@ -2929,18 +2935,36 @@ function SettingsSaveHint({ form }: { form: ProjectSettingsForm }) {
   );
 }
 
-// Memory tab — the agent-memory notes box, promoted out of Settings to its own
-// top-level destination.
+// Retain legacy notes as a migration detail inside Knowledge.
 function MemorySection({ form }: { form: ProjectSettingsForm }) {
   const { draft, setField, save, saving } = form;
+  const [expanded, setExpanded] = useState(false);
+  if (!expanded)
+    return (
+      <View style={styles.section}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Show preserved legacy notes"
+          onPress={() => setExpanded(true)}
+        >
+          <Text style={styles.settingsGroupDescription}>Preserved legacy notes</Text>
+        </Pressable>
+      </View>
+    );
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeader}>Agent memory</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Hide preserved legacy notes"
+          onPress={() => setExpanded(false)}
+        >
+          <Text style={styles.sectionHeader}>Preserved legacy notes</Text>
+        </Pressable>
         {saving ? <ActivityIndicator size="small" /> : null}
       </View>
       <Text style={styles.settingsGroupDescription}>
-        Notes injected into every new session of this project.
+        Preserved notes, used until a Wiki overview is approved.
       </Text>
       <View style={styles.settingsFormGroup}>
         <SettingsInput
@@ -2949,7 +2973,7 @@ function MemorySection({ form }: { form: ProjectSettingsForm }) {
           onChangeText={(value) => setField('memory', value)}
           placeholder="Project-specific guidance for agents"
           multiline
-          hint="Agents can append through verity-memory; edit or clear the notes anytime."
+          hint="These notes are preserved for migration. An approved Wiki overview replaces their automatic use; restoring legacy memory makes them active again."
           onBlur={save}
         />
       </View>

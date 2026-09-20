@@ -63,6 +63,8 @@ export interface AgentSpawnBrokerOptions {
 export function agentLaunchSpec(
   request: {
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
+    knowledgeIsolation?: boolean;
+    knowledgeHome?: string;
     args: string[];
     cwd: string;
   },

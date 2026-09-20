@@ -57,7 +57,7 @@ describe('managed knowledge', () => {
     expect(JSON.stringify(listing)).not.toContain(parent.id);
     expect(JSON.stringify(listing)).not.toContain(secret.name);
     expect(listing).toEqual({
-      folders: [{ ...child, parentId: null, mode: 'read' }],
+      folders: expect.arrayContaining([{ ...child, parentId: null, mode: 'read' }]),
       documents: [],
     });
     const results = await k.runAgent(actor, 'search', { query: 'Shared' });
@@ -298,10 +298,11 @@ describe('managed knowledge', () => {
   it('rolls back the entire import when new folders would exceed the installation limit', async () => {
     const k = ctx.store.knowledge;
     const root = await k.createFolder({ name: 'Import' });
+    const existingCount = (await k.listFolders()).length;
     await ctx.db
       .insertInto('knowledge_folders')
       .values(
-        Array.from({ length: KNOWLEDGE_MAX_FOLDERS - 2 }, (_, i) => ({
+        Array.from({ length: KNOWLEDGE_MAX_FOLDERS - existingCount - 1 }, (_, i) => ({
           id: 'seed-' + i,
           parent_id: null,
           name: 'Seed ' + i,

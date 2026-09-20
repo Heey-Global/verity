@@ -256,7 +256,7 @@ describe('ProjectDetailScreen — project settings', () => {
     );
   });
 
-  it('separates dev server, memory, automations, and settings', async () => {
+  it('separates dev server, knowledge, automations, and settings with legacy notes collapsed', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail() }));
     render(<ProjectDetailScreen />);
 
@@ -267,7 +267,9 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.queryByText('Agent Loops')).toBeNull();
     expect(screen.queryByLabelText('Memory')).toBeNull();
 
-    fireEvent.press(await screen.findByText('Memory'));
+    fireEvent.press(await screen.findByText('Knowledge'));
+    expect(screen.queryByLabelText('Memory')).toBeNull();
+    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
     expect(await screen.findByLabelText('Memory')).toBeOnTheScreen();
 
     fireEvent.press(screen.getByText('Automations'));
@@ -1076,7 +1078,9 @@ describe('ProjectDetailScreen — project settings', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
     render(<ProjectDetailScreen />);
 
-    fireEvent.press(await screen.findByText('Memory'));
+    fireEvent.press(await screen.findByText('Knowledge'));
+    expect(screen.queryByLabelText('Memory')).toBeNull();
+    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
     expect(await screen.findByDisplayValue('Remember the docs')).toBeOnTheScreen();
 
     fireEvent.changeText(screen.getByLabelText('Memory'), 'Updated note');
@@ -1223,7 +1227,9 @@ describe('ProjectDetailScreen — project settings', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
     render(<ProjectDetailScreen />);
 
-    fireEvent.press(await screen.findByText('Memory'));
+    fireEvent.press(await screen.findByText('Knowledge'));
+    expect(screen.queryByLabelText('Memory')).toBeNull();
+    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
     fireEvent.changeText(await screen.findByLabelText('Memory'), 'Keep docs current');
     fireEvent(screen.getByLabelText('Memory'), 'blur');
 
@@ -1250,7 +1256,9 @@ describe('ProjectDetailScreen — project settings', () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
     render(<ProjectDetailScreen />);
 
-    fireEvent.press(await screen.findByText('Memory'));
+    fireEvent.press(await screen.findByText('Knowledge'));
+    expect(screen.queryByLabelText('Memory')).toBeNull();
+    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
     const box = await screen.findByLabelText('Memory');
     fireEvent.changeText(box, 'Draft one');
     fireEvent(box, 'blur');

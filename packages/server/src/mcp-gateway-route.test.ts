@@ -756,6 +756,13 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       containerName: 'verity-__local__--website',
       state: 'active',
     });
+    // New projects receive managed knowledge spaces and are intentionally excluded
+    // from cross-project tools. Keep this delivery-seam test on the legacy,
+    // knowledge-free shape; the information-flow tests cover the exclusion itself.
+    await ctx.db
+      .deleteFrom('project_knowledge_spaces')
+      .where('project_id', 'in', [VERITY_CONTROL_PROJECT_ID, 'website'])
+      .execute();
     await harness.store.createSession({
       sessionId: 'sess-web',
       projectId: 'website',

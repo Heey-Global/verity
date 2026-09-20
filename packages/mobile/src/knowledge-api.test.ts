@@ -100,3 +100,80 @@ it('loads the requested history page and preserves the originating session', asy
   expect(await client.listKnowledgeRevisions('doc', 100, 50)).toEqual(revisions);
   expect(transport.mock.calls[0]?.[0]).toContain('/revisions?offset=100&limit=50');
 });
+
+it('keeps fixed grant metadata and sends explicit overview revision approval', async () => {
+  const transport = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ grants: [{ folderId: 'sources', mode: 'read', fixed: 'project' }] }),
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          overview: {
+            documentId: 'doc',
+            revisionId: 'v2',
+            title: 'Overview',
+            bodyMarkdown: 'Approved',
+          },
+        }),
+      ),
+    );
+  const client = new VerityClient({ baseUrl: 'https://example.test', fetch: transport });
+  expect(await client.listKnowledgeGrants('project')).toEqual([
+    { folderId: 'sources', mode: 'read', fixed: 'project' },
+  ]);
+  await client.approveProjectKnowledgeOverview('project', 'doc', 'v2');
+  expect(JSON.parse(transport.mock.calls[1]?.[1]?.body as string)).toEqual({
+    documentId: 'doc',
+    expectedRevisionId: 'v2',
+  });
+});
+
+it('downloads exact original bytes and URL-encodes source revisions', async () => {
+  const bytes = new Uint8Array([0, 255, 137, 80, 78, 71]);
+  const transport = vi.fn<typeof fetch>().mockResolvedValue(new Response(bytes));
+  const client = new VerityClient({ baseUrl: 'https://example.test', fetch: transport });
+  expect(new Uint8Array(await client.downloadKnowledgeOriginal('doc/id', 'revision/id'))).toEqual(
+    bytes,
+  );
+  expect(transport.mock.calls[0]?.[0]).toContain(
+    '/knowledge/documents/doc%2Fid/original?revisionId=revision%2Fid',
+  );
+});
+
+it('round-trips original metadata and bytes through the portable source bundle', async () => {
+  const bundle = {
+    version: 1,
+    documents: [
+      {
+        path: 'Sources/Logo.png.md',
+        bodyMarkdown: 'Logo original',
+        original: {
+          filename: 'Logo.png',
+          mediaType: 'image/png',
+          base64: 'iVBORw==',
+          sha256: 'digest',
+          processingState: 'ready',
+          processingNote: 'Raster preview available',
+          locators: [],
+          previews: [{ label: 'Original', mediaType: 'image/png', base64: 'iVBORw==' }],
+        },
+      },
+    ],
+  };
+  const transport = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(new Response(JSON.stringify(bundle)))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ imported: 1 })));
+  const client = new VerityClient({ baseUrl: 'https://example.test', fetch: transport });
+  const exported = await client.exportKnowledgeSourceBundle('source/folder');
+  await client.importKnowledgeSourceBundle('destination', exported);
+  expect(JSON.parse(transport.mock.calls[1]?.[1]?.body as string)).toEqual({
+    folderId: 'destination',
+    ...bundle,
+  });
+  expect(transport.mock.calls[0]?.[0]).toContain('folderId=source%2Ffolder');
+});

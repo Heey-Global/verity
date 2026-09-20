@@ -11,7 +11,7 @@ import {
 import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { AcpCodexBackend } from './acp-codex-backend.js';
 import { AcpOpenCodeBackend } from './acp-opencode-backend.js';
-import { createBrokerSpawner } from './broker-spawner.js';
+import { createBrokerSpawner, assertBrokerKnowledgeIsolation } from './broker-spawner.js';
 import { RunnerServer } from './runner-server.js';
 import { resolveRunnerMcpServers } from './runner-mcp-servers.js';
 
@@ -55,6 +55,7 @@ const startTurnRequestSchema = z
     disallowedTools: z.array(boundedString(4096)).max(256).optional(),
     timeoutMs: z.number().int().min(1).max(86_400_000).optional(),
     trustedCliExecution: z.boolean().optional(),
+    knowledgeIsolation: z.boolean().optional(),
     mcpGatewayToken: boundedString(512).min(1).optional(),
     mcpProxyToken: boundedString(512).min(1).optional(),
     mcpServers: z.array(httpMcpServerSchema).max(16).optional(),
@@ -176,6 +177,7 @@ const mcpServers = resolveRunnerMcpServers({
 });
 const brokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
 if (brokerSocket === undefined) throw new Error('runner worker requires the agent spawn broker');
+if (request.knowledgeIsolation) await assertBrokerKnowledgeIsolation(brokerSocket);
 const backends: Readonly<Record<RunnerSupervisorBackend, () => Backend>> = {
   'claude-acp': () => new AcpClaudeBackend(),
   'codex-acp': () => new AcpCodexBackend(),
@@ -217,7 +219,9 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
   ...(request.mcpGatewayToken !== undefined && mcpGatewayUrl !== undefined
     ? { mcpGateway: { url: mcpGatewayUrl, token: request.mcpGatewayToken } }
     : {}),
-  spawner: createBrokerSpawner(brokerSocket),
+  spawner: createBrokerSpawner(brokerSocket, {
+    knowledgeIsolation: request.knowledgeIsolation === true,
+  }),
 });
 const result = await turn.result;
 process.exitCode = result.exitCode;

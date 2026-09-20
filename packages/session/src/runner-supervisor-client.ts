@@ -997,6 +997,16 @@ export class SupervisorRunnerClient implements RunnerClient {
   }
 
   private async launch(opts: RunTurnOptions & { turnId: string }): Promise<void> {
+    if (opts.knowledgeIsolation) {
+      const status = await requestRunnerSupervisor(
+        join(this.options.runtimeDir, 'supervisor.sock'),
+        { kind: 'status' },
+      );
+      if (status.knowledgeIsolation !== true)
+        throw new Error('This sandbox must be rebuilt before isolated Wiki jobs can run');
+      if (opts.resumeSessionId)
+        throw new Error('Isolated Wiki jobs cannot resume prior backend context');
+    }
     if (opts.signal?.aborted === true) throw new Error('runner turn was cancelled before launch');
     if (opts.startCommandId === undefined || !SAFE_ID.test(opts.startCommandId)) {
       throw new Error('supervisor runner requires startCommandId');
@@ -1097,7 +1107,8 @@ export class SupervisorRunnerClient implements RunnerClient {
       // Execution authority is separate from advertising the native Codex tool. ACP
       // reaches the same executor through the loopback gateway, while the supervisor
       // still binds every spawn to this live turn.
-      trustedCliExecution: this.acpBackend,
+      trustedCliExecution: this.acpBackend && !opts.knowledgeIsolation,
+      ...(opts.knowledgeIsolation ? { knowledgeIsolation: true } : {}),
       // The mirror image for an ACP turn (ADR 0014 D1): no attested native channel,
       // so the brokered tools arrive as an MCP server the agent calls back into. The
       // bearer is minted per turn and carries the turn's identity on the Server side;
