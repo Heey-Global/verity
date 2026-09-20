@@ -1163,6 +1163,13 @@ describe('planning resumes after publication', () => {
     expect(checkout?.with?.['fetch-depth']).toBe(0);
     const lifecycle = steps.find((step) => step.run?.includes('release-lifecycle.mjs'));
     expect(lifecycle?.if).toContain('backend-replan');
+    // That checkout is all the run gets: the only install on the push path
+    // belongs to the mobile train. A third-party import here would strand
+    // planning on a bare workspace, after the release is already public.
+    const source = readFileSync('scripts/release-lifecycle.mjs', 'utf8');
+    const specifiers = [...source.matchAll(/^import [^']*'([^']+)';$/gmu)].map(([, name]) => name);
+    expect(specifiers.length).toBeGreaterThan(0);
+    for (const specifier of specifiers) expect(specifier, specifier).toMatch(/^node:/u);
   });
 
   it('keeps a dispatched re-plan in planning mode only', () => {
