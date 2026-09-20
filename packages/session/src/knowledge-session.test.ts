@@ -19,6 +19,7 @@ beforeEach(async () => {
     repo: 'test',
     containerName: 'test',
     state: 'absent',
+    overviewVisible: true,
   });
   await ctx.store.createSession({
     sessionId: 's',
