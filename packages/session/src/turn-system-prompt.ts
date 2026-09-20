@@ -170,11 +170,14 @@ export function formatBrokeredSecretAliases(secretAliases?: readonly string[]): 
  * loopback-only backend turns out to be.
  *
  * `opencode-acp` is the case that shows why this is not simply "is it supervised".
- * OpenCode runs behind the same spawn broker as Claude and Codex since ADR 0012
- * Amendment 4, and its adapter even advertises `mcpCapabilities.http` — so it COULD
- * carry the gateway. Its bearer is scoped server-side to knowledge tools only:
- * which agents may spend secrets is a separate decision from the transport they
- * use. Naming secrets to a session that cannot redeem them remains a dead end.
+ * OpenCode has run behind the same spawn broker as Claude and Codex since ADR 0012
+ * Amendment 4 and its adapter advertises `mcpCapabilities.http`, so it always COULD
+ * carry the gateway; it did not until ADR 0014 Amendment 4 decided that it may spend
+ * the operator's secrets. What changed is the decision, not the transport — which is
+ * why this arm had to be edited by hand rather than following from a capability. It
+ * answers `true` only alongside `ACP_WORKER_BACKENDS` and the `acpBackend` flag that
+ * mints the bearer: naming secrets to a session whose turns carry no bearer would be
+ * the dead end described above, in the other direction.
  *
  * Written as an exhaustive switch rather than a presence check for the same reason
  * {@link brokeredGrantChannel} is: the two answers must move together, and a presence
@@ -187,8 +190,8 @@ export function carriesBrokeredSecretTools(backend: Backend): boolean {
   switch (backend.runnerSupervisorBackend) {
     case 'claude-acp':
     case 'codex-acp':
-      return true;
     case 'opencode-acp':
+      return true;
     case undefined:
       return false;
     default:

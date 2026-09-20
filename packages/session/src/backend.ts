@@ -43,11 +43,12 @@ export type { BrokeredGrantChannel } from '@verity/events';
  * Every supervised backend uses ACP. Backends without a declared supervisor protocol
  * also fail closed to the restricted ACP channel.
  *
- * `opencode-acp` answers `acp` like the rest, and that answer is currently moot: it
- * is absent from `ACP_WORKER_BACKENDS`, so no gateway bearer is minted for its turns
- * and it raises no brokered prompt to redeem a grant against. Answering here anyway
- * keeps the two independent — the day OpenCode is admitted to the gateway, the
- * channel it redeems on is already the restricted one rather than a `default:` throw.
+ * `opencode-acp` answers `acp` like the rest. That answer used to be moot — no bearer
+ * was minted for its turns, so it raised no brokered prompt to redeem a grant against
+ * — and ADR 0014 Amendment 4 made it live by admitting OpenCode to the gateway. It
+ * needed no edit to become live, which was the point of answering for it while the
+ * question was still hypothetical: the channel was already the restricted one rather
+ * than a `default:` throw on the first brokered prompt an OpenCode turn raised.
  *
  * The absent case is the one worth spelling out. `runnerSupervisorBackend` is
  * optional, so "no attested transport" and "this object lost the field" are the same

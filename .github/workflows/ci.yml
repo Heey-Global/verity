@@ -528,20 +528,22 @@ jobs:
                   agent_seed_drift=true
                   server_image=true
                   ;;
+                # Prose package suites pin: they assert the commands and messages
+                # a runbook quotes against the sources that emit them.
+                docs/runbooks/*)
+                  test=true
+                  ;;
                 # Prose. Nothing builds it, `.prettierignore` excludes it from the
-                # formatter, and no test reads one — the last of which is asserted
-                # in scripts/ci-workflow.test.ts rather than trusted, because the
-                # arm below is the only thing standing between this directory and
-                # the full suite.
+                # formatter, and no test reads what the arm above leaves — asserted
+                # in scripts/ci-workflow.test.ts rather than trusted, since this arm
+                # is the only thing between this directory and the full suite.
                 docs/*)
                   ;;
                 # Everything this table does not name. Matching nothing used to
                 # mean running nothing, so a pull request touching only such a path
                 # reported green — not because the suite passed, but because it
-                # never started. That covered 25 files the suite reads, among them
-                # deploy/docker-compose.yml, four of the five workflow YAMLs
-                # scripts/ci-workflow.test.ts parses, deploy/gvisor/versions.env
-                # and renovate.json.
+                # never started. scripts/ci-workflow.test.ts records what that
+                # covered, and fails if it reopens.
                 #
                 # Only the three broad jobs. lint, typecheck and test read the
                 # repository at large, so "unknown path" is a real reason to run

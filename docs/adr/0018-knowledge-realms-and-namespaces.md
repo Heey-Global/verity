@@ -151,10 +151,11 @@ remain independent; external knowledge integrations may be added later.
 
 All supported model backends (Claude, Codex and OpenCode) expose server-mediated
 knowledge tools to list authorized folders, search documents, read a document, and
-create or edit documents when authorized under D5. OpenCode receives a per-turn
-gateway bearer restricted server-side to `verity_knowledge` for both discovery and
-execution, without secret-tool or trusted CLI authority. Knowledge guidance is
-refreshed on each turn so newly granted folders are discoverable in resumed sessions.
+create or edit documents when authorized under D5. All three use the existing
+per-turn gateway bearer (OpenCode admission is governed by ADR 0014 Amendment 4).
+Knowledge grants remain independent of brokered-secret approvals. Knowledge
+guidance is refreshed on each turn so newly granted folders are discoverable in
+resumed sessions.
 The server resolves the project
 from a trusted session/turn identity and checks current grants on every operation.
 A request-supplied project id or folder path cannot establish authority.

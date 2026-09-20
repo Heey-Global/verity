@@ -25,10 +25,11 @@ import { executionProfileRefSchema, secretAliasRefSchema } from './catalog.js';
  * `opencode-mcp` is the one label kept that nothing produces. It named a relay on
  * OpenCode's own `opencode serve` HTTP protocol, and ADR 0012 Amendment 4 retired that
  * transport too — but unlike `claude-native` it is a name a relay could still be built
- * under: OpenCode's ACP transport advertises `mcpCapabilities.http`, so the MCP server
- * the label refers to is reachable there, and only the Verity-side decision to admit
- * OpenCode to the gateway is missing (`ACP_WORKER_BACKENDS`). Should that relay be built,
- * this is the name it wants and the schema already accepts it.
+ * under. ADR 0014 Amendment 4 admitting OpenCode to the gateway does NOT produce it and
+ * is not the relay it names: gateway calls carry `acp-mcp`, the approval-gated channel
+ * whose whole premise is that nothing attests them (`mcp-gateway.ts`), which is the
+ * opposite of what a label here claims. Should an attested OpenCode relay be built, this
+ * is the name it wants and the schema already accepts it.
  */
 export const toolChannelSchema = z.enum(['codex-mcp', 'opencode-mcp']);
 export type ToolChannel = z.infer<typeof toolChannelSchema>;

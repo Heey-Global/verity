@@ -113,12 +113,18 @@ console.warn = (): void => originalConsoleWarn('runner worker dependency reporte
 if (
   request.trustedCliExecution === true &&
   request.backend !== 'claude-acp' &&
-  request.backend !== 'codex-acp'
+  request.backend !== 'codex-acp' &&
+  request.backend !== 'opencode-acp'
 ) {
   throw new Error('trusted CLI execution requires a supported brokered-tool backend');
 }
-// Gateway admission does not authorize secret tools: the server binds the bearer
-// to its tool scope. OpenCode receives knowledge access without trusted execution.
+// Brokered tools are exposed only through the ACP MCP gateway — and, within ACP,
+// only to the agents admitted to it. `opencode-acp` is one of them since ADR 0014
+// Amendment 4, which is a decision about whose secrets it may spend and not a
+// consequence of it speaking ACP. Both gates therefore still name their members
+// rather than asking whether the transport is ACP: the two questions have the same
+// answer today only because every current member was admitted one at a time. A
+// fourth adapter arrives here refused until that decision is taken for it too.
 if (
   request.mcpGatewayToken !== undefined &&
   request.backend !== 'claude-acp' &&
@@ -150,8 +156,8 @@ const usesInternalMcpProxy = request.mcpServers?.some(
 );
 // External MCP bindings are intentionally backend-neutral. Their separate proxy bearer
 // proves only turn/project identity and does not expose the built-in Verity gateway or
-// trusted CLI executor. Knowledge-scoped gateway bearers also grant no execution.
-// A bearer is the Server's decision that this turn is entitled to its scoped tools.
+// trusted CLI executor that `mcpGatewayToken` restricts to Claude/Codex above.
+// A bearer is the Server's decision that this turn is entitled to brokered tools.
 // Without a URL to redeem it against, the container is misprovisioned and no retry or
 // prompt can recover. Fail closed instead of silently starting a tool-less agent;
 // empty counts as absent, matching `supervisorWorkerEnv`.

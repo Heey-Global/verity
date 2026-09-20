@@ -55,9 +55,9 @@ All supported model backends — Claude, Codex and OpenCode (including Qwen) —
 access documents through the `verity_knowledge` tool.
 Ask the agent to search the library or work with a particular document. The server
 checks the project's current grants on every call; documents are retrieved on
-demand instead of copied wholesale into the Sandbox or system prompt. OpenCode
-receives a knowledge-only gateway credential; it does not gain access to secret
-tools. Existing sessions receive the current knowledge guidance on their next turn.
+demand instead of copied wholesale into the Sandbox or system prompt. All three backends use the existing authenticated gateway; knowledge access is
+governed by project folder grants independently of brokered-secret approvals.
+Existing sessions receive the current knowledge guidance on their next turn.
 
 One useful arrangement is a read-only `Sources` folder and a writable `Wiki`
 folder. Ask the agent to read sources and maintain summaries and an index in the

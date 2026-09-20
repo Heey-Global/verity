@@ -55,10 +55,21 @@ const OVERSIZE_DRAIN_GRACE_MS = 2_000;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 const WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp', 'pi']);
-// Knowledge access is available to every ACP backend; secret execution is narrower.
-// The server-side bearer registry enforces which tools each gateway token may call.
-const GATEWAY_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp']);
-const ACP_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp']);
+// The transports that reach the brokered Verity tools over the loopback MCP gateway
+// (ADR 0014 D1). Only these may
+// carry a gateway bearer on start-turn.
+//
+// `opencode-acp` joined them with ADR 0014 Amendment 4: which agents may spend the
+// operator's secrets is a decision, and that decision has now been taken for
+// OpenCode. It is still NOT the same question as "is this ACP" — a fourth adapter
+// has to be admitted here deliberately, not by speaking the protocol. The gates
+// stay separate literals so none can drift into the others by accident: this set,
+// `carriesBrokeredSecretTools` (packages/session/src/turn-system-prompt.ts), the
+// `acpBackend` flag that decides whether a bearer is minted at all
+// (packages/session/src/runner-supervisor-client.ts), and the two independent
+// re-checks in packages/session/src/runner-worker-entry.ts. They must agree; a
+// member added to one alone refuses the turn it was meant to admit.
+const ACP_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp']);
 // The subset of WORKER_BACKENDS that the PRODUCTION supervisor actually launches.
 // A start-turn for any backend outside this set is rejected at runtime (see the
 // workerBackends gate below), so it is the real capability boundary — distinct
@@ -1453,7 +1464,7 @@ export function validateStartTurnRequest(request) {
   const mcpGatewayToken = optionalString(request.mcpGatewayToken, 'mcpGatewayToken', 512);
   if (
     mcpGatewayToken !== undefined &&
-    (mcpGatewayToken === '' || !GATEWAY_WORKER_BACKENDS.has(request.backend))
+    (mcpGatewayToken === '' || !ACP_WORKER_BACKENDS.has(request.backend))
   ) {
     throw new Error('invalid mcpGatewayToken');
   }

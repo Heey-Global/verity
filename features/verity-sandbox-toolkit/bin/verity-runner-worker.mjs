@@ -31106,7 +31106,7 @@ var originalConsoleError = console.error.bind(console);
 var originalConsoleWarn = console.warn.bind(console);
 console.error = () => originalConsoleError("runner worker dependency reported an error");
 console.warn = () => originalConsoleWarn("runner worker dependency reported a warning");
-if (request.trustedCliExecution === true && request.backend !== "claude-acp" && request.backend !== "codex-acp") {
+if (request.trustedCliExecution === true && request.backend !== "claude-acp" && request.backend !== "codex-acp" && request.backend !== "opencode-acp") {
   throw new Error("trusted CLI execution requires a supported brokered-tool backend");
 }
 if (request.mcpGatewayToken !== void 0 && request.backend !== "claude-acp" && request.backend !== "codex-acp" && request.backend !== "opencode-acp") {

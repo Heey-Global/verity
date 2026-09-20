@@ -1,15 +1,16 @@
-import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Backend } from './backend.js';
+import type { Backend, RunnerSupervisorBackend } from './backend.js';
 import { InMemoryEventBus } from './bus.js';
 import type { RunnerFrameStore } from './file-tail-runner-client.js';
 import { stampFrame } from './runner-transport.js';
 import {
   DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS,
   MAX_SUPERVISOR_REQUEST_BYTES,
+  MCP_GATEWAY_BEARER_MAX_BYTES,
   MIN_SUPPORTED_PROTOCOL_VERSION,
   requestRunnerSupervisor,
   runSupervisorTrustedCli,
@@ -488,7 +489,7 @@ describe('SupervisorRunnerClient', () => {
     });
   });
 
-  it('mints a knowledge bearer for OpenCode without enabling trusted execution', async () => {
+  it('mints a bearer for an OpenCode ACP turn', async () => {
     const issued: string[] = [];
     const request = await captureStartRequest(
       'opencode-acp-gateway-runtime',
@@ -506,10 +507,532 @@ describe('SupervisorRunnerClient', () => {
         },
       },
     );
-    // Knowledge must reach OpenCode without granting the privileged executor.
+    // This is where the decision is actually enforced — every gate downstream is a
+    // re-check (ADR 0014 Amendment 4). The failure it guards is not a widened
+    // OpenCode, it is a BROKEN one in either direction: minting for a supervisor
+    // whose `ACP_WORKER_BACKENDS` does not know the backend gets `invalid
+    // mcpGatewayToken` and no turn at all, while withholding the bearer from an
+    // admitted backend starts the agent with an EMPTY `mcpServers` list — no
+    // `verity_secret_run`, no `verity_http_request`, and nothing saying so.
     expect(issued).toEqual(['turn-1']);
-    expect(request).toHaveProperty('mcpGatewayToken', 'gateway-token-1');
-    expect(request).toMatchObject({ backend: 'opencode-acp', trustedCliExecution: false });
+    expect(request).toMatchObject({
+      backend: 'opencode-acp',
+      trustedCliExecution: true,
+      mcpGatewayToken: 'gateway-token-1',
+    });
+  });
+
+  // The explanation recognizes the stale Sandbox by substring, against a message
+  // produced in another package with no shared constant — the supervisor is a
+  // boundary binary and importing from it is not the relationship these two have.
+  // So the pairing is what needs pinning: reword the supervisor's refusal and the
+  // only diagnostic this deployment gets for an old container disappears, with every
+  // test above still green, because they assert against their own fake server's
+  // literal rather than against the real emitter.
+  it('keeps the supervisor speaking the refusal the explanation recognizes', async () => {
+    const supervisor = await readFile(
+      new URL(
+        '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(supervisor).toContain("throw new Error('invalid mcpGatewayToken')");
+    // Both ends of the pairing, so this fails whichever one moves.
+    const client = await readFile(
+      new URL('./runner-supervisor-client.ts', import.meta.url),
+      'utf8',
+    );
+    expect(client).toContain("cause.message.includes('invalid mcpGatewayToken')");
+    // A stale supervisor rejects an OpenCode start on TWO counts — the bearer and
+    // `trustedCliExecution` — and answers with whichever gate it reaches first, which
+    // is why BOTH are pinned rather than the order they sit in. Recognizing one would
+    // make a reordering of the other's gate silently fatal to the diagnostic, and no
+    // test above would notice: they assert against their own fake's literal, and the
+    // fake has no gates to reorder.
+    expect(supervisor).toContain("throw new Error('invalid trustedCliExecution')");
+    expect(client).toContain("cause.message.includes('invalid trustedCliExecution')");
+    // The bearer refusal is emitted on THREE counts, not two: `optionalString` answers
+    // the same four words for an oversize token. That is the count the explanation can
+    // get wrong in the dangerous direction — a live Server defect read as container
+    // age — so the bound is taken from the supervisor's own call rather than restated,
+    // and tightening it there without following here fails right here.
+    const bound = /optionalString\(\s*request\.mcpGatewayToken,\s*'mcpGatewayToken',\s*(\d+)/u.exec(
+      // Numeric separators only, so a bound rewritten as `1_024` still reads as a
+      // number. Stripping every underscore in the file would rename identifiers the
+      // anchor may one day have to match.
+      supervisor.replace(/(?<=\d)_(?=\d)/gu, ''),
+    );
+    expect(bound?.[1]).toBeDefined();
+    expect(Number(bound?.[1])).toBe(MCP_GATEWAY_BEARER_MAX_BYTES);
+    // The number alone is half a mirror. Which side of it is admissible, and what is
+    // being counted, decide how a bearer AT the bound is classified — and that is the
+    // classification with a harmful wrong answer, since it sends a live Server defect
+    // to the container-recreation runbook. So pin the comparison itself: exclusive,
+    // and in BYTES, which is what `admissibleGatewayBearer` mirrors with `<=` on
+    // `Buffer.byteLength`. A supervisor switching to `>=`, or to UTF-16 units, changes
+    // the answer for exactly one bearer length and nothing else would notice.
+    // Whitespace-tolerant like the two below it: this is the shared `optionalString`
+    // helper, which validates more fields than the bearer, and a Prettier rewrap or a
+    // renamed bound would otherwise fail a test named for the gateway refusal with a
+    // message that points at neither.
+    expect(supervisor).toMatch(
+      /typeof value !== 'string' \|\|\s*Buffer\.byteLength\(value\) > \w+/u,
+    );
+    // The other half of the same mirror, and the half whose absence would be worse:
+    // `admissibleGatewayBearer` treats an empty bearer as a Server defect on the
+    // strength of the supervisor refusing it separately from the backend check. If
+    // that condition ever left this `if`, an empty bearer would mean only "unadmitted
+    // backend" — and a genuinely stale container sent one would be told that
+    // recreating it will not help, which is the misdiagnosis this whole function
+    // exists to prevent, delivered with more confidence than the bare words it
+    // replaced.
+    expect(supervisor).toMatch(
+      /mcpGatewayToken !== undefined &&\s*\(mcpGatewayToken === '' \|\| !ACP_WORKER_BACKENDS\.has\(request\.backend\)\)/u,
+    );
+    // Both gates above open on the field being PRESENT, and that — not the backend
+    // list — is what makes a CURRENT supervisor safe under an OLDER Server, which
+    // sends neither field for OpenCode. ADR 0014 Amendment 4 and its runbook state
+    // that asymmetry as the reason a refreshed container keeps serving OpenCode on a
+    // Server that has not been deployed yet — or has been rolled back. A supervisor
+    // that started refusing an ABSENT field would invert it, and every test here
+    // would still pass, because every one of them sends the field.
+    expect(supervisor).toMatch(
+      /if \(request\.trustedCliExecution === true &&\s*!ACP_WORKER_BACKENDS\.has\(request\.backend\)\)/u,
+    );
+  });
+
+  // The runbook's "Recognize it" section is a list of messages an operator matches by
+  // sight, and its whole job is to sort a stale container from a Server composition
+  // defect — two failures with opposite remedies. Reword one of these messages here
+  // and the page keeps showing the old wording: the operator finds no match, and the
+  // one page written for this failure stops answering it. Nothing else pairs the two,
+  // since the tests above assert against their own fakes' literals.
+  it('keeps the runbook quoting the refusals this client actually emits', async () => {
+    const page = 'docs/runbooks/opencode-brokered-tools-container-refresh.md';
+    const runbook = await readFile(new URL(`../../../${page}`, import.meta.url), 'utf8');
+    const client = await readFile(
+      new URL('./runner-supervisor-client.ts', import.meta.url),
+      'utf8',
+    );
+    // The refusal the client composes sends the operator to this page BY PATH. Read
+    // through the same literal the message carries, so a rename cannot leave the
+    // shipped error pointing at a page that no longer exists: it fails here, at the
+    // literal whoever renames it is already editing.
+    expect(client).toContain(page);
+    // The page wraps its quotes to prose width and separates them by blank lines, so
+    // read each quoted message as one unwrapped line.
+    const quoted = [...runbook.matchAll(/```\n([\s\S]*?)```/gu)]
+      .flatMap((block) => (block[1] ?? '').split(/\n\s*\n/u))
+      .map((paragraph) => paragraph.replace(/\s+/gu, ' ').trim())
+      .filter((line) => line.startsWith('invalid '));
+    // Two stale-container shapes and two composition defects. A quote deleted from the
+    // page is as much a drift as a quote gone stale.
+    expect(quoted).toHaveLength(4);
+    for (const line of quoted) {
+      // The bare words are what the client matches the supervisor's refusal on; the
+      // sentence after the dash is what it adds. Pin both halves against their source.
+      const [, refusal, explanation] = /^(invalid \w+) — (.+)$/u.exec(line) ?? [];
+      expect(refusal).toBeDefined();
+      expect(client).toContain(`cause.message.includes('${refusal!}')`);
+      // Eight words reaches well into the diagnosis and stops short of the first
+      // interpolated hole (`${…}` for the byte count, the refused field name), which
+      // no quotable page can carry verbatim.
+      expect(client).toContain(explanation!.split(' ').slice(0, 8).join(' '));
+    }
+  });
+
+  // `acpBackend` decides who is MINTED a bearer; `carriesBrokeredSecretTools` decides
+  // who is TOLD the project's secret names. Admitting a backend to the second alone is
+  // the quiet failure: the session is handed a list of aliases and no bearer to spend
+  // them with, which is the dead end that gate's own comment warns about, paid for with
+  // a disclosure. The type system does not catch it — an added `case` is as valid as
+  // any other — and neither does the behavioural suite, which enumerates the admitted
+  // members and so cannot see one too many. So pin that the two lists are one list.
+  // The same helper runs in packages/server/src/embedded.test.ts, over the other end
+  // of the same chain. Keep the two in step.
+  it('tells exactly the backends it mints a bearer for which secrets exist', async () => {
+    const members = async (url: URL, gate: RegExp): Promise<string[]> => {
+      const source = await readFile(url, 'utf8');
+      const region = gate.exec(source)?.[0];
+      expect(region).toBeDefined();
+      // Every quoted literal in the region, not the ones that look like today's
+      // backend ids: an admitted backend named without an `-acp` suffix would be
+      // invisible to a narrower pattern on BOTH sides at once, and two lists that
+      // cannot see the same member still compare equal.
+      return [...(region ?? '').matchAll(/'([^'\n]+)'/gu)].map((match) => match[1]!).sort();
+    };
+
+    const minted = await members(
+      new URL('./runner-supervisor-client.ts', import.meta.url),
+      /this\.acpBackend =[\s\S]*?;/u,
+    );
+    const told = await members(
+      new URL('./turn-system-prompt.ts', import.meta.url),
+      // The `true` arm only: the switch's other arms name no backend today, but a
+      // region running to the end of the function would start counting them if one
+      // ever did.
+      /function carriesBrokeredSecretTools[\s\S]*?return true;/u,
+    );
+
+    expect(told).toEqual(minted);
+    // Not a vacuous pass: two empty matches are equal, and the regions are the fragile
+    // part of this guard.
+    expect(told.length).toBeGreaterThanOrEqual(3);
+  });
+
+  /** Refuse every start-turn the way an old supervisor refuses a bearer it does not
+   *  admit, and return what the launch threw. Records the frames it answered so
+   *  callers can prove the refusal landed on a `start-turn` carrying the bearer their
+   *  scenario is named for — without that, a client that opened with some other frame,
+   *  or dropped the bearer on its way to the wire, would send these tests green for
+   *  the wrong reason, since this fake refuses whatever arrives first. */
+  async function refusedStart(
+    runtimeName: string,
+    error: string,
+    supervisorBackend: RunnerSupervisorBackend,
+    frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [],
+    // A bearer registry, because a supervisor cannot refuse a bearer it was never
+    // sent: without one these fakes would exercise the no-bearer path and never
+    // reach the case they are named for. The value matters — the explanation reads
+    // it to tell an unadmitted backend from an empty token — so each caller states
+    // the one its scenario would really have carried. `null` means no registry at
+    // all, which is the one case that really does put no bearer on the wire; it
+    // cannot be spelled `undefined`, which a default parameter would swallow back
+    // into the token below.
+    bearer: string | null = 'gateway-token-1',
+    // Bearers the client retired. A refused start is the NORMAL outcome for every
+    // OpenCode turn in a project waiting for its container refresh, so the window in
+    // which its bearer stays spendable is the deploy window, not one turn — and the
+    // registry's own expiry is the only other thing closing it.
+    released: string[] = [],
+  ): Promise<Error> {
+    const runtime = join(dir, runtimeName);
+    await mkdir(runtime, { recursive: true });
+    const server = createServer((peer) => {
+      sockets.add(peer);
+      peer.once('close', () => sockets.delete(peer));
+      peer.once('data', (chunk: Buffer) => {
+        frames.push(JSON.parse(chunk.toString('utf8')) as { kind?: unknown });
+        peer.end(`${JSON.stringify({ ok: false, error })}\n`);
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const client = new SupervisorRunnerClient(
+      { runnerSupervisorBackend: supervisorBackend } as Backend,
+      {
+        runtimeDir: runtime,
+        store,
+        bus: new InMemoryEventBus(),
+        ...(bearer === null
+          ? {}
+          : {
+              mcpGatewayTokens: {
+                issue: () => bearer,
+                release: (token: string) => released.push(token),
+              },
+            }),
+      },
+    );
+    const turn = client.startTurn(
+      {
+        store: {} as never,
+        worktree: '/work/project',
+        cwd: '/work/project',
+        storeSessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+        prompt: 'hello',
+      },
+      {},
+    );
+    return await turn.result.then(
+      () => {
+        throw new Error('start was expected to fail');
+      },
+      (thrown: Error) => thrown,
+    );
+  }
+
+  // The failure mode this deployment creates for itself: ADR 0006 D9 keeps a Sandbox
+  // from an older release attesting cleanly, so admitting OpenCode to the gateway
+  // Server-side meets a supervisor whose `ACP_WORKER_BACKENDS` predates the decision.
+  // It refuses — correctly, failing closed — with four words that describe a bearer
+  // and not the container age that actually caused it, and no other seam sees the
+  // combination. Silence here is the silent failure: every OpenCode turn in that
+  // deployment dies at start-turn and the operator reads it as a broken Server.
+  it('explains an OpenCode start refused by a Sandbox older than the gateway decision', async () => {
+    const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
+    const released: string[] = [];
+    const error = await refusedStart(
+      'stale-opencode-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      frames,
+      'gateway-token-1',
+      released,
+    );
+
+    expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
+    expect(frames[0]?.mcpGatewayToken).toBe('gateway-token-1');
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect(error.message).toMatch(/Recreate the project container/u);
+    // The supervisor's own words stay reachable; only the sentence around them is new.
+    expect((error.cause as Error | undefined)?.message).toMatch(/invalid mcpGatewayToken/u);
+    // And the bearer this refused start minted is retired with it. Nothing spends it
+    // — the turn never began — but on this deployment every OpenCode turn takes this
+    // path until the container is recreated, so a refusal that kept its bearer live
+    // would leave one spendable token per failed turn for the whole deploy window.
+    expect(released).toEqual(['gateway-token-1']);
+  });
+
+  // The OTHER cause of the same four words, and the reason the explanation reads the
+  // bearer instead of guessing: a Server that mints an empty one is refused by EVERY
+  // supervisor, current or stale. Neither cause is transient, so a single hedged
+  // message cannot serve both — it would send a Server composition defect to a
+  // remediation that reprovisions a container and still does not fix it.
+  it('names a Server defect rather than an old container when the bearer is empty', async () => {
+    const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
+    const error = await refusedStart(
+      'empty-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      frames,
+      '',
+    );
+
+    // The premise of the whole branch: an empty bearer is a value the Server SENT,
+    // not one it omitted. A client that dropped the field instead would be describing
+    // a different frame than the one the supervisor refused, and every assertion
+    // below would still pass.
+    expect(frames[0]).toHaveProperty('mcpGatewayToken', '');
+    expect(error.message).toMatch(/Server composition defect/u);
+    expect(error.message).toMatch(/empty/u);
+    expect(error.message).toMatch(/mcpGatewayTokens/u);
+    // The load-bearing half: this operator must NOT be sent to recreate a container
+    // that was never the problem.
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+    expect(error.message).toMatch(/recreating the project container will not change it/u);
+  });
+
+  // The other half: the explanation must not swallow a real one. A Claude or Codex
+  // turn refused this way is a bearer defect in a deployment where the backend has
+  // been admitted for releases — explaining it as an outdated container would send
+  // the operator to recreate a container that was never the problem.
+  it('leaves the same refusal alone on a backend that was already admitted', async () => {
+    const frames: Array<{ kind?: unknown }> = [];
+    const error = await refusedStart(
+      'stale-claude-runtime',
+      'invalid mcpGatewayToken',
+      'claude-acp',
+      frames,
+    );
+
+    expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // The THIRD cause of those same four words, and the one that made "non-empty string
+  // means stale container" too strong: the supervisor bounds the bearer's size with the
+  // same message it uses for emptiness. A Server minting an oversize token is refused by
+  // every supervisor that ever shipped, so reading it as container age would send an
+  // operator to reprovision against a defect reprovisioning cannot touch.
+  it('names a Server defect when the bearer is refused for being oversize', async () => {
+    const error = await refusedStart(
+      'oversize-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      [],
+      'x'.repeat(MCP_GATEWAY_BEARER_MAX_BYTES + 1),
+    );
+
+    expect(error.message).toMatch(/Server composition defect/u);
+    expect(error.message).toMatch(/over the 512-byte limit/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // The boundary itself, from the other side: a bearer AT the limit is one the
+  // supervisor would have accepted on shape, so refusing it says something about the
+  // supervisor rather than about the token. An off-by-one in the mirrored bound would
+  // otherwise turn the last admissible bearer into a phantom Server defect.
+  it('still reads a refusal of a bearer at the size limit as an outdated Sandbox', async () => {
+    const error = await refusedStart(
+      'limit-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      [],
+      'x'.repeat(MCP_GATEWAY_BEARER_MAX_BYTES),
+    );
+
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect(error.message).not.toMatch(/Server composition defect/u);
+  });
+
+  // The refusal a turn with NO bearer actually gets, and the reason recognizing the
+  // bearer refusal alone was not enough: `trustedCliExecution` rides on backend
+  // identity, not on whether a bearer was minted, so a turn that mints none sails past
+  // the bearer gate and is refused at the second one. This client is exercised at the
+  // shape that produces it — no registry, hence no bearer on the wire. In production
+  // that shape is a turn with no session to attribute to (`sessionId: null`), which is
+  // the only way `embedded.ts` composes a supervisor client without the registry; the
+  // same file now throws for a session-attributed turn that lacks one. That path is
+  // the ephemeral/meta-query one an operator uses while diagnosing the first failure.
+  it('explains a stale refusal that lands on the trusted-CLI gate instead', async () => {
+    const frames: Array<{ kind?: unknown; trustedCliExecution?: unknown }> = [];
+    const error = await refusedStart(
+      'stale-opencode-trusted-cli-runtime',
+      'invalid trustedCliExecution',
+      'opencode-acp',
+      frames,
+      null,
+    );
+
+    // The premise: no bearer on the wire, so only the second gate could have produced
+    // this — and the flag really was sent, which is what the explanation describes.
+    expect(frames[0]).not.toHaveProperty('mcpGatewayToken');
+    expect(frames[0]).toHaveProperty('trustedCliExecution', true);
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect(error.message).toMatch(/trusted-CLI execution flag/u);
+    expect(error.message).toMatch(/Recreate the project container/u);
+  });
+
+  // The same words on a backend admitted for releases are a real defect, not age.
+  it('leaves a trusted-CLI refusal alone on a backend that was already admitted', async () => {
+    const error = await refusedStart(
+      'trusted-cli-claude-runtime',
+      'invalid trustedCliExecution',
+      'claude-acp',
+    );
+
+    expect(error.message).toMatch(/invalid trustedCliExecution/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // Nothing about an empty bearer is OpenCode-specific — the registry is shared, and
+  // every brokered-tool backend draws from it — so the defect arm is deliberately NOT
+  // narrowed the way the stale-container arms are. A Claude operator meeting this
+  // deserves the same sentence rather than four bare words.
+  it('names the same Server defect for an empty bearer on any brokered-tool backend', async () => {
+    const error = await refusedStart(
+      'empty-bearer-claude-runtime',
+      'invalid mcpGatewayToken',
+      'claude-acp',
+      [],
+      '',
+    );
+
+    expect(error.message).toMatch(/Server composition defect/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // The bearer refusal for a turn that carried no bearer describes nothing real: that
+  // gate is reached only for a bearer that WAS sent. The wrong move is folding it into
+  // the empty-bearer branch — `undefined` and `''` are not the same claim, and a Server
+  // composition defect that did not happen is a diagnosis the operator cannot disprove.
+  it('adds nothing when the refusal arrives for a turn that carried no bearer', async () => {
+    const frames: Array<{ kind?: unknown; mcpGatewayToken?: unknown }> = [];
+    const error = await refusedStart(
+      'absent-bearer-runtime',
+      'invalid mcpGatewayToken',
+      'opencode-acp',
+      frames,
+      null,
+    );
+
+    expect(frames[0]).not.toHaveProperty('mcpGatewayToken');
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).not.toMatch(/Server composition defect/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // Recognition is by message text, so pin that it is narrow: an unrelated refusal on
+  // the SAME backend keeps its own words rather than being dressed up as container age.
+  it('leaves an unrelated OpenCode refusal alone', async () => {
+    const frames: Array<{ kind?: unknown }> = [];
+    const error = await refusedStart(
+      'busy-opencode-runtime',
+      'supervisor is busy',
+      'opencode-acp',
+      frames,
+    );
+
+    expect(frames.map((frame) => frame.kind)).toEqual(['start-turn']);
+    expect(error.message).toMatch(/supervisor is busy/u);
+    expect(error.message).not.toMatch(/predates OpenCode/u);
+  });
+
+  // There are TWO throw sites for a decided refusal, and the tests above only reach
+  // the first. The second is the one a stale Sandbox is most likely to be met at in
+  // practice: an overloaded old supervisor that drops the first answer sends the
+  // client through reconcile and a re-send, and the refusal lands on the second frame.
+  // Explaining one site and not the other would leave the operator reading four
+  // opaque words in exactly the deployment this explanation exists for.
+  it('explains the same stale refusal when it lands on the re-sent frame', async () => {
+    const runtime = join(dir, 'stale-opencode-resend-runtime');
+    await mkdir(runtime, { recursive: true });
+    const kinds: string[] = [];
+    const server = createServer((peer) => {
+      sockets.add(peer);
+      peer.once('close', () => sockets.delete(peer));
+      peer.once('data', (chunk: Buffer) => {
+        const kind = String((JSON.parse(chunk.toString('utf8')) as { kind?: unknown }).kind);
+        kinds.push(kind);
+        // Swallow the FIRST start-turn: unacknowledged, so the client may re-send.
+        if (kind === 'start-turn' && kinds.filter((k) => k === 'start-turn').length === 1) return;
+        // `get-turn` with no state is "nothing ever claimed this turn", which is what
+        // makes the re-send safe — the client will not send a second frame without it.
+        if (kind === 'get-turn') {
+          peer.end(`${JSON.stringify({ ok: true })}\n`);
+          return;
+        }
+        peer.end(`${JSON.stringify({ ok: false, error: 'invalid mcpGatewayToken' })}\n`);
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const client = new SupervisorRunnerClient(
+      { runnerSupervisorBackend: 'opencode-acp' } as Backend,
+      {
+        runtimeDir: runtime,
+        store,
+        bus: new InMemoryEventBus(),
+        // The real 15 s "did you hear me" bound is not what this test is about; it
+        // only has to be crossed. The reconcile floor
+        // (START_TURN_MISSING_STATE_MIN_MS) is fixed and still runs for real.
+        startAcceptTimeoutMs: 50,
+        // Non-empty, so this exercises the unadmitted-backend branch rather than the
+        // empty-bearer one — the re-send carries the same frame as the first attempt.
+        mcpGatewayTokens: { issue: () => 'gateway-token-1', release: () => {} },
+      },
+    );
+    const turn = client.startTurn(
+      {
+        store: {} as never,
+        worktree: '/work/project',
+        cwd: '/work/project',
+        storeSessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+        prompt: 'hello',
+      },
+      {},
+    );
+    const error = await turn.result.then(
+      () => {
+        throw new Error('start was expected to fail');
+      },
+      (thrown: Error) => thrown,
+    );
+
+    // Proves the refusal really arrived on the SECOND frame; without this the test
+    // would pass against a client that never re-sent at all.
+    expect(kinds.filter((kind) => kind === 'start-turn')).toHaveLength(2);
+    expect(error.message).toMatch(/invalid mcpGatewayToken/u);
+    expect(error.message).toMatch(/predates OpenCode's admission/u);
+    expect((error.cause as Error | undefined)?.message).toMatch(/invalid mcpGatewayToken/u);
   });
 
   it('carries proxy-bound MCP descriptors and a separate bearer for OpenCode', async () => {
@@ -557,29 +1080,26 @@ describe('SupervisorRunnerClient', () => {
   // Retiring is keyed on the bearer this start attempt minted, never on its turn id:
   // a second attempt for one turn would otherwise cut off a worker still using the
   // first attempt's bearer.
-  it.each(['claude-acp', 'codex-acp', 'opencode-acp'] as const)(
-    'retires the %s bearer it minted once the turn settles',
-    async (backend) => {
-      const released: string[] = [];
-      let minted = 0;
-      await captureStartRequest(
-        'acp-gateway-release-runtime',
-        { prompt: 'hello' },
-        {
-          backend: { runnerSupervisorBackend: backend } as Backend,
-          clientOptions: {
-            mcpGatewayTokens: {
-              issue: () => `gateway-token-${(minted += 1)}`,
-              release: (token: string) => released.push(token),
-            },
+  it('retires the bearer it minted once the turn settles', async () => {
+    const released: string[] = [];
+    let minted = 0;
+    await captureStartRequest(
+      'acp-gateway-release-runtime',
+      { prompt: 'hello' },
+      {
+        backend: { runnerSupervisorBackend: 'claude-acp' } as Backend,
+        clientOptions: {
+          mcpGatewayTokens: {
+            issue: () => `gateway-token-${(minted += 1)}`,
+            release: (token: string) => released.push(token),
           },
         },
-      );
-      // captureStartRequest settles the turn by rejecting the launch — a failed turn has
-      // to retire its bearer just as a successful one does.
-      expect(released).toEqual(['gateway-token-1']);
-    },
-  );
+      },
+    );
+    // captureStartRequest settles the turn by rejecting the launch — a failed turn has
+    // to retire its bearer just as a successful one does.
+    expect(released).toEqual(['gateway-token-1']);
+  });
 
   it('restores Codex rollout state before routing resume through start-turn', async () => {
     const runtime = join(dir, 'codex-runtime');

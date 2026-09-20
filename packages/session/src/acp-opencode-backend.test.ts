@@ -691,7 +691,7 @@ describe('AcpOpenCodeBackend', () => {
     );
   });
 
-  it('forwards a gateway it is handed, leaving admission an upstream decision', async () => {
+  it('offers the gateway as an MCP server when one is minted for the turn', async () => {
     const fake = acpSpawner({ httpMcp: true });
     await new AcpOpenCodeBackend().run({
       store: ctx.store,
@@ -700,9 +700,17 @@ describe('AcpOpenCodeBackend', () => {
       cwd: '/work/project',
       prompt: 'Use Verity tools',
       spawner: fake.spawner,
-      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'unused-turn-bearer' },
+      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'opencode-turn-bearer' },
     });
-    // OpenCode receives the scoped knowledge gateway through its HTTP MCP support.
+    // The transport CAN carry the gateway — that is what `mcpCapabilities.http`
+    // says — and since ADR 0014 Amendment 4 production mints a bearer for OpenCode
+    // turns, so this is now the live path to `verity_secret_run` rather than a
+    // hypothetical. The profile holds no part of the admission decision: it offers
+    // whatever gateway the caller hands it, and who gets handed one is decided
+    // upstream in `ACP_WORKER_BACKENDS` and the supervisor client's `acpBackend`.
+    // What this pins is that the offer is actually made — a turn admitted upstream
+    // and then dropped here starts with an empty `mcpServers` list and no tools,
+    // which looks exactly like a turn that was never admitted at all.
     expect(write(fake.writes, 'session/new')).toMatchObject({
       params: {
         mcpServers: [
@@ -710,7 +718,7 @@ describe('AcpOpenCodeBackend', () => {
             type: 'http',
             name: 'verity',
             url: 'http://relay:8080/internal/mcp',
-            headers: [{ name: 'Authorization', value: 'Bearer unused-turn-bearer' }],
+            headers: [{ name: 'Authorization', value: 'Bearer opencode-turn-bearer' }],
           },
         ],
       },
