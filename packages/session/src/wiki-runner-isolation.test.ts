@@ -139,14 +139,10 @@ it('materializes only model gateway settings in a fresh OpenCode home and remove
     env: { OPENCODE_CONFIG: configPath },
     spawnChild: (_command, _args, opts) => {
       home = opts.env!.HOME!;
-      return spawn(
-        process.execPath,
-        [
-          '-e',
-          "process.stdout.write(require('fs').readFileSync(process.env.OPENCODE_CONFIG,'utf8'))",
-        ],
-        opts,
-      );
+      // Reading the generated file is the behavior under test. Starting another
+      // Node runtime here adds thread creation to a suite that already exercises
+      // many child processes, and can fail before reading the file under CI load.
+      return spawn('/usr/bin/cat', [opts.env!.OPENCODE_CONFIG!], opts);
     },
   });
   try {

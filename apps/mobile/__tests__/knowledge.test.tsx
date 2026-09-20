@@ -136,7 +136,13 @@ test('a delayed original replacement cannot reopen a document after navigation',
   jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({
     canceled: false,
     assets: [
-      { uri: 'file:///source.pdf', name: 'source.pdf', size: 10, mimeType: 'application/pdf' },
+      {
+        uri: 'file:///source.pdf',
+        name: 'source.pdf',
+        size: 10,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
     ],
   });
   jest
@@ -627,12 +633,19 @@ test('validates every selected original before starting a multi-file upload', as
   jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({
     canceled: false,
     assets: [
-      { uri: 'cache/ok.pdf', name: 'ok.pdf', size: 12, mimeType: 'application/pdf' },
+      {
+        uri: 'cache/ok.pdf',
+        name: 'ok.pdf',
+        size: 12,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
       {
         uri: 'cache/large.pdf',
         name: 'large.pdf',
         size: 11 * 1024 * 1024,
         mimeType: 'application/pdf',
+        lastModified: 0,
       },
     ],
   });
@@ -655,8 +668,20 @@ test('refreshes successful original uploads when a later upload fails', async ()
   jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({
     canceled: false,
     assets: [
-      { uri: 'cache/a.pdf', name: 'a.pdf', size: 12, mimeType: 'application/pdf' },
-      { uri: 'cache/b.pdf', name: 'b.pdf', size: 12, mimeType: 'application/pdf' },
+      {
+        uri: 'cache/a.pdf',
+        name: 'a.pdf',
+        size: 12,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
+      {
+        uri: 'cache/b.pdf',
+        name: 'b.pdf',
+        size: 12,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
     ],
   });
   jest
