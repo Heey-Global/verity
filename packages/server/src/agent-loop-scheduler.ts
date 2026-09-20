@@ -87,7 +87,11 @@ export function startAgentLoopScheduler(deps: AgentLoopSchedulerDeps): AgentLoop
         await finish('error', 'project not found');
         return;
       }
-      if (project.state !== 'active') {
+      if (
+        project.state !== 'active' &&
+        project.state !== 'sleeping' &&
+        project.state !== 'waking'
+      ) {
         await finish('skipped', `project is not active (state=${project.state})`);
         return;
       }

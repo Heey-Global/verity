@@ -1362,6 +1362,8 @@ export interface Provisioner {
   recoverInterruptedWake?(projectId: string): Promise<ProjectRecord>;
   /** Restart a retained Sandbox with freshly issued authority. */
   wakeProject?(projectId: string): Promise<ProjectRecord>;
+  /** Readiness gate used by turns and Agent Loops; concurrent callers share one wake. */
+  ensureProjectSandboxAwake?(projectId: string): Promise<ProjectRecord>;
   /** Recreate only the project container using the existing clone path.
    * Does not fetch, reset, delete, or otherwise mutate the project worktree. */
   recreateContainer?(projectId: string, opts?: RecreateContainerOptions): Promise<ProjectRecord>;
@@ -2405,6 +2407,7 @@ export class ProvisionerImpl implements Provisioner {
     { promise: Promise<boolean>; requestingSessionIds: Set<string> }
   >();
   private readonly projectSandboxActivities = new Map<string, number>();
+  private readonly projectWakeAttempts = new Map<string, Promise<ProjectRecord>>();
 
   attachProjectBusyProbe(
     probe: (projectId: string, exceptSessionIds?: ReadonlySet<string>) => Promise<boolean>,
@@ -2684,7 +2687,31 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
+  async ensureProjectSandboxAwake(projectId: string): Promise<ProjectRecord> {
+    const project = await this.opts.store.getProject(projectId);
+    if (project === undefined) throw new ProvisioningError(`project ${projectId} not found`);
+    if (project.state === 'active') return project;
+    if (project.state !== 'sleeping' && !this.projectWakeAttempts.has(projectId)) {
+      throw new ProvisioningError(`project ${projectId} is ${project.state}`);
+    }
+    return this.wakeProject(projectId);
+  }
+
   async wakeProject(projectId: string): Promise<ProjectRecord> {
+    const existing = this.projectWakeAttempts.get(projectId);
+    if (existing !== undefined) return existing;
+    const attempt = this.wakeProjectOnce(projectId);
+    this.projectWakeAttempts.set(projectId, attempt);
+    try {
+      return await attempt;
+    } finally {
+      if (this.projectWakeAttempts.get(projectId) === attempt) {
+        this.projectWakeAttempts.delete(projectId);
+      }
+    }
+  }
+
+  private async wakeProjectOnce(projectId: string): Promise<ProjectRecord> {
     return this.withProjectExclusiveMutation(projectId, async () => {
       const project = await this.opts.store.getProject(projectId);
       if (project === undefined) throw new ProvisioningError('project gone mid-wake');

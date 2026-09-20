@@ -3297,6 +3297,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   const agentLoopExecutor = createAgentLoopExecutor({
+    prepareProject: async (project) => {
+      if (project.state === 'active') return project;
+      if (
+        (project.state === 'sleeping' || project.state === 'waking') &&
+        deps.provisioner?.ensureProjectSandboxAwake
+      ) {
+        return deps.provisioner.ensureProjectSandboxAwake(project.id);
+      }
+      throw new Error(`project is not ready (state=${project.state})`);
+    },
     ensureSession: ensureAgentLoopSession,
     runScript: async ({ loop, project, session }) => {
       if (!deps.projectRuntime?.runAgentLoopScript || !deps.projectCloneRoot) {
@@ -5194,7 +5204,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 sessionId: loop.sessionId,
               };
             }
-            if (project.state !== 'active') {
+            if (
+              project.state !== 'active' &&
+              project.state !== 'sleeping' &&
+              project.state !== 'waking'
+            ) {
               return {
                 outcome: 'skipped' as const,
                 exitCode: null,
