@@ -8,6 +8,8 @@ import {
   CONTAINER_PAUSED_REASON,
   CONTAINER_RESTARTING_REASON,
   CONTAINER_STOPPED_REASON,
+  INTERRUPTED_SLEEP_REASON,
+  INTERRUPTED_WAKE_REASON,
   CONTAINER_MISSING_REASON,
   STALE_PROVISIONING_REASON,
 } from './project-state.js';
@@ -130,6 +132,83 @@ describe('reconcileProjectContainerStates', () => {
     expect(result[0]?.state).toBe('active');
   });
 
+  it.each([{ running: false }, { running: false, status: 'exited' }, { running: true }] as const)(
+    'fails closed after an interrupted sleep %#',
+    async (inspection) => {
+      const update = vi.fn(async (_id, nextState) => project({ state: nextState }));
+      const stopContainer = vi.fn(async () => undefined);
+      const result = await reconcileProjectContainerStates(
+        [project({ state: 'sleeping_starting' })],
+        docker({
+          inspectContainer: vi.fn(async (id: string) => ({ id, ...inspection })),
+          stopContainer,
+        }),
+        update,
+      );
+
+      expect(update).toHaveBeenCalledWith('p1', 'failed', INTERRUPTED_SLEEP_REASON);
+      expect(stopContainer).toHaveBeenCalledTimes(inspection.running ? 1 : 0);
+      expect(result[0]?.state).toBe('failed');
+    },
+  );
+
+  it.each([{ running: false }, { running: false, status: 'exited' }, { running: true }] as const)(
+    'fails closed without an interrupted-wake authority recovery %#',
+    async (inspection) => {
+      const update = vi.fn(async (_id, nextState) => project({ state: nextState }));
+      const stopContainer = vi.fn(async () => undefined);
+      const result = await reconcileProjectContainerStates(
+        [project({ state: 'waking' })],
+        docker({
+          inspectContainer: vi.fn(async (id: string) => ({ id, ...inspection })),
+          stopContainer,
+        }),
+        update,
+      );
+
+      expect(update).toHaveBeenCalledWith('p1', 'failed', INTERRUPTED_WAKE_REASON);
+      expect(stopContainer).toHaveBeenCalledTimes(inspection.running ? 1 : 0);
+      expect(result[0]?.state).toBe('failed');
+    },
+  );
+
+  it.each([
+    { running: false },
+    { running: true },
+    { running: true, status: 'paused' },
+    { running: true, status: 'restarting' },
+  ])('leaves a sleeping project sleeping for Docker state %#', async (inspection) => {
+    const original = project({ state: 'sleeping' });
+    const update = vi.fn();
+    const result = await reconcileProjectContainerStates(
+      [original],
+      docker({
+        inspectContainer: vi.fn(async (id: string) => ({ id, ...inspection })),
+      }),
+      update,
+    );
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result[0]).toBe(original);
+  });
+
+  it('leaves a sleeping project sleeping when its retained container is missing', async () => {
+    const original = project({ state: 'sleeping' });
+    const update = vi.fn();
+    const result = await reconcileProjectContainerStates(
+      [original],
+      docker({
+        inspectContainer: vi.fn(async (id: string) => {
+          throw new DockerError({ kind: 'container_not_found', id });
+        }),
+      }),
+      update,
+    );
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result[0]).toBe(original);
+  });
+
   it('clears an orphaned rebuild notice after the server process restarts', async () => {
     const update = vi.fn(async (_id, state, provisionError, provisionWarning) =>
       project({
@@ -241,4 +320,30 @@ describe('reconcileProjectContainerStates', () => {
     expect(update).toHaveBeenCalledWith('p1', 'failed', STALE_PROVISIONING_REASON);
     expect(result[0]?.state).toBe('failed');
   });
+
+  it.each([
+    ['sleeping_starting', 'sleep'],
+    ['waking', 'wake'],
+  ] as const)(
+    'recovers interrupted %s authority when the Sandbox disappeared',
+    async (state, kind) => {
+      const recoverSleep = vi.fn(async () => project({ state: 'sleeping' }));
+      const recoverWake = vi.fn(async () => project({ state: 'sleeping' }));
+      const result = await reconcileProjectContainerStates(
+        [project({ state })],
+        docker({
+          inspectContainer: vi.fn(async () => {
+            throw new DockerError({ kind: 'container_not_found', id: 'p1' });
+          }),
+        }),
+        vi.fn(),
+        () => false,
+        recoverSleep,
+        recoverWake,
+      );
+
+      expect(kind === 'sleep' ? recoverSleep : recoverWake).toHaveBeenCalledWith('p1');
+      expect(result[0]?.state).toBe('sleeping');
+    },
+  );
 });

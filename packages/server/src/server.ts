@@ -568,8 +568,16 @@ type PublicProjectSettingsRecord = Omit<
 // `hiddenAt` is an internal soft-delete marker: hidden projects are filtered out
 // of `listProjects` before serialization, so the field would always be null on
 // the wire and adds nothing for clients — omit it from the public shape.
-interface PublicProjectRecord extends Omit<ProjectRecord, 'hiddenAt' | 'kind'> {
+interface PublicProjectRecord extends Omit<
+  ProjectRecord,
+  'hiddenAt' | 'kind' | 'state' | 'sleepCompatibilityFingerprint'
+> {
   kind?: ProjectRecord['kind'];
+  /** Legacy-compatible coarse state. Sleeping projects remain usable and wake on
+   * demand, so clients predating sleep/wake render them as active. */
+  state: Exclude<ProjectRecord['state'], 'sleeping_starting' | 'sleeping' | 'waking'>;
+  /** Detailed lifecycle state for clients that understand sandbox sleep/wake. */
+  lifecycleState?: ProjectRecord['state'];
   /** Latest published release for the overview version badge (#release-badge).
    *  All null when GitHub isn't configured, the repo has no releases, or the
    *  lookup hasn't resolved yet — the overview then simply shows no version. */
@@ -825,9 +833,13 @@ function publicProject(
   // Strip the internal soft-delete marker from the wire shape (see
   // PublicProjectRecord). `hiddenAt` is null for every listed project anyway.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
-  const { hiddenAt, kind, ...visible } = project;
+  const { hiddenAt, kind, state, sleepCompatibilityFingerprint, ...visible } = project;
+  void sleepCompatibilityFingerprint;
+  const sleeping = state === 'sleeping_starting' || state === 'sleeping' || state === 'waking';
   return {
     ...visible,
+    state: sleeping ? 'active' : state,
+    ...(sleeping ? { lifecycleState: state } : {}),
     ...(kind !== 'github' ? { kind } : {}),
     latestReleaseTag: release?.tag ?? null,
     latestReleaseName: release?.name ?? null,
@@ -5927,6 +5939,62 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
       return { code: 202, project: queued };
+    },
+    sleep: async (request, id) => {
+      if (deps.provisioner?.sleepProject === undefined) {
+        return { code: 503, error: 'project sleep is not configured' };
+      }
+      const project = await deps.eventStore.getProject(id);
+      if (project === undefined || project.hiddenAt !== null) {
+        return { code: 404, error: `project ${id} not found` };
+      }
+      if (project.state === 'sleeping') {
+        return {
+          code: 200,
+          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      }
+      if (project.state !== 'active') {
+        return { code: 409, error: `project ${id} is ${project.state}` };
+      }
+      try {
+        const slept = await deps.provisioner.sleepProject(id);
+        return {
+          code: 200,
+          project: publicProject(slept, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      } catch (error) {
+        request.log.error({ err: error, projectId: id }, 'verity: project sleep failed');
+        throw error;
+      }
+    },
+    wake: async (request, id) => {
+      if (deps.provisioner?.wakeProject === undefined) {
+        return { code: 503, error: 'project wake is not configured' };
+      }
+      const project = await deps.eventStore.getProject(id);
+      if (project === undefined || project.hiddenAt !== null) {
+        return { code: 404, error: `project ${id} not found` };
+      }
+      if (project.state === 'active') {
+        return {
+          code: 200,
+          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      }
+      if (project.state !== 'sleeping') {
+        return { code: 409, error: `project ${id} is ${project.state}` };
+      }
+      try {
+        const awake = await deps.provisioner.wakeProject(id);
+        return {
+          code: 200,
+          project: publicProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      } catch (error) {
+        request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
+        throw error;
+      }
     },
   });
 

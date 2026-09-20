@@ -1258,4 +1258,45 @@ describe('migrateToLatest', () => {
       await ctx.close();
     }
   });
+
+  it('adds nullable project sleep recovery metadata without changing existing state', async () => {
+    const ctx = await createIsolatedTestDb();
+    try {
+      const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
+      expect((await migrator.migrateTo('0099_managed_knowledge')).error).toBeUndefined();
+      await seedProject(ctx.db, {
+        id: 'p-sleep',
+        owner: 'acme',
+        repo: 'sleep',
+        containerName: 'verity-acme-sleep',
+        state: 'active',
+      });
+
+      expect((await migrator.migrateTo('0100_project_sandbox_sleep')).error).toBeUndefined();
+      await expect(
+        ctx.db
+          .selectFrom('projects')
+          .select(['state', 'sleep_compatibility_fingerprint', 'sleeping_since', 'wake_started_at'])
+          .where('id', '=', 'p-sleep')
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({
+        state: 'active',
+        sleep_compatibility_fingerprint: null,
+        sleeping_since: null,
+        wake_started_at: null,
+      });
+
+      expect((await migrator.migrateTo('0099_managed_knowledge')).error).toBeUndefined();
+      const columns = await sql<{ column_name: string }>`
+        select column_name from information_schema.columns
+        where table_name = 'projects'
+          and column_name in (
+            'sleep_compatibility_fingerprint', 'sleeping_since', 'wake_started_at'
+          )
+      `.execute(ctx.db);
+      expect(columns.rows).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  });
 });

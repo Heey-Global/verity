@@ -2701,7 +2701,25 @@ const migrations: Record<string, Migration> = {
       );
     },
   },
-  '0100_project_knowledge_spaces': {
+  '0100_project_sandbox_sleep': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('projects')
+        .addColumn('sleep_compatibility_fingerprint', 'text')
+        .addColumn('sleeping_since', 'timestamptz')
+        .addColumn('wake_started_at', 'timestamptz')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('projects')
+        .dropColumn('wake_started_at')
+        .dropColumn('sleeping_since')
+        .dropColumn('sleep_compatibility_fingerprint')
+        .execute();
+    },
+  },
+  '0101_project_knowledge_spaces': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`alter table knowledge_folders
         add column role text check(role in ('project','general','sources','wiki')),

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ProjectRecord } from '@verity/store';
 import { z } from 'zod';
 
@@ -21,6 +21,7 @@ type RepairOutcome =
   | { code: 200 | 202; project: ProjectRecord }
   | { code: 404 | 503; error: string; status?: 'sealed' }
   | { code: 409; requiresConfirmation: true; warnings: string[] };
+type SleepWakeOutcome = { code: 200; project: object } | { code: 404 | 409 | 503; error: string };
 
 export interface ProjectLifecycleRouteDeps {
   deleteProject: (request: FastifyRequest, projectId: string) => Promise<DeleteOutcome>;
@@ -34,6 +35,8 @@ export interface ProjectLifecycleRouteDeps {
     projectId: string,
     confirmWarnings: boolean,
   ) => Promise<RepairOutcome>;
+  sleep: (request: FastifyRequest, projectId: string) => Promise<SleepWakeOutcome>;
+  wake: (request: FastifyRequest, projectId: string) => Promise<SleepWakeOutcome>;
 }
 
 /** Registers destructive and restorative project lifecycle routes. */
@@ -87,4 +90,21 @@ export function registerProjectLifecycleRoutes(
       };
     },
   );
+
+  const sleepWakeHandler =
+    (run: ProjectLifecycleRouteDeps['sleep']) =>
+    async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+    ): Promise<{ project: object } | ErrorResponse> => {
+      const { id } = projectParams.parse(request.params);
+      const outcome = await run(request, id);
+      reply.code(outcome.code);
+      return 'project' in outcome ? { project: outcome.project } : { error: outcome.error };
+    };
+
+  // Keep these paths literal: route-scopes.test.ts statically discovers every
+  // registration so a new route cannot silently miss its authorization scope.
+  app.post('/projects/:id/sleep', sleepWakeHandler(deps.sleep));
+  app.post('/projects/:id/wake', sleepWakeHandler(deps.wake));
 }

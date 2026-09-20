@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.20",
+  "version": "1.33.21",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "d213999edc8f4eabcee56952420f47eeee880744",
-  "tag": "mobile-v1.33.20",
-  "branch": "staging-mobile-v1.33.20-d213999edc8f4eabcee56952420f47eeee880744",
-  "baseline": "mobile-v1.33.19",
-  "group": "d39726f9-0e83-4a23-8e42-8f0a247a2ab5",
+  "commit": "5e8054b8f938b20ddc3a7b7ffd57509bdde942de",
+  "tag": "mobile-v1.33.21",
+  "branch": "staging-mobile-v1.33.21-5e8054b8f938b20ddc3a7b7ffd57509bdde942de",
+  "baseline": "mobile-v1.33.20",
+  "group": "6e8eb2df-4f23-4c06-ab86-fc4aced6d048",
   "notes": [
-    "streamline explorer and enable access across model backends (#531)"
+    "add project sandbox sleep and wake (#538)",
+    "handle the keyboard through one controller everywhere (#537)"
   ]
 }

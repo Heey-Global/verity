@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/Heey-Global/verity/compare/v1.0.0...v1.1.0) (2026-09-20)
+
+
+### Features
+
+* **server:** add project sandbox sleep and wake ([#538](https://github.com/Heey-Global/verity/issues/538)) ([5e8054b](https://github.com/Heey-Global/verity/commit/5e8054b8f938b20ddc3a7b7ffd57509bdde942de))
+
 ## [1.0.0](https://github.com/Heey-Global/verity/compare/v0.17.0...v1.0.0) (2026-09-20)
 
 

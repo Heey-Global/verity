@@ -11,11 +11,15 @@ export interface ProjectSetupStatus {
   intent: 'progress' | 'ready' | 'error';
 }
 
+export function projectLifecycleState(project: ProjectRecord) {
+  return project.lifecycleState ?? project.state;
+}
+
 export function projectSetupStatus(
   project: ProjectRecord,
   detection?: DevServerDetection | null,
 ): ProjectSetupStatus {
-  switch (project.state) {
+  switch (projectLifecycleState(project)) {
     case 'absent':
       return project.setupStatus === 'pending'
         ? { label: 'Preparing project…', step: 0, total: 5, intent: 'progress' }
@@ -29,6 +33,12 @@ export function projectSetupStatus(
         total: 5,
         intent: 'progress',
       };
+    case 'sleeping_starting':
+      return { label: 'Putting project to sleep…', step: 0, total: 5, intent: 'progress' };
+    case 'sleeping':
+      return { label: 'Sleeping', step: 0, total: 5, intent: 'ready' };
+    case 'waking':
+      return { label: 'Waking secure workspace…', step: 2, total: 5, intent: 'progress' };
     case 'failed':
       return { label: 'Project setup needs attention', step: 0, total: 5, intent: 'error' };
     case 'active': {
@@ -64,10 +74,10 @@ export function projectOverviewSetupLabel(
   // A failed project explains itself: the reconciler writes an operator-facing
   // reason ("Sandbox container stopped — Repair to restart it."), which says far
   // more than the generic setup-step label, so it wins over every other line here.
-  if (project.state === 'failed')
-    return project.provisionError ?? projectSetupStatus(project).label;
+  const state = projectLifecycleState(project);
+  if (state === 'failed') return project.provisionError ?? projectSetupStatus(project).label;
   if (project.setupStatus === 'pending') return projectSetupStatus(project, detection).label;
-  if (project.state !== 'active') return projectSetupStatus(project).label;
+  if (state !== 'active') return projectSetupStatus(project).label;
   if (hasUnreviewedDevServers(detection)) return projectSetupStatus(project, detection).label;
   return undefined;
 }
