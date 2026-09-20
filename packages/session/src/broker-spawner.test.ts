@@ -78,6 +78,72 @@ afterEach(async () => {
 });
 
 describe('agent spawn broker', () => {
+  it('serializes Codex startup until the preceding process finishes SQLite initialization', async () => {
+    // Codex 0.154.0 can fail with EAGAIN when fresh ACP processes open its shared
+    // state runtime together. The first stdout is its initialize response, so it
+    // is the point where the next process may safely start while this one stays
+    // alive and continues serving the session.
+    const launches: ChildProcess[] = [];
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: runtimeDir,
+      secretDir: join(runtimeDir, 'secrets'),
+      enforceRoot: false,
+      agentUid: 1000,
+      agentGid: 1000,
+      spawnChild: (_command, _args, options) => {
+        const child = spawn(
+          process.execPath,
+          [
+            '-e',
+            "setTimeout(()=>process.stdout.write('initialized'),100);setTimeout(()=>process.exit(0),400)",
+          ],
+          options,
+        );
+        launches.push(child);
+        return child;
+      },
+    });
+    try {
+      const spawner = createBrokerSpawner(broker.socketPath);
+      const first = spawner('codex-acp', [], { cwd: runtimeDir, env: {} });
+      const second = spawner('codex-acp', [], { cwd: runtimeDir, env: {} });
+
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(launches).toHaveLength(1);
+      await vi.waitFor(() => expect(launches).toHaveLength(2), { timeout: 1_000 });
+      expect(launches[0]?.exitCode).toBeNull();
+      await expect(Promise.all([first.exited, second.exited])).resolves.toEqual([0, 0]);
+    } finally {
+      await broker.close();
+    }
+  });
+
+  it('releases the Codex startup queue when a process exits before producing output', async () => {
+    let launches = 0;
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: runtimeDir,
+      secretDir: join(runtimeDir, 'secrets'),
+      enforceRoot: false,
+      agentUid: 1000,
+      agentGid: 1000,
+      spawnChild: (_command, _args, options) => {
+        launches += 1;
+        return spawn(process.execPath, ['-e', 'process.exit(1)'], options);
+      },
+    });
+    try {
+      const spawner = createBrokerSpawner(broker.socketPath);
+      const first = spawner('codex-acp', [], { cwd: runtimeDir, env: {} });
+      const second = spawner('codex-acp', [], { cwd: runtimeDir, env: {} });
+      await expect(Promise.all([first.exited, second.exited])).resolves.toEqual([1, 1]);
+      expect(launches).toBe(2);
+    } finally {
+      await broker.close();
+    }
+  });
+
   it('proxies streaming stdin/stdout/stderr while fixing the dropped identity launch', async () => {
     const launches: Array<{ command: string; args: string[] }> = [];
     const broker = await runAgentSpawnBroker({
