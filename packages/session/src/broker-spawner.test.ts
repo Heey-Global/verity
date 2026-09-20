@@ -299,20 +299,55 @@ describe('agent spawn broker', () => {
     // starts a turn on import, so there is nothing to call. What can be pinned is the
     // shape of its two fail-closed re-checks, and they are worth pinning: the Server
     // decides which backends get a gateway bearer, and these are the Sandbox-side
-    // re-checks that refuse one that arrives anyway. `opencode-acp` is an ACP backend
-    // that is deliberately not admitted (ADR 0014 D1), so the day someone rewrites
-    // either gate as "is this ACP" it silently starts accepting a bearer for OpenCode
-    // turns. That edit has to fail here instead.
+    // re-checks that refuse one that arrives anyway.
+    //
+    // All three ACP adapters are admitted since ADR 0014 Amendment 4, which is what
+    // makes the shape rather than the membership the thing to guard: "is this ACP" is
+    // now a predicate with the same answer, so a rewrite to it would pass every
+    // behavioural test in the repo while quietly admitting the fourth adapter nobody
+    // has decided about. Requiring the members to be named one at a time is what
+    // keeps that decision explicit — and the trailing `)` matters, because without it
+    // this regex matches a prefix and a dropped member reads as a pass.
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
     for (const field of ['trustedCliExecution === true', 'mcpGatewayToken !== undefined']) {
       expect(text).toMatch(
         new RegExp(
           `request\\.${field} &&\\s*request\\.backend !== 'claude-acp' &&\\s*` +
-            `request\\.backend !== 'codex-acp'`,
+            `request\\.backend !== 'codex-acp' &&\\s*` +
+            `request\\.backend !== 'opencode-acp'\\s*\\)`,
           'u',
         ),
       );
     }
+  });
+
+  // Passing the re-check is not the same as being OFFERED the tools, and the gap
+  // between them is the silent failure: a turn whose bearer is admitted and then
+  // dropped before the profile starts its agent with an empty `mcpServers` list — no
+  // `verity_http_request`, no `verity_secret_run`, and nothing saying so, which is
+  // indistinguishable from never having been admitted at all. The arm that carries the
+  // bearer into the profile must therefore stay keyed on the bearer and the container's
+  // endpoint ALONE. A backend named in it would be a sixth membership list, in the one
+  // place where forgetting a member is silent rather than refused.
+  it('hands the admitted bearer to the profile without naming a backend again', async () => {
+    const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
+    // Matched loosely on purpose: the condition and the value it produces are the
+    // policy, and pinning Prettier's spacing would fire on a rewrap as if the policy
+    // had changed. The condition is captured lazily up to the `?` rather than by a
+    // character class, so a backend test written inside parentheses lands INSIDE the
+    // capture — which is what makes the last assertion real rather than a way of
+    // ending the match early.
+    const arm =
+      /\.\.\.\(request\.mcpGatewayToken !== undefined[\s\S]*?\?\s*\{\s*mcpGateway:\s*\{[^}]*\}/u.exec(
+        text,
+      );
+    expect(arm?.[0]).toBeDefined();
+    // The capture really reaches the payload, and the payload is what the assertion
+    // below is about. `[^}]*` stops at the first `}`, so a `${…}` hole inside the
+    // object would cut the region short and leave that assertion inspecting the
+    // condition alone — passing for the one reason it must never pass.
+    expect(arm?.[0]).toMatch(/token:\s*request\.mcpGatewayToken/u);
+    expect(arm?.[0]).not.toMatch(/backend/iu);
   });
 
   it('refuses a gateway bearer the container has no endpoint to redeem', async () => {

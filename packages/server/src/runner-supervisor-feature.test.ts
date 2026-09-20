@@ -18,7 +18,7 @@ import { EventEmitter } from 'node:events';
 import { createConnection, createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   collectEscapedProcessTree,
   frameBodyHash,
@@ -271,17 +271,17 @@ describe('verity-runner supervisor runtime', () => {
     // container env through the shared helper, never from an inline literal that only
     // names the broker socket. See the two tests below for what that helper owes.
     expect(source).toContain('workerEnv: supervisorWorkerEnv(process.env)');
-    // Launched, but NOT admitted to the brokered Verity tools. The two sets are
-    // separate on purpose (ADR 0014 D1): being an ACP transport says what an agent
-    // can speak, not whose secrets it may spend. Asserted on the source because
-    // `ACP_WORKER_BACKENDS` is module-private — the gate reads it, nothing exports
-    // it — and a one-word edit here is exactly the drift worth catching.
-    // Matched loosely on purpose: the point is the membership, not the formatting.
-    // Prettier rewraps this literal the moment a third member is added, and a
-    // tripwire that fires on the rewrap would read as a style failure rather than
-    // the policy change it is.
+    // Admitted to the brokered Verity tools — all three since ADR 0014 Amendment 4.
+    // The two sets stay separate on purpose (ADR 0014 D1): being an ACP transport
+    // says what an agent can speak, not whose secrets it may spend, and a fourth
+    // adapter joins `SUPERVISED_WORKER_BACKENDS` without joining this one. Asserted
+    // on the source because `ACP_WORKER_BACKENDS` is module-private — the gate reads
+    // it, nothing exports it — and a one-word edit here is exactly the drift worth
+    // catching. Matched loosely on purpose: the point is the membership, not the
+    // formatting, and a tripwire that fires on Prettier's rewrap would read as a
+    // style failure rather than the policy change it is.
     expect(source).toMatch(
-      /ACP_WORKER_BACKENDS = new Set\(\[\s*'claude-acp',\s*'codex-acp',?\s*\]/,
+      /ACP_WORKER_BACKENDS = new Set\(\[\s*'claude-acp',\s*'codex-acp',\s*'opencode-acp',?\s*\]/,
     );
   });
 
@@ -2130,6 +2130,66 @@ describe('verity-runner supervisor runtime', () => {
     expect(installer).toMatch(/install_trusted_cli_ownership\(\)\s*\{\s*\n\s*chown root:root/u);
     expect(installer).toContain('install_trusted_cli_ownership /usr/local/bin/doppler');
     expect(installer).toContain('install_trusted_cli_ownership /usr/local/lib/verity/gh-real');
+  });
+
+  it('installs the supervisor at the path the refresh runbook tells operators to read', async () => {
+    // That runbook's last step is a `docker exec … grep <pattern> <path>`, and it is the
+    // only thing separating "the recreation did not take" from "the recreation did not
+    // help" — nothing on the wire carries a boundary-binary version. Both halves of that
+    // command can rot silently and both rot in the dangerous direction: a path the
+    // installer no longer writes answers `0` for a container that is perfectly current,
+    // and a pattern that is not specific to the ADMISSION list answers non-zero for a
+    // stale one, since a pre-amendment supervisor has spawned OpenCode workers for
+    // releases and names it throughout. Prose notices neither.
+    const runbook = await readFile(
+      'docs/runbooks/opencode-brokered-tools-container-refresh.md',
+      'utf8',
+    );
+    const command = /grep -c "([^"]+)" (\/\S+)/u.exec(runbook);
+    expect(command).not.toBeNull();
+    const [, pattern, documented] = command!;
+
+    const installer = await readFile('features/verity-sandbox-toolkit/install.sh', 'utf8');
+    // The path on its own, not the surrounding `install` invocation: pinning the line
+    // continuation and its indent would report a reformat of the installer as a rename.
+    // Escaped first — the path comes out of prose, and its `.`-bearing siblings would
+    // otherwise match an installer path that merely looks like the documented one.
+    const escaped = documented!.replace(/[\\^$.*+?()[\]{}|]/gu, '\\$&');
+    expect(installer).toMatch(
+      new RegExp(`verity-runner-supervisor\\.mjs"\\s*\\\\?\\s*${escaped}(?!\\S)`, 'u'),
+    );
+
+    // Run the operator's pattern through the operator's tool. Re-reading a BRE as a JS
+    // regex is not the same language — bracket expressions and line bounding both
+    // differ — and a test that passes on a pattern `grep` rejects would certify the one
+    // command this page cannot afford to have wrong.
+    const supervisorPath = 'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs';
+    const supervisor = await readFile(supervisorPath, 'utf8');
+    const count = async (path: string): Promise<string> => {
+      // grep exits 1 on no match, which execFile reports as a rejection.
+      const run = await execFileAsync('grep', ['-c', pattern!, path]).catch(
+        (error: { stdout?: string }) => ({ stdout: error.stdout ?? '' }),
+      );
+      return run.stdout.trim();
+    };
+    expect(await count(supervisorPath)).toBe('1');
+
+    // And that it DISCRIMINATES, which is the property the operator's conclusion rests
+    // on. Take OpenCode back out of the admission list — the pre-amendment supervisor,
+    // which still names it everywhere else — and the command must answer `0`.
+    const stale = supervisor.replace(
+      /(ACP_WORKER_BACKENDS = new Set\(\[[^\]]*), 'opencode-acp'/u,
+      '$1',
+    );
+    expect(stale).not.toBe(supervisor);
+    expect(stale).toContain('opencode-acp');
+    const staleDir = await mkdtemp(join(tmpdir(), 'verity-stale-supervisor-'));
+    onTestFinished(async () => {
+      await rm(staleDir, { recursive: true, force: true });
+    });
+    const stalePath = join(staleDir, 'verity-runner-supervisor');
+    await writeFile(stalePath, stale);
+    expect(await count(stalePath)).toBe('0');
   });
 
   it('writes the opencode-acp wrapper root-owned and keeps it out of the dev chown', async () => {

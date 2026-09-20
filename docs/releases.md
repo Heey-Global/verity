@@ -42,6 +42,25 @@ version, `server` release branch, `v` tags, root changelog and version file.
 Historical release boundaries remain readable; migration never bootstraps a new
 history or publishes a release by itself.
 
+## Changes that require operator action
+
+Some changes cannot be made safe by the Server alone: a Sandbox boundary binary
+rolls on its own lifecycle (ADR 0006 D9), so a change spanning both sides may
+need project containers recreated, and in a particular order. A runbook is not
+the delivery vehicle for that — it is reachable only by an operator who has
+already hit the failure it describes.
+
+Such a change ships as a breaking one: a `!` on the squash title and a
+`BREAKING CHANGE:` footer in its body naming the action and the ordering. Release
+Please renders that footer in `CHANGELOG.md`, which is the release notes, so the
+requirement arrives with the version that needs it rather than after it. The `!`
+is about the operator's deployment, not about a source API — a release nobody can
+install correctly without a step they were never told about is the breakage.
+
+Write the footer as an instruction, not a description: what to do, in which
+order, and what fails if that order is reversed. The runbook then carries the
+recovery for whoever finds out the hard way, and is linked from it.
+
 ## Planning and publication are separate
 
 The release lifecycle makes a decision before invoking Release Please:

@@ -362,6 +362,13 @@ members rather than asking whether the transport is ACP. That is the posture the
 native path had, so nothing is lost by carrying it across; admitting OpenCode later
 is a one-line change in each of those places plus the review that justifies it.
 
+> **Superseded by ADR 0014 Amendment 4 (2026-09-19).** That decision has been
+> taken: OpenCode is admitted to the gateway and carries the brokered tools. The
+> paragraph above stands as the record of why the transport migration did not
+> decide it. The admission remains what it says it is — a change in each of those
+> named gates, not a property of speaking ACP — so a fourth adapter still arrives
+> refused.
+
 
 ## Amendment 5 (2026-09-17) — discover OpenCode models from the provider
 

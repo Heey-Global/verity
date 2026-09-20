@@ -1152,13 +1152,16 @@ export function buildRunnerConductorWiring(deps: {
         // A gateway-eligible ACP turn that has a session to attribute to must also have
         // the registry that mints its bearer. Its absence is a misassembled Server, not
         // a runtime condition the turn can recover from. Ephemeral and meta-query turns
-        // legitimately have no gateway context, while `opencode-acp` is deliberately
-        // outside the named brokered-tool backend set.
+        // legitimately have no gateway context. `opencode-acp` joined the named
+        // brokered-tool backends with ADR 0014 Amendment 4 and is held to the same
+        // requirement: a Server that would start it tool-less and silent is the failure
+        // this closes, whichever of the three adapters runs the turn.
         if (
           gatewayToolContext !== undefined &&
           deps.mcpGatewayTokens === undefined &&
           (backend.runnerSupervisorBackend === 'claude-acp' ||
-            backend.runnerSupervisorBackend === 'codex-acp')
+            backend.runnerSupervisorBackend === 'codex-acp' ||
+            backend.runnerSupervisorBackend === 'opencode-acp')
         ) {
           throw new Error(
             'the Server was composed without mcpGatewayTokens; a brokered-tool ACP turn cannot start without the per-turn gateway bearer registry',

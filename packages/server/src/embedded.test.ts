@@ -12,7 +12,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:net';
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   deriveKeyFromPassword,
@@ -1722,24 +1722,103 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       mcpGatewayTokens: undefined,
     });
 
-    for (const acpBackend of [claudeAcpBackend, codexAcpBackend]) {
+    // All three, since ADR 0014 Amendment 4 admitted OpenCode to the gateway. Checked
+    // per backend rather than once: the gate names its members by hand, so a Server
+    // that forgot one would start exactly that backend's turns tool-less and silent.
+    for (const acpBackend of [claudeAcpBackend, codexAcpBackend, openCodeAcpBackend]) {
       await expect(
         wiring.runner?.(acpBackend, { sessionId: 's-acp', projectId, worktree: '/wt' }),
       ).rejects.toThrow('composed without mcpGatewayTokens');
     }
 
-    await expect(
-      wiring.runner?.(claudeAcpBackend, { sessionId: null, projectId, worktree: '/wt' }),
-    ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    // This refusal is NEW for OpenCode — a Server missing the registry used to start
+    // its turns tool-less — and it reads enough like the stale-container refusal to be
+    // taken for one. The refresh runbook therefore lists it among the messages that
+    // recreating a container does not fix, and that listing is only useful while it
+    // quotes what is actually thrown.
+    const runbook = await readFile(
+      new URL(
+        '../../../docs/runbooks/opencode-brokered-tools-container-refresh.md',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    // Read out of the source, not restated here. A copy in this file pairs the page
+    // with the test rather than with the throw, so rewording the throw leaves both
+    // green and the page quoting a message no Server emits — the one drift this
+    // pairing exists to catch.
+    const embedded = await readFile(new URL('./embedded.ts', import.meta.url), 'utf8');
+    const thrown =
+      /deps\.mcpGatewayTokens === undefined &&[\s\S]*?throw new Error\(\s*'([^']+)'/u.exec(
+        embedded,
+      )?.[1];
+    expect(thrown).toBeDefined();
+    expect(runbook.replace(/\n/gu, ' ')).toContain(thrown!);
 
-    await expect(
-      wiring.runner?.(openCodeAcpBackend, { sessionId: 's-oc', projectId, worktree: '/wt' }),
-    ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    // A turn with no session to attribute to has no gateway context to begin with, so
+    // the missing registry is not its problem — that is the ephemeral/meta-query case,
+    // and it must keep starting. Per backend again, and for the same reason the
+    // refusal is: the escape is a hand-written condition beside a hand-written member
+    // list, so a Server that admitted OpenCode to one and not the other would refuse
+    // every OpenCode meta query on a deployment that composes no registry.
+    for (const acpBackend of [claudeAcpBackend, codexAcpBackend, openCodeAcpBackend]) {
+      await expect(
+        wiring.runner?.(acpBackend, { sessionId: null, projectId, worktree: '/wt' }),
+      ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    }
 
+    // The other direction, for the same three. Asserting only the refusal would leave
+    // a gate that rejects EVERY ACP turn looking correct here, and `opencode-acp` is
+    // the member worth naming: its admission is what this branch changed, so the
+    // positive case is the one that proves the seam swung rather than just closed.
     const composed = buildRunnerConductorWiring({ ...baseDeps(), runnerSupervisor: true });
-    await expect(
-      composed.runner?.(claudeAcpBackend, { sessionId: 's-acp', projectId, worktree: '/wt' }),
-    ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    for (const acpBackend of [claudeAcpBackend, codexAcpBackend, openCodeAcpBackend]) {
+      await expect(
+        composed.runner?.(acpBackend, { sessionId: 's-acp', projectId, worktree: '/wt' }),
+      ).resolves.toBeInstanceOf(SupervisorRunnerClient);
+    }
+  });
+
+  // The gate above is a membership list written by hand next to the one in
+  // `SupervisorRunnerClient.acpBackend`, and the two answer the same question from
+  // opposite ends: which backends are handed a per-turn gateway bearer. Every other
+  // pairing in this decision fails loudly when it drifts — an unadmitted backend is
+  // refused — but this one fails QUIETLY in the direction that matters: a backend
+  // admitted in `acpBackend` and forgotten here gets a client composed without the
+  // registry, mints nothing, and starts its agent tool-less with no composition error
+  // to read. The loop above pins today's three; this pins that the two lists are the
+  // same list, so a fourth admitted in one is not silently absent from the other.
+  // The same helper runs in packages/session/src/runner-supervisor-client.test.ts,
+  // over the other end of the same chain. Keep the two in step.
+  it('names the same brokered-tool backends the bearer-minting client does', async () => {
+    const members = async (url: URL, gate: RegExp): Promise<string[]> => {
+      const source = await readFile(url, 'utf8');
+      const region = gate.exec(source)?.[0];
+      expect(region).toBeDefined();
+      // Every quoted literal in the region, not the ones that look like today's
+      // backend ids: an admitted backend named without an `-acp` suffix would be
+      // invisible to a narrower pattern on BOTH sides at once, and two lists that
+      // cannot see the same member still compare equal.
+      return [...(region ?? '').matchAll(/'([^'\n]+)'/gu)].map((match) => match[1]!).sort();
+    };
+
+    const here = await members(
+      new URL('./embedded.ts', import.meta.url),
+      // Anchored on BOTH conditions of the composition check, because the first alone
+      // is not unique to it: an earlier `gatewayToolContext !== undefined` elsewhere in
+      // the file would silently re-target this region, and a wrong-but-nonempty match
+      // passes the emptiness guard below.
+      /gatewayToolContext !== undefined &&\s*deps\.mcpGatewayTokens === undefined &&[\s\S]*?\) \{/u,
+    );
+    const client = await members(
+      new URL('../../session/src/runner-supervisor-client.ts', import.meta.url),
+      /this\.acpBackend =[\s\S]*?;/u,
+    );
+
+    expect(here).toEqual(client);
+    // Not a vacuous pass: an empty match on either side would equal an empty match on
+    // the other, and the regexes are the fragile part of this guard.
+    expect(here.length).toBeGreaterThanOrEqual(3);
   });
 
   it('falls back to loopback for backends the native supervisor worker cannot run', async () => {

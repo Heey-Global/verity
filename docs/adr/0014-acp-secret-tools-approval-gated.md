@@ -480,3 +480,187 @@ than returned as fragments that could split one credential across approvals.
 Responses exceeding the bounded raw assembly buffer are likewise represented by
 an omission marker rather than returning a tail that may have lost a credential
 prefix.
+
+## Amendment 4 (2026-09-19) — OpenCode is admitted to the gateway
+
+ADR 0012 Amendment 4 moved OpenCode onto ACP and deliberately left it outside the
+brokered tools, naming the reason: which agents may spend the operator's secrets
+is a decision, not a consequence of the transport an agent happens to speak. This
+amendment takes that decision. `opencode-acp` now carries the same brokered tools
+as `claude-acp` and `codex-acp`: a per-turn gateway bearer is minted for its
+turns, its `session/new` offers the loopback MCP server, `trustedCliExecution` is
+granted to it, and the project's secret NAMES are listed in its system prompt.
+
+**Nothing about the guarantee changes, because there was never an attestation to
+weaken.** D1 already states that the gateway is approval-gated rather than
+attested, on every transport it serves: the bearer identifies the turn, it
+authorizes nothing, and a same-UID workspace process that reads it from `/proc`
+gets a card the operator did not expect. That is the exposure Claude and Codex
+already run with. OpenCode joins a channel whose security rests on D2 — no secret
+resolves without an operator decision covering the call — and D2 is a property of
+the channel, not of the agent on the other end of it.
+
+**What made it a decision anyway** is the other end. The tools are as strong as
+the agent is trustworthy with a card in front of the operator, and admitting an
+agent means accepting that its turns can ask. That question was answered for
+Claude and Codex when D1 shipped and is now answered for OpenCode, which runs
+behind the same spawn broker, in the same Sandbox, under the same per-turn
+identity, and — unlike either of them — under `openCodeMode`, which collapses
+every Verity posture into `build` or `plan`. An unattended OpenCode turn therefore
+gets fewer tools than the same turn on Claude, never more.
+
+**`trustedCliExecution` is part of this decision, not a side effect of it.** It
+rides the same flag as the bearer, and no line mentioning it changed, so it is
+worth saying what it grants: not a shell, but the execution half of
+`verity_secret_run`, one of the three D1 tools. It is reachable only through the
+gateway (`mcp-gateway-tools.ts`), under the same D2 approval and the same
+root-owned-executable allowlist as on Claude and Codex. Admitting an agent to the
+gateway and withholding this would mean one of the three tools failing at the
+point of use rather than a narrower posture. A future backend that should get the
+gateway *without* `verity_secret_run` is possible, and needs its own predicate
+rather than a reinterpretation of this one.
+
+**D3 is unchanged and already correct for it.** `brokeredGrantChannel` has
+answered `acp` for `opencode-acp` since before this amendment, so a standing grant
+created on the restricted channel is what an OpenCode turn redeems against, and a
+native-path `forever` grant does not auto-approve on it. That arm needed no edit;
+it was written for this day.
+
+It does mean OpenCode turns can redeem grants approved during a Claude or Codex
+turn, and that is worth stating rather than leaving to be discovered. Grants are
+keyed by project, binding, secret alias and tool target (ADR 0011 D2) — never by
+backend — so a `project`-scope grant has always covered every session in its
+project, on whichever agent. Admitting OpenCode widens who can redeem one in
+exactly the way starting another Claude session does, which is the reach the
+operator agreed to when they chose `project` over `session`. What does NOT widen
+is the ceiling: those grants are all on the `acp` channel, where `forever` is
+refused at the store and a redemption additionally requires an ACP approval under
+24 hours old. An operator who wants a decision confined to the agent in front of
+them has `session` scope, which binds to the session id and so never crosses to
+another backend's turn.
+
+**The admission is still not "is it ACP".** Four gates name their members by hand
+— `ACP_WORKER_BACKENDS` in the supervisor, the `acpBackend` flag that mints the
+bearer, `carriesBrokeredSecretTools`, and the runner worker's two independent
+re-checks — plus the Server's bearer-registry assembly check. They are separate
+literals so none can drift into the others, and they must move together: a member
+added to one alone either refuses the turn it meant to admit or starts it
+tool-less. A fourth adapter arrives refused until this document says otherwise.
+
+### Consequences
+
+- **A Sandbox older than this release refuses every OpenCode turn.** ADR 0006 D9
+  has such a container attesting cleanly — a Server outliving a Sandbox is the
+  normal case — but its supervisor's `ACP_WORKER_BACKENDS` predates the decision
+  and answers `invalid mcpGatewayToken` to the bearer the Server now mints. That
+  is the old boundary failing closed, which is the right direction, and it is not
+  recoverable at runtime: the fix is to recreate the project container on a
+  current toolkit.
+
+  That one list gates two fields, so the refusal has two shapes. A turn with
+  `sessionId: null` — the ephemeral/meta-query path — mints no bearer and clears
+  the first gate, but `trustedCliExecution` rides on backend identity rather than
+  on bearer presence, so it is refused at the second one with `invalid
+  trustedCliExecution`. Such turns are NOT exempt, and the field is not gated on
+  the bearer to make them so: it is the execution half of `verity_secret_run` and
+  belongs to the same decision. An older draft of this bullet claimed the
+  exemption and was wrong.
+
+  The Server recognizes both refusals and says so rather than passing on four
+  opaque words (`explainStaleGatewayRefusal`, `runner-supervisor-client.ts`),
+  which also keeps the supervisor's gate order from being load-bearing. It states
+  the cause outright, because it can: a current supervisor emits the bearer
+  refusal for two further reasons of its own — a bearer that is EMPTY, and one
+  over its 512-byte shape bound, both Server composition defects that no
+  reprovisioning fixes. All three are indistinguishable from the message, and
+  none of them are to the client that minted the bearer. It reads the value it
+  sent, and explains container age only for a bearer the supervisor would have
+  accepted on shape; the defect cases are told outright that recreating the
+  container will not help. That defect arm is the one thing here not narrowed to
+  OpenCode: the registry is shared, so the same malformed bearer on Claude or
+  Codex is the same defect. The mirrored shape bound is the fragile part of that
+  — the supervisor is a boundary binary with nothing to import — so the bound and
+  its comparison are pinned against the supervisor's own source rather than
+  restated. The operator-facing procedure is
+  `docs/runbooks/opencode-brokered-tools-container-refresh.md`.
+
+  Detecting this BEFORE the turn was considered and rejected on two counts. The
+  status handshake names no backends, so a Server would have to infer staleness
+  from a new field's ABSENCE — which is what the refusal already reports — by
+  changing the very boundary binary the affected containers do not have. The
+  `protocolVersion` it does carry is not a substitute: it is the WIRE dialect,
+  and this amendment changes no frame. Bumping it to signal a policy change would
+  make every older supervisor look wire-incompatible and refuse ALL of its turns,
+  Claude and Codex included, turning a failure confined to one backend into a
+  total one. Failing per-backend, at the turn, is the smaller blast radius.
+- **This release is order-dependent, and the order is Server first, then the
+  containers.** As a pairing it looks like the opposite: both supervisor gates
+  fire on a field being PRESENT, so a CURRENT supervisor under an older Server is
+  fine — that Server sends neither field for OpenCode — while the reverse is the
+  failure above. Refreshing the containers first is still wrong, because the
+  toolkit is not independently installable ahead of the Server that ships it. A
+  Server pins the toolkit Feature to its own bundled version, and it attests each
+  Sandbox against the ledger in its own bundle (`published-hashes.json`), which
+  cannot list a release published after it. Forcing the newer toolkit in
+  therefore fails attestation, and a failed attestation disables the Runner
+  supervisor for the whole container (`provisioner.ts`) — trading a failure
+  confined to OpenCode for one that takes Claude and Codex down with it. So:
+  deploy the Server, then recreate the project containers running OpenCode. The
+  window between the two is the one in which those turns fail, and shortening it
+  is the mitigation; Claude and Codex are the workaround inside it.
+
+  There is deliberately no rollout flag — no switch that withholds the bearer
+  while the Server otherwise ships this. A flag would be a second answer to "may
+  OpenCode spend the operator's secrets", sitting outside this document and
+  outgrowing it, which is the coupling the hand-named gates above exist to
+  prevent. Deploy ordering is a release-note obligation instead: this amendment
+  ships as a BREAKING change — `!` on the squash title, a `BREAKING CHANGE:`
+  footer naming the container refresh and the order — so Release Please renders
+  it into `CHANGELOG.md` with the version that needs it. `docs/releases.md`,
+  "Changes that require operator action", is where that rule now lives, because a
+  runbook is only reachable by an operator who has already hit the failure.
+
+  Forcing the refresh instead of announcing it was considered, and there is
+  exactly one lever: raising `minimumVersion` in the toolkit's
+  `published-hashes.json`, which would stop older toolkits attesting at all. It is
+  rejected for the reason that rejected a `protocolVersion` bump — attestation is
+  whole-container, so it would strand Claude and Codex sessions in those projects
+  over a change that affects neither — and additionally because ADR 0006 D9 takes
+  a Server outliving a Sandbox as the NORMAL case and requires the previous Runner
+  to keep working. A boundary version the operator can read is the part that is
+  genuinely missing today; recovery therefore ends with a check against the
+  installed supervisor itself, which is the artifact the question is about.
+- **The project's secret NAMES now reach whichever model provider the OpenCode
+  session is configured with.** `carriesBrokeredSecretTools` lists the aliases in
+  the system prompt, so admitting OpenCode also discloses them — and that lands
+  differently here than on the other two adapters. Claude and Codex each speak to
+  one vendor, chosen by choosing the agent; OpenCode speaks to an API base URL and
+  key the operator supplies (ADR 0012 Amendment 5), which may be any provider at
+  all. The exposure is names, never values — no value resolves without a D2
+  approval covering the call, and an alias without the gateway behind it buys a
+  reader nothing, which is ADR 0011 D3's position that secret names are not
+  secret — but "the names of this project's secrets" still describes the project,
+  and an operator who picked a provider for model access did not pick it for
+  this. The names go anyway, because they are what makes the tools usable: an
+  agent that cannot name an alias cannot ask for an approval, which is the
+  tool-less-but-admitted dead end this amendment removes everywhere else. The
+  control is therefore which adapter a project's sessions run on, and which
+  provider that adapter is pointed at — not a per-backend name filter, since the
+  aliases are the project's bindings and a project has one set of them.
+- **A Server composed without `mcpGatewayTokens` now refuses OpenCode turns that
+  it previously ran tool-less.** The registry is mandatory for every named
+  brokered-tool backend, and OpenCode joins that requirement here rather than
+  being exempted from it: a Server that would start an admitted turn with no
+  tools and no error is the failure that check closes. The production
+  composition always supplies the registry, so this reaches only a partial
+  assembly — but its message (`composed without mcpGatewayTokens`) resembles the
+  stale-container one closely enough to be misread as container age, so the
+  runbook names it under "Recognize it" as a third message that recreating
+  nothing will fix.
+- Control-plane sessions still do not get OpenCode. That refusal is ADR 0012
+  Amendment 4's, for a different reason — the fixed control-plane Runner carries
+  no OpenCode configuration or egress material — and this amendment does not
+  touch it.
+- `opencode-mcp` in `@verity/secret-contracts` still names nothing. It is a label
+  for an ATTESTED native relay; gateway calls carry `acp-mcp`, whose premise is
+  that nothing attests them.

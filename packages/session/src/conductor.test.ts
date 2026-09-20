@@ -4412,7 +4412,11 @@ describe('Conductor.startSession', () => {
   // here rather than quietly dropping out of coverage. Adding one is caught on the
   // source side: `carriesBrokeredSecretTools` switches exhaustively, so a new member
   // has to be decided there before it can reach a turn at all.
-  it.each(['claude-acp', 'codex-acp'] as const satisfies readonly RunnerSupervisorBackend[])(
+  it.each([
+    'claude-acp',
+    'codex-acp',
+    'opencode-acp',
+  ] as const satisfies readonly RunnerSupervisorBackend[])(
     'lists the project secret names on the %s transport',
     async (supervisor) => {
       const appended = await brokeredTurnSystemPrompt(`s-alias-${supervisor}`, supervisor);
@@ -4421,10 +4425,12 @@ describe('Conductor.startSession', () => {
     },
   );
 
-  // The other half of the same rule. A backend that declares no transport (OpenCode/Pi
-  // on the loopback path) has no native relay and no MCP gateway, so it has no tool that
-  // accepts a `secretAlias`. Handing it names would leave it holding a list it cannot
-  // spend — the same dead end, made more inviting.
+  // The other half of the same rule. A backend that declares no transport has no MCP
+  // gateway and no permission bridging, so it has no tool that accepts a `secretAlias`.
+  // Handing it names would leave it holding a list it cannot spend — the same dead end,
+  // made more inviting. No shipped backend is in that state since OpenCode moved to
+  // `opencode-acp`; this now covers the dropped-field case and any future loopback-only
+  // backend, which is why it asserts on `undefined` rather than naming an agent.
   it('omits the project secret names for a backend that declares no transport', async () => {
     const brokeredSecretAliases = vi.fn(() => Promise.resolve(['ASC_API_KEY', 'EXAMPLE_TOKEN']));
 
@@ -4439,6 +4445,31 @@ describe('Conductor.startSession', () => {
     expect(brokeredSecretAliases).not.toHaveBeenCalled();
   });
 
+  // "A fourth adapter arrives refused until this document says otherwise" (ADR 0014
+  // Amendment 4) is an invariant the type system alone cannot hold: the gate switches
+  // exhaustively over the union, so a NEW member is caught at compile time — but a
+  // value that crossed a process boundary or a cast reaches the `default:` arm at
+  // runtime, and that arm is the only thing standing between an undecided backend and
+  // a list of the operator's secret names. Every other test here names an admitted
+  // member, so nothing else exercises it — and no honest member is available to use
+  // instead, since `RUNNER_SUPERVISOR_BACKENDS` has exactly three and all three are
+  // admitted. Cast deliberately, therefore: this asserts what happens when the types
+  // have already been bypassed. It compiles because an assertion widens the literal on
+  // the source side, so the compiler is not being silenced here either.
+  it('omits the project secret names for a supervised backend nobody has admitted', async () => {
+    const brokeredSecretAliases = vi.fn(() => Promise.resolve(['ASC_API_KEY', 'EXAMPLE_TOKEN']));
+
+    const appended = await brokeredTurnSystemPrompt(
+      's-alias-unadmitted',
+      'pi-acp' as RunnerSupervisorBackend,
+      { brokeredSecretAliases },
+    );
+
+    expect(appended).toContain(TERMINOLOGY_SYSTEM_PROMPT); // the turn did reach the backend
+    expect(appended).not.toContain('ASC_API_KEY');
+    expect(brokeredSecretAliases).not.toHaveBeenCalled();
+  });
+
   // An ACP turn reads these rules beside the schema, as the MCP gateway's tool
   // descriptions (ADR 0014). Repeating them in the system prompt would ship a second
   // copy of the same security rules, paid for every turn and free to drift from the
@@ -4446,7 +4477,11 @@ describe('Conductor.startSession', () => {
   // so it is the one transport that still needs them spelled out here.
   // Every ACP transport, not just Claude's: a branch that leaked the rules block to
   // `codex-acp` alone would otherwise pass on the strength of the `claude-acp` case.
-  it.each(['claude-acp', 'codex-acp'] as const satisfies readonly RunnerSupervisorBackend[])(
+  it.each([
+    'claude-acp',
+    'codex-acp',
+    'opencode-acp',
+  ] as const satisfies readonly RunnerSupervisorBackend[])(
     'leaves the brokered-tool rules to the MCP tool descriptions on %s',
     async (supervisor) => {
       const appended = await brokeredTurnSystemPrompt(`s-rules-${supervisor}`, supervisor);

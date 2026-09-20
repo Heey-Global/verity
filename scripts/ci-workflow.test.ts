@@ -4798,9 +4798,8 @@ describe('changed-area detector', () => {
    */
   it('keeps the documentation arm free of anything the suite touches', () => {
     // Two lines, unlike the release allowlist above: `docs/*)` then a bare `;;`.
-    const inert = (/\n +([^\n(]*docs[^\n(]*)\)\n +;;\n/.exec(detect?.run ?? '')?.[1] ?? '').split(
-      '|',
-    );
+    const inertArm = /\n +([^\n(]*docs[^\n(]*)\)\n +;;\n/.exec(detect?.run ?? '');
+    const inert = (inertArm?.[1] ?? '').split('|');
     expect(inert, 'the inert arm is no longer where this test looks for it').toContain('docs/*');
 
     // The arm's other premise. `lint` runs the formatter over a glob rather than
@@ -4818,21 +4817,33 @@ describe('changed-area detector', () => {
       ).toBe(true);
     }
 
-    // Executable website assets live below docs for static hosting and have an
-    // explicit active arm before the inert prose fallback.
-    const activeDocumentation = [
-      'docs/website/Dockerfile',
-      'docs/website/nginx.conf',
-      'docs/website/site/install.sh',
-    ];
+    // Not every documentation path is inert: executable website assets live
+    // below docs for static hosting, and the runbooks package suites pin are
+    // read by those suites. Both are claimed by an arm above the fallback, and
+    // `case` takes the first arm that matches. Read those arms back out of the
+    // table rather than restating them — a restated list keeps this check
+    // failing for a file that has since been given an arm, and keeps it passing
+    // for one whose arm was deleted, which is the direction that costs a green.
+    const matches = (pattern: string, file: string): boolean =>
+      new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`).test(
+        file,
+      );
+    const active = [
+      ...(detect?.run ?? '')
+        .slice(0, inertArm?.index ?? 0)
+        .matchAll(/\n +([^\n(#]*docs[^\n(]*)\)\n/gu),
+    ].flatMap((arm) => (arm[1] ?? '').split('|'));
+    for (const pattern of active) {
+      expect(
+        inert.includes(pattern),
+        `${pattern} was read as both routed and inert — the arm extraction has drifted`,
+      ).toBe(false);
+    }
+
     const documentation = tracked.filter(
       (file) =>
-        !activeDocumentation.includes(file) &&
-        inert.some((pattern) =>
-          new RegExp(
-            `^${pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`,
-          ).test(file),
-        ),
+        !active.some((pattern) => matches(pattern, file)) &&
+        inert.some((pattern) => matches(pattern, file)),
     );
     expect(documentation.length).toBeGreaterThan(10);
 
@@ -4851,7 +4862,11 @@ describe('changed-area detector', () => {
    * The net. Every tracked file that any suite names has to reach the `test` job,
    * whichever arm it lands in — that is the property the holes above violated, and
    * asserting it per file is what makes a new hole a failing test instead of a
-   * quiet green.
+   * quiet green. Before the catch-all arm, 25 files the suite reads matched no arm
+   * at all and so ran nothing — among them deploy/docker-compose.yml, four of the
+   * five workflow YAMLs this file parses, deploy/gvisor/versions.env and
+   * renovate.json. The detector's own `run` block is a few hundred characters
+   * below GitHub's hard ceiling, so that history lives here rather than there.
    *
    * Deliberately loose on what counts as "names": a bare mention in non-comment
    * code, not a proven read. A fixture path that only gets written costs one job
