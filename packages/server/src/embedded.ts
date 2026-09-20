@@ -787,6 +787,8 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  /** Automatic project Sandbox sleep. Zero or absent disables it. */
+  sandboxIdleTimeoutMs?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
   sandboxAllowPrivilegeEscalation?: boolean | undefined;
@@ -3988,6 +3990,9 @@ export async function buildEmbeddedServer(
     // the `project` field on POST /sessions and POST /projects/:id/deprovision
     // both return 503 (the mobile picker hides the fleet-registry UI).
     ...(provisioner !== undefined ? { provisioner } : {}),
+    ...(config.sandboxIdleTimeoutMs !== undefined
+      ? { sandboxIdleTimeoutMs: config.sandboxIdleTimeoutMs }
+      : {}),
     ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
       ? { projectCloneRoot: config.hostCloneRoot }
       : {}),

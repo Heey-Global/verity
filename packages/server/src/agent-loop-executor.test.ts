@@ -55,6 +55,23 @@ function setup(result: {
 }
 
 describe('Agent Loop executor', () => {
+  it('holds and releases a project activity lease around Sandbox work', async () => {
+    const release = vi.fn();
+    const beginProjectActivity = vi.fn(() => release);
+    const executor = createAgentLoopExecutor({
+      beginProjectActivity,
+      ensureSession: vi.fn(async () => session),
+      runScript: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false })),
+      appendNotice: vi.fn(async () => undefined),
+      dispatchTurnWhenIdle: vi.fn(async () => ({ accepted: true })),
+    });
+
+    await executor.execute(loop, project);
+
+    expect(beginProjectActivity).toHaveBeenCalledWith(project.id);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('prepares a sleeping project before creating its session or running its script', async () => {
     const sleeping = { ...project, state: 'sleeping' as const };
     const awake = { ...project, state: 'active' as const };

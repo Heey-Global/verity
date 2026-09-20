@@ -537,6 +537,26 @@ describe('ProvisionerImpl (#174)', () => {
     expect(calls.find((call) => call.method === 'stopContainer')).toBeDefined();
   });
 
+  it('refuses to sleep while a Sandbox activity lease is held', async () => {
+    const id = await seedProject('active');
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: defaultProjectRelay(),
+    });
+    expect(provisioner.tryBeginProjectSandboxActivity(id)).toBe(true);
+
+    await expect(provisioner.sleepProject(id)).rejects.toThrow('turn in flight');
+    expect(calls.find((call) => call.method === 'stopContainer')).toBeUndefined();
+
+    provisioner.endProjectSandboxActivity(id);
+  });
+
   it('completes relay, egress, and Sandbox cleanup after an interrupted sleep', async () => {
     const id = await seedProject('active');
     await ctx.store.updateProjectSleepState(id, 'sleeping_starting', {
@@ -9304,12 +9324,15 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const provisioner = makeProvisioner(client);
     provisioner.attachProjectBusyProbe(async () => false);
     const recreate = vi.spyOn(provisioner, 'recreateContainer');
+    expect(provisioner.projectSandboxLastActivityAt(p.id)).toBeUndefined();
     expect(provisioner.tryBeginProjectSandboxActivity(p.id)).toBe(true);
+    expect(provisioner.projectSandboxLastActivityAt(p.id)).toEqual(expect.any(Number));
 
     await expect(provisioner.repairSandboxForTurn(p.id, 'requesting-session')).resolves.toBe(false);
     expect(recreate).not.toHaveBeenCalled();
 
     provisioner.endProjectSandboxActivity(p.id);
+    expect(provisioner.projectSandboxLastActivityAt(p.id)).toEqual(expect.any(Number));
     expect(provisioner.tryBeginProjectSandboxActivity(p.id)).toBe(true);
     provisioner.endProjectSandboxActivity(p.id);
   });

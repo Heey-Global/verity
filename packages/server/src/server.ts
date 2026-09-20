@@ -254,6 +254,10 @@ import { detectDevServers } from './dev-server-detection.js';
 import { DevServerDetectionCache } from './dev-server-detection-cache.js';
 import { createAgentLoopExecutor } from './agent-loop-executor.js';
 import {
+  projectHasPersistentSandboxActivity,
+  startProjectIdleSleepScheduler,
+} from './project-idle-sleep.js';
+import {
   AmbiguousGitPushError,
   ProvisioningError,
   ProvisioningWarning,
@@ -1183,6 +1187,9 @@ export interface ServerDeps {
    * the no-project spawn path).
    */
   provisioner?: Provisioner | undefined;
+  /** Stop active project Sandboxes after this much confirmed inactivity. Zero or
+   *  absent disables automatic sleep. */
+  sandboxIdleTimeoutMs?: number | undefined;
   /**
    * Host root containing provisioned project clones. Required alongside
    * `provisioner` for active project spawns so the conductor runs in the
@@ -3307,6 +3314,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       throw new Error(`project is not ready (state=${project.state})`);
     },
+    beginProjectActivity: (projectId) => {
+      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) return undefined;
+      return () => deps.provisioner?.endProjectSandboxActivity?.(projectId);
+    },
     ensureSession: ensureAgentLoopSession,
     runScript: async ({ loop, project, session }) => {
       if (!deps.projectRuntime?.runAgentLoopScript || !deps.projectCloneRoot) {
@@ -3368,12 +3379,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     exceptSessionIds?: ReadonlySet<string>,
   ): Promise<boolean> => {
     const sessions = await deps.eventStore.listSessions();
-    return sessions.some(
-      (s) =>
-        s.projectId === projectId &&
-        !exceptSessionIds?.has(s.sessionId) &&
-        conductor.isBusy(s.sessionId),
-    );
+    if (
+      sessions.some(
+        (s) =>
+          s.projectId === projectId &&
+          !exceptSessionIds?.has(s.sessionId) &&
+          conductor.isBusy(s.sessionId),
+      )
+    )
+      return true;
+
+    const project = await deps.eventStore.getProject(projectId);
+    if (project === undefined) return false;
+    return projectHasPersistentSandboxActivity({
+      project,
+      listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
+      listDevServers: () => deps.eventStore.listDevServers(projectId),
+      runtime: deps.projectRuntime,
+    });
   };
   // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
   // project network, deferring around in-flight turns via the same busy probe.
@@ -3385,6 +3408,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.addHook('onClose', () => {
     stopProjectRelayMigrationScheduler();
   });
+  const idleSleepScheduler =
+    deps.provisioner?.sleepProject !== undefined && (deps.sandboxIdleTimeoutMs ?? 0) > 0
+      ? startProjectIdleSleepScheduler({
+          listProjects: () => deps.eventStore.listProjects(),
+          isBusy: isProjectBusy,
+          ...(deps.provisioner.projectSandboxLastActivityAt === undefined
+            ? {}
+            : {
+                lastActivityAt: deps.provisioner.projectSandboxLastActivityAt.bind(
+                  deps.provisioner,
+                ),
+              }),
+          sleepProject: deps.provisioner.sleepProject.bind(deps.provisioner),
+          idleMs: deps.sandboxIdleTimeoutMs!,
+          onSlept: (projectId) => app.log.info({ projectId }, 'idle project Sandbox slept'),
+          onError: (projectId, err) =>
+            app.log.warn(
+              { projectId, err },
+              projectId === undefined
+                ? 'idle project Sandbox sweep failed'
+                : 'idle project Sandbox sleep deferred',
+            ),
+        })
+      : undefined;
+  app.addHook('onClose', () => idleSleepScheduler?.stop());
   const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
     const persist = async (): Promise<void> => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
