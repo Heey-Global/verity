@@ -693,7 +693,12 @@ VERITY_SERVER_MEMORY=2g
 VERITY_POSTGRES_MEMORY=1g
 VERITY_SANDBOX_MEMORY=4g
 VERITY_SANDBOX_CPUS=2
+VERITY_SANDBOX_IDLE_MINUTES=30
 ```
+
+An active project Sandbox sleeps after this many minutes without a running turn,
+Agent Loop, dev server, or public preview. New turns and Agent Loops wake it
+automatically. Set `VERITY_SANDBOX_IDLE_MINUTES=0` to keep Sandboxes running.
 
 One exception, on the managed topology only: the Server container is created by
 the Updater from the sealed deployment spec, not by Compose, so `mem_limit` and

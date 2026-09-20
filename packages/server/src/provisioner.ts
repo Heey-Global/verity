@@ -1437,6 +1437,7 @@ export interface Provisioner {
   /** Atomically claim/release background Sandbox use against repair ownership. */
   tryBeginProjectSandboxActivity?(projectId: string): boolean;
   endProjectSandboxActivity?(projectId: string): void;
+  projectSandboxLastActivityAt?(projectId: string): number | undefined;
 }
 
 export class ProvisioningWarning extends Error {
@@ -2407,6 +2408,7 @@ export class ProvisionerImpl implements Provisioner {
     { promise: Promise<boolean>; requestingSessionIds: Set<string> }
   >();
   private readonly projectSandboxActivities = new Map<string, number>();
+  private readonly projectSandboxLastActivities = new Map<string, number>();
   private readonly projectWakeAttempts = new Map<string, Promise<ProjectRecord>>();
 
   attachProjectBusyProbe(
@@ -2475,6 +2477,7 @@ export class ProvisionerImpl implements Provisioner {
 
   tryBeginProjectSandboxActivity(projectId: string): boolean {
     if (this.turnSandboxRepairs.has(projectId)) return false;
+    this.markProjectSandboxActivity(projectId);
     this.projectSandboxActivities.set(
       projectId,
       (this.projectSandboxActivities.get(projectId) ?? 0) + 1,
@@ -2483,9 +2486,21 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   endProjectSandboxActivity(projectId: string): void {
+    this.markProjectSandboxActivity(projectId);
     const remaining = (this.projectSandboxActivities.get(projectId) ?? 1) - 1;
     if (remaining <= 0) this.projectSandboxActivities.delete(projectId);
     else this.projectSandboxActivities.set(projectId, remaining);
+  }
+
+  projectSandboxLastActivityAt(projectId: string): number | undefined {
+    return this.projectSandboxLastActivities.get(projectId);
+  }
+
+  private markProjectSandboxActivity(projectId: string): void {
+    this.projectSandboxLastActivities.set(
+      projectId,
+      Math.max(Date.now(), (this.projectSandboxLastActivities.get(projectId) ?? 0) + 1),
+    );
   }
 
   async withProjectExclusiveMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
@@ -2688,6 +2703,7 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   async ensureProjectSandboxAwake(projectId: string): Promise<ProjectRecord> {
+    this.markProjectSandboxActivity(projectId);
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) throw new ProvisioningError(`project ${projectId} not found`);
     if (project.state === 'active') return project;
@@ -2698,6 +2714,7 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   async wakeProject(projectId: string): Promise<ProjectRecord> {
+    this.markProjectSandboxActivity(projectId);
     const existing = this.projectWakeAttempts.get(projectId);
     if (existing !== undefined) return existing;
     const attempt = this.wakeProjectOnce(projectId);

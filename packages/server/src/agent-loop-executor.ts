@@ -16,6 +16,8 @@ interface AgentLoopExecutionResult {
 }
 
 export interface AgentLoopExecutorDeps {
+  /** Hold an activity lease while the loop uses the project Sandbox. */
+  beginProjectActivity?(projectId: string): (() => void) | undefined;
   /** Wake or otherwise prepare the project before any Sandbox-dependent work. */
   prepareProject?(project: ProjectRecord): Promise<ProjectRecord>;
   ensureSession(loop: AgentLoopRecord, project: ProjectRecord): Promise<SessionRecord>;
@@ -63,6 +65,7 @@ export function createAgentLoopExecutor(deps: AgentLoopExecutorDeps): AgentLoopE
         };
       }
       running.add(loop.id);
+      let endProjectActivity: (() => void) | undefined;
       try {
         if (!loop.script?.trim()) {
           return {
@@ -73,6 +76,10 @@ export function createAgentLoopExecutor(deps: AgentLoopExecutorDeps): AgentLoopE
           };
         }
         const readyProject = (await deps.prepareProject?.(project)) ?? project;
+        endProjectActivity = deps.beginProjectActivity?.(readyProject.id);
+        if (deps.beginProjectActivity !== undefined && endProjectActivity === undefined) {
+          throw new Error('project Sandbox mutation is already in progress');
+        }
         const session = await deps.ensureSession(loop, readyProject);
         const result = await deps.runScript({ loop, project: readyProject, session });
         const signal = parseSpawnSignal(result.stdout);
@@ -149,6 +156,7 @@ export function createAgentLoopExecutor(deps: AgentLoopExecutorDeps): AgentLoopE
           loop.sessionId,
         );
       } finally {
+        endProjectActivity?.();
         running.delete(loop.id);
       }
     },
