@@ -7946,9 +7946,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }
-      // SBX-4: reject a turn against a project whose sandbox isn't active
+      // SBX-4: reject a turn against a project whose sandbox cannot become active
       // (stopped/failed/restarting) up front — 409 + repair hint — instead of
-      // dispatching a doomed `docker exec` that would just crash the turn.
+      // dispatching a doomed `docker exec` that would just crash the turn. Sleeping
+      // and waking projects continue to dispatch: foreground turn preparation joins
+      // their automatic wake before attempting container work.
       // Mirrors the session-spawn route's `state !== 'active'` gate. An unknown
       // session is left to dispatchTurn's 404 below.
       if (session?.projectId != null) {
@@ -7956,7 +7958,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (
           project !== undefined &&
           !isControlPlaneProject(project) &&
-          project.state !== 'active'
+          project.state !== 'active' &&
+          project.state !== 'sleeping' &&
+          project.state !== 'waking'
         ) {
           reply.code(409);
           return {

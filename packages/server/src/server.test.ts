@@ -7151,6 +7151,39 @@ describe('POST /sessions/:id/turns', () => {
     expect(dispatchTurn).not.toHaveBeenCalled();
   });
 
+  it.each(['sleeping', 'waking'] as const)(
+    'accepts a turn while the project sandbox is %s so preparation can wake it',
+    async (state) => {
+      dispatchTurn.mockResolvedValueOnce({ queued: false });
+      await ctx.store.upsertProject({
+        id: `p-${state}`,
+        owner: 'heey-global',
+        repo: 'verity',
+        containerName: `dev-heey-global-verity-${state}`,
+        state,
+      });
+      await ctx.store.createSession({
+        sessionId: `s-${state}`,
+        worktree: `/data/dev/heey-global-verity/.verity-sessions/agent-${state}`,
+        model: 'claude-opus-4-8',
+        projectId: `p-${state}`,
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: `/sessions/s-${state}/turns`,
+        payload: { prompt: 'wake up and continue' },
+      });
+
+      expect(res.statusCode).toBe(202);
+      expect(dispatchTurn).toHaveBeenCalledWith(
+        `s-${state}`,
+        'wake up and continue',
+        expect.any(Object),
+      );
+    },
+  );
+
   it('does not require an active sandbox for Verity Control turns', async () => {
     dispatchTurn.mockResolvedValueOnce({ queued: false });
     await ctx.store.upsertProject({
