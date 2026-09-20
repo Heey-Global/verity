@@ -17,7 +17,7 @@ import { createWebSocket } from '../lib/socket';
 export interface UseSession extends SessionModelState {
   /** Fire-and-forget an operator turn; the agent's reply streams back over WS.
    * Optional turn options (e.g. image `attachments`) are forwarded to the model. */
-  sendTurn: (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => void;
+  sendTurn: (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => Promise<boolean>;
   /** Load the previous page of older history (scroll-up); no-op when none/loading. */
   loadOlder: () => void;
   /** Load older history in one fetch down to `targetSeq` (a bookmark jump to an
@@ -93,11 +93,12 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   const sendTurn = useCallback(
     (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => {
-      if (model.state.sending) return;
-      void model.sendTurn(prompt, opts).then(() => {
+      if (model.state.sending) return Promise.resolve(false);
+      return model.sendTurn(prompt, opts).then((accepted) => {
         if (model.state.sendError === undefined) {
           publishSessionStatusMutation(sessionId, 'running');
         }
+        return accepted;
       });
     },
     [model, sessionId],

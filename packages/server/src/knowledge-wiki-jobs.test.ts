@@ -89,6 +89,7 @@ it('starts a fresh scoped session with selected model and exposes completion thr
     expect(response.statusCode).toBe(202);
     const { job } = response.json();
     expect(job.status).toBe('running');
+    expect(job.model).toBe('codex/default');
     expect(job.sourceRevisions).toEqual([
       { documentId: source.id, revisionId: source.currentRevisionId },
     ]);
@@ -118,16 +119,289 @@ it('starts a fresh scoped session with selected model and exposes completion thr
     await app.close();
   }
 });
+it('debounces new Sources into one automatic maintenance job', async () => {
+  const { source } = await setup();
+  const second = await ctx.store.knowledge.createDocument({
+    folderId: (await ctx.store.knowledge.getProjectSpace('project'))!.sourcesFolderId,
+    title: 'Follow-up',
+    bodyMarkdown: 'A second decision.',
+  });
+  const sendTurn = vi.fn(async (sessionId: string) => ({
+    sessionId,
+    exitCode: 0,
+    stderr: '',
+    aborted: false,
+  }));
+  const jobs = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: { sendTurn, cancelTurn: vi.fn(async () => true) },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 5,
+    onError: (error) => {
+      throw error;
+    },
+  });
+  await jobs.enqueue('project', [source.id]);
+  await jobs.enqueue('project', [second.id]);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await jobs.close();
+  expect(sendTurn).toHaveBeenCalledOnce();
+  const [job] = await ctx.store.knowledge.listWikiJobs('project');
+  expect(job).toMatchObject({ model: 'codex/knowledge', status: 'completed' });
+  expect(job!.sourceRevisions.map((item) => item.documentId)).toEqual(
+    expect.arrayContaining([source.id, second.id]),
+  );
+});
+it('recovers debounced maintenance after a server restart', async () => {
+  const { source } = await setup();
+  const first = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: { sendTurn: vi.fn(), cancelTurn: vi.fn(async () => true) },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 10,
+    onError: () => {},
+  });
+  await first.enqueue('project', [source.id]);
+  await first.close();
+  expect(await ctx.store.knowledge.listWikiMaintenance('project')).toHaveLength(1);
+
+  const sendTurn = vi.fn(async (sessionId: string) => ({
+    sessionId,
+    exitCode: 0,
+    stderr: '',
+    aborted: false,
+  }));
+  const recovered = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: { sendTurn, cancelTurn: vi.fn(async () => true) },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    onError: (error) => {
+      throw error;
+    },
+  });
+  await recovered.recover();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await recovered.close();
+  expect(sendTurn).toHaveBeenCalledOnce();
+  expect(await ctx.store.knowledge.listWikiMaintenance('project')).toEqual([]);
+});
+it('retains automatic maintenance after a backend failure', async () => {
+  const { source } = await setup();
+  const jobs = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: {
+      sendTurn: vi.fn(async (sessionId: string) => ({
+        sessionId,
+        exitCode: 1,
+        stderr: 'backend failed',
+        aborted: false,
+      })),
+      cancelTurn: vi.fn(async () => true),
+    },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 5,
+    onError: () => {},
+  });
+  await jobs.enqueue('project', [source.id]);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await jobs.close();
+  expect(await ctx.store.knowledge.listWikiMaintenance('project')).toMatchObject([
+    { projectId: 'project', sourceDocumentId: source.id },
+  ]);
+});
+it('reports a failed post-job queue read without leaking an unhandled rejection', async () => {
+  const { source } = await setup();
+  const errors: unknown[] = [];
+  const original = ctx.store.knowledge.listWikiMaintenance.bind(ctx.store.knowledge);
+  const list = vi
+    .spyOn(ctx.store.knowledge, 'listWikiMaintenance')
+    .mockImplementationOnce(original)
+    .mockRejectedValueOnce(new Error('database temporarily unavailable'));
+  const jobs = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: {
+      sendTurn: vi.fn(async (sessionId: string) => ({
+        sessionId,
+        exitCode: 0,
+        stderr: '',
+        aborted: false,
+      })),
+      cancelTurn: vi.fn(async () => true),
+    },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 5,
+    onError: (error) => errors.push(error),
+  });
+  try {
+    await jobs.enqueue('project', [source.id]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(errors).toEqual([
+      expect.objectContaining({ message: 'database temporarily unavailable' }),
+    ]);
+  } finally {
+    await jobs.close();
+    list.mockRestore();
+  }
+});
+it('automatically reconciles the Wiki after its last Source is deleted', async () => {
+  const { source } = await setup();
+  await ctx.store.knowledge.deleteDocument(source.id);
+  const prompts: string[] = [];
+  const jobs = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: {
+      sendTurn: vi.fn(async (sessionId: string, prompt: string) => {
+        prompts.push(prompt);
+        return { sessionId, exitCode: 0, stderr: '', aborted: false };
+      }),
+      cancelTurn: vi.fn(async () => true),
+    },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 5,
+    onError: (error) => {
+      throw error;
+    },
+  });
+  await jobs.enqueueReconciliation('project');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await jobs.close();
+  expect(prompts[0]).toContain('Reconcile the project Wiki after Sources were removed');
+  expect((await ctx.store.knowledge.listWikiJobs('project'))[0]).toMatchObject({
+    kind: 'reconcile',
+    status: 'completed',
+    sourceRevisions: [],
+  });
+  expect(await ctx.store.knowledge.listWikiReconciliations()).toEqual([]);
+});
+it('runs reconciliation and ingestion separately when both are pending', async () => {
+  const { source } = await setup();
+  const kinds: string[] = [];
+  const jobs = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: {
+      sendTurn: vi.fn(async (sessionId: string, prompt: string) => {
+        kinds.push(prompt.includes('Reconcile the project Wiki') ? 'reconcile' : 'ingest');
+        return { sessionId, exitCode: 0, stderr: '', aborted: false };
+      }),
+      cancelTurn: vi.fn(async () => true),
+    },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 5,
+    onError: (error) => {
+      throw error;
+    },
+  });
+  await jobs.enqueue('project', [source.id]);
+  await jobs.enqueueReconciliation('project');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await jobs.close();
+  expect(kinds).toEqual(['reconcile', 'ingest']);
+  expect(await ctx.store.knowledge.listWikiMaintenance('project')).toEqual([]);
+  expect(await ctx.store.knowledge.listWikiReconciliations()).toEqual([]);
+});
+it('does not clear a source that was queued again after a job claimed it', async () => {
+  const { source } = await setup();
+  const firstDueAt = new Date('2026-01-01T00:00:00.000Z');
+  const replacementDueAt = new Date('2026-01-01T00:01:00.000Z');
+  await ctx.store.knowledge.queueWikiMaintenance('project', [source.id], firstDueAt);
+  const claimed = await ctx.store.knowledge.listWikiMaintenance('project');
+  await ctx.store.knowledge.queueWikiMaintenance('project', [source.id], replacementDueAt);
+  await ctx.store.knowledge.clearWikiMaintenance(claimed);
+  expect(await ctx.store.knowledge.listWikiMaintenance('project')).toEqual([
+    { projectId: 'project', sourceDocumentId: source.id, dueAt: replacementDueAt },
+  ]);
+});
+it('waits for active project maintenance before starting the next batch', async () => {
+  const { source, space } = await setup();
+  const second = await ctx.store.knowledge.createDocument({
+    folderId: space.sourcesFolderId,
+    title: 'Later upload',
+    bodyMarkdown: 'A later decision.',
+  });
+  let firstStarted!: () => void;
+  let finishFirst!: () => void;
+  const started = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  const firstFinished = new Promise<void>((resolve) => {
+    finishFirst = resolve;
+  });
+  const prompts: string[] = [];
+  const sendTurn = vi.fn(async (sessionId: string, prompt: string) => {
+    prompts.push(prompt);
+    if (sendTurn.mock.calls.length === 1) {
+      firstStarted();
+      await firstFinished;
+    }
+    return { sessionId, exitCode: 0, stderr: '', aborted: false };
+  });
+  const jobs = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: { sendTurn, cancelTurn: vi.fn(async () => true) },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 5,
+    onError: (error) => {
+      throw error;
+    },
+  });
+  await jobs.enqueue('project', [source.id]);
+  await started;
+  await jobs.enqueue('project', [second.id]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(sendTurn).toHaveBeenCalledOnce();
+  finishFirst();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await jobs.close();
+  expect(sendTurn).toHaveBeenCalledTimes(2);
+  expect(prompts[1]).toContain(second.id);
+  expect(prompts[1]).not.toContain(source.id);
+});
+it('cancels a running automatic job before waiting for its completion on shutdown', async () => {
+  const { source } = await setup();
+  let started!: () => void;
+  let finish!: () => void;
+  const didStart = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const didFinish = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const cancelTurn = vi.fn(async () => {
+    finish();
+    return true;
+  });
+  const jobs = createKnowledgeWikiJobs({
+    store: ctx.store,
+    conductor: {
+      sendTurn: vi.fn(async (sessionId: string) => {
+        started();
+        await didFinish;
+        return { sessionId, exitCode: 0, stderr: '', aborted: true };
+      }),
+      cancelTurn,
+    },
+    prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
+    debounceMs: 5,
+    onError: (error) => {
+      throw error;
+    },
+  });
+  await jobs.enqueue('project', [source.id]);
+  await didStart;
+  await jobs.close();
+  expect(cancelTurn).toHaveBeenCalledOnce();
+});
 it('marks backend failure without claiming success and cleans rejected job sessions', async () => {
   const { source } = await setup();
   const errors: unknown[] = [];
   const release = vi.fn();
+  const sendTurn = vi.fn(async () => {
+    throw new Error('backend unavailable');
+  });
   const jobs = createKnowledgeWikiJobs({
     store: ctx.store,
     conductor: {
-      sendTurn: vi.fn(async () => {
-        throw new Error('backend unavailable');
-      }),
+      sendTurn,
       cancelTurn: vi.fn(async () => true),
     },
     prepare: async () => ({ model: 'claude', directory, release }),
@@ -143,6 +417,7 @@ it('marks backend failure without claiming success and cleans rejected job sessi
   const job = await jobs.start('project', { kind: 'ingest', sourceDocumentIds: [source.id] });
   await jobs.close();
   expect((await ctx.store.knowledge.getWikiJob(job.id))?.status).toBe('failed');
+  expect(sendTurn).toHaveBeenCalledTimes(3);
   expect(errors).toHaveLength(1);
   expect(release).toHaveBeenCalledTimes(2);
 });

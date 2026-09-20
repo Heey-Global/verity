@@ -298,6 +298,8 @@ interface BrokeredHttpConsumptionsTable {
  * the Verity API/UI instead of scattered container-local git config. */
 export interface VeritySettingsTable {
   id: string;
+  /** System-wide model used for automatic Wiki maintenance. */
+  knowledge_model: ColumnType<string | null, string | null | undefined, string | null>;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   git_user_name: ColumnType<string | null, string | null | undefined, string | null>;
@@ -1091,14 +1093,16 @@ interface KnowledgeSpacesTable {
   overview_document_id: Generated<string | null>;
   overview_revision_id: Generated<string | null>;
   legacy_memory: Generated<string | null>;
+  reconcile_due_at: Generated<Date | null>;
 }
 interface KnowledgeWikiJobsTable {
   id: string;
   project_id: string;
   session_id: string;
-  kind: 'ingest' | 'check';
+  kind: 'ingest' | 'check' | 'reconcile';
   status: 'pending' | 'running' | 'completed' | 'failed';
   source_revisions: string;
+  model: Generated<string | null>;
   error: Generated<string | null>;
   created_at: Generated<Date>;
 }
@@ -1118,11 +1122,17 @@ interface KnowledgeSourceRevisionsTable {
   locators: ColumnType<{ label: string; text: string }[], string, string>;
   previews: ColumnType<{ label: string; mediaType: string; base64: string }[], string, string>;
 }
+interface KnowledgeMaintenanceQueueTable {
+  project_id: string;
+  source_document_id: string;
+  due_at: Date;
+}
 export interface Database {
   project_knowledge_spaces: KnowledgeSpacesTable;
   knowledge_wiki_jobs: KnowledgeWikiJobsTable;
   knowledge_provenance: KnowledgeProvenanceTable;
   knowledge_source_revisions: KnowledgeSourceRevisionsTable;
+  knowledge_maintenance_queue: KnowledgeMaintenanceQueueTable;
   knowledge_folders: KnowledgeFoldersTable;
   knowledge_documents: KnowledgeDocumentsTable;
   knowledge_document_revisions: KnowledgeRevisionsTable;

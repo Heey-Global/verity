@@ -2785,6 +2785,58 @@ const migrations: Record<string, Migration> = {
       );
     },
   },
+  '0102_automatic_knowledge_maintenance': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table verity_settings add column knowledge_model text`.execute(db);
+      await sql`alter table knowledge_wiki_jobs add column model text`.execute(db);
+      await sql`create index knowledge_source_sha256 on knowledge_source_revisions(sha256)`.execute(
+        db,
+      );
+      await sql`create table knowledge_maintenance_queue (
+        project_id text not null references projects(id) on delete cascade,
+        source_document_id text not null references knowledge_documents(id) on delete cascade,
+        due_at timestamptz not null,
+        primary key(project_id,source_document_id)
+      )`.execute(db);
+      await sql`alter table project_knowledge_spaces add column reconcile_due_at timestamptz`.execute(
+        db,
+      );
+      await sql`with recursive source_folders(project_id,id) as (
+        select project_id,sources_folder_id from project_knowledge_spaces
+        union all
+        select sf.project_id,f.id from source_folders sf
+          join knowledge_folders f on f.parent_id=sf.id
+      ) insert into knowledge_maintenance_queue(project_id,source_document_id,due_at)
+        select sf.project_id,d.id,now() from source_folders sf
+          join knowledge_documents d on d.folder_id=sf.id
+        on conflict do nothing`.execute(db);
+      await sql`with recursive wiki_folders(project_id,id) as (
+        select project_id,wiki_folder_id from project_knowledge_spaces
+        union all
+        select wf.project_id,f.id from wiki_folders wf
+          join knowledge_folders f on f.parent_id=wf.id
+      ) update project_knowledge_spaces s set reconcile_due_at=now()
+        where exists(select 1 from wiki_folders wf
+          join knowledge_documents d on d.folder_id=wf.id
+          where wf.project_id=s.project_id)`.execute(db);
+      await sql`alter table knowledge_wiki_jobs drop constraint knowledge_wiki_jobs_kind_check,
+        add constraint knowledge_wiki_jobs_kind_check check(kind in ('ingest','check','reconcile'))`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`delete from knowledge_wiki_jobs where kind = 'reconcile'`.execute(db);
+      await sql`alter table knowledge_wiki_jobs drop constraint knowledge_wiki_jobs_kind_check,
+        add constraint knowledge_wiki_jobs_kind_check check(kind in ('ingest','check'))`.execute(
+        db,
+      );
+      await sql`alter table project_knowledge_spaces drop column reconcile_due_at`.execute(db);
+      await sql`drop table knowledge_maintenance_queue`.execute(db);
+      await sql`drop index knowledge_source_sha256`.execute(db);
+      await sql`alter table knowledge_wiki_jobs drop column model`.execute(db);
+      await sql`alter table verity_settings drop column knowledge_model`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

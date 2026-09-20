@@ -608,6 +608,7 @@ export class ProjectMemoryTooLargeError extends Error {
 }
 
 export interface VeritySettingsRecord {
+  knowledgeModel?: string | null;
   gitUserName: string | null;
   gitUserEmail: string | null;
   gitSshPrivateKeyPath: string | null;
@@ -663,6 +664,7 @@ export interface VeritySettingsRecord {
 }
 
 type VeritySettingsKey =
+  | 'knowledgeModel'
   | 'advancedModeEnabled'
   | 'gitUserName'
   | 'gitUserEmail'
@@ -4685,6 +4687,7 @@ export class EventStore implements EventSink {
 
   private veritySettingsRowToRecord(
     row: {
+      knowledge_model: string | null;
       git_user_name: string | null;
       git_user_email: string | null;
       git_ssh_private_key_path: string | null;
@@ -4724,6 +4727,7 @@ export class EventStore implements EventSink {
     decrypt = true,
   ): VeritySettingsRecord {
     return {
+      knowledgeModel: row.knowledge_model,
       advancedModeEnabled: row.advanced_mode_enabled,
       gitUserName: row.git_user_name,
       gitUserEmail: row.git_user_email,
@@ -4777,6 +4781,7 @@ export class EventStore implements EventSink {
   }
 
   private readonly veritySettingsColumns = [
+    'knowledge_model',
     'advanced_mode_enabled',
     'git_user_name',
     'git_user_email',
@@ -4840,6 +4845,7 @@ export class EventStore implements EventSink {
   async updateVeritySettings(patch: VeritySettingsPatch): Promise<VeritySettingsRecord> {
     const values = {
       id: 'global',
+      knowledge_model: normalizeSetting(patch.knowledgeModel),
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
       git_user_name: normalizeSetting(patch.gitUserName),
       git_user_email: normalizeSetting(patch.gitUserEmail),
@@ -4880,6 +4886,9 @@ export class EventStore implements EventSink {
       .values(values)
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
+          ...(patch.knowledgeModel !== undefined
+            ? { knowledge_model: normalizeSetting(patch.knowledgeModel) }
+            : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }
             : {}),

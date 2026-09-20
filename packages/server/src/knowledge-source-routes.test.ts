@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 
@@ -96,6 +96,120 @@ it('does not expose originals by revision id belonging to another document', asy
     expect(response.statusCode).toBe(404);
     const metadata = await app.inject({ url: `/knowledge/documents/${a.id}/source` });
     expect(metadata.json()).toEqual({ source: null });
+  } finally {
+    await app.close();
+  }
+});
+
+it('stores project chat selections under Chat uploads, deduplicates files, and schedules maintenance', async () => {
+  await ctx.store.upsertProject({
+    id: 'chat-knowledge',
+    owner: 'example',
+    repo: 'chat-knowledge',
+    containerName: 'chat-knowledge',
+    state: 'active',
+    overviewVisible: true,
+  });
+  await ctx.store.createSession({
+    sessionId: 'chat-session',
+    projectId: 'chat-knowledge',
+    worktree: '/tmp/chat-knowledge',
+    model: 'codex/default',
+  });
+  const schedule = vi.fn();
+  const app = Fastify();
+  registerKnowledgeSourceRoutes(app, {
+    knowledge: ctx.store.knowledge,
+    store: ctx.store,
+    schedule,
+  });
+  try {
+    const space = (await ctx.store.knowledge.getProjectSpace('chat-knowledge'))!;
+    const nested = await ctx.store.knowledge.createFolder({
+      parentId: space.sourcesFolderId,
+      name: 'Research',
+    });
+    const uploaded = await app.inject({
+      method: 'POST',
+      url: '/knowledge/sources',
+      payload: {
+        folderId: nested.id,
+        filename: 'research.txt',
+        base64: Buffer.from('New research').toString('base64'),
+      },
+    });
+    expect(schedule).toHaveBeenCalledWith('chat-knowledge', [
+      uploaded.json<{ document: { id: string } }>().document.id,
+    ]);
+    schedule.mockClear();
+    const attachment = {
+      filename: 'decision.txt',
+      base64: Buffer.from('Use the blue design.').toString('base64'),
+    };
+    const first = await app.inject({
+      method: 'POST',
+      url: '/sessions/chat-session/knowledge-sources',
+      payload: {
+        messageId: 'message-1',
+        text: 'Approved the launch plan.',
+        attachments: [attachment],
+      },
+    });
+    expect(first.statusCode).toBe(200);
+    const firstDocuments = first.json<{ documents: { id: string; folderId: string }[] }>()
+      .documents;
+    expect(firstDocuments).toHaveLength(2);
+    const second = await app.inject({
+      method: 'POST',
+      url: '/sessions/chat-session/knowledge-sources',
+      payload: { attachments: [attachment] },
+    });
+    expect(second.json<{ documents: { id: string }[] }>().documents[0]!.id).toBe(
+      firstDocuments[1]!.id,
+    );
+    const folders = await ctx.store.knowledge.listFolders();
+    expect(folders.find((folder) => folder.id === firstDocuments[0]!.folderId)?.name).toBe(
+      'Chat uploads',
+    );
+    expect(schedule).toHaveBeenCalledWith(
+      'chat-knowledge',
+      expect.arrayContaining(firstDocuments.map((document) => document.id)),
+    );
+    schedule.mockClear();
+    const beforeRejectedBatch = await ctx.store.knowledge.listDocuments({
+      folderId: firstDocuments[0]!.folderId,
+    });
+    const rejected = await app.inject({
+      method: 'POST',
+      url: '/sessions/chat-session/knowledge-sources',
+      payload: {
+        text: 'This must not be saved by itself.',
+        attachments: [attachment, { filename: 'broken.txt', base64: 'not base64!' }],
+      },
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(
+      await ctx.store.knowledge.listDocuments({ folderId: firstDocuments[0]!.folderId }),
+    ).toEqual(beforeRejectedBatch);
+    expect(schedule).not.toHaveBeenCalled();
+    schedule.mockRejectedValueOnce(new Error('scheduler unavailable'));
+    const committedWithoutWake = await app.inject({
+      method: 'POST',
+      url: '/knowledge/sources',
+      payload: {
+        folderId: nested.id,
+        filename: 'crash-safe.txt',
+        base64: Buffer.from('Persist before waking the scheduler.').toString('base64'),
+      },
+    });
+    expect(committedWithoutWake.statusCode).toBe(500);
+    const crashSafe = (await ctx.store.knowledge.listDocuments({ folderId: nested.id })).find(
+      (document) => document.title.startsWith('crash-safe.txt'),
+    );
+    expect(crashSafe).toBeDefined();
+    expect(await ctx.store.knowledge.listWikiMaintenance('chat-knowledge')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ sourceDocumentId: crashSafe!.id })]),
+    );
   } finally {
     await app.close();
   }

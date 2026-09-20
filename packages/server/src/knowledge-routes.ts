@@ -27,6 +27,8 @@ class KnowledgeCleanupPendingError extends Error {
 export interface KnowledgeRouteDeps {
   knowledge: KnowledgeStore;
   reconcileInvalidations(): Promise<void>;
+  schedule?: (projectId: string, sourceDocumentIds: string[]) => Promise<void> | void;
+  scheduleReconciliation?: (projectId: string) => Promise<void> | void;
 }
 
 /** Operator routes use the server's default paired-device authentication gate. */
@@ -119,30 +121,45 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
         document: await store.getDocument(params.parse(request.params).id, query.revisionId),
       };
     });
-    instance.post('/knowledge/documents', { bodyLimit: 2 * 1024 * 1024 }, async (request) => ({
-      document: await store.createDocument(documentBody.parse(request.body)),
-    }));
-    instance.put('/knowledge/documents/:id', { bodyLimit: 2 * 1024 * 1024 }, async (request) => ({
-      document: await store.updateDocument(
+    const wakeMaintenance = async (document: { id: string; folderId: string }): Promise<void> => {
+      const projectId = await store.projectForSourceFolder(document.folderId);
+      if (projectId) await deps.schedule?.(projectId, [document.id]);
+    };
+    instance.post('/knowledge/documents', { bodyLimit: 2 * 1024 * 1024 }, async (request) => {
+      const document = await store.createDocument(documentBody.parse(request.body));
+      await wakeMaintenance(document);
+      return { document };
+    });
+    instance.put('/knowledge/documents/:id', { bodyLimit: 2 * 1024 * 1024 }, async (request) => {
+      const document = await store.updateDocument(
         params.parse(request.params).id,
         editBody.parse(request.body),
-      ),
-    }));
+      );
+      await wakeMaintenance(document);
+      return { document };
+    });
     instance.patch('/knowledge/documents/:id', async (request) => {
       const { folderId, expectedPolicyToken } = z
         .object({ folderId: id, expectedPolicyToken: id })
         .strict()
         .parse(request.body);
-      const document = await store.moveDocument(
-        params.parse(request.params).id,
-        folderId,
-        expectedPolicyToken,
-      );
+      const documentId = params.parse(request.params).id;
+      const before = await store.getDocument(documentId);
+      const previousSourceProject = await store.projectForSourceFolder(before.folderId);
+      const document = await store.moveDocument(documentId, folderId, expectedPolicyToken);
+      const nextSourceProject = await store.projectForSourceFolder(document.folderId);
+      if (previousSourceProject && previousSourceProject !== nextSourceProject)
+        await deps.scheduleReconciliation?.(previousSourceProject);
+      if (nextSourceProject && nextSourceProject !== previousSourceProject)
+        await deps.schedule?.(nextSourceProject, [document.id]);
       await reconcile();
       return { document };
     });
     instance.delete('/knowledge/documents/:id', async (request) => {
-      await store.deleteDocument(params.parse(request.params).id);
+      const document = await store.getDocument(params.parse(request.params).id);
+      const projectId = await store.projectForSourceFolder(document.folderId);
+      await store.deleteDocument(document.id);
+      if (projectId) await deps.scheduleReconciliation?.(projectId);
       await reconcile();
       return { ok: true };
     });
@@ -166,7 +183,9 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
         .object({ revisionId: id, expectedRevisionId: id })
         .strict()
         .parse(request.body);
-      return { document: await store.restoreDocument(params.parse(request.params).id, body) };
+      const document = await store.restoreDocument(params.parse(request.params).id, body);
+      await wakeMaintenance(document);
+      return { document };
     });
     instance.get('/projects/:id/knowledge-grants', async (request) => ({
       grants: await store.getGrants(params.parse(request.params).id),
