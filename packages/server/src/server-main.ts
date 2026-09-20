@@ -882,6 +882,7 @@ async function main(): Promise<void> {
       sandboxPidsLimit: parseNonNegativeInt(process.env.VERITY_SANDBOX_PIDS_LIMIT),
       sandboxMemoryBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY),
       sandboxNanoCpus: parseCpuCores(process.env.VERITY_SANDBOX_CPUS),
+      sandboxCpuShares: parseNonNegativeInt(process.env.VERITY_SANDBOX_CPU_SHARES),
       sandboxCapAdd: splitList(process.env.VERITY_SANDBOX_CAP_ADD),
       sandboxAllowPrivilegeEscalation:
         process.env.VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION === '1' ||

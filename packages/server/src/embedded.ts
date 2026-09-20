@@ -789,6 +789,7 @@ export interface EmbeddedServerConfig {
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
+  sandboxCpuShares?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
   sandboxAllowPrivilegeEscalation?: boolean | undefined;
   /** Port for a SECOND, non-published HTTP listener that serves the `/internal/*`
@@ -3309,6 +3310,9 @@ export async function buildEmbeddedServer(
         ? { sandboxMemoryBytes: config.sandboxMemoryBytes }
         : {}),
       ...(config.sandboxNanoCpus !== undefined ? { sandboxNanoCpus: config.sandboxNanoCpus } : {}),
+      ...(config.sandboxCpuShares !== undefined
+        ? { sandboxCpuShares: config.sandboxCpuShares }
+        : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
       ...(config.sandboxAllowPrivilegeEscalation !== undefined
         ? { sandboxAllowPrivilegeEscalation: config.sandboxAllowPrivilegeEscalation }
