@@ -4,11 +4,25 @@ import { z } from 'zod';
 import { sessionParams } from './session-route-schemas.js';
 
 /** Caps the JSON upload route at roughly a 52 MiB recording once base64 is
- *  decoded. `buildServer` reads this to size Fastify's own body limit, which
- *  takes the larger of this and the attachment cap plus an envelope allowance,
- *  because a body limit at or below this one rejects a legal recording before
- *  any schema runs and the client sees a bare 413 instead of a field error. */
+ *  decoded. */
 export const MAX_MEETING_AUDIO_BASE64_LEN = 70_000_000;
+
+/**
+ * What the JSON upload route, and only it, may buffer.
+ *
+ * It has to stay above {@link MAX_MEETING_AUDIO_BASE64_LEN}: a body limit at or
+ * below the schema's own cap rejects a legal recording before any schema runs,
+ * and the client sees a bare 413 instead of a field error — after it has already
+ * sent the bytes. The allowance on top covers the JSON envelope and the other
+ * fields travelling beside `data`.
+ *
+ * This used to be `buildServer`'s GLOBAL limit, taken as the larger of this cap
+ * and the turn-attachment cap. That made every route in the server willing to
+ * buffer 71 MB to accommodate two that need it, and a buffered base64 body costs
+ * roughly three times its own size in peak memory — the body, the string
+ * `JSON.parse` produces from it, and the Buffer the handler decodes back.
+ */
+export const MEETING_TRANSCRIPT_BODY_LIMIT_BYTES = MAX_MEETING_AUDIO_BASE64_LEN + 1_000_000;
 
 // `fileName` is bounded but not shape-checked, here or on the streamed route:
 // it is a label, not a path. The handlers derive the stored name from
@@ -88,6 +102,7 @@ export function registerMeetingTranscriptRoutes(
 ): void {
   app.post(
     '/sessions/:id/meetings/transcripts',
+    { bodyLimit: MEETING_TRANSCRIPT_BODY_LIMIT_BYTES },
     async (request, reply): Promise<MeetingTranscriptCreated | { error: string }> => {
       const { id } = sessionParams.parse(request.params);
       return deps.save(request, reply, id, meetingTranscriptBody.parse(request.body));
