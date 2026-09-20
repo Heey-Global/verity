@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/Heey-Global/verity/compare/v1.3.0...v1.3.1) (2026-09-20)
+
+
+### Performance Improvements
+
+* **server:** bound activity projection reads ([#557](https://github.com/Heey-Global/verity/issues/557)) ([87eb98e](https://github.com/Heey-Global/verity/commit/87eb98eb6ad3058bbeb7b5e8aee08c50420bd943))
+
 ## [1.3.0](https://github.com/Heey-Global/verity/compare/v1.2.0...v1.3.0) (2026-09-20)
 
 
