@@ -22,7 +22,7 @@ export const MAX_MEETING_AUDIO_BASE64_LEN = 70_000_000;
  * roughly three times its own size in peak memory — the body, the string
  * `JSON.parse` produces from it, and the Buffer the handler decodes back.
  */
-export const MEETING_TRANSCRIPT_BODY_LIMIT_BYTES = MAX_MEETING_AUDIO_BASE64_LEN + 1_000_000;
+const MEETING_TRANSCRIPT_BODY_LIMIT_BYTES = MAX_MEETING_AUDIO_BASE64_LEN + 1_000_000;
 
 // `fileName` is bounded but not shape-checked, here or on the streamed route:
 // it is a label, not a path. The handlers derive the stored name from
