@@ -4187,6 +4187,32 @@ describe('GET /projects (#174)', () => {
     }
   });
 
+  it('projects sleep states through an additive field for older clients', async () => {
+    const project = await ctx.store.upsertProject({
+      id: 'p-sleeping-wire',
+      owner: 'heey-global',
+      repo: 'sleeping-wire',
+      containerName: 'dev-heey-global-sleeping-wire',
+      state: 'sleeping',
+    });
+    const withProjects = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listProjects: () => Promise.resolve([project]),
+    });
+    try {
+      const res = await withProjects.inject({ method: 'GET', url: '/projects' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject([
+        { id: project.id, state: 'active', lifecycleState: 'sleeping' },
+      ]);
+      expect(res.json()[0]).not.toHaveProperty('sleepCompatibilityFingerprint');
+    } finally {
+      await withProjects.close();
+    }
+  });
+
   // The startup drift report only reaches a server log. These carry the same
   // verdict per project onto the wire so the app can show it.
   describe('toolkit drift on the project wire shape', () => {
@@ -11598,6 +11624,79 @@ describe('POST /projects/:id/deprovision (#174)', () => {
       expect(res.json()).toEqual({ error: 'internal error' });
     } finally {
       await a.close();
+    }
+  });
+});
+
+describe('POST /projects/:id/sleep and /wake', () => {
+  it('runs explicit sleep and wake through the provisioner', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-sleep-route',
+      owner: 'heey-global',
+      repo: 'sleep-route',
+      containerName: 'dev-heey-global-sleep-route',
+      state: 'active',
+    });
+    const sleepProject = vi.fn(async (id: string) =>
+      ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'sha256:test',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      }),
+    );
+    const wakeProject = vi.fn(async (id: string) =>
+      ctx.store.updateProjectSleepState(id, 'active', {
+        sleepCompatibilityFingerprint: null,
+        sleepingSince: null,
+        wakeStartedAt: null,
+      }),
+    );
+    const provisioner = {
+      provision: vi.fn(),
+      sleepProject: async (id: string) => (await sleepProject(id))!,
+      wakeProject: async (id: string) => (await wakeProject(id))!,
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const slept = await server.inject({ method: 'POST', url: '/projects/p-sleep-route/sleep' });
+      expect(slept.statusCode).toBe(200);
+      expect(slept.json()).toMatchObject({
+        project: { state: 'active', lifecycleState: 'sleeping' },
+      });
+      expect(sleepProject).toHaveBeenCalledOnce();
+
+      const woke = await server.inject({ method: 'POST', url: '/projects/p-sleep-route/wake' });
+      expect(woke.statusCode).toBe(200);
+      expect(woke.json()).toMatchObject({ project: { state: 'active' } });
+      expect(wakeProject).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects a transition from the wrong lifecycle state', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-failed-sleep-route',
+      owner: 'heey-global',
+      repo: 'failed-sleep-route',
+      containerName: 'dev-heey-global-failed-sleep-route',
+      state: 'failed',
+    });
+    const provisioner = {
+      provision: vi.fn(),
+      sleepProject: vi.fn(),
+      wakeProject: vi.fn(),
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, provisioner });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/projects/p-failed-sleep-route/sleep',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(provisioner.sleepProject).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
     }
   });
 });

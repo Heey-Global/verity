@@ -694,11 +694,20 @@ VERITY_POSTGRES_MEMORY=1g
 VERITY_SANDBOX_MEMORY=4g
 VERITY_SANDBOX_CPUS=2
 VERITY_SANDBOX_CPU_SHARES=512
+VERITY_SANDBOX_IDLE_MINUTES=30
 ```
 
-Every value above is a **per-container** ceiling, and nothing bounds their sum.
-A host running more projects than it has cores is therefore oversubscribed by
-design: six sandboxes at `VERITY_SANDBOX_CPUS=2` want twelve cores on an
+An active project Sandbox sleeps after this many minutes without a running turn,
+Agent Loop, dev server, or public preview. New turns and Agent Loops wake it
+automatically. Set `VERITY_SANDBOX_IDLE_MINUTES=0` to keep Sandboxes running.
+
+Sleep decides how many sandboxes are resident at all; the limits below govern the
+ones that are awake. The two are complementary, and neither replaces the other —
+a host whose projects are all mid-turn has nothing to put to sleep.
+
+The memory, CPU, and PID values above are **per-container** ceilings, and nothing
+bounds their sum. A host running more projects than it has cores is therefore
+oversubscribed by design: six sandboxes at `VERITY_SANDBOX_CPUS=2` want twelve cores on an
 eight-core box, and each one is inside its own limit the whole time. Ceilings
 alone do not say who yields when they collide — Docker assigns no CPU weight by
 default, so the control-plane Server, the relays, and an agent running a
@@ -736,8 +745,8 @@ hard cgroup ceiling with swap disabled, so an over-large workload is killed
 inside its own container where the session can see and report it, rather than
 being allowed to page the host. Oversubscribing memory across many concurrent
 sandboxes still costs reclaim pressure. If a host runs enough projects at once to
-feel it, lower `VERITY_SANDBOX_MEMORY` or run fewer projects — do not give the
-swap back.
+feel it, lower `VERITY_SANDBOX_MEMORY`, shorten `VERITY_SANDBOX_IDLE_MINUTES` so
+fewer sandboxes stay resident, or run fewer projects — do not give the swap back.
 
 One exception, on the managed topology only: the Server container is created by
 the Updater from the sealed deployment spec, not by Compose, so `mem_limit` and

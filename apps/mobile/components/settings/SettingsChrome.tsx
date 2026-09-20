@@ -7,13 +7,15 @@
 // five screens they happen to be on, and the auto-save banner reports work
 // started on a screen that has since been popped.
 import { Children, Fragment, isValidElement, type ReactNode } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 import { Stack } from 'expo-router';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { StatusPill } from '../StatusPill';
+import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useVeritySettings } from '../../lib/settingsStore';
 import { settingsStyles as styles } from './settingsStyles';
 
@@ -54,16 +56,25 @@ export function SettingsScaffold({
           <Text style={styles.autoSaveBannerText}>Saving changes…</Text>
         </View>
       ) : null}
-      <ScrollView
+      {/*
+        Keyboard-aware rather than a plain ScrollView: the keyboard covers the
+        bottom of the list on both platforms, and the last group of a screen
+        (Public Preview, on connected services) holds a write-only paste box —
+        a credential typed behind the keyboard is never echoed back anywhere.
+        `bottomOffset` is the gap left between the focused field and the
+        keyboard's top edge, so the field is not flush against it.
+      */}
+      <KeyboardAwareScrollView
         contentContainerStyle={[
           styles.content,
           detail ? styles.detailContent : null,
           { paddingBottom: insets.bottom + 24 },
         ]}
         keyboardShouldPersistTaps="handled"
+        bottomOffset={KEYBOARD_BOTTOM_OFFSET}
       >
         {children}
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </View>
   );
 }

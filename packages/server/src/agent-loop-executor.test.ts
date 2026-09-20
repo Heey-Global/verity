@@ -55,6 +55,48 @@ function setup(result: {
 }
 
 describe('Agent Loop executor', () => {
+  it('holds and releases a project activity lease around Sandbox work', async () => {
+    const release = vi.fn();
+    const beginProjectActivity = vi.fn(() => release);
+    const executor = createAgentLoopExecutor({
+      beginProjectActivity,
+      ensureSession: vi.fn(async () => session),
+      runScript: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false })),
+      appendNotice: vi.fn(async () => undefined),
+      dispatchTurnWhenIdle: vi.fn(async () => ({ accepted: true })),
+    });
+
+    await executor.execute(loop, project);
+
+    expect(beginProjectActivity).toHaveBeenCalledWith(project.id);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('prepares a sleeping project before creating its session or running its script', async () => {
+    const sleeping = { ...project, state: 'sleeping' as const };
+    const awake = { ...project, state: 'active' as const };
+    const prepareProject = vi.fn(async () => awake);
+    const ensureSession = vi.fn(async () => session);
+    const runScript = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+    }));
+    const executor = createAgentLoopExecutor({
+      prepareProject,
+      ensureSession,
+      runScript,
+      appendNotice: vi.fn(async () => undefined),
+      dispatchTurnWhenIdle: vi.fn(async () => ({ accepted: true })),
+    });
+
+    await expect(executor.execute(loop, sleeping)).resolves.toMatchObject({ outcome: 'ok' });
+    expect(prepareProject).toHaveBeenCalledWith(sleeping);
+    expect(ensureSession).toHaveBeenCalledWith(loop, awake);
+    expect(runScript).toHaveBeenCalledWith(expect.objectContaining({ project: awake }));
+  });
+
   it('does not persist raw output or dispatch an agent for exit 0', async () => {
     const { executor, appendNotice, dispatchTurnWhenIdle } = setup({
       exitCode: 0,

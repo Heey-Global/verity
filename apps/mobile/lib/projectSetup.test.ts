@@ -42,6 +42,22 @@ describe('project setup presentation', () => {
     expect(hasUnreviewedDevServers(detection)).toBe(true);
   });
 
+  it.each([
+    ['sleeping_starting', 'Putting project to sleep…', 'progress'],
+    ['sleeping', 'Sleeping', 'ready'],
+    ['waking', 'Waking secure workspace…', 'progress'],
+  ] as const)('presents %s as %s', (lifecycleState, label, intent) => {
+    const sleepingProject = {
+      ...project,
+      state: 'active',
+      lifecycleState,
+      setupStatus: 'complete',
+    } as ProjectRecord;
+
+    expect(projectSetupStatus(sleepingProject)).toMatchObject({ label, intent });
+    expect(projectOverviewSetupLabel(sleepingProject)).toBe(label);
+  });
+
   it('keeps pending setup live on the overview until setup is completed', () => {
     const pending = { ...project, state: 'active', setupStatus: 'pending' } as ProjectRecord;
 

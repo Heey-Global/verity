@@ -254,6 +254,10 @@ import { detectDevServers } from './dev-server-detection.js';
 import { DevServerDetectionCache } from './dev-server-detection-cache.js';
 import { createAgentLoopExecutor } from './agent-loop-executor.js';
 import {
+  projectHasPersistentSandboxActivity,
+  startProjectIdleSleepScheduler,
+} from './project-idle-sleep.js';
+import {
   AmbiguousGitPushError,
   ProvisioningError,
   ProvisioningWarning,
@@ -559,8 +563,16 @@ type PublicProjectSettingsRecord = Omit<
 // `hiddenAt` is an internal soft-delete marker: hidden projects are filtered out
 // of `listProjects` before serialization, so the field would always be null on
 // the wire and adds nothing for clients — omit it from the public shape.
-interface PublicProjectRecord extends Omit<ProjectRecord, 'hiddenAt' | 'kind'> {
+interface PublicProjectRecord extends Omit<
+  ProjectRecord,
+  'hiddenAt' | 'kind' | 'state' | 'sleepCompatibilityFingerprint'
+> {
   kind?: ProjectRecord['kind'];
+  /** Legacy-compatible coarse state. Sleeping projects remain usable and wake on
+   * demand, so clients predating sleep/wake render them as active. */
+  state: Exclude<ProjectRecord['state'], 'sleeping_starting' | 'sleeping' | 'waking'>;
+  /** Detailed lifecycle state for clients that understand sandbox sleep/wake. */
+  lifecycleState?: ProjectRecord['state'];
   /** Latest published release for the overview version badge (#release-badge).
    *  All null when GitHub isn't configured, the repo has no releases, or the
    *  lookup hasn't resolved yet — the overview then simply shows no version. */
@@ -816,9 +828,13 @@ function publicProject(
   // Strip the internal soft-delete marker from the wire shape (see
   // PublicProjectRecord). `hiddenAt` is null for every listed project anyway.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
-  const { hiddenAt, kind, ...visible } = project;
+  const { hiddenAt, kind, state, sleepCompatibilityFingerprint, ...visible } = project;
+  void sleepCompatibilityFingerprint;
+  const sleeping = state === 'sleeping_starting' || state === 'sleeping' || state === 'waking';
   return {
     ...visible,
+    state: sleeping ? 'active' : state,
+    ...(sleeping ? { lifecycleState: state } : {}),
     ...(kind !== 'github' ? { kind } : {}),
     latestReleaseTag: release?.tag ?? null,
     latestReleaseName: release?.name ?? null,
@@ -1171,6 +1187,9 @@ export interface ServerDeps {
    * the no-project spawn path).
    */
   provisioner?: Provisioner | undefined;
+  /** Stop active project Sandboxes after this much confirmed inactivity. Zero or
+   *  absent disables automatic sleep. */
+  sandboxIdleTimeoutMs?: number | undefined;
   /**
    * Host root containing provisioned project clones. Required alongside
    * `provisioner` for active project spawns so the conductor runs in the
@@ -3285,6 +3304,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   const agentLoopExecutor = createAgentLoopExecutor({
+    prepareProject: async (project) => {
+      if (project.state === 'active') return project;
+      if (
+        (project.state === 'sleeping' || project.state === 'waking') &&
+        deps.provisioner?.ensureProjectSandboxAwake
+      ) {
+        return deps.provisioner.ensureProjectSandboxAwake(project.id);
+      }
+      throw new Error(`project is not ready (state=${project.state})`);
+    },
+    beginProjectActivity: (projectId) => {
+      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) return undefined;
+      return () => deps.provisioner?.endProjectSandboxActivity?.(projectId);
+    },
     ensureSession: ensureAgentLoopSession,
     runScript: async ({ loop, project, session }) => {
       if (!deps.projectRuntime?.runAgentLoopScript || !deps.projectCloneRoot) {
@@ -3346,12 +3379,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     exceptSessionIds?: ReadonlySet<string>,
   ): Promise<boolean> => {
     const sessions = await deps.eventStore.listSessions();
-    return sessions.some(
-      (s) =>
-        s.projectId === projectId &&
-        !exceptSessionIds?.has(s.sessionId) &&
-        conductor.isBusy(s.sessionId),
-    );
+    if (
+      sessions.some(
+        (s) =>
+          s.projectId === projectId &&
+          !exceptSessionIds?.has(s.sessionId) &&
+          conductor.isBusy(s.sessionId),
+      )
+    )
+      return true;
+
+    const project = await deps.eventStore.getProject(projectId);
+    if (project === undefined) return false;
+    return projectHasPersistentSandboxActivity({
+      project,
+      listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
+      listDevServers: () => deps.eventStore.listDevServers(projectId),
+      runtime: deps.projectRuntime,
+    });
   };
   // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
   // project network, deferring around in-flight turns via the same busy probe.
@@ -3363,6 +3408,31 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.addHook('onClose', () => {
     stopProjectRelayMigrationScheduler();
   });
+  const idleSleepScheduler =
+    deps.provisioner?.sleepProject !== undefined && (deps.sandboxIdleTimeoutMs ?? 0) > 0
+      ? startProjectIdleSleepScheduler({
+          listProjects: () => deps.eventStore.listProjects(),
+          isBusy: isProjectBusy,
+          ...(deps.provisioner.projectSandboxLastActivityAt === undefined
+            ? {}
+            : {
+                lastActivityAt: deps.provisioner.projectSandboxLastActivityAt.bind(
+                  deps.provisioner,
+                ),
+              }),
+          sleepProject: deps.provisioner.sleepProject.bind(deps.provisioner),
+          idleMs: deps.sandboxIdleTimeoutMs!,
+          onSlept: (projectId) => app.log.info({ projectId }, 'idle project Sandbox slept'),
+          onError: (projectId, err) =>
+            app.log.warn(
+              { projectId, err },
+              projectId === undefined
+                ? 'idle project Sandbox sweep failed'
+                : 'idle project Sandbox sleep deferred',
+            ),
+        })
+      : undefined;
+  app.addHook('onClose', () => idleSleepScheduler?.stop());
   const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
     const persist = async (): Promise<void> => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
@@ -5182,7 +5252,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 sessionId: loop.sessionId,
               };
             }
-            if (project.state !== 'active') {
+            if (
+              project.state !== 'active' &&
+              project.state !== 'sleeping' &&
+              project.state !== 'waking'
+            ) {
               return {
                 outcome: 'skipped' as const,
                 exitCode: null,
@@ -5861,6 +5935,62 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
       );
       return { code: 202, project: queued };
+    },
+    sleep: async (request, id) => {
+      if (deps.provisioner?.sleepProject === undefined) {
+        return { code: 503, error: 'project sleep is not configured' };
+      }
+      const project = await deps.eventStore.getProject(id);
+      if (project === undefined || project.hiddenAt !== null) {
+        return { code: 404, error: `project ${id} not found` };
+      }
+      if (project.state === 'sleeping') {
+        return {
+          code: 200,
+          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      }
+      if (project.state !== 'active') {
+        return { code: 409, error: `project ${id} is ${project.state}` };
+      }
+      try {
+        const slept = await deps.provisioner.sleepProject(id);
+        return {
+          code: 200,
+          project: publicProject(slept, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      } catch (error) {
+        request.log.error({ err: error, projectId: id }, 'verity: project sleep failed');
+        throw error;
+      }
+    },
+    wake: async (request, id) => {
+      if (deps.provisioner?.wakeProject === undefined) {
+        return { code: 503, error: 'project wake is not configured' };
+      }
+      const project = await deps.eventStore.getProject(id);
+      if (project === undefined || project.hiddenAt !== null) {
+        return { code: 404, error: `project ${id} not found` };
+      }
+      if (project.state === 'active') {
+        return {
+          code: 200,
+          project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      }
+      if (project.state !== 'sleeping') {
+        return { code: 409, error: `project ${id} is ${project.state}` };
+      }
+      try {
+        const awake = await deps.provisioner.wakeProject(id);
+        return {
+          code: 200,
+          project: publicProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
+        };
+      } catch (error) {
+        request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
+        throw error;
+      }
     },
   });
 

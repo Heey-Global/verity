@@ -54,6 +54,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -61,7 +62,11 @@ import { createVerityClient } from '../../lib/client';
 import { Icon } from '../../components/Icon';
 import { StatusPill, type StatusPillIntent } from '../../components/StatusPill';
 import { repairProject } from '../../lib/projectRepair';
-import { projectSetupStatus, toolkitDriftNotice } from '../../lib/projectSetup';
+import {
+  projectLifecycleState,
+  projectSetupStatus,
+  toolkitDriftNotice,
+} from '../../lib/projectSetup';
 
 function param(value: string | string[] | undefined): string {
   return Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
@@ -186,8 +191,16 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
   }, [detail?.project.setupStatus, projectId]);
 
   useEffect(() => {
-    const state = detail?.project.state;
-    if (state !== 'cloning' && state !== 'container_starting') return;
+    const project = detail?.project;
+    if (project === undefined) return;
+    const state = projectLifecycleState(project);
+    if (
+      state !== 'cloning' &&
+      state !== 'container_starting' &&
+      state !== 'sleeping_starting' &&
+      state !== 'waking'
+    )
+      return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async (): Promise<void> => {
@@ -199,7 +212,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [detail?.project.state, load]);
+  }, [detail?.project.lifecycleState, detail?.project.state, load]);
 
   const deleteProject = useCallback(() => {
     if (detail === undefined || deleting) return;
@@ -305,6 +318,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
 
   const { project, settings } = detail;
   const title = project.repo;
+  const lifecycleState = projectLifecycleState(project);
   return (
     <View style={styles.flex}>
       <Stack.Screen options={{ title }} />
@@ -322,11 +336,17 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
           { paddingBottom: insets.bottom + 24 },
         ]}
       >
-        {project.state !== 'active' && project.state !== 'absent' ? (
+        {lifecycleState !== 'active' && lifecycleState !== 'absent' ? (
           <View style={styles.runtimePanel} accessibilityLabel="Project setup progress">
             <Text style={styles.operationsTitle}>{projectSetupStatus(project).label}</Text>
-            {project.state === 'failed' && project.provisionError ? (
+            {lifecycleState === 'failed' && project.provisionError ? (
               <Text style={styles.settingsError}>{project.provisionError}</Text>
+            ) : lifecycleState === 'sleeping' ? (
+              <Text style={styles.operationsSubtitle}>The secure workspace is stopped.</Text>
+            ) : lifecycleState === 'sleeping_starting' ? (
+              <Text style={styles.operationsSubtitle}>The workspace is stopping safely.</Text>
+            ) : lifecycleState === 'waking' ? (
+              <Text style={styles.operationsSubtitle}>The secure workspace is starting.</Text>
             ) : (
               <Text style={styles.operationsSubtitle}>
                 Setup continues in the background if you leave this screen.
@@ -2047,7 +2067,15 @@ function DevServersSection({
         animationType="fade"
         onRequestClose={() => setEditing(null)}
       >
-        <View style={styles.modalOverlay}>
+        {/*
+          Four text fields in a dialog that is vertically centred: with the
+          keyboard up, the lower half of the card — Preview URL, port, and both
+          buttons — sits behind it. Padding the overlay re-centres the card in
+          what is left. The controller's KeyboardAvoidingView works in here,
+          where React Native's does not: a Modal is its own host view, and only
+          React context reaches across it.
+        */}
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior="padding" automaticOffset>
           <View style={styles.modalCard}>
             <Text style={styles.sectionHeader}>
               {editing === 'new' ? 'Add Dev Server' : 'Edit Dev Server'}
@@ -2115,7 +2143,7 @@ function DevServersSection({
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

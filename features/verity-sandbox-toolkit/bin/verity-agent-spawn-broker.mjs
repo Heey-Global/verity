@@ -2047,6 +2047,25 @@ export async function runAgentSpawnBroker(options = {}) {
   let closing = false;
   const spawnChild =
     options.spawnChild ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
+  // Codex opens one shared SQLite state runtime for every fresh ACP process. Its
+  // startup path can return EAGAIN when two processes open that runtime together,
+  // even after all databases already exist. Serialize only that startup window:
+  // the first ACP stdout proves initialization completed, after which the live
+  // processes may continue concurrently.
+  let codexStartupTail = Promise.resolve();
+  const acquireCodexStartup = async () => {
+    let releaseSlot = () => undefined;
+    const slot = new Promise((resolveSlot) => (releaseSlot = resolveSlot));
+    const previous = codexStartupTail;
+    codexStartupTail = previous.then(() => slot);
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      releaseSlot();
+    };
+  };
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
@@ -2060,6 +2079,7 @@ export async function runAgentSpawnBroker(options = {}) {
     let protocolFailed = false;
     let trustedCliFailurePhase;
     let trustedCliCorrelationId;
+    let releaseCodexStartup = () => undefined;
     const fail = (error) => {
       if (protocolFailed) return;
       protocolFailed = true;
@@ -2168,8 +2188,12 @@ export async function runAgentSpawnBroker(options = {}) {
                   options,
                 );
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'spawn';
+          if (request.kind === 'agent' && request.command === 'codex-acp') {
+            releaseCodexStartup = await acquireCodexStartup();
+          }
           child = spawnChild(spec.command, spec.args, spec.spawnOptions);
         } catch (error) {
+          releaseCodexStartup();
           throw leakOutranks(await materialized.cleanup(), error);
         }
         const pendingFrames = [];
@@ -2189,8 +2213,12 @@ export async function runAgentSpawnBroker(options = {}) {
         // Registered before the rejection handler below, so this containment is
         // always under way by the time the spawn rejection is handled.
         let spawnErrorCleanup;
-        child.once('error', () => (spawnErrorCleanup = materialized.cleanup()));
+        child.once('error', () => {
+          releaseCodexStartup();
+          spawnErrorCleanup = materialized.cleanup();
+        });
         const relay = (kind, chunk) => {
+          if (kind === 'stdout') releaseCodexStartup();
           const frame = { ok: true, kind, data: chunk.toString('base64') };
           if (!accepted) pendingFrames.push(frame);
           else if (!send(socket, frame)) {
@@ -2204,6 +2232,7 @@ export async function runAgentSpawnBroker(options = {}) {
           child.once('exit', () => killExitedTrustedCliProcessGroup(child));
         }
         child.once('close', (code, signal) => {
+          releaseCodexStartup();
           childClosed = true;
           children.delete(child);
           const exitFrame = { ok: true, kind: 'exit', code, signal };

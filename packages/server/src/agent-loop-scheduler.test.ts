@@ -90,6 +90,28 @@ function fakeStore(due: AgentLoopRecord[], proj: ProjectRecord | null = project(
 const log = { info: vi.fn(), warn: vi.fn() };
 
 describe('startAgentLoopScheduler', () => {
+  it.each(['sleeping', 'waking'] as const)(
+    'admits a %s project so the executor can join its wake',
+    async (state) => {
+      const { store } = fakeStore([loop()], project({ state }));
+      const executeAgentLoop = vi.fn(async () => ({
+        outcome: 'ok' as const,
+        detail: null,
+        sessionId: 'sess-1',
+        exitCode: 0,
+      }));
+      const sched = startAgentLoopScheduler({ store, executeAgentLoop, log, now: () => NOW });
+
+      await sched.runOnce();
+      sched.stop();
+
+      expect(executeAgentLoop).toHaveBeenCalledWith({
+        loop: expect.objectContaining({ id: 'l1' }),
+        project: expect.objectContaining({ state }),
+      });
+    },
+  );
+
   it('executes a due loop and records its result', async () => {
     const { store, finished, ran } = fakeStore([loop()]);
     const executeAgentLoop = vi.fn(async () => ({

@@ -13,22 +13,14 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Updates from 'expo-updates';
 import { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getAuthToken } from '../../lib/authToken';
 import { getVerityBaseUrl } from '../../lib/client';
+import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { parsePairingUri, type VerityPairingPayload } from '../../lib/pairing';
 import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairingSession';
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
@@ -261,14 +253,17 @@ export default function OnboardingServerUrl() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={0}
-    >
-      <ScrollView
+    <View style={styles.root}>
+      {/*
+        The address and pairing-code fields sit well down the page, so padding
+        the frame is not enough — the scroll view has to bring the focused one
+        up itself. Scrolling also covers the manual-address field that only
+        appears on the reconfigure path, below the fold on a phone.
+      */}
+      <KeyboardAwareScrollView
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 24 }]}
         keyboardShouldPersistTaps="handled"
+        bottomOffset={KEYBOARD_BOTTOM_OFFSET}
       >
         <Text style={styles.eyebrow}>{isReconfigure ? 'Verity connection' : 'Secure pairing'}</Text>
         <Text style={styles.title} accessibilityRole="header">
@@ -434,7 +429,7 @@ export default function OnboardingServerUrl() {
             </>
           </View>
         )}
-      </ScrollView>
+      </KeyboardAwareScrollView>
       <Modal
         visible={scannerOpen}
         animationType="slide"
@@ -469,7 +464,7 @@ export default function OnboardingServerUrl() {
           </View>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 

@@ -1000,6 +1000,21 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.method).toBe('POST');
   });
 
+  it('sleeps and wakes a project', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ project: { ...project, lifecycleState: 'sleeping' } }),
+      json({ project }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    expect(await client.sleepProject('p/1')).toMatchObject({ lifecycleState: 'sleeping' });
+    expect(await client.wakeProject('p/1')).toMatchObject({ id: 'p1', state: 'active' });
+    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
+      ['POST', 'http://host/projects/p%2F1/sleep'],
+      ['POST', 'http://host/projects/p%2F1/wake'],
+    ]);
+  });
+
   it('deletes a project', async () => {
     const { fetch, calls } = fakeFetch(json({ projectId: 'p/1' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -2964,4 +2979,29 @@ describe('projectRecordSchema sandbox update', () => {
     });
     expect(parsed.sandboxUpdate?.turnBlocked).toBe(true);
   });
+});
+
+describe('projectRecordSchema lifecycle states', () => {
+  const project = {
+    id: 'p1',
+    owner: 'heey-global',
+    repo: 'verity',
+    containerName: 'dev-heey-global--verity',
+    imageRef: null,
+    provisionError: null,
+    createdAt: '2026-09-20T00:00:00.000Z',
+    updatedAt: '2026-09-20T00:00:00.000Z',
+  };
+
+  it.each(['sleeping_starting', 'sleeping', 'waking'] as const)(
+    'accepts the %s lifecycle state while retaining the legacy state',
+    (lifecycleState) => {
+      expect(
+        projectRecordSchema.parse({ ...project, state: 'active', lifecycleState }),
+      ).toMatchObject({
+        state: 'active',
+        lifecycleState,
+      });
+    },
+  );
 });

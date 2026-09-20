@@ -39,7 +39,10 @@ describe('project relay runtime composition', () => {
       resolve: vi.fn(),
       revokeProject: vi.fn(async () => {}),
     } satisfies GhTokenCapabilityRegistry;
-    const startRelay = vi.fn(async () => ({ close: vi.fn(async () => {}) }));
+    const startRelay = vi.fn(async () => ({
+      quiesce: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    }));
     const runtime = createProjectRelayRuntime({
       app: {} as FastifyInstance,
       docker: {} as DockerClient,

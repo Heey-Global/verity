@@ -213,6 +213,7 @@ import {
   claudeTransportRefusal,
 } from './claude-egress-agent-env.js';
 import { CONTAINER_GENERATION_LABEL } from './project-relay-migration.js';
+import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
@@ -786,6 +787,8 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  /** Automatic project Sandbox sleep. Zero or absent disables it. */
+  sandboxIdleTimeoutMs?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
@@ -2898,6 +2901,16 @@ export async function buildEmbeddedServer(
             throw error;
           }
         },
+        sleep: (projectId) => {
+          if (projectRelayLifecycle === undefined)
+            throw new Error('project relay runtime is not initialized');
+          return projectRelayLifecycle.sleep(projectId);
+        },
+        reactivate: (binding) => {
+          if (projectRelayLifecycle === undefined)
+            throw new Error('project relay runtime is not initialized');
+          return projectRelayLifecycle.reactivate(binding);
+        },
         stop: (projectId) => projectRelayLifecycle?.stop(projectId) ?? Promise.resolve(),
         brokerUrl: (activation) => `http://${projectRelayContainerName(activation.identity)}:8080`,
         claudeGatewayUrl: (activation) =>
@@ -3954,6 +3967,8 @@ export async function buildEmbeddedServer(
               (id, state, provisionError, provisionWarning) =>
                 eventStore.updateProjectState(id, state, provisionError, provisionWarning),
               (id) => provisioner?.isProjectProvisioning(id) === true,
+              provisioner?.recoverInterruptedSleep?.bind(provisioner),
+              provisioner?.recoverInterruptedWake?.bind(provisioner),
             );
             return reconciled ?? project;
           },
@@ -3979,6 +3994,9 @@ export async function buildEmbeddedServer(
     // the `project` field on POST /sessions and POST /projects/:id/deprovision
     // both return 503 (the mobile picker hides the fleet-registry UI).
     ...(provisioner !== undefined ? { provisioner } : {}),
+    ...(config.sandboxIdleTimeoutMs !== undefined
+      ? { sandboxIdleTimeoutMs: config.sandboxIdleTimeoutMs }
+      : {}),
     ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
       ? { projectCloneRoot: config.hostCloneRoot }
       : {}),
@@ -4281,6 +4299,17 @@ export async function buildEmbeddedServer(
           preparation.sessionId,
           preparation.canWait,
           async (queuedSessionIds) => {
+            await ensureProjectSandboxReadyForTurn({
+              project,
+              getProject: (projectId) => store.getProject(projectId),
+              canWait: preparation.canWait,
+              waitingOn: (message) => preparation.waitingOn(message),
+              ...(provisioner?.ensureProjectSandboxAwake === undefined
+                ? {}
+                : {
+                    ensureAwake: provisioner.ensureProjectSandboxAwake.bind(provisioner),
+                  }),
+            });
             await refreshProjectToken?.(project);
             const settings = isProjectSettingsReader(store)
               ? await store.getProjectSettings(project.id)

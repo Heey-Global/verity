@@ -2699,6 +2699,24 @@ const migrations: Record<string, Migration> = {
       );
     },
   },
+  '0100_project_sandbox_sleep': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('projects')
+        .addColumn('sleep_compatibility_fingerprint', 'text')
+        .addColumn('sleeping_since', 'timestamptz')
+        .addColumn('wake_started_at', 'timestamptz')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('projects')
+        .dropColumn('wake_started_at')
+        .dropColumn('sleeping_since')
+        .dropColumn('sleep_compatibility_fingerprint')
+        .execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

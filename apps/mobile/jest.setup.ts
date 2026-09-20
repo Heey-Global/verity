@@ -28,6 +28,15 @@ import 'react-native-gesture-handler/jestSetup';
 // components can exercise their render contract without booting either runtime.
 jest.mock('react-native-reanimated', () => require('react-native-reanimated/mock'));
 
+// react-native-keyboard-controller is native-backed too. Its shipped jest mock
+// renders `KeyboardAwareScrollView` as a plain RN `ScrollView` and
+// `KeyboardAvoidingView` as a `View`, keeping every prop — so tests can assert
+// on the keyboard props we pass, but never on keyboard behaviour itself, which
+// only exists on a device.
+jest.mock('react-native-keyboard-controller', () =>
+  require('react-native-keyboard-controller/jest'),
+);
+
 // Expo 57 resolves vector-icon fonts through the runtime asset registry, where
 // Jest's numeric font module has no registered Metro asset. Tests exercise our
 // icon wrapper's layout and interaction, not the native font loader, so keep a

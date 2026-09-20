@@ -22,14 +22,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -558,11 +557,12 @@ function NewProject({
   ]);
 
   return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={0}
-    >
+    // "Create project" is pinned below the scroll view, so the frame has to
+    // shrink rather than the scroll view scrolling under the keyboard —
+    // otherwise the button the operator is typing towards is the thing the
+    // keyboard hides. One `padding` behavior for both platforms: the
+    // controller's version animates in step with the keyboard on Android too.
+    <KeyboardAvoidingView style={styles.flex} behavior="padding">
       <Stack.Screen options={{ title: 'New project' }} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {setupProject && setupStatus ? (

@@ -27,6 +27,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -34,6 +35,7 @@ import { Icon } from '../components/Icon';
 import { useTasks } from '../hooks/useTasks';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { createVerityClient } from '../lib/client';
+import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 
 /** Split a multiline field into a trimmed, non-empty string[] (one item per line). */
 function splitLines(text: string): string[] {
@@ -295,9 +297,13 @@ function PlanBoard({ client }: { client: VerityClient }) {
 
   return (
     <>
-      <ScrollView
+      {/* Keyboard-aware so the capture box stays visible while a task is typed
+          into it — the list below it can be long enough to push the composer
+          off-screen once the keyboard takes the bottom half. */}
+      <KeyboardAwareScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        bottomOffset={KEYBOARD_BOTTOM_OFFSET}
         refreshControl={
           <RefreshControl
             refreshing={loading}
@@ -453,7 +459,7 @@ function PlanBoard({ client }: { client: VerityClient }) {
             )}
           </>
         ) : null}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       {review ? (
         <ReviewSheet
@@ -814,7 +820,22 @@ function ReviewSheet({
 
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.sheetBackdrop}>
+      {/*
+        Five editable fields in a sheet anchored to the bottom edge: with the
+        keyboard up, everything from the middle of the sheet down — including
+        the Create button — is behind it. React Native's own
+        KeyboardAvoidingView cannot help here because a Modal renders in its own
+        host view; the controller's reads the provider through React context,
+        which does cross that boundary.
+      */}
+      <KeyboardAvoidingView
+        style={styles.sheetBackdrop}
+        behavior="padding"
+        // Measure this view's own position instead of assuming it starts at the
+        // top of the screen: inside a Modal on Android it does not, and a lift
+        // computed from the wrong origin is off by the status bar.
+        automaticOffset
+      >
         <View style={styles.sheetCard}>
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>Review issue</Text>
@@ -944,7 +965,7 @@ function ReviewSheet({
             </Pressable>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
