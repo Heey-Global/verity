@@ -42,16 +42,19 @@ function tsxFilesIn(dir: string): string[] {
 /**
  * Whether a source mounts a scrolling container of its own.
  *
- * Matched against the import statements rather than the JSX, so a renamed
- * import (`ScrollView as Scroller`), a list from another package (FlashList),
- * or a container pulled from reanimated counts — and so prose in a comment
- * about the scaffold's scroll view does not.
+ * Matched against what the imports bind rather than against the JSX, so a
+ * renamed import (`ScrollView as Scroller`), a list from another package
+ * (FlashList), or a container pulled from reanimated counts — while prose in a
+ * comment, a module path such as `./ScrollViewHelpers`, and a type-only import
+ * of `FlatListProps` do not.
  */
 const CONTAINER = /(ScrollView|FlatList|FlashList|SectionList|VirtualizedList)/;
 function mountsOwnScrollContainer(source: string): boolean {
-  const imports = source.match(/^\s*import\b[\s\S]*?from\s+['"][^'"]+['"]/gm) ?? [];
+  const bindings = [...source.matchAll(/^\s*import\s+(?!type\b)([\s\S]*?)\sfrom\s+['"]/gm)].map(
+    ([, clause]) => clause.replace(/\btype\s+\w+/g, ''),
+  );
   return (
-    imports.some((statement) => CONTAINER.test(statement)) ||
+    bindings.some((clause) => CONTAINER.test(clause)) ||
     // `import Animated from 'react-native-reanimated'` names no container, so
     // its scrolling variants only show up at the use site.
     /Animated\.(ScrollView|FlatList|SectionList)/.test(source)
