@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.23",
+  "version": "1.33.24",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "132848a499bad5420a53c68964b104312121480f",
-  "tag": "mobile-v1.33.23",
-  "branch": "staging-mobile-v1.33.23-132848a499bad5420a53c68964b104312121480f",
-  "baseline": "mobile-v1.33.22",
-  "group": "4a721bf3-12aa-42bb-b491-f502d09e849a",
+  "commit": "c4a7c64e8eb19ca3d52cdd75d710cdfe3065682c",
+  "tag": "mobile-v1.33.24",
+  "branch": "staging-mobile-v1.33.24-c4a7c64e8eb19ca3d52cdd75d710cdfe3065682c",
+  "baseline": "mobile-v1.33.23",
+  "group": "1f2cd202-938d-4985-972c-80738da335ea",
   "notes": [
-    "show sleeping projects with moon icon (#553)",
-    "add managed project wikis (#539)"
+    "hide unadded repositories (#556)"
   ]
 }
