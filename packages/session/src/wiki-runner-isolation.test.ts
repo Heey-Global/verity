@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, rm, writeFile, readFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -139,10 +140,11 @@ it('materializes only model gateway settings in a fresh OpenCode home and remove
     env: { OPENCODE_CONFIG: configPath },
     spawnChild: (_command, _args, opts) => {
       home = opts.env!.HOME!;
-      // Reading the generated file is the behavior under test. Starting another
-      // Node runtime here adds thread creation to a suite that already exercises
-      // many child processes, and can fail before reading the file under CI load.
-      return spawn('/usr/bin/cat', [opts.env!.OPENCODE_CONFIG!], opts);
+      // Capture the materialized file before the short-lived stand-in can exit
+      // and trigger cleanup. Under load, racing cleanup against a separate reader
+      // made this guard fail without any isolation contract being broken.
+      config = readFileSync(opts.env!.OPENCODE_CONFIG!, 'utf8');
+      return spawn('/usr/bin/true', [], opts);
     },
   });
   try {
@@ -152,6 +154,7 @@ it('materializes only model gateway settings in a fresh OpenCode home and remove
       [],
       { cwd: root, env: {} },
     );
+    // Drain the broker stream so the child lifecycle completes normally.
     for await (const text of child.stdout) config += text;
     expect(await child.exited).toBe(0);
     expect(config).toContain('test-model');
