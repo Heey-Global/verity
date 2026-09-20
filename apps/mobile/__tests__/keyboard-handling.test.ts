@@ -36,7 +36,7 @@ function tsxFilesIn(dir: string): string[] {
  *  `import { KeyboardAvoidingView } from 'react-native-keyboard-controller';`
  *  — the very thing this file asks for — be read as a react-native import. */
 function reactNativeBindings(source: string): string {
-  return [...source.matchAll(/^\s*import\s+(?!type\b)([^;]*?)\sfrom\s+'react-native';/gm)]
+  return [...source.matchAll(/^\s*import\s+(?!type\b)([^;]*?)\sfrom\s+['"]react-native['"];/gm)]
     .map(([, clause]) => clause.replace(/\btype\s+\w+/g, ''))
     .join('\n');
 }
