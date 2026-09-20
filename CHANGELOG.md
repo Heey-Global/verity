@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.3](https://github.com/Heey-Global/verity/compare/v1.3.2...v1.3.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **server:** diagnose MCP gateway bearer rejection ([#562](https://github.com/Heey-Global/verity/issues/562)) ([e160bb7](https://github.com/Heey-Global/verity/commit/e160bb71491e0f593ae86a7833a9c753dbf58e70))
+* **server:** exclude waking turn from busy check ([#564](https://github.com/Heey-Global/verity/issues/564)) ([a80392c](https://github.com/Heey-Global/verity/commit/a80392ce871efc16b2641d07959e8b7c3e39b03d))
+
 ## [1.3.2](https://github.com/Heey-Global/verity/compare/v1.3.1...v1.3.2) (2026-09-20)
 
 
