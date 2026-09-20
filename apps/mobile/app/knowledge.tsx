@@ -10,7 +10,9 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, ScrollView, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { useUnistyles } from 'react-native-unistyles';
+import { Icon } from '../components/Icon';
 import { createVerityClient } from '../lib/client';
 import { KnowledgeButton as Button } from '../components/knowledge/KnowledgeButton';
 import { KnowledgeMarkdown } from '../components/knowledge/KnowledgeMarkdown';
@@ -34,6 +36,9 @@ export function Library({
   initialFolder: string | null;
 }) {
   const navigation = useNavigation();
+  const { theme } = useUnistyles();
+  const [folderAction, setFolderAction] = useState<'create' | 'rename' | null>(null);
+  const [moreActions, setMoreActions] = useState(false);
   const [folders, setFolders] = useState<KnowledgeFolder[]>([]);
   const [folderId, setFolderId] = useState(initialFolder);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -133,6 +138,8 @@ export function Library({
   };
   const showFolder = (id: string | null) => {
     setFolderId(id);
+    setFolderAction(null);
+    setMoreActions(false);
     setDocument(null);
     setEditing(false);
     setCreating(false);
@@ -230,6 +237,67 @@ export function Library({
       }
     });
   };
+  const renderDocument = (entry: KnowledgeDocument, depth: number) => (
+    <Pressable
+      key={entry.id}
+      accessibilityRole="button"
+      accessibilityLabel={entry.title}
+      disabled={busy}
+      onPress={() => openDocument(entry.id)}
+      style={[styles.explorerRow, { paddingLeft: 28 + depth * 16 }]}
+    >
+      <Icon name="file-text" size={17} color={theme.colors.textMuted} />
+      <Text numberOfLines={1} style={styles.entryText}>
+        {entry.title}
+      </Text>
+    </Pressable>
+  );
+  const renderFolders = (parentId: string | null, depth: number): React.ReactNode =>
+    folders
+      .filter((folder) => folder.parentId === parentId)
+      .map((folder) => {
+        const isOpen = path.some((item) => item.id === folder.id);
+        return (
+          <View key={folder.id}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Folder: ${folder.name}`}
+              accessibilityState={{ expanded: isOpen, selected: folder.id === folderId }}
+              disabled={busy}
+              onPress={() => {
+                if (folderId === folder.id && isOpen) {
+                  openFolder(folder.parentId);
+                } else openFolder(folder.id);
+              }}
+              style={[
+                styles.explorerRow,
+                folder.id === folderId && styles.selectedRow,
+                { paddingLeft: depth * 16 },
+              ]}
+            >
+              <Icon
+                name={isOpen ? 'chevron-down' : 'chevron-right'}
+                size={15}
+                color={theme.colors.textMuted}
+              />
+              <Icon name="folder" size={18} color={theme.colors.textMuted} />
+              <Text numberOfLines={1} style={styles.entryText}>
+                {folder.name}
+              </Text>
+            </Pressable>
+            {isOpen ? (
+              <>
+                {renderFolders(folder.id, depth + 1)}
+                {folder.id === folderId
+                  ? documents
+                      .filter((entry) => entry.folderId === folder.id)
+                      .map((entry) => renderDocument(entry, depth + 1))
+                  : null}
+              </>
+            ) : null}
+          </View>
+        );
+      });
   return (
     <ScrollView
       style={styles.screen}
@@ -237,14 +305,10 @@ export function Library({
       keyboardShouldPersistTaps="handled"
     >
       <Stack.Screen options={{ title: 'Knowledge', gestureEnabled: !dirty && !busy }} />
-      <Text style={styles.muted}>
-        Your knowledge library. Project grants control agent access; you can manage all folders
-        here.
-      </Text>
       <View style={styles.row}>
-        <Button label="Knowledge root" onPress={() => openFolder(null)} />
+        <Button icon="home" label="Knowledge root" onPress={() => openFolder(null)} />
         {path.map((f) => (
-          <Button key={f.id} label={f.name} onPress={() => openFolder(f.id)} />
+          <Button icon="chevron-right" key={f.id} label={f.name} onPress={() => openFolder(f.id)} />
         ))}
       </View>
       {error ? (
@@ -296,8 +360,10 @@ export function Library({
               <Text style={styles.heading}>{document?.title}</Text>
               <KnowledgeMarkdown body={document?.bodyMarkdown ?? ''} onLink={openLinkedDocument} />
               <View style={styles.row}>
-                <Button label="Edit" disabled={busy} onPress={startEdit} />
+                <Button icon="edit-2" iconOnly label="Edit" disabled={busy} onPress={startEdit} />
                 <Button
+                  icon="clock"
+                  iconOnly
                   label="Revision history"
                   disabled={busy}
                   onPress={() => {
@@ -311,6 +377,8 @@ export function Library({
                   }}
                 />
                 <Button
+                  icon="share"
+                  iconOnly
                   label="Export document"
                   disabled={busy}
                   onPress={() => {
@@ -330,8 +398,16 @@ export function Library({
                     });
                   }}
                 />
-                <Button label="Move document" disabled={busy} onPress={() => setMoving(!moving)} />
                 <Button
+                  icon="corner-up-right"
+                  iconOnly
+                  label="Move document"
+                  disabled={busy}
+                  onPress={() => setMoving(!moving)}
+                />
+                <Button
+                  icon="trash-2"
+                  iconOnly
                   label="Delete document"
                   disabled={busy}
                   onPress={() =>
@@ -421,20 +497,132 @@ export function Library({
             accessibilityLabel="Search knowledge"
             editable={!busy}
             placeholder="Search documents"
+            placeholderTextColor={theme.colors.textMuted}
             style={styles.input}
             value={query}
             onChangeText={setQuery}
           />
-          {folders
-            .filter((f) => f.parentId === folderId)
-            .map((f) => (
-              <Button key={f.id} label={`Folder: ${f.name}`} onPress={() => openFolder(f.id)} />
-            ))}
-          {documents
-            .filter((d) => query || d.folderId === folderId)
-            .map((d) => (
-              <Button key={d.id} label={d.title} onPress={() => openDocument(d.id)} />
-            ))}
+          <View style={styles.toolbar}>
+            <Button
+              icon="folder-plus"
+              iconOnly
+              label="New folder"
+              disabled={busy}
+              onPress={() => {
+                setFolderAction('create');
+                setFolderName('');
+              }}
+            />
+            <Button
+              icon="file-plus"
+              iconOnly
+              label="New document"
+              disabled={busy || !folderId}
+              onPress={() => {
+                setCreating(true);
+                setTitle('');
+                setBody('');
+                setEditing(true);
+                setPreview(false);
+              }}
+            />
+            <Button
+              icon="upload"
+              iconOnly
+              label="Import Markdown files"
+              disabled={busy || !folderId}
+              onPress={() => {
+                void run(async () => {
+                  const picked = await DocumentPicker.getDocumentAsync({
+                    multiple: true,
+                    copyToCacheDirectory: true,
+                    type: ['text/markdown', 'text/plain'],
+                  });
+                  if (picked.canceled) return;
+                  const entries = [];
+                  try {
+                    if (picked.assets.length > 100)
+                      throw new Error('Import at most 100 documents at a time');
+                    if (
+                      picked.assets.reduce((sum, asset) => sum + (asset.size ?? 0), 0) >
+                      2 * 1024 * 1024
+                    )
+                      throw new Error('Import is limited to 2 MiB');
+                    for (const asset of picked.assets) {
+                      if ((asset.size ?? 0) > 256 * 1024)
+                        throw new Error('Each document is limited to 256 KiB');
+                      if (!asset.name.toLowerCase().endsWith('.md'))
+                        throw new Error('Only .md files can be imported');
+                      entries.push({
+                        path: asset.name,
+                        bodyMarkdown: await new File(asset.uri).text(),
+                      });
+                    }
+                    if (folderId) await client.importKnowledge(folderId, entries);
+                    await refresh();
+                  } finally {
+                    for (const asset of picked.assets) {
+                      try {
+                        new File(asset.uri).delete();
+                      } catch {
+                        /* Cache cleanup must not hide the import outcome. */
+                      }
+                    }
+                  }
+                });
+              }}
+            />
+            <Button
+              icon="more-horizontal"
+              iconOnly
+              label="More folder actions"
+              disabled={busy || !folderId}
+              onPress={() => setMoreActions(!moreActions)}
+            />
+          </View>
+          {folderAction ? (
+            <View style={styles.row}>
+              <TextInput
+                accessibilityLabel="Folder name"
+                placeholder="Folder name"
+                placeholderTextColor={theme.colors.textMuted}
+                autoFocus
+                style={[styles.input, styles.cell]}
+                value={folderName}
+                onChangeText={setFolderName}
+                editable={!busy}
+              />
+              <Button
+                icon="check"
+                iconOnly
+                label={folderAction === 'create' ? 'Create folder' : 'Save folder name'}
+                disabled={busy || !folderName.trim()}
+                onPress={() => {
+                  void run(async () => {
+                    if (folderAction === 'create')
+                      await client.createKnowledgeFolder({ name: folderName, parentId: folderId });
+                    else if (folderId)
+                      await client.updateKnowledgeFolder(folderId, { name: folderName });
+                    setFolderName('');
+                    setFolderAction(null);
+                    await refresh();
+                  });
+                }}
+              />
+              <Button
+                icon="x"
+                iconOnly
+                label="Cancel folder editing"
+                disabled={busy}
+                onPress={() => setFolderAction(null)}
+              />
+            </View>
+          ) : null}
+          {!query ? renderFolders(null, 0) : null}
+          {query ? documents.map((d) => renderDocument(d, 0)) : null}
+          {!folders.length && !query ? (
+            <Text style={styles.muted}>Create a folder to start your library.</Text>
+          ) : null}
           {hasMore ? (
             <Button
               label="Load more documents"
@@ -455,129 +643,64 @@ export function Library({
               }}
             />
           ) : null}
-          <TextInput
-            accessibilityLabel="Folder name"
-            placeholder="Folder name"
-            style={styles.input}
-            value={folderName}
-            onChangeText={setFolderName}
-          />
-          <View style={styles.row}>
-            <Button
-              label="Create folder"
-              disabled={busy || !folderName.trim()}
-              onPress={() => {
-                void run(async () => {
-                  await client.createKnowledgeFolder({ name: folderName, parentId: folderId });
-                  setFolderName('');
-                  await refresh();
-                });
-              }}
-            />
-            {folderId ? (
-              <>
-                <Button
-                  label="New document"
-                  disabled={busy}
-                  onPress={() => {
-                    setCreating(true);
-                    setTitle('');
-                    setBody('');
-                    setEditing(true);
-                    setPreview(false);
-                  }}
-                />
-                <Button
-                  label="Rename folder"
-                  disabled={busy || !folderName.trim()}
-                  onPress={() => {
-                    void run(async () => {
-                      await client.updateKnowledgeFolder(folderId, { name: folderName });
-                      setFolderName('');
-                      await refresh();
-                    });
-                  }}
-                />
-                <Button label="Move folder" disabled={busy} onPress={() => setMoving(!moving)} />
-                <Button
-                  label="Delete folder"
-                  disabled={busy}
-                  onPress={() =>
-                    confirm(
-                      'Delete this folder and its contents? Project access changes may retire affected session contexts.',
-                      () => {
-                        void run(async () => {
-                          await client.deleteKnowledgeFolder(folderId);
-                          showFolder(currentFolder?.parentId ?? null);
-                        });
-                      },
-                    )
-                  }
-                />
-              </>
-            ) : null}
-          </View>
-          {folderId ? (
+          {moreActions && folderId ? (
             <View style={styles.row}>
               <Button
-                label="Import Markdown files"
+                icon="edit-2"
+                label="Rename folder"
                 disabled={busy}
                 onPress={() => {
-                  void run(async () => {
-                    const picked = await DocumentPicker.getDocumentAsync({
-                      multiple: true,
-                      copyToCacheDirectory: true,
-                      type: ['text/markdown', 'text/plain'],
-                    });
-                    if (picked.canceled) return;
-                    const entries = [];
-                    try {
-                      if (picked.assets.length > 100)
-                        throw new Error('Import at most 100 documents at a time');
-                      if (
-                        picked.assets.reduce((sum, asset) => sum + (asset.size ?? 0), 0) >
-                        2 * 1024 * 1024
-                      )
-                        throw new Error('Import is limited to 2 MiB');
-                      for (const asset of picked.assets) {
-                        if ((asset.size ?? 0) > 256 * 1024)
-                          throw new Error('Each document is limited to 256 KiB');
-                        if (!asset.name.toLowerCase().endsWith('.md'))
-                          throw new Error('Only .md files can be imported');
-                        entries.push({
-                          path: asset.name,
-                          bodyMarkdown: await new File(asset.uri).text(),
-                        });
-                      }
-                      if (folderId) await client.importKnowledge(folderId, entries);
-                      await refresh();
-                    } finally {
-                      for (const asset of picked.assets) {
-                        try {
-                          new File(asset.uri).delete();
-                        } catch {
-                          /* Cache cleanup must not hide the import outcome. */
-                        }
-                      }
-                    }
-                  });
+                  setFolderAction('rename');
+                  setFolderName(currentFolder?.name ?? '');
                 }}
               />
               <Button
-                label="Import folder bundle"
+                icon="corner-up-right"
+                label="Move folder"
                 disabled={busy}
-                onPress={() => setTransfer('')}
+                onPress={() => setMoving(!moving)}
               />
               <Button
-                label="Export Markdown bundle"
+                icon="trash-2"
+                label="Delete folder"
                 disabled={busy}
-                onPress={() => {
-                  void run(async () => {
-                    const exported = await client.exportKnowledge(folderId);
-                    setTransfer(JSON.stringify(exported, null, 2));
-                  });
-                }}
+                onPress={() =>
+                  confirm(
+                    'Delete this folder and its contents? Project access changes may retire affected session contexts.',
+                    () => {
+                      void run(async () => {
+                        await client.deleteKnowledgeFolder(folderId);
+                        showFolder(currentFolder?.parentId ?? null);
+                      });
+                    },
+                  )
+                }
               />
+            </View>
+          ) : null}
+          {folderId ? (
+            <View style={styles.row}>
+              {moreActions ? (
+                <>
+                  <Button
+                    icon="download"
+                    label="Import folder bundle"
+                    disabled={busy}
+                    onPress={() => setTransfer('')}
+                  />
+                  <Button
+                    icon="share"
+                    label="Export Markdown bundle"
+                    disabled={busy}
+                    onPress={() => {
+                      void run(async () => {
+                        const exported = await client.exportKnowledge(folderId);
+                        setTransfer(JSON.stringify(exported, null, 2));
+                      });
+                    }}
+                  />
+                </>
+              ) : null}
             </View>
           ) : null}
         </View>

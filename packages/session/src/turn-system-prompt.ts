@@ -199,6 +199,20 @@ export function carriesBrokeredSecretTools(backend: Backend): boolean {
   }
 }
 
+/** Knowledge is available on every shipped model transport, independently of secret authority. */
+export function carriesKnowledgeTools(backend: Backend): boolean {
+  switch (backend.runnerSupervisorBackend) {
+    case 'claude-acp':
+    case 'codex-acp':
+    case 'opencode-acp':
+      return true;
+    case undefined:
+      return false;
+    default:
+      return assertNoBrokeredToolChannel(backend.runnerSupervisorBackend);
+  }
+}
+
 /** Compile-time exhaustiveness for {@link carriesBrokeredSecretTools}, failing closed
  *  at runtime if the types are ever bypassed. */
 function assertNoBrokeredToolChannel(backend: never): boolean {

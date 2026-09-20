@@ -67,9 +67,7 @@ test('edits the selected document with its loaded revision and previews Markdown
 test('a read child does not mask inherited write access', async () => {
   const client = fake();
   render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
-  expect(
-    await screen.findByText('Engineering — effective: Read & Write (inherited Read & Write)'),
-  ).toBeTruthy();
+  expect(await screen.findByLabelText('Engineering: inherited Read & Write')).toBeTruthy();
   expect(screen.getByLabelText('Open Engineering in Knowledge')).toBeTruthy();
 });
 
@@ -90,16 +88,16 @@ test('a delayed grant save cannot replace the next project’s access selection'
   const view = render(
     <ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="first" />,
   );
-  fireEvent.press(await screen.findByLabelText('Company: Read'));
+  await chooseWriteAccess('Company');
   await waitFor(() => expect(client.saveKnowledgeGrants).toHaveBeenCalled());
   view.rerender(
     <ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="second" />,
   );
-  expect(await screen.findByText('Company — effective: None')).toBeTruthy();
+  expect(await screen.findByLabelText('Allow Company')).toBeTruthy();
   await act(async () => {
     complete([{ folderId: 'root', mode: 'read_write' }]);
   });
-  expect(screen.getByText('Company — effective: None')).toBeTruthy();
+  expect(screen.getByLabelText('Allow Company')).toBeTruthy();
 });
 
 test('reloads committed grants when the cleanup acknowledgement fails', async () => {
@@ -114,9 +112,9 @@ test('reloads committed grants when the cleanup acknowledgement fails', async ()
       .mockRejectedValue(new Error('Access changes were saved. Cleanup will retry.')),
   };
   render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
-  fireEvent.press(await screen.findByLabelText('Company: Read'));
+  await chooseWriteAccess('Company');
   expect(await screen.findByText('Access changes were saved. Cleanup will retry.')).toBeTruthy();
-  expect(await screen.findByText('Company — effective: None')).toBeTruthy();
+  expect(await screen.findByLabelText('Allow Company')).toBeTruthy();
 });
 
 test('following a link from a draft requires discard and opens the target outside edit mode', async () => {
@@ -166,12 +164,12 @@ test('failed grant recovery blocks edits until an authoritative reload succeeds'
     saveKnowledgeGrants: jest.fn().mockRejectedValue(new Error('Cleanup pending')),
   };
   render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
-  fireEvent.press(await screen.findByLabelText('Company: Read'));
+  await chooseWriteAccess('Company');
   await screen.findByText('Could not reload saved access. Reload before editing.');
   fireEvent.press(screen.getByLabelText('Company: Read'));
   expect(client.saveKnowledgeGrants).toHaveBeenCalledTimes(1);
   fireEvent.press(screen.getByLabelText('Reload knowledge access'));
-  expect(await screen.findByText('Company — effective: None')).toBeTruthy();
+  expect(await screen.findByLabelText('Allow Company')).toBeTruthy();
   fireEvent.press(screen.getByLabelText('Allow Company'));
   await waitFor(() => expect(client.saveKnowledgeGrants).toHaveBeenCalledTimes(2));
 });
@@ -252,4 +250,89 @@ test('restoring a historical title refreshes the current folder listing', async 
   } finally {
     alert.mockRestore();
   }
+});
+
+test('folder access tree collapses children without changing grants', async () => {
+  const client = { ...fake(), saveKnowledgeGrants: jest.fn() };
+  render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
+  await screen.findByLabelText('Open Engineering in Knowledge');
+  fireEvent.press(screen.getByLabelText('Collapse Company'));
+  expect(screen.queryByLabelText('Open Engineering in Knowledge')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Expand Company'));
+  expect(screen.getByLabelText('Open Engineering in Knowledge')).toBeTruthy();
+  expect(client.saveKnowledgeGrants).not.toHaveBeenCalled();
+});
+
+test('inherited access remains checked until its parent grant is removed', async () => {
+  const client = {
+    ...fake(),
+    listKnowledgeGrants: jest.fn().mockResolvedValue([{ folderId: 'root', mode: 'read' }]),
+    saveKnowledgeGrants: jest.fn(),
+  };
+  render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
+  const inherited = await screen.findByLabelText('Allow Engineering');
+  expect(inherited.props.accessibilityState).toMatchObject({ checked: true, disabled: true });
+  fireEvent.press(inherited);
+  expect(client.saveKnowledgeGrants).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Engineering: Read')).toBeTruthy();
+});
+
+test('new folder toolbar opens a compact form and creates inside the selected folder', async () => {
+  const client = { ...fake(), createKnowledgeFolder: jest.fn().mockResolvedValue({ id: 'new' }) };
+  render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+  await screen.findByLabelText('Standards');
+  expect(screen.queryByLabelText('Folder name')).toBeNull();
+  fireEvent.press(screen.getByLabelText('New folder'));
+  fireEvent.changeText(screen.getByLabelText('Folder name'), 'Notes');
+  fireEvent.press(screen.getByLabelText('Create folder'));
+  await waitFor(() =>
+    expect(client.createKnowledgeFolder).toHaveBeenCalledWith({
+      name: 'Notes',
+      parentId: 'child',
+    }),
+  );
+  await waitFor(() => expect(screen.queryByLabelText('Folder name')).toBeNull());
+});
+
+async function chooseWriteAccess(name: string) {
+  const alert = jest.spyOn(Alert, 'alert');
+  try {
+    fireEvent.press(await screen.findByLabelText(`${name}: Read`));
+    await act(async () => {
+      alert.mock.calls
+        .at(-1)?.[2]
+        ?.find((button) => button.text === 'Read & Write')
+        ?.onPress?.();
+    });
+  } finally {
+    alert.mockRestore();
+  }
+}
+
+test('a child can add write access while inheriting read access', async () => {
+  const client = {
+    ...fake(),
+    listKnowledgeGrants: jest.fn().mockResolvedValue([{ folderId: 'root', mode: 'read' }]),
+    saveKnowledgeGrants: jest.fn().mockImplementation(async (_projectId, grants) => grants),
+  };
+  render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
+  await chooseWriteAccess('Engineering');
+  expect(client.saveKnowledgeGrants).toHaveBeenCalledWith('project', [
+    { folderId: 'root', mode: 'read' },
+    { folderId: 'child', mode: 'read_write' },
+  ]);
+});
+
+test('library folders expand and collapse without changing the library', async () => {
+  const client = fake();
+  render(<Library client={client as unknown as VerityClient} initialFolder={null} />);
+  await screen.findByLabelText('Folder: Company');
+  expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Folder: Company'));
+  expect(screen.getByLabelText('Folder: Engineering')).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('Folder: Engineering'));
+  expect(await screen.findByLabelText('Standards')).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('Folder: Company'));
+  fireEvent.press(screen.getByLabelText('Folder: Company'));
+  expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
 });

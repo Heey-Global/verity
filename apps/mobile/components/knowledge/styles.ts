@@ -1,7 +1,7 @@
 import { StyleSheet } from 'react-native-unistyles';
 export const styles = StyleSheet.create((theme) => ({
   screen: { flex: 1, backgroundColor: theme.colors.background },
-  content: { padding: 16, gap: 16 },
+  content: { padding: 16, gap: 12 },
   group: { gap: 8 },
   row: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
   text: { color: theme.colors.text, fontSize: 16, lineHeight: 24 },
@@ -13,10 +13,27 @@ export const styles = StyleSheet.create((theme) => ({
   button: {
     minHeight: 44,
     justifyContent: 'center',
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  buttonText: { color: theme.colors.text, fontSize: 13 },
+  iconButton: { width: 44, paddingHorizontal: 0 },
+  explorerRow: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 8,
+  },
+  selectedRow: { backgroundColor: theme.colors.surface, borderRadius: 6 },
+  entryText: { color: theme.colors.text, fontSize: 14, flex: 1 },
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
     borderColor: theme.colors.border,
   },
   input: {

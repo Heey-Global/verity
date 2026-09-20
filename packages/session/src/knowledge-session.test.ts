@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { Conductor, KnowledgeSessionClosedError } from './conductor.js';
-import type { Backend } from './backend.js';
+import { RUNNER_SUPERVISOR_BACKENDS, type Backend } from './backend.js';
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -68,4 +68,35 @@ describe('knowledge session closure', () => {
       KnowledgeSessionClosedError,
     );
   });
+});
+
+describe('knowledge discovery context', () => {
+  it.each(RUNNER_SUPERVISOR_BACKENDS)(
+    'announces newly granted knowledge on resumed %s turns',
+    async (runnerSupervisorBackend) => {
+      const seen: string[] = [];
+      const backend: Backend = {
+        runnerSupervisorBackend,
+        run: async (opts) => {
+          seen.push(opts.appendSystemPrompt ?? '');
+          await opts.onSession?.('thread-knowledge');
+          return { sessionId: opts.storeSessionId, exitCode: 0, stderr: '', aborted: false };
+        },
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend,
+        worktreeExists: async () => true,
+      });
+      await conductor.sendTurn('s', 'Hello');
+      expect(seen[0]).not.toContain('## Project knowledge');
+      const folder = await ctx.store.knowledge.createFolder({ name: 'Personal' });
+      await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read' }]);
+      // A grant added after context creation must not leave the agent searching only its repo.
+      await conductor.sendTurn('s', 'What are my values?');
+      expect(seen[1]).toContain('## Project knowledge');
+      expect(seen[1]).toContain('use verity_knowledge to list');
+      expect(seen[1]).toContain('unavailable verity-memory');
+    },
+  );
 });
