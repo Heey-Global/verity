@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.18",
+  "version": "1.33.19",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "0263ddf98dc25a6f6e5b2c593dfd611c97b66fed",
-  "tag": "mobile-v1.33.18",
-  "branch": "staging-mobile-v1.33.18-0263ddf98dc25a6f6e5b2c593dfd611c97b66fed",
-  "baseline": "mobile-v1.33.17",
-  "group": "60816885-b8b4-4c89-95f3-2b618abbaac5",
+  "commit": "e92ca3b8701c798406536aa46129daa19ec128b3",
+  "tag": "mobile-v1.33.19",
+  "branch": "staging-mobile-v1.33.19-e92ca3b8701c798406536aa46129daa19ec128b3",
+  "baseline": "mobile-v1.33.18",
+  "group": "a75563dc-f68f-4dfd-9f2d-639ad81270e3",
   "notes": [
-    "retain project gesture while folding the list (#524)",
-    "move linked Google file below session header (#522)"
+    "add managed knowledge library with project access grants (#526)"
   ]
 }
