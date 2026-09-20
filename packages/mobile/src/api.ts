@@ -114,6 +114,7 @@ export const sessionSummarySchema = z.object({
    * `resumable` yet) must not hard-fail the list parse — a missing value reads as
    * "resumable" (the safe default: don't block sending on absent metadata). */
   resumable: z.boolean().optional(),
+  knowledgeAccessRevoked: z.boolean().optional(),
   /** Compact PR status for this session's current branch (#387), so the overview can
    * mark merge-ready / merge-blocked / CI-failed sessions without a per-session branch fetch. `null` =
    * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
@@ -1500,16 +1501,18 @@ export class VerityApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
-    opts: { requiresConfirmation?: boolean; warnings?: string[] } = {},
+    opts: { requiresConfirmation?: boolean; warnings?: string[]; code?: string | undefined } = {},
   ) {
     super(message);
     this.name = 'VerityApiError';
     this.requiresConfirmation = opts.requiresConfirmation === true;
     this.warnings = opts.warnings ?? [];
+    this.code = opts.code;
   }
 
   readonly requiresConfirmation: boolean;
   readonly warnings: string[];
+  readonly code: string | undefined;
 }
 
 export function isServerSecretSealedError(error: unknown): error is VerityApiError {
@@ -1645,6 +1648,56 @@ export interface MobileScrollDiagnostic {
   data: Record<string, unknown>;
 }
 
+const knowledgeFolderSchema = z.object({
+  id: z.string(),
+  parentId: z.string().nullable(),
+  name: z.string(),
+});
+export type KnowledgeFolder = z.infer<typeof knowledgeFolderSchema>;
+const knowledgeDocumentSchema = z.object({
+  id: z.string(),
+  folderId: z.string(),
+  title: z.string(),
+  currentRevisionId: z.string(),
+  bodyMarkdown: z.string().optional(),
+});
+export type KnowledgeDocument = z.infer<typeof knowledgeDocumentSchema>;
+const knowledgeRevisionSchema = z.object({
+  id: z.string(),
+  documentId: z.string(),
+  title: z.string().optional(),
+  bodyMarkdown: z.string(),
+  authorIdentity: z.string(),
+  projectId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  turnId: z.string().nullable().optional(),
+  createdAt: z.union([z.string(), z.number()]),
+});
+export type KnowledgeRevision = z.infer<typeof knowledgeRevisionSchema>;
+const knowledgeGrantSchema = z.object({
+  folderId: z.string(),
+  mode: z.enum(['read', 'read_write']),
+});
+export type KnowledgeGrant = z.infer<typeof knowledgeGrantSchema>;
+const knowledgeExportSchema = z.object({
+  documents: z.array(z.object({ path: z.string(), bodyMarkdown: z.string() })),
+});
+export type KnowledgeExport = z.infer<typeof knowledgeExportSchema>;
+
+const knowledgeMovePreviewSchema = z.object({
+  policyToken: z.string(),
+  affectedProjects: z.array(
+    z.object({
+      projectId: z.string(),
+      lostRead: z.number(),
+      gainedRead: z.number(),
+      lostWrite: z.number(),
+      gainedWrite: z.number(),
+    }),
+  ),
+});
+export type KnowledgeMovePreview = z.infer<typeof knowledgeMovePreviewSchema>;
+
 export class VerityClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -1660,6 +1713,180 @@ export class VerityClient {
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.onUnauthorized = opts.onUnauthorized;
+  }
+
+  private async knowledgeRequest(path: string, method = 'GET', body?: unknown): Promise<unknown> {
+    const response = await this.request(path, {
+      method,
+      ...(body === undefined
+        ? {}
+        : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+    });
+    return response.json();
+  }
+  async listKnowledgeFolders(): Promise<KnowledgeFolder[]> {
+    return z
+      .object({ folders: z.array(knowledgeFolderSchema) })
+      .parse(await this.knowledgeRequest('/knowledge/folders')).folders;
+  }
+  async createKnowledgeFolder(input: {
+    name: string;
+    parentId: string | null;
+  }): Promise<KnowledgeFolder> {
+    return z
+      .object({ folder: knowledgeFolderSchema })
+      .parse(await this.knowledgeRequest('/knowledge/folders', 'POST', input)).folder;
+  }
+  async updateKnowledgeFolder(
+    id: string,
+    input: { name?: string; parentId?: string | null; expectedPolicyToken?: string },
+  ): Promise<KnowledgeFolder> {
+    return z
+      .object({ folder: knowledgeFolderSchema })
+      .parse(
+        await this.knowledgeRequest(`/knowledge/folders/${encodeURIComponent(id)}`, 'PATCH', input),
+      ).folder;
+  }
+  async previewKnowledgeFolderMove(
+    id: string,
+    parentId: string | null,
+  ): Promise<KnowledgeMovePreview> {
+    return knowledgeMovePreviewSchema.parse(
+      await this.knowledgeRequest(
+        `/knowledge/folders/${encodeURIComponent(id)}/move-preview`,
+        'POST',
+        { parentId },
+      ),
+    );
+  }
+  async previewKnowledgeDocumentMove(id: string, folderId: string): Promise<KnowledgeMovePreview> {
+    return knowledgeMovePreviewSchema.parse(
+      await this.knowledgeRequest(
+        `/knowledge/documents/${encodeURIComponent(id)}/move-preview`,
+        'POST',
+        { folderId },
+      ),
+    );
+  }
+  async deleteKnowledgeFolder(id: string): Promise<void> {
+    await this.knowledgeRequest(`/knowledge/folders/${encodeURIComponent(id)}`, 'DELETE');
+  }
+  async listKnowledgeDocuments(
+    folderId?: string,
+    query?: string,
+    offset = 0,
+    limit = 100,
+  ): Promise<KnowledgeDocument[]> {
+    const params = new URLSearchParams();
+    if (folderId) params.set('folderId', folderId);
+    if (query) params.set('query', query);
+    params.set('offset', String(offset));
+    params.set('limit', String(limit));
+    return z
+      .object({ documents: z.array(knowledgeDocumentSchema) })
+      .parse(await this.knowledgeRequest(`/knowledge/documents?${params.toString()}`)).documents;
+  }
+  async getKnowledgeDocument(id: string, revisionId?: string): Promise<KnowledgeDocument> {
+    return z
+      .object({ document: knowledgeDocumentSchema })
+      .parse(
+        await this.knowledgeRequest(
+          `/knowledge/documents/${encodeURIComponent(id)}${revisionId ? `?revisionId=${encodeURIComponent(revisionId)}` : ''}`,
+        ),
+      ).document;
+  }
+  async createKnowledgeDocument(input: {
+    folderId: string;
+    title: string;
+    bodyMarkdown: string;
+  }): Promise<KnowledgeDocument> {
+    return z
+      .object({ document: knowledgeDocumentSchema })
+      .parse(await this.knowledgeRequest('/knowledge/documents', 'POST', input)).document;
+  }
+  async saveKnowledgeDocument(
+    id: string,
+    input: { title: string; bodyMarkdown: string; expectedRevisionId: string },
+  ): Promise<KnowledgeDocument> {
+    return z
+      .object({ document: knowledgeDocumentSchema })
+      .parse(
+        await this.knowledgeRequest(`/knowledge/documents/${encodeURIComponent(id)}`, 'PUT', input),
+      ).document;
+  }
+  async moveKnowledgeDocument(
+    id: string,
+    folderId: string,
+    expectedPolicyToken: string,
+  ): Promise<KnowledgeDocument> {
+    return z.object({ document: knowledgeDocumentSchema }).parse(
+      await this.knowledgeRequest(`/knowledge/documents/${encodeURIComponent(id)}`, 'PATCH', {
+        folderId,
+        expectedPolicyToken,
+      }),
+    ).document;
+  }
+  async deleteKnowledgeDocument(id: string): Promise<void> {
+    await this.knowledgeRequest(`/knowledge/documents/${encodeURIComponent(id)}`, 'DELETE');
+  }
+  async listKnowledgeRevisions(id: string, offset = 0, limit = 100): Promise<KnowledgeRevision[]> {
+    return z
+      .object({ revisions: z.array(knowledgeRevisionSchema) })
+      .parse(
+        await this.knowledgeRequest(
+          `/knowledge/documents/${encodeURIComponent(id)}/revisions?offset=${offset}&limit=${limit}`,
+        ),
+      ).revisions;
+  }
+  async restoreKnowledgeRevision(
+    id: string,
+    revisionId: string,
+    expectedRevisionId: string,
+  ): Promise<KnowledgeDocument> {
+    return z
+      .object({ document: knowledgeDocumentSchema })
+      .parse(
+        await this.knowledgeRequest(
+          `/knowledge/documents/${encodeURIComponent(id)}/restore`,
+          'POST',
+          { revisionId, expectedRevisionId },
+        ),
+      ).document;
+  }
+  async listKnowledgeGrants(projectId: string): Promise<KnowledgeGrant[]> {
+    return z
+      .object({ grants: z.array(knowledgeGrantSchema) })
+      .parse(
+        await this.knowledgeRequest(`/projects/${encodeURIComponent(projectId)}/knowledge-grants`),
+      ).grants;
+  }
+  async saveKnowledgeGrants(
+    projectId: string,
+    grants: KnowledgeGrant[],
+  ): Promise<KnowledgeGrant[]> {
+    return z
+      .object({ grants: z.array(knowledgeGrantSchema) })
+      .parse(
+        await this.knowledgeRequest(
+          `/projects/${encodeURIComponent(projectId)}/knowledge-grants`,
+          'PUT',
+          { grants },
+        ),
+      ).grants;
+  }
+  async exportKnowledge(folderId: string): Promise<KnowledgeExport> {
+    return knowledgeExportSchema.parse(
+      await this.knowledgeRequest(`/knowledge/export?folderId=${encodeURIComponent(folderId)}`),
+    );
+  }
+  async importKnowledge(
+    folderId: string,
+    documents: KnowledgeExport['documents'],
+  ): Promise<number> {
+    return z
+      .object({ imported: z.number() })
+      .parse(await this.knowledgeRequest('/knowledge/import', 'POST', { folderId, documents }))
+      .imported;
   }
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -3157,6 +3384,7 @@ export class VerityClient {
       throw new VerityApiError(res.status, payload.message, {
         requiresConfirmation: payload.requiresConfirmation,
         warnings: payload.warnings,
+        code: payload.code,
       });
     }
     return res;
@@ -3167,13 +3395,18 @@ export class VerityClient {
  * to a status-derived message when there's no JSON. */
 async function errorPayload(
   res: Response,
-): Promise<{ message: string; requiresConfirmation: boolean; warnings: string[] }> {
+): Promise<{ message: string; requiresConfirmation: boolean; warnings: string[]; code?: string }> {
   try {
     const body: unknown = await res.json();
     if (body && typeof body === 'object' && 'error' in body) {
       const { error } = body;
       if (typeof error === 'string') {
-        return { message: error, requiresConfirmation: false, warnings: [] };
+        return {
+          message: error,
+          requiresConfirmation: false,
+          warnings: [],
+          ...('code' in body && typeof body.code === 'string' ? { code: body.code } : {}),
+        };
       }
     }
     if (body && typeof body === 'object' && 'requiresConfirmation' in body && 'warnings' in body) {

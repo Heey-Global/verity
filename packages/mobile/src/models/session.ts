@@ -72,6 +72,7 @@ export interface SessionModelState {
    * input + shows a banner instead of letting the operator hit a 410). Also set
    * `false` reactively if a send itself 410s (the detail was stale). */
   resumable: boolean | undefined;
+  knowledgeAccessRevoked?: boolean;
   /** Operator-assigned display name (from the session detail), or `null` if none.
    * `undefined` until the detail loads. The screen titles the header with it. */
   name: string | null | undefined;
@@ -237,6 +238,7 @@ export class SessionModel {
   private _sending = false;
   private _sendError: string | undefined;
   private _resumable: boolean | undefined;
+  private _knowledgeAccessRevoked = false;
   private _name: string | null | undefined;
   // The session's current (persisted) engine/model + its project, both from the
   // session detail; `switchModel` updates `_model` on a successful switch.
@@ -390,6 +392,7 @@ export class SessionModel {
       sending: this._sending,
       sendError: this._sendError,
       resumable: this._resumable,
+      knowledgeAccessRevoked: this._knowledgeAccessRevoked,
       name: this._name,
       model: this._model,
       projectId: this._projectId,
@@ -933,6 +936,10 @@ export class SessionModel {
       // Only seed the initial value: don't let a slow probe that started while the
       // worktree still existed overwrite a `false` already latched by a 410 mid-probe
       // (that would briefly re-enable a session the send proved dead).
+      if (detail.knowledgeAccessRevoked === true) {
+        this._knowledgeAccessRevoked = true;
+        this._resumable = false;
+      }
       if (this._resumable === undefined) {
         this._resumable = detail.resumable;
       }
@@ -1048,6 +1055,10 @@ export class SessionModel {
       // 410 Gone = the worktree vanished since the detail loaded; flip the flag so
       // the screen disables further sends (don't let the operator retry into a wall).
       if (error instanceof VerityApiError && error.status === 410) this._resumable = false;
+      if (error instanceof VerityApiError && error.code === 'knowledgeSessionClosed') {
+        this._knowledgeAccessRevoked = true;
+        this._resumable = false;
+      }
     } finally {
       this._sending = false;
       this.emit();

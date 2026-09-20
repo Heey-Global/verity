@@ -1023,7 +1023,60 @@ interface ControlPlaneGenerationTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
+interface KnowledgeFoldersTable {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+interface KnowledgeDocumentsTable {
+  id: string;
+  folder_id: string;
+  title: string;
+  current_revision_id: string | null;
+  created_at: Generated<Date>;
+  updated_at: Generated<Date>;
+}
+interface KnowledgeRevisionsTable {
+  id: string;
+  document_id: string;
+  title: string;
+  body_markdown: string;
+  author_identity: string;
+  project_id: string | null;
+  session_id: string | null;
+  turn_id: string | null;
+  created_at: Generated<Date>;
+}
+interface KnowledgeGrantsTable {
+  project_id: string;
+  folder_id: string;
+  mode: 'read' | 'read_write';
+}
+interface KnowledgeAuditTable {
+  id: string;
+  project_id: string;
+  session_id: string;
+  turn_id: string;
+  operation: string;
+  target: string | null;
+  revision_id: string | null;
+  outcome: 'allow' | 'deny' | 'conflict';
+  created_at: Generated<Date>;
+}
+interface KnowledgeInvalidatedSessionsTable {
+  session_id: string;
+  stopped_at: Generated<Date | null>;
+  created_at: Generated<Date>;
+}
 export interface Database {
+  knowledge_folders: KnowledgeFoldersTable;
+  knowledge_documents: KnowledgeDocumentsTable;
+  knowledge_document_revisions: KnowledgeRevisionsTable;
+  project_knowledge_grants: KnowledgeGrantsTable;
+  knowledge_access_events: KnowledgeAuditTable;
+  knowledge_invalidated_sessions: KnowledgeInvalidatedSessionsTable;
   http_mcp_connections: HttpMcpConnectionsTable;
   project_mcp_bindings: ProjectMcpBindingsTable;
   control_plane_generation: ControlPlaneGenerationTable;

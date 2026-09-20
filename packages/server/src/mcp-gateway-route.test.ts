@@ -67,6 +67,7 @@ function build(
     wire?: boolean;
     allow?: boolean;
     trustedCli?: boolean;
+    knowledge?: boolean;
     /** Compose the deployment's network-origin gate, so `/internal/*` behaves on the
      *  operator-facing listener the way a real deployment makes it behave. */
     internalGuard?: boolean;
@@ -87,9 +88,11 @@ function build(
   const dispatches: Harness['dispatches'] = [];
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     servedTools:
-      options.trustedCli === true
-        ? ['verity_http_request', 'verity_secret_run']
-        : ['verity_http_request'],
+      options.knowledge === true
+        ? ['verity_knowledge']
+        : options.trustedCli === true
+          ? ['verity_http_request', 'verity_secret_run']
+          : ['verity_http_request'],
     ...(options.sessionTools === true
       ? {
           extraToolsForProject: () =>
@@ -282,6 +285,25 @@ async function withListener(
 }
 
 describe('POST /internal/mcp (loopback MCP gateway)', () => {
+  it('accepts an escaped Markdown document within the stored byte limit', async () => {
+    const harness = build({ knowledge: true, allow: true });
+    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+    await withListener(harness, async (socketPath) => {
+      const bodyMarkdown = '\u0001'.repeat(256 * 1024);
+      const res = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'verity_knowledge',
+          arguments: { operation: 'create', folderId: 'folder', title: 'Notes', bodyMarkdown },
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(harness.records.some((record) => record.kind === 'gateway_call_received')).toBe(true);
+    });
+  });
+
   it('serves a tool call for the session and turn the bearer was minted for', async () => {
     const harness = build();
     const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
@@ -464,7 +486,7 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
             url: 'https://api.example.com/v1/things',
             secretAlias: 'EXAMPLE_TOKEN',
             auth: { header: 'authorization', scheme: 'Bearer' },
-            body: { blob: 'x'.repeat(512 * 1024) },
+            body: { blob: 'x'.repeat(3 * 1024 * 1024) },
           },
         },
       });

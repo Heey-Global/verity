@@ -2411,3 +2411,20 @@ describe('SessionModel — a session that is still being created', () => {
     model.stop();
   });
 });
+
+it('keeps a knowledge-revoked session readable while disabling further turns', async () => {
+  const { connect } = recordingConnect();
+  const client = {
+    ...stubClient(),
+    getSession: vi.fn().mockResolvedValue({ resumable: false, knowledgeAccessRevoked: true }),
+  } as unknown as VerityClient;
+  const model = new SessionModel({ client, sessionId: 's1', baseUrl: 'http://host', connect });
+  model.start();
+  try {
+    await vi.waitFor(() => expect(model.state.knowledgeAccessRevoked).toBe(true));
+    expect(model.state.resumable).toBe(false);
+    expect(model.state.session).toBeDefined();
+  } finally {
+    model.stop();
+  }
+});

@@ -511,6 +511,7 @@ export function SessionChat({
     sendError,
     cancelError,
     resumable,
+    knowledgeAccessRevoked,
     name,
     model: currentModel,
     projectId,
@@ -3124,7 +3125,16 @@ export function SessionChat({
         {/* Right spacer keeps the title centered now that the actions live on the
             context row below — the title row gets the full width, so the session name
             no longer truncates on a phone. */}
-        <View style={styles.headerSide} />
+        <View style={styles.headerSide}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Knowledge"
+            onPress={() => router.push('/knowledge')}
+            hitSlop={12}
+          >
+            <Icon name="book-open" size={20} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
       </View>
       {/* Context row under the title: the branch switcher (#91) and the bookmarks
           jump-list (#bookmarks), plus the Issue chip when present. Moved down off the
@@ -3377,7 +3387,11 @@ export function SessionChat({
       {dead ? (
         <Banner
           tone="attention"
-          text="This session's workspace was cleaned up. The transcript stays available, but new turns need a new agent."
+          text={
+            knowledgeAccessRevoked
+              ? 'Knowledge access changed. Start a new session to continue. The transcript stays available.'
+              : "This session's workspace was cleaned up. The transcript stays available, but new turns need a new agent."
+          }
         />
       ) : null}
       {rateNotice ? (

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { KnowledgeError } from '@verity/store';
+import { knowledgeToolRequestSchema, KNOWLEDGE_TOOL_DESCRIPTION } from './knowledge-tool.js';
 
 import {
   brokeredHttpRequestSchema,
@@ -240,6 +242,7 @@ export interface McpGatewayDeps {
 }
 
 const TOOL_SCHEMAS = {
+  verity_knowledge: knowledgeToolRequestSchema,
   verity_http_request: brokeredHttpRequestSchema,
   verity_secret_run: trustedCliRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
@@ -291,6 +294,7 @@ const TOOL_SCHEMAS = {
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
+  verity_knowledge: KNOWLEDGE_TOOL_DESCRIPTION,
   verity_http_request: BROKERED_HTTP_TOOL_DESCRIPTION,
   verity_secret_run: TRUSTED_CLI_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
@@ -659,6 +663,16 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       // is classified the same way here: that dep is optional, and a session can also lose its
       // Control binding while the card is parked.
       if (error instanceof ControlPlaneSessionToolError) return refuseControlPlane(error);
+      if (error instanceof KnowledgeError) {
+        return reject(
+          projectId,
+          callId,
+          'unavailable',
+          keyed,
+          toolName,
+          toolError(id, error.message),
+        );
+      }
       if (error instanceof TrustedCliDispatchError) {
         return reject(
           projectId,

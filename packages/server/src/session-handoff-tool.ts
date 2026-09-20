@@ -190,6 +190,12 @@ export interface ControlPlaneSessionToolDeps {
   controlProjectId: string;
   /** The originating session, to prove the bearer's project claim against the store. */
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
+  /** Knowledge-bearing contexts cannot act as a cross-project transfer bridge. */
+  authorizeKnowledgeCaller?:
+    ((input: { projectId: string; sessionId: string }) => Promise<void>) | undefined;
+  /** Missing sessionId checks a project before session creation or discovery. */
+  canAccessKnowledgeTarget?:
+    ((input: { projectId: string; sessionId?: string }) => Promise<boolean>) | undefined;
   listProjects(): Promise<readonly ProjectRecord[]>;
   /** Live sessions, already projected to metadata. Supplied by the route so `status` and
    *  `resumable` are the same projection `GET /sessions` serves.
@@ -347,6 +353,19 @@ export function createControlPlaneSessionTools(
         'originating session is not a Verity Control session',
       );
     }
+    await deps.authorizeKnowledgeCaller?.(input);
+  };
+
+  const requireKnowledgeTarget = async (projectId: string, sessionId?: string): Promise<void> => {
+    if (
+      deps.canAccessKnowledgeTarget &&
+      !(await deps.canAccessKnowledgeTarget({
+        projectId,
+        ...(sessionId === undefined ? {} : { sessionId }),
+      }))
+    ) {
+      throw new ControlPlaneSessionToolError('target is unavailable for cross-project access');
+    }
   };
 
   const requireObservableTarget = async (
@@ -447,7 +466,16 @@ export function createControlPlaneSessionTools(
     sessions: { facts: ControlPlaneSessionFacts; project: ProjectRecord }[];
     omitted: number;
   }> => {
-    const byId = new Map(projects.map((project) => [project.id, project]));
+    const permittedProjects: ProjectRecord[] = [];
+    for (const project of projects) {
+      if (
+        !deps.canAccessKnowledgeTarget ||
+        (await deps.canAccessKnowledgeTarget({ projectId: project.id }))
+      ) {
+        permittedProjects.push(project);
+      }
+    }
+    const byId = new Map(permittedProjects.map((project) => [project.id, project]));
     const addressableProject = (projectId: string): ProjectRecord | undefined => {
       const project = byId.get(projectId);
       if (project === undefined) return undefined;
@@ -463,7 +491,8 @@ export function createControlPlaneSessionTools(
         addressableProject(candidate.projectId) !== undefined &&
         narrow({ sessionId: candidate.sessionId, projectId: candidate.projectId }),
       requireResumable,
-      limit,
+      // A cap before policy filtering can reveal protected session counts.
+      deps.canAccessKnowledgeTarget ? undefined : limit,
     );
     const sessions: { facts: ControlPlaneSessionFacts; project: ProjectRecord }[] = [];
     for (const session of projected.sessions) {
@@ -474,12 +503,24 @@ export function createControlPlaneSessionTools(
       const project = addressableProject(projectId);
       if (project === undefined) continue;
       if (!narrow({ sessionId: session.sessionId, projectId })) continue;
+      if (
+        deps.canAccessKnowledgeTarget &&
+        !(await deps.canAccessKnowledgeTarget({
+          projectId,
+          sessionId: session.sessionId,
+        }))
+      )
+        continue;
       sessions.push({ facts: session, project });
     }
     // `omitted` counts what the cap left unprojected, and is relayed rather than recomputed:
     // the re-checks above drop sessions this module would never have reported anyway, and
     // folding those into the same number would tell the caller its view is truncated when it
     // is complete.
+    if (deps.canAccessKnowledgeTarget) {
+      const visible = limit === undefined ? sessions : sessions.slice(0, limit);
+      return { sessions: visible, omitted: sessions.length - visible.length };
+    }
     return { sessions, omitted: projected.omitted };
   };
 
@@ -560,6 +601,7 @@ export function createControlPlaneSessionTools(
         LIST_SESSIONS_MAX_ENTRIES,
       );
       const entries = wanted.sessions.map((entry) => entryFor(entry.facts, entry.project));
+      await requireControlPlaneCaller(input);
       return {
         sessions: request.activeOnly === false ? entries : entries.filter((e) => e.handoffEligible),
         omitted: wanted.omitted,
@@ -592,6 +634,7 @@ export function createControlPlaneSessionTools(
         target = found;
       } else if ('newSession' in request.target) {
         const project = resolveProject(projects, request.target.newSession.project);
+        await requireKnowledgeTarget(project.id);
         if (isControlPlaneTarget(project, deps.controlProjectId))
           throw new ControlPlaneSessionToolError(
             'a handoff cannot target a Verity Control session',
@@ -635,6 +678,7 @@ export function createControlPlaneSessionTools(
         // — so the transcript of this session is where that trace lives. Address a
         // `sessionId` directly when the target has to be settled before the card.
         const project = resolveProject(projects, request.target.project);
+        await requireKnowledgeTarget(project.id);
         if (isControlPlaneTarget(project, deps.controlProjectId))
           throw new ControlPlaneSessionToolError(
             'a handoff cannot target a Verity Control session',
@@ -681,6 +725,8 @@ export function createControlPlaneSessionTools(
       const prompt = [SESSION_HANDOFF_ENVELOPE, `Title: ${request.title}`, request.briefing].join(
         '\n\n',
       );
+      await requireControlPlaneCaller(input);
+      await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
       const { queued } = await deps.dispatchTurn({
         sessionId: target.facts.sessionId,
         prompt,
@@ -719,11 +765,18 @@ export function createControlPlaneSessionTools(
       if (deps.readProgress === undefined) {
         throw new ControlPlaneSessionToolError('session progress is not configured');
       }
+      await requireControlPlaneCaller(input);
+      await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
+      const result = await deps.readProgress(target.facts.sessionId);
+      // Knowledge can become readable while the transcript snapshot is being built.
+      // Check the materialized snapshot before exposing it across projects.
+      await requireControlPlaneCaller(input);
+      await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
       return {
         sessionId: target.facts.sessionId,
         projectId: target.project.id,
         project: `${target.project.owner}/${target.project.repo}`,
-        ...(await deps.readProgress(target.facts.sessionId)),
+        ...result,
       };
     },
     async recentMessages(input) {
@@ -734,12 +787,16 @@ export function createControlPlaneSessionTools(
         throw new ControlPlaneSessionToolError('recent session messages are not configured');
       }
       const count = request.count ?? RECENT_SESSION_MESSAGES_DEFAULT;
+      await requireControlPlaneCaller(input);
+      await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
       const result = await deps.readRecentMessages({
         sessionId: target.facts.sessionId,
         count,
         ...(request.sinceMinutes === undefined ? {} : { sinceMinutes: request.sinceMinutes }),
         ...(request.beforeSeq === undefined ? {} : { beforeSeq: request.beforeSeq }),
       });
+      await requireControlPlaneCaller(input);
+      await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
       return {
         sessionId: target.facts.sessionId,
         projectId: target.project.id,

@@ -1,360 +1,347 @@
-# ADR 0018 — Knowledge Realms and Namespaces
+# ADR 0018 — Managed Knowledge Folders and Project Access
 
-**Status:** Proposed · **Date:** 2026-09-15
+**Status:** Accepted · **Date:** 2026-09-15 · **Revised:** 2026-09-19
+
+This revision replaces the original realm-and-namespace proposal with a
+Verity-managed knowledge library and explicit project grants to folders. The
+implementation follows this revised decision; see [Knowledge library](../knowledge.md)
+for the user workflow. The filename stays unchanged to preserve existing links.
 
 ## Context
 
-Operators keep durable knowledge outside the repositories an agent works in — an
-Obsidian vault, a wiki, meeting notes, product decisions. They want agents to use it,
-and they want two separations while doing so:
+Durable knowledge must be available to agents without requiring the operator to
+run an external knowledge service. A local Obsidian vault is not automatically
+reachable from a Verity server; the original proposal assumed an MCP connection
+without delivering the connection or synchronization path.
 
-1. **Private and business knowledge must not mix.** A session working on a company
-   repository must not have private notes in its context, and the reverse.
-2. **Which runtime reaches which body of knowledge must be controllable.** The operator
-   phrased this as "which LLM may access what".
+The desired workflow is to create and maintain knowledge in Verity, organize it in
+folders and subfolders, and select which folders each project may read or also write. A project
+may need several unrelated subtrees, such as `Company/Engineering` and
+`General/Writing`. Requiring exactly one realm per project does not express this
+choice naturally.
 
-### What exists today
-
-- **Per-project agent memory** ([ADR 0008](0008-per-project-agent-memory.md), shipped).
-  A single free-text blob in `project_settings.memory`
-  (`packages/store/src/schema.ts:248`, cap `PROJECT_MEMORY_MAX_CHARS = 8_000`,
-  `packages/store/src/store.ts:572`). The agent appends through
-  `agent-seed/bin/verity-memory` against the capability-authenticated broker
-  (`packages/server/src/project-memory-route.ts`); the Conductor folds it into the
-  runtime system prompt once per fresh backend context
-  (`packages/session/src/conductor.ts:5137`, attached at `:1294` and `:4497`).
-- **HTTP MCP connections with a project binding.** `http_mcp_connections` is **global**
-  (`schema.ts:90`) and `project_mcp_bindings` maps a connection to a project
-  (`schema.ts:107`, cap of 16 enabled per project, `store.ts:5884`). The Conductor
-  rewrites every bound connection into an internal proxy descriptor carrying only the
-  connection id in `X-Verity-MCP-Binding` (`packages/server/src/embedded.ts:1284`,
-  `packages/session/src/runner-mcp-servers.ts`). The proxy resolves the real upstream and
-  its credential **server-side on every call**, from the internal connection identity
-  rather than the request body (`packages/server/src/http-mcp-proxy.ts:188`,
-  `packages/server/src/server.ts:4518`). The Sandbox never holds the credential and never
-  names its own project.
-- **Reference documents in Git.** [ADR 0009](0009-google-drive-sources.md) writes imported
-  documents to `docs/reference/`, versioned and idempotent by name.
-
-### What does not exist
-
-- **Any scope above the project.** `ProjectsTable` (`schema.ts:130`) has no grouping
-  column. ADR 0008 closed with the global tier explicitly out of scope: *"A truly
-  cross-project ('global over all projects') memory … would need a separate channel."*
-  That channel is what this ADR defines.
-- **A model or runtime as an authorization principal.** The model is a project preference
-  (`project_settings.default_model`, `schema.ts:242`) with a per-turn override
-  (`server.ts:7307`). Claude, Codex and OpenCode sessions of one project share one
-  Sandbox, one gh-token capability of one container generation, and one set of MCP
-  bindings. Nothing in the authorization path can currently distinguish them.
-- **A retrieval layer.** Search is full-text over the chat projection only, and the
-  spike (`docs/search-performance-spike.md`) missed its latency targets for broad project
-  and global queries at 20,000 projected messages.
+Existing project memory remains useful for short conventions and decisions.
+Longer documents need durable storage, editing, discovery and retrieval on demand.
+They must survive project Sandbox sleep, replacement and deletion.
 
 ## Decision
 
-**Introduce `realm` as the operator-facing isolation scope above the project, express
-durable external knowledge as `knowledge namespaces` bound to a realm, and keep the
-content itself in external stores reached through the existing MCP gateway. Verity owns
-the boundary and the audit trail; it does not become a knowledge store.**
+Verity will own a knowledge library of Markdown documents arranged in folders and
+subfolders. Projects receive explicit `read` or `read_write` grants to one or more
+folders.
+A grant includes the selected folder's complete subtree. There is no realm,
+additional space membership, or namespace required for this managed library.
 
-### D1 — The scope above the project is a realm, and it is not called a workspace
+The operator deliberately controls which knowledge can be combined in a project.
+Names such as `Private` and `Company` are ordinary folders, not special isolation
+classes. Granting both to one project is supported and knowingly makes both
+available to its agents.
 
-A realm groups projects that may share knowledge. "Private" and "business" are realms.
-A project belongs to exactly one.
+### D1 — One folder tree, with stable identities
 
-The name matters here because `workspace` is already taken in this codebase and means
-something else: the project checkout inside a Sandbox (`workspaceFolder` and
-`workspaceMount` in `packages/server/src/provisioner.ts:243`, `:281`; `workspaceDir` in
-`embedded.ts:4022`). [ADR 0013](0013-component-naming.md) D1 fixed one-name-one-thing for
-components; the same rule is worth keeping for data scopes, and a `workspace_id` that
-denotes a knowledge grouping while `workspaceFolder` denotes a directory is exactly the
-drift ADR 0013 was written against.
+Folders have stable identifiers, a name and an optional parent folder. Documents
+have stable identifiers, a containing folder, a title and Markdown content.
+Multiple top-level folders are supported; the library root is a navigation element,
+not a grantable folder. Documents belong to a folder rather than the library root.
 
-### D2 — Realm assignment lives in `project_settings`, not in `projects`
+Folder names and paths are presentation, not authorization identifiers. Renaming a
+folder does not invalidate its grants. Cycles and ambiguous sibling names are
+rejected. Moving a folder changes inherited access and must be treated as an
+access-policy mutation, not merely as a visual rearrangement.
 
-```
-project_settings.realm_id  TEXT NOT NULL REFERENCES realms(id)
-```
+Example:
 
-`ProjectSettingsTable` exists precisely so that "GitHub/project sync can refresh lifecycle
-metadata without touching local runtime preferences" (`schema.ts:219`). Realm assignment
-is such a preference: the installation-sync upsert writes `projects` rows and would have
-to be taught to preserve a column there, which is the kind of thing that is correct on the
-day it is written and silently wrong after the next sync change. The migration creates one
-real default-realm row and backfills a settings row for every project. Project creation must
-create both records transactionally. There is no `NULL` sentinel: every authorization join
-uses an ordinary non-null foreign key, and a missing settings row fails closed.
-
-`realms` itself is minimal — `id`, `name`, `memory`, timestamps.
-
-### D3 — Knowledge has three tiers and Verity stores only the first
-
-| Tier | Content | Where it lives | How the agent reaches it |
-| --- | --- | --- | --- |
-| Facts | decisions, conventions, gotchas | `realms.memory` + `project_settings.memory` | injected at context init |
-| Documents | specs, imported reference material | Git, `docs/reference/` (ADR 0009) | ordinary file tools |
-| Corpus | vault, wiki, archive | external store, an MCP connection | on demand through the gateway |
-
-Only the facts tier grows in this ADR. The documents tier is unchanged. The corpus tier is
-configuration: a connection row, a namespace row, and the proxy that already exists.
-
-Verity does not ingest, chunk, embed, index or edit the corpus. The retrieval evidence in
-`docs/search-performance-spike.md` is that even full-text search over the chat projection
-needs a query-plan optimization before it meets its targets; a general document-retrieval
-layer is a product, not a feature, and the repository's product boundary places the
-self-hosted core at running agent fleets. A plain-Markdown wiki read with ordinary tools is
-also what an agent consumes best — the second-brain designs the operator cited work that
-way rather than through a vector index.
-
-### D4 — Namespaces bind a connection to a realm; enforcement stays in the proxy
-
-```
-knowledge_namespaces(id, realm_id, connection_id, label, mode, enabled)
-   mode: 'read' | 'read_write'
+```text
+Knowledge
+├── Private
+│   ├── House
+│   └── Finance
+├── Company
+│   ├── Product
+│   └── Engineering
+└── General
+    └── Writing
 ```
 
-A `read` namespace also carries a non-empty, operator-reviewed
-`read_tool_allowlist`. The proxy parses MCP `tools/call` requests and rejects a tool whose
-name is not on that allowlist before forwarding it. Discovery responses are filtered to the
-same set. Connections that cannot provide a stable read-only tool set cannot be exposed as a
-`read` namespace. `read_write` is a separate explicit mode, never the fallback when read-only
-enforcement is unavailable.
+### D2 — Project access is an explicit multi-selection of folders
 
-A namespace connection must itself expose exactly one corpus, scoped by its upstream root or
-credential. The same connection may belong to at most one namespace globally. Verity refuses
-namespace creation unless the connection is marked `isolated_corpus` during an operator
-verification step; the UI states that a tool allowlist does not partition its arguments. A
-server that can search both private and business roots therefore needs two connection rows
-with independently scoped upstream configuration. Verity does not claim to repair an upstream
-credential that can escape its declared corpus.
+Project Settings provides a folder-tree multi-select. A project can select zero,
+one or many folders or subfolders anywhere in the library. Each selection has a
+mode picker: **Read** or **Read & Write**. New selections default to `read`;
+`read_write` is an explicit choice and includes read access.
 
-The method policy is also fail-closed. A `read` namespace permits only MCP lifecycle traffic
-(`initialize`, `notifications/initialized`, `ping`), `tools/list`, and allowlisted
-`tools/call`; it rejects resources, prompts, completion, logging, sampling, elicitation and
-unknown or extension methods. Supporting a read-only resource API later requires another
-explicit method-and-identifier policy, not a broader wildcard.
+- A selected folder grants its selected mode to itself and every descendant.
+- New documents and subfolders inherit access from selected ancestors.
+- No selection means no managed knowledge access.
+- Grants combine by union; overlapping selections do not duplicate results.
+  The stronger mode wins: `read_write` takes precedence over `read`.
+- A read-only parent can have an explicitly writable child. A read-only child
+  cannot restrict an inherited writable parent; the parent grant must be changed
+  to read-only and write access granted to the intended subfolders instead.
+- There are no deny rules or exceptions beneath a selected ancestor in the first
+  version. To share only part of a tree, select those subfolders instead.
+- The UI distinguishes direct selections from inherited access. Deselecting a
+  child cannot remove access granted by a selected parent.
+- The save view shows the resulting accessible subtrees, including inherited
+  read/write modes, so the operator can review the effective grant.
 
-A `read_write` namespace permits the same lifecycle methods, `tools/list`, and `tools/call`
-for the upstream's complete discovered tool set; write authority is deliberately expressed by
-that mode. It still rejects resources, prompts, completion, logging, sampling, elicitation and
-unknown or extension methods. Adding any method to either mode is a policy change, not an
-upstream-driven default.
+Existing projects start with no folder grants. Project creation and GitHub sync
+must not infer grants from repository names, organization membership or paths.
+Deleting a project removes its grants, not shared knowledge.
 
-JSON-RPC batch arrays are rejected for namespace connections in phase 1. Supporting them later
-requires authorizing and pre-auditing every element before forwarding any element; mixed
-partially authorized batches must fail as a unit.
+### D3 — Verity stores and maintains the documents
 
-At the Streamable HTTP layer, `POST` carries only the JSON-RPC methods above. `GET` (SSE) and
-`DELETE` (cleanup) are allowed only for an upstream session id established through that same
-resolved namespace, caller session and connection; arbitrary session ids fail closed. Audit
-events record these as `transport:get` and `transport:delete` with no target name, linked to
-the namespace and upstream session id. They confer no additional JSON-RPC method authority.
+The proposed initial storage is the existing Verity database: folder metadata,
+Markdown document bodies, immutable document revisions and project-folder grants.
+Knowledge is installation data, independent of repositories and Sandbox writable
+layers. The database backup and restore procedure must include it.
 
-The proxy applies policy in both directions, including streamed `POST` responses and `GET`
-SSE. Upstream responses must correlate to an outstanding authorized request. Upstream-initiated
-requests (including sampling, elicitation and roots) are rejected, and notifications are
-fail-closed to an explicit protocol list such as `notifications/tools/list_changed`; logging
-messages and unknown extensions are dropped and audited. An upstream stream cannot acquire
-authority that the client request policy denied.
+The initial logical model is:
 
-Namespace access requires the proxy's trusted per-turn caller identity, not the project-scoped
-container identity. The server mints the existing MCP proxy bearer for a specific
-`{ sessionId, turnId, projectId, sessionRealmId }`; `mcpProxyResolveCaller` validates it and
-supplies those fields to descriptor resolution, transport-session binding and audit. A bearer
-cannot be used after its turn or from a different session. Any backend path that currently
-reaches the proxy with project identity alone must gain this per-turn binding before namespace
-descriptors are enabled; project identity is insufficient and fails closed.
-
-`project_mcp_bindings` stays as it is for project-specific tools. A shared resolver produces
-the deduplicated union of direct bindings and enabled namespaces for a project. The Conductor
-uses that resolver when building MCP descriptors in `embedded.ts`; descriptors carry the
-opaque connection id only, as today. `resolveConnection` in `server.ts:4518` uses the same
-resolver on every call and derives the namespace mode and allowlist from server-side rows.
-No Sandbox-facing descriptor or request field is accepted as policy input.
-
-That location is the whole point of the design. It already re-resolves the binding on
-**every** proxied call, against `identity.projectId` taken from the internal connection
-identity rather than from anything the Sandbox says (`http-mcp-proxy.ts:188`). A namespace
-check placed there inherits that property unchanged: a Sandbox cannot name its own realm
-any more than it can name its own project, and revoking a namespace takes effect on the
-next call rather than on the next session. The existing cap of 16 enabled connections per
-project (`store.ts:5884`) becomes a union-aware invariant. Enabling a namespace or moving a
-project validates the resulting deduplicated union for every affected project and rejects the
-write if any would exceed 16; descriptor construction asserts the same bound fail closed.
-
-A realm move is a session-generation boundary, not a metadata-only update. Its preflight locks
-the project and validates the target realm, namespace union, direct-binding conflicts and
-hosted Learning Loops before setting `realm_move_pending`, which refuses new turns and
-configuration writes. The server then stops active turns and tears down backend contexts;
-failure clears the pending flag while sessions remain resumable in the unchanged old realm.
-Only after every context is confirmed stopped does one transaction revalidate the locked
-inputs, permanently close the existing sessions and change membership atomically. Closed
-transcripts remain visible as history but cannot seed a backend context or call MCP. This
-prevents a failed move from destroying resumability and prevents old-realm memory, messages or
-fetched corpus data from entering a context with new-realm authority.
-
-That final transaction also creates a fresh `kind = 'agent_loop'` session in the target realm
-for every standard Agent Loop and repoints its `session_id`; run history stays attached to the
-loop. Provisioning may occur later through the existing session path. Learning Loops must have
-been rehosted during preflight and are not rebound implicitly.
-
-`sessions.realm_id` snapshots the project's non-null realm at session creation and never
-changes. Every agent-mediated cross-project path — session discovery, progress, recent-message
-observation, handoff, dispatch and future transcript tools — resolves the caller session and
-requires its `realm_id` to equal the target session's. Pre-move sessions therefore remain in
-their old realm and are excluded from new-realm agent reads even though their transcripts are
-retained. Direct operator UI/API access may list historical sessions across realms because it
-uses operator authentication rather than a session capability; it must not turn that access
-into content delivered to an agent without the same-realm check.
-
-Policy provenance is unique rather than composed. `connection_id` is globally unique in
-`knowledge_namespaces`, and
-enabling a namespace is rejected if that connection is directly bound to **any** project,
-regardless of realm. Creating a direct binding is rejected if any namespace globally names
-the connection. Realm moves revalidate these global invariants as part of preflight.
-Thus every reachable connection is authorized by exactly one direct binding or one namespace;
-the proxy never has to merge a write policy with a read policy.
-
-### D5 — Realm memory is read with a scope check; only the operator writes it
-
-`projectMemoryPrompt` (`conductor.ts:5137`) becomes a two-part read — the realm block resolved
-from immutable `session.realmId`, then the project block resolved from `session.projectId`.
-For a dispatchable session the server also requires the project's current realm to equal the
-snapshot; closed historical sessions cannot initialize a backend. The session states nothing.
-Both blocks keep the ADR 0008 framing (`operator-curated; may be stale — verify before relying
-on it`), and an empty realm memory emits no header, as today.
-
-**Agent writes stay project-scoped.** `verity-memory append` continues to write
-`project_settings.memory` only; realm memory is written by the operator in the UI. ADR
-0008's Security section already records that agent-written memory is a durable
-influence channel at system-prompt altitude, injected before the operator reviews it. At
-realm altitude that channel would let one compromised turn plant standing text in the
-system prompt of **every sibling project in the realm** — the blast radius ADR 0008 bounded
-by keeping the capability project-bound. Widening the read scope is the feature; widening
-the write scope is not, and they are separable.
-
-### D6 — The model is not an authorization principal; the realm is
-
-"Which LLM may access what" cannot be implemented as a per-model flag inside a project, and
-this ADR states that rather than shipping a control that reads stronger than it is. Within
-one project there is one Sandbox, one capability, one container generation and one set of
-bindings; the backend choice is a per-turn parameter resolved after all of that
-(`server.ts:7307`). Worse, an in-context filter is not a boundary at all: anything injected
-or fetched into a context is readable by the model, and prompt injection defeats filtering
-applied after the fact.
-
-**The decision is that runtime separation is expressed by realm membership** — put the
-private projects in the private realm and give that realm only the namespaces and the
-runtimes it should have. A realm may additionally declare an allowed runtime set through a
-normalized relation:
-
-```
-realm_allowed_runtimes(realm_id, runtime)  PRIMARY KEY (realm_id, runtime)
-realms.runtime_unrestricted BOOLEAN NOT NULL DEFAULT false
+```text
+knowledge_folders(id, parent_id, name, timestamps)
+knowledge_documents(id, folder_id, title, current_revision_id, timestamps)
+knowledge_document_revisions(id, document_id, body_markdown, author_identity, created_at)
+project_knowledge_grants(project_id, folder_id, mode)
+  mode: read | read_write
 ```
 
-`runtime_unrestricted = true` explicitly permits every canonical backend. Otherwise the rows
-are the exact allowlist, and zero rows means deny all. The default realm migration deliberately
-sets the flag to true to preserve existing behavior; deleting its rows cannot fail open.
-`runtime` is validated against canonical backend identifiers at write time; unknown values are
-rejected rather than ignored. The shared model resolver first resolves aliases/defaults to
-`{ model, backend }`, then authorizes the resolved `backend`. Callers cannot authorize a model
-string directly, and adding a model or alias cannot introduce a backend without the same check.
+Foreign keys, unique grant pairs, validated modes and transactional writes enforce
+consistency. Revision authorship distinguishes authenticated operator edits from
+agent edits and records the originating project, session and turn for agent writes.
+Updates use an expected revision so concurrent editors cannot silently overwrite
+each other. Restoring an old version creates a new revision rather than rewriting
+history. Documents are limited to 256 KiB of UTF-8 Markdown, imports and exports
+to 100 documents and 2 MiB of Markdown per operation, and folder nesting to 16
+levels with at most 1,000 folders. Document listings, search and revision history
+are paginated in pages of at most 100 entries.
 
-The relation and one shared realm-aware validator are mandatory in the first realm migration
-and are used by every creation, dispatch, existing-session model change, per-turn override,
-handoff and Agent Loop reaction path
-(including `server.ts:4659`, `:7049`, `:7307`, `:7674`). No caller may resolve or persist a
-model without it; realms do not ship with bypassing paths. This is a **configuration guard**,
-not a containment boundary: it stops an operator from accidentally opening a private-realm
-session on an unintended runtime. It must not be documented as preventing a model that already
-has a context from reading what is in it.
+The knowledge library is accessible through a book icon in the app header, with
+an accessible Knowledge label, independently of the current project. This entry
+opens the library's top-level folder overview. Returning from the library restores
+the previous screen. The library is not only a folder picker in Project Settings.
+The operator can browse top-level folders, open nested folders, navigate back
+using breadcrumbs or equivalent mobile navigation, and open Markdown documents
+from the current folder's file list.
 
-### D7 — Every namespace call is recorded against its realm
+Opening a document shows its rendered Markdown with an explicit Edit action. The
+editor exposes the Markdown source with a preview, Save and Cancel, and protection
+against losing unsaved changes when navigating away. Saving updates the document
+in place with a new revision; concurrent changes show a conflict rather than
+silently overwriting another edit. Revision history and restoration are accessible
+from the document view.
 
-The proxy sees every call already. It appends a row to a dedicated
-`knowledge_namespace_audit` event table containing `{ requestId, phase, realmId, namespaceId,
-projectId, sessionId, turnId, connectionId, upstreamSessionId, method, targetName,
-namespaceMode, outcome, denialReason, createdAt }`. `upstreamSessionId` is nullable for
-stateless calls and set for Streamable HTTP lifecycle traffic. `phase` is `request` or
-`outcome`; an outcome event links to its request by
-`requestId`, and only outcome events carry `outcome`/`denialReason`. `targetName` is the
-validated tool or resource identifier when the method has one. Events form a per-realm hash
-chain using the same sequence/previous-hash/event-hash shape as the Brokered Secrets audit
-trail. Phase 1 does not prune this chain; a future retention policy must first define and
-retain verifiable checkpoints across deleted prefixes. Without this, "did a session in the business realm read my private notes" has no
-durable answer, and a separation nobody can verify is a separation nobody should trust.
+The UI supports creating folders and pages, editing Markdown, viewing revision
+history, and importing and exporting Markdown with the folder structure preserved.
+Individual files use `.md`; folder exports use a portable JSON bundle of relative
+Markdown paths and bodies that can be reimported without an external service.
+Project Settings provides an Open in Knowledge action for each folder grant so the
+operator can jump directly to its contents and return to the project. Operator
+library management uses operator authentication and is not limited by the current
+project's agent grants; the UI keeps project access settings distinct from this
+management view. These navigation and editing flows must work in the mobile app.
+Imports validate paths and names and report collisions instead of overwriting
+existing documents silently. Rendering must not execute embedded HTML or scripts.
+Attachments, binary documents and a rich-text editor are outside the first version.
 
-Auditing is fail-closed before side effects: the proxy must append a hash-chained request
-event before forwarding and refuses the call if that write fails. It appends a linked outcome
-event afterward. If the outcome write fails after the upstream already answered, the durable
-request has no linked outcome and is therefore reported as `unknown`; a retry worker may
-append the result later; it is never silently treated as success. Thus every forwarded access
-has a durable intent record even across a database failure that occurs after forwarding.
+An external vault or MCP server is not required. Existing project MCP connections
+remain independent; external knowledge integrations may be added later.
+
+### D4 — Agents access authorized knowledge through server-mediated tools
+
+The existing Claude and Codex gateway paths expose server-mediated knowledge tools
+to list authorized folders, search documents, read a document, and create or edit
+documents when authorized under D5. OpenCode-specific gateway support is outside
+this implementation; adding it must not widen existing secret-tool authority. The server resolves the project
+from a trusted session/turn identity and checks current grants on every operation.
+A request-supplied project id or folder path cannot establish authority.
+
+Search filters by authorization before computing result snippets, counts or
+pagination. Listings, direct-id reads, revision reads and exports apply the same
+policy. Unauthorized folder names, document titles, snippets and revision bodies
+must not leak through navigation or error responses. Knowledge is not mounted
+wholesale into project Sandboxes.
+
+Agents receive only the selected document content needed for their work, with its
+source and revision identified. Documents are external reference data and must not
+be injected as standing system instructions. Search starts with bounded text
+search; embeddings and semantic retrieval are not prerequisites.
+
+Access events record the calling project, session and turn, operation, target,
+revision where applicable, and allow/deny outcome. Audit metadata must not copy
+document bodies. A read requires a durable access record before content is returned;
+failure to record it denies the read. Successful writes commit their document
+revision and audit event in the same transaction; audit failure rolls back the
+write. Denied and conflicting write attempts are recorded without exposing content.
+
+### D5 — Editing and memory have separate authority
+
+A `read` grant permits discovery and reading only. A `read_write` grant additionally
+permits agents to create Markdown documents in existing authorized folders and edit
+existing documents' titles and bodies. It does not permit creating or renaming
+folders, deleting or moving documents or folders, changing grants, or modifying
+revision history. Those operations remain operator-only through the authenticated
+UI/API. Imports that mutate hierarchy likewise remain operator-only.
+
+The server checks the effective write mode on the destination folder for creation
+and the document's current folder for edits. Authorization and the mutation are
+transactionally ordered against grant changes and moves; a check performed only
+when constructing tool descriptors is insufficient. Unknown or missing modes deny
+access rather than falling back to write authority.
+
+Every agent edit creates an attributed immutable revision and requires the expected
+current revision. A stale edit fails with a conflict and must be reread and
+reconciled; no blind overwrite or force-write bypass is exposed. Creation rejects
+name collisions rather than converting them into edits.
+
+The explicit write grant authorizes these changes without per-edit approval. Changes
+become visible immediately to other projects with read access to the document.
+The picker explains this shared effect, and the history shows who changed what.
+The operator can restore a prior revision using the versioned UI workflow.
+
+`project_settings.memory` and `verity-memory append` remain project-scoped. Short
+project facts continue to enter fresh backend contexts through the existing memory
+path. This revision introduces neither realm memory nor folder memory automatically
+injected into every associated project.
+
+A shared document can contain conventions, but sharing it does not turn its content
+into a trusted instruction. Writable documents are an intentional cross-project
+content channel: agents in other authorized projects may read those edits. This
+must not become automatic system-prompt injection or permission to edit another
+project's memory.
+
+### D6 — Permission changes account for existing contexts
+
+Downgrading effective access from `read_write` to `read` stops subsequent writes
+without discarding a context that still has read access. Outstanding writes must
+recheck authority at commit; a write ordered after the downgrade cannot succeed.
+The UI evaluates the union of grants: removing one write grant is not a downgrade
+if another ancestor still grants write access.
+
+Revoking a grant prevents subsequent retrieval, but cannot make a model forget
+content already read. The same issue arises when documents or subtrees move out
+of a project's accessible tree or are deleted.
+
+Mutations that reduce a project's accessible knowledge must therefore invalidate
+its affected backend contexts before further dispatch. Old sessions remain
+historical records and cannot resume or seed replacement contexts carrying the
+removed knowledge. Scheduled Agent Loops need fresh sessions while retaining their
+run history. A failed transition must not leave a resumable stale context with new
+authority; transition state and retry/recovery behavior are required implementation
+work.
+
+Moves show the resulting access changes before confirmation. Stable ids preserve
+direct grants to a moved folder; access inherited from its old parent disappears,
+and access inherited from its new parent applies. Moving a document also changes
+access to its revisions. The move and grant evaluation must be atomic with respect
+to reads, writes and concurrent hierarchy mutations.
+
+Removing a grant cannot erase content previously copied into a repository, another
+document or a transcript. The UI must describe revocation as stopping future access
+and continuation, not as deleting all past copies.
+
+Folder grants alone also do not authorize cross-project transcript reads, handoffs
+or dispatch. Those paths must not let a project obtain knowledge through a more
+privileged session. Before shipping, their existing policies must be reviewed and
+any unsafe agent-mediated transfer blocked unless an enforceable information-flow
+rule exists. Equal or overlapping folder selections are not automatically a safe
+transcript-sharing boundary, particularly after permissions change.
+
+### D7 — Realms and their other responsibilities are removed from this proposal
+
+This revision does not introduce `realms`, `project_settings.realm_id`,
+`sessions.realm_id`, `realm_allowed_runtimes`, or `knowledge_namespaces`.
+There is no single-select realm assignment alongside the folder multi-select.
+
+Backend choice remains a project/session concern. Folder grants apply uniformly to
+agents in the project and do not promise per-model isolation. New restrictions on
+allowed backends, shared memory and general session-to-session information flow
+need their own decisions rather than being inferred from folder names.
+
+[ADR 0019](0019-learning-loop.md) still assumes realms, immutable realm provenance
+and realm memory. Those assumptions are superseded by this revision. ADR 0019 must
+be revised before implementation; a folder grant is not a replacement learning
+scope, and it does not authorize scanning transcripts of other projects.
 
 ## Alternatives considered
 
-- **A Verity-native knowledge store** (ingest, chunking, embeddings, search, an editor).
-  Rejected: it is a second product beside the control plane, the search spike shows the
-  retrieval work is not incidental, and it competes with tools the operator already runs.
-  The facts tier in D3 is the small part of it that genuinely belongs in Verity, because it
-  is the part that must be in the system prompt.
-- **A per-model ACL inside a project.** Rejected in D6 — there is no principal to attach it
-  to, and it would misrepresent an in-context filter as a boundary.
-- **One shared store with per-document `visibility: private | business` tags.** Rejected: a
-  filter over a shared corpus fails open — a mistagged, newly added or renamed document is
-  visible by default. Separate namespaces fail closed, which is the correct direction for a
-  separation whose failure mode is a private note in a business context.
-- **`project_mcp_bindings` alone, with a naming convention.** Rejected: without a scope
-  there is nothing to enforce, every new project must be wired by hand, and forgetting one
-  is silent.
-- **Realm as a full multi-tenancy boundary** (per-realm keys, per-realm users, separate
-  secret scopes). Deferred. Verity's authentication identifies a device credential, not a
-  user — ADR 0015 records the same gap — so per-realm authority has nothing to hang on yet.
-  This ADR keeps realms as an operator-facing grouping over the isolation Verity already
-  has (the per-project Sandbox), and claims no more than that.
-- **A dedicated realm-write capability for agents.** Deferred with D5; this is the thing to
-  reach for if realm memory turns out to need agent writes.
+- **Exactly one realm per project:** rejected for this knowledge workflow because
+  projects need arbitrary combinations of folders and subfolders.
+- **External knowledge stores only:** rejected as the required baseline because a
+  local vault needs an additional connectivity or synchronization service.
+- **Knowledge inside each Sandbox:** rejected because shared documents must survive
+  Sandbox lifecycle changes and need centralized access enforcement.
+- **Filesystem copies in every project:** rejected as the default because copies
+  drift and cannot enforce current grants on subsequent reads.
+- **Per-document grants and nested deny rules:** deferred; subtree grants with
+  additive selection are easier to inspect and explain.
+- **A complete Obsidian replacement:** out of scope. Graph views, plugins,
+  collaborative live editing and semantic indexing are not needed for the initial
+  managed Markdown library.
 
 ## Consequences
 
-- One migration: `realms`, `knowledge_namespaces`, `knowledge_namespace_audit`, non-null
-  `project_settings.realm_id`, immutable `sessions.realm_id`, and `realm_allowed_runtimes`,
-  including the seeded default realm and settings/session backfill. Audit appends serialize on
-  a locked per-realm chain-head row before assigning the next sequence and hashes, matching
-  the Brokered Secrets audit's concurrency discipline.
-- Four code seams, all extensions of existing ones: shared descriptor/connection resolution,
-  proxy policy enforcement (`server.ts:4518`), the two-part memory read
-  (`conductor.ts:5137`), and the model-resolution guard (`server.ts:4659`, `:7307`). No new
-  broker or transport; namespace enablement requires the existing MCP proxy bearer to carry
-  the per-session/turn caller binding on every backend.
-- The system prompt grows by the realm memory once per fresh backend context — the same
-  cadence and cap mechanism as ADR 0008, not per turn. Realm and project memory are each
-  capped at 8,000 characters, making their combined injected payload at most 16,000
-  characters before fixed framing.
-- The private/business separation is exactly as strong as the per-project Sandbox boundary
-  operators already rely on. This ADR adds no isolation; it makes an existing boundary
-  addressable and prevents knowledge from being wired across it by hand.
-- Realm memory is a wider injection surface than project memory. Restricting writes to the
-  operator (D5) bounds who can place text there; it does not make the text trustworthy, and
-  the prompt framing stays advisory.
-- No retrieval is delivered. An operator who wants semantic search over the corpus gets it
-  from the external store, through the same namespace.
-- UI work: a realm screen, a realm picker in Project Settings, and namespace management
-  beside the existing MCP connection screen (`packages/server/src/http-mcp-connections-route.ts`,
-  `packages/mobile/src/api.ts:2389`).
+Verity now owns document storage, editing, version history, text search, import,
+export and backup coverage. This deliberately reverses the original decision not
+to store a knowledge corpus. The feature belongs to the self-hosted core and has
+no dependency on a paid hosted service.
 
-## Scope / open questions
+The UI needs a knowledge-library screen and a project folder-access picker.
+Implementation spans the store, authenticated management routes, shared agent
+read/write tools, session lifecycle handling and the mobile interface. Merely adding
+a folder tree and filtering search results does not complete this decision.
 
-- Whether the `control_plane` project (`schema.ts:139`) starts in the seeded default realm or
-  gets a dedicated realm during migration.
-- How allowlist drift is presented when an upstream renames a tool. The fail-closed behavior
-  is fixed: an unknown name remains unavailable until the operator reviews and updates the
-  namespace. Phase 1 may ship `read` only and defer write namespaces.
-- Whether the realm should eventually scope brokered secrets and Doppler bindings, which are
-  per-project today. Likely yes, and it would be the first real test of realm as an
-  authority boundary rather than a grouping.
-- Which external store is validated first (an Obsidian vault behind an MCP server is the
-  assumed shape) and whether its MCP server is something we ship or something the operator
-  runs.
+## Required verification before shipping
+
+- Direct and inherited grants, multiple selections, overlap and empty selections;
+  read/write precedence, writable children and non-restricting read-only children.
+- Read-only agents cannot create or edit documents; writable agents cannot move,
+  delete, change hierarchy or grants, or mutate revision history.
+- Write authorization is enforced across every backend, including direct-id calls,
+  stale tool descriptors and grant downgrades or moves racing with commit.
+- Agent writes produce attributed revisions and atomic audit events, become visible
+  to authorized readers, and reject stale edits and creation collisions.
+- New descendants, renamed folders, moves, cycle rejection and concurrent mutations.
+- No unauthorized metadata or content through search, counts, listings, ids,
+  revisions, exports or errors, across both supported knowledge gateway backends.
+- Revocation and deletion racing with reads, active turns and scheduled loops;
+  old contexts cannot resume or seed a replacement after access is removed.
+- Agent-mediated cross-project paths cannot bypass knowledge authorization.
+- The operator can open the library's root through the app-header book icon
+  independently of the current project and return to the previous screen.
+- The operator can browse nested folders, open
+  documents, edit and preview Markdown, save or cancel, and inspect or restore
+  revisions in the mobile app. Project folder links open the correct folder.
+- Navigating away protects unsaved edits; save failures preserve the draft and
+  concurrent edits reject stale revisions; restoration preserves history.
+- Markdown rendering and imports reject executable content and path traversal.
+- Knowledge and revisions survive Sandbox replacement, project deletion and a
+  database backup/restore round trip; Markdown export preserves content and paths.
+
+Security guards must be checked against deliberately broken authorization before
+they are trusted, following the repository's testing instructions.
+
+## Implementation and deferred work
+
+The initial implementation serializes policy and content operations with a database
+advisory transaction lock. Read-access reductions atomically record permanent
+session invalidations and unbind Agent Loop sessions. Dispatch and agent tools
+check this durable fence; cleanup stops backend contexts, retries on failure and
+recovers after restart. Moves require a reviewed policy token and reject stale
+previews.
+
+Cross-project session tools exclude callers and targets with knowledge grants,
+recorded knowledge exposure or invalidated contexts. Observation checks are repeated
+after materializing the response, so a concurrent grant change cannot leak its
+snapshot. This conservative policy can be refined separately.
+
+Deferred work:
+
+
+- A future retention policy for access records and document revisions. The initial
+  version retains revisions while a document exists; explicit document or subtree
+  deletion removes its revisions, while access audit metadata is retained.
+- Text-search indexing and latency targets against a representative corpus.
+- More permissive, explicit rules for agent-mediated cross-project information
+  transfer that preserve knowledge provenance; folder overlap alone is insufficient.
+- A revised scope and approval target for ADR 0019's Learning Loop.
