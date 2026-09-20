@@ -469,6 +469,8 @@ function managedClient() {
     getProjectKnowledgeOverview: jest.fn().mockResolvedValue(null),
     listKnowledgeWikiJobs: jest.fn().mockResolvedValue([]),
     listModels: jest.fn().mockResolvedValue({ models: ['provider/model'] }),
+    getVeritySettings: jest.fn().mockResolvedValue({ knowledgeModel: null }),
+    updateVeritySettings: jest.fn().mockImplementation((patch) => Promise.resolve(patch)),
     createKnowledgeWikiJob: jest.fn().mockResolvedValue({
       id: 'job',
       projectId: 'project',
@@ -524,7 +526,7 @@ test('managed project folders stay connected and cannot grant Sources write acce
   );
 });
 
-test('wiki jobs submit only the selected own source with the selected model', async () => {
+test('Knowledge model selection is system-wide and source ingestion is automatic', async () => {
   const client = managedClient();
   render(
     <ProjectKnowledge
@@ -536,17 +538,13 @@ test('wiki jobs submit only the selected own source with the selected model', as
   expect(screen.queryByLabelText('Sources')).toBeNull();
   expect(screen.queryByLabelText('Wiki')).toBeNull();
   expect(screen.queryByLabelText('Refresh knowledge')).toBeNull();
-  fireEvent.press(await screen.findByLabelText('Wiki model: project default'));
+  fireEvent.press(await screen.findByLabelText('Knowledge model: automatic'));
   fireEvent.press(await screen.findByLabelText('provider/model'));
-  fireEvent.press(screen.getByLabelText('Add this Source to the Wiki'));
   await waitFor(() =>
-    expect(client.createKnowledgeWikiJob).toHaveBeenCalledWith('project', {
-      kind: 'ingest',
-      sourceDocumentIds: ['source'],
-      model: 'provider/model',
-    }),
+    expect(client.updateVeritySettings).toHaveBeenCalledWith({ knowledgeModel: 'provider/model' }),
   );
-  expect(await screen.findByLabelText('Wiki update · Starting')).toBeTruthy();
+  expect(client.createKnowledgeWikiJob).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText('Add this Source to the Wiki')).toBeNull();
 });
 
 test('running Wiki jobs refresh their status automatically', async () => {
@@ -571,12 +569,12 @@ test('running Wiki jobs refresh their status automatically', async () => {
   try {
     render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
     await act(async () => Promise.resolve());
-    expect(screen.getByLabelText('Wiki review · Running')).toBeTruthy();
+    expect(screen.getByLabelText('Wiki review · Running · 0 sources')).toBeTruthy();
     await act(async () => {
       jest.advanceTimersByTime(2_000);
       await Promise.resolve();
     });
-    expect(screen.getByLabelText('Wiki review · Completed')).toBeTruthy();
+    expect(screen.getByLabelText('Wiki review · Completed · 0 sources')).toBeTruthy();
     expect(client.listKnowledgeWikiJobs).toHaveBeenCalledTimes(2);
   } finally {
     jest.useRealTimers();
@@ -597,7 +595,7 @@ test('an additional shared source never offers project Wiki ingestion', async ()
       }}
     />,
   );
-  await screen.findByLabelText('Review Wiki against Sources');
+  await screen.findByLabelText(/Knowledge model:/);
   expect(screen.queryByLabelText('Add this Source to the Wiki')).toBeNull();
   expect(screen.queryByLabelText('Use as project briefing')).toBeNull();
 });
@@ -774,7 +772,7 @@ test('unsupported source extraction keeps the original available and states the 
   expect(client.getKnowledgeSource).toHaveBeenCalledWith('doc', 'v1');
 });
 
-test('stale Wiki pages offer a fresh check instead of silently accepting old source content', async () => {
+test('stale Wiki pages rely on automatic maintenance without a manual review action', async () => {
   const client = managedClient();
   render(
     <ProjectKnowledge
@@ -789,11 +787,7 @@ test('stale Wiki pages offer a fresh check instead of silently accepting old sou
       }}
     />,
   );
-  fireEvent.press(await screen.findByLabelText('Review outdated Wiki page'));
-  await waitFor(() =>
-    expect(client.createKnowledgeWikiJob).toHaveBeenCalledWith('project', {
-      kind: 'check',
-      sourceDocumentIds: [],
-    }),
-  );
+  await screen.findByLabelText(/Knowledge model:/);
+  expect(screen.queryByLabelText('Review outdated Wiki page')).toBeNull();
+  expect(client.createKnowledgeWikiJob).not.toHaveBeenCalled();
 });

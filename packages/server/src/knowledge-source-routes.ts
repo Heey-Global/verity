@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import {
+  type EventStore,
   KnowledgeError,
   type KnowledgeStore,
   type KnowledgeSource,
@@ -26,7 +28,12 @@ function decode(value: string): Buffer {
 /** These management endpoints inherit the paired-device authentication gate. */
 export function registerKnowledgeSourceRoutes(
   app: FastifyInstance,
-  deps: { knowledge: KnowledgeStore },
+  deps: {
+    knowledge: KnowledgeStore;
+    store?: Pick<EventStore, 'getSession'>;
+    schedule?: (projectId: string, sourceDocumentIds: string[]) => Promise<void> | void;
+    wakeMaintenance?: (projectId: string) => Promise<void> | void;
+  },
 ): void {
   const knowledge = deps.knowledge;
   void app.register((instance, _options, done) => {
@@ -47,14 +54,64 @@ export function registerKnowledgeSourceRoutes(
         source.processingNote,
         ...source.locators.map((part) => `## ${part.label}\n\n${part.text}`),
       ].join('\n\n');
+      const projectId = await knowledge.projectForSourceFolder(body.folderId);
       const document = await knowledge.createSourceDocument(
         { folderId: body.folderId, title: body.filename, bodyMarkdown },
         (tx, doc) => knowledge.sources.attachRevision(tx, doc.currentRevisionId, source),
+        projectId ?? undefined,
       );
+      if (projectId) await deps.schedule?.(projectId, [document.id]);
       return {
         document,
         source: metadata(await knowledge.sources.getRevision(document.currentRevisionId)),
       };
+    });
+    instance.post('/sessions/:id/knowledge-sources', { bodyLimit: 14_100_000 }, async (request) => {
+      if (!deps.store) throw new KnowledgeError('not_found');
+      const { id: sessionId } = z.object({ id }).parse(request.params);
+      const body = z
+        .object({
+          messageId: id.optional(),
+          text: z.string().trim().min(1).max(262_144).optional(),
+          attachments: z
+            .array(z.object({ filename: file.filename, base64: file.base64 }).strict())
+            .max(10)
+            .default([]),
+        })
+        .strict()
+        .refine((value) => value.text !== undefined || value.attachments.length > 0)
+        .parse(request.body);
+      const session = await deps.store.getSession(sessionId);
+      if (!session?.projectId)
+        throw new KnowledgeError('forbidden', 'Project Knowledge requires a project session');
+      const space = await knowledge.getProjectSpace(session.projectId);
+      if (!space) throw new KnowledgeError('not_found');
+      const uploads = await knowledge.ensureFolder(space.sourcesFolderId, 'Chat uploads');
+      const inputs: Parameters<KnowledgeStore['createChatSources']>[1] = [];
+      if (body.text) {
+        inputs.push({
+          title: `Chat message ${new Date().toISOString()}`,
+          bodyMarkdown: [
+            `From session ${sessionId}${body.messageId ? `, message ${body.messageId}` : ''}.`,
+            body.text,
+          ].join('\n\n'),
+        });
+      }
+      for (const attachment of body.attachments) {
+        const bytes = decode(attachment.base64);
+        const source = await processKnowledgeSource(attachment.filename, bytes);
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const bodyMarkdown = [
+          source.processingNote,
+          ...source.locators.map((part) => `## ${part.label}\n\n${part.text}`),
+        ].join('\n\n');
+        inputs.push({ title: attachment.filename, bodyMarkdown, source, sha256 });
+      }
+      const documents = await knowledge.createChatSources(uploads.id, inputs, session.projectId);
+      await deps.schedule?.(session.projectId, [
+        ...new Set(documents.map((document) => document.id)),
+      ]);
+      return { documents };
     });
     instance.put('/knowledge/documents/:id/source', { bodyLimit: 14_100_000 }, async (request) => {
       const { id: documentId } = z.object({ id }).parse(request.params);
@@ -67,11 +124,15 @@ export function registerKnowledgeSourceRoutes(
         source.processingNote,
         ...source.locators.map((part) => `## ${part.label}\n\n${part.text}`),
       ].join('\n\n');
+      const current = await knowledge.getDocument(documentId);
+      const projectId = await knowledge.projectForSourceFolder(current.folderId);
       const document = await knowledge.updateSourceDocument(
         documentId,
         { expectedRevisionId: body.expectedRevisionId, title: body.filename, bodyMarkdown },
         (tx, doc) => knowledge.sources.attachRevision(tx, doc.currentRevisionId, source),
+        projectId ?? undefined,
       );
+      if (projectId) await deps.schedule?.(projectId, [document.id]);
       return {
         document,
         source: metadata(await knowledge.sources.getRevision(document.currentRevisionId)),
@@ -176,15 +237,16 @@ export function registerKnowledgeSourceRoutes(
         })
         .strict()
         .parse(request.body);
-      return {
-        imported: await knowledge.importDocuments(
-          body.folderId,
-          body.documents.map(({ original, ...document }) =>
-            original ? { ...document, original } : document,
-          ),
-          true,
+      const imported = await knowledge.importDocuments(
+        body.folderId,
+        body.documents.map(({ original, ...document }) =>
+          original ? { ...document, original } : document,
         ),
-      };
+        true,
+      );
+      const projectId = await knowledge.projectForSourceFolder(body.folderId);
+      if (projectId) await deps.wakeMaintenance?.(projectId);
+      return { imported };
     });
     done();
   });

@@ -1005,12 +1005,12 @@ export class SessionModel {
    * turn is dispatched async server-side — a 202 resolves this; a 404/409/400
    * sets {@link SessionModelState.sendError}.
    */
-  async sendTurn(prompt: string, opts: Omit<TurnRequest, 'prompt'> = {}): Promise<void> {
+  async sendTurn(prompt: string, opts: Omit<TurnRequest, 'prompt'> = {}): Promise<boolean> {
     // Re-entrancy guard: drop a second send while one is already in flight. The
     // screen disables the button on `sending`, but that flag is React state set
     // async via onChange, so a fast double-tap can call this twice before the
     // re-render — without this guard both would POST a turn from one intent.
-    if (this._sending) return;
+    if (this._sending) return false;
     this._sending = true;
     this._sendError = undefined;
     this._cancelError = undefined; // a new turn clears a stale stop-error banner
@@ -1043,6 +1043,7 @@ export class SessionModel {
       // Remember the queued text so the screen can show it as a pending bubble
       // until its prompt event lands in the transcript (the turn actually runs).
       if (this._queued) this._queuedAll.push(prompt);
+      return true;
     } catch (error) {
       // Keep the bubble and mark it un-sent rather than dropping the text on the
       // floor: the operator can tap it to get the message back into the input.
@@ -1059,6 +1060,7 @@ export class SessionModel {
         this._knowledgeAccessRevoked = true;
         this._resumable = false;
       }
+      return false;
     } finally {
       this._sending = false;
       this.emit();

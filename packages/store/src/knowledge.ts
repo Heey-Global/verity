@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from './schema.js';
-import { KnowledgeSourceStore } from './knowledge-sources.js';
+import { KnowledgeSourceStore, type KnowledgeSourceInput } from './knowledge-sources.js';
 
 export const KNOWLEDGE_DOCUMENT_MAX_BYTES = 256 * 1024;
 export const KNOWLEDGE_IMPORT_MAX_BYTES = 2 * 1024 * 1024;
@@ -25,9 +25,10 @@ export interface KnowledgeWikiJob {
   id: string;
   projectId: string;
   sessionId: string;
-  kind: 'ingest' | 'check';
+  kind: 'ingest' | 'check' | 'reconcile';
   status: 'pending' | 'running' | 'completed' | 'failed';
   sourceRevisions: { documentId: string; revisionId: string }[];
+  model: string | null;
   createdAt: Date;
   error: string | null;
 }
@@ -233,9 +234,10 @@ export class KnowledgeStore {
     id: string;
     project_id: string;
     session_id: string;
-    kind: 'ingest' | 'check';
+    kind: 'ingest' | 'check' | 'reconcile';
     status: KnowledgeWikiJob['status'];
     source_revisions: string;
+    model: string | null;
     created_at: Date;
     error: string | null;
   }): KnowledgeWikiJob {
@@ -246,6 +248,7 @@ export class KnowledgeStore {
       kind: row.kind,
       status: row.status,
       sourceRevisions: JSON.parse(row.source_revisions) as KnowledgeWikiJob['sourceRevisions'],
+      model: row.model,
       createdAt: row.created_at,
       error: row.error,
     };
@@ -309,7 +312,8 @@ export class KnowledgeStore {
     projectId: string;
     sessionId: string;
     sourceDocumentIds: string[];
-    kind: 'ingest' | 'check';
+    kind: 'ingest' | 'check' | 'reconcile';
+    model?: string;
   }): Promise<KnowledgeWikiJob> {
     return this.transaction(async (tx) => {
       const space = await tx
@@ -391,7 +395,7 @@ export class KnowledgeStore {
           doc = await this.document(tx, id);
         } catch (error) {
           if (
-            input.kind === 'check' &&
+            (input.kind === 'check' || input.kind === 'reconcile') &&
             error instanceof KnowledgeError &&
             error.code === 'not_found'
           )
@@ -415,6 +419,7 @@ export class KnowledgeStore {
           kind: input.kind,
           status: 'pending',
           source_revisions: JSON.stringify(sourceRevisions),
+          model: input.model ?? null,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -424,21 +429,221 @@ export class KnowledgeStore {
   async createSourceDocument(
     input: KnowledgeDocumentInput,
     attach: (tx: Tx, document: KnowledgeDocument) => Promise<void>,
+    maintenanceProjectId?: string,
   ): Promise<KnowledgeDocument> {
     return this.transaction(async (tx) => {
       const doc = await this.create(tx, input);
       await attach(tx, doc);
+      if (maintenanceProjectId)
+        await this.queueWikiMaintenanceTx(tx, maintenanceProjectId, [doc.id], new Date(), false);
       return doc;
     });
+  }
+  async ensureFolder(parentId: string, folderName: string): Promise<KnowledgeFolder> {
+    name(folderName);
+    return this.transaction(async (tx) => {
+      const existing = await tx
+        .selectFrom('knowledge_folders')
+        .selectAll()
+        .where('parent_id', '=', parentId)
+        .where('name', '=', folderName)
+        .executeTakeFirst();
+      if (existing)
+        return {
+          id: existing.id,
+          parentId: existing.parent_id,
+          name: existing.name,
+          ...(existing.role ? { role: existing.role } : {}),
+          ...(existing.project_id ? { projectId: existing.project_id } : {}),
+        };
+      const parent = await tx
+        .selectFrom('knowledge_folders')
+        .select(['id', 'project_id'])
+        .where('id', '=', parentId)
+        .executeTakeFirst();
+      if (!parent) throw new KnowledgeError('not_found');
+      const row = await tx
+        .insertInto('knowledge_folders')
+        .values({
+          id: randomUUID(),
+          parent_id: parentId,
+          name: folderName,
+          project_id: parent.project_id,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return { id: row.id, parentId: row.parent_id, name: row.name };
+    });
+  }
+  async createChatSources(
+    folderId: string,
+    inputs: {
+      title: string;
+      bodyMarkdown: string;
+      source?: KnowledgeSourceInput;
+      sha256?: string;
+    }[],
+    maintenanceProjectId?: string,
+  ): Promise<KnowledgeDocument[]> {
+    return this.transaction(async (tx) => {
+      const documents: KnowledgeDocument[] = [];
+      for (const input of inputs) {
+        if (input.sha256) {
+          const existing = await tx
+            .selectFrom('knowledge_documents as d')
+            .innerJoin('knowledge_source_revisions as s', 's.revision_id', 'd.current_revision_id')
+            .select('d.id')
+            .where('d.folder_id', '=', folderId)
+            .where('s.sha256', '=', input.sha256)
+            .executeTakeFirst();
+          if (existing) {
+            documents.push(await this.document(tx, existing.id));
+            continue;
+          }
+        }
+        const document = await this.create(tx, {
+          folderId,
+          title: input.title,
+          bodyMarkdown: input.bodyMarkdown,
+        });
+        if (input.source)
+          await this.sources.attachRevision(tx, document.currentRevisionId, input.source);
+        documents.push(document);
+      }
+      if (maintenanceProjectId)
+        await this.queueWikiMaintenanceTx(
+          tx,
+          maintenanceProjectId,
+          documents.map((document) => document.id),
+          new Date(),
+          false,
+        );
+      return documents;
+    });
+  }
+  async queueWikiMaintenance(
+    projectId: string,
+    sourceDocumentIds: string[],
+    dueAt: Date,
+    debounceExisting = true,
+  ): Promise<void> {
+    await this.transaction((tx) =>
+      this.queueWikiMaintenanceTx(tx, projectId, sourceDocumentIds, dueAt, debounceExisting),
+    );
+  }
+  private async queueWikiMaintenanceTx(
+    tx: Tx,
+    projectId: string,
+    sourceDocumentIds: string[],
+    dueAt: Date,
+    debounceExisting: boolean,
+  ): Promise<void> {
+    if (debounceExisting)
+      await tx
+        .updateTable('knowledge_maintenance_queue')
+        .set({ due_at: dueAt })
+        .where('project_id', '=', projectId)
+        .execute();
+    if (sourceDocumentIds.length)
+      await tx
+        .insertInto('knowledge_maintenance_queue')
+        .values(
+          [...new Set(sourceDocumentIds)].map((sourceDocumentId) => ({
+            project_id: projectId,
+            source_document_id: sourceDocumentId,
+            due_at: dueAt,
+          })),
+        )
+        .onConflict((conflict) =>
+          conflict.columns(['project_id', 'source_document_id']).doUpdateSet({ due_at: dueAt }),
+        )
+        .execute();
+  }
+  private async sourceProject(tx: Tx, folderId: string): Promise<string | undefined> {
+    const project = await sql<{ project_id: string }>`with recursive ancestors as (
+      select id,parent_id from knowledge_folders where id=${folderId}
+      union all
+      select f.id,f.parent_id from knowledge_folders f join ancestors a on a.parent_id=f.id
+    ) select s.project_id from project_knowledge_spaces s join ancestors a on a.id=s.sources_folder_id limit 1`.execute(
+      tx,
+    );
+    return project.rows[0]?.project_id;
+  }
+  private async queueSourceMaintenance(tx: Tx, document: KnowledgeDocument): Promise<void> {
+    const projectId = await this.sourceProject(tx, document.folderId);
+    if (projectId)
+      await this.queueWikiMaintenanceTx(tx, projectId, [document.id], new Date(), false);
+  }
+  async listWikiMaintenance(
+    projectId?: string,
+  ): Promise<{ projectId: string; sourceDocumentId: string; dueAt: Date }[]> {
+    let query = this.db.selectFrom('knowledge_maintenance_queue').selectAll();
+    if (projectId) query = query.where('project_id', '=', projectId);
+    return (await query.orderBy('due_at').execute()).map((row) => ({
+      projectId: row.project_id,
+      sourceDocumentId: row.source_document_id,
+      dueAt: row.due_at,
+    }));
+  }
+  async clearWikiMaintenance(
+    records: { projectId: string; sourceDocumentId: string; dueAt: Date }[],
+  ): Promise<void> {
+    if (!records.length) return;
+    await this.transaction(async (tx) => {
+      for (const record of records)
+        await tx
+          .deleteFrom('knowledge_maintenance_queue')
+          .where('project_id', '=', record.projectId)
+          .where('source_document_id', '=', record.sourceDocumentId)
+          .where('due_at', '=', record.dueAt)
+          .execute();
+    });
+  }
+  async queueWikiReconciliation(projectId: string, dueAt: Date): Promise<void> {
+    await this.db
+      .updateTable('project_knowledge_spaces')
+      .set({ reconcile_due_at: dueAt })
+      .where('project_id', '=', projectId)
+      .execute();
+  }
+  async listWikiReconciliations(): Promise<{ projectId: string; dueAt: Date }[]> {
+    return (
+      await this.db
+        .selectFrom('project_knowledge_spaces')
+        .select(['project_id', 'reconcile_due_at'])
+        .where('reconcile_due_at', 'is not', null)
+        .execute()
+    ).map((row) => ({ projectId: row.project_id, dueAt: row.reconcile_due_at! }));
+  }
+  async clearWikiReconciliation(projectId: string, dueAt: Date): Promise<void> {
+    await this.db
+      .updateTable('project_knowledge_spaces')
+      .set({ reconcile_due_at: null })
+      .where('project_id', '=', projectId)
+      .where('reconcile_due_at', '=', dueAt)
+      .execute();
+  }
+  async projectForSourceFolder(folderId: string): Promise<string | null> {
+    const result = await sql<{ project_id: string }>`with recursive ancestors as (
+      select id,parent_id from knowledge_folders where id=${folderId}
+      union all
+      select f.id,f.parent_id from knowledge_folders f join ancestors a on a.parent_id=f.id
+    ) select s.project_id from project_knowledge_spaces s join ancestors a on a.id=s.sources_folder_id limit 1`.execute(
+      this.db,
+    );
+    return result.rows[0]?.project_id ?? null;
   }
   async updateSourceDocument(
     id: string,
     input: KnowledgeDocumentEdit,
     attach: (tx: Tx, document: KnowledgeDocument) => Promise<void>,
+    maintenanceProjectId?: string,
   ): Promise<KnowledgeDocument> {
     return this.transaction(async (tx) => {
       const doc = await this.edit(tx, id, input);
       await attach(tx, doc);
+      if (maintenanceProjectId)
+        await this.queueWikiMaintenanceTx(tx, maintenanceProjectId, [doc.id], new Date(), false);
       return doc;
     });
   }
@@ -820,6 +1025,7 @@ export class KnowledgeStore {
       const folders = await this.folders(tx);
       const old = folders.find((f) => f.id === id);
       if (!old) throw new KnowledgeError('not_found');
+      const previousSourceProject = await this.sourceProject(tx, id);
       if (old.role && (input.parentId !== undefined || input.name !== undefined))
         throw new KnowledgeError('forbidden', 'Managed folders cannot be renamed or moved');
       if (input.parentId !== undefined && input.parentId !== old.parentId) {
@@ -870,6 +1076,23 @@ export class KnowledgeStore {
           tx,
           sources.map((source) => source.id),
         );
+        const nextSourceProject = await this.sourceProject(tx, id);
+        const sourceIds = sources.map((source) => source.id);
+        if (previousSourceProject && previousSourceProject !== nextSourceProject) {
+          if (sourceIds.length)
+            await tx
+              .deleteFrom('knowledge_maintenance_queue')
+              .where('project_id', '=', previousSourceProject)
+              .where('source_document_id', 'in', sourceIds)
+              .execute();
+          await tx
+            .updateTable('project_knowledge_spaces')
+            .set({ reconcile_due_at: new Date() })
+            .where('project_id', '=', previousSourceProject)
+            .execute();
+        }
+        if (nextSourceProject && nextSourceProject !== previousSourceProject)
+          await this.queueWikiMaintenanceTx(tx, nextSourceProject, sourceIds, new Date(), false);
       }
       return next;
     }, input.expectedPolicyToken);
@@ -894,12 +1117,19 @@ export class KnowledgeStore {
         );
       if ((await this.folders(tx)).find((f) => f.id === id)?.role)
         throw new KnowledgeError('forbidden', 'Managed folders cannot be deleted');
+      const sourceProject = await this.sourceProject(tx, id);
       const row = await tx
         .deleteFrom('knowledge_folders')
         .where('id', '=', id)
         .returning('id')
         .executeTakeFirst();
       if (!row) throw new KnowledgeError('not_found');
+      if (sourceProject)
+        await tx
+          .updateTable('project_knowledge_spaces')
+          .set({ reconcile_due_at: new Date() })
+          .where('project_id', '=', sourceProject)
+          .execute();
     });
   }
   async getGrants(projectId: string): Promise<KnowledgeGrant[]> {
@@ -1186,7 +1416,11 @@ export class KnowledgeStore {
     return this.document(tx, id);
   }
   async createDocument(input: KnowledgeDocumentInput, author?: string): Promise<KnowledgeDocument> {
-    return this.transaction((tx) => this.create(tx, input, author));
+    return this.transaction(async (tx) => {
+      const document = await this.create(tx, input, author);
+      await this.queueSourceMaintenance(tx, document);
+      return document;
+    });
   }
   private async edit(
     tx: Tx,
@@ -1232,6 +1466,7 @@ export class KnowledgeStore {
           .insertInto('knowledge_provenance')
           .values({ ...provenance, revision_id: updated.currentRevisionId })
           .execute();
+      await this.queueSourceMaintenance(tx, updated);
       return provenance ? this.document(tx, id) : updated;
     });
   }
@@ -1314,6 +1549,7 @@ export class KnowledgeStore {
           .insertInto('knowledge_provenance')
           .values({ ...provenance, revision_id: restored.currentRevisionId })
           .execute();
+      await this.queueSourceMaintenance(tx, restored);
       return this.document(tx, restored.id);
     });
   }
@@ -1324,6 +1560,8 @@ export class KnowledgeStore {
   ): Promise<KnowledgeDocument> {
     return this.policyMutation(async (tx) => {
       const d = await this.document(tx, id);
+      const previousSourceProject = await this.sourceProject(tx, d.folderId);
+      const nextSourceProject = await this.sourceProject(tx, folderId);
       const fs = await this.folders(tx);
       const subtree = (role: 'wiki' | 'sources', folder: string) =>
         fs.some(
@@ -1342,7 +1580,22 @@ export class KnowledgeStore {
         .where('id', '=', id)
         .execute();
       if (d.folderId !== folderId) await this.assertMovedSourceAudiences(tx, [id]);
-      return this.document(tx, id);
+      const moved = await this.document(tx, id);
+      if (previousSourceProject && previousSourceProject !== nextSourceProject) {
+        await tx
+          .deleteFrom('knowledge_maintenance_queue')
+          .where('project_id', '=', previousSourceProject)
+          .where('source_document_id', '=', id)
+          .execute();
+        await tx
+          .updateTable('project_knowledge_spaces')
+          .set({ reconcile_due_at: new Date() })
+          .where('project_id', '=', previousSourceProject)
+          .execute();
+      }
+      if (nextSourceProject && nextSourceProject !== previousSourceProject)
+        await this.queueWikiMaintenanceTx(tx, nextSourceProject, [id], new Date(), false);
+      return moved;
     }, expectedPolicyToken);
   }
   async deleteDocument(id: string): Promise<void> {
@@ -1358,6 +1611,8 @@ export class KnowledgeStore {
           'conflict',
           'Clear the approved project overview before deleting its document',
         );
+      const document = await this.document(tx, id);
+      const sourceProject = await this.sourceProject(tx, document.folderId);
       if (
         !(await tx
           .deleteFrom('knowledge_documents')
@@ -1366,6 +1621,12 @@ export class KnowledgeStore {
           .executeTakeFirst())
       )
         throw new KnowledgeError('not_found');
+      if (sourceProject)
+        await tx
+          .updateTable('project_knowledge_spaces')
+          .set({ reconcile_due_at: new Date() })
+          .where('project_id', '=', sourceProject)
+          .execute();
     });
   }
   async exportDocuments(folderId?: string, includeOriginals = false): Promise<KnowledgeFile[]> {
@@ -1442,6 +1703,8 @@ export class KnowledgeStore {
     return this.transaction(async (tx) => {
       if (!(await this.folders(tx)).some((f) => f.id === folderId))
         throw new KnowledgeError('not_found');
+      const sourceProject = await this.sourceProject(tx, folderId);
+      const importedDocumentIds: string[] = [];
       for (const file of files) {
         if (typeof file.path !== 'string' || !file.path.endsWith('.md'))
           throw new KnowledgeError('invalid', 'Import accepts relative Markdown paths');
@@ -1460,6 +1723,7 @@ export class KnowledgeStore {
           title,
           bodyMarkdown: file.bodyMarkdown,
         });
+        importedDocumentIds.push(document.id);
         if (file.original) {
           if (!includeOriginals)
             throw new KnowledgeError('invalid', 'Use the original-source bundle import');
@@ -1473,6 +1737,14 @@ export class KnowledgeStore {
           await this.sources.attachRevision(tx, document.currentRevisionId, { ...original, bytes });
         }
       }
+      if (sourceProject)
+        await this.queueWikiMaintenanceTx(
+          tx,
+          sourceProject,
+          importedDocumentIds,
+          new Date(),
+          false,
+        );
       return files.length;
     });
   }
@@ -1601,6 +1873,7 @@ export class KnowledgeStore {
                 (row) =>
                   (row.created_at <= job.createdAt || row.job_id === job.id) &&
                   (job.kind === 'check' ||
+                    job.kind === 'reconcile' ||
                     row.source_revisions === null ||
                     (JSON.parse(row.source_revisions) as KnowledgeWikiJob['sourceRevisions']).every(
                       (source) => captured?.has(source.documentId) === true,

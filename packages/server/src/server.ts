@@ -5679,8 +5679,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
             projectId,
           );
+          const globalSettings = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
           const available = await availableModels({ allowLegacyCodexFallback: true });
-          const model = requestedModel ?? settings?.defaultModel ?? available.default;
+          const model =
+            requestedModel ??
+            globalSettings?.knowledgeModel ??
+            settings?.defaultModel ??
+            available.default;
           if (!model || !(await isConfiguredProjectSessionModel(model)))
             throw new KnowledgeError('invalid', PROJECT_MODEL_ERROR);
           return {
@@ -5694,15 +5699,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
       },
     });
+    app.addHook('onReady', () => wikiJobs.recover());
     app.addHook('onClose', () => wikiJobs.close());
     registerKnowledgeProjectRoutes(app, {
       knowledge: deps.eventStore.knowledge,
       startWikiJob: (projectId, input) => wikiJobs.start(projectId, input),
     });
-    registerKnowledgeSourceRoutes(app, { knowledge: deps.eventStore.knowledge });
+    registerKnowledgeSourceRoutes(app, {
+      knowledge: deps.eventStore.knowledge,
+      store: deps.eventStore,
+      schedule: (projectId, sourceDocumentIds) => wikiJobs.enqueue(projectId, sourceDocumentIds),
+      wakeMaintenance: (projectId) => wikiJobs.wake(projectId),
+    });
     registerKnowledgeRoutes(app, {
       knowledge: deps.eventStore.knowledge,
       reconcileInvalidations: reconcileKnowledgeInvalidations,
+      schedule: (projectId, sourceDocumentIds) => wikiJobs.enqueue(projectId, sourceDocumentIds),
+      scheduleReconciliation: (projectId) => wikiJobs.enqueueReconciliation(projectId),
+      wakeMaintenance: (projectId) => wikiJobs.wake(projectId),
     });
   }
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
@@ -5782,6 +5796,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   const veritySettingsBody = z.object({
+    knowledgeModel: z.string().trim().min(1).max(256).nullable().optional(),
     advancedModeEnabled: z.boolean().optional(),
     gitUserName: z.string().nullable().optional(),
     gitUserEmail: z.string().nullable().optional(),

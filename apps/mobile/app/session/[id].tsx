@@ -478,6 +478,9 @@ const SessionActionsContext = createContext<SessionActions | null>(null);
 // nothing rather than crashing (never happens in practice; the FlashList is always
 // wrapped).
 const BookmarksContext = createContext<Bookmarks | null>(null);
+const KnowledgeSaveContext = createContext<{
+  save(messageId: string, text: string): Promise<void>;
+} | null>(null);
 
 const SessionFileOpenContext = createContext<((path: string) => void) | null>(null);
 const SessionFileImageSourceContext = createContext<
@@ -2159,6 +2162,10 @@ export function SessionChat({
   // Pending image uploads for the NEXT turn (picked but not yet sent, raw base64).
   // Cleared on send. Kept in screen state (not the draft cache) — transient.
   const [attachments, setAttachments] = useState<AttachmentUpload[]>([]);
+  const [saveAttachmentsToKnowledge, setSaveAttachmentsToKnowledge] = useState(false);
+  useEffect(() => {
+    if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
+  }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
   useFocusEffect(
     useCallback(() => {
@@ -2344,13 +2351,34 @@ export function SessionChat({
     // final) result writes the transcript back into the field right after we clear
     // it, and recording stays on. `abort()` swallows the trailing result; no-op idle.
     voiceAbort();
-    sendTurn(prompt, attachments.length > 0 ? { attachments } : {});
+    const sentAttachments = attachments;
+    void sendTurn(prompt, attachments.length > 0 ? { attachments } : {}).then((accepted) => {
+      if (!accepted || !saveAttachmentsToKnowledge || !projectId || sentAttachments.length === 0)
+        return;
+      void client
+        .saveSessionKnowledge(sessionId, {
+          attachments: sentAttachments.map((attachment, index) => ({
+            filename:
+              attachment.kind === 'file'
+                ? attachment.fileName
+                : `chat-image-${String(index + 1)}.${attachment.mediaType === 'image/png' ? 'png' : 'jpg'}`,
+            base64: attachment.data,
+          })),
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not save to Project Knowledge',
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
+    });
     // Sending is an explicit return to the live conversation: reveal the new operator
     // message even when they had scrolled up to read older transcript content, and keep
     // following while the matching prompt event and agent response arrive.
     scrollToLatest(true);
     setDraft('');
     setAttachments([]);
+    setSaveAttachmentsToKnowledge(false);
     setSendNonce((n) => n + 1);
     // Sending a steering prompt is a "send then watch the agent work" action, so on a
     // touch keyboard close it to reveal the transcript (the operator expected this).
@@ -2376,6 +2404,10 @@ export function SessionChat({
     setDraft,
     voiceAbort,
     isIpadFocusTarget,
+    saveAttachmentsToKnowledge,
+    projectId,
+    client,
+    sessionId,
   ]);
   // Merge handling is server-side: the server performs deterministic worktree
   // cleanup, then dispatches the agent-facing post-merge turn while keeping the
@@ -3468,67 +3500,79 @@ export function SessionChat({
           <SessionFileOpenContext.Provider value={openSessionFile}>
             <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
               <BookmarksContext.Provider value={bookmarks}>
-                <FlashList
-                  ref={listRef}
-                  data={data}
-                  keyExtractor={rowKey}
-                  renderItem={renderItem}
-                  getItemType={getItemType}
-                  // Render further beyond the viewport (default ~250px) so rows above are
-                  // MEASURED before a scroll-up reveals them — their height correction then
-                  // happens off-screen instead of jumping the visible offset (cause-2 fix).
-                  drawDistance={500}
-                  // Visual inversion: newest-first data flipped back the right way up.
-                  // Each row is counter-flipped in renderItem (styles.invertedItem).
-                  style={styles.invertedList}
-                  contentContainerStyle={styles.listContent}
-                  onScroll={onListScroll}
-                  onTouchEnd={clearSearchHighlightAfterTouch}
-                  scrollEventThrottle={64}
-                  // Only a real finger drag/fling summons the message-nav stack (see
-                  // revealNav) — programmatic/content-driven scrolls (session open, agent
-                  // streaming) fire none of these, so the stack never pops up on its own. The
-                  // hold-then-fade starts on motion END (drag lift / fling settle), so the
-                  // 1.8s is measured from the list coming to REST.
-                  onScrollBeginDrag={onListScrollBeginDrag}
-                  onMomentumScrollBegin={onListMomentumScrollBegin}
-                  onScrollEndDrag={onListScrollEndDrag}
-                  onMomentumScrollEnd={onListMomentumScrollEnd}
-                  onViewableItemsChanged={onViewableItemsChanged}
-                  viewabilityConfig={viewabilityConfig}
-                  // Paging is driven by our scroll/viewability callbacks (see
-                  // requestOlderHistory), which also own the settle window between
-                  // pages that the native edge callbacks have no notion of.
-                  //
-                  // The spinner belongs to the OLDEST end, which in the newest-first
-                  // list is the footer. It sits behind the viewport, so unlike the
-                  // former header spinner it cannot shift a single visible row.
-                  ListFooterComponent={
-                    <View style={[styles.olderSpinner, styles.invertedItem]}>
-                      <ActivityIndicator
-                        color={theme.colors.textMuted}
-                        animating={loadingOlder}
-                        hidesWhenStopped={false}
-                        style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
-                        accessibilityLabel="Loading older messages"
-                        accessibilityElementsHidden={!loadingOlder}
-                        importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
-                      />
-                    </View>
+                <KnowledgeSaveContext.Provider
+                  value={
+                    projectId
+                      ? {
+                          save: async (messageId, text) => {
+                            await client.saveSessionKnowledge(sessionId, { messageId, text });
+                          },
+                        }
+                      : null
                   }
-                  maintainVisibleContentPosition={maintainVisibleContentPosition}
-                  // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
-                  keyboardDismissMode="interactive"
-                  keyboardShouldPersistTaps="handled"
-                />
-                {/* Opaque cover shown only while converging to a saved position that is
+                >
+                  <FlashList
+                    ref={listRef}
+                    data={data}
+                    keyExtractor={rowKey}
+                    renderItem={renderItem}
+                    getItemType={getItemType}
+                    // Render further beyond the viewport (default ~250px) so rows above are
+                    // MEASURED before a scroll-up reveals them — their height correction then
+                    // happens off-screen instead of jumping the visible offset (cause-2 fix).
+                    drawDistance={500}
+                    // Visual inversion: newest-first data flipped back the right way up.
+                    // Each row is counter-flipped in renderItem (styles.invertedItem).
+                    style={styles.invertedList}
+                    contentContainerStyle={styles.listContent}
+                    onScroll={onListScroll}
+                    onTouchEnd={clearSearchHighlightAfterTouch}
+                    scrollEventThrottle={64}
+                    // Only a real finger drag/fling summons the message-nav stack (see
+                    // revealNav) — programmatic/content-driven scrolls (session open, agent
+                    // streaming) fire none of these, so the stack never pops up on its own. The
+                    // hold-then-fade starts on motion END (drag lift / fling settle), so the
+                    // 1.8s is measured from the list coming to REST.
+                    onScrollBeginDrag={onListScrollBeginDrag}
+                    onMomentumScrollBegin={onListMomentumScrollBegin}
+                    onScrollEndDrag={onListScrollEndDrag}
+                    onMomentumScrollEnd={onListMomentumScrollEnd}
+                    onViewableItemsChanged={onViewableItemsChanged}
+                    viewabilityConfig={viewabilityConfig}
+                    // Paging is driven by our scroll/viewability callbacks (see
+                    // requestOlderHistory), which also own the settle window between
+                    // pages that the native edge callbacks have no notion of.
+                    //
+                    // The spinner belongs to the OLDEST end, which in the newest-first
+                    // list is the footer. It sits behind the viewport, so unlike the
+                    // former header spinner it cannot shift a single visible row.
+                    ListFooterComponent={
+                      <View style={[styles.olderSpinner, styles.invertedItem]}>
+                        <ActivityIndicator
+                          color={theme.colors.textMuted}
+                          animating={loadingOlder}
+                          hidesWhenStopped={false}
+                          style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
+                          accessibilityLabel="Loading older messages"
+                          accessibilityElementsHidden={!loadingOlder}
+                          importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
+                        />
+                      </View>
+                    }
+                    maintainVisibleContentPosition={maintainVisibleContentPosition}
+                    // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
+                    keyboardDismissMode="interactive"
+                    keyboardShouldPersistTaps="handled"
+                  />
+                  {/* Opaque cover shown only while converging to a saved position that is
                 already present in the initial loaded tail. It blocks touches during the
                 measurement correction and lifts after we've scrolled to the anchor. */}
-                {restoring ? (
-                  <View style={styles.restoreCover}>
-                    <ActivityIndicator color={theme.colors.textMuted} />
-                  </View>
-                ) : null}
+                  {restoring ? (
+                    <View style={styles.restoreCover}>
+                      <ActivityIndicator color={theme.colors.textMuted} />
+                    </View>
+                  ) : null}
+                </KnowledgeSaveContext.Provider>
               </BookmarksContext.Provider>
             </SessionFileImageSourceContext.Provider>
           </SessionFileOpenContext.Provider>
@@ -3673,6 +3717,9 @@ export function SessionChat({
         keyboardHeight={keyboardHeight}
         onHeightChange={setInputBarHeight}
         attachments={attachments}
+        knowledgeEnabled={Boolean(projectId)}
+        saveAttachmentsToKnowledge={saveAttachmentsToKnowledge}
+        onToggleSaveAttachmentsToKnowledge={() => setSaveAttachmentsToKnowledge((value) => !value)}
         onAttach={onAttach}
         onDropFiles={onDropFiles}
         onDropRejected={onDropRejected}
@@ -4796,6 +4843,9 @@ function AgentMarkdown({
     [],
   );
   const bookmarks = useContext(BookmarksContext);
+  const knowledge = useContext(KnowledgeSaveContext);
+  const [knowledgeSavedFor, setKnowledgeSavedFor] = useState<string>();
+  const knowledgeSaved = messageId != null && knowledgeSavedFor === messageId;
   const bookmarked = messageId != null && bookmarks?.isBookmarked(messageId) === true;
   return (
     <Pressable
@@ -4863,6 +4913,38 @@ function AgentMarkdown({
                   bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt })
                 }
               />
+            ) : null}
+            {messageId != null && knowledge ? (
+              <Pressable
+                onPress={() => {
+                  void knowledge
+                    .save(messageId, text)
+                    .then(() => setKnowledgeSavedFor(messageId))
+                    .catch((error: unknown) =>
+                      Alert.alert(
+                        'Could not add to Project Knowledge',
+                        error instanceof Error ? error.message : String(error),
+                      ),
+                    );
+                }}
+                disabled={knowledgeSaved}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  knowledgeSaved ? 'Added to Project Knowledge' : 'Add to Project Knowledge'
+                }
+                style={({ pressed }) => [
+                  styles.copyBtn,
+                  styles.msgActionBtn,
+                  pressed ? styles.copyBtnPressed : null,
+                ]}
+              >
+                <Icon
+                  name={knowledgeSaved ? 'check' : 'book-open'}
+                  size={15}
+                  color={knowledgeSaved ? theme.colors.primary : theme.colors.textMuted}
+                />
+              </Pressable>
             ) : null}
             <CopyButton
               value={text}
@@ -6903,6 +6985,9 @@ function InputBar({
   keyboardHeight,
   onHeightChange,
   attachments,
+  knowledgeEnabled,
+  saveAttachmentsToKnowledge,
+  onToggleSaveAttachmentsToKnowledge,
   onAttach,
   onDropFiles,
   onDropRejected,
@@ -6944,6 +7029,9 @@ function InputBar({
   onHeightChange: (height: number) => void;
   /** Files picked or dropped for the next turn (not yet sent, raw base64). */
   attachments: AttachmentUpload[];
+  knowledgeEnabled: boolean;
+  saveAttachmentsToKnowledge: boolean;
+  onToggleSaveAttachmentsToKnowledge: () => void;
   /** Open the attach menu, docked to the paperclip (its measured screen rect). */
   onAttach: (anchor: AttachAnchor) => void;
   /** Attach Finder/Desktop files dropped anywhere on the composer. */
@@ -7008,7 +7096,24 @@ function InputBar({
         </View>
       ) : null}
       {attachments.length > 0 ? (
-        <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
+        <>
+          <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
+          {knowledgeEnabled ? (
+            <Pressable
+              onPress={onToggleSaveAttachmentsToKnowledge}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: saveAttachmentsToKnowledge }}
+              style={styles.knowledgeAttachmentToggle}
+            >
+              <Icon
+                name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
+                size={16}
+                color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
+              />
+              <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
+            </Pressable>
+          ) : null}
+        </>
       ) : null}
       {/* Two-tier layout (like the Claude app): the text field spans the FULL width
           on top, and the action buttons sit in a row UNDERNEATH it — so the field is
@@ -9012,6 +9117,17 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     paddingTop: theme.spacing.sm,
+  },
+  knowledgeAttachmentToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+  },
+  knowledgeAttachmentToggleText: {
+    color: theme.colors.textMuted,
+    fontSize: 13,
   },
   previewItem: {
     width: 64,

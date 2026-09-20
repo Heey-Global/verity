@@ -12,6 +12,7 @@ import { Alert, Text, View } from 'react-native';
 import { KnowledgeButton as Button } from './KnowledgeButton';
 import { KnowledgeMarkdown } from './KnowledgeMarkdown';
 import { styles } from './styles';
+import { loadVeritySettings, saveVeritySettings, useVeritySettings } from '../../lib/settingsStore';
 
 const jobStatusLabel: Record<KnowledgeWikiJob['status'], string> = {
   pending: 'Starting',
@@ -42,12 +43,15 @@ export function ProjectKnowledge({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [model, setModel] = useState<string>();
   const [models, setModels] = useState<string[]>([]);
   const [chooseModel, setChooseModel] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const generation = useRef(0);
   const lock = useRef(false);
+  const { settings } = useVeritySettings();
+  useEffect(() => {
+    if (typeof client.getVeritySettings === 'function') void loadVeritySettings(client);
+  }, [client]);
   useEffect(() => {
     const current = ++generation.current;
     setSpace(null);
@@ -94,13 +98,12 @@ export function ProjectKnowledge({
       setBusy(false);
     }
   };
-  const start = (kind: 'ingest' | 'check', sourceDocumentIds: string[]) => {
+  const start = (kind: KnowledgeWikiJob['kind'], sourceDocumentIds: string[]) => {
     const current = generation.current;
     void run(async () => {
       const job = await client.createKnowledgeWikiJob(projectId, {
         kind,
         sourceDocumentIds,
-        ...(model ? { model } : {}),
       });
       if (current === generation.current) setJobs((previous) => [job, ...previous]);
     });
@@ -192,7 +195,11 @@ export function ProjectKnowledge({
         <>
           <View style={styles.row}>
             <Button
-              label={model ? `Wiki model: ${model}` : 'Wiki model: project default'}
+              label={
+                settings?.knowledgeModel
+                  ? `Knowledge model: ${settings.knowledgeModel}`
+                  : 'Knowledge model: automatic'
+              }
               disabled={busy || blocked}
               onPress={() => {
                 void run(async () => {
@@ -202,27 +209,13 @@ export function ProjectKnowledge({
                 });
               }}
             />
-            <Button
-              icon="check-circle"
-              label={document?.stale ? 'Review outdated Wiki page' : 'Review Wiki against Sources'}
-              disabled={busy || blocked}
-              onPress={() => start('check', [])}
-            />
-            {document && inside(document.folderId, space.sourcesFolderId) ? (
-              <Button
-                icon="book-open"
-                label="Add this Source to the Wiki"
-                disabled={busy || blocked}
-                onPress={() => start('ingest', [document.id])}
-              />
-            ) : null}
           </View>
           {chooseModel ? (
             <View style={styles.group}>
               <Button
-                label="Use the project default model"
+                label="Choose automatically"
                 onPress={() => {
-                  setModel(undefined);
+                  void saveVeritySettings(client, { knowledgeModel: null });
                   setChooseModel(false);
                 }}
               />
@@ -231,7 +224,7 @@ export function ProjectKnowledge({
                   key={id}
                   label={id}
                   onPress={() => {
-                    setModel(id);
+                    void saveVeritySettings(client, { knowledgeModel: id });
                     setChooseModel(false);
                   }}
                 />
@@ -239,14 +232,14 @@ export function ProjectKnowledge({
             </View>
           ) : null}
           <Text style={styles.muted}>
-            Review is read-only. It opens a separate session and reports outdated claims,
-            contradictions, missing references and broken links.
+            New Sources are added to the Wiki automatically. This model is used system-wide; every
+            job remains limited to its project.
           </Text>
           {jobs.slice(0, 10).map((job) => (
             <View key={job.id} style={styles.row}>
               <Button
                 icon="message-circle"
-                label={`${job.kind === 'ingest' ? 'Wiki update' : 'Wiki review'} · ${jobStatusLabel[job.status]}`}
+                label={`${job.kind === 'ingest' ? 'Wiki update' : 'Wiki review'} · ${jobStatusLabel[job.status]} · ${String(job.sourceRevisions.length)} source${job.sourceRevisions.length === 1 ? '' : 's'}${job.model ? ` · ${job.model}` : ''}`}
                 onPress={() =>
                   router.push({ pathname: '/session/[id]', params: { id: job.sessionId } })
                 }

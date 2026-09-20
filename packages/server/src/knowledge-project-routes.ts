@@ -6,7 +6,7 @@ const projectParams = z.object({ id: z.string().min(1).max(128) });
 const wikiJobBody = z
   .object({
     sourceDocumentIds: z.array(z.string().min(1).max(128)).max(100),
-    kind: z.enum(['ingest', 'check']),
+    kind: z.enum(['ingest', 'check', 'reconcile']),
     model: z.string().trim().min(1).max(256).optional(),
   })
   .strict();

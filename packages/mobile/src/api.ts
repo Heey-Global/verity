@@ -724,6 +724,7 @@ export const veritySettingsSchema = z.object({
   googleDriveAccountEmail: z.string().nullable(),
   googleDriveConnected: z.boolean(),
   advancedModeEnabled: z.boolean().default(false),
+  knowledgeModel: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -864,6 +865,7 @@ const sessionGoogleWorkspaceFileSchema = z.object({
 export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
 
 type VeritySettingsKey =
+  | 'knowledgeModel'
   | 'advancedModeEnabled'
   | 'gitUserName'
   | 'gitUserEmail'
@@ -1733,9 +1735,10 @@ const knowledgeWikiJobSchema = z.object({
   id: z.string(),
   projectId: z.string(),
   sessionId: z.string(),
-  kind: z.enum(['ingest', 'check']),
+  kind: z.enum(['ingest', 'check', 'reconcile']),
   status: z.enum(['pending', 'running', 'completed', 'failed']),
   sourceRevisions: z.array(z.object({ documentId: z.string(), revisionId: z.string() })),
+  model: z.string().nullable().optional(),
   createdAt: z.union([z.string(), z.number()]),
   error: z.string().nullable(),
 });
@@ -1835,7 +1838,11 @@ export class VerityClient {
   }
   async createKnowledgeWikiJob(
     id: string,
-    input: { sourceDocumentIds: string[]; kind: 'ingest' | 'check'; model?: string },
+    input: {
+      sourceDocumentIds: string[];
+      kind: 'ingest' | 'check' | 'reconcile';
+      model?: string;
+    },
   ): Promise<KnowledgeWikiJob> {
     return z
       .object({ job: knowledgeWikiJobSchema })
@@ -1872,6 +1879,24 @@ export class VerityClient {
     return z
       .object({ document: knowledgeDocumentSchema })
       .parse(await this.knowledgeRequest('/knowledge/sources', 'POST', input)).document;
+  }
+  async saveSessionKnowledge(
+    sessionId: string,
+    input: {
+      messageId?: string;
+      text?: string;
+      attachments?: { filename: string; base64: string }[];
+    },
+  ): Promise<KnowledgeDocument[]> {
+    return z
+      .object({ documents: z.array(knowledgeDocumentSchema) })
+      .parse(
+        await this.knowledgeRequest(
+          `/sessions/${encodeURIComponent(sessionId)}/knowledge-sources`,
+          'POST',
+          input,
+        ),
+      ).documents;
   }
   async replaceKnowledgeSource(
     id: string,

@@ -7,6 +7,9 @@ import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js'
 let ctx: TestDb;
 let app: FastifyInstance;
 const reconcile = vi.fn(async () => {});
+const schedule = vi.fn(async () => {});
+const scheduleReconciliation = vi.fn(async () => {});
+const wakeMaintenance = vi.fn(async () => {});
 beforeAll(async () => {
   ctx = await createTestDb();
 });
@@ -17,10 +20,16 @@ beforeEach(async () => {
   await app?.close();
   await truncateAll(ctx.db);
   reconcile.mockClear();
+  schedule.mockClear();
+  scheduleReconciliation.mockClear();
+  wakeMaintenance.mockClear();
   app = Fastify();
   registerKnowledgeRoutes(app, {
     knowledge: ctx.store.knowledge,
     reconcileInvalidations: reconcile,
+    schedule,
+    scheduleReconciliation,
+    wakeMaintenance,
   });
   await ctx.store.upsertProject({
     id: 'p',
@@ -41,6 +50,135 @@ afterAll(async () => {
 });
 
 describe('knowledge management routes', () => {
+  it('wakes automatic maintenance for ordinary project Source documents', async () => {
+    await ctx.store.upsertProject({
+      id: 'p',
+      owner: 'test',
+      repo: 'test',
+      containerName: 'test',
+      state: 'absent',
+      overviewVisible: true,
+    });
+    const space = (await ctx.store.knowledge.getProjectSpace('p'))!;
+    const response = await app.inject({
+      method: 'POST',
+      url: '/knowledge/documents',
+      payload: {
+        folderId: space.sourcesFolderId,
+        title: 'Decision',
+        bodyMarkdown: 'Use the blue design.',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(schedule).toHaveBeenCalledWith('p', [response.json().document.id]);
+    schedule.mockClear();
+    expect(
+      (
+        await app.inject({
+          method: 'DELETE',
+          url: `/knowledge/documents/${response.json().document.id}`,
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(scheduleReconciliation).toHaveBeenCalledWith('p');
+  });
+  it('wakes automatic ingestion when a document moves into project Sources', async () => {
+    await ctx.store.upsertProject({
+      id: 'p',
+      owner: 'test',
+      repo: 'test',
+      containerName: 'test',
+      state: 'absent',
+      overviewVisible: true,
+    });
+    const space = (await ctx.store.knowledge.getProjectSpace('p'))!;
+    const outside = await ctx.store.knowledge.createFolder({ name: 'Outside' });
+    const document = await ctx.store.knowledge.createDocument({
+      folderId: outside.id,
+      title: 'Moved decision',
+      bodyMarkdown: 'Move this into Sources.',
+    });
+    const preview = (
+      await app.inject({
+        method: 'POST',
+        url: `/knowledge/documents/${document.id}/move-preview`,
+        payload: { folderId: space.sourcesFolderId },
+      })
+    ).json();
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: `/knowledge/documents/${document.id}`,
+      payload: { folderId: space.sourcesFolderId, expectedPolicyToken: preview.policyToken },
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(schedule).toHaveBeenCalledWith('p', [document.id]);
+    scheduleReconciliation.mockClear();
+    const returnPreview = (
+      await app.inject({
+        method: 'POST',
+        url: `/knowledge/documents/${document.id}/move-preview`,
+        payload: { folderId: outside.id },
+      })
+    ).json();
+    expect(
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: `/knowledge/documents/${document.id}`,
+          payload: { folderId: outside.id, expectedPolicyToken: returnPreview.policyToken },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(scheduleReconciliation).toHaveBeenCalledWith('p');
+    expect(await ctx.store.knowledge.listWikiMaintenance('p')).toEqual([]);
+  });
+  it('maintains whole Source subtrees when folders move or are deleted', async () => {
+    await ctx.store.upsertProject({
+      id: 'p',
+      owner: 'test',
+      repo: 'test',
+      containerName: 'test',
+      state: 'absent',
+      overviewVisible: true,
+    });
+    const space = (await ctx.store.knowledge.getProjectSpace('p'))!;
+    const outside = await ctx.store.knowledge.createFolder({ name: 'Imported notes' });
+    const document = await ctx.store.knowledge.createDocument({
+      folderId: outside.id,
+      title: 'Nested decision',
+      bodyMarkdown: 'Move the whole folder.',
+    });
+    const enter = (
+      await app.inject({
+        method: 'POST',
+        url: `/knowledge/folders/${outside.id}/move-preview`,
+        payload: { parentId: space.sourcesFolderId },
+      })
+    ).json();
+    expect(
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: `/knowledge/folders/${outside.id}`,
+          payload: { parentId: space.sourcesFolderId, expectedPolicyToken: enter.policyToken },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(wakeMaintenance).toHaveBeenCalledWith('p');
+    expect(await ctx.store.knowledge.listWikiMaintenance('p')).toEqual([
+      expect.objectContaining({ sourceDocumentId: document.id }),
+    ]);
+
+    wakeMaintenance.mockClear();
+    expect(
+      (await app.inject({ method: 'DELETE', url: `/knowledge/folders/${outside.id}` })).statusCode,
+    ).toBe(200);
+    expect(wakeMaintenance).toHaveBeenCalledWith('p');
+    expect(await ctx.store.knowledge.listWikiMaintenance('p')).toEqual([]);
+    expect(await ctx.store.knowledge.listWikiReconciliations()).toEqual([
+      expect.objectContaining({ projectId: 'p' }),
+    ]);
+  });
   it('supports editor revisions and reports a conflicting save without losing the saved body', async () => {
     const folder = await ctx.store.knowledge.createFolder({ name: 'Notes' });
     const create = await app.inject({
