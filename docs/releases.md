@@ -96,6 +96,15 @@ The release lifecycle makes a decision before invoking Release Please:
 4. Planning requires a known, published release boundary matching the product's
    version manifest and Git history. Missing history is an error, not permission
    to gather every historical commit into a new changelog.
+5. A completed Server publication dispatches one planning run of its own. The
+   push that published a version could not also plan the next one, and nothing
+   else reconciles that: source commits merged before the release would sit on
+   main without a release PR until an unrelated later push happened to plan
+   one — silently, with no failed run to notice. That run can only plan. It
+   refuses every recovery input and stops unless the lifecycle reaches planning
+   mode, so it opens a release PR when one is due and does nothing when it is
+   not. The Mobile train is deliberately excluded: its OTA-versus-native
+   decision is derived from the push diff, which a dispatched run does not have.
 
 The first release of a product needs an explicit bootstrap decision rather than
 an implicit fallback from an unknown boundary. A delayed trigger must not

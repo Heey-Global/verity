@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 interface WorkflowStep {
   id?: string;
+  if?: string;
   name?: string;
   uses?: string;
   env?: Record<string, string>;
@@ -1107,5 +1108,131 @@ describe('release train concurrency', () => {
     expect(backend.jobs['release-please']?.outputs?.['backend-release-created']).not.toBe('true');
     const callees = Object.values(backend.jobs).flatMap((job) => (job.uses ? [job.uses] : []));
     expect(callees).toEqual(['./.github/workflows/self-update.yml']);
+  });
+});
+
+describe('planning resumes after publication', () => {
+  type Job = {
+    if?: string;
+    uses?: string;
+    env?: Record<string, string>;
+    permissions?: Record<string, string>;
+    with?: Record<string, string>;
+    steps?: WorkflowStep[];
+  };
+  type Workflow = { jobs: Record<string, Job> };
+  const dispatchFile = 'release-dispatch.yml';
+  const release = parse(readFileSync('.github/workflows/release.yml', 'utf8')) as Workflow;
+  const dispatch = parse(readFileSync(`.github/workflows/${dispatchFile}`, 'utf8')) as Workflow;
+  // Whatever it is named, the backend publisher is the job that clears a draft
+  // it identifies by the planned backend version.
+  const publishers = Object.entries(release.jobs).filter(
+    ([, job]) =>
+      job.steps?.some((step) => step.run?.includes('--draft=false')) &&
+      Object.values(job.env ?? {}).some((value) => value.includes('backend-version')),
+  );
+
+  it('dispatches a planning run from the job that clears the draft', () => {
+    // A push runs either planning or publication, never both, and no schedule
+    // reconciles the difference. Losing this dispatch leaves every commit
+    // merged before a release without a release PR until an unrelated later
+    // push happens to plan one — no failed run, no draft, nothing to notice.
+    expect(publishers).toHaveLength(1);
+    const [name, job] = publishers[0]!;
+    const replan = job.steps?.filter((step) => step.run?.includes('gh workflow run')) ?? [];
+    expect(replan, `${name} must dispatch the follow-up planning run`).toHaveLength(1);
+    expect(replan[0]?.run).toContain(dispatchFile);
+    expect(replan[0]?.run).toContain('backend-replan=true');
+    // Recovery publishes an older draft; only the push lifecycle that produced
+    // this release may plan the next one against current main.
+    expect(replan[0]?.if).toContain("github.event_name == 'push'");
+    expect(job.permissions?.actions).toBe('write');
+    // Without a token the dispatch fails after the draft is already cleared:
+    // a published release, a red run, and no planning run at all.
+    const token = replan[0]?.env?.GH_TOKEN ?? job.env?.GH_TOKEN;
+    expect(token, `${name} must give the dispatch a token`).toContain('GITHUB_TOKEN');
+  });
+
+  it('prepares the workspace a dispatched planning run reads', () => {
+    const steps = release.jobs['release-please']?.steps ?? [];
+    // The lifecycle resolves tags and merge bases from a local clone, so the
+    // dispatched run needs the same checkout the push path gets. Skipping it
+    // leaves the planning run failing on an empty workspace.
+    const checkouts = steps.filter(
+      (step) => step.uses?.startsWith('actions/checkout@') && step.with?.['fetch-depth'] === 0,
+    );
+    expect(checkouts).toHaveLength(1);
+    const [checkout] = checkouts;
+    expect(checkout?.if).toContain('backend-replan');
+    expect(checkout?.with?.['fetch-depth']).toBe(0);
+    const lifecycle = steps.find((step) => step.run?.includes('release-lifecycle.mjs'));
+    expect(lifecycle?.if).toContain('backend-replan');
+    // That checkout is all the run gets: the only install on the push path
+    // belongs to the mobile train. A third-party import here would strand
+    // planning on a bare workspace, after the release is already public.
+    const source = readFileSync('scripts/release-lifecycle.mjs', 'utf8');
+    const specifiers = [...source.matchAll(/^import [^']*'([^']+)';$/gmu)].map(([, name]) => name);
+    expect(specifiers.length).toBeGreaterThan(0);
+    for (const specifier of specifiers) expect(specifier, specifier).toMatch(/^node:/u);
+  });
+
+  it('keeps a dispatched re-plan in planning mode only', () => {
+    const steps = release.jobs['release-please']?.steps ?? [];
+    const reachable = steps.filter(
+      (step) =>
+        step.uses?.startsWith('googleapis/release-please-action@') &&
+        step.if?.includes('backend-replan'),
+    );
+    // Only the backend train may be planned this way: the mobile train decides
+    // between OTA and native from the push diff, which a manual run has not got.
+    expect(reachable).toHaveLength(1);
+    expect(reachable[0]?.id).toBe('release-backend');
+    expect(reachable[0]?.if).toContain(
+      "inputs.backend-replan && steps.lifecycle.outputs.mode == 'plan'",
+    );
+    const forwarded = dispatch.jobs['release-train']?.with?.['backend-replan'];
+    expect(forwarded).toContain("matrix.train == 'backend'");
+    // An API dispatch carries inputs as strings. Forwarding one unnormalized
+    // into this boolean input fails the dispatched run before it can plan.
+    expect(forwarded).toContain("format('{0}', inputs['backend-replan']) == 'true'");
+  });
+
+  it('refuses a re-plan that carries any recovery input', () => {
+    const guard = release.jobs['release-please']?.steps?.find(
+      (step) => step.name === 'Validate backend re-plan request',
+    );
+    expect(guard?.run).toBeDefined();
+    const accepted = { REPLAN: 'true', EVENT_NAME: 'workflow_dispatch' };
+    for (const [overrides, valid] of [
+      [{}, true],
+      [{ REPLAN: 'false', EVENT_NAME: 'push' }, true],
+      [{ EVENT_NAME: 'push' }, false],
+      [{ VERSION: '1.2.3' }, false],
+      [{ SOURCE_REF: 'main' }, false],
+      [{ MOBILE_TAG: 'mobile-v1.33.0' }, false],
+      [{ WEBSITE_VERSION: '1.2.3' }, false],
+      [{ WEBSITE_REF: 'main' }, false],
+      [{ SCHEMA_FORWARD_MAX: '0042_x' }, false],
+      [{ REPUBLISH: 'true' }, false],
+      [{ ARTIFACT_ONLY: 'true' }, false],
+      [{ ACCEPT_NO_ROLLBACK: 'true' }, false],
+    ] as const) {
+      const env: Record<string, string> = {
+        ...process.env,
+        MOBILE_TAG: '',
+        VERSION: '',
+        SOURCE_REF: '',
+        SCHEMA_FORWARD_MAX: '',
+        REPUBLISH: 'false',
+        ARTIFACT_ONLY: 'false',
+        ACCEPT_NO_ROLLBACK: 'false',
+        WEBSITE_VERSION: '',
+        WEBSITE_REF: '',
+        ...accepted,
+        ...overrides,
+      };
+      const result = spawnSync('bash', ['-c', guard!.run!], { env });
+      expect(result.status === 0, JSON.stringify(overrides)).toBe(valid);
+    }
   });
 });
