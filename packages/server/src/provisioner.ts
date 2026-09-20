@@ -2543,8 +2543,7 @@ export class ProvisionerImpl implements Provisioner {
         // Revoke/quiesce before stopping: no retained credential remains useful
         // during the interval in which Docker is still draining the Sandbox.
         await this.quiesceProjectForSleep(project);
-        const stopped = await this.opts.docker.inspectContainer(project.containerName);
-        if (stopped.running) throw new Error('Docker still reports the Sandbox as running');
+        await this.confirmSandboxStopped(project.containerName);
         return (await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
           sleepCompatibilityFingerprint: fingerprint,
           sleepingSince: new Date(),
@@ -2566,9 +2565,8 @@ export class ProvisionerImpl implements Provisioner {
         return project;
       }
       try {
-        await this.quiesceProjectForSleep(project);
-        const stopped = await this.opts.docker.inspectContainer(project.containerName);
-        if (stopped.running) throw new Error('Docker still reports the Sandbox as running');
+        await this.quiesceProjectAfterRestart(project);
+        await this.confirmSandboxStopped(project.containerName);
         return (await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
           sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
           sleepingSince: new Date(),
@@ -2582,21 +2580,86 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
-  private async quiesceProjectForSleep(project: ProjectRecord): Promise<void> {
-    const results = await Promise.allSettled([
+  private async quiesceProjectForSleep(
+    project: ProjectRecord,
+    stopTarget: string | false = project.containerName,
+  ): Promise<void> {
+    const authorityResults = await Promise.allSettled([
       this.opts.projectRelay.sleep?.(project.id) ??
         Promise.reject(new Error('project relay does not support sleep')),
       ...(this.opts.claudeEgressIdentity === undefined
         ? []
         : [this.opts.claudeEgressIdentity.revokeProject(project.id)]),
-      this.opts.docker.stopContainer(project.containerName),
     ]);
     const failures: unknown[] = [];
-    for (const result of results) {
+    for (const result of authorityResults) {
       if (result.status === 'rejected') failures.push(result.reason as unknown);
+    }
+    // Start Sandbox shutdown only after authority cleanup has settled. Even when
+    // revocation failed, still attempt the stop and report every failure together.
+    if (stopTarget !== false) {
+      try {
+        await this.opts.docker.stopContainer(stopTarget);
+      } catch (error) {
+        if (!(error instanceof DockerError && error.kind === 'container_not_found')) {
+          failures.push(error);
+        }
+      }
     }
     if (failures.length > 0) {
       throw new AggregateError(failures, `project sleep cleanup failed: ${project.id}`);
+    }
+  }
+
+  private async retainedSandboxForRecovery(
+    project: ProjectRecord,
+  ): Promise<{ id: string; generation: string } | undefined> {
+    let inspect: ContainerInspect;
+    try {
+      inspect = await this.opts.docker.inspectContainer(project.containerName);
+    } catch (error) {
+      if (error instanceof DockerError && error.kind === 'container_not_found') return undefined;
+      throw error;
+    }
+    const generation = containerGenerationOf(inspect);
+    if (inspect.labels?.[PROJECT_ID_LABEL] !== project.id || generation === undefined) {
+      throw new Error(`project ${project.id} has no owned retained Sandbox generation`);
+    }
+    return { id: inspect.id, generation };
+  }
+
+  private async quiesceProjectAfterRestart(project: ProjectRecord): Promise<void> {
+    const failures: unknown[] = [];
+    let stopTarget: string | false = false;
+    try {
+      const retained = await this.retainedSandboxForRecovery(project);
+      if (retained !== undefined) {
+        stopTarget = retained.id;
+        if (this.opts.projectRelay.resume === undefined) {
+          throw new Error('project relay does not support recovery adoption');
+        }
+        await this.opts.projectRelay.resume(this.relayBinding(project, retained.generation));
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      await this.quiesceProjectForSleep(project, stopTarget);
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `project sleep recovery cleanup failed: ${project.id}`);
+    }
+  }
+
+  private async confirmSandboxStopped(containerName: string): Promise<void> {
+    try {
+      const stopped = await this.opts.docker.inspectContainer(containerName);
+      if (stopped.running) throw new Error('Docker still reports the Sandbox as running');
+    } catch (error) {
+      if (error instanceof DockerError && error.kind === 'container_not_found') return;
+      throw error;
     }
   }
 
@@ -2607,7 +2670,7 @@ export class ProvisionerImpl implements Provisioner {
       if (project.state !== 'waking' || project.sleepCompatibilityFingerprint == null)
         return project;
       try {
-        await this.quiesceProjectForSleep(project);
+        await this.quiesceProjectAfterRestart(project);
         return (await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
           sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
           sleepingSince: project.sleepingSince ?? new Date(),

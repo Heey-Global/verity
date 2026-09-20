@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ProjectRecord } from '@verity/store';
 import { z } from 'zod';
 
@@ -91,18 +91,20 @@ export function registerProjectLifecycleRoutes(
     },
   );
 
-  for (const [action, run] of [
-    ['sleep', deps.sleep],
-    ['wake', deps.wake],
-  ] as const) {
-    app.post(
-      `/projects/:id/${action}`,
-      async (request, reply): Promise<{ project: object } | { error: string }> => {
-        const { id } = projectParams.parse(request.params);
-        const outcome = await run(request, id);
-        reply.code(outcome.code);
-        return 'project' in outcome ? { project: outcome.project } : { error: outcome.error };
-      },
-    );
-  }
+  const sleepWakeHandler =
+    (run: ProjectLifecycleRouteDeps['sleep']) =>
+    async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+    ): Promise<{ project: object } | ErrorResponse> => {
+      const { id } = projectParams.parse(request.params);
+      const outcome = await run(request, id);
+      reply.code(outcome.code);
+      return 'project' in outcome ? { project: outcome.project } : { error: outcome.error };
+    };
+
+  // Keep these paths literal: route-scopes.test.ts statically discovers every
+  // registration so a new route cannot silently miss its authorization scope.
+  app.post('/projects/:id/sleep', sleepWakeHandler(deps.sleep));
+  app.post('/projects/:id/wake', sleepWakeHandler(deps.wake));
 }

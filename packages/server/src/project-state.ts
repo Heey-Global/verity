@@ -159,6 +159,14 @@ async function reconcileProject(
     }
     return project;
   } catch (error) {
+    if (error instanceof DockerError && error.kind === 'container_not_found') {
+      if (project.state === 'sleeping_starting' && recoverInterruptedSleep !== undefined) {
+        return recoverInterruptedSleep(project.id);
+      }
+      if (project.state === 'waking' && recoverInterruptedWake !== undefined) {
+        return recoverInterruptedWake(project.id);
+      }
+    }
     if (
       error instanceof DockerError &&
       error.kind === 'container_not_found' &&

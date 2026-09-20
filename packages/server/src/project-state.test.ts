@@ -320,4 +320,30 @@ describe('reconcileProjectContainerStates', () => {
     expect(update).toHaveBeenCalledWith('p1', 'failed', STALE_PROVISIONING_REASON);
     expect(result[0]?.state).toBe('failed');
   });
+
+  it.each([
+    ['sleeping_starting', 'sleep'],
+    ['waking', 'wake'],
+  ] as const)(
+    'recovers interrupted %s authority when the Sandbox disappeared',
+    async (state, kind) => {
+      const recoverSleep = vi.fn(async () => project({ state: 'sleeping' }));
+      const recoverWake = vi.fn(async () => project({ state: 'sleeping' }));
+      const result = await reconcileProjectContainerStates(
+        [project({ state })],
+        docker({
+          inspectContainer: vi.fn(async () => {
+            throw new DockerError({ kind: 'container_not_found', id: 'p1' });
+          }),
+        }),
+        vi.fn(),
+        () => false,
+        recoverSleep,
+        recoverWake,
+      );
+
+      expect(kind === 'sleep' ? recoverSleep : recoverWake).toHaveBeenCalledWith('p1');
+      expect(result[0]?.state).toBe('sleeping');
+    },
+  );
 });

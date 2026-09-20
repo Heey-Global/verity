@@ -322,6 +322,9 @@ function defaultProjectRelay(): ProjectRelayControl {
         githubCapability: 'test-github-capability',
       };
     },
+    async resume() {
+      return true;
+    },
     async stop() {},
     brokerUrl: () => 'http://relay:8080',
     claudeGatewayUrl: () => 'https://relay:8443',
@@ -542,7 +545,11 @@ describe('ProvisionerImpl (#174)', () => {
       wakeStartedAt: null,
     });
     const { client: docker, calls } = fakeDocker({
-      inspectContainer: vi.fn(async () => ({ id: 'container-1', running: false })),
+      inspectContainer: vi.fn(async () => ({
+        id: 'container-1',
+        running: false,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      })),
     });
     const slept: string[] = [];
     const relay = defaultProjectRelay();
@@ -574,7 +581,13 @@ describe('ProvisionerImpl (#174)', () => {
       sleepingSince: new Date(),
       wakeStartedAt: new Date(),
     });
-    const { client: docker, calls } = fakeDocker();
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: vi.fn(async () => ({
+        id: 'container-1',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      })),
+    });
     const slept: string[] = [];
     const relay = defaultProjectRelay();
     relay.sleep = async (projectId) => void slept.push(projectId);
@@ -596,6 +609,78 @@ describe('ProvisionerImpl (#174)', () => {
     expect(slept).toEqual([id]);
     expect(egress.revoked).toEqual([id]);
     expect(calls.find((call) => call.method === 'stopContainer')).toBeDefined();
+  });
+
+  it('still revokes authority and stops the Sandbox when recovery adoption fails', async () => {
+    const id = await seedProject('active');
+    await ctx.store.updateProjectSleepState(id, 'sleeping_starting', {
+      sleepCompatibilityFingerprint: 'retained-fingerprint',
+      sleepingSince: null,
+      wakeStartedAt: null,
+    });
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: vi.fn(async () => ({
+        id: 'container-1',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      })),
+    });
+    const slept: string[] = [];
+    const relay = defaultProjectRelay();
+    relay.resume = async () => {
+      throw new Error('adoption failed');
+    };
+    relay.sleep = async (projectId) => void slept.push(projectId);
+    const egress = fakeEgressIdentity();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+      claudeEgressIdentity: egress.service,
+    });
+
+    await expect(provisioner.recoverInterruptedSleep(id)).rejects.toThrow(
+      'project sleep recovery failed',
+    );
+    expect(slept).toEqual([id]);
+    expect(egress.revoked).toEqual([id]);
+    expect(calls.find((call) => call.method === 'stopContainer')).toBeDefined();
+  });
+
+  it('never stops a foreign container found under the retained Sandbox name', async () => {
+    const id = await seedProject('active');
+    await ctx.store.updateProjectSleepState(id, 'sleeping_starting', {
+      sleepCompatibilityFingerprint: 'retained-fingerprint',
+      sleepingSince: null,
+      wakeStartedAt: null,
+    });
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: vi.fn(async () => ({
+        id: 'foreign-container',
+        running: true,
+        labels: { [PROJECT_ID_LABEL]: 'another-project' },
+      })),
+    });
+    const relay = defaultProjectRelay();
+    relay.sleep = async () => undefined;
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+    });
+
+    await expect(provisioner.recoverInterruptedSleep(id)).rejects.toThrow(
+      'project sleep recovery failed',
+    );
+    expect(calls.find((call) => call.method === 'stopContainer')).toBeUndefined();
   });
 
   it('attempts every sleep cleanup step when relay cleanup fails', async () => {
