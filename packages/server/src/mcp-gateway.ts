@@ -1,5 +1,4 @@
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
-export { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import { randomUUID } from 'node:crypto';
 import { KnowledgeError } from '@verity/store';
 import { knowledgeToolRequestSchema, KNOWLEDGE_TOOL_DESCRIPTION } from './knowledge-tool.js';
