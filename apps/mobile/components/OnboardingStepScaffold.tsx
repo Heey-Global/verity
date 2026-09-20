@@ -4,7 +4,8 @@
 // navigation controls.
 import { type Href, router } from 'expo-router';
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 import { type StepId, stepProgress } from '@verity/mobile';
@@ -29,11 +30,12 @@ export function OnboardingStepScaffold({
   const insets = useSafeAreaInsets();
   const { index, total } = stepProgress(stepId);
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={0}
-    >
+    // The Back/Next footer is pinned below the scroll view, so the frame — not
+    // the scroll view — has to shrink: `padding` keeps Next reachable while a
+    // step's field is being filled in. Unlike React Native's own
+    // KeyboardAvoidingView this one follows the keyboard on Android too, where
+    // `behavior` used to be left off entirely.
+    <KeyboardAvoidingView style={styles.root} behavior="padding">
       <View style={[styles.header, { paddingTop: insets.top + 24 }]}>
         <View style={styles.headerInner}>
           <OnboardingProgress current={index} total={total} />

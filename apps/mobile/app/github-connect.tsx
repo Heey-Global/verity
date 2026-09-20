@@ -12,12 +12,14 @@ import {
 } from '@verity/mobile';
 import { router, Stack } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { GithubConnectPanel } from '../components/GithubConnectPanel';
 import { createVerityClient } from '../lib/client';
+import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 
 export default function GithubConnectScreen() {
   const client = createVerityClient();
@@ -112,7 +114,14 @@ function GithubConnectView({ client }: { client: VerityClient }) {
   return (
     <View style={styles.flex}>
       <Stack.Screen options={{ title: 'GitHub' }} />
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
+      {/* The connect panel below pastes a GitHub App private key into a
+          multiline box near the bottom of the page — exactly where the keyboard
+          lands, in a field that never shows its value back. */}
+      <KeyboardAwareScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={KEYBOARD_BOTTOM_OFFSET}
+      >
         {error ? (
           <Text style={styles.error} accessibilityRole="alert">
             {error}
@@ -150,7 +159,7 @@ function GithubConnectView({ client }: { client: VerityClient }) {
         ) : (
           <GithubConnectPanel client={client} onConnected={onConnected} />
         )}
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </View>
   );
 }
