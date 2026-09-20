@@ -116,9 +116,6 @@ services:
       VERITY_SANDBOX_MEMORY: ${VERITY_SANDBOX_MEMORY:-4g}
       VERITY_SANDBOX_CPUS: ${VERITY_SANDBOX_CPUS:-2}
       VERITY_SANDBOX_PIDS_LIMIT: ${VERITY_SANDBOX_PIDS_LIMIT:-512}
-      # Stop an otherwise idle project Sandbox; turns and Agent Loops wake it.
-      # Running dev servers and public previews keep it awake. Set 0 to disable.
-      VERITY_SANDBOX_IDLE_MINUTES: ${VERITY_SANDBOX_IDLE_MINUTES:-30}
       # Escape hatch for a project whose devcontainer needs sudo or a capability:
       # VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION: '1'   # keep sudo working
       # VERITY_SANDBOX_CAP_ADD: NET_BIND_SERVICE          # add back specific caps

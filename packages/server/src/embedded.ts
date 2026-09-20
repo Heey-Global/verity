@@ -183,6 +183,7 @@ import {
   type ProjectImageRefSource,
   type DevcontainerFeatureSource,
 } from './provisioner.js';
+import { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telemetry.js';
 import { trustedToolkitIdentity } from './runner-boundary-attestation.js';
 import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { reportToolkitDrift } from './toolkit-drift.js';
@@ -787,8 +788,6 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
-  /** Automatic project Sandbox sleep. Zero or absent disables it. */
-  sandboxIdleTimeoutMs?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
   sandboxAllowPrivilegeEscalation?: boolean | undefined;
@@ -2541,6 +2540,7 @@ export async function buildEmbeddedServer(
   }
   let docker: DockerClient | undefined;
   let provisioner: ProvisionerImpl | undefined;
+  const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
   // Claude-egress identity material is wired into the provisioner/deprovisioner
   // and projected exclusively into the standalone Agent Gateway.
@@ -3271,6 +3271,7 @@ export async function buildEmbeddedServer(
       onContainerStarted: async () => {
         await projectAgentGatewayIdentity(true);
       },
+      onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
       ...(previewShareManager !== undefined
         ? {
             withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
@@ -3990,9 +3991,7 @@ export async function buildEmbeddedServer(
     // the `project` field on POST /sessions and POST /projects/:id/deprovision
     // both return 503 (the mobile picker hides the fleet-registry UI).
     ...(provisioner !== undefined ? { provisioner } : {}),
-    ...(config.sandboxIdleTimeoutMs !== undefined
-      ? { sandboxIdleTimeoutMs: config.sandboxIdleTimeoutMs }
-      : {}),
+    ...(provisioner !== undefined ? { projectSandboxLifecycleTelemetry } : {}),
     ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
       ? { projectCloneRoot: config.hostCloneRoot }
       : {}),
