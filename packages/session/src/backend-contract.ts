@@ -108,6 +108,8 @@ export interface RunTurnOptions {
   appendSystemPrompt?: string;
   /** Verity session id to persist events under when it differs from the backend resume id. */
   storeSessionId?: string;
+  /** Fresh Wiki job: require broker-enforced filesystem read isolation and fresh backend homes. */
+  knowledgeIsolation?: boolean;
   /** Backend session id to resume; omit to start a fresh backend session. */
   resumeSessionId?: string;
   /**

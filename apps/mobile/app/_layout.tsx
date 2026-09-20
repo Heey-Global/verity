@@ -381,7 +381,18 @@ function AppHeader({
         <View style={[styles.headerSide, styles.headerSideRight]}>
           {options.headerRight?.({ canGoBack: back !== undefined, tintColor: theme.colors.text })}
           {route.name !== 'knowledge' ? (
-            <Link href="/knowledge" accessibilityLabel="Knowledge" asChild>
+            <Link
+              href={
+                route.name === 'project/[id]' &&
+                route.params &&
+                'id' in route.params &&
+                typeof route.params.id === 'string'
+                  ? { pathname: '/knowledge', params: { projectId: route.params.id } }
+                  : '/knowledge'
+              }
+              accessibilityLabel="Knowledge"
+              asChild
+            >
               <Pressable style={styles.headerIconButton} accessibilityRole="button">
                 <Icon name="book-open" size={20} color={theme.colors.textMuted} />
               </Pressable>

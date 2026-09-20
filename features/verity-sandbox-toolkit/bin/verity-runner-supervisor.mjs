@@ -1506,6 +1506,16 @@ export function validateStartTurnRequest(request) {
       return { name, url, headers };
     });
   }
+  if (request.knowledgeIsolation !== undefined && typeof request.knowledgeIsolation !== 'boolean')
+    throw new Error('invalid knowledgeIsolation');
+  if (
+    request.knowledgeIsolation &&
+    (request.resumeSessionId ||
+      request.trustedCliExecution ||
+      request.mcpProxyToken ||
+      request.mcpServers?.length)
+  )
+    throw new Error('Isolated Wiki jobs cannot inherit context or external tools');
   if (request.trustedCliExecution === true && !ACP_WORKER_BACKENDS.has(request.backend)) {
     throw new Error('invalid trustedCliExecution');
   }
@@ -1557,6 +1567,7 @@ export function validateStartTurnRequest(request) {
     steerable: request.steerable === true,
     permissionControl: request.permissionControl === true,
     trustedCliExecution: request.trustedCliExecution === true,
+    ...(request.knowledgeIsolation ? { knowledgeIsolation: true } : {}),
     ...(appendSystemPrompt !== undefined ? { appendSystemPrompt } : {}),
     ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
     ...(mcpGatewayToken !== undefined ? { mcpGatewayToken } : {}),
@@ -2227,7 +2238,12 @@ export async function handleSupervisorRequest(
   }
   switch (request.kind) {
     case 'status':
-      return { ok: true, protocolVersion: SUPERVISOR_PROTOCOL_VERSION, runnerInstanceId };
+      return {
+        ok: true,
+        protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
+        runnerInstanceId,
+        knowledgeIsolation: true,
+      };
     case 'list-turns':
       return { ok: true, turns: await listTurns(runtimeDir) };
     case 'get-turn': {

@@ -23,6 +23,8 @@ import { createHash, randomBytes } from 'node:crypto';
 
 /** Who a presented token was minted for. */
 export interface McpGatewayCaller {
+  /** Server-resolved restriction for isolated maintenance sessions; never request supplied. */
+  readonly knowledgeOnly?: boolean;
   readonly sessionId: string;
   /** The turn the token was minted for. Serving a trusted CLI call needs it: the Sandbox
    *  supervisor only runs one inside a turn that asked for the capability up front. */

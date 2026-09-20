@@ -1,8 +1,12 @@
+import * as DocumentPicker from 'expo-document-picker';
+import { File } from 'expo-file-system';
+import { ProjectKnowledge } from '../components/knowledge/ProjectKnowledge';
 import { Alert } from 'react-native';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import type { VerityClient } from '@verity/mobile';
 import { Library } from '../app/knowledge';
 import { ProjectKnowledgeGrants } from '../components/knowledge/ProjectKnowledgeGrants';
+import { KnowledgeOriginal } from '../components/knowledge/KnowledgeOriginal';
 
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
@@ -98,6 +102,108 @@ test('a delayed grant save cannot replace the next project’s access selection'
     complete([{ folderId: 'root', mode: 'read_write' }]);
   });
   expect(screen.getByLabelText('Allow Company')).toBeTruthy();
+});
+
+test('a delayed original replacement cannot reopen a document after navigation', async () => {
+  let complete!: (document: {
+    id: string;
+    folderId: string;
+    title: string;
+    bodyMarkdown: string;
+    currentRevisionId: string;
+  }) => void;
+  const client = {
+    ...fake(),
+    getKnowledgeSource: jest.fn().mockResolvedValue({
+      documentId: 'doc',
+      revisionId: 'v1',
+      filename: 'source.pdf',
+      mediaType: 'application/pdf',
+      size: 10,
+      sha256: 'hash',
+      processingState: 'ready',
+      processingNote: '',
+      locators: [],
+      previews: [],
+    }),
+    replaceKnowledgeSource: jest.fn(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    ),
+  };
+  jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({
+    canceled: false,
+    assets: [
+      {
+        uri: 'file:///source.pdf',
+        name: 'source.pdf',
+        size: 10,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
+    ],
+  });
+  jest
+    .mocked(File)
+    .mockImplementation(
+      () => ({ base64: () => Promise.resolve('c291cmNl'), delete: jest.fn() }) as never,
+    );
+  const onReplaced = jest.fn(() => Promise.resolve());
+  const onOriginal = jest.fn();
+  const first = {
+    id: 'doc',
+    folderId: 'child',
+    title: 'Standards',
+    bodyMarkdown: '# Rules',
+    currentRevisionId: 'v1',
+  };
+  const view = render(
+    <KnowledgeOriginal
+      client={client as unknown as VerityClient}
+      document={first}
+      onReplaced={onReplaced}
+      onOriginal={onOriginal}
+    />,
+  );
+  fireEvent.press(await screen.findByLabelText('Replace original file'));
+  await waitFor(() => expect(client.replaceKnowledgeSource).toHaveBeenCalled());
+  view.unmount();
+  await act(async () => {
+    complete({ ...first, currentRevisionId: 'v2' });
+  });
+  expect(onReplaced).not.toHaveBeenCalled();
+});
+
+test('retries a transient original lookup failure', async () => {
+  const client = {
+    ...fake(),
+    getKnowledgeSource: jest
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(null),
+  };
+  const onOriginal = jest.fn();
+  render(
+    <KnowledgeOriginal
+      client={client as unknown as VerityClient}
+      document={{
+        id: 'doc',
+        folderId: 'child',
+        title: 'Standards',
+        bodyMarkdown: '# Rules',
+        currentRevisionId: 'v1',
+      }}
+      onReplaced={() => Promise.resolve()}
+      onOriginal={onOriginal}
+    />,
+  );
+  expect(await screen.findByLabelText('Retry original lookup')).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('Retry original lookup'));
+  await waitFor(() => expect(client.getKnowledgeSource).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(onOriginal).toHaveBeenLastCalledWith(false));
+  expect(screen.queryByLabelText('Retry original lookup')).toBeNull();
 });
 
 test('reloads committed grants when the cleanup acknowledgement fails', async () => {
@@ -335,4 +441,310 @@ test('library folders expand and collapse without changing the library', async (
   fireEvent.press(screen.getByLabelText('Folder: Company'));
   fireEvent.press(screen.getByLabelText('Folder: Company'));
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
+});
+
+const managedSpace = {
+  projectId: 'project',
+  rootFolderId: 'root',
+  sourcesFolderId: 'sources',
+  wikiFolderId: 'wiki',
+  generalFolderId: 'general',
+};
+function managedClient() {
+  return {
+    ...fake(),
+    getProjectKnowledgeSpace: jest.fn().mockResolvedValue(managedSpace),
+    getProjectKnowledgeOverview: jest.fn().mockResolvedValue(null),
+    listKnowledgeWikiJobs: jest.fn().mockResolvedValue([]),
+    listModels: jest.fn().mockResolvedValue({ models: ['provider/model'] }),
+    createKnowledgeWikiJob: jest.fn().mockResolvedValue({
+      id: 'job',
+      projectId: 'project',
+      sessionId: 'fresh-session',
+      kind: 'ingest',
+      status: 'pending',
+      sourceRevisions: [{ documentId: 'source', revisionId: 'v1' }],
+      createdAt: 1,
+      error: null,
+    }),
+    approveProjectKnowledgeOverview: jest.fn().mockResolvedValue({
+      documentId: 'overview',
+      revisionId: 'v2',
+      title: 'Overview',
+      bodyMarkdown: 'Approved',
+    }),
+  };
+}
+
+test('managed project folders stay connected and cannot grant Sources write access', async () => {
+  const client = {
+    ...fake(),
+    listKnowledgeFolders: jest.fn().mockResolvedValue([
+      { id: 'root', parentId: null, name: 'Project', role: 'project', projectId: 'project' },
+      { id: 'sources', parentId: 'root', name: 'Sources', role: 'sources', projectId: 'project' },
+      { id: 'wiki', parentId: 'root', name: 'Wiki', role: 'wiki', projectId: 'project' },
+      { id: 'general', parentId: null, name: 'General', role: 'general' },
+      { id: 'nested', parentId: 'sources', name: 'Meetings' },
+      { id: 'general-child', parentId: 'general', name: 'Brand' },
+      { id: 'extra', parentId: null, name: 'Extra' },
+    ]),
+    listKnowledgeGrants: jest.fn().mockResolvedValue([
+      { folderId: 'root', mode: 'read', fixed: 'project' },
+      { folderId: 'sources', mode: 'read', fixed: 'project' },
+      { folderId: 'wiki', mode: 'read_write', fixed: 'project' },
+      { folderId: 'general', mode: 'read', fixed: 'general' },
+    ]),
+    saveKnowledgeGrants: jest.fn().mockResolvedValue([]),
+  };
+  render(<ProjectKnowledgeGrants client={client as unknown as VerityClient} projectId="project" />);
+  expect(await screen.findByLabelText('Always connected: Sources')).toBeDisabled();
+  expect(screen.getByLabelText('Always connected: General')).toBeDisabled();
+  expect(screen.queryByLabelText('Sources: Read')).toBeNull();
+  expect(screen.getByLabelText('Meetings: Read only')).toBeTruthy();
+  expect(screen.getByLabelText('Brand: Read only')).toBeTruthy();
+  expect(screen.queryByLabelText('Meetings: Read')).toBeNull();
+
+  fireEvent.press(screen.getByLabelText('Allow Extra'));
+  await waitFor(() =>
+    expect(client.saveKnowledgeGrants).toHaveBeenCalledWith('project', [
+      { folderId: 'extra', mode: 'read' },
+    ]),
+  );
+});
+
+test('wiki jobs submit only the selected own source with the selected model', async () => {
+  const client = managedClient();
+  render(
+    <ProjectKnowledge
+      client={client as unknown as VerityClient}
+      projectId="project"
+      document={{ id: 'source', folderId: 'sources', title: 'Meeting', currentRevisionId: 'v1' }}
+    />,
+  );
+  fireEvent.press(await screen.findByLabelText('Project default model'));
+  fireEvent.press(await screen.findByLabelText('provider/model'));
+  fireEvent.press(screen.getByLabelText('Incorporate into Wiki'));
+  await waitFor(() =>
+    expect(client.createKnowledgeWikiJob).toHaveBeenCalledWith('project', {
+      kind: 'ingest',
+      sourceDocumentIds: ['source'],
+      model: 'provider/model',
+    }),
+  );
+  expect(await screen.findByLabelText('Wiki update · pending')).toBeTruthy();
+});
+
+test('an additional shared source never offers project Wiki ingestion', async () => {
+  const client = managedClient();
+  render(
+    <ProjectKnowledge
+      client={client as unknown as VerityClient}
+      projectId="project"
+      document={{
+        id: 'private',
+        folderId: 'another-project',
+        title: 'Shared source',
+        currentRevisionId: 'v1',
+      }}
+    />,
+  );
+  await screen.findByLabelText('Check Wiki');
+  expect(screen.queryByLabelText('Incorporate into Wiki')).toBeNull();
+  expect(screen.queryByLabelText('Always consider')).toBeNull();
+});
+
+test('overview activation requires approval and uses the loaded revision', async () => {
+  const client = managedClient();
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  try {
+    render(
+      <ProjectKnowledge
+        client={client as unknown as VerityClient}
+        projectId="project"
+        document={{ id: 'overview', folderId: 'wiki', title: 'Overview', currentRevisionId: 'v2' }}
+      />,
+    );
+    fireEvent.press(await screen.findByLabelText('Always consider'));
+    expect(client.approveProjectKnowledgeOverview).not.toHaveBeenCalled();
+    await act(async () => {
+      alert.mock.calls
+        .at(-1)?.[2]
+        ?.find((button) => button.text === 'Approve')
+        ?.onPress?.();
+    });
+    expect(client.approveProjectKnowledgeOverview).toHaveBeenCalledWith(
+      'project',
+      'overview',
+      'v2',
+    );
+  } finally {
+    alert.mockRestore();
+  }
+});
+
+test('uploads original bytes into the selected folder without Markdown conversion', async () => {
+  const pick = jest.mocked(DocumentPicker.getDocumentAsync);
+  pick.mockResolvedValue({
+    canceled: false,
+    assets: [
+      {
+        uri: 'cache/source.pdf',
+        lastModified: 0,
+        name: 'Style guide.pdf',
+        size: 12,
+        mimeType: 'application/pdf',
+      },
+    ],
+  });
+  const remove = jest.fn();
+  jest
+    .mocked(File)
+    .mockImplementation(
+      () => ({ base64: async () => 'cGRmLWJ5dGVz', delete: remove }) as unknown as File,
+    );
+  const client = {
+    ...fake(),
+    uploadKnowledgeSource: jest.fn().mockResolvedValue({
+      id: 'original',
+      folderId: 'child',
+      title: 'Style guide.pdf',
+      currentRevisionId: 'original-v1',
+    }),
+  };
+  try {
+    render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+    await screen.findByLabelText('Folder: Engineering');
+    fireEvent.press(screen.getByLabelText('Upload original files'));
+    await waitFor(() =>
+      expect(client.uploadKnowledgeSource).toHaveBeenCalledWith({
+        folderId: 'child',
+        filename: 'Style guide.pdf',
+        base64: 'cGRmLWJ5dGVz',
+      }),
+    );
+    await waitFor(() => expect(remove).toHaveBeenCalled());
+  } finally {
+    pick.mockReset();
+    jest.mocked(File).mockReset();
+  }
+});
+
+test('validates every selected original before starting a multi-file upload', async () => {
+  jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({
+    canceled: false,
+    assets: [
+      {
+        uri: 'cache/ok.pdf',
+        name: 'ok.pdf',
+        size: 12,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
+      {
+        uri: 'cache/large.pdf',
+        name: 'large.pdf',
+        size: 11 * 1024 * 1024,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
+    ],
+  });
+  jest
+    .mocked(File)
+    .mockImplementation(
+      () => ({ base64: async () => 'cGRm', delete: jest.fn() }) as unknown as File,
+    );
+  const client = { ...fake(), uploadKnowledgeSource: jest.fn() };
+  render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+  await screen.findByLabelText('Folder: Engineering');
+  fireEvent.press(screen.getByLabelText('Upload original files'));
+  expect((await screen.findByRole('alert')).props.children).toContain(
+    'Each original is limited to 10 MiB',
+  );
+  expect(client.uploadKnowledgeSource).not.toHaveBeenCalled();
+});
+
+test('refreshes successful original uploads when a later upload fails', async () => {
+  jest.mocked(DocumentPicker.getDocumentAsync).mockResolvedValue({
+    canceled: false,
+    assets: [
+      {
+        uri: 'cache/a.pdf',
+        name: 'a.pdf',
+        size: 12,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
+      {
+        uri: 'cache/b.pdf',
+        name: 'b.pdf',
+        size: 12,
+        mimeType: 'application/pdf',
+        lastModified: 0,
+      },
+    ],
+  });
+  jest
+    .mocked(File)
+    .mockImplementation(
+      () => ({ base64: async () => 'cGRm', delete: jest.fn() }) as unknown as File,
+    );
+  const client = {
+    ...fake(),
+    uploadKnowledgeSource: jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'a' })
+      .mockRejectedValueOnce(new Error('second upload failed')),
+  };
+  render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+  await screen.findByLabelText('Folder: Engineering');
+  fireEvent.press(screen.getByLabelText('Upload original files'));
+  expect((await screen.findByRole('alert')).props.children).toContain('second upload failed');
+  expect(client.listKnowledgeDocuments).toHaveBeenCalledTimes(2);
+});
+
+test('unsupported source extraction keeps the original available and states the limitation', async () => {
+  const client = {
+    ...fake(),
+    getKnowledgeSource: jest.fn().mockResolvedValue({
+      revisionId: 'v1',
+      filename: 'Scanned.pdf',
+      mediaType: 'application/pdf',
+      size: 1024,
+      sha256: 'digest',
+      processingState: 'unsupported',
+      processingNote: 'Scanned pages require OCR; no text was extracted.',
+      locators: [],
+      previews: [],
+    }),
+  };
+  render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+  fireEvent.press(await screen.findByLabelText('Standards'));
+  expect(await screen.findByText('Scanned pages require OCR; no text was extracted.')).toBeTruthy();
+  expect(screen.getByLabelText('Open original file')).toBeEnabled();
+  expect(client.getKnowledgeSource).toHaveBeenCalledWith('doc', 'v1');
+});
+
+test('stale Wiki pages offer a fresh check instead of silently accepting old source content', async () => {
+  const client = managedClient();
+  render(
+    <ProjectKnowledge
+      client={client as unknown as VerityClient}
+      projectId="project"
+      document={{
+        id: 'page',
+        folderId: 'wiki',
+        title: 'Overview',
+        currentRevisionId: 'v1',
+        stale: true,
+      }}
+    />,
+  );
+  fireEvent.press(await screen.findByLabelText('Review stale Wiki'));
+  await waitFor(() =>
+    expect(client.createKnowledgeWikiJob).toHaveBeenCalledWith('project', {
+      kind: 'check',
+      sourceDocumentIds: [],
+    }),
+  );
 });

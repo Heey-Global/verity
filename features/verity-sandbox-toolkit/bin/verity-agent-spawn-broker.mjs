@@ -522,12 +522,15 @@ async function validateSpawnRequest(raw, options) {
   if (!withinAgentWorktreeRoots(cwd, worktreeRoots)) {
     throw new Error('agent cwd escaped the worktree root');
   }
+  if (raw.knowledgeIsolation !== undefined && typeof raw.knowledgeIsolation !== 'boolean')
+    throw new Error('Invalid knowledge isolation policy');
   return {
     kind: 'agent',
     command: raw.command,
     args: raw.args,
     cwd,
     sessionEnv: raw.sessionEnv,
+    knowledgeIsolation: raw.knowledgeIsolation === true,
   };
 }
 
@@ -765,6 +768,87 @@ export function resolveDockerGid(env, statSocketGid) {
   return String(declared);
 }
 
+/** Create only transport configuration; no transcript, user instructions or project config crosses this boundary. */
+async function prepareKnowledgeIsolation(request, options, connectorUrl) {
+  if (!isLocalConnectorUrl(connectorUrl))
+    throw new Error('Wiki isolation requires the local model gateway');
+  const { uid, gid } = validateIdentity(options);
+  const parent =
+    options.enforceRoot === false
+      ? join(options.runtimeDir, 'wiki-homes')
+      : '/run/verity-knowledge';
+  await mkdir(parent, { recursive: true, mode: 0o755 });
+  if (options.enforceRoot !== false) await validateImmutablePath(parent);
+  const home = await mkdtemp(join(parent, 'job-'));
+  try {
+    await chown(home, uid, gid);
+    await chmod(home, 0o700);
+    for (const relative of ['claude', 'codex', 'config', 'data', 'state', 'cache', 'tmp']) {
+      const directory = join(home, relative);
+      await mkdir(directory, { mode: 0o700 });
+      await chown(directory, uid, gid);
+    }
+    const writeConfig = async (path, content) => {
+      await writeFile(path, content, { mode: 0o600 });
+      await chown(path, uid, gid);
+    };
+    const gateway = new URL(connectorUrl);
+    await writeConfig(
+      join(home, 'codex', 'config.toml'),
+      [
+        'model_provider = "verity_gateway"',
+        '[model_providers.verity_gateway]',
+        'name = "Verity Gateway"',
+        `base_url = "${gateway.origin}/codex"`,
+        'env_key = "VERITY_CODEX_PLACEHOLDER"',
+        'http_headers = { "x-openai-actor-authorization" = "verity-codex-gateway-placeholder-v1" }',
+        'wire_api = "responses"',
+        'requires_openai_auth = false',
+      ].join('\n'),
+    );
+    if (request.command === 'opencode-acp') {
+      const configPath = options.env?.OPENCODE_CONFIG;
+      if (typeof configPath !== 'string')
+        throw new Error('Wiki isolation requires configured OpenCode models');
+      const config = JSON.parse(await readFile(configPath, 'utf8'));
+      const models = config?.provider?.verity?.models;
+      if (!models || typeof models !== 'object' || Array.isArray(models))
+        throw new Error('Invalid OpenCode model gateway configuration');
+      await writeConfig(
+        join(home, 'config', 'opencode.json'),
+        JSON.stringify({
+          autoupdate: false,
+          provider: {
+            verity: {
+              npm: '@ai-sdk/openai-compatible',
+              name: 'Verity',
+              options: {
+                baseURL: `${gateway.origin}/opencode`,
+                apiKey: 'verity-opencode-gateway-placeholder-v1',
+              },
+              models: Object.fromEntries(
+                Object.keys(models).map((model) => [model, { name: model }]),
+              ),
+            },
+          },
+        }),
+      );
+    }
+    return home;
+  } catch (error) {
+    await rm(home, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+export async function materializeKnowledgeIsolation(request, options, connectorUrl) {
+  const home = await prepareKnowledgeIsolation(request, options, connectorUrl);
+  return {
+    home,
+    cleanup: () => rm(home, { recursive: true, force: true }),
+  };
+}
+
 export function agentLaunchSpec(request, options) {
   const { uid, gid } = validateIdentity(options);
   const setprivPath = options.setprivPath ?? '/usr/bin/setpriv';
@@ -790,6 +874,8 @@ export function agentLaunchSpec(request, options) {
   if (typeof agentPath !== 'string') {
     throw new Error(`unsupported agent command '${String(request.command)}'`);
   }
+  if (request.knowledgeIsolation && typeof request.knowledgeHome !== 'string')
+    throw new Error('Wiki isolation home was not prepared');
   return {
     command: setprivPath,
     args: [
@@ -802,20 +888,53 @@ export function agentLaunchSpec(request, options) {
       // from the control-plane Runner and why this argv does not restore it.
       // `options.dockerGid` is that one sanctioned variation, and it swaps
       // `--clear-groups` for `--groups=<docker>` — never the runtime GID.
-      ...privilegeDropFlags(options.dockerGid, options.runnerGid),
+      ...privilegeDropFlags(
+        request.knowledgeIsolation ? undefined : options.dockerGid,
+        options.runnerGid,
+      ),
+      ...(request.knowledgeIsolation
+        ? [
+            options.scriptSandboxPath ?? '/usr/local/bin/verity-script-sandbox',
+            '--root',
+            request.cwd,
+            '--cwd',
+            request.cwd,
+            '--loading',
+            'dynamic',
+            '--dynamic-root',
+            request.knowledgeHome,
+            '--write-isolated',
+            '--',
+          ]
+        : []),
       agentPath,
       ...request.args,
     ],
     spawnOptions: {
       cwd: request.cwd,
-      env: childEnvironment(
-        request.command,
-        {
-          ...options.env,
-          VERITY_CLAUDE_CONNECTOR_URL: options.connectorUrl,
-        },
-        request.sessionEnv,
-      ),
+      env: {
+        ...childEnvironment(
+          request.command,
+          {
+            ...options.env,
+            VERITY_CLAUDE_CONNECTOR_URL: options.connectorUrl,
+          },
+          request.sessionEnv,
+        ),
+        ...(request.knowledgeIsolation
+          ? {
+              HOME: request.knowledgeHome,
+              CLAUDE_CONFIG_DIR: join(request.knowledgeHome, 'claude'),
+              CODEX_HOME: join(request.knowledgeHome, 'codex'),
+              XDG_CONFIG_HOME: join(request.knowledgeHome, 'config'),
+              OPENCODE_CONFIG: join(request.knowledgeHome, 'config', 'opencode.json'),
+              XDG_DATA_HOME: join(request.knowledgeHome, 'data'),
+              XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
+              XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
+              TMPDIR: join(request.knowledgeHome, 'tmp'),
+            }
+          : {}),
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
       // Give every agent invocation its own process group. Codex can leave tool
       // and sub-agent descendants running after its direct process receives a
@@ -2023,6 +2142,12 @@ export async function runAgentSpawnBroker(options = {}) {
   validateIdentity(options);
   await validateSharedSessionRoot(options);
   const runtimeDir = resolve(options.runtimeDir ?? DEFAULT_RUNTIME_DIR);
+  // The unprivileged test seam must keep every broker-owned path inside its
+  // temporary runtime. Falling back to the production secret directory here
+  // makes even a secret-free probe depend on access to root-owned `/run` state.
+  if (options.enforceRoot === false && options.secretDir === undefined) {
+    options = { ...options, secretDir: join(runtimeDir, 'secrets') };
+  }
   // `enforceRoot: false` is the explicit test seam; every real/root broker uses
   // the fixed root-owned control directory unless the caller names another one.
   const controlDir = resolve(
@@ -2111,7 +2236,11 @@ export async function runAgentSpawnBroker(options = {}) {
           raw.kind === 'status'
         ) {
           protocolFailed = true;
-          send(socket, { ok: true, protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION });
+          send(socket, {
+            ok: true,
+            protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION,
+            knowledgeIsolation: true,
+          });
           socket.end();
           return;
         }
@@ -2170,6 +2299,18 @@ export async function runAgentSpawnBroker(options = {}) {
           // They are maintained separately on purpose — one guards the socket, one
           // guards the exported function — so they can disagree, and the day they do
           // is the day this matters. Cheap enough to hold the guard open for.
+          if (request.kind === 'agent' && request.knowledgeIsolation) {
+            const isolated = await materializeKnowledgeIsolation(request, options, connectorUrl);
+            request.knowledgeHome = isolated.home;
+            const cleanup = materialized.cleanup;
+            materialized.cleanup = async () => {
+              try {
+                return await cleanup();
+              } finally {
+                await isolated.cleanup();
+              }
+            };
+          }
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'launch-spec';
           const spec =
             request.kind === 'agent'
@@ -2267,6 +2408,12 @@ export async function runAgentSpawnBroker(options = {}) {
                     // this reason, which is what gets the secret rotated.
                     { ok: false, error: TRUSTED_CLI_SECRET_LEAK_ERROR },
               ),
+            );
+          } else if (request.knowledgeIsolation) {
+            void materialized.cleanup().then(
+              () => deliver(exitFrame),
+              () =>
+                deliver({ ok: false, error: 'Could not remove the isolated Wiki runtime home' }),
             );
           } else {
             deliver(exitFrame);

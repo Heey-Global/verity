@@ -66,7 +66,10 @@ export function ProjectKnowledgeGrants({
     setBusy(true);
     setError('');
     void client
-      .saveKnowledgeGrants(projectId, next)
+      .saveKnowledgeGrants(
+        projectId,
+        next.filter((grant) => !grant.fixed),
+      )
       .then((saved) => {
         if (current === generation.current) {
           authoritative = true;
@@ -129,7 +132,8 @@ export function ProjectKnowledgeGrants({
     <View style={styles.group}>
       <Text style={styles.heading}>Knowledge access</Text>
       <Text style={styles.muted}>
-        Check folders to share with this project. Subfolders inherit access.
+        Your Sources, Wiki, and General are always connected. Check additional folders below.
+        Subfolders inherit access.
       </Text>
       {error ? (
         <Text accessibilityRole="alert" style={styles.error}>
@@ -145,8 +149,20 @@ export function ProjectKnowledgeGrants({
       ) : null}
       {rows.map(({ folder, depth, inherited }) => {
         const direct = grants.find((g) => g.folderId === folder.id);
-        const effective =
-          inherited === 'read_write' || direct?.mode === 'read_write'
+        const fixed = !!direct?.fixed;
+        let ancestor: KnowledgeFolder | undefined = folder;
+        let readOnly = false;
+        const seen = new Set<string>();
+        while (ancestor && !seen.has(ancestor.id)) {
+          seen.add(ancestor.id);
+          if (ancestor.role === 'sources' || ancestor.role === 'general') readOnly = true;
+          ancestor = folders.find((entry) => entry.id === ancestor?.parentId);
+        }
+        const effective = readOnly
+          ? direct || inherited
+            ? 'Read'
+            : 'None'
+          : inherited === 'read_write' || direct?.mode === 'read_write'
             ? 'Read & Write'
             : direct || inherited
               ? 'Read'
@@ -180,12 +196,12 @@ export function ProjectKnowledgeGrants({
             </Pressable>
             <Pressable
               accessibilityRole="checkbox"
-              accessibilityLabel={`${direct ? 'Remove' : 'Allow'} ${folder.name}`}
+              accessibilityLabel={`${fixed ? 'Always connected:' : direct ? 'Remove' : 'Allow'} ${folder.name}`}
               accessibilityState={{
                 checked: !!(direct || inherited),
-                disabled: busy || needsReload || (!!inherited && !direct),
+                disabled: busy || needsReload || fixed || (!!inherited && !direct),
               }}
-              disabled={busy || needsReload || (!!inherited && !direct)}
+              disabled={busy || needsReload || fixed || (!!inherited && !direct)}
               style={tree.icon}
               onPress={() => {
                 const next = direct
@@ -214,7 +230,7 @@ export function ProjectKnowledgeGrants({
               accessibilityRole="button"
               accessibilityLabel={`Open ${folder.name} in Knowledge`}
               onPress={() =>
-                router.push({ pathname: '/knowledge', params: { folderId: folder.id } })
+                router.push({ pathname: '/knowledge', params: { folderId: folder.id, projectId } })
               }
             >
               <Icon name="folder" size={18} color={theme.colors.textMuted} />
@@ -222,7 +238,13 @@ export function ProjectKnowledgeGrants({
                 {folder.name}
               </Text>
             </Pressable>
-            {(direct || inherited) && inherited !== 'read_write' ? (
+            {fixed ? (
+              <Text style={tree.inherited}>{effective} · always connected</Text>
+            ) : readOnly && (direct || inherited) ? (
+              <Text style={tree.inherited} accessibilityLabel={`${folder.name}: Read only`}>
+                Read only
+              </Text>
+            ) : (direct || inherited) && inherited !== 'read_write' ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`${folder.name}: ${effective}`}

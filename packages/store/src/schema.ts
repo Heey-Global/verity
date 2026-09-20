@@ -1034,6 +1034,9 @@ interface ControlPlaneGenerationTable {
 }
 
 interface KnowledgeFoldersTable {
+  role: Generated<'project' | 'general' | 'sources' | 'wiki' | null>;
+  project_id: Generated<string | null>;
+  archived: Generated<boolean>;
   id: string;
   parent_id: string | null;
   name: string;
@@ -1080,7 +1083,46 @@ interface KnowledgeInvalidatedSessionsTable {
   stopped_at: Generated<Date | null>;
   created_at: Generated<Date>;
 }
+interface KnowledgeSpacesTable {
+  project_id: string;
+  root_folder_id: string;
+  sources_folder_id: string;
+  wiki_folder_id: string;
+  overview_document_id: Generated<string | null>;
+  overview_revision_id: Generated<string | null>;
+  legacy_memory: Generated<string | null>;
+}
+interface KnowledgeWikiJobsTable {
+  id: string;
+  project_id: string;
+  session_id: string;
+  kind: 'ingest' | 'check';
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  source_revisions: string;
+  error: Generated<string | null>;
+  created_at: Generated<Date>;
+}
+interface KnowledgeProvenanceTable {
+  revision_id: string;
+  job_id: string;
+  source_revisions: string;
+}
+interface KnowledgeSourceRevisionsTable {
+  revision_id: string;
+  filename: string;
+  media_type: string;
+  bytes: Uint8Array;
+  sha256: string;
+  processing_state: string;
+  processing_note: string;
+  locators: ColumnType<{ label: string; text: string }[], string, string>;
+  previews: ColumnType<{ label: string; mediaType: string; base64: string }[], string, string>;
+}
 export interface Database {
+  project_knowledge_spaces: KnowledgeSpacesTable;
+  knowledge_wiki_jobs: KnowledgeWikiJobsTable;
+  knowledge_provenance: KnowledgeProvenanceTable;
+  knowledge_source_revisions: KnowledgeSourceRevisionsTable;
   knowledge_folders: KnowledgeFoldersTable;
   knowledge_documents: KnowledgeDocumentsTable;
   knowledge_document_revisions: KnowledgeRevisionsTable;

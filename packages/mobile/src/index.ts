@@ -468,6 +468,10 @@ export {
 } from './push/outbox.js';
 
 export {
+  type KnowledgeSpace,
+  type KnowledgeOverview,
+  type KnowledgeWikiJob,
+  type KnowledgeSource,
   type KnowledgeFolder,
   type KnowledgeDocument,
   type KnowledgeRevision,

@@ -13,7 +13,8 @@ export {
   DEV_SERVER_HOST_PORT_RANGES,
   DevServerPortRangeExhaustedError,
 } from './dev-server-ports.js';
-import { KnowledgeStore } from './knowledge.js';
+import { KnowledgeError, KnowledgeStore } from './knowledge.js';
+import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import { scrubNulEscapes } from './nul-scrub.js';
 import { redactSecrets } from './redact.js';
 import { computeNextRun } from './schedule.js';
@@ -3412,6 +3413,9 @@ export class EventStore implements EventSink {
     const shouldMigrateLegacyContainerName = containerName.startsWith('verity-');
 
     const row = await this.db.transaction().execute(async (tx) => {
+      // Knowledge lifecycle mutations take this lock before touching a project
+      // row. Match that order here so sync cannot deadlock with hide/delete.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const claimed = await tx
         .insertInto('project_identity_claims')
         .values({ owner, repo, project_id: input.id })
@@ -3437,7 +3441,7 @@ export class EventStore implements EventSink {
           throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
         }
       }
-      return tx
+      const project = await tx
         .insertInto('projects')
         .values({
           id: input.id,
@@ -3510,6 +3514,8 @@ export class EventStore implements EventSink {
         )
         .returningAll()
         .executeTakeFirst();
+      if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+      return project;
     });
     if (!row) {
       // The only way `RETURNING *` returns undefined here is if the ORM/dialect
@@ -3527,6 +3533,7 @@ export class EventStore implements EventSink {
     const owner = input.owner.toLowerCase();
     const repo = input.repo.toLowerCase();
     const row = await this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const claimed = await tx
         .insertInto('project_identity_claims')
         .values({ owner, repo, project_id: input.id })
@@ -3536,7 +3543,7 @@ export class EventStore implements EventSink {
       if (claimed === undefined) {
         throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
       }
-      return tx
+      const project = await tx
         .insertInto('projects')
         .values({
           id: input.id,
@@ -3555,6 +3562,8 @@ export class EventStore implements EventSink {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+      return project;
     });
     return this.projectRowToRecord(row);
   }
@@ -3963,16 +3972,37 @@ export class EventStore implements EventSink {
    * second hide just refreshes the timestamp. Returns whether a row matched.
    */
   async hideProject(id: string): Promise<boolean> {
-    const result = await this.db
-      .updateTable('projects')
-      .set({ hidden_at: sql`now()`, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const result = await tx
+        .updateTable('projects')
+        .set({ hidden_at: sql`now()`, updated_at: sql`now()` })
+        .where('id', '=', id)
+        .executeTakeFirst();
+      await tx
+        .updateTable('knowledge_folders')
+        .set({ archived: true, project_id: null })
+        .where('project_id', '=', id)
+        .execute();
+      await tx.deleteFrom('project_knowledge_spaces').where('project_id', '=', id).execute();
+      await tx
+        .updateTable('knowledge_wiki_jobs')
+        .set({ status: 'failed', error: 'Project was deleted' })
+        .where('project_id', '=', id)
+        .where('status', 'in', ['pending', 'running'])
+        .execute();
+      return result.numUpdatedRows > 0n;
+    });
   }
 
   async deleteProject(id: string): Promise<boolean> {
     const result = await this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      await tx
+        .updateTable('knowledge_folders')
+        .set({ archived: true, project_id: null })
+        .where('project_id', '=', id)
+        .execute();
       await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
       return tx.deleteFrom('projects').where('id', '=', id).executeTakeFirst();
     });
@@ -5626,6 +5656,19 @@ export class EventStore implements EventSink {
       throw new ProjectMemoryTooLargeError(delta.length, PROJECT_MEMORY_MAX_CHARS);
     }
     return this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const overview = await tx
+        .selectFrom('project_knowledge_spaces')
+        .select('overview_revision_id')
+        .where('project_id', '=', projectId)
+        .executeTakeFirst();
+      if (overview?.overview_revision_id) {
+        throw new KnowledgeError(
+          'conflict',
+          'This project uses an approved Knowledge overview. Update its Wiki page and approve the new revision in Project Settings; legacy memory was not changed.',
+        );
+      }
+
       // Ensure the settings row exists FIRST, in this transaction, so the
       // `FOR UPDATE` below always locks a committed row. `project_settings` rows
       // are created lazily, so without this two sibling sessions of a settings-less

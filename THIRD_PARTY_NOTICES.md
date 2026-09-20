@@ -41,14 +41,17 @@ separately by `TRADEMARKS.md`.
 | (MIT OR CC0-1.0) | 1 |
 | (Unlicense OR Apache-2.0) | 1 |
 | 0BSD | 2 |
-| Apache-2.0 | 38 |
+| Apache-2.0 | 52 |
+| Apache-2.0 AND LGPL-3.0-or-later | 3 |
+| Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
 | BlueOak-1.0.0 | 7 |
 | BSD-2-Clause | 21 |
 | BSD-3-Clause | 26 |
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 1 |
 | ISC | 61 |
-| MIT | 937 |
+| LGPL-3.0-or-later | 10 |
+| MIT | 959 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -251,6 +254,33 @@ separately by `TRADEMARKS.md`.
 | @humanfs/types | Apache-2.0 | [source](https://www.npmjs.com/package/%40humanfs%2Ftypes) |
 | @humanwhocodes/module-importer | Apache-2.0 | [source](https://www.npmjs.com/package/%40humanwhocodes%2Fmodule-importer) |
 | @humanwhocodes/retry | Apache-2.0 | [source](https://www.npmjs.com/package/%40humanwhocodes%2Fretry) |
+| @img/colour | MIT | [source](https://www.npmjs.com/package/%40img%2Fcolour) |
+| @img/sharp-darwin-arm64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-darwin-arm64) |
+| @img/sharp-darwin-x64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-darwin-x64) |
+| @img/sharp-freebsd-wasm32 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-freebsd-wasm32) |
+| @img/sharp-libvips-darwin-arm64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-darwin-arm64) |
+| @img/sharp-libvips-darwin-x64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-darwin-x64) |
+| @img/sharp-libvips-linux-arm64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-arm64) |
+| @img/sharp-libvips-linux-arm | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-arm) |
+| @img/sharp-libvips-linux-ppc64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-ppc64) |
+| @img/sharp-libvips-linux-riscv64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-riscv64) |
+| @img/sharp-libvips-linux-s390x | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-s390x) |
+| @img/sharp-libvips-linux-x64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-x64) |
+| @img/sharp-libvips-linuxmusl-arm64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linuxmusl-arm64) |
+| @img/sharp-libvips-linuxmusl-x64 | LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linuxmusl-x64) |
+| @img/sharp-linux-arm64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linux-arm64) |
+| @img/sharp-linux-arm | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linux-arm) |
+| @img/sharp-linux-ppc64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linux-ppc64) |
+| @img/sharp-linux-riscv64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linux-riscv64) |
+| @img/sharp-linux-s390x | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linux-s390x) |
+| @img/sharp-linux-x64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linux-x64) |
+| @img/sharp-linuxmusl-arm64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linuxmusl-arm64) |
+| @img/sharp-linuxmusl-x64 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-linuxmusl-x64) |
+| @img/sharp-wasm32 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | [source](https://www.npmjs.com/package/%40img%2Fsharp-wasm32) |
+| @img/sharp-webcontainers-wasm32 | Apache-2.0 | [source](https://www.npmjs.com/package/%40img%2Fsharp-webcontainers-wasm32) |
+| @img/sharp-win32-arm64 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-arm64) |
+| @img/sharp-win32-ia32 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-ia32) |
+| @img/sharp-win32-x64 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-x64) |
 | @isaacs/ttlcache | ISC | [source](https://www.npmjs.com/package/%40isaacs%2Fttlcache) |
 | @istanbuljs/load-nyc-config | ISC | [source](https://www.npmjs.com/package/%40istanbuljs%2Fload-nyc-config) |
 | @istanbuljs/schema | MIT | [source](https://www.npmjs.com/package/%40istanbuljs%2Fschema) |
@@ -281,7 +311,20 @@ separately by `TRADEMARKS.md`.
 | @keyv/serialize | MIT | [source](https://www.npmjs.com/package/%40keyv%2Fserialize) |
 | @lukeed/ms | MIT | [source](https://www.npmjs.com/package/%40lukeed%2Fms) |
 | @modelcontextprotocol/sdk | MIT | [source](https://www.npmjs.com/package/%40modelcontextprotocol%2Fsdk) |
+| @napi-rs/canvas-android-arm64 | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-android-arm64) |
+| @napi-rs/canvas-darwin-arm64 | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-darwin-arm64) |
+| @napi-rs/canvas-darwin-x64 | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-darwin-x64) |
+| @napi-rs/canvas-linux-arm-gnueabihf | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm-gnueabihf) |
+| @napi-rs/canvas-linux-arm64-gnu | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm64-gnu) |
+| @napi-rs/canvas-linux-arm64-musl | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm64-musl) |
+| @napi-rs/canvas-linux-riscv64-gnu | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-riscv64-gnu) |
+| @napi-rs/canvas-linux-x64-gnu | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-x64-gnu) |
+| @napi-rs/canvas-linux-x64-musl | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-x64-musl) |
+| @napi-rs/canvas-win32-arm64-msvc | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-win32-arm64-msvc) |
+| @napi-rs/canvas-win32-x64-msvc | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-win32-x64-msvc) |
+| @napi-rs/canvas | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fcanvas) |
 | @napi-rs/wasm-runtime | MIT | [source](https://www.npmjs.com/package/%40napi-rs%2Fwasm-runtime) |
+| @nodable/entities | MIT | [source](https://www.npmjs.com/package/%40nodable%2Fentities) |
 | @npmcli/agent | ISC | [source](https://www.npmjs.com/package/%40npmcli%2Fagent) |
 | @npmcli/fs | ISC | [source](https://www.npmjs.com/package/%40npmcli%2Ffs) |
 | @npmcli/redact | ISC | [source](https://www.npmjs.com/package/%40npmcli%2Fredact) |
@@ -458,6 +501,7 @@ separately by `TRADEMARKS.md`.
 | ansi-regex | MIT | [source](https://www.npmjs.com/package/ansi-regex) |
 | ansi-styles | MIT | [source](https://www.npmjs.com/package/ansi-styles) |
 | anymatch | ISC | [source](https://www.npmjs.com/package/anymatch) |
+| anynum | MIT | [source](https://www.npmjs.com/package/anynum) |
 | arg | MIT | [source](https://www.npmjs.com/package/arg) |
 | argparse | MIT | [source](https://www.npmjs.com/package/argparse) |
 | argparse | Python-2.0 | [source](https://www.npmjs.com/package/argparse) |
@@ -667,6 +711,8 @@ separately by `TRADEMARKS.md`.
 | fast-querystring | MIT | [source](https://www.npmjs.com/package/fast-querystring) |
 | fast-sha256 | Unlicense | [source](https://www.npmjs.com/package/fast-sha256) |
 | fast-uri | BSD-3-Clause | [source](https://www.npmjs.com/package/fast-uri) |
+| fast-xml-builder | MIT | [source](https://www.npmjs.com/package/fast-xml-builder) |
+| fast-xml-parser | MIT | [source](https://www.npmjs.com/package/fast-xml-parser) |
 | fastify-plugin | MIT | [source](https://www.npmjs.com/package/fastify-plugin) |
 | fastify | MIT | [source](https://www.npmjs.com/package/fastify) |
 | fastq | ISC | [source](https://www.npmjs.com/package/fastq) |
@@ -675,6 +721,7 @@ separately by `TRADEMARKS.md`.
 | fd-package-json | MIT | [source](https://www.npmjs.com/package/fd-package-json) |
 | fdir | MIT | [source](https://www.npmjs.com/package/fdir) |
 | fetch-nodeshim | MIT | [source](https://www.npmjs.com/package/fetch-nodeshim) |
+| fflate | MIT | [source](https://www.npmjs.com/package/fflate) |
 | file-entry-cache | MIT | [source](https://www.npmjs.com/package/file-entry-cache) |
 | fill-range | MIT | [source](https://www.npmjs.com/package/fill-range) |
 | filter-obj | MIT | [source](https://www.npmjs.com/package/filter-obj) |
@@ -750,6 +797,7 @@ separately by `TRADEMARKS.md`.
 | is-potential-custom-element-name | MIT | [source](https://www.npmjs.com/package/is-potential-custom-element-name) |
 | is-promise | MIT | [source](https://www.npmjs.com/package/is-promise) |
 | is-stream | MIT | [source](https://www.npmjs.com/package/is-stream) |
+| is-unsafe | MIT | [source](https://www.npmjs.com/package/is-unsafe) |
 | is-wsl | MIT | [source](https://www.npmjs.com/package/is-wsl) |
 | isexe | ISC | [source](https://www.npmjs.com/package/isexe) |
 | istanbul-lib-coverage | BSD-3-Clause | [source](https://www.npmjs.com/package/istanbul-lib-coverage) |
@@ -915,11 +963,13 @@ separately by `TRADEMARKS.md`.
 | parse5 | MIT | [source](https://www.npmjs.com/package/parse5) |
 | parseurl | MIT | [source](https://www.npmjs.com/package/parseurl) |
 | path-exists | MIT | [source](https://www.npmjs.com/package/path-exists) |
+| path-expression-matcher | MIT | [source](https://www.npmjs.com/package/path-expression-matcher) |
 | path-is-absolute | MIT | [source](https://www.npmjs.com/package/path-is-absolute) |
 | path-key | MIT | [source](https://www.npmjs.com/package/path-key) |
 | path-parse | MIT | [source](https://www.npmjs.com/package/path-parse) |
 | path-scurry | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/path-scurry) |
 | path-to-regexp | MIT | [source](https://www.npmjs.com/package/path-to-regexp) |
+| pdfjs-dist | Apache-2.0 | [source](https://www.npmjs.com/package/pdfjs-dist) |
 | pg-cloudflare | MIT | [source](https://www.npmjs.com/package/pg-cloudflare) |
 | pg-connection-string | MIT | [source](https://www.npmjs.com/package/pg-connection-string) |
 | pg-int8 | ISC | [source](https://www.npmjs.com/package/pg-int8) |
@@ -1041,6 +1091,7 @@ separately by `TRADEMARKS.md`.
 | setprototypeof | ISC | [source](https://www.npmjs.com/package/setprototypeof) |
 | sf-symbols-typescript | MIT | [source](https://www.npmjs.com/package/sf-symbols-typescript) |
 | shallowequal | MIT | [source](https://www.npmjs.com/package/shallowequal) |
+| sharp | Apache-2.0 | [source](https://www.npmjs.com/package/sharp) |
 | shebang-command | MIT | [source](https://www.npmjs.com/package/shebang-command) |
 | shebang-regex | MIT | [source](https://www.npmjs.com/package/shebang-regex) |
 | shell-quote | MIT | [source](https://www.npmjs.com/package/shell-quote) |
@@ -1090,6 +1141,7 @@ separately by `TRADEMARKS.md`.
 | strip-final-newline | MIT | [source](https://www.npmjs.com/package/strip-final-newline) |
 | strip-indent | MIT | [source](https://www.npmjs.com/package/strip-indent) |
 | strip-json-comments | MIT | [source](https://www.npmjs.com/package/strip-json-comments) |
+| strnum | MIT | [source](https://www.npmjs.com/package/strnum) |
 | structured-headers | MIT | [source](https://www.npmjs.com/package/structured-headers) |
 | supports-color | MIT | [source](https://www.npmjs.com/package/supports-color) |
 | supports-hyperlinks | MIT | [source](https://www.npmjs.com/package/supports-hyperlinks) |
@@ -1171,6 +1223,7 @@ separately by `TRADEMARKS.md`.
 | ws | MIT | [source](https://www.npmjs.com/package/ws) |
 | xcode | Apache-2.0 | [source](https://www.npmjs.com/package/xcode) |
 | xml-name-validator | Apache-2.0 | [source](https://www.npmjs.com/package/xml-name-validator) |
+| xml-naming | MIT | [source](https://www.npmjs.com/package/xml-naming) |
 | xml2js | MIT | [source](https://www.npmjs.com/package/xml2js) |
 | xmlbuilder | MIT | [source](https://www.npmjs.com/package/xmlbuilder) |
 | xmlchars | MIT | [source](https://www.npmjs.com/package/xmlchars) |

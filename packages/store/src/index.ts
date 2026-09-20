@@ -133,3 +133,5 @@ export type {
 } from './schema.js';
 
 export * from './knowledge.js';
+
+export * from './knowledge-sources.js';

@@ -1,4 +1,6 @@
-import { sql, type Kysely } from 'kysely';
+import { randomUUID } from 'node:crypto';
+import { sql, type Kysely, type Transaction } from 'kysely';
+import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import type { Migration, MigrationProvider } from 'kysely/migration';
 import type { Database } from './schema.js';
 import {
@@ -2715,6 +2717,72 @@ const migrations: Record<string, Migration> = {
         .dropColumn('sleeping_since')
         .dropColumn('sleep_compatibility_fingerprint')
         .execute();
+    },
+  },
+  '0101_project_knowledge_spaces': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table knowledge_folders
+        add column role text check(role in ('project','general','sources','wiki')),
+        add column project_id text,
+        add column archived boolean not null default false`.execute(db);
+      await sql`create unique index knowledge_general_root on knowledge_folders(role) where role = 'general'`.execute(
+        db,
+      );
+      await sql`create table project_knowledge_spaces (
+        project_id text primary key references projects(id) on delete cascade,
+        root_folder_id text not null references knowledge_folders(id),
+        sources_folder_id text not null references knowledge_folders(id),
+        wiki_folder_id text not null references knowledge_folders(id),
+        overview_document_id text references knowledge_documents(id),
+        overview_revision_id text references knowledge_document_revisions(id),
+        legacy_memory text
+      )`.execute(db);
+      await sql`create table knowledge_wiki_jobs (
+        id text primary key, project_id text not null references projects(id) on delete cascade,
+        session_id text not null unique references sessions(session_id) on delete cascade,
+        kind text not null check(kind in ('ingest','check')),
+        status text not null check(status in ('pending','running','completed','failed')),
+        source_revisions text not null, error text, created_at timestamptz not null default now()
+      )`.execute(db);
+      await sql`create table knowledge_provenance (
+        revision_id text primary key references knowledge_document_revisions(id) on delete cascade,
+        job_id text not null, source_revisions text not null
+      )`.execute(db);
+      await sql`create table knowledge_source_revisions (
+        revision_id text primary key references knowledge_document_revisions(id) on delete cascade,
+        filename text not null, media_type text not null, bytes bytea not null, sha256 text not null,
+        processing_state text not null, processing_note text not null,
+        locators jsonb not null, previews jsonb not null
+      )`.execute(db);
+      // Stable bindings never adopt folders by display name, including pre-existing General folders.
+      await sql`insert into knowledge_folders(id,name,role) values
+        ('managed-general', case when exists(select 1 from knowledge_folders where parent_id is null and name='General' and id <> 'managed-general') then ${`General (${randomUUID()})`} else 'General' end, 'general')
+        on conflict(id) do update set role='general'`.execute(db);
+      await sql`insert into knowledge_folders(id,parent_id,name,role) values
+        ('managed-general-sources','managed-general','Sources','sources'),
+        ('managed-general-wiki','managed-general','Wiki','wiki')
+        on conflict(id) do update set parent_id=excluded.parent_id,name=excluded.name,role=excluded.role`.execute(
+        db,
+      );
+      const projects = await sql<{
+        id: string;
+        repo: string;
+      }>`select id,repo from projects order by id`.execute(db);
+      for (const project of projects.rows) {
+        await ensureProjectKnowledgeSpace(
+          db as unknown as Transaction<Database>,
+          project.id,
+          project.repo,
+        );
+      }
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table knowledge_source_revisions,knowledge_provenance,knowledge_wiki_jobs,project_knowledge_spaces`.execute(
+        db,
+      );
+      await sql`alter table knowledge_folders drop column role,drop column project_id,drop column archived`.execute(
+        db,
+      );
     },
   },
 };

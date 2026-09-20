@@ -1660,12 +1660,16 @@ export interface MobileScrollDiagnostic {
 }
 
 const knowledgeFolderSchema = z.object({
+  role: z.enum(['project', 'general', 'sources', 'wiki']).optional(),
+  projectId: z.string().optional(),
+  archived: z.boolean().optional(),
   id: z.string(),
   parentId: z.string().nullable(),
   name: z.string(),
 });
 export type KnowledgeFolder = z.infer<typeof knowledgeFolderSchema>;
 const knowledgeDocumentSchema = z.object({
+  stale: z.boolean().optional(),
   id: z.string(),
   folderId: z.string(),
   title: z.string(),
@@ -1686,6 +1690,7 @@ const knowledgeRevisionSchema = z.object({
 });
 export type KnowledgeRevision = z.infer<typeof knowledgeRevisionSchema>;
 const knowledgeGrantSchema = z.object({
+  fixed: z.enum(['project', 'general']).optional(),
   folderId: z.string(),
   mode: z.enum(['read', 'read_write']),
 });
@@ -1708,6 +1713,69 @@ const knowledgeMovePreviewSchema = z.object({
   ),
 });
 export type KnowledgeMovePreview = z.infer<typeof knowledgeMovePreviewSchema>;
+
+const knowledgeSpaceSchema = z.object({
+  projectId: z.string(),
+  rootFolderId: z.string(),
+  generalFolderId: z.string(),
+  sourcesFolderId: z.string(),
+  wikiFolderId: z.string(),
+});
+export type KnowledgeSpace = z.infer<typeof knowledgeSpaceSchema>;
+const knowledgeOverviewSchema = z.object({
+  documentId: z.string(),
+  revisionId: z.string(),
+  title: z.string(),
+  bodyMarkdown: z.string(),
+});
+export type KnowledgeOverview = z.infer<typeof knowledgeOverviewSchema>;
+const knowledgeWikiJobSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  sessionId: z.string(),
+  kind: z.enum(['ingest', 'check']),
+  status: z.enum(['pending', 'running', 'completed', 'failed']),
+  sourceRevisions: z.array(z.object({ documentId: z.string(), revisionId: z.string() })),
+  createdAt: z.union([z.string(), z.number()]),
+  error: z.string().nullable(),
+});
+export type KnowledgeWikiJob = z.infer<typeof knowledgeWikiJobSchema>;
+const knowledgeSourceSchema = z.object({
+  revisionId: z.string(),
+  filename: z.string(),
+  mediaType: z.string(),
+  size: z.number(),
+  sha256: z.string(),
+  processingState: z.enum(['ready', 'unsupported', 'failed']),
+  processingNote: z.string().nullable(),
+  locators: z.array(z.object({ label: z.string(), text: z.string() })),
+  previews: z.array(z.object({ label: z.string(), mediaType: z.string(), base64: z.string() })),
+});
+export type KnowledgeSource = z.infer<typeof knowledgeSourceSchema>;
+
+const knowledgeSourceBundleSchema = z.object({
+  version: z.literal(1),
+  documents: z.array(
+    z.object({
+      path: z.string(),
+      bodyMarkdown: z.string(),
+      original: z
+        .object({
+          filename: z.string(),
+          mediaType: z.string(),
+          base64: z.string(),
+          sha256: z.string(),
+          processingState: z.enum(['ready', 'unsupported', 'failed']),
+          processingNote: z.string().nullable(),
+          locators: z.array(z.object({ label: z.string(), text: z.string() })),
+          previews: z.array(
+            z.object({ label: z.string(), mediaType: z.string(), base64: z.string() }),
+          ),
+        })
+        .optional(),
+    }),
+  ),
+});
 
 export class VerityClient {
   private readonly baseUrl: string;
@@ -1734,6 +1802,106 @@ export class VerityClient {
         : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
     });
     return response.json();
+  }
+  async getProjectKnowledgeSpace(id: string): Promise<KnowledgeSpace> {
+    return z
+      .object({ space: knowledgeSpaceSchema })
+      .parse(await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-space`))
+      .space;
+  }
+  async getProjectKnowledgeOverview(id: string): Promise<KnowledgeOverview | null> {
+    return z
+      .object({ overview: knowledgeOverviewSchema.nullable() })
+      .parse(await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-overview`))
+      .overview;
+  }
+  async approveProjectKnowledgeOverview(
+    id: string,
+    documentId: string,
+    expectedRevisionId: string,
+  ): Promise<KnowledgeOverview> {
+    return z
+      .object({ overview: knowledgeOverviewSchema })
+      .parse(
+        await this.knowledgeRequest(
+          `/projects/${encodeURIComponent(id)}/knowledge-overview`,
+          'PUT',
+          { documentId, expectedRevisionId },
+        ),
+      ).overview;
+  }
+  async clearProjectKnowledgeOverview(id: string): Promise<void> {
+    await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-overview`, 'DELETE');
+  }
+  async createKnowledgeWikiJob(
+    id: string,
+    input: { sourceDocumentIds: string[]; kind: 'ingest' | 'check'; model?: string },
+  ): Promise<KnowledgeWikiJob> {
+    return z
+      .object({ job: knowledgeWikiJobSchema })
+      .parse(
+        await this.knowledgeRequest(
+          `/projects/${encodeURIComponent(id)}/knowledge-wiki-jobs`,
+          'POST',
+          input,
+        ),
+      ).job;
+  }
+  async listKnowledgeWikiJobs(id: string): Promise<KnowledgeWikiJob[]> {
+    return z
+      .object({ jobs: z.array(knowledgeWikiJobSchema) })
+      .parse(await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-wiki-jobs`))
+      .jobs;
+  }
+  async exportKnowledgeSourceBundle(folderId: string) {
+    return knowledgeSourceBundleSchema.parse(
+      await this.knowledgeRequest(
+        `/knowledge/source-bundle?folderId=${encodeURIComponent(folderId)}`,
+      ),
+    );
+  }
+  async importKnowledgeSourceBundle(folderId: string, bundle: unknown): Promise<void> {
+    const parsed = knowledgeSourceBundleSchema.parse(bundle);
+    await this.knowledgeRequest('/knowledge/source-bundle', 'POST', { folderId, ...parsed });
+  }
+  async uploadKnowledgeSource(input: {
+    folderId: string;
+    filename: string;
+    base64: string;
+  }): Promise<KnowledgeDocument> {
+    return z
+      .object({ document: knowledgeDocumentSchema })
+      .parse(await this.knowledgeRequest('/knowledge/sources', 'POST', input)).document;
+  }
+  async replaceKnowledgeSource(
+    id: string,
+    input: { expectedRevisionId: string; filename: string; base64: string },
+  ): Promise<KnowledgeDocument> {
+    return z
+      .object({ document: knowledgeDocumentSchema })
+      .parse(
+        await this.knowledgeRequest(
+          `/knowledge/documents/${encodeURIComponent(id)}/source`,
+          'PUT',
+          input,
+        ),
+      ).document;
+  }
+  async getKnowledgeSource(id: string, revisionId: string): Promise<KnowledgeSource | null> {
+    return z
+      .object({ source: knowledgeSourceSchema.nullable() })
+      .parse(
+        await this.knowledgeRequest(
+          `/knowledge/documents/${encodeURIComponent(id)}/source?revisionId=${encodeURIComponent(revisionId)}`,
+        ),
+      ).source;
+  }
+  async downloadKnowledgeOriginal(id: string, revisionId: string): Promise<ArrayBuffer> {
+    const response = await this.request(
+      `/knowledge/documents/${encodeURIComponent(id)}/original?revisionId=${encodeURIComponent(revisionId)}`,
+      { method: 'GET' },
+    );
+    return response.arrayBuffer();
   }
   async listKnowledgeFolders(): Promise<KnowledgeFolder[]> {
     return z

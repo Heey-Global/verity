@@ -1,3 +1,5 @@
+import { ProjectKnowledge } from '../components/knowledge/ProjectKnowledge';
+import { KnowledgeOriginal } from '../components/knowledge/KnowledgeOriginal';
 import type {
   KnowledgeDocument,
   KnowledgeFolder,
@@ -15,16 +17,15 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
 import { createVerityClient } from '../lib/client';
-import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 import { KnowledgeButton as Button } from '../components/knowledge/KnowledgeButton';
 import { KnowledgeMarkdown } from '../components/knowledge/KnowledgeMarkdown';
 import { styles } from '../components/knowledge/styles';
 
 export default function KnowledgeScreen() {
   const client = useMemo(() => createVerityClient(), []);
-  const params = useLocalSearchParams<{ folderId?: string }>();
+  const params = useLocalSearchParams<{ folderId?: string; projectId?: string }>();
   return client ? (
-    <Library client={client} initialFolder={params.folderId ?? null} />
+    <Library client={client} initialFolder={params.folderId ?? null} projectId={params.projectId} />
   ) : (
     <Text style={styles.text}>Connect to your server to open Knowledge.</Text>
   );
@@ -33,9 +34,11 @@ export default function KnowledgeScreen() {
 export function Library({
   client,
   initialFolder,
+  projectId,
 }: {
   client: VerityClient;
   initialFolder: string | null;
+  projectId?: string;
 }) {
   const navigation = useNavigation();
   const { theme } = useUnistyles();
@@ -43,10 +46,28 @@ export function Library({
   const [moreActions, setMoreActions] = useState(false);
   const [folders, setFolders] = useState<KnowledgeFolder[]>([]);
   const [folderId, setFolderId] = useState(initialFolder);
+  const activeProjectId = useMemo(() => {
+    if (projectId) return projectId;
+    let current = folders.find((folder) => folder.id === folderId);
+    const seen = new Set<string>();
+    while (current && !seen.has(current.id)) {
+      if (current.projectId) return current.projectId;
+      seen.add(current.id);
+      current = folders.find((folder) => folder.id === current?.parentId);
+    }
+    return undefined;
+  }, [projectId, folders, folderId]);
+  const onSpace = useCallback(
+    (space: { sourcesFolderId: string }) => {
+      if (!initialFolder) setFolderId((current) => current ?? space.sourcesFolderId);
+    },
+    [initialFolder],
+  );
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [document, setDocument] = useState<KnowledgeDocument | null>(null);
   const [editing, setEditing] = useState(false);
+  const [hasOriginal, setHasOriginal] = useState<boolean | null>(null);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -252,6 +273,7 @@ export function Library({
       <Text numberOfLines={1} style={styles.entryText}>
         {entry.title}
       </Text>
+      {entry.stale ? <Text style={styles.muted}>Source changed</Text> : null}
     </Pressable>
   );
   const renderFolders = (parentId: string | null, depth: number): React.ReactNode =>
@@ -300,16 +322,12 @@ export function Library({
           </View>
         );
       });
-  // Keyboard-aware: the rename, new-folder and document-title fields sit at
-  // whatever depth the library has scrolled to, and the editor's body field is
-  // below the fold by definition. A plain scroll view leaves whichever one is
-  // focused behind the keyboard with nothing to scroll into.
   return (
+    // Keep fields visible when editing a deeply scrolled folder or document.
     <KeyboardAwareScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
-      bottomOffset={KEYBOARD_BOTTOM_OFFSET}
     >
       <Stack.Screen options={{ title: 'Knowledge', gestureEnabled: !dirty && !busy }} />
       <View style={styles.row}>
@@ -324,6 +342,17 @@ export function Library({
         </Text>
       ) : null}
       {busy ? <Text style={styles.muted}>Working…</Text> : null}
+      {activeProjectId ? (
+        <ProjectKnowledge
+          key={activeProjectId}
+          client={client}
+          projectId={activeProjectId}
+          document={document}
+          folders={folders}
+          blocked={busy || editing || creating}
+          onSpace={onSpace}
+        />
+      ) : null}
       {document || creating ? (
         <View style={styles.group}>
           {editing ? (
@@ -365,9 +394,33 @@ export function Library({
           ) : (
             <>
               <Text style={styles.heading}>{document?.title}</Text>
+              {document?.stale ? (
+                <Text style={styles.muted}>
+                  Source changed or removed. Review this Wiki page before relying on it.
+                </Text>
+              ) : null}
+              {document ? (
+                <KnowledgeOriginal
+                  client={client}
+                  document={document}
+                  onOriginal={setHasOriginal}
+                  onReplaced={async (next) => {
+                    setDocument(next);
+                    await refresh();
+                  }}
+                />
+              ) : null}
               <KnowledgeMarkdown body={document?.bodyMarkdown ?? ''} onLink={openLinkedDocument} />
               <View style={styles.row}>
-                <Button icon="edit-2" iconOnly label="Edit" disabled={busy} onPress={startEdit} />
+                {hasOriginal !== true ? (
+                  <Button
+                    icon="edit-2"
+                    iconOnly
+                    label="Edit"
+                    disabled={busy || hasOriginal === null}
+                    onPress={startEdit}
+                  />
+                ) : null}
                 <Button
                   icon="clock"
                   iconOnly
@@ -580,6 +633,55 @@ export function Library({
               }}
             />
             <Button
+              icon="upload-cloud"
+              iconOnly
+              label="Upload original files"
+              disabled={busy || !folderId}
+              onPress={() => {
+                void run(async () => {
+                  const picked = await DocumentPicker.getDocumentAsync({
+                    multiple: true,
+                    copyToCacheDirectory: true,
+                    type: '*/*',
+                  });
+                  if (picked.canceled) return;
+                  let uploaded = 0;
+                  let failure: unknown;
+                  try {
+                    for (const asset of picked.assets)
+                      if ((asset.size ?? 0) > 10 * 1024 * 1024)
+                        throw new Error('Each original is limited to 10 MiB');
+                    for (const asset of picked.assets) {
+                      if (folderId)
+                        await client.uploadKnowledgeSource({
+                          folderId,
+                          filename: asset.name,
+                          base64: await new File(asset.uri).base64(),
+                        });
+                      uploaded += 1;
+                    }
+                  } catch (error) {
+                    failure = error;
+                  } finally {
+                    for (const asset of picked.assets) {
+                      try {
+                        new File(asset.uri).delete();
+                      } catch {
+                        /* Preserve the upload outcome. */
+                      }
+                    }
+                  }
+                  if (uploaded > 0)
+                    try {
+                      await refresh();
+                    } catch (error) {
+                      failure ??= error;
+                    }
+                  if (failure) throw failure;
+                });
+              }}
+            />
+            <Button
               icon="more-horizontal"
               iconOnly
               label="More folder actions"
@@ -655,7 +757,7 @@ export function Library({
               <Button
                 icon="edit-2"
                 label="Rename folder"
-                disabled={busy}
+                disabled={busy || !!currentFolder?.role}
                 onPress={() => {
                   setFolderAction('rename');
                   setFolderName(currentFolder?.name ?? '');
@@ -664,13 +766,13 @@ export function Library({
               <Button
                 icon="corner-up-right"
                 label="Move folder"
-                disabled={busy}
+                disabled={busy || !!currentFolder?.role}
                 onPress={() => setMoving(!moving)}
               />
               <Button
                 icon="trash-2"
                 label="Delete folder"
-                disabled={busy}
+                disabled={busy || !!currentFolder?.role}
                 onPress={() =>
                   confirm(
                     'Delete this folder and its contents? Project access changes may retire affected session contexts.',
@@ -689,6 +791,59 @@ export function Library({
             <View style={styles.row}>
               {moreActions ? (
                 <>
+                  <Button
+                    icon="upload"
+                    label="Import source bundle"
+                    disabled={busy}
+                    onPress={() => {
+                      void run(async () => {
+                        const picked = await DocumentPicker.getDocumentAsync({
+                          multiple: false,
+                          copyToCacheDirectory: true,
+                          type: 'application/json',
+                        });
+                        if (picked.canceled) return;
+                        const asset = picked.assets[0];
+                        if (!asset) return;
+                        const file = new File(asset.uri);
+                        try {
+                          if ((asset.size ?? 0) > 20 * 1024 * 1024)
+                            throw new Error('Source bundles are limited to 20 MiB');
+                          const bundle: unknown = JSON.parse(await file.text());
+                          await client.importKnowledgeSourceBundle(folderId, bundle);
+                          await refresh();
+                        } finally {
+                          try {
+                            file.delete();
+                          } catch {
+                            /* Preserve the import outcome. */
+                          }
+                        }
+                      });
+                    }}
+                  />
+                  <Button
+                    icon="download"
+                    label="Export source bundle"
+                    disabled={busy}
+                    onPress={() => {
+                      void run(async () => {
+                        const bundle = await client.exportKnowledgeSourceBundle(folderId);
+                        const file = new File(Paths.cache, 'knowledge-sources.json');
+                        try {
+                          file.create({ overwrite: true });
+                          file.write(JSON.stringify(bundle));
+                          await Sharing.shareAsync(file.uri, { mimeType: 'application/json' });
+                        } finally {
+                          if (file.exists) file.delete();
+                        }
+                      });
+                    }}
+                  />
+                  <Text style={styles.muted}>
+                    Source bundles include current originals and extracted content; full history is
+                    retained in server backups.
+                  </Text>
                   <Button
                     icon="download"
                     label="Import folder bundle"

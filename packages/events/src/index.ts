@@ -115,4 +115,5 @@ export {
   knowledgeToolRequestSchema,
   KNOWLEDGE_TOOL_DESCRIPTION,
   KNOWLEDGE_CONTEXT_INSTRUCTIONS,
+  KNOWLEDGE_WIKI_CONTEXT_INSTRUCTIONS,
 } from './knowledge-tool.js';
