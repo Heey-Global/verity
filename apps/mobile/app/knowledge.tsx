@@ -12,7 +12,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Pressable, Text, TextInput, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
@@ -759,50 +759,67 @@ export function Library({
               />
             </View>
           ) : null}
-          {moreActions && folderId ? (
-            <View style={styles.row}>
-              <Button
-                icon="edit-2"
-                label="Rename folder"
-                disabled={busy || !!currentFolder?.role}
-                onPress={() => {
-                  setFolderAction('rename');
-                  setFolderName(currentFolder?.name ?? '');
-                }}
-              />
-              <Button
-                icon="corner-up-right"
-                label="Move folder"
-                disabled={busy || !!currentFolder?.role}
-                onPress={() => setMoving(!moving)}
-              />
-              <Button
-                icon="trash-2"
-                label="Delete folder"
-                disabled={busy || !!currentFolder?.role}
-                onPress={() =>
-                  confirm(
-                    'Delete this folder and its contents? Project access changes may retire affected session contexts.',
-                    () => {
-                      void run(async () => {
-                        await client.deleteKnowledgeFolder(folderId);
-                        showFolder(currentFolder?.parentId ?? null);
-                      });
-                    },
-                  )
-                }
-              />
-            </View>
-          ) : null}
-          {folderId ? (
-            <View style={styles.row}>
-              {moreActions ? (
-                <>
+          <Modal
+            visible={moreActions && !!folderId}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setMoreActions(false)}
+          >
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close folder actions"
+              style={styles.menuBackdrop}
+              onPress={() => setMoreActions(false)}
+            >
+              <Pressable style={styles.menuCard} onPress={() => undefined}>
+                <Text style={styles.heading}>Folder actions</Text>
+                <View style={styles.group}>
+                  <Button
+                    icon="edit-2"
+                    label="Rename folder"
+                    disabled={busy || !!currentFolder?.role}
+                    onPress={() => {
+                      setMoreActions(false);
+                      setFolderAction('rename');
+                      setFolderName(currentFolder?.name ?? '');
+                    }}
+                  />
+                  <Button
+                    icon="corner-up-right"
+                    label="Move folder"
+                    disabled={busy || !!currentFolder?.role}
+                    onPress={() => {
+                      setMoreActions(false);
+                      setMoving(!moving);
+                    }}
+                  />
+                  <Button
+                    icon="trash-2"
+                    label="Delete folder"
+                    disabled={busy || !!currentFolder?.role}
+                    onPress={() => {
+                      const selectedFolderId = folderId;
+                      if (!selectedFolderId) return;
+                      setMoreActions(false);
+                      confirm(
+                        'Delete this folder and its contents? Project access changes may retire affected session contexts.',
+                        () => {
+                          void run(async () => {
+                            await client.deleteKnowledgeFolder(selectedFolderId);
+                            showFolder(currentFolder?.parentId ?? null);
+                          });
+                        },
+                      );
+                    }}
+                  />
                   <Button
                     icon="upload"
                     label="Import source bundle"
                     disabled={busy}
                     onPress={() => {
+                      const selectedFolderId = folderId;
+                      if (!selectedFolderId) return;
+                      setMoreActions(false);
                       void run(async () => {
                         const picked = await DocumentPicker.getDocumentAsync({
                           multiple: false,
@@ -817,7 +834,7 @@ export function Library({
                           if ((asset.size ?? 0) > 20 * 1024 * 1024)
                             throw new Error('Source bundles are limited to 20 MiB');
                           const bundle: unknown = JSON.parse(await file.text());
-                          await client.importKnowledgeSourceBundle(folderId, bundle);
+                          await client.importKnowledgeSourceBundle(selectedFolderId, bundle);
                           await refresh();
                         } finally {
                           try {
@@ -834,8 +851,11 @@ export function Library({
                     label="Export source bundle"
                     disabled={busy}
                     onPress={() => {
+                      const selectedFolderId = folderId;
+                      if (!selectedFolderId) return;
+                      setMoreActions(false);
                       void run(async () => {
-                        const bundle = await client.exportKnowledgeSourceBundle(folderId);
+                        const bundle = await client.exportKnowledgeSourceBundle(selectedFolderId);
                         const file = new File(Paths.cache, 'knowledge-sources.json');
                         try {
                           file.create({ overwrite: true });
@@ -855,23 +875,29 @@ export function Library({
                     icon="download"
                     label="Import folder bundle"
                     disabled={busy}
-                    onPress={() => setTransfer('')}
+                    onPress={() => {
+                      setMoreActions(false);
+                      setTransfer('');
+                    }}
                   />
                   <Button
                     icon="share"
                     label="Export Markdown bundle"
                     disabled={busy}
                     onPress={() => {
+                      const selectedFolderId = folderId;
+                      if (!selectedFolderId) return;
+                      setMoreActions(false);
                       void run(async () => {
-                        const exported = await client.exportKnowledge(folderId);
+                        const exported = await client.exportKnowledge(selectedFolderId);
                         setTransfer(JSON.stringify(exported, null, 2));
                       });
                     }}
                   />
-                </>
-              ) : null}
-            </View>
-          ) : null}
+                </View>
+              </Pressable>
+            </Pressable>
+          </Modal>
           {!query ? renderFolders(null, 0) : null}
           {query ? documents.map((d) => renderDocument(d, 0)) : null}
           {!folders.length && !query ? (

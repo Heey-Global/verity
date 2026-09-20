@@ -49,6 +49,20 @@ export const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderColor: theme.colors.border,
   },
+  menuBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    padding: 16,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  menuCard: {
+    gap: 8,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
   input: {
     color: theme.colors.text,
     padding: 12,
