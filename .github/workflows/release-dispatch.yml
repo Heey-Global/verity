@@ -84,6 +84,9 @@ jobs:
       backend-artifact-only: ${{ matrix.train == 'backend' && inputs['backend-artifact-only'] || false }}
       backend-schema-forward-max: ${{ inputs['backend-schema-forward-max'] || '' }}
       backend-accept-no-rollback: ${{ inputs['backend-accept-no-rollback'] || false }}
-      backend-replan: ${{ matrix.train == 'backend' && inputs['backend-replan'] || false }}
+      # The publisher dispatches this run through the API, which carries inputs
+      # as strings, while the manual form sends a real boolean. Normalize both:
+      # a string reaching this boolean input fails the whole dispatched run.
+      backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}
       website-ref: ${{ inputs['website-ref'] || '' }}

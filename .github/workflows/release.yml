@@ -2680,6 +2680,8 @@ jobs:
       # this release sit on main with no release PR until an unrelated later push
       # happens to plan one — silently, with no failed run to notice. The
       # publication above cleared the draft this planning run refuses to pass.
+      # The dispatcher only ever publishes from a push to main, so planning
+      # targets that same branch rather than this run's release tag.
       - name: Plan the next backend release
         if: github.event_name == 'push'
         shell: bash

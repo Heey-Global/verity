@@ -1147,6 +1147,22 @@ describe('planning resumes after publication', () => {
     // this release may plan the next one against current main.
     expect(replan[0]?.if).toContain("github.event_name == 'push'");
     expect(job.permissions?.actions).toBe('write');
+    // Without a token the dispatch fails after the draft is already cleared:
+    // a published release, a red run, and no planning run at all.
+    const token = replan[0]?.env?.GH_TOKEN ?? job.env?.GH_TOKEN;
+    expect(token, `${name} must give the dispatch a token`).toContain('GITHUB_TOKEN');
+  });
+
+  it('prepares the workspace a dispatched planning run reads', () => {
+    const steps = release.jobs['release-please']?.steps ?? [];
+    // The lifecycle resolves tags and merge bases from a local clone, so the
+    // dispatched run needs the same checkout the push path gets. Skipping it
+    // leaves the planning run failing on an empty workspace.
+    const checkout = steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+    expect(checkout?.if).toContain('backend-replan');
+    expect(checkout?.with?.['fetch-depth']).toBe(0);
+    const lifecycle = steps.find((step) => step.run?.includes('release-lifecycle.mjs'));
+    expect(lifecycle?.if).toContain('backend-replan');
   });
 
   it('keeps a dispatched re-plan in planning mode only', () => {
@@ -1163,9 +1179,11 @@ describe('planning resumes after publication', () => {
     expect(reachable[0]?.if).toContain(
       "inputs.backend-replan && steps.lifecycle.outputs.mode == 'plan'",
     );
-    expect(dispatch.jobs['release-train']?.with?.['backend-replan']).toContain(
-      "matrix.train == 'backend'",
-    );
+    const forwarded = dispatch.jobs['release-train']?.with?.['backend-replan'];
+    expect(forwarded).toContain("matrix.train == 'backend'");
+    // An API dispatch carries inputs as strings. Forwarding one unnormalized
+    // into this boolean input fails the dispatched run before it can plan.
+    expect(forwarded).toContain("format('{0}', inputs['backend-replan']) == 'true'");
   });
 
   it('refuses a re-plan that carries any recovery input', () => {
