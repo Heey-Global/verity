@@ -13,6 +13,7 @@ import {
   deriveSessionStatus,
   deriveSessionStatusFromProjection,
   permissionEventAwaitsInput,
+  projectionTailIsSelfContained,
 } from './status.js';
 
 const text: AgentEvent = { t: 'text', delta: 'hi' };
@@ -123,6 +124,23 @@ describe('deriveSessionStatus', () => {
   it('does not inherit a terminal status across a fresh prompt boundary', () => {
     expect(deriveSessionStatus([result, { t: 'prompt', text: 'new turn' }, text])).toBe('running');
     expect(deriveSessionStatus([error, { t: 'prompt', text: 'new turn' }])).toBe('running');
+  });
+});
+
+describe('projectionTailIsSelfContained', () => {
+  it('accepts a tail at a fresh prompt boundary and preserves the full-log status', () => {
+    const oldTurn: AgentEvent[] = [{ t: 'prompt', text: 'old' }, taskStarted, result];
+    const tail: AgentEvent[] = [{ t: 'prompt', text: 'new' }, text, result];
+    expect(projectionTailIsSelfContained(tail)).toBe(true);
+    expect(deriveSessionStatus(tail)).toBe(deriveSessionStatus([...oldTurn, ...tail]));
+  });
+
+  it('rejects a tail whose only prompt was steered into an earlier turn', () => {
+    const tail: AgentEvent[] = [{ t: 'prompt', text: 'more context', steered: true }, result];
+    expect(projectionTailIsSelfContained(tail)).toBe(false);
+    expect(deriveSessionStatus(tail)).not.toBe(
+      deriveSessionStatus([{ t: 'prompt', text: 'start' }, taskStarted, ...tail]),
+    );
   });
 });
 

@@ -13738,6 +13738,7 @@ describe('overview projections read only the narrow event slice', () => {
     const getEventsAfter = vi.spyOn(ctx.store, 'getEventsAfter');
     const countingReads = vi.spyOn(ctx.store, 'listSessionProjectionFacts');
     const sliceOnlyReads = vi.spyOn(ctx.store, 'listSessionProjectionEvents');
+    const tailReads = vi.spyOn(ctx.store, 'listRecentSessionProjectionEvents');
     try {
       const list = await app.inject({ method: 'GET', url: '/sessions' });
       expect(list.json()).toHaveLength(1);
@@ -13766,12 +13767,57 @@ describe('overview projections read only the narrow event slice', () => {
       // the projection read that still grows with the log, and paying it 40 times
       // a minute per open session is the shape of waste this whole change removed.
       expect(countingReads).toHaveBeenCalledTimes(2);
-      expect(sliceOnlyReads).toHaveBeenCalledTimes(1);
+      expect(tailReads).toHaveBeenCalledTimes(1);
+      expect(sliceOnlyReads).not.toHaveBeenCalled();
     } finally {
       getEvents.mockRestore();
       getEventsAfter.mockRestore();
       countingReads.mockRestore();
       sliceOnlyReads.mockRestore();
+      tailReads.mockRestore();
+    }
+  });
+
+  it('falls back to the full projection when the recent tail misses the turn boundary', async () => {
+    await ctx.store.createSession({ sessionId: 's-long-turn', worktree: '/wt/long', model: 'm' });
+    await ctx.store.appendEvent('s-long-turn', { t: 'prompt', text: 'go' });
+    for (let i = 0; i <= 200; i += 1) {
+      await ctx.store.appendEvent('s-long-turn', { t: 'status', state: 'running' });
+    }
+    const tailReads = vi.spyOn(ctx.store, 'listRecentSessionProjectionEvents');
+    const fullReads = vi.spyOn(ctx.store, 'listSessionProjectionEvents');
+    try {
+      const activity = await app.inject({ method: 'GET', url: '/sessions/s-long-turn/activity' });
+      expect(activity.json()).toMatchObject({ busy: false });
+      expect(tailReads).toHaveBeenCalledTimes(1);
+      expect(fullReads).toHaveBeenCalledTimes(1);
+    } finally {
+      tailReads.mockRestore();
+      fullReads.mockRestore();
+    }
+  });
+
+  it('keeps the whole-log task gate when an accepted tail no longer contains the task', async () => {
+    await ctx.store.createSession({ sessionId: 's-old-task', worktree: '/wt/task', model: 'm' });
+    await ctx.store.appendEvent('s-old-task', { t: 'task', id: 'old', phase: 'started' });
+    for (let i = 0; i < 5; i += 1) {
+      await ctx.store.appendEvent('s-old-task', { t: 'status', state: 'running' });
+    }
+    await ctx.store.appendEvent('s-old-task', { t: 'prompt', text: 'new turn' });
+    for (let i = 0; i < 198; i += 1) {
+      await ctx.store.appendEvent('s-old-task', { t: 'status', state: 'running' });
+    }
+
+    const fullReads = vi.spyOn(ctx.store, 'listSessionProjectionEvents');
+    const taskChecks = vi.spyOn(ctx.store, 'sessionHasTaskLifecycleEvent');
+    try {
+      const activity = await app.inject({ method: 'GET', url: '/sessions/s-old-task/activity' });
+      expect(activity.json()).toMatchObject({ busy: true });
+      expect(taskChecks).toHaveBeenCalledTimes(1);
+      expect(fullReads).not.toHaveBeenCalled();
+    } finally {
+      fullReads.mockRestore();
+      taskChecks.mockRestore();
     }
   });
 
