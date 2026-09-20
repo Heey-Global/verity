@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.2](https://github.com/Heey-Global/verity/compare/v1.3.1...v1.3.2) (2026-09-20)
+
+
+### Bug Fixes
+
+* **knowledge:** hide unadded repositories ([#556](https://github.com/Heey-Global/verity/issues/556)) ([c4a7c64](https://github.com/Heey-Global/verity/commit/c4a7c64e8eb19ca3d52cdd75d710cdfe3065682c))
+* **server:** wake sleeping sandbox on session turn ([#559](https://github.com/Heey-Global/verity/issues/559)) ([471d9c6](https://github.com/Heey-Global/verity/commit/471d9c6e7389a54c57ac84458901cb4217c21a3a))
+
+
+### Performance Improvements
+
+* **server:** scope large body limits to upload routes ([#555](https://github.com/Heey-Global/verity/issues/555)) ([ca5ee6e](https://github.com/Heey-Global/verity/commit/ca5ee6e2ed3f7750284d0576f1fb78dbbe80feb0))
+
 ## [1.3.1](https://github.com/Heey-Global/verity/compare/v1.3.0...v1.3.1) (2026-09-20)
 
 
