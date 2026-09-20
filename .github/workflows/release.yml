@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      backend-replan:
+        description: Plan the next backend release PR after a completed publication
+        required: false
+        default: false
+        type: boolean
       website-version:
         description: Existing website release version to recover (X.Y.Z)
         required: false
@@ -105,6 +110,33 @@ jobs:
             fi
           fi
 
+      - name: Validate backend re-plan request
+        env:
+          REPLAN: ${{ inputs.backend-replan }}
+          EVENT_NAME: ${{ github.event_name }}
+          MOBILE_TAG: ${{ inputs.mobile-tag }}
+          VERSION: ${{ inputs.backend-version }}
+          SOURCE_REF: ${{ inputs.backend-ref }}
+          SCHEMA_FORWARD_MAX: ${{ inputs.backend-schema-forward-max }}
+          REPUBLISH: ${{ inputs.backend-republish }}
+          ARTIFACT_ONLY: ${{ inputs.backend-artifact-only }}
+          ACCEPT_NO_ROLLBACK: ${{ inputs.backend-accept-no-rollback }}
+          WEBSITE_VERSION: ${{ inputs.website-version }}
+          WEBSITE_REF: ${{ inputs.website-ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$REPLAN" == true ]]; then
+            # A re-plan carries no recovery input: planning may never publish,
+            # and a request that mixes both hides which mode actually ran.
+            if [[ "$EVENT_NAME" != workflow_dispatch ||
+                  -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
+                  "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ]]; then
+              echo '::error::A backend re-plan is a manual planning run and must carry no recovery input.' >&2
+              exit 1
+            fi
+          fi
+
       - name: Repair workspace ownership
         working-directory: /
         run: |
@@ -146,7 +178,7 @@ jobs:
       # hiding a manifest or a file that does not belong to the selected train.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.backend-replan
         with:
           fetch-depth: 0
 
@@ -271,7 +303,9 @@ jobs:
 
       - name: Reconcile release lifecycle
         id: lifecycle
-        if: github.event_name == 'push' && steps.release-trains.outputs[inputs.train] == 'true'
+        if: >-
+          (github.event_name == 'push' && steps.release-trains.outputs[inputs.train] == 'true') ||
+          (inputs.backend-replan && inputs.train == 'backend')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -357,7 +391,12 @@ jobs:
 
       - name: Open backend release PR or create release
         id: release-backend
-        if: github.event_name == 'push' && inputs.train == 'backend' && steps.release-trains.outputs.backend == 'true' && steps.lifecycle.outputs.mode != 'skip'
+        # A re-plan reaches Release Please only in planning mode, so a manual
+        # run can never create a release the push lifecycle did not authorize.
+        if: >-
+          inputs.train == 'backend' &&
+          ((github.event_name == 'push' && steps.release-trains.outputs.backend == 'true' && steps.lifecycle.outputs.mode != 'skip') ||
+          (inputs.backend-replan && steps.lifecycle.outputs.mode == 'plan'))
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -2544,6 +2583,7 @@ jobs:
       needs.publish-preview-images.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
+      actions: write
       contents: write
       issues: write
       pull-requests: read
@@ -2633,3 +2673,14 @@ jobs:
           else
             gh release edit "$TAG" --draft=false --latest=false
           fi
+
+      # Planning and publication are separate modes, so the push that published
+      # this version could not also plan the next one, and nothing re-runs
+      # planning on its own. Without this dispatch, source commits merged before
+      # this release sit on main with no release PR until an unrelated later push
+      # happens to plan one — silently, with no failed run to notice. The
+      # publication above cleared the draft this planning run refuses to pass.
+      - name: Plan the next backend release
+        if: github.event_name == 'push'
+        shell: bash
+        run: gh workflow run release-dispatch.yml --ref main -f backend-replan=true
