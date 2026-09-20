@@ -74,13 +74,20 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
           'invalid',
           'Preview and confirm the access changes before moving a folder',
         );
-      const folder = await store.updateFolder(params.parse(request.params).id, {
+      const folderId = params.parse(request.params).id;
+      const previousSourceProject = await store.projectForSourceFolder(folderId);
+      const folder = await store.updateFolder(folderId, {
         ...(body.name === undefined ? {} : { name: body.name }),
         ...(body.parentId === undefined ? {} : { parentId: body.parentId }),
         ...(body.expectedPolicyToken === undefined
           ? {}
           : { expectedPolicyToken: body.expectedPolicyToken }),
       });
+      const nextSourceProject = await store.projectForSourceFolder(folder.id);
+      if (previousSourceProject && previousSourceProject !== nextSourceProject)
+        await deps.wakeMaintenance?.(previousSourceProject);
+      if (nextSourceProject && nextSourceProject !== previousSourceProject)
+        await deps.wakeMaintenance?.(nextSourceProject);
       await reconcile();
       return { folder };
     });
@@ -93,7 +100,10 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
       return store.previewDocumentMove(params.parse(request.params).id, folderId);
     });
     instance.delete('/knowledge/folders/:id', async (request) => {
-      await store.deleteFolder(params.parse(request.params).id);
+      const folderId = params.parse(request.params).id;
+      const sourceProject = await store.projectForSourceFolder(folderId);
+      await store.deleteFolder(folderId);
+      if (sourceProject) await deps.wakeMaintenance?.(sourceProject);
       await reconcile();
       return { ok: true };
     });

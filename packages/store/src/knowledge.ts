@@ -1025,6 +1025,7 @@ export class KnowledgeStore {
       const folders = await this.folders(tx);
       const old = folders.find((f) => f.id === id);
       if (!old) throw new KnowledgeError('not_found');
+      const previousSourceProject = await this.sourceProject(tx, id);
       if (old.role && (input.parentId !== undefined || input.name !== undefined))
         throw new KnowledgeError('forbidden', 'Managed folders cannot be renamed or moved');
       if (input.parentId !== undefined && input.parentId !== old.parentId) {
@@ -1075,6 +1076,23 @@ export class KnowledgeStore {
           tx,
           sources.map((source) => source.id),
         );
+        const nextSourceProject = await this.sourceProject(tx, id);
+        const sourceIds = sources.map((source) => source.id);
+        if (previousSourceProject && previousSourceProject !== nextSourceProject) {
+          if (sourceIds.length)
+            await tx
+              .deleteFrom('knowledge_maintenance_queue')
+              .where('project_id', '=', previousSourceProject)
+              .where('source_document_id', 'in', sourceIds)
+              .execute();
+          await tx
+            .updateTable('project_knowledge_spaces')
+            .set({ reconcile_due_at: new Date() })
+            .where('project_id', '=', previousSourceProject)
+            .execute();
+        }
+        if (nextSourceProject && nextSourceProject !== previousSourceProject)
+          await this.queueWikiMaintenanceTx(tx, nextSourceProject, sourceIds, new Date(), false);
       }
       return next;
     }, input.expectedPolicyToken);
@@ -1099,12 +1117,19 @@ export class KnowledgeStore {
         );
       if ((await this.folders(tx)).find((f) => f.id === id)?.role)
         throw new KnowledgeError('forbidden', 'Managed folders cannot be deleted');
+      const sourceProject = await this.sourceProject(tx, id);
       const row = await tx
         .deleteFrom('knowledge_folders')
         .where('id', '=', id)
         .returning('id')
         .executeTakeFirst();
       if (!row) throw new KnowledgeError('not_found');
+      if (sourceProject)
+        await tx
+          .updateTable('project_knowledge_spaces')
+          .set({ reconcile_due_at: new Date() })
+          .where('project_id', '=', sourceProject)
+          .execute();
     });
   }
   async getGrants(projectId: string): Promise<KnowledgeGrant[]> {
