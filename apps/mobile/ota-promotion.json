@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.19",
+  "version": "1.33.20",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "e92ca3b8701c798406536aa46129daa19ec128b3",
-  "tag": "mobile-v1.33.19",
-  "branch": "staging-mobile-v1.33.19-e92ca3b8701c798406536aa46129daa19ec128b3",
-  "baseline": "mobile-v1.33.18",
-  "group": "a75563dc-f68f-4dfd-9f2d-639ad81270e3",
+  "commit": "d213999edc8f4eabcee56952420f47eeee880744",
+  "tag": "mobile-v1.33.20",
+  "branch": "staging-mobile-v1.33.20-d213999edc8f4eabcee56952420f47eeee880744",
+  "baseline": "mobile-v1.33.19",
+  "group": "d39726f9-0e83-4a23-8e42-8f0a247a2ab5",
   "notes": [
-    "add managed knowledge library with project access grants (#526)"
+    "streamline explorer and enable access across model backends (#531)"
   ]
 }
