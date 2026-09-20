@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/Heey-Global/verity/compare/v1.1.0...v1.2.0) (2026-09-20)
+
+
+### Features
+
+* **server:** sleep idle project sandboxes ([#547](https://github.com/Heey-Global/verity/issues/547)) ([9ade70a](https://github.com/Heey-Global/verity/commit/9ade70a7ae9e9caf2dedd1a7131bed88a8fad430))
+* **server:** wake sleeping projects for queued work ([#544](https://github.com/Heey-Global/verity/issues/544)) ([cdbe23b](https://github.com/Heey-Global/verity/commit/cdbe23b4547744df1f497492bd83e388b056e23e))
+
+
+### Bug Fixes
+
+* **sandbox:** serialize Codex SQLite initialization ([#542](https://github.com/Heey-Global/verity/issues/542)) ([d65a73d](https://github.com/Heey-Global/verity/commit/d65a73de17395ae4518b6bba4cbca239bb6d869b))
+
 ## [1.1.0](https://github.com/Heey-Global/verity/compare/v1.0.0...v1.1.0) (2026-09-20)
 
 
