@@ -2897,6 +2897,16 @@ export async function buildEmbeddedServer(
             throw error;
           }
         },
+        sleep: (projectId) => {
+          if (projectRelayLifecycle === undefined)
+            throw new Error('project relay runtime is not initialized');
+          return projectRelayLifecycle.sleep(projectId);
+        },
+        reactivate: (binding) => {
+          if (projectRelayLifecycle === undefined)
+            throw new Error('project relay runtime is not initialized');
+          return projectRelayLifecycle.reactivate(binding);
+        },
         stop: (projectId) => projectRelayLifecycle?.stop(projectId) ?? Promise.resolve(),
         brokerUrl: (activation) => `http://${projectRelayContainerName(activation.identity)}:8080`,
         claudeGatewayUrl: (activation) =>
@@ -3950,6 +3960,8 @@ export async function buildEmbeddedServer(
               (id, state, provisionError, provisionWarning) =>
                 eventStore.updateProjectState(id, state, provisionError, provisionWarning),
               (id) => provisioner?.isProjectProvisioning(id) === true,
+              provisioner?.recoverInterruptedSleep?.bind(provisioner),
+              provisioner?.recoverInterruptedWake?.bind(provisioner),
             );
             return reconciled ?? project;
           },

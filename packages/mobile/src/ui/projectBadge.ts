@@ -1,6 +1,6 @@
 import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 
-import type { ProjectRecord, ProjectState } from '../api.js';
+import type { ProjectLifecycleState, ProjectRecord } from '../api.js';
 
 /**
  * Presentation adapter for a project's container lifecycle, mirroring
@@ -35,12 +35,20 @@ export interface ProjectBadge {
   needsRepair: boolean;
 }
 
-// Exhaustive over ProjectState: if the server's state union grows, this stops
+// Exhaustive over ProjectLifecycleState: if the server's lifecycle union grows, this stops
 // compiling until the new state is given a badge (no silently untyped project).
-const BADGES: Record<ProjectState, ProjectBadge> = {
+const BADGES: Record<ProjectLifecycleState, ProjectBadge> = {
   active: { label: 'Running', tone: 'done', pulsing: false, needsRepair: false },
   cloning: { label: 'Preparing repository…', tone: 'working', pulsing: true, needsRepair: false },
   container_starting: { label: 'Starting…', tone: 'working', pulsing: true, needsRepair: false },
+  sleeping_starting: {
+    label: 'Going to sleep…',
+    tone: 'working',
+    pulsing: true,
+    needsRepair: false,
+  },
+  sleeping: { label: 'Sleeping', tone: 'idle', pulsing: false, needsRepair: false },
+  waking: { label: 'Waking…', tone: 'working', pulsing: true, needsRepair: false },
   // `failed` is the only state the reconciler assigns to a project whose container
   // stopped or vanished, so it is always operator-actionable via Repair.
   failed: { label: 'Needs repair', tone: 'danger', pulsing: false, needsRepair: true },
@@ -84,7 +92,7 @@ export const UNTRACKED_PROJECT_BADGE: ProjectBadge = {
 
 /** Map a project's container lifecycle to its indicator descriptor. */
 export function projectBadge(
-  project: Pick<ProjectRecord, 'state'> & {
+  project: Pick<ProjectRecord, 'state' | 'lifecycleState'> & {
     setupStatus?: ProjectRecord['setupStatus'];
     provisionWarning?: ProjectRecord['provisionWarning'];
   },
@@ -94,14 +102,15 @@ export function projectBadge(
     project.provisionWarning === PROJECT_IMAGE_REBUILDING_WARNING
   )
     return REBUILDING_BADGE;
-  if (project.state === 'absent' && project.setupStatus === 'pending') return SETUP_BADGE;
-  return BADGES[project.state];
+  const state = project.lifecycleState ?? project.state;
+  if (state === 'absent' && project.setupStatus === 'pending') return SETUP_BADGE;
+  return BADGES[state];
 }
 
 /** Single source of truth for "show the Repair action", so the overview row and the
  *  project detail screen can't drift apart on when a project is broken. */
 export function projectNeedsRepair(
-  project: Pick<ProjectRecord, 'state'> & {
+  project: Pick<ProjectRecord, 'state' | 'lifecycleState'> & {
     setupStatus?: ProjectRecord['setupStatus'];
     provisionWarning?: ProjectRecord['provisionWarning'];
   },

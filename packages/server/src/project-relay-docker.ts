@@ -273,6 +273,9 @@ async function sweepSupersededRelays(
 
 function containerRuntime(docker: DockerClient, id: string): ProjectRelayRuntime {
   return {
+    async quiesce(): Promise<void> {
+      await docker.stopContainer(id);
+    },
     async close(): Promise<void> {
       const failures = await removeRelayContainer(docker, id);
       if (failures.length > 0) {

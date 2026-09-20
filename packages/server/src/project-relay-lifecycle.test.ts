@@ -53,6 +53,9 @@ function harness() {
     }),
   } satisfies GhTokenCapabilityRegistry;
   const runtime = {
+    quiesce: vi.fn(async () => {
+      calls.push('runtime.quiesce');
+    }),
     close: vi.fn(async () => {
       calls.push('runtime.close');
     }),
@@ -137,6 +140,70 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.github.issue).not.toHaveBeenCalled();
     expect(h.calls).toEqual(['broker.start', 'claude.start', 'runtime.start']);
     expect(h.startRelay).toHaveBeenCalledWith(expect.objectContaining({ resumeExisting: true }));
+  });
+
+  it('sleeps by revoking authority and quiescing the retained relay generation', async () => {
+    const h = harness();
+    await h.lifecycle.start(binding);
+    h.calls.length = 0;
+
+    await h.lifecycle.sleep('p1');
+
+    expect(h.calls).toEqual([
+      'signing.revoke',
+      'github.revoke',
+      'runtime.quiesce',
+      'broker.close',
+      'claude.close',
+    ]);
+    expect(h.runtime.close).not.toHaveBeenCalled();
+    expect(h.lifecycle.isActive('p1')).toBe(false);
+
+    await expect(h.lifecycle.reactivate(binding)).resolves.toEqual({
+      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      signingCapability: 'sign-cap',
+      githubCapability: 'gh-cap',
+    });
+    expect(h.startRelay).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+        resumeExisting: true,
+      }),
+    );
+    expect(h.signing.issue).toHaveBeenCalledTimes(2);
+    expect(h.github.issue).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps restart resume distinct from waking with fresh capabilities', async () => {
+    const resumed = harness();
+    await resumed.lifecycle.resume(binding);
+    expect(resumed.signing.issue).not.toHaveBeenCalled();
+    expect(resumed.github.issue).not.toHaveBeenCalled();
+
+    const woken = harness();
+    await expect(woken.lifecycle.reactivate(binding)).resolves.toMatchObject({
+      signingCapability: 'sign-cap',
+      githubCapability: 'gh-cap',
+    });
+    expect(woken.signing.issue).toHaveBeenCalledOnce();
+    expect(woken.github.issue).toHaveBeenCalledOnce();
+    expect(woken.startRelay).toHaveBeenCalledWith(
+      expect.objectContaining({ resumeExisting: true }),
+    );
+  });
+
+  it('retains failed sleep handles for retry without reclosing successful resources', async () => {
+    const h = harness();
+    await h.lifecycle.start(binding);
+    h.runtime.quiesce.mockRejectedValueOnce(new Error('relay stop failed'));
+
+    await expect(h.lifecycle.sleep('p1')).rejects.toThrow(/relay sleep failed/);
+    expect(h.lifecycle.isActive('p1')).toBe(true);
+    await expect(h.lifecycle.sleep('p1')).resolves.toBeUndefined();
+
+    expect(h.runtime.quiesce).toHaveBeenCalledTimes(2);
+    expect(h.brokerClose).toHaveBeenCalledOnce();
+    expect(h.claudeClose).toHaveBeenCalledOnce();
   });
 
   it('does not revoke an existing sandbox capability when resume fails', async () => {
