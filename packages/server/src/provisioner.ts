@@ -154,6 +154,30 @@ const DEFAULT_SANDBOX_MEMORY_BYTES = 4 * 1024 * 1024 * 1024; // 4 GiB
 // sandboxes. Two cores matches the reference Compose deployment and remains
 // overridable through VERITY_SANDBOX_CPUS for larger or smaller hosts.
 const DEFAULT_SANDBOX_NANO_CPUS = 2 * 1e9;
+// Relative CPU weight per project sandbox (HostConfig.CpuShares). The ceiling
+// above is per-container and says nothing about how many of them run at once, so
+// on a host with more projects than cores every sandbox's ceiling is real and
+// their SUM is not: six sandboxes at two cores each want twelve on an eight-core
+// box. Nothing then decides who yields, because Docker sets no CPU weight at all
+// by default and every container — sandboxes, the relays, the control-plane
+// Server, whatever else the operator runs — sits at cgroup v2's default
+// `cpu.weight` of 100. Observed in prod: one sandbox running a legitimate
+// repository-wide `eslint .` inside its 2-core quota, alongside five idle-to-busy
+// neighbours, drove host CPU pressure to ~50% (PSI some avg60) with no OOM and no
+// container over its limit — the control plane competed 1:1 with the lint and the
+// whole box read as unresponsive.
+//
+// Weighting sandboxes below everything else fixes the ordering without touching
+// the workload: `cpu.weight` is work-conserving, so a sandbox alone on the host
+// still runs out to its full NanoCpus quota and a full `eslint .` / build / test
+// run is not slowed at all. It only decides who wins while CPU is actually
+// contended, and there the answer should be the control plane, not an agent's
+// lint. 512 is picked for the cgroup v2 weight it produces, not for its v1
+// meaning: runc maps it to 20 against the default 100, roughly a 1:5
+// deprioritization (on cgroup v1 it is used as-is, i.e. half of 1024). Override
+// with VERITY_SANDBOX_CPU_SHARES; 0 restores the daemon default and with it the
+// flat hierarchy described above.
+const DEFAULT_SANDBOX_CPU_SHARES = 512;
 const DEVCONTAINER_BUILD_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 /** How many genuinely legacy or broken project relays may be repaired at once,
  * without letting every project's container create hit the host in one instant. */
@@ -560,6 +584,10 @@ export interface ProvisionerOptions {
   sandboxMemoryBytes?: number | undefined;
   /** CPU quota per sandbox in nano-CPUs (1e9 = one core). Default 2 cores. */
   sandboxNanoCpus?: number | undefined;
+  /** Relative CPU weight per sandbox, deciding who yields once those per-container
+   *  quotas oversubscribe the host. Default 512 — below the control plane and the
+   *  relays, which stay at the daemon default. 0 opts out. */
+  sandboxCpuShares?: number | undefined;
   /** Capabilities to add back on top of the default `CapDrop: ALL` — for a project
    *  that genuinely needs one (e.g. `NET_BIND_SERVICE`). */
   sandboxCapAdd?: string[] | undefined;
@@ -4643,6 +4671,12 @@ export class ProvisionerImpl implements Provisioner {
       // crashed worker into a git checkout on a disk that is already the scarce resource.
       ulimits: [{ name: 'core', soft: 0, hard: 0 }],
       nanoCpus: this.opts.sandboxNanoCpus ?? DEFAULT_SANDBOX_NANO_CPUS,
+      // The ceiling above bounds ONE sandbox; this decides which container yields
+      // when several of them, plus the control plane, want the host's cores at the
+      // same moment. Without it every container shares one flat default weight and
+      // a routine lint in one project makes the whole box unresponsive. Nothing
+      // here caps throughput: an uncontended sandbox still runs out to `nanoCpus`.
+      cpuShares: this.opts.sandboxCpuShares ?? DEFAULT_SANDBOX_CPU_SHARES,
       // Join the resolved sandbox network (per-project when H2 isolation is on, else
       // the shared internal network when configured) so — in broker mode — the
       // sandbox reaches the control-plane signing broker by service DNS name.

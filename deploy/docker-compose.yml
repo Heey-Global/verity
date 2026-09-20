@@ -115,6 +115,16 @@ services:
       # v1 host as well — untested, and the prompt is written not to depend on it.
       VERITY_SANDBOX_MEMORY: ${VERITY_SANDBOX_MEMORY:-4g}
       VERITY_SANDBOX_CPUS: ${VERITY_SANDBOX_CPUS:-2}
+      # Relative CPU weight per sandbox. The ceiling above bounds ONE sandbox;
+      # nothing bounds their sum, so on a host with more projects than cores the
+      # per-container ceilings oversubscribe it and Docker's flat default weight
+      # leaves the control plane competing 1:1 with an agent's lint. This puts
+      # sandboxes below the Server and the relays, which stay at the default. It
+      # costs an uncontended sandbox nothing — CPU weight is work-conserving, so a
+      # full build/test/lint run still reaches the `VERITY_SANDBOX_CPUS` ceiling.
+      # Read it as the cgroup v2 weight it becomes (512 -> 20, against a default of
+      # 100), not as a fraction of Docker's nominal 1024. 0 restores the default.
+      VERITY_SANDBOX_CPU_SHARES: ${VERITY_SANDBOX_CPU_SHARES:-512}
       VERITY_SANDBOX_PIDS_LIMIT: ${VERITY_SANDBOX_PIDS_LIMIT:-512}
       # Escape hatch for a project whose devcontainer needs sudo or a capability:
       # VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION: '1'   # keep sudo working

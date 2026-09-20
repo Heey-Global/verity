@@ -307,6 +307,28 @@ export interface ContainerSpec {
   /** CPU quota in nano-CPUs (`HostConfig.NanoCpus`; 1e9 = one core). Omit → unlimited. */
   nanoCpus?: number;
   /**
+   * Relative CPU weight (`HostConfig.CpuShares`) — what the scheduler divides by
+   * once the per-container {@link nanoCpus} ceilings on a host add up to more
+   * cores than it has. The two are not alternatives and Docker accepts both:
+   * `nanoCpus` is a hard quota (cgroup v2 `cpu.max`) that binds even on an idle
+   * host, while this is a share of the CPU that is actually contended
+   * (`cpu.weight`) and binds only while a sibling cgroup is runnable. Weighting a
+   * container down therefore costs it nothing whenever its neighbours are idle —
+   * it still runs out to its full quota — which is what makes this usable on a
+   * workload that must not be narrowed.
+   *
+   * Omitting it is NOT equivalent to passing Docker's nominal default of 1024. An
+   * unset value leaves the cgroup at cgroup v2's default `cpu.weight` of 100,
+   * whereas runc converts whatever shares value it IS given with
+   * `1 + ((shares - 2) * 9999) / 262142` — which maps 1024 to 39 and 512 to 20,
+   * both far below that default. So "pass 1024 to change nothing" silently
+   * deprioritizes the container ~2.5x on every cgroup v2 host, and the reverse
+   * mistake needs a shares value near 2600 to reproduce the unset weight. Pick
+   * values here against the v2 weight they produce, not against 1024. On a
+   * cgroup v1 host the number is used as-is, where 1024 is the default.
+   */
+  cpuShares?: number;
+  /**
    * Per-process rlimits (`HostConfig.Ulimits`), e.g. `[{ name: 'core', soft: 0, hard: 0 }]`
    * to stop a crashing process from writing a core dump. Docker takes the names without
    * the `RLIMIT_` prefix, exactly as `docker run --ulimit` does, and `-1` means
@@ -383,6 +405,11 @@ export interface ContainerInspect {
    *  combined ceiling matches its memory ceiling and therefore cannot swap. */
   memorySwapBytes?: number | undefined;
   nanoCpus?: number | undefined;
+  /** `HostConfig.CpuShares`. Reported so a caller can tell a container left at the
+   *  daemon's default CPU weight (0 — unset) from one deliberately weighted below
+   *  its neighbours. 0 and 1024 are NOT the same answer here; see
+   *  {@link ContainerSpec.cpuShares}. */
+  cpuShares?: number | undefined;
   env?: string[] | undefined;
   /** Runtime mounts reported by inspect; secret jobs require this to be empty. */
   mountCount?: number | undefined;
@@ -1127,6 +1154,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           ? { MemorySwap: spec.memorySwapBytes }
           : {}),
         ...(spec.nanoCpus !== undefined && spec.nanoCpus > 0 ? { NanoCpus: spec.nanoCpus } : {}),
+        // Emitted only when positive: Docker reads 0 as "unset", so a spec that
+        // zeroes this asks for the daemon default weight rather than for a
+        // container the scheduler starves.
+        ...(spec.cpuShares !== undefined && spec.cpuShares > 0
+          ? { CpuShares: spec.cpuShares }
+          : {}),
         ...(ulimits.length
           ? {
               Ulimits: ulimits.map((limit) => ({
@@ -1656,6 +1689,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           Memory?: unknown;
           MemorySwap?: unknown;
           NanoCpus?: unknown;
+          CpuShares?: unknown;
           Privileged?: unknown;
           CapAdd?: unknown;
           GroupAdd?: unknown;
@@ -1734,6 +1768,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : {}),
         ...(typeof json.HostConfig?.NanoCpus === 'number'
           ? { nanoCpus: json.HostConfig.NanoCpus }
+          : {}),
+        ...(typeof json.HostConfig?.CpuShares === 'number'
+          ? { cpuShares: json.HostConfig.CpuShares }
           : {}),
         ...(isStringArray(json.Config?.Env) ? { env: json.Config.Env } : {}),
         ...(Array.isArray(json.Mounts)

@@ -192,6 +192,29 @@ describe('openCodeSettingsConfig', () => {
  *  round one keeps a failure message readable. */
 const START_MS = Date.parse('2026-09-17T12:00:00.000Z');
 
+/** `cpu.weight` a cgroup v2 container gets when Docker sends no `CpuShares` —
+ *  what every Verity container other than a sandbox runs at. */
+const CGROUP_V2_DEFAULT_CPU_WEIGHT = 100;
+
+/**
+ * runc's `CpuShares` -> cgroup v2 `cpu.weight` conversion
+ * (`ConvertCPUSharesToCgroupV2Value`), so a test can assert the weight a sandbox
+ * actually ends up scheduled at instead of the Docker-API number that produces
+ * it. The two do not rank alike, which is the whole reason to convert: shares
+ * 1024 — Docker's nominal default, and the obvious "reset to neutral" value —
+ * converts to 39, well under the 100 an unweighted container gets.
+ */
+function cgroupV2CpuWeight(shares: number | undefined): number {
+  // `trunc`, not `floor`: Go divides integers toward zero, and the two disagree
+  // for `shares === 1` — the one legal-looking input that makes the numerator
+  // negative. No value this repository produces reaches that input, but a helper
+  // documented as mirroring runc should not diverge from it anywhere it can be
+  // read back as evidence of what the kernel will see.
+  return shares === undefined || shares === 0
+    ? CGROUP_V2_DEFAULT_CPU_WEIGHT
+    : 1 + Math.trunc(((shares - 2) * 9999) / 262142);
+}
+
 /**
  * Run `body` against a controllable `Date.now()`, starting at `from`.
  *
@@ -1964,6 +1987,67 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.memoryBytes).toBe(6 * 1024 * 1024 * 1024);
     expect(spec.memorySwapBytes).toBe(6 * 1024 * 1024 * 1024);
     expect(spec.nanoCpus).toBe(3_000_000_000);
+  });
+
+  it('weights a sandbox below the containers it shares the host with', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+    });
+
+    await provisioner.provision(id);
+
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    // The ceiling bounds ONE sandbox and says nothing about six of them at once, so
+    // on a host with more projects than cores the ceilings oversubscribe it and the
+    // scheduler needs a tie-break. Asserted as the cgroup v2 weight runc derives
+    // rather than as the number itself: the number is a per-deployment default that
+    // may move, while "a sandbox must not outrank the control plane" is the property
+    // worth guarding — and reading the raw value hides the trap. Docker's nominal
+    // 1024 reads like "the default" and is not one (it converts to 39, below 100),
+    // whereas 0 and anything from ~2598 up genuinely are. Setting one of those puts
+    // every container back on one flat weight, where a routine repository-wide lint
+    // in one project competes 1:1 with the Server and the box goes unresponsive with
+    // no container over any limit and nothing in the logs.
+    expect(cgroupV2CpuWeight(spec.cpuShares)).toBeLessThan(CGROUP_V2_DEFAULT_CPU_WEIGHT);
+    // ...and only a tie-break: the quota the sandbox runs out to when the host is
+    // quiet is untouched, so no workload is narrowed to buy the ordering.
+    expect(spec.nanoCpus).toBe(2_000_000_000);
+  });
+
+  it('lets a deployment opt out of sandbox CPU weighting', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      sandboxCpuShares: 0,
+    });
+
+    await provisioner.provision(id);
+
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    // VERITY_SANDBOX_CPU_SHARES=0 has to reach the spec as 0 and be dropped at the
+    // Docker layer, not be swallowed here by `?? DEFAULT`. A `||` or a truthiness
+    // check in the provisioner would turn the documented opt-out into the default
+    // it was meant to override, with nothing to show for it.
+    expect(spec.cpuShares).toBe(0);
   });
 
   it('mounts and starts the opt-in protected Runner supervisor without routing turns', async () => {

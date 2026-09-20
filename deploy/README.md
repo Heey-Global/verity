@@ -693,7 +693,51 @@ VERITY_SERVER_MEMORY=2g
 VERITY_POSTGRES_MEMORY=1g
 VERITY_SANDBOX_MEMORY=4g
 VERITY_SANDBOX_CPUS=2
+VERITY_SANDBOX_CPU_SHARES=512
 ```
+
+Every value above is a **per-container** ceiling, and nothing bounds their sum.
+A host running more projects than it has cores is therefore oversubscribed by
+design: six sandboxes at `VERITY_SANDBOX_CPUS=2` want twelve cores on an
+eight-core box, and each one is inside its own limit the whole time. Ceilings
+alone do not say who yields when they collide — Docker assigns no CPU weight by
+default, so the control-plane Server, the relays, and an agent running a
+repository-wide lint all sit at the same cgroup v2 `cpu.weight` of 100 and the
+box reads as unresponsive while no single container is misbehaving.
+
+`VERITY_SANDBOX_CPU_SHARES` supplies that ordering: it weights project sandboxes
+below the control plane and the relays, which keep the default. It is not a
+second ceiling and does not slow a build, a test run, or a lint — CPU weight is
+work-conserving, so a sandbox with idle neighbours still runs out to its full
+`VERITY_SANDBOX_CPUS` quota, and the weight only decides the split while the CPU
+is genuinely contended. Read the number as the cgroup v2 weight it becomes rather
+than as a fraction of Docker's nominal 1024: runc maps 512 to 20 against that
+default of 100. Set it to `0` to opt out and return to one flat weight for
+everything.
+
+The weight is applied when a sandbox container is **created**, and a changed
+weight is not itself drift: the reconciler compares the memory, swap, CPU and PID
+ceilings, so a sandbox that already exists keeps whatever weight it was created
+with until something else recreates it. Expect a host to converge as its projects
+are next provisioned, repaired, or updated rather than at a fixed point after the
+upgrade. To pull a specific project forward, recreate its sandbox.
+
+On the **managed topology** there is a second-order effect worth knowing before
+you reach for the override. The Server's environment is resolved from the source
+list sealed into the deployment spec at bootstrap, so a host bootstrapped before
+this variable existed has no source for it: setting `VERITY_SANDBOX_CPU_SHARES`
+in `.env` there is silently ignored and the Server uses the built-in default —
+the same 512, so the protection is in place either way, but a deliberate override
+will not take. Hosts bootstrapped from this release onward seal the name and
+honour it.
+
+Memory has no equivalent knob, and deliberately so: `VERITY_SANDBOX_MEMORY` is a
+hard cgroup ceiling with swap disabled, so an over-large workload is killed
+inside its own container where the session can see and report it, rather than
+being allowed to page the host. Oversubscribing memory across many concurrent
+sandboxes still costs reclaim pressure. If a host runs enough projects at once to
+feel it, lower `VERITY_SANDBOX_MEMORY` or run fewer projects — do not give the
+swap back.
 
 One exception, on the managed topology only: the Server container is created by
 the Updater from the sealed deployment spec, not by Compose, so `mem_limit` and

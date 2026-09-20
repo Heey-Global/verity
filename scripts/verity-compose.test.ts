@@ -160,6 +160,44 @@ describe('deploy/bin/verity-compose', () => {
       '${VERITY_POSTGRES_PASSWORD:',
     );
   });
+  it('ships the same sandbox CPU weight from Compose as the provisioner falls back to', () => {
+    const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
+      services: Record<string, { environment?: Record<string, string> }>;
+    };
+    const interpolated = compose.services['verity']?.environment?.['VERITY_SANDBOX_CPU_SHARES'];
+    const composeDefault = Number(
+      /^\$\{VERITY_SANDBOX_CPU_SHARES:-(\d+)\}$/.exec(interpolated ?? '')?.[1],
+    );
+    const codeDefault = Number(
+      /^const DEFAULT_SANDBOX_CPU_SHARES = (\d+);$/m.exec(
+        readFileSync('packages/server/src/provisioner.ts', 'utf8'),
+      )?.[1],
+    );
+    // Both are read out of the artifacts rather than restated, so this compares the
+    // two defaults that actually ship. They are reachable on different topologies —
+    // Compose supplies the env var, an embedded or managed Server started without it
+    // falls through to the constant — and a host would have to be inspected at the
+    // cgroup to notice they had drifted apart. Everything would look configured.
+    expect(Number.isFinite(composeDefault)).toBe(true);
+    expect(Number.isFinite(codeDefault)).toBe(true);
+    expect(composeDefault).toBe(codeDefault);
+    // And the shipped value has to be one that actually deprioritizes: runc's
+    // shares -> cgroup v2 `cpu.weight` conversion must land under the 100 an
+    // unweighted container gets. A number that looks neutral in Docker's 1024-based
+    // vocabulary is not necessarily neutral here, and the reverse — raising this
+    // past ~2598 — would rank sandboxes ABOVE the control plane while still reading
+    // like a configured limit.
+    expect(1 + Math.trunc(((composeDefault - 2) * 9999) / 262142)).toBeLessThan(100);
+    // And something has to READ the name Compose sets. The two defaults agreeing
+    // proves nothing about the wiring between them: a renamed or mistyped env var
+    // leaves Compose shipping a variable no code looks up, every sandbox silently
+    // on the fallback, and an operator override quietly doing nothing — with the
+    // deployment reading as configured the whole time.
+    expect(readFileSync('packages/server/src/server-main.ts', 'utf8')).toContain(
+      'process.env.VERITY_SANDBOX_CPU_SHARES',
+    );
+  });
+
   it('gives bootstrap and the Updater the same managed ACP environment sources', () => {
     const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
       services: Record<string, { environment?: Record<string, string> }>;

@@ -605,6 +605,7 @@ describe('createDockerClient (#174)', () => {
     expect(body.HostConfig.PidsLimit).toBeUndefined();
     expect(body.HostConfig.Memory).toBeUndefined();
     expect(body.HostConfig.NanoCpus).toBeUndefined();
+    expect(body.HostConfig.CpuShares).toBeUndefined();
     expect(body.HostConfig.Ulimits).toBeUndefined();
     expect(body.HostConfig.Runtime).toBeUndefined();
     expect(body.HostConfig.ReadonlyRootfs).toBeUndefined();
@@ -625,6 +626,7 @@ describe('createDockerClient (#174)', () => {
       memoryBytes: 2 * 1024 ** 3,
       memorySwapBytes: 2 * 1024 ** 3,
       nanoCpus: 1_500_000_000,
+      cpuShares: 512,
       ulimits: [{ name: 'core', soft: 0, hard: 0 }],
       runtime: 'runsc',
       readOnlyRootfs: true,
@@ -640,6 +642,12 @@ describe('createDockerClient (#174)', () => {
     // thrashing instead of OOMing, and Docker's default is twice the memory limit.
     expect(body.HostConfig.MemorySwap).toBe(2 * 1024 ** 3);
     expect(body.HostConfig.NanoCpus).toBe(1_500_000_000);
+    // Alongside NanoCpus, not instead of it: the quota bounds this container on an
+    // idle host, the weight decides who yields when several of them plus the
+    // control plane want the same cores. Docker accepts both, and dropping this
+    // one leaves the container at the same default weight as everything else —
+    // every ceiling still honoured, and nothing to break the tie.
+    expect(body.HostConfig.CpuShares).toBe(512);
     // Docker's rlimit shape: the `RLIMIT_` prefix is dropped, soft and hard are both
     // required, and a zero core limit is a real limit rather than an omission.
     expect(body.HostConfig.Ulimits).toEqual([{ Name: 'core', Soft: 0, Hard: 0 }]);
@@ -648,6 +656,22 @@ describe('createDockerClient (#174)', () => {
     expect(body.HostConfig.Tmpfs).toEqual({
       '/tmp': 'rw,noexec,nosuid,nodev,size=67108864',
     });
+  });
+
+  it('omits a zero CPU weight rather than forwarding it', async () => {
+    // Docker reads CpuShares 0 as "unset", so the two spellings agree here — but
+    // only because this is filtered out. Forwarded, a deployment that opts out of
+    // sandbox weighting would depend on the daemon reading 0 the same way, and a
+    // value that reached runc literally would convert to weight 1: a container the
+    // scheduler starves, from a setting whose whole purpose was to change nothing.
+    const fetch = fakeFetch([
+      { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'abc123' }) },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+    await docker.createContainer({ ...sampleSpec, nanoCpus: 2e9, cpuShares: 0 });
+    const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
+    expect(body.HostConfig.CpuShares).toBeUndefined();
+    expect(body.HostConfig.NanoCpus).toBe(2e9);
   });
 
   it('drops a ulimit whose soft/hard is not a usable rlimit value', async () => {
@@ -1054,6 +1078,7 @@ describe('createDockerClient (#174)', () => {
             Memory: 536_870_912,
             MemorySwap: 536_870_912,
             NanoCpus: 1_000_000_000,
+            CpuShares: 512,
             Privileged: false,
             Devices: [],
             DeviceRequests: null,
@@ -1101,6 +1126,10 @@ describe('createDockerClient (#174)', () => {
       // invisible otherwise.
       memorySwapBytes: 536_870_912,
       nanoCpus: 1_000_000_000,
+      // Reported for the same reason as MemorySwap above: the daemon's "unset" is
+      // 0, not 1024, so a container left at the default CPU weight and one weighted
+      // down are indistinguishable unless this is carried through inspect.
+      cpuShares: 512,
       privileged: false,
       deviceCount: 0,
       restartPolicy: 'no',
