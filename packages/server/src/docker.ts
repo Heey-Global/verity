@@ -171,6 +171,10 @@ export interface DockerImageSummary {
   id: string;
   /** Every `repo:tag` pointing at this image; `[]` for an untagged/dangling one. */
   repoTags: string[];
+  /** Every content-addressed `repo@sha256:…` reference for this image. */
+  repoDigests: string[];
+  /** Image config labels, used to identify untagged Verity release images. */
+  labels: Record<string, string>;
   /** Creation time in Unix SECONDS (the Engine's unit for this field). */
   created: number;
   /** Apparent size in bytes. Shared layers are counted once PER IMAGE, so summing
@@ -1850,7 +1854,10 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       if (!Array.isArray(json)) return [];
       return json.flatMap((entry): DockerImageSummary[] => {
         if (typeof entry !== 'object' || entry === null) return [];
-        const { Id, RepoTags, Created, Size } = entry as Record<string, unknown>;
+        const { Id, RepoTags, RepoDigests, Labels, Created, Size } = entry as Record<
+          string,
+          unknown
+        >;
         if (typeof Id !== 'string') return [];
         return [
           {
@@ -1861,6 +1868,17 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
             repoTags: isStringArray(RepoTags)
               ? RepoTags.filter((tag) => tag !== '<none>:<none>')
               : [],
+            repoDigests: isStringArray(RepoDigests)
+              ? RepoDigests.filter((digest) => digest !== '<none>@<none>')
+              : [],
+            labels:
+              typeof Labels === 'object' && Labels !== null
+                ? Object.fromEntries(
+                    Object.entries(Labels).filter(
+                      (entry): entry is [string, string] => typeof entry[1] === 'string',
+                    ),
+                  )
+                : {},
             created: typeof Created === 'number' ? Created : 0,
             size: typeof Size === 'number' ? Size : 0,
           },

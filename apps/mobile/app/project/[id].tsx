@@ -55,6 +55,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -2053,7 +2054,15 @@ function DevServersSection({
         animationType="fade"
         onRequestClose={() => setEditing(null)}
       >
-        <View style={styles.modalOverlay}>
+        {/*
+          Four text fields in a dialog that is vertically centred: with the
+          keyboard up, the lower half of the card — Preview URL, port, and both
+          buttons — sits behind it. Padding the overlay re-centres the card in
+          what is left. The controller's KeyboardAvoidingView works in here,
+          where React Native's does not: a Modal is its own host view, and only
+          React context reaches across it.
+        */}
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior="padding" automaticOffset>
           <View style={styles.modalCard}>
             <Text style={styles.sectionHeader}>
               {editing === 'new' ? 'Add Dev Server' : 'Edit Dev Server'}
@@ -2121,7 +2130,7 @@ function DevServersSection({
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

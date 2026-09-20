@@ -3,6 +3,7 @@ import { basename, isAbsolute, normalize } from 'node:path';
 import { createPostgresDb, withUnpairedDeviceFence } from '@verity/store';
 import { ACTIVATION_GATE_DIRECTORY } from './activation-gate.js';
 import {
+  MANAGED_DEPLOYMENT_ROOT,
   advanceManagedDeploymentImage,
   initializeManagedDeployment,
   readManagedDeployment,
@@ -14,7 +15,6 @@ import {
 
 const OFFICIAL_IMAGE = /^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a-f0-9]{64}$/;
 const MAX_LINUX_ID = 0xfffffffe;
-export const MANAGED_DEPLOYMENT_ROOT = '/var/lib/verity/updater/managed-deployment';
 const REQUIRED_SERVER_ENVIRONMENT = [
   'HOST',
   'DATABASE_URL',

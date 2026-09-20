@@ -166,6 +166,8 @@ services:
       #   * anonymous volumes — the daemon mints one per container for each VOLUME
       #     in the image, and they outlive the container unless removed with it;
       #   * build cache — accumulates unbounded on a busy build host;
+      #   * old Verity release images — digest-pinned Server, Sandbox, and relay
+      #     generations remain after updates even when no container uses them;
       #   * orphaned buildx builder state volumes — a `docker-container` driver
       #     builder keeps multi-GB BuildKit cache in a
       #     `buildx_buildkit_builder-*_state` volume that `buildx rm` / a daemon
@@ -175,8 +177,10 @@ services:
       # tagged, not dangling, and prune skips volumes altogether), which is why a
       # host can be full despite regular prunes. The GC runs daily at 04:00 (just
       # after the 03:00 sandbox auto-update, so it retires the tag that update
-      # superseded) plus once shortly after boot, and it only ever deletes images
-      # carrying a `verity-devc-` tag, volumes that are dangling AND carry the
+      # superseded) plus once shortly after boot. It deletes superseded
+      # `verity-devc-` images, old unused official Verity releases (keeping two
+      # per repository), and old untagged images whose OCI source label proves
+      # they came from Verity. Volumes must be dangling AND carry the
       # daemon's anonymous label AND have a daemon-generated 64-hex name, and
       # dangling `buildx_buildkit_builder-*_state` volumes. Named volumes —
       # `verity-data`, `verity-db` — can never match.

@@ -936,7 +936,14 @@ describe('createDockerClient (#174)', () => {
         match: /\/images\/json/,
         method: 'GET',
         resp: res([
-          { Id: 'sha256:a', RepoTags: ['verity-devc-acme-web:aaa'], Created: 100, Size: 5 },
+          {
+            Id: 'sha256:a',
+            RepoTags: ['verity-devc-acme-web:aaa'],
+            RepoDigests: ['verity-devc-acme-web@sha256:abc'],
+            Labels: { 'org.opencontainers.image.source': 'https://example.test/repo' },
+            Created: 100,
+            Size: 5,
+          },
           { Id: 'sha256:b', RepoTags: ['<none>:<none>'], Created: 90, Size: 6 },
           { Id: 'sha256:c', RepoTags: null, Created: 80, Size: 7 },
         ]),
@@ -944,9 +951,16 @@ describe('createDockerClient (#174)', () => {
     ]);
     const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
     expect(await docker.listImages?.()).toEqual([
-      { id: 'sha256:a', repoTags: ['verity-devc-acme-web:aaa'], created: 100, size: 5 },
-      { id: 'sha256:b', repoTags: [], created: 90, size: 6 },
-      { id: 'sha256:c', repoTags: [], created: 80, size: 7 },
+      {
+        id: 'sha256:a',
+        repoTags: ['verity-devc-acme-web:aaa'],
+        repoDigests: ['verity-devc-acme-web@sha256:abc'],
+        labels: { 'org.opencontainers.image.source': 'https://example.test/repo' },
+        created: 100,
+        size: 5,
+      },
+      { id: 'sha256:b', repoTags: [], repoDigests: [], labels: {}, created: 90, size: 6 },
+      { id: 'sha256:c', repoTags: [], repoDigests: [], labels: {}, created: 80, size: 7 },
     ]);
   });
 

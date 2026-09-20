@@ -2739,9 +2739,7 @@ const migrations: Record<string, Migration> = {
       // Stable bindings never adopt folders by display name, including pre-existing General folders.
       await sql`insert into knowledge_folders(id,name,role) values
         ('managed-general', case when exists(select 1 from knowledge_folders where parent_id is null and name='General' and id <> 'managed-general') then ${`General (${randomUUID()})`} else 'General' end, 'general')
-        on conflict(id) do update set role='general'`.execute(
-        db,
-      );
+        on conflict(id) do update set role='general'`.execute(db);
       await sql`insert into knowledge_folders(id,parent_id,name,role) values
         ('managed-general-sources','managed-general','Sources','sources'),
         ('managed-general-wiki','managed-general','Wiki','wiki')

@@ -12,7 +12,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, Text, TextInput, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
 import { createVerityClient } from '../lib/client';
@@ -322,7 +323,8 @@ export function Library({
         );
       });
   return (
-    <ScrollView
+    // Keep fields visible when editing a deeply scrolled folder or document.
+    <KeyboardAwareScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
@@ -991,6 +993,6 @@ export function Library({
           </View>
         </View>
       ) : null}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }

@@ -191,6 +191,55 @@ describe('deploy/bin/verity-compose', () => {
   });
 
   /**
+   * Docker refuses to start a container whose volume subpath does not exist, so the
+   * Runner's OpenCode configuration mount is a start-up prerequisite, not a
+   * nice-to-have: forget to create it and the control plane has no Runner at all —
+   * every backend's turns, not only OpenCode's. The Server writes the file into that
+   * directory, but it may do so long after the Runner was expected to start, and on
+   * the managed topology the reconciler that creates the Runner need not even share
+   * a process with it. So the init step owns the directory's existence.
+   *
+   * Both topologies run their own init, and the managed one is read as source text
+   * because `prepareSpec` is not exported — the command is a literal either way, and
+   * what matters is that neither list forgets the path the other mounts.
+   */
+  it('creates the OpenCode configuration directory both Runner specs mount', () => {
+    const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
+      services: Record<string, { command?: string[] }>;
+    };
+    const compose = overlay.services['verity-control-runner-init']?.command?.join(' ');
+    const managed = readFileSync(
+      'packages/server/src/self-update/managed-control-plane-runner.ts',
+      'utf8',
+    );
+    for (const [name, source] of [
+      ['the Compose init service', compose],
+      ['the managed preparation spec', managed],
+    ] as const) {
+      expect(source, `${name} does not create /data/secrets/opencode`).toContain(
+        '/data/secrets/opencode',
+      );
+      // Created by root, written by the Server as uid 1000. Without the handover the
+      // directory exists, the Runner starts, and every later materialization the
+      // Server attempts under /data/secrets fails on a directory it cannot write.
+      //
+      // The secret ROOT, not the OpenCode child: `\b` would have accepted
+      // `/data/secrets/opencode` alone, which is the half-done version of exactly
+      // this mistake — and the half that leaves git material and signing tokens
+      // unwritable while OpenCode works.
+      expect(source, `${name} leaves /data/secrets root-owned`).toMatch(
+        /chown 1000:1000 [^&'\n]*\/data\/secrets(?=[ '&\n])/u,
+      );
+      // And not at the init container's umask. This directory is the Server's secret
+      // root; creating it here must reproduce the 0700 `writeSecretFile` would have
+      // given it, or the first process to create it decides how open it is.
+      expect(source, `${name} widens /data/secrets past 0700`).toMatch(
+        /chmod 0700 \/data\/secrets(?=[ '&\n])/u,
+      );
+    }
+  });
+
+  /**
    * The control-plane Runner is the one container with TWO worktree trees: its
    * `verity-control` clone at /work, and the shared namespace the Server actually
    * allocates control-plane session worktrees in. The spawn broker confines an
@@ -253,6 +302,40 @@ describe('deploy/bin/verity-compose', () => {
     expect(byTarget(compose)).toEqual(
       byTarget(specMounts(controlRunnerSpec({ hostPath: '/var/run/docker.sock', gid: '999' }))),
     );
+  });
+
+  /**
+   * The environment drifts the same way the mount list does, and worse: a mount the
+   * Runner is missing usually fails loudly at start, while a missing variable starts
+   * a container that looks healthy and fails one backend's turns only. That is how
+   * the MCP gateway route (#1570) got through, and the OpenCode provider
+   * configuration is now the second entry that only one kind of turn ever reads.
+   *
+   * Compared as a whole map, for the same reason the mounts are: an extra variable on
+   * one topology is a behaviour the other does not have. The two values Compose
+   * leaves to the operator are resolved through their documented defaults — that is
+   * what a `docker compose` run with an empty `.env` produces, which is the
+   * deployment the managed spec is meant to reproduce.
+   */
+  it('gives the control-plane Runner the same environment in Compose and in desiredSpec', () => {
+    const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
+      services: Record<string, { environment?: Record<string, string> }>;
+    };
+    const compose = Object.fromEntries(
+      Object.entries(overlay.services['verity-control-runner']?.environment ?? {}).map(
+        ([name, value]) => [name, interpolate(String(value))],
+      ),
+    );
+    expect(Object.keys(compose).length).toBeGreaterThan(0);
+    const spec = Object.fromEntries(
+      (controlRunnerSpec({ hostPath: '/var/run/docker.sock', gid: '999' }).env ?? []).map(
+        (entry) => {
+          const separator = entry.indexOf('=');
+          return [entry.slice(0, separator), entry.slice(separator + 1)];
+        },
+      ),
+    );
+    expect(compose).toEqual(spec);
   });
 
   /**

@@ -234,6 +234,16 @@ RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifec
 RUN npm install -g @openai/codex@0.154.0
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 RUN npm install -g @agentclientprotocol/codex-acp@1.12.0
+# renovate: datasource=npm depName=opencode-ai
+RUN npm install -g opencode-ai@1.18.31
+# OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
+# `opencode acp` subcommand, built by the script the sandbox toolkit uses for project
+# Sandboxes so the two cannot drift. Copied on its own, like the Claude hardening
+# scripts above, to keep the pinned installs' cache layers. The pin must match
+# `OPENCODE_VERSION` in that Feature's install.sh — `scripts/agent-cli-pins.test.ts`
+# fails the build's own test suite when it does not.
+COPY features/verity-sandbox-toolkit/bin/verity-opencode-acp-install.sh /tmp/verity-opencode-acp-install.sh
+RUN sh /tmp/verity-opencode-acp-install.sh && rm /tmp/verity-opencode-acp-install.sh
 
 # Bundle the shared `verity-sandbox-toolkit` devcontainer Feature (R3.1/#299) so
 # project devcontainer builds can inject it via `--additional-features`. The

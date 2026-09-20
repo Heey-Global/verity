@@ -1,3 +1,4 @@
+import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import { randomUUID } from 'node:crypto';
 import { KnowledgeError } from '@verity/store';
 import { knowledgeToolRequestSchema, KNOWLEDGE_TOOL_DESCRIPTION } from './knowledge-tool.js';
@@ -100,11 +101,6 @@ function dopplerResolutionMessage(error: DopplerSecretResolutionError): string |
 export const MCP_GATEWAY_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const;
 
 const MCP_GATEWAY_SERVER_NAME = 'verity-secret-gateway';
-
-/** How long an unanswered card may hold one call open before the caller is denied. Long
- *  enough that an operator who stepped away can still answer, short enough that an
- *  abandoned request does not pin a connection for the session's life. */
-export const MCP_GATEWAY_APPROVAL_TIMEOUT_MS = 5 * 60_000;
 
 const JSON_RPC_VERSION = '2.0';
 const PARSE_ERROR = -32_700;

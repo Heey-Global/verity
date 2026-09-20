@@ -109,7 +109,6 @@ import {
   FlatList,
   InteractionManager,
   Keyboard,
-  KeyboardAvoidingView,
   Linking,
   Modal,
   type NativeScrollEvent,
@@ -135,6 +134,7 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // across reopens — the backlog of images never loads up front.
 import { Image as ExpoImage, type ImageSource } from 'expo-image';
 import { UITextView } from 'react-native-uitextview';
+import { KeyboardAvoidingView, KeyboardStickyView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -3249,7 +3249,12 @@ export function SessionChat({
   return (
     <KeyboardAvoidingView
       style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      // The composer is pinned to the bottom of this frame, so the frame is what
+      // shrinks. `padding` on both platforms now that the keyboard controller
+      // drives it — it tracks the keyboard frame-by-frame instead of jumping on
+      // the show event, which is what the transcript's scroll position is
+      // measured against.
+      behavior="padding"
       // The custom nav header is drawn by the navigator ABOVE this screen body, so
       // the KAV frame already starts below it (screen-absolute coords) — no extra
       // offset needed. A non-zero offset here over-lifts the input by ~the header
@@ -5816,6 +5821,7 @@ function BranchSwitcherSheet({
   onClose: () => void;
 }) {
   const { theme } = useUnistyles();
+  const insets = useSafeAreaInsets();
   const sheet = useResizableSheet();
   const { current, switchable, previewable, loading, error, switchTo } = branches;
 
@@ -5868,162 +5874,172 @@ function BranchSwitcherSheet({
         accessibilityRole="button"
         accessibilityLabel="Close switcher"
       />
-      <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
-        <SheetResizeHandle panHandlers={sheet.panHandlers} />
-        <Text style={styles.sheetTitle}>Switch branch</Text>
-        <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
-          {error ? <Text style={styles.sheetError}>Couldn’t load branches: {error}</Text> : null}
-          {switchError ? <Text style={styles.sheetError}>{switchError}</Text> : null}
-          {loading && current === undefined ? (
-            <View style={styles.sheetLoading}>
-              <ActivityIndicator color={theme.colors.accent} />
-            </View>
-          ) : null}
-          {current !== undefined ? (
-            <View style={styles.sheetRow}>
-              <View style={[styles.sheetDot, { backgroundColor: theme.colors.tone.active }]} />
-              <Text style={styles.sheetRowLabel} numberOfLines={1}>
-                {current}
-              </Text>
-              <Text style={styles.sheetCurrent}>current</Text>
-            </View>
-          ) : null}
-          {!loading && !error && switchable.length === 0 ? (
-            <Text style={styles.sheetEmpty}>No other branches — create one below.</Text>
-          ) : null}
-          {switchable.map((branch) => (
-            <Pressable
-              key={branch}
-              style={({ pressed }) => [styles.sheetRow, pressed ? styles.sheetRowPressed : null]}
-              onPress={() => void run({ branch }, branch)}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel={`Switch to branch ${branch}`}
-            >
-              <View style={[styles.sheetDot, { backgroundColor: theme.colors.border }]} />
-              <Text style={styles.sheetRowLabel} numberOfLines={1}>
-                {branch}
-              </Text>
-              {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
-            </Pressable>
-          ))}
-          {/* Preview a PR / pushed branch (#122): check out origin/<branch> DETACHED
+      {/*
+        The "new branch name" field is the last row of this sheet, so the
+        keyboard lands squarely on it. The sheet has a dragged, animated height
+        rather than a flexible one — shrinking it from the outside would fight
+        the resize gesture — so it rides up with the keyboard instead. The
+        `opened` offset gives back the home-indicator padding the sheet no
+        longer needs once the keyboard occupies that strip.
+      */}
+      <KeyboardStickyView offset={{ closed: 0, opened: insets.bottom }}>
+        <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
+          <SheetResizeHandle panHandlers={sheet.panHandlers} />
+          <Text style={styles.sheetTitle}>Switch branch</Text>
+          <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
+            {error ? <Text style={styles.sheetError}>Couldn’t load branches: {error}</Text> : null}
+            {switchError ? <Text style={styles.sheetError}>{switchError}</Text> : null}
+            {loading && current === undefined ? (
+              <View style={styles.sheetLoading}>
+                <ActivityIndicator color={theme.colors.accent} />
+              </View>
+            ) : null}
+            {current !== undefined ? (
+              <View style={styles.sheetRow}>
+                <View style={[styles.sheetDot, { backgroundColor: theme.colors.tone.active }]} />
+                <Text style={styles.sheetRowLabel} numberOfLines={1}>
+                  {current}
+                </Text>
+                <Text style={styles.sheetCurrent}>current</Text>
+              </View>
+            ) : null}
+            {!loading && !error && switchable.length === 0 ? (
+              <Text style={styles.sheetEmpty}>No other branches — create one below.</Text>
+            ) : null}
+            {switchable.map((branch) => (
+              <Pressable
+                key={branch}
+                style={({ pressed }) => [styles.sheetRow, pressed ? styles.sheetRowPressed : null]}
+                onPress={() => void run({ branch }, branch)}
+                disabled={busy}
+                accessibilityRole="button"
+                accessibilityLabel={`Switch to branch ${branch}`}
+              >
+                <View style={[styles.sheetDot, { backgroundColor: theme.colors.border }]} />
+                <Text style={styles.sheetRowLabel} numberOfLines={1}>
+                  {branch}
+                </Text>
+                {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+              </Pressable>
+            ))}
+            {/* Preview a PR / pushed branch (#122): check out origin/<branch> DETACHED
               so the cockpit can see an open PR live, even one a sibling worktree is
               developing. Separate section from the local switch rows. */}
-          {previewable.length > 0 ? (
-            <>
-              <Text style={styles.sheetSectionLabel}>Preview a PR / pushed branch</Text>
-              {previewable.map((branch) => (
+            {previewable.length > 0 ? (
+              <>
+                <Text style={styles.sheetSectionLabel}>Preview a PR / pushed branch</Text>
+                {previewable.map((branch) => (
+                  <Pressable
+                    key={`preview:${branch}`}
+                    style={({ pressed }) => [
+                      styles.sheetRow,
+                      pressed ? styles.sheetRowPressed : null,
+                    ]}
+                    onPress={() => void run({ preview: branch }, branch)}
+                    disabled={busy}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Preview pushed branch ${branch}`}
+                  >
+                    {/* Accent dot marks a preview (detached) row vs a local switch. */}
+                    <View style={[styles.sheetDot, { backgroundColor: theme.colors.accent }]} />
+                    <Text style={styles.sheetRowLabel} numberOfLines={1}>
+                      {branch}
+                    </Text>
+                    <Text style={styles.sheetCurrent}>preview</Text>
+                    {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+                  </Pressable>
+                ))}
+              </>
+            ) : null}
+          </ScrollView>
+
+          {dirty ? (
+            <View style={styles.dirtyPrompt}>
+              <Text style={styles.dirtyText}>
+                Uncommitted changes — keep them by committing or stashing before switching to{' '}
+                {dirty.label}.
+              </Text>
+              <View style={styles.dirtyButtons}>
                 <Pressable
-                  key={`preview:${branch}`}
                   style={({ pressed }) => [
-                    styles.sheetRow,
+                    styles.dirtyButton,
                     pressed ? styles.sheetRowPressed : null,
                   ]}
-                  onPress={() => void run({ preview: branch }, branch)}
+                  onPress={() => void run({ ...dirty.opts, onDirty: 'commit' }, dirty.label)}
                   disabled={busy}
                   accessibilityRole="button"
-                  accessibilityLabel={`Preview pushed branch ${branch}`}
+                  accessibilityLabel="Commit changes and switch"
                 >
-                  {/* Accent dot marks a preview (detached) row vs a local switch. */}
-                  <View style={[styles.sheetDot, { backgroundColor: theme.colors.accent }]} />
-                  <Text style={styles.sheetRowLabel} numberOfLines={1}>
-                    {branch}
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                    Commit &amp; switch
                   </Text>
-                  <Text style={styles.sheetCurrent}>preview</Text>
-                  {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
                 </Pressable>
-              ))}
-            </>
-          ) : null}
-        </ScrollView>
-
-        {dirty ? (
-          <View style={styles.dirtyPrompt}>
-            <Text style={styles.dirtyText}>
-              Uncommitted changes — keep them by committing or stashing before switching to{' '}
-              {dirty.label}.
-            </Text>
-            <View style={styles.dirtyButtons}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.dirtyButton,
+                    pressed ? styles.sheetRowPressed : null,
+                  ]}
+                  onPress={() => void run({ ...dirty.opts, onDirty: 'stash' }, dirty.label)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Stash changes and switch"
+                >
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                    Stash &amp; switch
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.dirtyButton,
+                    pressed ? styles.sheetRowPressed : null,
+                  ]}
+                  onPress={() => setDirty(undefined)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel"
+                >
+                  <Text style={styles.dirtyButtonText}>Cancel</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.sheetNew}>
+              <TextInput
+                style={styles.newBranchInput}
+                value={newBranch}
+                onChangeText={setNewBranch}
+                placeholder="New branch name"
+                placeholderTextColor={theme.colors.textFaint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!busy}
+                keyboardAppearance="dark"
+                onSubmitEditing={createNew}
+                accessibilityLabel="New branch name"
+              />
               <Pressable
                 style={({ pressed }) => [
-                  styles.dirtyButton,
+                  styles.newBranchButton,
+                  newBranch.trim().length === 0 || busy ? styles.newBranchButtonDisabled : null,
                   pressed ? styles.sheetRowPressed : null,
                 ]}
-                onPress={() => void run({ ...dirty.opts, onDirty: 'commit' }, dirty.label)}
-                disabled={busy}
+                onPress={createNew}
+                disabled={newBranch.trim().length === 0 || busy}
                 accessibilityRole="button"
-                accessibilityLabel="Commit changes and switch"
+                accessibilityLabel="Create and switch to new branch"
               >
-                <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
-                  Commit &amp; switch
-                </Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.dirtyButton,
-                  pressed ? styles.sheetRowPressed : null,
-                ]}
-                onPress={() => void run({ ...dirty.opts, onDirty: 'stash' }, dirty.label)}
-                disabled={busy}
-                accessibilityRole="button"
-                accessibilityLabel="Stash changes and switch"
-              >
-                <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
-                  Stash &amp; switch
-                </Text>
-              </Pressable>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.dirtyButton,
-                  pressed ? styles.sheetRowPressed : null,
-                ]}
-                onPress={() => setDirty(undefined)}
-                disabled={busy}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel"
-              >
-                <Text style={styles.dirtyButtonText}>Cancel</Text>
+                {pending === newBranch.trim() && newBranch.trim().length > 0 ? (
+                  <ActivityIndicator color={theme.colors.accent} />
+                ) : (
+                  <Text style={[styles.newBranchButtonText, { color: theme.colors.accent }]}>
+                    Create
+                  </Text>
+                )}
               </Pressable>
             </View>
-          </View>
-        ) : (
-          <View style={styles.sheetNew}>
-            <TextInput
-              style={styles.newBranchInput}
-              value={newBranch}
-              onChangeText={setNewBranch}
-              placeholder="New branch name"
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!busy}
-              keyboardAppearance="dark"
-              onSubmitEditing={createNew}
-              accessibilityLabel="New branch name"
-            />
-            <Pressable
-              style={({ pressed }) => [
-                styles.newBranchButton,
-                newBranch.trim().length === 0 || busy ? styles.newBranchButtonDisabled : null,
-                pressed ? styles.sheetRowPressed : null,
-              ]}
-              onPress={createNew}
-              disabled={newBranch.trim().length === 0 || busy}
-              accessibilityRole="button"
-              accessibilityLabel="Create and switch to new branch"
-            >
-              {pending === newBranch.trim() && newBranch.trim().length > 0 ? (
-                <ActivityIndicator color={theme.colors.accent} />
-              ) : (
-                <Text style={[styles.newBranchButtonText, { color: theme.colors.accent }]}>
-                  Create
-                </Text>
-              )}
-            </Pressable>
-          </View>
-        )}
-      </Animated.View>
+          )}
+        </Animated.View>
+      </KeyboardStickyView>
     </Modal>
   );
 }

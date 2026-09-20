@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.0.0](https://github.com/Heey-Global/verity/compare/v0.17.0...v1.0.0) (2026-09-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **control-plane:** the control-plane Runner must be recreated after the Server image is deployed, in that order. A Runner from an older image refuses OpenCode turns at the spawn broker; one with an older spec runs OpenCode without its provider configuration. Claude and Codex control-plane turns are unaffected by either. Managed deployments reconcile themselves; Compose deployments recreate the Runner by hand. See docs/runbooks/opencode-brokered-tools-container-refresh.md.
+* **secrets:** admit OpenCode to the brokered Verity tools ([#527](https://github.com/Heey-Global/verity/issues/527))
+
+### Features
+
+* **control-plane:** run OpenCode turns on the dedicated Runner ([#532](https://github.com/Heey-Global/verity/issues/532)) ([eb39376](https://github.com/Heey-Global/verity/commit/eb3937607c3d35a21198f1e3d9a1d7567a66ff47))
+* **secrets:** admit OpenCode to the brokered Verity tools ([#527](https://github.com/Heey-Global/verity/issues/527)) ([b3a440e](https://github.com/Heey-Global/verity/commit/b3a440eec7c0581453e3e98876340a54130eb05e))
+* **server:** retain recent Verity release images ([#536](https://github.com/Heey-Global/verity/issues/536)) ([788d3ea](https://github.com/Heey-Global/verity/commit/788d3ea540271ed4e36dd9aee2c24a208acfe936))
+
+
+### Bug Fixes
+
+* **knowledge:** streamline explorer and enable access across model backends ([#531](https://github.com/Heey-Global/verity/issues/531)) ([d213999](https://github.com/Heey-Global/verity/commit/d213999edc8f4eabcee56952420f47eeee880744))
+
+
+### Performance Improvements
+
+* **server:** load companion runtimes without the server module graph ([#534](https://github.com/Heey-Global/verity/issues/534)) ([b9d18e6](https://github.com/Heey-Global/verity/commit/b9d18e615fa3689b60ee4c025afbdc111d512a62))
+
 ## [0.17.0](https://github.com/Heey-Global/verity/compare/v0.16.4...v0.17.0) (2026-09-20)
 
 

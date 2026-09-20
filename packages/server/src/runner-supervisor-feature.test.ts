@@ -2202,11 +2202,21 @@ describe('verity-runner supervisor runtime', () => {
     // protection today is a comment — that array drives the F11 chown to the dev
     // user, and handing the file to the identity the agent runs as would let an
     // agent turn choose which binary the next one starts.
-    const installer = await readFile('features/verity-sandbox-toolkit/install.sh', 'utf8');
-    expect(installer).toContain(
+    //
+    // The wrapper now has two installers — this Feature and the Server image, which
+    // is what the control-plane Runner runs (ADR 0012 Amendment 6) — so it is
+    // defined once, in the script below, and both run it. Read the properties there
+    // and read the invocation here; `scripts/agent-cli-pins.test.ts` is what keeps
+    // either from inlining a second copy.
+    const [installer, wrapperScript] = await Promise.all([
+      readFile('features/verity-sandbox-toolkit/install.sh', 'utf8'),
+      readFile('features/verity-sandbox-toolkit/bin/verity-opencode-acp-install.sh', 'utf8'),
+    ]);
+    expect(installer).toContain('bin/verity-opencode-acp-install.sh');
+    expect(wrapperScript).toContain(
       `printf '#!/bin/sh\\nexec %s acp "$@"\\n' "$OPENCODE_BIN" > "$OPENCODE_ACP_TMP"`,
     );
-    expect(installer).toContain(
+    expect(wrapperScript).toContain(
       'install -o root -g root -m 0755 "$OPENCODE_ACP_TMP" /usr/local/bin/opencode-acp',
     );
     const written = installer
@@ -2218,12 +2228,8 @@ describe('verity-runner supervisor runtime', () => {
     // Fail the build, not the first turn: nothing has a fallback for a missing
     // executable, so an image that requested opencode and cannot find it must stop
     // here rather than ship looking complete and ENOENT at spawn.
-    const wrapperBlock = installer.slice(
-      installer.indexOf('if [ "$INSTALL_OPENCODE" = \'true\' ]; then'),
-      installer.indexOf('install -d /usr/local/share/verity-sandbox-toolkit/lifecycle'),
-    );
-    expect(wrapperBlock).toContain('cannot build opencode-acp');
-    expect(wrapperBlock).toContain('exit 1');
+    expect(wrapperScript).toContain('cannot build opencode-acp');
+    expect(wrapperScript).toContain('exit 1');
   });
 
   it('installs no bubblewrap, in the Feature or in the image that bakes it', async () => {

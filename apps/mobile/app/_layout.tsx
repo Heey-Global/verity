@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -163,60 +164,70 @@ function HydratedRoot() {
       <ForegroundUpdateSync />
       <GestureHandlerRootView style={styles.root}>
         <SafeAreaProvider>
-          <Stack
-            screenOptions={{
-              header: (props) => <AppHeader {...props} />,
-              contentStyle: { backgroundColor: theme.colors.background },
-            }}
-          >
-            <Stack.Screen
-              name="index"
-              options={{
-                title: 'Verity',
+          {/*
+            Every keyboard-aware view in the app reads this provider's context,
+            including the ones inside a `Modal` — React context crosses that
+            portal, which is why a sheet can avoid the keyboard here while an
+            RN `KeyboardAvoidingView` inside one cannot. Without the provider
+            those components degrade to plain views that quietly do nothing, so
+            `keyboard-handling.test.ts` fails if it is ever dropped.
+          */}
+          <KeyboardProvider>
+            <Stack
+              screenOptions={{
+                header: (props) => <AppHeader {...props} />,
+                contentStyle: { backgroundColor: theme.colors.background },
               }}
-            />
-            {/* The task backlog (ADR 0007) is a top-triggered OVERLAY, not a persistent
+            >
+              <Stack.Screen
+                name="index"
+                options={{
+                  title: 'Verity',
+                }}
+              />
+              {/* The task backlog (ADR 0007) is a top-triggered OVERLAY, not a persistent
               bottom-tab destination: the home header's list icon opens it as a modal
               sheet (its own close/swipe-dismiss), so it lifts over the current context
               and gets out of the way — no footer nav competing with the chat composer. */}
-            <Stack.Screen
-              name="plan"
-              options={{ presentation: 'fullScreenModal', headerShown: false }}
-            />
-            <Stack.Screen
-              name="search"
-              options={{ presentation: 'fullScreenModal', headerShown: false }}
-            />
-            <Stack.Screen name="session/[id]" options={{ title: 'Session' }} />
-            <Stack.Screen name="project/[id]" options={{ title: 'Project' }} />
-            <Stack.Screen name="new" options={{ title: 'New agent' }} />
-            <Stack.Screen name="new-project" options={{ title: 'New project' }} />
-            {/* Settings is a flat stack of sibling routes, not a nested layout:
+              <Stack.Screen
+                name="plan"
+                options={{ presentation: 'fullScreenModal', headerShown: false }}
+              />
+              <Stack.Screen
+                name="search"
+                options={{ presentation: 'fullScreenModal', headerShown: false }}
+              />
+              <Stack.Screen name="session/[id]" options={{ title: 'Session' }} />
+              <Stack.Screen name="project/[id]" options={{ title: 'Project' }} />
+              <Stack.Screen name="new" options={{ title: 'New agent' }} />
+              <Stack.Screen name="new-project" options={{ title: 'New project' }} />
+              {/* Settings is a flat stack of sibling routes, not a nested layout:
                 a nested one would draw a second header, and `AppHeader` decides
                 it is on home by `route.name === 'index'`. */}
-            <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
-            <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
-            <Stack.Screen
-              name="settings/services/index"
-              options={{ title: 'Connected services' }}
-            />
-            <Stack.Screen
-              name="settings/services/mcp/index"
-              options={{ title: 'MCP connections' }}
-            />
-            <Stack.Screen
-              name="settings/services/mcp/new"
-              options={{ title: 'Add MCP connection' }}
-            />
-            <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
-            <Stack.Screen name="knowledge" options={{ title: 'Knowledge' }} />
-            <Stack.Screen name="devices" options={{ title: 'Devices' }} />
-            <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
-            <Stack.Screen name="unlock-device" options={{ headerShown: false }} />
-            <Stack.Screen name="secure-device" options={{ headerShown: false }} />
-            {/* The onboarding wizard renders its own header/progress (#320). */}
-            <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-          </Stack>
+              <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
+              <Stack.Screen name="settings/github" options={{ title: 'GitHub' }} />
+              <Stack.Screen
+                name="settings/services/index"
+                options={{ title: 'Connected services' }}
+              />
+              <Stack.Screen
+                name="settings/services/mcp/index"
+                options={{ title: 'MCP connections' }}
+              />
+              <Stack.Screen
+                name="settings/services/mcp/new"
+                options={{ title: 'Add MCP connection' }}
+              />
+              <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
+              <Stack.Screen name="knowledge" options={{ title: 'Knowledge' }} />
+              <Stack.Screen name="devices" options={{ title: 'Devices' }} />
+              <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
+              <Stack.Screen name="unlock-device" options={{ headerShown: false }} />
+              <Stack.Screen name="secure-device" options={{ headerShown: false }} />
+              {/* The onboarding wizard renders its own header/progress (#320). */}
+              <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+            </Stack>
+          </KeyboardProvider>
         </SafeAreaProvider>
       </GestureHandlerRootView>
     </KeyCommands>

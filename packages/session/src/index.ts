@@ -22,6 +22,7 @@ export {
   brokeredGrantChannel,
   isRunnerSupervisorBackend,
   RUNNER_SUPERVISOR_BACKENDS,
+  runnerSupervisorBackendLabel,
   type Backend,
   type BrokeredGrantChannel,
   type RunnerSupervisorBackend,
