@@ -50,6 +50,40 @@ describe('Meeting transcript routes', () => {
   });
   afterEach(async () => app.close());
 
+  it('declares a body limit above the cap its upload schema enforces', async () => {
+    // Read off the REGISTERED route rather than the exported constant: the
+    // constant being correct proves nothing if the registration stops passing
+    // it. Drop `{ bodyLimit }` from the `app.post` and the route silently falls
+    // back to buildServer's modest default — a legal recording then dies as a
+    // bare 413 while Fastify is still reading the socket, with no field error,
+    // no handler, and the client's bytes already sent.
+    const probe = Fastify();
+    const limits = new Map<string, number | undefined>();
+    probe.addHook('onRoute', (route) => {
+      // `method` is a string for a single-verb registration and an array for a
+      // multi-verb one. Matching only the string form would silently observe no
+      // routes at all if these registrations were ever rewritten as `app.route`,
+      // and every assertion below reads a missing entry rather than a wrong one.
+      if ([route.method].flat().includes('POST')) limits.set(route.url, route.bodyLimit);
+    });
+    registerMeetingTranscriptRoutes(probe, { save, stream });
+    await probe.ready();
+
+    expect(limits.get('/sessions/:id/meetings/transcripts')).toBeGreaterThan(
+      MAX_MEETING_AUDIO_BASE64_LEN,
+    );
+    // The streamed sibling must NOT carry one: its body is the audio itself and
+    // is piped to disk, so any buffered limit here would cap a two-hour
+    // recording at whatever number happened to be copied across.
+    //
+    // `has` first, because `get` answers `undefined` both for a route that
+    // declared no limit and for a route the probe never saw — so on its own the
+    // assertion below would keep passing if the registration disappeared.
+    expect(limits.has('/sessions/:id/meetings/transcripts/stream')).toBe(true);
+    expect(limits.get('/sessions/:id/meetings/transcripts/stream')).toBeUndefined();
+    await probe.close();
+  });
+
   it('answers an undecodable metadata header with 400 instead of crashing the upload', async () => {
     // A lone '%' is a header a client can produce by concatenating instead of
     // encoding. If the URIError guard is ever dropped, decodeURIComponent throws
@@ -189,14 +223,6 @@ describe('Meeting transcript routes on a real server', () => {
   afterAll(async () => {
     await server?.close();
     await ctx.close();
-  });
-
-  it('keeps the body limit above the cap the upload schema enforces', () => {
-    // The cap lives in this module, the limit is computed in buildServer, and
-    // nothing but arithmetic connects them. Raise the cap alone and every test
-    // still passes while a legal recording dies as a bare 413 during upload —
-    // no field error, no route, and the client has already sent the bytes.
-    expect(server.initialConfig.bodyLimit).toBeGreaterThan(MAX_MEETING_AUDIO_BASE64_LEN);
   });
 
   it('answers an undecodable metadata header with the product 400, not a 500', async () => {

@@ -208,10 +208,7 @@ import {
 } from './project-concierge-routes.js';
 import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
-import {
-  MAX_MEETING_AUDIO_BASE64_LEN,
-  registerMeetingTranscriptRoutes,
-} from './meeting-transcript-routes.js';
+import { registerMeetingTranscriptRoutes } from './meeting-transcript-routes.js';
 import { registerSessionFileRoutes } from './session-file-routes.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerAttachmentRoute } from './attachment-route.js';
@@ -1431,7 +1428,11 @@ const MAX_ATTACHMENTS = 8;
 const MAX_IMAGE_ATTACHMENT_BASE64_LEN = 10_000_000;
 const MAX_FILE_ATTACHMENT_BYTES = 25_000_000;
 const MAX_TURN_ATTACHMENT_BYTES = 50_000_000;
-const MAX_TURN_ATTACHMENT_BASE64_LEN = 66_666_668;
+// Fastify's default for any route that declares no limit of its own. Above
+// Fastify's own 1 MiB so the largest text bodies here (a knowledge document is
+// capped at 2 MB by its route) are not the thing that has to opt out, and far
+// below what an upload route needs — those declare their own.
+const DEFAULT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 // How many projection events `GET /sessions/:id/activity` reads before falling
 // back to the full slice. Not a correctness bound — `activityProjection` only
 // accepts a tail that provably answers like the whole log — so this trades how
@@ -2849,17 +2850,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
     deps.eventStore.scheduleMessageProjection();
   }
-  // Raise the body limit above Fastify's 1 MiB default: a turn may carry image
-  // attachments (base64), and the per-route schema is what actually bounds their
-  // aggregate size. Without this, a real screenshot
-  // (>1 MiB of base64) is rejected with a 413 BEFORE the schema runs — the turn
-  // silently never dispatches. Headroom added for the prompt + JSON envelope.
-  // The same reasoning binds MAX_MEETING_AUDIO_BASE64_LEN, which lives in
-  // meeting-transcript-routes.ts next to the schema that enforces it: this limit
-  // has to stay above it, so lowering one without the other is what turns a field
-  // error into a bare 413.
-  const bodyLimit =
-    Math.max(MAX_TURN_ATTACHMENT_BASE64_LEN, MAX_MEETING_AUDIO_BASE64_LEN) + 1_000_000;
+  // What a route gets when it declares no `bodyLimit` of its own: enough for the
+  // metadata-shaped JSON that is all every route here takes, and nothing like
+  // enough for a base64 upload.
+  //
+  // This used to be sized from the two upload caps, so it was ~71 MB for every
+  // route in the server. Bulk is now declared where it is needed — see
+  // TURN_BODY_LIMIT_BYTES and MEETING_TRANSCRIPT_BODY_LIMIT_BYTES, alongside the
+  // limits the knowledge source routes already declare above this default and
+  // the far tighter ones the pairing and secret routes set below it. What that
+  // removes is not a leak but a ceiling: a buffered base64 body costs about
+  // three times its own size at once (the body, the string `JSON.parse` produces
+  // from it, the Buffer the handler decodes back), so a global 71 MB meant any
+  // route at all could be made to cost ~237 MB of peak memory.
+  //
+  // Raising this back to cover some new large-body route is the mistake to avoid:
+  // it would restore that ceiling everywhere to serve one endpoint. Give the
+  // route its own limit instead. Routes streaming to disk need neither — the
+  // `application/octet-stream` parser below hands them the raw stream and no body
+  // limit applies.
+  const bodyLimit = DEFAULT_BODY_LIMIT_BYTES;
   const loggerOption: NonNullable<FastifyServerOptions['logger']> = deps.logger
     ? {
         serializers: {
