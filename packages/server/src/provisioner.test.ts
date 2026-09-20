@@ -767,6 +767,62 @@ describe('ProvisionerImpl (#174)', () => {
     expect(calls).toContainEqual({ method: 'startContainer', payload: 'container-1' });
   });
 
+  it('coalesces concurrent automatic wakes for one sleeping project', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker } = fakeDocker({
+      inspectContainer: vi
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValue({ ...retained, running: true }),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const relay = defaultProjectRelay();
+    const reactivate = vi.fn(async () => {
+      await gate;
+      return {
+        identity: { projectId: id, containerGeneration: 'generation-1' },
+        signingCapability: 'fresh-signing',
+        githubCapability: 'fresh-github',
+      };
+    });
+    relay.reactivate = reactivate;
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+    });
+
+    const first = provisioner.ensureProjectSandboxAwake(id);
+    await vi.waitFor(() => expect(reactivate).toHaveBeenCalledOnce());
+    await expect(ctx.store.getProject(id)).resolves.toMatchObject({ state: 'waking' });
+    const second = provisioner.ensureProjectSandboxAwake(id);
+    release();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ state: 'active' }),
+      expect.objectContaining({ state: 'active' }),
+    ]);
+    expect(reactivate).toHaveBeenCalledOnce();
+  });
+
   it('marks a wake failed when rollback cannot confirm the Sandbox stopped', async () => {
     const id = await seedProject('active');
     const retained = {

@@ -213,6 +213,7 @@ import {
   claudeTransportRefusal,
 } from './claude-egress-agent-env.js';
 import { CONTAINER_GENERATION_LABEL } from './project-relay-migration.js';
+import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
@@ -4289,6 +4290,17 @@ export async function buildEmbeddedServer(
           preparation.sessionId,
           preparation.canWait,
           async (queuedSessionIds) => {
+            await ensureProjectSandboxReadyForTurn({
+              project,
+              getProject: (projectId) => store.getProject(projectId),
+              canWait: preparation.canWait,
+              waitingOn: (message) => preparation.waitingOn(message),
+              ...(provisioner?.ensureProjectSandboxAwake === undefined
+                ? {}
+                : {
+                    ensureAwake: provisioner.ensureProjectSandboxAwake.bind(provisioner),
+                  }),
+            });
             await refreshProjectToken?.(project);
             const settings = isProjectSettingsReader(store)
               ? await store.getProjectSettings(project.id)

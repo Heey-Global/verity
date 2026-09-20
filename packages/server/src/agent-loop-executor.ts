@@ -16,6 +16,8 @@ interface AgentLoopExecutionResult {
 }
 
 export interface AgentLoopExecutorDeps {
+  /** Wake or otherwise prepare the project before any Sandbox-dependent work. */
+  prepareProject?(project: ProjectRecord): Promise<ProjectRecord>;
   ensureSession(loop: AgentLoopRecord, project: ProjectRecord): Promise<SessionRecord>;
   runScript(input: {
     loop: AgentLoopRecord;
@@ -70,8 +72,9 @@ export function createAgentLoopExecutor(deps: AgentLoopExecutorDeps): AgentLoopE
             sessionId: loop.sessionId,
           };
         }
-        const session = await deps.ensureSession(loop, project);
-        const result = await deps.runScript({ loop, project, session });
+        const readyProject = (await deps.prepareProject?.(project)) ?? project;
+        const session = await deps.ensureSession(loop, readyProject);
+        const result = await deps.runScript({ loop, project: readyProject, session });
         const signal = parseSpawnSignal(result.stdout);
         // stdout/stderr may contain repository data. Never persist raw process
         // output in notices or run history; only an explicit JSON `prompt` crosses
