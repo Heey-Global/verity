@@ -1678,6 +1678,8 @@ export class KnowledgeStore {
     return this.transaction(async (tx) => {
       if (!(await this.folders(tx)).some((f) => f.id === folderId))
         throw new KnowledgeError('not_found');
+      const sourceProject = await this.sourceProject(tx, folderId);
+      const importedDocumentIds: string[] = [];
       for (const file of files) {
         if (typeof file.path !== 'string' || !file.path.endsWith('.md'))
           throw new KnowledgeError('invalid', 'Import accepts relative Markdown paths');
@@ -1696,6 +1698,7 @@ export class KnowledgeStore {
           title,
           bodyMarkdown: file.bodyMarkdown,
         });
+        importedDocumentIds.push(document.id);
         if (file.original) {
           if (!includeOriginals)
             throw new KnowledgeError('invalid', 'Use the original-source bundle import');
@@ -1709,6 +1712,14 @@ export class KnowledgeStore {
           await this.sources.attachRevision(tx, document.currentRevisionId, { ...original, bytes });
         }
       }
+      if (sourceProject)
+        await this.queueWikiMaintenanceTx(
+          tx,
+          sourceProject,
+          importedDocumentIds,
+          new Date(),
+          false,
+        );
       return files.length;
     });
   }

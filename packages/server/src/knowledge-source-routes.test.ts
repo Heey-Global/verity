@@ -117,11 +117,13 @@ it('stores project chat selections under Chat uploads, deduplicates files, and s
     model: 'codex/default',
   });
   const schedule = vi.fn();
+  const wakeMaintenance = vi.fn();
   const app = Fastify();
   registerKnowledgeSourceRoutes(app, {
     knowledge: ctx.store.knowledge,
     store: ctx.store,
     schedule,
+    wakeMaintenance,
   });
   try {
     const space = (await ctx.store.knowledge.getProjectSpace('chat-knowledge'))!;
@@ -141,6 +143,20 @@ it('stores project chat selections under Chat uploads, deduplicates files, and s
     expect(schedule).toHaveBeenCalledWith('chat-knowledge', [
       uploaded.json<{ document: { id: string } }>().document.id,
     ]);
+    const importTarget = await ctx.store.knowledge.createFolder({
+      parentId: space.sourcesFolderId,
+      name: 'Imported',
+    });
+    const exported = await app.inject({
+      url: `/knowledge/source-bundle?folderId=${nested.id}`,
+    });
+    const imported = await app.inject({
+      method: 'POST',
+      url: '/knowledge/source-bundle',
+      payload: { ...exported.json<Record<string, unknown>>(), folderId: importTarget.id },
+    });
+    expect(imported.statusCode).toBe(200);
+    expect(wakeMaintenance).toHaveBeenCalledWith('chat-knowledge');
     schedule.mockClear();
     const attachment = {
       filename: 'decision.txt',

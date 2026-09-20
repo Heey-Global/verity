@@ -214,6 +214,21 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
       await deps.store.knowledge.queueWikiReconciliation(projectId, dueAt);
       arm(projectId, dueAt);
     },
+    async wake(projectId: string) {
+      const records = await deps.store.knowledge.listWikiMaintenance(projectId);
+      const reconciliation = (await deps.store.knowledge.listWikiReconciliations()).find(
+        (entry) => entry.projectId === projectId,
+      );
+      const dueDates = [
+        ...records.map((record) => record.dueAt),
+        ...(reconciliation ? [reconciliation.dueAt] : []),
+      ];
+      if (dueDates.length)
+        arm(
+          projectId,
+          dueDates.reduce((latest, candidate) => (candidate > latest ? candidate : latest)),
+        );
+    },
     async recover() {
       const records = await deps.store.knowledge.listWikiMaintenance();
       const projects = new Map<string, Date>();

@@ -32,6 +32,7 @@ export function registerKnowledgeSourceRoutes(
     knowledge: KnowledgeStore;
     store?: Pick<EventStore, 'getSession'>;
     schedule?: (projectId: string, sourceDocumentIds: string[]) => Promise<void> | void;
+    wakeMaintenance?: (projectId: string) => Promise<void> | void;
   },
 ): void {
   const knowledge = deps.knowledge;
@@ -236,15 +237,16 @@ export function registerKnowledgeSourceRoutes(
         })
         .strict()
         .parse(request.body);
-      return {
-        imported: await knowledge.importDocuments(
-          body.folderId,
-          body.documents.map(({ original, ...document }) =>
-            original ? { ...document, original } : document,
-          ),
-          true,
+      const imported = await knowledge.importDocuments(
+        body.folderId,
+        body.documents.map(({ original, ...document }) =>
+          original ? { ...document, original } : document,
         ),
-      };
+        true,
+      );
+      const projectId = await knowledge.projectForSourceFolder(body.folderId);
+      if (projectId) await deps.wakeMaintenance?.(projectId);
+      return { imported };
     });
     done();
   });

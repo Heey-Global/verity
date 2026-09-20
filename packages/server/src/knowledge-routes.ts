@@ -29,6 +29,7 @@ export interface KnowledgeRouteDeps {
   reconcileInvalidations(): Promise<void>;
   schedule?: (projectId: string, sourceDocumentIds: string[]) => Promise<void> | void;
   scheduleReconciliation?: (projectId: string) => Promise<void> | void;
+  wakeMaintenance?: (projectId: string) => Promise<void> | void;
 }
 
 /** Operator routes use the server's default paired-device authentication gate. */
@@ -211,7 +212,10 @@ export function registerKnowledgeRoutes(app: FastifyInstance, deps: KnowledgeRou
         })
         .strict()
         .parse(request.body);
-      return { imported: await store.importDocuments(body.folderId, body.documents) };
+      const imported = await store.importDocuments(body.folderId, body.documents);
+      const projectId = await store.projectForSourceFolder(body.folderId);
+      if (projectId) await deps.wakeMaintenance?.(projectId);
+      return { imported };
     });
     done();
   });

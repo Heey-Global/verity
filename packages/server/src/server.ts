@@ -5709,12 +5709,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       knowledge: deps.eventStore.knowledge,
       store: deps.eventStore,
       schedule: (projectId, sourceDocumentIds) => wikiJobs.enqueue(projectId, sourceDocumentIds),
+      wakeMaintenance: (projectId) => wikiJobs.wake(projectId),
     });
     registerKnowledgeRoutes(app, {
       knowledge: deps.eventStore.knowledge,
       reconcileInvalidations: reconcileKnowledgeInvalidations,
       schedule: (projectId, sourceDocumentIds) => wikiJobs.enqueue(projectId, sourceDocumentIds),
       scheduleReconciliation: (projectId) => wikiJobs.enqueueReconciliation(projectId),
+      wakeMaintenance: (projectId) => wikiJobs.wake(projectId),
     });
   }
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
