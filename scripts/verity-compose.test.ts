@@ -198,6 +198,26 @@ describe('deploy/bin/verity-compose', () => {
     );
   });
 
+  it('lets the managed topology seal the sandbox CPU weight as an env source', () => {
+    // On the managed topology Compose does not create the Server — the Updater does,
+    // from the env SOURCES sealed at bootstrap. Bootstrap seals by rule rather than by
+    // a hand-kept list: every VERITY_* name present, minus an explicit set of
+    // bootstrap-only inputs. So this variable is sealed for free, and the failure this
+    // guards is someone adding it to that exclusion set (reasonably enough — most of
+    // the entries there are also resource-shaped) and thereby making the documented
+    // override inert on every managed host. Compose would still ship it, the Server
+    // would still start, every sandbox would sit on the 512 fallback, and the only
+    // way to see it would be to read a container's cgroup.
+    const bootstrap = readFileSync('packages/server/src/self-update/managed-bootstrap.ts', 'utf8');
+    expect(bootstrap).toContain("name.startsWith('VERITY_')");
+    const excluded = /!\[([\s\S]*?)\]\.includes\(name\)/.exec(bootstrap)?.[1];
+    // Fail loudly if the shape moved rather than passing on an empty match, which
+    // would assert nothing at all.
+    expect(excluded).toBeDefined();
+    expect(excluded).toContain("'VERITY_SERVER_IMAGE'");
+    expect(excluded).not.toContain('VERITY_SANDBOX_CPU_SHARES');
+  });
+
   it('gives bootstrap and the Updater the same managed ACP environment sources', () => {
     const overlay = parse(readFileSync('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
       services: Record<string, { environment?: Record<string, string> }>;
