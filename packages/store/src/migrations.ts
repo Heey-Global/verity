@@ -2807,7 +2807,7 @@ const migrations: Record<string, Migration> = {
         select sf.project_id,f.id from source_folders sf
           join knowledge_folders f on f.parent_id=sf.id
       ) insert into knowledge_maintenance_queue(project_id,source_document_id,due_at)
-        select sf.project_id,d.id,now() from source_folders sf
+        select sf.project_id,d.id,date_trunc('milliseconds',now()) from source_folders sf
           join knowledge_documents d on d.folder_id=sf.id
         on conflict do nothing`.execute(db);
       await sql`with recursive wiki_folders(project_id,id) as (
@@ -2815,7 +2815,7 @@ const migrations: Record<string, Migration> = {
         union all
         select wf.project_id,f.id from wiki_folders wf
           join knowledge_folders f on f.parent_id=wf.id
-      ) update project_knowledge_spaces s set reconcile_due_at=now()
+      ) update project_knowledge_spaces s set reconcile_due_at=date_trunc('milliseconds',now())
         where exists(select 1 from wiki_folders wf
           join knowledge_documents d on d.folder_id=wf.id
           where wf.project_id=s.project_id)`.execute(db);
