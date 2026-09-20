@@ -8,6 +8,8 @@ import {
   type ServerDeploymentSpecBody,
 } from './deployment-spec.js';
 
+export const MANAGED_DEPLOYMENT_ROOT = '/var/lib/verity/updater/managed-deployment';
+
 const MANAGED_DEPLOYMENT_MARKER_VERSION = 1 as const;
 export const MANAGED_DEPLOYMENT_SPEC_FILE = 'server-deployment.json';
 export const MANAGED_DEPLOYMENT_MARKER_FILE = 'managed-deployment.json';

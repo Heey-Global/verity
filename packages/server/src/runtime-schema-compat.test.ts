@@ -37,10 +37,13 @@ describe('runtime schema forward compatibility', () => {
    * wiring. A promise honoured at only one of them is the identical crash, one
    * stack frame later.
    */
-  it.each(['main.ts', 'embedded.ts'])('hands the promise to the migrator in %s', async (file) => {
-    const source = await readFile(resolve(import.meta.dirname, file), 'utf8');
-    expect(source).toMatch(
-      /migrateToLatest\(\s*db,\s*migrationProvider,\s*\{\s*forwardMax:\s*SERVER_COMPAT\.schema\.max\s*,?\s*\}\s*\)/,
-    );
-  });
+  it.each(['server-main.ts', 'embedded.ts'])(
+    'hands the promise to the migrator in %s',
+    async (file) => {
+      const source = await readFile(resolve(import.meta.dirname, file), 'utf8');
+      expect(source).toMatch(
+        /migrateToLatest\(\s*db,\s*migrationProvider,\s*\{\s*forwardMax:\s*SERVER_COMPAT\.schema\.max\s*,?\s*\}\s*\)/,
+      );
+    },
+  );
 });
