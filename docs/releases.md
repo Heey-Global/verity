@@ -57,6 +57,28 @@ requirement arrives with the version that needs it rather than after it. The `!`
 is about the operator's deployment, not about a source API — a release nobody can
 install correctly without a step they were never told about is the breakage.
 
+The test is what the step preserves, not that a step exists. If the release makes
+something that worked before stop working until the operator acts, that is the
+breakage and the `!` announces it. If the step only unlocks a NEW capability —
+nothing that ran yesterday changes, and an operator who does not want the
+capability does nothing — it is a `feat:`, and the step belongs in that feature's
+release note and runbook. Both shapes need documenting; only the first needs a
+version number that makes people read it.
+
+Two consecutive OpenCode changes both shipped as `!`, and only one of them should
+have; that pair is why this paragraph exists. They are about different turns, so
+keep the classes apart when reading them. Admitting OpenCode to the brokered secret tools (#527) changed
+**project-Sandbox turns**: a container provisioned before it had been running
+those turns tool-less, and afterwards the boundary refuses them until it is
+recreated, so the operator acts to keep what they already had. Running OpenCode's
+**control-plane turns** on the dedicated Runner (#532) never touched that class —
+control-plane turns were refused by the Server itself, before and independently of
+#527, so nothing regressed, Claude and Codex were untouched, and an operator with
+no OpenCode control-plane session had nothing to do. That one should have been a
+`feat:`; the entry stands in the 1.0.0 notes as cut, since neither history nor a
+published changelog is rewritten for it. Past 1.0.0 the same mistake costs a major
+version, so it is cheaper to make the distinction here than in review.
+
 Write the footer as an instruction, not a description: what to do, in which
 order, and what fails if that order is reversed. The runbook then carries the
 recovery for whoever finds out the hard way, and is linked from it.
