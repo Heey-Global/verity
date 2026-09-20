@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/Heey-Global/verity/compare/v0.16.4...v0.17.0) (2026-09-20)
+
+
+### Features
+
+* add managed knowledge library with project access grants ([#526](https://github.com/Heey-Global/verity/issues/526)) ([e92ca3b](https://github.com/Heey-Global/verity/commit/e92ca3b8701c798406536aa46129daa19ec128b3))
+
 ## [0.16.4](https://github.com/Heey-Global/verity/compare/v0.16.3...v0.16.4) (2026-09-19)
 
 
