@@ -22,16 +22,8 @@ import {
 } from '@verity/mobile';
 import { router, type Href, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -47,6 +39,7 @@ import {
   setAuthToken,
 } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { clearPairingBootstrap, getPairingBootstrap } from '../../lib/pairingSession';
 import { deviceLabel } from '../../lib/deviceLabel';
 import { getServerProfile } from '../../lib/serverProfile';
@@ -429,24 +422,23 @@ function MasterPasswordStep({
 
 function DeviceAuthorizationScaffold({ children }: { children: ReactNode }) {
   const insets = useSafeAreaInsets();
+  // Keyboard-aware: the password box is the only control here and it has to
+  // stay visible while it is typed into — a masked field gives no other
+  // feedback that the characters are landing.
   return (
-    <KeyboardAvoidingView
+    <KeyboardAwareScrollView
       style={styles.authRoot}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={0}
+      contentContainerStyle={[styles.authContent, { paddingTop: insets.top + 32 }]}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
+      bottomOffset={KEYBOARD_BOTTOM_OFFSET}
     >
-      <ScrollView
-        contentContainerStyle={[styles.authContent, { paddingTop: insets.top + 32 }]}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="interactive"
-      >
-        <Text style={styles.authEyebrow}>Device authorization</Text>
-        <Text style={styles.title} accessibilityRole="header">
-          Unlock Verity
-        </Text>
-        {children}
-      </ScrollView>
-    </KeyboardAvoidingView>
+      <Text style={styles.authEyebrow}>Device authorization</Text>
+      <Text style={styles.title} accessibilityRole="header">
+        Unlock Verity
+      </Text>
+      {children}
+    </KeyboardAwareScrollView>
   );
 }
 

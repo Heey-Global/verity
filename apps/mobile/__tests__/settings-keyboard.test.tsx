@@ -2,11 +2,12 @@
 //
 // Settings is where the operator types credentials they can never re-read: the
 // paste boxes are write-only, so a subscription key typed under the keyboard is
-// not shown back anywhere. On iOS a ScrollView keeps its full height when the
+// not shown back anywhere. A plain ScrollView keeps its full height when the
 // keyboard opens — the keyboard just covers the bottom of it, and the last
 // group on a screen (Public Preview, on connected services) becomes unreachable
-// with nothing to scroll into. Both tests here guard that: the scaffold asks for
-// the keyboard inset, and no settings screen scrolls through anything else.
+// with nothing to scroll into. Both tests here guard that: the scaffold scrolls
+// a focused field clear of the keyboard, and no settings screen scrolls through
+// anything else.
 import { render, screen } from '@testing-library/react-native';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -15,6 +16,7 @@ import { ScrollView, Text } from 'react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 
 import { SettingsScaffold } from '../components/settings/SettingsChrome';
+import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 import { resetSettingsHarness } from './support/settingsHarness';
 
 afterEach(() => resetSettingsHarness());
@@ -62,20 +64,22 @@ function mountsOwnScrollContainer(source: string): boolean {
 }
 
 describe('settings keyboard avoidance', () => {
-  it('adjusts the scaffold for the keyboard so a focused field can scroll clear of it', () => {
+  it('scrolls the scaffold so a focused field clears the keyboard', () => {
     render(
       <SettingsScaffold title="Services">
         <Text>field</Text>
       </SettingsScaffold>,
     );
 
-    // Without this the scroll view has no room below its content to scroll
-    // into, and iOS leaves the focused box behind the keyboard: the operator
-    // pastes or types a credential blind, into a field that never echoes it.
+    // `bottomOffset` only exists on the keyboard-aware scroll view — the
+    // library's jest mock renders it as a plain RN `ScrollView`, so the prop is
+    // what tells the two apart here. Swapped back to a plain one, the focused
+    // box stays behind the keyboard and the operator types a credential blind,
+    // into a field that never echoes it back.
     const scrollViews = screen.UNSAFE_getAllByType(ScrollView);
     expect(scrollViews.length).toBeGreaterThan(0);
     for (const scrollView of scrollViews) {
-      expect(scrollView.props.automaticallyAdjustKeyboardInsets).toBe(true);
+      expect(scrollView.props.bottomOffset).toBe(KEYBOARD_BOTTOM_OFFSET);
     }
   });
 

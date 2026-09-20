@@ -10,10 +10,12 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, Text, TextInput, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
 import { createVerityClient } from '../lib/client';
+import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 import { KnowledgeButton as Button } from '../components/knowledge/KnowledgeButton';
 import { KnowledgeMarkdown } from '../components/knowledge/KnowledgeMarkdown';
 import { styles } from '../components/knowledge/styles';
@@ -298,11 +300,16 @@ export function Library({
           </View>
         );
       });
+  // Keyboard-aware: the rename, new-folder and document-title fields sit at
+  // whatever depth the library has scrolled to, and the editor's body field is
+  // below the fold by definition. A plain scroll view leaves whichever one is
+  // focused behind the keyboard with nothing to scroll into.
   return (
-    <ScrollView
+    <KeyboardAwareScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      bottomOffset={KEYBOARD_BOTTOM_OFFSET}
     >
       <Stack.Screen options={{ title: 'Knowledge', gestureEnabled: !dirty && !busy }} />
       <View style={styles.row}>
@@ -831,6 +838,6 @@ export function Library({
           </View>
         </View>
       ) : null}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
