@@ -1,5 +1,1 @@
-export {
-  knowledgeToolRequestSchema,
-  KNOWLEDGE_TOOL_DESCRIPTION,
-  KNOWLEDGE_CONTEXT_INSTRUCTIONS,
-} from '@verity/events';
+export { knowledgeToolRequestSchema, KNOWLEDGE_TOOL_DESCRIPTION } from '@verity/events';

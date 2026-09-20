@@ -1023,14 +1023,14 @@ interface ControlPlaneGenerationTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
-export interface KnowledgeFoldersTable {
+interface KnowledgeFoldersTable {
   id: string;
   parent_id: string | null;
   name: string;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
 }
-export interface KnowledgeDocumentsTable {
+interface KnowledgeDocumentsTable {
   id: string;
   folder_id: string;
   title: string;
@@ -1038,7 +1038,7 @@ export interface KnowledgeDocumentsTable {
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
 }
-export interface KnowledgeRevisionsTable {
+interface KnowledgeRevisionsTable {
   id: string;
   document_id: string;
   title: string;
@@ -1049,12 +1049,12 @@ export interface KnowledgeRevisionsTable {
   turn_id: string | null;
   created_at: Generated<Date>;
 }
-export interface KnowledgeGrantsTable {
+interface KnowledgeGrantsTable {
   project_id: string;
   folder_id: string;
   mode: 'read' | 'read_write';
 }
-export interface KnowledgeAuditTable {
+interface KnowledgeAuditTable {
   id: string;
   project_id: string;
   session_id: string;
@@ -1065,7 +1065,7 @@ export interface KnowledgeAuditTable {
   outcome: 'allow' | 'deny' | 'conflict';
   created_at: Generated<Date>;
 }
-export interface KnowledgeInvalidatedSessionsTable {
+interface KnowledgeInvalidatedSessionsTable {
   session_id: string;
   stopped_at: Generated<Date | null>;
   created_at: Generated<Date>;

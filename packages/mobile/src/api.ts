@@ -1648,13 +1648,13 @@ export interface MobileScrollDiagnostic {
   data: Record<string, unknown>;
 }
 
-export const knowledgeFolderSchema = z.object({
+const knowledgeFolderSchema = z.object({
   id: z.string(),
   parentId: z.string().nullable(),
   name: z.string(),
 });
 export type KnowledgeFolder = z.infer<typeof knowledgeFolderSchema>;
-export const knowledgeDocumentSchema = z.object({
+const knowledgeDocumentSchema = z.object({
   id: z.string(),
   folderId: z.string(),
   title: z.string(),
@@ -1662,7 +1662,7 @@ export const knowledgeDocumentSchema = z.object({
   bodyMarkdown: z.string().optional(),
 });
 export type KnowledgeDocument = z.infer<typeof knowledgeDocumentSchema>;
-export const knowledgeRevisionSchema = z.object({
+const knowledgeRevisionSchema = z.object({
   id: z.string(),
   documentId: z.string(),
   title: z.string().optional(),
@@ -1674,17 +1674,17 @@ export const knowledgeRevisionSchema = z.object({
   createdAt: z.union([z.string(), z.number()]),
 });
 export type KnowledgeRevision = z.infer<typeof knowledgeRevisionSchema>;
-export const knowledgeGrantSchema = z.object({
+const knowledgeGrantSchema = z.object({
   folderId: z.string(),
   mode: z.enum(['read', 'read_write']),
 });
 export type KnowledgeGrant = z.infer<typeof knowledgeGrantSchema>;
-export const knowledgeExportSchema = z.object({
+const knowledgeExportSchema = z.object({
   documents: z.array(z.object({ path: z.string(), bodyMarkdown: z.string() })),
 });
 export type KnowledgeExport = z.infer<typeof knowledgeExportSchema>;
 
-export const knowledgeMovePreviewSchema = z.object({
+const knowledgeMovePreviewSchema = z.object({
   policyToken: z.string(),
   affectedProjects: z.array(
     z.object({
