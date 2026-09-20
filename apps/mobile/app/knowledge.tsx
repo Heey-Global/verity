@@ -759,31 +759,6 @@ export function Library({
               />
             </View>
           ) : null}
-          {!query ? renderFolders(null, 0) : null}
-          {query ? documents.map((d) => renderDocument(d, 0)) : null}
-          {!folders.length && !query ? (
-            <Text style={styles.muted}>Create a folder to start your library.</Text>
-          ) : null}
-          {hasMore ? (
-            <Button
-              label="Load more documents"
-              disabled={busy}
-              onPress={() => {
-                void run(async () => {
-                  const next = await client.listKnowledgeDocuments(
-                    folderId ?? undefined,
-                    query || undefined,
-                    documents.length,
-                  );
-                  setDocuments((current) => [
-                    ...current,
-                    ...next.filter((d) => !current.some((old) => old.id === d.id)),
-                  ]);
-                  setHasMore(next.length === 100);
-                });
-              }}
-            />
-          ) : null}
           {moreActions && folderId ? (
             <View style={styles.row}>
               <Button
@@ -896,6 +871,31 @@ export function Library({
                 </>
               ) : null}
             </View>
+          ) : null}
+          {!query ? renderFolders(null, 0) : null}
+          {query ? documents.map((d) => renderDocument(d, 0)) : null}
+          {!folders.length && !query ? (
+            <Text style={styles.muted}>Create a folder to start your library.</Text>
+          ) : null}
+          {hasMore ? (
+            <Button
+              label="Load more documents"
+              disabled={busy}
+              onPress={() => {
+                void run(async () => {
+                  const next = await client.listKnowledgeDocuments(
+                    folderId ?? undefined,
+                    query || undefined,
+                    documents.length,
+                  );
+                  setDocuments((current) => [
+                    ...current,
+                    ...next.filter((d) => !current.some((old) => old.id === d.id)),
+                  ]);
+                  setHasMore(next.length === 100);
+                });
+              }}
+            />
           ) : null}
         </View>
       )}

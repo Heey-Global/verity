@@ -400,6 +400,15 @@ test('new folder toolbar opens a compact form and creates inside the selected fo
   await waitFor(() => expect(screen.queryByLabelText('Folder name')).toBeNull());
 });
 
+test('more folder actions open directly from the toolbar', async () => {
+  const client = fake();
+  render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+  fireEvent.press(await screen.findByLabelText('More folder actions'));
+  expect(screen.getByLabelText('Rename folder')).toBeTruthy();
+  expect(screen.getByLabelText('Import source bundle')).toBeTruthy();
+  expect(screen.getByLabelText('Export Markdown bundle')).toBeTruthy();
+});
+
 async function chooseWriteAccess(name: string) {
   const alert = jest.spyOn(Alert, 'alert');
   try {
@@ -524,6 +533,7 @@ test('wiki jobs submit only the selected own source with the selected model', as
   );
   expect(screen.queryByLabelText('Sources')).toBeNull();
   expect(screen.queryByLabelText('Wiki')).toBeNull();
+  expect(screen.queryByLabelText('Refresh knowledge')).toBeNull();
   fireEvent.press(await screen.findByLabelText('Project default model'));
   fireEvent.press(await screen.findByLabelText('provider/model'));
   fireEvent.press(screen.getByLabelText('Incorporate into Wiki'));
@@ -535,6 +545,40 @@ test('wiki jobs submit only the selected own source with the selected model', as
     }),
   );
   expect(await screen.findByLabelText('Wiki update · pending')).toBeTruthy();
+});
+
+test('running Wiki jobs refresh their status automatically', async () => {
+  jest.useFakeTimers();
+  const pending = {
+    id: 'job',
+    projectId: 'project',
+    sessionId: 'fresh-session',
+    kind: 'check' as const,
+    status: 'running' as const,
+    sourceRevisions: [],
+    createdAt: 1,
+    error: null,
+  };
+  const client = {
+    ...managedClient(),
+    listKnowledgeWikiJobs: jest
+      .fn()
+      .mockResolvedValueOnce([pending])
+      .mockResolvedValue([{ ...pending, status: 'completed' as const }]),
+  };
+  try {
+    render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
+    await act(async () => Promise.resolve());
+    expect(screen.getByLabelText('Wiki check · running')).toBeTruthy();
+    await act(async () => {
+      jest.advanceTimersByTime(2_000);
+      await Promise.resolve();
+    });
+    expect(screen.getByLabelText('Wiki check · completed')).toBeTruthy();
+    expect(client.listKnowledgeWikiJobs).toHaveBeenCalledTimes(2);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test('an additional shared source never offers project Wiki ingestion', async () => {

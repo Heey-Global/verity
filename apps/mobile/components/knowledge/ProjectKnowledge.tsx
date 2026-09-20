@@ -67,6 +67,11 @@ export function ProjectKnowledge({
       generation.current++;
     };
   }, [client, projectId, reload, onSpace]);
+  useEffect(() => {
+    if (!jobs.some((job) => job.status === 'pending' || job.status === 'running')) return;
+    const timer = setTimeout(() => setReload((value) => value + 1), 2_000);
+    return () => clearTimeout(timer);
+  }, [jobs]);
   const run = async (action: () => Promise<void>) => {
     if (lock.current || blocked) return;
     lock.current = true;
@@ -110,14 +115,6 @@ export function ProjectKnowledge({
           {error}
         </Text>
       ) : null}
-      <View style={styles.row}>
-        <Button
-          icon="refresh-cw"
-          label="Refresh knowledge"
-          disabled={busy || blocked}
-          onPress={() => setReload((value) => value + 1)}
-        />
-      </View>
       {overview ? (
         <View style={styles.group}>
           <Text style={styles.muted}>Always considered in new sessions · approved version</Text>
