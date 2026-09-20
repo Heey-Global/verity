@@ -258,6 +258,7 @@ import {
   projectHasPersistentSandboxActivity,
   startProjectIdleSleepScheduler,
 } from './project-idle-sleep.js';
+import type { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telemetry.js';
 import {
   AmbiguousGitPushError,
   ProvisioningError,
@@ -1188,6 +1189,8 @@ export interface ServerDeps {
    * the no-project spawn path).
    */
   provisioner?: Provisioner | undefined;
+  /** In-process aggregate and structured transition feed for Sandbox sleep/wake. */
+  projectSandboxLifecycleTelemetry?: ProjectSandboxLifecycleTelemetry | undefined;
   /**
    * Host root containing provisioned project clones. Required alongside
    * `provisioner` for active project spawns so the conductor runs in the
@@ -3429,7 +3432,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 ? 'idle project Sandbox sweep failed'
                 : 'idle project Sandbox sleep deferred',
             ),
+          onSweep: (projects) => {
+            const summary = deps.projectSandboxLifecycleTelemetry?.summaryIfDue(projects);
+            if (summary !== undefined) {
+              app.log.info(summary, 'project Sandbox lifecycle summary');
+            }
+          },
         });
+  deps.projectSandboxLifecycleTelemetry?.attachSink((event) => {
+    app.log.info(event, 'project Sandbox lifecycle transition');
+  });
   app.addHook('onClose', () => idleSleepScheduler?.stop());
   const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
     const persist = async (): Promise<void> => {
