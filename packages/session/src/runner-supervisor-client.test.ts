@@ -645,6 +645,8 @@ describe('SupervisorRunnerClient', () => {
   // a disclosure. The type system does not catch it — an added `case` is as valid as
   // any other — and neither does the behavioural suite, which enumerates the admitted
   // members and so cannot see one too many. So pin that the two lists are one list.
+  // The same helper runs in packages/server/src/embedded.test.ts, over the other end
+  // of the same chain. Keep the two in step.
   it('tells exactly the backends it mints a bearer for which secrets exist', async () => {
     const members = async (url: URL, gate: RegExp): Promise<string[]> => {
       const source = await readFile(url, 'utf8');

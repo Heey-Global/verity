@@ -1743,9 +1743,17 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       ),
       'utf8',
     );
-    expect(runbook.replace(/\n/gu, ' ')).toContain(
-      'the Server was composed without mcpGatewayTokens; a brokered-tool ACP turn cannot start without the per-turn gateway bearer registry',
-    );
+    // Read out of the source, not restated here. A copy in this file pairs the page
+    // with the test rather than with the throw, so rewording the throw leaves both
+    // green and the page quoting a message no Server emits — the one drift this
+    // pairing exists to catch.
+    const embedded = await readFile(new URL('./embedded.ts', import.meta.url), 'utf8');
+    const thrown =
+      /deps\.mcpGatewayTokens === undefined &&[\s\S]*?throw new Error\(\s*'([^']+)'/u.exec(
+        embedded,
+      )?.[1];
+    expect(thrown).toBeDefined();
+    expect(runbook.replace(/\n/gu, ' ')).toContain(thrown!);
 
     // A turn with no session to attribute to has no gateway context to begin with, so
     // the missing registry is not its problem — that is the ephemeral/meta-query case,
@@ -1780,6 +1788,8 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
   // registry, mints nothing, and starts its agent tool-less with no composition error
   // to read. The loop above pins today's three; this pins that the two lists are the
   // same list, so a fourth admitted in one is not silently absent from the other.
+  // The same helper runs in packages/session/src/runner-supervisor-client.test.ts,
+  // over the other end of the same chain. Keep the two in step.
   it('names the same brokered-tool backends the bearer-minting client does', async () => {
     const members = async (url: URL, gate: RegExp): Promise<string[]> => {
       const source = await readFile(url, 'utf8');
