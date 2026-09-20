@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.24",
+  "version": "1.33.25",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "c4a7c64e8eb19ca3d52cdd75d710cdfe3065682c",
-  "tag": "mobile-v1.33.24",
-  "branch": "staging-mobile-v1.33.24-c4a7c64e8eb19ca3d52cdd75d710cdfe3065682c",
-  "baseline": "mobile-v1.33.23",
-  "group": "1f2cd202-938d-4985-972c-80738da335ea",
+  "commit": "6e77fe9ece6a1655d6fbf89a93af271221da79a9",
+  "tag": "mobile-v1.33.25",
+  "branch": "staging-mobile-v1.33.25-6e77fe9ece6a1655d6fbf89a93af271221da79a9",
+  "baseline": "mobile-v1.33.24",
+  "group": "010a1d12-1102-446d-95d9-e949e7a015b3",
   "notes": [
-    "hide unadded repositories (#556)"
+    "automate wiki maintenance (#566)"
   ]
 }
