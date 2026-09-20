@@ -226,6 +226,7 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerHealthRoute } from './health-route.js';
+import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
@@ -3876,6 +3877,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { secretJobRuntimeReadiness: deps.secretJobRuntimeReadiness }
       : {}),
   });
+  registerDiagnosticsMemoryRoute(app);
 
   registerServerUpdateRoutes(app, deps);
 
