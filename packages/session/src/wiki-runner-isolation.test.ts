@@ -140,11 +140,11 @@ it('materializes only model gateway settings in a fresh OpenCode home and remove
     env: { OPENCODE_CONFIG: configPath },
     spawnChild: (_command, _args, opts) => {
       home = opts.env!.HOME!;
-      // Capture the materialized file before the short-lived stand-in can exit
-      // and trigger cleanup. Under load, racing cleanup against a separate reader
-      // made this guard fail without any isolation contract being broken.
+      // Capture the materialized file before the stand-in exits and triggers
+      // cleanup. Keep it alive long enough for the broker's spawned handshake;
+      // pre-acceptance exits are covered by the broker protocol suite.
       config = readFileSync(opts.env!.OPENCODE_CONFIG!, 'utf8');
-      return spawn('/usr/bin/true', [], opts);
+      return spawn('/usr/bin/sleep', ['0.1'], opts);
     },
   });
   try {
