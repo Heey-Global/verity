@@ -47,9 +47,9 @@ function tsxFilesIn(dir: string): string[] {
  * or a container pulled from reanimated counts — and so prose in a comment
  * about the scaffold's scroll view does not.
  */
-const CONTAINER = /(ScrollView|FlatList|SectionList|VirtualizedList)/;
+const CONTAINER = /(ScrollView|FlatList|FlashList|SectionList|VirtualizedList)/;
 function mountsOwnScrollContainer(source: string): boolean {
-  const imports = source.match(/import[\s\S]*?from\s+['"][^'"]+['"]/g) ?? [];
+  const imports = source.match(/^\s*import\b[\s\S]*?from\s+['"][^'"]+['"]/gm) ?? [];
   return (
     imports.some((statement) => CONTAINER.test(statement)) ||
     // `import Animated from 'react-native-reanimated'` names no container, so

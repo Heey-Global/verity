@@ -61,13 +61,10 @@ export function SettingsScaffold({
           { paddingBottom: insets.bottom + 24 },
         ]}
         keyboardShouldPersistTaps="handled"
-        // iOS leaves the scroll view at full height when the keyboard opens, so
-        // the keyboard simply covers its lower third — which is where the paste
-        // boxes sit on every screen that has one (the Uplink subscription key is
-        // the last row of the last group). Without the keyboard's height as a
-        // bottom inset there is nothing left to scroll into, and the operator
-        // types a credential they cannot see. No-op on Android, where the window
-        // resizes instead.
+        // iOS keeps the scroll view at full height when the keyboard opens, so
+        // without the keyboard's height as a bottom inset there is nothing to
+        // scroll into and a focused paste box stays behind it — typing a
+        // credential blind. No-op on Android, where the window resizes instead.
         automaticallyAdjustKeyboardInsets
       >
         {children}
