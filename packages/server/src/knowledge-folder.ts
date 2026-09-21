@@ -25,7 +25,7 @@ import { join } from 'node:path';
  */
 
 /** Directory under the Verity data root holding every knowledge folder. */
-export const KNOWLEDGE_ROOT_DIR = 'knowledge';
+const KNOWLEDGE_ROOT_DIR = 'knowledge';
 
 /**
  * The shared folder's name — both its directory under the knowledge root and the
@@ -57,7 +57,7 @@ export const OVERVIEW_FILE_NAME = 'overview.md';
 export const KNOWLEDGE_MOUNT_TARGET = '/knowledge';
 
 /** Where the shared folder is mounted, nested inside {@link KNOWLEDGE_MOUNT_TARGET}. */
-export const SHARED_KNOWLEDGE_MOUNT_TARGET = `${KNOWLEDGE_MOUNT_TARGET}/${SHARED_KNOWLEDGE_DIR}`;
+const SHARED_KNOWLEDGE_MOUNT_TARGET = `${KNOWLEDGE_MOUNT_TARGET}/${SHARED_KNOWLEDGE_DIR}`;
 
 /**
  * Project ids are app-generated UUIDs, so anything outside this alphabet is
@@ -67,7 +67,7 @@ export const SHARED_KNOWLEDGE_MOUNT_TARGET = `${KNOWLEDGE_MOUNT_TARGET}/${SHARED
  */
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-export function assertKnowledgeProjectId(projectId: string): void {
+function assertKnowledgeProjectId(projectId: string): void {
   if (!PROJECT_ID_PATTERN.test(projectId) || projectId === SHARED_KNOWLEDGE_DIR) {
     throw new Error(`invalid project id for a knowledge folder: ${JSON.stringify(projectId)}`);
   }

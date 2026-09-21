@@ -50,7 +50,7 @@ type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
 
 /** A resolved explorer root: the directory on disk plus the name it was reached
  *  by, which decides what is hidden from a listing and what may be written. */
-export interface SessionFileTarget {
+interface SessionFileTarget {
   root: SessionFileRootName;
   dir: string;
 }
