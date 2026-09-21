@@ -1,14 +1,17 @@
 {
   "schema": 1,
-  "version": "1.33.28",
+  "version": "1.33.29",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "4d9b9b45922a4ad6ec85ea75f7d918671377c2d4",
-  "tag": "mobile-v1.33.28",
-  "branch": "staging-mobile-v1.33.28-4d9b9b45922a4ad6ec85ea75f7d918671377c2d4",
-  "baseline": "mobile-v1.33.27",
-  "group": "b7a5cec4-3c5c-41ab-a6ef-95527ddb92fa",
+  "commit": "7373344de46ec3c591ed15c22f386a4392d7cd99",
+  "tag": "mobile-v1.33.29",
+  "branch": "staging-mobile-v1.33.29-7373344de46ec3c591ed15c22f386a4392d7cd99",
+  "baseline": "mobile-v1.33.28",
+  "group": "265cb1dc-a726-4480-aa5c-8fe4bbbb300d",
   "notes": [
-    "require a global maintenance model (#590)"
+    "complete isolated home before ownership handoff (#597)",
+    "add iPad Knowledge split view (#598)",
+    "show files when expanding Knowledge folders (#595)",
+    "avoid duplicate Knowledge action on iPad (#594)"
   ]
 }
