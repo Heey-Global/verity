@@ -1565,6 +1565,11 @@ describe('EventStore — project memory (ADR 0008)', () => {
   });
 });
 
+/** Comfortably longer than any log the fact tests write, so the tail IS the whole
+ *  slice and they keep asking what they were written to ask. The tail bound
+ *  itself is exercised against a log built to exceed it. */
+const WHOLE_LOG = 1_000;
+
 describe('EventStore — session projection facts', () => {
   const other = { sessionId: 's2', worktree: '/wt/agent-s2', model: 'claude-opus-5' };
   // Both status-bearing and neutral kinds, so the filter has something to drop.
@@ -1665,7 +1670,7 @@ describe('EventStore — session projection facts', () => {
     for (const event of [...sampleEvents, ...projected]) await ctx.store.appendEvent('s1', event);
     for (const event of sampleEvents) await ctx.store.appendEvent('s2', event);
 
-    const facts = await ctx.store.listSessionProjectionFacts(['s1', 's2']);
+    const facts = await ctx.store.listSessionProjectionFacts(['s1', 's2'], WHOLE_LOG);
 
     for (const sessionId of ['s1', 's2']) {
       const full = await ctx.store.getEventsAfter(sessionId, 0);
@@ -1676,6 +1681,7 @@ describe('EventStore — session projection facts', () => {
       const expected = full.filter((row) => sessionProjectionEvents([row.event]).length === 1);
       expect(entry?.events).toEqual(expected);
       expect(entry?.eventCount).toBe(full.length);
+      expect(entry?.lastEventSeq).toBe(full.at(-1)?.seq ?? 0);
       expect(entry?.lastActivityAt).toBe(full.at(-1)?.ts);
     }
     // s2 holds none of the projected kinds — the count still separates it from an
@@ -1685,16 +1691,35 @@ describe('EventStore — session projection facts', () => {
   });
 
   it('returns a zeroed entry for a session with no events and for an unknown id', async () => {
-    const facts = await ctx.store.listSessionProjectionFacts(['s1', 'nope']);
+    const facts = await ctx.store.listSessionProjectionFacts(['s1', 'nope'], WHOLE_LOG);
     for (const sessionId of ['s1', 'nope']) {
       expect(facts.get(sessionId)).toEqual({
         eventCount: 0,
+        lastEventSeq: 0,
         lastActivityAt: null,
         events: [],
+        eventsTruncated: false,
+        rateLimitEvents: [],
         usage: aggregateUsage([]),
       });
     }
-    expect(await ctx.store.listSessionProjectionFacts([])).toEqual(new Map());
+    expect(await ctx.store.listSessionProjectionFacts([], WHOLE_LOG)).toEqual(new Map());
+  });
+
+  it('bounds a fallback projection read to the facts snapshot', async () => {
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'snapshot' });
+    const facts = (await ctx.store.listSessionProjectionFacts(['s1'], 1)).get('s1')!;
+
+    await ctx.store.appendEvent('s1', {
+      t: 'result',
+      usage: { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+      stopReason: 'end_turn',
+    });
+
+    const bounded = (await ctx.store.listSessionProjectionEvents(['s1'], facts.lastEventSeq)).get(
+      's1',
+    );
+    expect(bounded?.map((event) => event.event.t)).toEqual(['prompt']);
   });
 
   it('answers for more sessions than one statement can bind', async () => {
@@ -1704,12 +1729,15 @@ describe('EventStore — session projection facts', () => {
     // a route that throws — a failure mode the per-session reads this replaced
     // did not have, and one that only appears once the install is big enough.
     const ids = Array.from({ length: 70_000 }, (_, at) => `absent-${String(at)}`);
-    const facts = await ctx.store.listSessionProjectionFacts(ids);
+    const facts = await ctx.store.listSessionProjectionFacts(ids, WHOLE_LOG);
     expect(facts.size).toBe(ids.length);
     expect(facts.get('absent-69999')).toEqual({
       eventCount: 0,
+      lastEventSeq: 0,
       lastActivityAt: null,
       events: [],
+      eventsTruncated: false,
+      rateLimitEvents: [],
       usage: aggregateUsage([]),
     });
   });
@@ -1757,7 +1785,7 @@ describe('EventStore — session projection facts', () => {
       newestByTimestamp.at(-1)?.created_at.getTime(),
     );
 
-    const facts = await ctx.store.listSessionProjectionFacts(['s1']);
+    const facts = await ctx.store.listSessionProjectionFacts(['s1'], WHOLE_LOG);
     expect(facts.get('s1')?.lastActivityAt).toBe(newestBySeq?.created_at.getTime());
     expect(facts.get('s1')?.lastActivityAt).toBe(older.getTime());
     expect(facts.get('s1')?.eventCount).toBe(2);
@@ -1772,7 +1800,7 @@ describe('EventStore — session projection facts', () => {
     await ctx.store.appendEvent('s2', { t: 'text', delta: 'nothing projected' });
 
     const ids = ['s1', 's2', 'nope'];
-    const facts = await ctx.store.listSessionProjectionFacts(ids);
+    const facts = await ctx.store.listSessionProjectionFacts(ids, WHOLE_LOG);
     const slices = await ctx.store.listSessionProjectionEvents(ids);
     expect([...slices.keys()]).toEqual(ids);
     for (const id of ids) expect(slices.get(id)).toEqual(facts.get(id)?.events);
@@ -1829,9 +1857,112 @@ describe('EventStore — session projection facts', () => {
         payload: JSON.stringify({ t: 'prompt' }),
       })
       .execute();
-    await expect(ctx.store.listSessionProjectionFacts(['s1', 's2'])).rejects.toThrow(
+    await expect(ctx.store.listSessionProjectionFacts(['s1', 's2'], WHOLE_LOG)).rejects.toThrow(
       /corrupt event payload in session s1/,
     );
+  });
+
+  it('reads the END of a long log, and reports that there is more', async () => {
+    // The point of the bound: the overview polls every ~2 s per device, and the
+    // slice it used to hydrate grew with history. A tail taken from the WRONG
+    // end would still be cheap and still be wrong — the status derivation reads
+    // backwards from the newest event, so it would report every long session as
+    // whatever it was doing at the beginning of its life.
+    const tailLimit = 4;
+    for (let at = 0; at < tailLimit * 3; at += 1) {
+      await ctx.store.appendEvent('s1', { t: 'status', state: 'running' });
+      await ctx.store.appendEvent('s1', { t: 'text', delta: 'not projected' });
+    }
+
+    const full = (await ctx.store.listSessionProjectionEvents(['s1'])).get('s1') ?? [];
+    const facts = await ctx.store.listSessionProjectionFacts(['s1'], tailLimit);
+    expect(full.length).toBeGreaterThan(tailLimit);
+    expect(facts.get('s1')?.events).toEqual(full.slice(-tailLimit));
+    expect(facts.get('s1')?.eventsTruncated).toBe(true);
+    // The counters are still facts about the WHOLE log — a tail that shortened
+    // them would read as an unread badge quietly resetting itself.
+    expect(facts.get('s1')?.eventCount).toBe(tailLimit * 3 * 2);
+  });
+
+  it('bounds each session separately, and calls a short tail complete', async () => {
+    // One `limit` for the whole statement instead of one per session would fill
+    // itself from whichever session sorted first and hand every other session an
+    // empty projection — a badge that reads `idle` for a running session.
+    const tailLimit = 2;
+    for (const id of ['s1', 's2']) {
+      for (let at = 0; at < tailLimit + 1; at += 1) {
+        await ctx.store.appendEvent(id, { t: 'status', state: 'running' });
+      }
+    }
+    await ctx.store.appendEvent('s2', { t: 'prompt', text: 'newest' });
+
+    const facts = await ctx.store.listSessionProjectionFacts(['s1', 's2'], tailLimit);
+    for (const id of ['s1', 's2']) {
+      const full = (await ctx.store.listSessionProjectionEvents([id])).get(id) ?? [];
+      expect(facts.get(id)?.events).toEqual(full.slice(-tailLimit));
+    }
+
+    // …and a log shorter than the bound is not truncated: the caller reads that
+    // flag as "there may be something older", and a tail that always claimed
+    // there was would send every short session through the full-slice fallback
+    // the bound exists to avoid.
+    const short = await ctx.store.listSessionProjectionFacts(['s1'], WHOLE_LOG);
+    expect(short.get('s1')?.eventsTruncated).toBe(false);
+    expect(short.get('s1')?.events).toEqual(
+      (await ctx.store.listSessionProjectionEvents(['s1'])).get('s1'),
+    );
+  });
+
+  it('keeps the quota state in force even when it is older than the tail', async () => {
+    // A `rate_limit` event is not a moment, it is a state that stands until the
+    // provider replaces it. Read out of the tail, a session that was throttled
+    // and has since been chatty reports NO limit at all — which the overview
+    // renders as "fine", the one reading the operator cannot tell apart from
+    // never having been limited.
+    const limited: AgentEvent = {
+      t: 'rate_limit',
+      status: 'limited',
+      resetsAt: 7,
+      window: 'weekly',
+      usedPercent: 99,
+    };
+    await ctx.store.appendEvent('s1', limited);
+    const tailLimit = 2;
+    for (let at = 0; at < tailLimit + 1; at += 1) {
+      await ctx.store.appendEvent('s1', { t: 'status', state: 'running' });
+    }
+
+    const facts = await ctx.store.listSessionProjectionFacts(['s1'], tailLimit);
+    expect(facts.get('s1')?.rateLimitEvents.map(({ event }) => event)).toEqual([limited]);
+    // The premise: it really is out of reach of the tail, so the assertion above
+    // is about the separate read and not about a tail that happened to hold it.
+    expect(facts.get('s1')?.events.map(({ event }) => event)).not.toContainEqual(limited);
+  });
+
+  it('keeps the newest quota state per provider, window and scope', async () => {
+    // One session runs under several quotas at once, and they expire
+    // independently: collapsing them to one state would hide whichever the
+    // operator is actually blocked on. `providerLabel` is optional and means
+    // Claude when absent, so an older event that omits it and a newer one that
+    // spells it out are the SAME quota — grouped apart, the stale one survives
+    // as the newest of a group of its own.
+    const superseded: AgentEvent = {
+      t: 'rate_limit',
+      status: 'limited',
+      resetsAt: 1,
+      window: 'five_hour',
+      usedPercent: 90,
+    };
+    const current: AgentEvent = { ...superseded, providerLabel: 'Claude', usedPercent: 95 };
+    const otherWindow: AgentEvent = { ...superseded, window: 'weekly', usedPercent: 10 };
+    const otherScope: AgentEvent = { ...superseded, scope: 'opus', usedPercent: 20 };
+    for (const event of [superseded, current, otherWindow, otherScope]) {
+      await ctx.store.appendEvent('s1', event);
+    }
+
+    const facts = await ctx.store.listSessionProjectionFacts(['s1'], WHOLE_LOG);
+    const states = facts.get('s1')?.rateLimitEvents.map(({ event }) => event) ?? [];
+    expect(new Set(states)).toEqual(new Set([current, otherWindow, otherScope]));
   });
 });
 
@@ -1840,7 +1971,7 @@ describe('EventStore — session usage totals', () => {
   /** The totals alone, so these read as being about the sums and not the slice. */
   const sessionUsageTotals = async (ids: readonly string[]): Promise<Map<string, UsageTotals>> =>
     new Map(
-      [...(await ctx.store.listSessionProjectionFacts(ids))].map(([id, facts]) => [
+      [...(await ctx.store.listSessionProjectionFacts(ids, WHOLE_LOG))].map(([id, facts]) => [
         id,
         facts.usage,
       ]),
