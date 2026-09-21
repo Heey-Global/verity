@@ -8,13 +8,13 @@ Verity drives Claude Code by shelling out to the `claude` CLI and adapting its
 `stream-json` output into a canonical `AgentEvent` log (pglite). This hard-couples the
 control-plane to Anthropic. Two needs forced a rethink:
 
-1. **Usage limits.** The operator hit the Claude Max subscription limit and wants to keep
-   working by switching to other models.
+1. **Provider availability and usage limits.** Sessions must remain usable when one provider is
+   unavailable or has exhausted its allocation.
 2. **Multi-model.** Use Claude when it fits; cheaper open models (DeepInfra: Kimi K2,
    GLM-4.6, …) otherwise.
 
-Operator constraint: *don't over-couple to the `claude` CLI* — switching must be
-transparent behind an abstraction.
+Provider switching must remain transparent behind an abstraction rather than coupling the
+control plane to the `claude` CLI.
 
 ## Decision
 

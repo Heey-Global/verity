@@ -88,7 +88,7 @@ scope"). For an internal/small deployment we keep the OAuth consent screen in
 (Workspace org; no verification, no expiry), avoiding Google's public-app verification
 / security-assessment burden. The lighter Google Picker + `drive.file` alternative was
 rejected because it forces Google's picker UI in a WebView instead of the native
-browsing UX the operator wants.
+browsing experience used by the app.
 
 ### The connect flow is native-app OAuth (PKCE), not a server redirect
 

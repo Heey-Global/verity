@@ -241,8 +241,8 @@ handshake — the failure the field was added to prevent, reintroduced one frame
 
 This exists because the ordering rule below is otherwise unsatisfiable in the direction that matters.
 Installations are self-hosted, so the Uplink cannot wait for every receiver it can reach to upgrade
-before it sends anything new — and under [ADR 0012 Amendment
-1](adr/0012-subscription-uplink-for-sharing-and-remote-control.md#amendment-1-2026-08-28--remote-web-access-over-the-uplink)
+before it sends anything new — and under Amendment 1 of the separately maintained Subscription
+Uplink ADR
 the Uplink is the party that opens the *stream* for an arriving browser. That is a frame on the
 existing control connection, not a new connection: the edge signals, and the installation dials the
 data connection outbound, so every TCP connection between the two is still installation-originated

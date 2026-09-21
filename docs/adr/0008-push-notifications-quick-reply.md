@@ -18,11 +18,11 @@ state changes while it is in the foreground with a socket open:
   `running | awaiting_input | awaiting_dependency | crashed | completed | idle`) and an
   unread dot (`packages/mobile/src/unread.ts`). Neither emits an OS notification.
 
-So when the operator is away from the app — phone locked, on a walk, glancing at an Apple
+So when someone is away from the app — phone locked or using an Apple
 Watch — and an agent **stops for a permission prompt** or **finishes / crashes**, nothing
-tells them. The operator has to open the app and look.
+tells them. They have to open the app and look.
 
-The operator wants exactly the interaction pattern iOS/watchOS already offer for
+The required interaction follows the pattern iOS/watchOS already offer for
 messaging: an **OS push notification with quick-reply actions** — a text-reply field to
 answer an agent's question, and Allow/Deny buttons to resolve a permission prompt —
 usable straight from the lock screen or the Apple Watch, without opening the app.

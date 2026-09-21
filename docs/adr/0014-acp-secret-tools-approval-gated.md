@@ -1,6 +1,6 @@
 # ADR 0014: Secret tools on ACP are approval-gated, not attested
 
-- Status: accepted (operator decision, 2026-08-08)
+- Status: accepted (2026-08-08)
 - Relates to: ADR 0011 (pragmatic secret brokerage), ADR 0012 (agent transport over ACP v1)
 - Source material: `docs/ACP_ATTESTED_TOOL_CHANNEL_DESIGN.md`
 
@@ -237,8 +237,8 @@ outcome never arrives reads as indeterminate, which is the correct reading of a
 crash mid-call and is why the two are separate writes rather than one.
 
 The event is a safe projection, under the same rule as every other audit row:
-`BROKERED_SECRETS_W3_W4_CONTRACTS.md` §3.4 excludes raw argv, provider keys,
-ciphertext, and secret values, and this event is not an exception to it. That
+raw argv, provider keys, ciphertext, and secret values are excluded, and this event is not
+an exception to it. That
 matters more here than elsewhere, because these parameters are attacker-supplied
 by construction — the whole premise is a caller Verity did not authenticate — so
 persisting them verbatim writes attacker-chosen bytes, possibly including a
@@ -307,8 +307,8 @@ person who cannot see it.
 
 ### D5 — Stop calling this "attested"
 
-ADR 0012 invariant 6 and `docs/BROKERED_SECRETS_W3_W4_CONTRACTS.md` §4.1 use
-"attested" for the native Codex relay, where two independent channels agree. The
+ADR 0012 invariant 6 uses "attested" for the native Codex relay, where two independent
+channels agree. The
 ACP channel does not have that property and this ADR does not claim it. The
 supported wording for the ACP path is **approval-gated**. Any UI, document, or
 commit message that calls it attested is wrong.

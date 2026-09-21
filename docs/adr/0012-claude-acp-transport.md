@@ -150,9 +150,8 @@ per-project, no capability-aware automatic fallback is possible either.
 The original condition for the default flip was "an authenticated HTTP-MCP tool
 channel with a per-turn token", which codex-acp accepts via
 `mcpCapabilities.http`. **That condition is withdrawn — it cannot be met as
-worded.** A per-turn token configured inside the agent child is the shape
-`BROKERED_SECRETS_W3_W4_CONTRACTS.md` §4.1 declares insufficient, because same-UID
-repository processes can reach or steal it. Measurement on 2026-08-08 turned that
+worded.** A per-turn token configured inside the agent child is insufficient because
+same-UID repository processes can reach or steal it. Measurement on 2026-08-08 turned that
 from an objection into a fact for Claude: `claude-agent-acp` passes the
 client-supplied MCP configuration on its child's command line, so the URL and any
 `Authorization` header are readable from `/proc/<pid>/cmdline` by any workspace

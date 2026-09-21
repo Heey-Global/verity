@@ -2,8 +2,6 @@
 
 **Status:** Phase 0 draft · **Date:** 2026-07-17
 **Decision:** [ADR 0009](adr/0009-brokered-secrets-and-secret-job-executor.md)
-**Plan:** Brokered Secrets Phase 0 (`docs/BROKERED_SECRETS_PHASE_0_PLAN.md`, not in the public
-snapshot)
 
 ## 1. Scope
 
