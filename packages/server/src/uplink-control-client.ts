@@ -315,17 +315,22 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.unansweredPings = 0;
     });
     socket.once('error', (error) => this.options.log?.warn({ error }, 'Uplink connection error'));
-    socket.once('close', (code: number, reason: Buffer) => {
+    socket.once('close', (code: number, reason?: Buffer) => {
       if (this.socket !== socket) return;
       this.socket = undefined;
       // Without the code and reason a refusal that closes before `reject` is
       // indistinguishable from a network drop, and both just look like silence.
-      // A shutdown this side asked for is not a warning, though: making every
-      // graceful stop yellow is how a log stops being read.
-      const expected = this.stopped && code === 1000;
-      const record = { code, reason: reason.toString(), welcomed: this.welcomed };
-      if (expected) this.options.log?.info(record, 'Uplink control connection closed');
-      else this.options.log?.warn(record, 'Uplink control connection closed');
+      //
+      // This does not fire on a graceful shutdown, and so needs no quieter
+      // branch for one: `stop()` drops its reference before `ws` delivers the
+      // event — which it does on a later tick, never inside `close()` — so the
+      // guard above returns first. `reason` is defensive for the same reason
+      // the factory is injectable: a throw here would abandon the reconnect
+      // below and strand the client silently.
+      this.options.log?.warn(
+        { code, reason: String(reason ?? ''), welcomed: this.welcomed },
+        'Uplink control connection closed',
+      );
       this.clearAuthority('Uplink disconnected', !this.stopped);
       this.scheduleReconnect();
     });
@@ -454,9 +459,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.retryCeilingMs = RECONNECT_CAPACITY_MS;
         this.retryMs = RECONNECT_CAPACITY_MS;
       }
+      // `welcomed` distinguishes a handshake the Uplink turned away from one it
+      // had already admitted and then refused on a later frame. Those have
+      // different causes, and the message alone would name only the first.
       this.options.log?.warn(
-        { frameType: 'reject', reason, identity },
-        'Uplink refused the control handshake',
+        { frameType: 'reject', reason, identity, welcomed: this.welcomed },
+        'Uplink refused the control connection',
       );
       this.clearAuthority(reason);
       this.socket?.close(4003, closeReason(reason, 'rejected'));
@@ -688,9 +696,12 @@ function optionalString(value: unknown, fallback: string): string {
  * enters that state rather than trusting the far end to be terse. */
 function refusalReason(value: unknown, fallback: string): string {
   const reason = optionalString(value, fallback);
-  return reason.length <= MAX_REFUSAL_REASON_CHARS
-    ? reason
-    : `${reason.slice(0, MAX_REFUSAL_REASON_CHARS)}…`;
+  if (reason.length <= MAX_REFUSAL_REASON_CHARS) return reason;
+  // By code point, not by unit: slicing a string this side never chose the
+  // shape of can otherwise end on half a surrogate pair, and the replacement
+  // character that produces is exactly the kind of detail that gets read as
+  // corruption somewhere downstream.
+  return `${[...reason].slice(0, MAX_REFUSAL_REASON_CHARS).join('')}…`;
 }
 
 /** `ws` throws a RangeError on a close reason over 123 bytes. Thrown from here

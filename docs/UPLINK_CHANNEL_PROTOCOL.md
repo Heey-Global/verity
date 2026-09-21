@@ -603,17 +603,24 @@ Sent by the preview edge (data connection, `packages/preview-tunnel`):
 | `4001` | Replaced by current connector    | A newer connector took over the share                     |
 | `4003` | Share expired                    | The share's lifetime ran out                              |
 
-**The 4000-range is not yet agreed across the boundary, and today it collides.** The hosted Uplink
-uses `4001` for the refusal that this document's table assigns to lease expiry, and `4003` for lease
-expiry — the inverse of both rows above. Until that is reconciled, **no diagnosis may be keyed on a
-close code alone**: use the `reject.reason` on the frame, which is unambiguous in both directions.
+**The 4000-range is not yet agreed across the boundary, and today it collides.** Observed against
+Uplink 2.1.0, the two sides read the same two numbers in opposite senses:
+
+| Code   | Installation (table above) | Hosted Uplink |
+| ------ | -------------------------- | ------------- |
+| `4001` | Lease expired              | Refusal       |
+| `4003` | Refused or withdrawn       | Lease expired |
+
+Until that is reconciled, **no diagnosis may be keyed on a close code alone**: use the
+`reject.reason` on the frame, which is unambiguous in both directions.
 Aligning the two is an Uplink-side change; this table is the installation's half and is what
 `packages/server/src/uplink-control-client.ts` implements.
 
 The installation logs the close code, the close reason, and whether the connection had been
 welcomed, because a refusal that closes the socket without sending `reject` is otherwise
-indistinguishable from a network drop. One exclusion: a socket it has already superseded with a
-newer dial is closed without a record, since it no longer describes the connection that matters.
+indistinguishable from a network drop. Two exclusions: a socket it has already superseded with a
+newer dial, and a shutdown it asked for itself — in both the installation has dropped its reference
+before the close arrives, and neither describes a connection anyone is diagnosing.
 The preview edge does not yet do the same — that half is unimplemented, not specified-and-violated.
 
 A close reason is capped at 123 bytes by the WebSocket framing itself. An implementation echoing a

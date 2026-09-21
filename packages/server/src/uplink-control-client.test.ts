@@ -410,12 +410,39 @@ describe('UplinkControlClient', () => {
     const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
     expect(surfaced).toMatch(/^x+…$/);
     expect(surfaced.length).toBeLessThan(250);
+    await client.stop();
+  });
 
-    // And again on the decline, which replays the stored reason rather than
-    // re-deriving it.
+  it('keeps a multi-byte refusal reason intact when it clamps it', async () => {
+    vi.useFakeTimers();
+    const { client, sockets, disabled } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    await flush();
     disabled.mockClear();
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
-    for (const call of disabled.mock.calls) expect(String(call[0]).length).toBeLessThan(250);
+    // An emoji is a surrogate pair. Clamping by code unit lands between its
+    // halves and emits a lone surrogate, which reaches the app as a
+    // replacement character and reads there as corrupted data rather than as
+    // a truncated message.
+    //
+    // The leading character matters: with pairs alone the cut lands on an even
+    // index, which is a pair boundary, and a code-unit slice would pass by
+    // luck. One BMP character ahead of them shifts every boundary by one.
+    sockets[0]!.message({ type: 'revoke', reason: `x${'🛰'.repeat(400)}` });
+    await flush();
+
+    const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
+    // With the `u` flag a well-formed pair is one code point outside this
+    // range, so the class matches only an unpaired half.
+    expect(surfaced).not.toMatch(/[\uD800-\uDFFF]/u);
+    expect(surfaced).toMatch(/^x🛰+…$/u);
     await client.stop();
   });
 
@@ -539,8 +566,13 @@ describe('UplinkControlClient', () => {
     // whether the refusal was the handshake or a later withdrawal, because the
     // two sides of this protocol number their close codes independently.
     expect(log.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ frameType: 'reject', reason: 'limit_reached', identity: false }),
-      'Uplink refused the control handshake',
+      expect.objectContaining({
+        frameType: 'reject',
+        reason: 'limit_reached',
+        identity: false,
+        welcomed: false,
+      }),
+      'Uplink refused the control connection',
     );
     // `welcomed: false` is the line that distinguishes "never admitted" from
     // "was up and dropped" — the distinction this incident class turns on.
