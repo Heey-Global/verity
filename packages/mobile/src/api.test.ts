@@ -1588,6 +1588,28 @@ describe('VerityClient.createSession', () => {
     await expect(client.createSession({ prompt: 'go' })).rejects.toThrow();
   });
 
+  // The chat screen opens before this call answers, so its rejection IS what the
+  // operator reads in the session banner — there is no session to fall back to.
+  // A ZodError's message is a pretty-printed JSON array of its issues, which the
+  // banner renders verbatim: a schema dump where a sentence belongs.
+  it('rejects a body it cannot parse with a readable reason, not a schema dump', async () => {
+    const { fetch } = fakeFetch(json({ awaitingProvisioning: true, project: { id: 'p1' } }, 202));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    const caught: unknown = await client
+      .createSession({ prompt: 'go', project: 'heey-global/verity' })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    expect(caught).toBeInstanceOf(Error);
+    const { message } = caught as Error;
+    expect(message).not.toContain('\n');
+    expect(message).not.toContain('"code"');
+    expect(message.length).toBeLessThan(120);
+  });
+
   it('parses the awaiting-provisioning response for project spawns', async () => {
     const project = {
       id: 'p1',

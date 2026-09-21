@@ -829,6 +829,16 @@ function publicVeritySettings(
   };
 }
 
+/** Whether the project is in a sleep/wake transition or asleep. Such a Sandbox is
+ * provisioned — its clone, worktrees and retained container all still exist — which
+ * is why the wire projection reports it as `active` and why a spawn must not route
+ * it to the provisioner. */
+function isSleepLifecycleState(
+  state: ProjectRecord['state'],
+): state is Extract<ProjectRecord['state'], 'sleeping_starting' | 'sleeping' | 'waking'> {
+  return state === 'sleeping_starting' || state === 'sleeping' || state === 'waking';
+}
+
 function publicProject(
   project: ProjectRecord,
   release: ReleaseSummary | null,
@@ -840,7 +850,7 @@ function publicProject(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
   const { hiddenAt, kind, state, sleepCompatibilityFingerprint, ...visible } = project;
   void sleepCompatibilityFingerprint;
-  const sleeping = state === 'sleeping_starting' || state === 'sleeping' || state === 'waking';
+  const sleeping = isSleepLifecycleState(state);
   return {
     ...visible,
     state: sleeping ? 'active' : state,
@@ -2362,7 +2372,7 @@ type SpawnResult =
   // call did not mint the session, so a caller that would follow a create with a
   // prepared first turn knows not to send it twice.
   | { sessionId: string; existing?: true }
-  | { project: ProjectRecord; awaitingProvisioning: true }
+  | { project: PublicProjectRecord; awaitingProvisioning: true }
   | { requiresConfirmation: true; warnings: string[] }
   | { error: string; status?: 'sealed' };
 
@@ -7816,7 +7826,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(400);
           return { error: PROJECT_MODEL_ERROR };
         }
-        if (project.state !== 'active') {
+        // A Sandbox in a sleep lifecycle state is provisioned, not missing: its
+        // clone and worktrees sit on the host, and the first turn brings the
+        // container back through `ensureProjectSandboxReadyForTurn`. Only states
+        // that have no usable Sandbox belong in the provisioning branch below —
+        // sending a sleeping project there claims its row for CLONING and rebuilds
+        // exactly the container the sleep was retaining.
+        if (project.state !== 'active' && !isSleepLifecycleState(project.state)) {
           if (deps.secretCipher?.isSealed() === true) {
             reply.code(503);
             return { error: 'secret store is sealed', status: 'sealed' as const };
@@ -7848,7 +7864,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               ),
           );
           reply.code(202);
-          return { project, awaitingProvisioning: true };
+          // Same wire shape every other project payload uses: the raw row carries
+          // internal fields and lifecycle states no client schema accepts, and a
+          // client that cannot parse this answer reports a schema dump instead of
+          // "provisioning, try again".
+          return {
+            project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+            awaitingProvisioning: true,
+          };
         }
         projectId = project.id;
         const projectClone = projectClonePath(deps.projectCloneRoot, project);

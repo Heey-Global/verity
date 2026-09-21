@@ -3370,9 +3370,18 @@ export class VerityClient {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return z
+    const parsed = z
       .union([sessionCreatedSchema, sessionAwaitingProvisioningSchema])
-      .parse(await res.json());
+      .safeParse(await res.json());
+    if (!parsed.success) {
+      // This rejection is what the chat screen renders as the reason the session
+      // never started, and a ZodError's message is a JSON dump of its issues — the
+      // operator would read a schema report where a sentence belongs. Every other
+      // caller of a `.parse` here feeds a screen that can fall back to its empty
+      // state; this one cannot.
+      throw new Error('The server answered the create with an unexpected response.');
+    }
+    return parsed.data;
   }
 
   /** Rename a session (set its display name), or clear it by passing `null`.
