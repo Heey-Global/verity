@@ -3891,7 +3891,7 @@ export async function buildEmbeddedServer(
           }
         }
       }
-      await projectAgentGatewayIdentity(true);
+      await projectAgentGatewayIdentity(inspected > 0);
       app.log.info(
         { inspected, repaired, deferred, projectedBindings: agentGatewayBindings.length },
         'Agent Gateway identity reconciliation completed after secret unlock',
