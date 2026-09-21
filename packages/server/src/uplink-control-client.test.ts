@@ -387,18 +387,80 @@ describe('UplinkControlClient', () => {
     client.start();
     await flush();
     sockets[0]!.open();
-    // An identity refusal is held until the credentials change, so whatever
-    // the far end sends here is what the app shows for as long as that lasts.
-    // The frame limit alone permits tens of kilobytes of it.
-    sockets[0]!.message({ type: 'reject', reason: `unknown_key${'x'.repeat(50_000)}` });
+    // `revoke` is the refusal that carries free text: the reject reasons that
+    // are held are exact tokens, so only this path can store an arbitrary
+    // string. It is held until the credentials change, so whatever arrives
+    // here is what the app shows for as long as that lasts - and the frame
+    // limit alone permits tens of kilobytes of it.
+    //
+    // It has to be welcomed first. A revoke before a welcome is a protocol
+    // violation, and the parser's own short message would be the thing
+    // measured instead of the stored reason.
+    sockets[0]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    await flush();
+    disabled.mockClear();
+    sockets[0]!.message({ type: 'revoke', reason: 'x'.repeat(50_000) });
     await flush();
 
     const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
+    expect(surfaced).toMatch(/^x+…$/);
     expect(surfaced.length).toBeLessThan(250);
+
+    // And again on the decline, which replays the stored reason rather than
+    // re-deriving it.
+    disabled.mockClear();
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
+    for (const call of disabled.mock.calls) expect(String(call[0]).length).toBeLessThan(250);
     await client.stop();
   });
 
-  it.each(['unknown_key', 'revoked', 'expired', 'protocol_unsupported'])(
+  it('never hands a close reason to ws that ws would throw on', async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'capacity: '.repeat(40) });
+    await flush();
+
+    // Over 123 bytes `ws` throws a RangeError out of close(). Thrown from the
+    // frame handler it is caught by the parser's catch, which reports a refusal
+    // we parsed perfectly as an unparseable frame and closes 1002 instead of
+    // 4003 - destroying the one log line that names why sharing stopped.
+    const [, reason] = sockets[0]!.close.mock.calls.at(-1) ?? [];
+    expect(Buffer.byteLength(String(reason))).toBeLessThanOrEqual(123);
+    expect(sockets[0]!.close).not.toHaveBeenCalledWith(1002, expect.anything());
+    await client.stop();
+  });
+
+  it('keeps reporting a refusal it has stopped dialling on', async () => {
+    vi.useFakeTimers();
+    const { client, sockets, log } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'unknown_key' });
+    await flush();
+    log.warn.mockClear();
+
+    // The incident this change exists for ran 13 days. An installation that
+    // has given up must not look like one that is fine: if the only record is
+    // the single refusal at the moment it happened, whoever looks later sees
+    // an idle client and no reason.
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2.5);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'unknown_key' }),
+      'not dialling the Uplink: this key was refused',
+    );
+    await client.stop();
+  });
+
+  it.each(['unknown_key', 'revoked', 'expired'])(
     'stops dialling after the identity refusal %s and surfaces it verbatim',
     async (reason) => {
       vi.useFakeTimers();
@@ -443,15 +505,21 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('treats a reject reason it does not know as capacity, not as terminal', async () => {
+  it.each([
+    // A reason added to the service after this version shipped. Defaulting to
+    // terminal would strand every installation that had not been updated yet.
+    'region_unavailable',
+    // Named, but still not this installation's standing: a mixed-version fleet
+    // or a rolled-back deployment answers differently on the next dial, and the
+    // upgrade that would fix it from this side restarts the process anyway.
+    'protocol_unsupported',
+  ])('treats the reject reason %s as capacity, not as terminal', async (reason) => {
     vi.useFakeTimers();
     const { client, socketFactory, sockets } = setupReconnecting();
     client.start();
     await flush();
     sockets[0]!.open();
-    // A reason added to the service after this version shipped. Defaulting to
-    // terminal would strand every installation that had not been updated yet.
-    sockets[0]!.message({ type: 'reject', reason: 'region_unavailable' });
+    sockets[0]!.message({ type: 'reject', reason });
     await flush();
 
     await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);

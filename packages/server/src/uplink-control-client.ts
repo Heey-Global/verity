@@ -22,21 +22,24 @@ const ABANDONED_REQUEST_TTL_MS = 9 * 60 * 60_000;
 const MAX_ABANDONED_CREATES = 1_024;
 const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
 const MAX_REFUSAL_REASON_CHARS = 200;
+/** Hard WebSocket limit on a close reason; `ws` throws above it. */
+const MAX_CLOSE_REASON_BYTES = 123;
 export const UPLINK_CONTROL_URL = 'wss://uplink.verity.build/control';
 
 /** Refusals that are about who this installation is: dialling again with the
  * same key cannot change the answer, so the client stops and reports the reason.
- * Everything else — a named capacity limit, or a reason this client has never
- * heard of — is treated as temporary and retried on the slower schedule. That
- * default direction is the safe one: retrying a permanent refusal wastes a
- * connection every few minutes, while giving up on a temporary one leaves
- * sharing dead until someone restarts the server. */
-const IDENTITY_REJECTS: ReadonlySet<string> = new Set([
-  'unknown_key',
-  'revoked',
-  'expired',
-  'protocol_unsupported',
-]);
+ * Everything else — a named capacity limit, a version mismatch, or a reason this
+ * client has never heard of — is treated as temporary and retried on the slower
+ * schedule. That default direction is the safe one: retrying a permanent refusal
+ * wastes a connection every few minutes, while giving up on a temporary one
+ * leaves sharing dead until someone restarts the server.
+ *
+ * `protocol_unsupported` belongs on the temporary side despite naming something
+ * this installation cannot change: a mixed-version fleet or a rolled-back
+ * deployment resolves it without anyone touching the installation, and the fix
+ * that *is* the installation's — upgrading it — restarts the process anyway, so
+ * treating it as permanent would buy nothing and cost the self-healing case. */
+const IDENTITY_REJECTS: ReadonlySet<string> = new Set(['unknown_key', 'revoked', 'expired']);
 
 interface SettingsStore extends EventStore {
   getVeritySettings(): Promise<VeritySettingsRecord | undefined>;
@@ -227,8 +230,17 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (this.lastReject?.key === key) {
+      // A stranded installation used to log its refusal once and then go quiet
+      // while looping every 30s, which reads exactly like a healthy server. Say
+      // so on every decline instead, on the slower schedule so that saying so
+      // stays affordable: one line every five minutes is what makes the state
+      // findable in a log nobody was watching at the time.
+      this.options.log?.warn(
+        { reason: this.lastReject.reason, identity: true },
+        'not dialling the Uplink: this key was refused',
+      );
       this.clearAuthority(this.lastReject.reason);
-      this.scheduleReconnect(RECONNECT_MAX_MS);
+      this.scheduleReconnect(RECONNECT_CAPACITY_MS);
       return;
     }
     const socket =
@@ -447,7 +459,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         'Uplink refused the control handshake',
       );
       this.clearAuthority(reason);
-      this.socket?.close(4003, reason);
+      this.socket?.close(4003, closeReason(reason, 'rejected'));
       return;
     }
     if (frame.type === 'share.expired') {
@@ -679,6 +691,17 @@ function refusalReason(value: unknown, fallback: string): string {
   return reason.length <= MAX_REFUSAL_REASON_CHARS
     ? reason
     : `${reason.slice(0, MAX_REFUSAL_REASON_CHARS)}…`;
+}
+
+/** `ws` throws a RangeError on a close reason over 123 bytes. Thrown from here
+ * it would land in the frame handler's catch, which reports a refusal we
+ * understood perfectly as an unparseable frame and closes with 1002 instead of
+ * 4003 — turning the one log line that names the cause into a misleading one.
+ * The far end already knows why it refused us, so echoing anything at all is a
+ * courtesy; drop back to the fallback token rather than truncating into a
+ * split UTF-8 sequence. */
+function closeReason(reason: string, fallback: string): string {
+  return Buffer.byteLength(reason) <= MAX_CLOSE_REASON_BYTES ? reason : fallback;
 }
 
 function validUplinkShareId(value: string): boolean {

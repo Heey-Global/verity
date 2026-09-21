@@ -108,13 +108,21 @@ are several connections.
 Whether it retries depends on what the reason is about, and the two classes are not a matter of
 taste:
 
-- **Identity** — `unknown_key`, `revoked`, `expired`, `protocol_unsupported`. The answer is a
-  property of this key, so dialling again with the same key cannot change it. The installation stops
-  until its credentials change or it restarts.
-- **Capacity** — `limit_reached`, and every reason an installation does not recognise. The answer is
-  a property of the service at this moment, so it can change without the installation doing
-  anything. The installation keeps dialling on a slower schedule (five minutes) rather than the
-  ordinary back-off, so a freed slot is picked up without adding load to something already full.
+- **Identity** — `unknown_key`, `revoked`, `expired`. The answer is a property of this key, so
+  dialling again with the same key cannot change it. The installation stops until its credentials
+  change or it restarts, and reports the reason it was given on a five-minute cadence for as long as
+  it stays stranded — silence would be indistinguishable from health.
+- **Capacity** — `limit_reached`, `protocol_unsupported`, and every reason an installation does not
+  recognise. The answer is a property of the service at this moment, so it can change without the
+  installation doing anything. The installation keeps dialling on a slower schedule (five minutes)
+  rather than the ordinary back-off, so a freed slot is picked up without adding load to something
+  already full.
+
+`protocol_unsupported` is on the capacity side deliberately, even though it names something the
+installation cannot change on the next dial. A mixed-version fleet behind a load balancer, or a
+rolled-back deployment, answers differently without anyone touching the installation; and the remedy
+that *is* the installation's — upgrading it — restarts the process, which clears an identity refusal
+anyway. Classifying it as identity would therefore buy nothing and lose the self-healing case.
 
 **Unknown reasons are capacity, not identity.** A newer Uplink refusing an older installation for a
 reason it has never heard of must not be able to take that installation permanently offline until
@@ -602,10 +610,16 @@ close code alone**: use the `reject.reason` on the frame, which is unambiguous i
 Aligning the two is an Uplink-side change; this table is the installation's half and is what
 `packages/server/src/uplink-control-client.ts` implements.
 
-Both sides log the close code, the close reason, and whether the connection had been welcomed. A
-refusal that closes the socket without sending `reject` is otherwise indistinguishable from a
-network drop. One exclusion: a socket the installation has already superseded with a newer dial is
-closed without a record, since it no longer describes the connection that matters.
+The installation logs the close code, the close reason, and whether the connection had been
+welcomed, because a refusal that closes the socket without sending `reject` is otherwise
+indistinguishable from a network drop. One exclusion: a socket it has already superseded with a
+newer dial is closed without a record, since it no longer describes the connection that matters.
+The preview edge does not yet do the same — that half is unimplemented, not specified-and-violated.
+
+A close reason is capped at 123 bytes by the WebSocket framing itself. An implementation echoing a
+reason it received must bound what it sends, or drop back to a fixed token: `ws` raises rather than
+truncating, and a raise inside a frame handler turns a refusal that was understood into one
+reported as a parse failure.
 
 ## Required changes in `packages/preview-tunnel`
 
