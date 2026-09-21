@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.26",
+  "version": "1.33.27",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "3d0cb1f6d921161ff2431bc0479c3f2d4448e333",
-  "tag": "mobile-v1.33.26",
-  "branch": "staging-mobile-v1.33.26-3d0cb1f6d921161ff2431bc0479c3f2d4448e333",
-  "baseline": "mobile-v1.33.25",
-  "group": "21c98633-bfd8-484d-9611-6bbf2bbad1c3",
+  "commit": "6bc4c45262ce326bbbe7e015683f10b4b5476bb6",
+  "tag": "mobile-v1.33.27",
+  "branch": "staging-mobile-v1.33.27-6bc4c45262ce326bbbe7e015683f10b4b5476bb6",
+  "baseline": "mobile-v1.33.26",
+  "group": "5b2ea500-c631-4cd9-8674-c20fa3f4cb3e",
   "notes": [
-    "show transient dependency status (#579)"
+    "spawn into sleeping projects without reprovisioning (#586)"
   ]
 }
