@@ -162,6 +162,19 @@ it('debounces new Sources into one automatic maintenance job', async () => {
     aborted: false,
   }));
   const debounceMs = 5;
+  const queueWikiMaintenance = ctx.store.knowledge.queueWikiMaintenance.bind(ctx.store.knowledge);
+  let releaseSecond!: () => void;
+  const secondWrite = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  let writes = 0;
+  const queue = vi
+    .spyOn(ctx.store.knowledge, 'queueWikiMaintenance')
+    .mockImplementation(async (...args) => {
+      writes += 1;
+      if (writes === 2) await secondWrite;
+      return queueWikiMaintenance(...args);
+    });
   const jobs = createKnowledgeWikiJobs({
     store: ctx.store,
     conductor: { sendTurn, cancelTurn: vi.fn(async () => true) },
@@ -171,16 +184,26 @@ it('debounces new Sources into one automatic maintenance job', async () => {
       throw error;
     },
   });
-  await jobs.enqueue('project', [source.id]);
-  await jobs.enqueue('project', [second.id]);
-  await drained(() => expect(sendTurn).toHaveBeenCalled(), debounceMs);
-  await jobs.close();
-  expect(sendTurn).toHaveBeenCalledOnce();
-  const [job] = await ctx.store.knowledge.listWikiJobs('project');
-  expect(job).toMatchObject({ model: 'codex/knowledge', status: 'completed' });
-  expect(job!.sourceRevisions.map((item) => item.documentId)).toEqual(
-    expect.arrayContaining([source.id, second.id]),
-  );
+  try {
+    await jobs.enqueue('project', [source.id]);
+    const enqueueSecond = jobs.enqueue('project', [second.id]);
+    await surplus(debounceMs);
+    expect(sendTurn).not.toHaveBeenCalled();
+    releaseSecond();
+    await enqueueSecond;
+    await drained(() => expect(sendTurn).toHaveBeenCalled(), debounceMs);
+    await jobs.close();
+    expect(sendTurn).toHaveBeenCalledOnce();
+    const [job] = await ctx.store.knowledge.listWikiJobs('project');
+    expect(job).toMatchObject({ model: 'codex/knowledge', status: 'completed' });
+    expect(job!.sourceRevisions.map((item) => item.documentId)).toEqual(
+      expect.arrayContaining([source.id, second.id]),
+    );
+  } finally {
+    releaseSecond();
+    queue.mockRestore();
+    await jobs.close();
+  }
 });
 it('recovers debounced maintenance after a server restart', async () => {
   const { source } = await setup();
