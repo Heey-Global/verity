@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   type EventStore,
   KnowledgeError,
@@ -9,6 +9,8 @@ import {
 } from '@verity/store';
 import { z } from 'zod';
 import { processKnowledgeSource } from './knowledge-source-processing.js';
+import { ensureProjectKnowledge } from './knowledge-folder.js';
+import { ingestKnowledgeBytes } from './knowledge-file-ingest.js';
 
 const id = z.string().min(1).max(128);
 const file = { filename: z.string().min(1).max(150), base64: z.string().min(4).max(13_981_016) };
@@ -25,12 +27,22 @@ function decode(value: string): Buffer {
   return bytes;
 }
 
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = '';
+  for (const character of value) {
+    if (Buffer.byteLength(result) + Buffer.byteLength(character) > maxBytes) break;
+    result += character;
+  }
+  return result;
+}
+
 /** These management endpoints inherit the paired-device authentication gate. */
 export function registerKnowledgeSourceRoutes(
   app: FastifyInstance,
   deps: {
     knowledge: KnowledgeStore;
     store?: Pick<EventStore, 'getSession'>;
+    dataRoot?: string | undefined;
     schedule?: (projectId: string, sourceDocumentIds: string[]) => Promise<void> | void;
     wakeMaintenance?: (projectId: string) => Promise<void> | void;
   },
@@ -84,34 +96,46 @@ export function registerKnowledgeSourceRoutes(
       const session = await deps.store.getSession(sessionId);
       if (!session?.projectId)
         throw new KnowledgeError('forbidden', 'Project Knowledge requires a project session');
-      const space = await knowledge.getProjectSpace(session.projectId);
-      if (!space) throw new KnowledgeError('not_found');
-      const uploads = await knowledge.ensureFolder(space.sourcesFolderId, 'Chat uploads');
-      const inputs: Parameters<KnowledgeStore['createChatSources']>[1] = [];
+      if (!deps.dataRoot) throw new KnowledgeError('conflict', 'Knowledge storage is unavailable');
+      // Validate the entire batch before creating the first file. A malformed
+      // second attachment must not leave the preceding note behind.
+      const decodedAttachments = body.attachments.map((attachment) => ({
+        ...attachment,
+        bytes: decode(attachment.base64),
+      }));
+      const root = await ensureProjectKnowledge(deps.dataRoot, session.projectId);
+      const paths: string[] = [];
       if (body.text) {
-        inputs.push({
-          title: `Chat message ${new Date().toISOString()}`,
-          bodyMarkdown: [
-            `From session ${sessionId}${body.messageId ? `, message ${body.messageId}` : ''}.`,
-            body.text,
-          ].join('\n\n'),
-        });
+        const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
+        const suffix = body.messageId
+          ? `-${body.messageId.replace(/[^A-Za-z0-9_-]/gu, '').slice(0, 24)}`
+          : `-${randomUUID()}`;
+        const path = `notes/${stamp}${suffix}.md`;
+        paths.push(
+          await ingestKnowledgeBytes(
+            root,
+            path,
+            Buffer.from(
+              `From session ${sessionId}${body.messageId ? `, message ${body.messageId}` : ''}.\n\n${body.text}\n`,
+              'utf8',
+            ),
+          ),
+        );
       }
-      for (const attachment of body.attachments) {
-        const bytes = decode(attachment.base64);
-        const source = await processKnowledgeSource(attachment.filename, bytes);
-        const sha256 = createHash('sha256').update(bytes).digest('hex');
-        const bodyMarkdown = [
-          source.processingNote,
-          ...source.locators.map((part) => `## ${part.label}\n\n${part.text}`),
-        ].join('\n\n');
-        inputs.push({ title: attachment.filename, bodyMarkdown, source, sha256 });
+      for (const attachment of decodedAttachments) {
+        const { bytes } = attachment;
+        const safeName = attachment.filename.replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(0, 150);
+        const extensionIndex = safeName.lastIndexOf('.');
+        const rawStem = extensionIndex > 0 ? safeName.slice(0, extensionIndex) : safeName;
+        const rawExtension = extensionIndex > 0 ? safeName.slice(extensionIndex) : '';
+        const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 8);
+        const extension = truncateUtf8(rawExtension, 40);
+        const stem = truncateUtf8(rawStem, 200 - Buffer.byteLength(extension)) || 'file';
+        paths.push(
+          await ingestKnowledgeBytes(root, `imports/${stem}-${digest}${extension}`, bytes),
+        );
       }
-      const documents = await knowledge.createChatSources(uploads.id, inputs, session.projectId);
-      await deps.schedule?.(session.projectId, [
-        ...new Set(documents.map((document) => document.id)),
-      ]);
-      return { documents };
+      return { paths };
     });
     instance.put('/knowledge/documents/:id/source', { bodyLimit: 14_100_000 }, async (request) => {
       const { id: documentId } = z.object({ id }).parse(request.params);

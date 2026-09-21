@@ -24,6 +24,7 @@ import {
   type PermissionDecision,
   type RateLimitNotice,
   type SessionFileEntry,
+  type SessionFileRoot,
   type SessionGoogleWorkspaceFile,
   type ToolCallMessage,
   type UserTextMessage,
@@ -3157,25 +3158,7 @@ export function SessionChat({
         {/* Right spacer keeps the title centered now that the actions live on the
             context row below — the title row gets the full width, so the session name
             no longer truncates on a phone. */}
-        <View style={styles.headerSide}>
-          {/* The split view already has the app header's Knowledge action. Keep
-              this route-local action only on narrow screens where that header is
-              replaced by the session header. */}
-          {!embedded ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Knowledge"
-              onPress={() =>
-                router.push(
-                  projectId ? { pathname: '/knowledge', params: { projectId } } : '/knowledge',
-                )
-              }
-              hitSlop={12}
-            >
-              <Icon name="book-open" size={20} color={theme.colors.textMuted} />
-            </Pressable>
-          ) : null}
-        </View>
+        <View style={styles.headerSide} />
       </View>
       {/* Context row under the title: the branch switcher (#91) and the bookmarks
           jump-list (#bookmarks), plus the Issue chip when present. Moved down off the
@@ -3931,6 +3914,7 @@ function SessionFilesSheet({
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
+  const [root, setRoot] = useState<SessionFileRoot>('worktree');
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -3938,6 +3922,7 @@ function SessionFilesSheet({
   const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [mutating, setMutating] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
@@ -3979,7 +3964,7 @@ function SessionFilesSheet({
     setError(null);
     setPreviewLoading(true);
     void client
-      .getSessionFileContent(sessionId, initialFilePath)
+      .getSessionFileContent(sessionId, initialFilePath, 'worktree')
       .then((file) => {
         if (active()) setPreview({ path: file.path, content: file.content });
       })
@@ -3999,7 +3984,7 @@ function SessionFilesSheet({
     setLoading(true);
     setError(null);
     void client
-      .listSessionFiles(sessionId, path)
+      .listSessionFiles(sessionId, path, root)
       .then((dir) => {
         if (!active) return;
         setEntries(dir.entries);
@@ -4017,7 +4002,7 @@ function SessionFilesSheet({
     return () => {
       active = false;
     };
-  }, [client, sessionId, path, reloadKey]);
+  }, [client, sessionId, path, root, reloadKey]);
 
   // A reload — an upload landed, or the agent changed the tree — can retire rows
   // the selection still names. Pruning keeps the header count honest and stops a
@@ -4051,6 +4036,7 @@ function SessionFilesSheet({
             path,
             fileName: file.fileName,
             data: new FsFile(file.uri),
+            root,
           });
           uploaded = true;
         }
@@ -4071,7 +4057,7 @@ function SessionFilesSheet({
         setUploading(false);
       }
     })();
-  }, [client, path, sessionId]);
+  }, [client, path, root, sessionId]);
 
   const uploadDroppedFiles = useCallback(
     (files: readonly DroppedFileDescriptor[]) => {
@@ -4089,6 +4075,7 @@ function SessionFilesSheet({
                 path,
                 fileName: file.fileName,
                 data: new FsFile(file.uri),
+                root,
               });
               uploaded = true;
             } catch (err) {
@@ -4119,7 +4106,7 @@ function SessionFilesSheet({
         }
       })();
     },
-    [client, path, sessionId],
+    [client, path, root, sessionId],
   );
 
   const onUploadDropRejected = useCallback((errors: string[]) => {
@@ -4129,10 +4116,10 @@ function SessionFilesSheet({
   const openWith = useCallback(
     (filePath: string) => {
       void (async () => {
-        const url = client.sessionFileDownloadUrl(sessionId, filePath);
+        const url = client.sessionFileDownloadUrl(sessionId, filePath, root);
         try {
           if (Platform.OS === 'web') {
-            const blob = await client.downloadSessionFile(sessionId, filePath);
+            const blob = await client.downloadSessionFile(sessionId, filePath, root);
             const objectUrl = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
             anchor.href = objectUrl;
@@ -4174,7 +4161,7 @@ function SessionFilesSheet({
         }
       })();
     },
-    [baseUrl, client, directTlsPin, sessionId],
+    [baseUrl, client, directTlsPin, root, sessionId],
   );
 
   const openFile = useCallback(
@@ -4196,7 +4183,7 @@ function SessionFilesSheet({
       // sits unchanged after the tap and the open reads as a dead press.
       setPreviewLoading(true);
       void client
-        .getSessionFileContent(sessionId, entry.path)
+        .getSessionFileContent(sessionId, entry.path, root)
         .then((file) => {
           if (previewRequest.current !== request) return;
           setPreview({ path: file.path, content: file.content });
@@ -4214,7 +4201,7 @@ function SessionFilesSheet({
           setPreviewLoading(false);
         });
     },
-    [client, sessionId, openWith],
+    [client, sessionId, openWith, root],
   );
 
   const toggleSelected = useCallback((entry: SessionFileEntry) => {
@@ -4228,6 +4215,73 @@ function SessionFilesSheet({
     setSelected([]);
     modifierClick.current = { anchor: null, range: [] };
   }, []);
+
+  const deleteSelectedKnowledge = useCallback(() => {
+    if (mutating || root === 'worktree' || selected.length === 0) return;
+    setMutating(true);
+    Alert.alert(
+      selected.length === 1
+        ? 'Delete knowledge file?'
+        : `Delete ${selected.length} knowledge files?`,
+      'This removes the files and their extracted text.',
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              const deleted: string[] = [];
+              try {
+                for (const filePath of selected) {
+                  await client.deleteSessionFile(sessionId, root, filePath);
+                  deleted.push(filePath);
+                }
+                endSelection();
+              } catch (err) {
+                setSelected((current) => current.filter((path) => !deleted.includes(path)));
+                Alert.alert(
+                  'Could not delete file',
+                  err instanceof Error ? err.message : String(err),
+                );
+              } finally {
+                if (deleted.length > 0) setReloadKey((key) => key + 1);
+                setMutating(false);
+              }
+            })();
+          },
+        },
+      ],
+      { cancelable: false },
+    );
+  }, [client, endSelection, mutating, root, selected, sessionId]);
+
+  const moveSelectedKnowledge = useCallback(() => {
+    if (mutating || root === 'worktree' || selected.length === 0) return;
+    setMutating(true);
+    const destination = root === 'knowledge' ? 'shared' : 'knowledge';
+    void (async () => {
+      const moved: string[] = [];
+      try {
+        for (const filePath of selected) {
+          await client.moveSessionFile(sessionId, {
+            root,
+            path: filePath,
+            toRoot: destination,
+            toPath: destination === 'knowledge' ? 'imports' : '',
+          });
+          moved.push(filePath);
+        }
+        endSelection();
+      } catch (err) {
+        setSelected((current) => current.filter((path) => !moved.includes(path)));
+        Alert.alert('Could not move file', err instanceof Error ? err.message : String(err));
+      } finally {
+        if (moved.length > 0) setReloadKey((key) => key + 1);
+        setMutating(false);
+      }
+    })();
+  }, [client, endSelection, mutating, root, selected, sessionId]);
 
   const rememberModifiers = useCallback((held: ClickModifiers) => {
     modifiers.current = held;
@@ -4243,6 +4297,7 @@ function SessionFilesSheet({
   // selection mode, open it outside of one.
   const pressFileRow = useCallback(
     (entry: SessionFileEntry) => {
+      if (mutating) return;
       // Consumed, not just read: every touch reports its own flags before its
       // press, so a press that finds a report left over is one that had no touch
       // behind it — VoiceOver activation, say — and must not inherit whatever was
@@ -4268,12 +4323,12 @@ function SessionFilesSheet({
       }
       openFile(entry);
     },
-    [entries, openFile, selected, selecting, toggleSelected],
+    [entries, mutating, openFile, selected, selecting, toggleSelected],
   );
 
   const downloadUrlFor = useCallback(
-    (filePath: string) => client.sessionFileDownloadUrl(sessionId, filePath),
-    [client, sessionId],
+    (filePath: string) => client.sessionFileDownloadUrl(sessionId, filePath, root),
+    [client, root, sessionId],
   );
 
   // Every row needs its own drag payload, and each selected row's payload is the
@@ -4327,12 +4382,18 @@ function SessionFilesSheet({
                 : 'Files'}
             </Text>
             <Text style={styles.filesPath} numberOfLines={1}>
-              /{path}
+              {root === 'worktree'
+                ? 'Worktree'
+                : root === 'knowledge'
+                  ? '📚 Knowledge'
+                  : '📚 Shared'}
+              {path ? ` / ${path}` : ''}
             </Text>
           </View>
           {canSelect ? (
             <Pressable
               onPress={() => (selecting ? endSelection() : setSelecting(true))}
+              disabled={mutating}
               hitSlop={8}
               accessibilityRole="button"
               accessibilityState={{ selected: selecting }}
@@ -4346,9 +4407,33 @@ function SessionFilesSheet({
               />
             </Pressable>
           ) : null}
+          {selecting && root !== 'worktree' && selected.length > 0 ? (
+            <>
+              <Pressable
+                onPress={moveSelectedKnowledge}
+                disabled={mutating}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Knowledge'}
+                style={styles.bookmarkRemove}
+              >
+                <Icon name="repeat" size={18} color={theme.colors.textMuted} />
+              </Pressable>
+              <Pressable
+                onPress={deleteSelectedKnowledge}
+                disabled={mutating}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Delete selected knowledge files"
+                style={styles.bookmarkRemove}
+              >
+                <Icon name="trash-2" size={18} color={theme.colors.tone.danger} />
+              </Pressable>
+            </>
+          ) : null}
           <Pressable
             onPress={uploadFiles}
-            disabled={uploading}
+            disabled={uploading || mutating}
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={`Upload files to /${path}`}
@@ -4373,6 +4458,48 @@ function SessionFilesSheet({
             <Icon name="x" size={20} color={theme.colors.textMuted} />
           </Pressable>
         </View>
+        {!preview ? (
+          <View style={styles.filesRootBar}>
+            {(
+              [
+                ['worktree', 'Files'],
+                ['knowledge', '📚 Knowledge'],
+                ['shared', '📚 Shared'],
+              ] as const
+            ).map(([candidate, label]) => (
+              <Pressable
+                key={candidate}
+                disabled={mutating}
+                onPress={() => {
+                  if (mutating || (candidate === root && path === '')) return;
+                  previewRequest.current += 1;
+                  endSelection();
+                  setRoot(candidate);
+                  setPath('');
+                  setEntries([]);
+                  setTruncated(false);
+                  setLoading(true);
+                  setPreview(null);
+                  setPreviewLoading(false);
+                  setError(null);
+                }}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: root === candidate }}
+                accessibilityLabel={label}
+                style={[
+                  styles.filesRootButton,
+                  root === candidate ? styles.filesRootButtonActive : null,
+                ]}
+              >
+                <Text
+                  style={root === candidate ? styles.filesRootLabelActive : styles.filesRootLabel}
+                >
+                  {label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {preview ? (
           <View style={styles.filesPreviewWrap}>
             <View style={styles.filesPreviewHeader}>
@@ -7903,6 +8030,28 @@ const styles = StyleSheet.create((theme) => ({
   filesPath: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
+  },
+  filesRootBar: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
+  },
+  filesRootButton: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.sm,
+  },
+  filesRootButtonActive: {
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  filesRootLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+  },
+  filesRootLabelActive: {
+    color: theme.colors.text,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
   },
   // The drop target wraps the list rather than the whole sheet: a drop onto the
   // preview or the header would have no directory to land in.

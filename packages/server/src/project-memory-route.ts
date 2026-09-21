@@ -3,14 +3,13 @@ import {
   KnowledgeError,
   PROJECT_MEMORY_MAX_CHARS,
   ProjectMemoryTooLargeError,
-  type EventStore,
 } from '@verity/store';
 import { bearerToken } from './auth.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { internalConnectionIdentity } from './internal-listener.js';
 
 export interface ProjectMemoryRouteDeps {
-  store: Pick<EventStore, 'appendProjectMemory'>;
+  append: (projectId: string, text: string) => Promise<number | undefined>;
   capabilities?: GhTokenCapabilityRegistry | undefined;
 }
 
@@ -51,24 +50,24 @@ export function registerProjectMemoryRoute(
           return { error: 'expected a JSON body with a string "text" field' };
         }
         try {
-          const settings = await deps.store.appendProjectMemory(binding.projectId, text);
-          if (settings === undefined) {
+          const length = await deps.append(binding.projectId, text);
+          if (length === undefined) {
             // Capability resolved but the project row is gone (deprovisioned mid-flight).
             reply.code(404);
             return { error: 'project not found' };
           }
           request.log.info(
-            { projectId: binding.projectId, length: settings.memory?.length ?? 0 },
+            { projectId: binding.projectId, length },
             'verity: appended project memory',
           );
-          return { ok: true, length: settings.memory?.length ?? 0 };
+          return { ok: true, length };
         } catch (error) {
           if (error instanceof KnowledgeError)
             return reply.code(error.statusCode).send({ error: error.message });
           if (error instanceof ProjectMemoryTooLargeError) {
             reply.code(413);
             return {
-              error: `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters; edit or prune it in Project Settings`,
+              error: `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters; edit or prune overview.md in the Explorer`,
             };
           }
           throw error;

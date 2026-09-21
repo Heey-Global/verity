@@ -460,6 +460,8 @@ export interface TurnPreparationContext {
 
 export interface ConductorDeps {
   store: EventStore;
+  /** Project overview.md contents for a fresh backend context. */
+  projectOverview?: ((projectId: string) => Promise<string | undefined>) | undefined;
   /** Durable Verity-owned system context selected from the persisted session.
    * Evaluated whenever a fresh backend context starts, so an empty session can
    * receive hidden capabilities on its first real turn without a synthetic turn. */
@@ -5239,6 +5241,11 @@ export class Conductor {
   private async projectMemoryPrompt(session: SessionRecord): Promise<string> {
     if (session.projectId === null) return '';
     if (await this.deps.store.knowledge.getWikiJobForSession(session.sessionId)) return '';
+    if (this.deps.projectOverview !== undefined) {
+      const overview = (await this.deps.projectOverview(session.projectId))?.trim();
+      if (!overview) return '';
+      return `\n\n## Project overview (operator-curated; may be stale — verify before relying on it)\n${overview}`;
+    }
     const overview = await this.deps.store.knowledge.getProjectOverview(session.projectId);
     if (overview)
       return `\n\n## Project overview (approved reference context; verify before relying on it)\n${overview.bodyMarkdown}`;

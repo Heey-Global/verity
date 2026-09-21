@@ -1,5 +1,3 @@
-import { ProjectKnowledge } from '../../components/knowledge/ProjectKnowledge';
-import { ProjectKnowledgeGrants } from '../../components/knowledge/ProjectKnowledgeGrants';
 // Project detail: local Verity project metadata plus the sessions bound to this
 // repository. Project operations such as dev servers and Agent Loops live here so
 // the screen stays the stable management surface for per-repo automation.
@@ -333,7 +331,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          activeTab === 'settings' || activeTab === 'memory' ? styles.settingsContent : null,
+          activeTab === 'settings' ? styles.settingsContent : null,
           { paddingBottom: insets.bottom + 24 },
         ]}
       >
@@ -357,12 +355,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
         ) : null}
         {activeTab === 'dev-server' ? (
           <DevServersSection client={client} project={project} onUpdated={onProjectUpdated} />
-        ) : null}
-        {activeTab === 'memory' ? (
-          <>
-            <ProjectKnowledge client={client} projectId={project.id} />
-            <MemorySection form={settingsForm} />
-          </>
         ) : null}
         {activeTab === 'automations' ? (
           <AgentLoopsSection
@@ -392,9 +384,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
               settings={settings}
               onSaved={onSettingsSaved}
             />
-            <View style={styles.section}>
-              <ProjectKnowledgeGrants client={client} projectId={project.id} />
-            </View>
             {project.kind === 'local' ? (
               <LinkGitHubSection client={client} project={project} onUpdated={onProjectUpdated} />
             ) : null}
@@ -410,7 +399,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
   );
 }
 
-type ProjectTab = 'dev-server' | 'memory' | 'automations' | 'settings';
+type ProjectTab = 'dev-server' | 'automations' | 'settings';
 
 function ProjectTabs({
   active,
@@ -426,7 +415,6 @@ function ProjectTabs({
   const { theme } = useUnistyles();
   const tabs: { key: ProjectTab; label: string }[] = [
     { key: 'dev-server', label: 'Dev Server' },
-    { key: 'memory', label: 'Knowledge' },
     { key: 'automations', label: 'Automations' },
   ];
   return (
@@ -2960,53 +2948,6 @@ function SettingsSaveHint({ form }: { form: ProjectSettingsForm }) {
               : 'All changes save automatically.'}
       </Text>
     </>
-  );
-}
-
-// Retain legacy notes as a migration detail inside Knowledge.
-function MemorySection({ form }: { form: ProjectSettingsForm }) {
-  const { draft, setField, save, saving } = form;
-  const [expanded, setExpanded] = useState(false);
-  if (!expanded)
-    return (
-      <View style={styles.section}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Show preserved legacy notes"
-          onPress={() => setExpanded(true)}
-        >
-          <Text style={styles.settingsGroupDescription}>Preserved legacy notes</Text>
-        </Pressable>
-      </View>
-    );
-  return (
-    <View style={styles.section}>
-      <View style={styles.sectionHeaderRow}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Hide preserved legacy notes"
-          onPress={() => setExpanded(false)}
-        >
-          <Text style={styles.sectionHeader}>Preserved legacy notes</Text>
-        </Pressable>
-        {saving ? <ActivityIndicator size="small" /> : null}
-      </View>
-      <Text style={styles.settingsGroupDescription}>
-        Preserved notes, used until a Wiki overview is approved.
-      </Text>
-      <View style={styles.settingsFormGroup}>
-        <SettingsInput
-          label="Memory"
-          value={draft.memory}
-          onChangeText={(value) => setField('memory', value)}
-          placeholder="Project-specific guidance for agents"
-          multiline
-          hint="These notes are preserved for migration. An approved Wiki overview replaces their automatic use; restoring legacy memory makes them active again."
-          onBlur={save}
-        />
-      </View>
-      <SettingsSaveHint form={form} />
-    </View>
   );
 }
 
