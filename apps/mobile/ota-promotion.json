@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.30",
+  "version": "1.33.31",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "d5a4c29e06babb679788f15d06878ef19a2928d4",
-  "tag": "mobile-v1.33.30",
-  "branch": "staging-mobile-v1.33.30-d5a4c29e06babb679788f15d06878ef19a2928d4",
-  "baseline": "mobile-v1.33.29",
-  "group": "22b3e6e8-e8f3-4442-8630-8f2f140ce711",
+  "commit": "b67908a92d4ae0962d85e5bad72a13bdbbcf10d2",
+  "tag": "mobile-v1.33.31",
+  "branch": "staging-mobile-v1.33.31-b67908a92d4ae0962d85e5bad72a13bdbbcf10d2",
+  "baseline": "mobile-v1.33.30",
+  "group": "7e1f84aa-9b61-486a-b73c-3158d9bfc036",
   "notes": [
-    "keep Knowledge navigation header stable (#599)"
+    "stop badging transient Sandbox lifecycle failures as crashed (#605)"
   ]
 }
