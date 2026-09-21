@@ -266,11 +266,6 @@ on the old image and will stay there.
   **Refresh token**, the `Config changed — Reprovision to apply` banner, and the `DOPPLER`
   section. Its `§6` muted-pill rows are re-specified here as muted detail text (with `Bound`
   as `transient`), and "Repair" is renamed to **Reprovision**.
-- **[`positioning-and-navigation.md`](./positioning-and-navigation.md)** (product positioning
-  and top-level navigation) references this document for the pill and the glossary and
-  extends the glossary with **Delegated / Needs you / Instruction / Landed / Knowledge /
-  Overview / Keep**. Only its knowledge part is scheduled
-  ([ADR 0022](./adr/0022-knowledge-folder-and-retrieval.md)); the rest is the target picture.
 
 When either surface changes a status word, a save behaviour, or a lifecycle verb, change it
 **here first**, then let both specs pick it up by reference. That is the whole point of this
