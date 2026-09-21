@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.0](https://github.com/Heey-Global/verity/compare/v1.3.3...v1.4.0) (2026-09-21)
+
+
+### Features
+
+* **knowledge:** automate wiki maintenance ([#566](https://github.com/Heey-Global/verity/issues/566)) ([6e77fe9](https://github.com/Heey-Global/verity/commit/6e77fe9ece6a1655d6fbf89a93af271221da79a9))
+* **mobile:** show transient dependency status ([#579](https://github.com/Heey-Global/verity/issues/579)) ([422e76f](https://github.com/Heey-Global/verity/commit/422e76fab7420db941b09280755ea1ea79efcecb))
+
+
+### Bug Fixes
+
+* **deps:** update dependency fastify to v5.12.5 ([#576](https://github.com/Heey-Global/verity/issues/576)) ([5dc33b1](https://github.com/Heey-Global/verity/commit/5dc33b1b4f9f094ebe8a6060448ea6c5e0e05cf2))
+* **server:** serialize wiki maintenance debounce writes ([#584](https://github.com/Heey-Global/verity/issues/584)) ([c2ddc37](https://github.com/Heey-Global/verity/commit/c2ddc3724cb81b58beb983ea0950f6a63cad858b))
+* **uplink:** recover from temporary control refusals ([#582](https://github.com/Heey-Global/verity/issues/582)) ([1be7402](https://github.com/Heey-Global/verity/commit/1be74027198693d47fe94a024a3f129f3eaebdce))
+
+
+### Performance Improvements
+
+* **server:** read the overview projection as a bounded tail ([#583](https://github.com/Heey-Global/verity/issues/583)) ([75bc53c](https://github.com/Heey-Global/verity/commit/75bc53c3398cd821338953f10e9897c4bcb236a8))
+* **store:** sum session token totals in SQL ([#581](https://github.com/Heey-Global/verity/issues/581)) ([b005737](https://github.com/Heey-Global/verity/commit/b005737229c237acf514d6eecfe8c8cd9ef255c9))
+
 ## [1.3.3](https://github.com/Heey-Global/verity/compare/v1.3.2...v1.3.3) (2026-09-20)
 
 
