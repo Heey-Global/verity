@@ -108,9 +108,9 @@ describe('settings/knowledge', () => {
     expect(screen.queryByText(/Wiki maintenance stays queued/)).toBeNull();
   });
 
-  it('says the choice covers every project', async () => {
+  it('explains the global choice without implying that project content is mixed', async () => {
     renderScreen();
 
-    expect(await screen.findByText(/applies to all projects/)).toBeOnTheScreen();
+    expect(await screen.findByText(/never mixes content between projects/)).toBeOnTheScreen();
   });
 });

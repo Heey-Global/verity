@@ -2,7 +2,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import { ProjectKnowledge } from '../components/knowledge/ProjectKnowledge';
 import { Alert } from 'react-native';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import * as ReactNative from 'react-native';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import type { VerityClient } from '@verity/mobile';
 import { Library } from '../app/knowledge';
 import { ProjectKnowledgeGrants } from '../components/knowledge/ProjectKnowledgeGrants';
@@ -327,7 +328,7 @@ test('moving a document updates its folder and permits moving back', async () =>
     ).toHaveLength(1);
     expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith('root', undefined);
     fireEvent.press(screen.getByLabelText('Move document'));
-    expect(await screen.findByLabelText('Move to Engineering')).toBeTruthy();
+    expect(await screen.findByLabelText('Move to Company / Engineering')).toBeTruthy();
     expect(screen.queryByLabelText('Move to Company')).toBeNull();
   } finally {
     alert.mockRestore();
@@ -482,6 +483,68 @@ test('the library uses one compact parent action instead of repeating the folder
   await waitFor(() =>
     expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith('root', undefined),
   );
+});
+
+test('keeps the folder tree beside an open document on wide screens', async () => {
+  const previousWindow = ReactNative.Dimensions.get('window');
+  const previousScreen = ReactNative.Dimensions.get('screen');
+  ReactNative.Dimensions.set({
+    window: { width: 1180, height: 820, scale: 2, fontScale: 1 },
+    screen: { width: 1180, height: 820, scale: 2, fontScale: 1 },
+  });
+  try {
+    const client = fake();
+    render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+
+    fireEvent.press(await screen.findByLabelText('Standards'));
+
+    expect(screen.getByLabelText('Search knowledge')).toBeTruthy();
+    expect(screen.getByLabelText('Folder: Company')).toBeTruthy();
+    expect(await screen.findByText('Rules')).toBeTruthy();
+  } finally {
+    cleanup();
+    ReactNative.Dimensions.set({ window: previousWindow, screen: previousScreen });
+  }
+});
+
+test('loads more folder documents from the wide-screen master pane', async () => {
+  const previousWindow = ReactNative.Dimensions.get('window');
+  const previousScreen = ReactNative.Dimensions.get('screen');
+  ReactNative.Dimensions.set({
+    window: { width: 1180, height: 820, scale: 2, fontScale: 1 },
+    screen: { width: 1180, height: 820, scale: 2, fontScale: 1 },
+  });
+  const firstPage = Array.from({ length: 100 }, (_, index) => ({
+    id: `doc-${String(index)}`,
+    folderId: 'child',
+    title: `Document ${String(index)}`,
+    currentRevisionId: 'v1',
+  }));
+  const client = {
+    ...fake(),
+    listKnowledgeDocuments: jest
+      .fn()
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce([
+        { id: 'doc-100', folderId: 'child', title: 'Document 100', currentRevisionId: 'v1' },
+      ]),
+    getKnowledgeDocument: jest.fn().mockResolvedValue({
+      ...firstPage[0],
+      bodyMarkdown: '# First',
+    }),
+  };
+  try {
+    render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+    fireEvent.press(await screen.findByLabelText('Document 0'));
+    await screen.findByText('First');
+    fireEvent.press(screen.getByLabelText('Load more documents'));
+
+    expect(await screen.findByLabelText('Document 100')).toBeTruthy();
+    expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith('child', undefined, 100);
+  } finally {
+    cleanup();
+    ReactNative.Dimensions.set({ window: previousWindow, screen: previousScreen });
+  }
 });
 
 const managedSpace = {
