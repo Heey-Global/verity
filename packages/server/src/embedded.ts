@@ -1,4 +1,5 @@
 export { parsePort } from './deployment-port.js';
+import { sandboxNotReadyError } from '@verity/events';
 import {
   ALLOWED_PERMISSION_MODES,
   AcpClaudeBackend,
@@ -174,6 +175,7 @@ import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from '.
 import {
   ProvisionerImpl,
   DeprovisionerImpl,
+  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   projectClonePath,
   gitAuthHeader,
   defaultDevcontainerBuildSpawner,
@@ -1730,7 +1732,10 @@ export function createProjectTurnPreparationSerializer(deps: {
   return async (projectId, sessionId, canWait, prepare) => {
     if (!canWait) {
       if (tails.has(projectId) || deps.repairInFlight(projectId)) {
-        throw new Error('project Sandbox preparation is already in progress');
+        // Transient by construction: something else is making this Sandbox ready
+        // right now. The background resolution declines to queue behind it, which
+        // must not end up as a `crashed` badge on a session that is fine.
+        throw sandboxNotReadyError('project Sandbox preparation is already in progress');
       }
       const backend = await prepare(new Set([sessionId]));
       return backend === undefined ? undefined : deps.wrapBackground(projectId, backend);
@@ -2589,15 +2594,17 @@ export async function buildEmbeddedServer(
    * anyway. The two turn paths deliberately do NOT use this: there the caller is a
    * single turn that must fail closed rather than run without egress identity.
    */
-  const publishRunnerIdentity = async (occasion: string): Promise<void> => {
+  const publishRunnerIdentity = async (occasion: string): Promise<boolean> => {
     try {
       await refreshControlPlaneRunnerIdentity?.();
+      return true;
     } catch (error) {
       console.warn(
         error instanceof SealedError
           ? `verity: control-plane Runner identity deferred until unlock (${occasion})`
           : `verity: control-plane Runner identity deferred (${occasion}): ${String(error)}`,
       );
+      return false;
     }
   };
   let agentGatewayTls: ClaudeEgressMtlsMaterial | undefined;
@@ -2748,6 +2755,28 @@ export async function buildEmbeddedServer(
           containerGeneration,
         })) === true,
     );
+  const hasProjectedAgentGatewayBinding = (
+    projectId: string,
+    inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
+  ): boolean => {
+    const fingerprint = inspected.labels?.[AGENT_GATEWAY_PEER_FINGERPRINT_LABEL];
+    return (
+      fingerprint !== undefined &&
+      agentGatewayBindings.some(
+        (binding) => binding.projectId === projectId && binding.fingerprint256 === fingerprint,
+      )
+    );
+  };
+  const agentGatewayReady = async (
+    projectId: string,
+    inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
+  ): Promise<boolean> => {
+    await agentGatewayBindingProjection;
+    return (
+      (await healthyRelayGeneration(projectId, inspected)) &&
+      hasProjectedAgentGatewayBinding(projectId, inspected)
+    );
+  };
   /**
    * Last-resort repair for a Claude turn whose Sandbox cannot reach the relay:
    * recreate the Sandbox and report whether the turn may proceed on it.
@@ -2759,7 +2788,7 @@ export async function buildEmbeddedServer(
    * that repairs itself in a minute. Failures are swallowed into `false` so the
    * caller raises the one operator-facing message.
    */
-  const repairSandboxForClaudeTurn = async (
+  const repairSandboxForAgentTurn = async (
     project: ProjectRecord,
     preparation: TurnPreparationContext,
     queuedSessionIds: ReadonlySet<string>,
@@ -2775,6 +2804,7 @@ export async function buildEmbeddedServer(
           project.id,
           preparation.sessionId,
           queuedSessionIds,
+          { requireFreshAgentGatewayIdentity: true },
         ))
       )
         return false;
@@ -2787,11 +2817,12 @@ export async function buildEmbeddedServer(
     // must not let the turn through to fail deeper in.
     try {
       const inspected = await docker.inspectContainer(project.containerName);
-      return await healthyRelayGeneration(project.id, inspected);
+      await synchronizeAgentGatewayForTurn();
+      return await agentGatewayReady(project.id, inspected);
     } catch (error) {
       app.log.warn(
         { err: error, projectId: project.id },
-        'could not verify the Claude relay after a turn-time sandbox repair',
+        'could not verify the Agent Gateway identity after a turn-time sandbox repair',
       );
       return false;
     }
@@ -2800,7 +2831,10 @@ export async function buildEmbeddedServer(
   const withProjectSandboxActivity = (projectId: string, backend: Backend): Backend => {
     const use = async <T>(operation: () => Promise<T>): Promise<T> => {
       if (provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) {
-        throw new Error('project Sandbox repair is already in progress');
+        // Same transient class as the serializer above — this wrapper is only ever
+        // applied to a background resolution's backend, and a repair holding the
+        // activity lock resolves itself.
+        throw sandboxNotReadyError('project Sandbox repair is already in progress');
       }
       try {
         return await operation();
@@ -3302,6 +3336,9 @@ export async function buildEmbeddedServer(
         await projectAgentGatewayIdentity(true);
       },
       onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
+      onSandboxWakeFallback: (event) => {
+        app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
+      },
       ...(previewShareManager !== undefined
         ? {
             withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
@@ -3770,6 +3807,14 @@ export async function buildEmbeddedServer(
                     (id, state, provisionError, provisionWarning) =>
                       eventStore.updateProjectState(id, state, provisionError, provisionWarning),
                     (id) => provisioner?.isProjectProvisioning(id) === true,
+                    // A list poll can land after wake persisted `waking` but before
+                    // Docker starts the retained container. Give reconciliation the
+                    // same recovery hooks as the detail route: an in-process wake
+                    // owns the mutation barrier, so recovery declines and the
+                    // reconciler preserves `waking` instead of publishing a
+                    // momentary, operator-actionable `failed` state.
+                    provisioner?.recoverInterruptedSleep?.bind(provisioner),
+                    provisioner?.recoverInterruptedWake?.bind(provisioner),
                   )
                 : projects;
             const result = await reconciled;
@@ -3836,10 +3881,47 @@ export async function buildEmbeddedServer(
     ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
     onSecretUnlocked: async () => {
       await projectAgentGatewayIdentity();
+      let inspected = 0;
+      let repaired = 0;
+      let deferred = 0;
+      if (docker !== undefined && provisioner?.repairSandboxForTurn !== undefined) {
+        for (const project of await eventStore.listProjects()) {
+          if (project.kind === 'control_plane' || project.state !== 'active') continue;
+          try {
+            const container = await docker.inspectContainer(project.containerName);
+            if (!container.running) continue;
+            inspected += 1;
+            if (await agentGatewayReady(project.id, container)) continue;
+            const didRepair = await provisioner.repairSandboxForTurn(
+              project.id,
+              `secret-unlock:${project.id}`,
+              undefined,
+              { requireFreshAgentGatewayIdentity: true },
+            );
+            if (didRepair) repaired += 1;
+            else deferred += 1;
+          } catch (error) {
+            deferred += 1;
+            app.log.warn(
+              { err: error, projectId: project.id },
+              'Agent Gateway identity reconciliation deferred for project',
+            );
+          }
+        }
+      }
+      await projectAgentGatewayIdentity(inspected > 0);
+      app.log.info(
+        { inspected, repaired, deferred, projectedBindings: agentGatewayBindings.length },
+        'Agent Gateway identity reconciliation completed after secret unlock',
+      );
       // Publishes what the sealed boot had to skip. Ordered after the gateway
       // projection because both mint from the same CA and the gateway is what a
       // Sandbox needs first; the Runner picks its material up by generation file.
-      await publishRunnerIdentity('secret unlock');
+      const runnerIdentityPublished = await publishRunnerIdentity('secret unlock');
+      app.log.info(
+        { published: runnerIdentityPublished },
+        'control-plane Runner identity resume completed after secret unlock',
+      );
       // The provider settings are readable now. A sealed boot can only have written
       // the credential-free fallback, and the Runner reads the file through a
       // directory mount, so replacing it here reaches containers already running.
@@ -4359,10 +4441,10 @@ export async function buildEmbeddedServer(
               if (docker === undefined) {
                 throw new Error('Claude egress routing target cannot be verified');
               }
-              let relayProvisioned: boolean;
+              let gatewayReady: boolean;
               try {
                 const inspected = await docker.inspectContainer(project.containerName);
-                relayProvisioned = await healthyRelayGeneration(project.id, inspected);
+                gatewayReady = await agentGatewayReady(project.id, inspected);
               } catch (error) {
                 app.log.warn(
                   { err: error, projectId: project.id },
@@ -4372,7 +4454,7 @@ export async function buildEmbeddedServer(
                   cause: error,
                 });
               }
-              if (!relayProvisioned) {
+              if (!gatewayReady) {
                 // The Sandbox cannot serve this turn — but that is a repairable state,
                 // not a reason to end the turn. Failing here surfaced as a red
                 // `run_failed` the operator had to resolve by hand, and the periodic
@@ -4381,16 +4463,23 @@ export async function buildEmbeddedServer(
                 // busy. So rebuild now, tell the operator it is happening, and continue
                 // the turn on the fresh Sandbox once it is up. Background resolutions
                 // (auto-title, reattach) don't wait — they keep failing fast.
-                relayProvisioned = await repairSandboxForClaudeTurn(
+                gatewayReady = await repairSandboxForAgentTurn(
                   project,
                   preparation,
                   queuedSessionIds,
                 );
               }
-              if (!relayProvisioned) {
-                throw new Error(
-                  'Sandbox predates the agent gateway relay and could not be recreated automatically — repair the project, then send the message again',
-                );
+              if (!gatewayReady) {
+                const message =
+                  'Sandbox has no valid Agent Gateway identity and could not be repaired automatically — repair the project, then send the message again';
+                // A background resolution never attempted the rebuild above, so its
+                // failure says nothing about whether the Sandbox is repairable — only
+                // that this resolution would not wait for one. Reporting it as the
+                // transient class keeps it from freezing the session on `crashed` (the
+                // badge outlives the turn; the Sandbox usually does not). A foreground
+                // turn, whose repair genuinely ran and failed, keeps the red badge and
+                // the operator-facing instruction above.
+                throw preparation.canWait ? new Error(message) : sandboxNotReadyError(message);
               }
               // Binding issuance and revocation keep the routed set current: read the
               // latest rotating credential and wait for the gateway to acknowledge

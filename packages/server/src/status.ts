@@ -1,14 +1,37 @@
-import type { AgentEvent, AgentStatus } from '@verity/events';
+import { SANDBOX_NOT_READY_ERROR_KIND, type AgentEvent, type AgentStatus } from '@verity/events';
 
 /** A session's badge status (concept §12) — the agent lifecycle plus `idle`. */
 export type SessionStatus = AgentStatus | 'idle';
+
+/**
+ * `error` kinds that end a turn WITHOUT meaning the session is broken: the
+ * project Sandbox was asleep, waking, or being rebuilt when the turn tried to
+ * run. They badge `idle`, not `crashed`.
+ *
+ * The distinction matters because this projection is the badge and it sticks:
+ * the backward scan stops at the event it settles on, so a red `crashed` from a
+ * Sandbox that woke up a minute later stayed on the session until the operator
+ * sent another message by hand. `idle` is also the honest answer — nothing is
+ * running, nothing is owed to the operator, and the live overlay in `server.ts`
+ * upgrades it to `running` the moment a turn is in flight again (which it does
+ * NOT do for the `awaiting_*` states, so parking on "Waiting" here would mask a
+ * successor turn instead).
+ *
+ * One of these settles the turn but does NOT get to overrule an older terminal
+ * outcome: the scan keeps walking far enough for a genuine `crashed` or
+ * `completed` behind it to survive. Older live/waiting states belonged to a turn
+ * that this error ended, so they settle as `idle` instead.
+ */
+const NON_CRASHING_ERROR_KINDS: ReadonlySet<string> = new Set([SANDBOX_NOT_READY_ERROR_KIND]);
 
 /**
  * Derive a session's current status from its canonical event log — a read-time
  * projection (§12), not persisted state. Scans backward for the most recent
  * status-bearing event: an explicit `status` wins; otherwise a `result` or
  * `interrupted` → completed, `error` → crashed, an unresolved `permission` →
- * awaiting_input.
+ * awaiting_input. A {@link NON_CRASHING_ERROR_KINDS} `error` is walked past
+ * rather than settled on, and only decides the status if nothing older does — as
+ * `idle`, since the turn it belongs to did end.
  * An empty log is `idle`; a log with only neutral events is treated as running.
  *
  * Background tasks (sub-agents / `run_in_background`) outlive a turn's first
@@ -31,7 +54,7 @@ export function deriveSessionStatus(events: readonly AgentEvent[]): SessionStatu
  *
  * - the forward pass calls `openTasks.clear()` on one, so no `task` before it can
  *   affect the open set afterwards;
- * - the backward scan returns `'running'` on one, so it never reads past it.
+ * - the backward scan returns on one, so it never reads past it.
  *
  * So every event preceding the most recent non-steered `prompt` is unreachable,
  * and a tail containing one carries everything the derivation can observe.
@@ -82,9 +105,11 @@ export function permissionEventAwaitsInput(events: readonly AgentEvent[]): boole
  *
  * The narrowing is lossless HERE and nowhere else: the forward pass reads only
  * `prompt` and `task`, and the backward scan returns on `status`, `result`,
- * `interrupted`, `error`, `permission` or a non-steered `prompt` and otherwise
- * keeps scanning — so dropping every other kind cannot change which event the
- * scan settles on. The single exception is the empty-log case, which is why
+ * `interrupted`, a crashing `error`, `permission` or a non-steered `prompt` and
+ * otherwise keeps scanning — so dropping every other kind cannot change which
+ * event the scan settles on. (It also keeps scanning past a non-crashing
+ * `error`, which is in the narrowed set too, so what it then reaches is
+ * unaffected.) The single exception is the empty-log case, which is why
  * `totalEventCount` is passed separately: a session whose log holds nothing but
  * `text` events is running, not idle, and `events.length` can no longer tell
  * those apart.
@@ -108,27 +133,43 @@ export function deriveSessionStatusFromProjection(
     if (event.phase === 'started') openTasks.add(event.id);
     else if (event.phase === 'ended') openTasks.delete(event.id);
   }
+  // Set once the scan walks past a NON_CRASHING_ERROR_KINDS event. A turn that
+  // never got to run leaves whatever the log said before it standing, so the
+  // scan keeps going and anything older still wins — including a real `crashed`,
+  // which must not be cleared by a failure that only means "the Sandbox was
+  // asleep". This flag only decides the two cases where nothing older speaks:
+  // the answer is `idle` rather than `running`, because that turn did end.
+  let endedWithoutRunning = false;
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event === undefined) continue;
     // A fresh operator prompt starts a new turn. Until that turn emits its own
     // status-bearing event it is running; never inherit a terminal marker from
     // the preceding turn. Steered prompts remain part of the current turn.
-    if (event.t === 'prompt' && event.steered !== true) return 'running';
+    if (event.t === 'prompt' && event.steered !== true) {
+      return endedWithoutRunning ? 'idle' : 'running';
+    }
     switch (event.t) {
       case 'status':
+        if (endedWithoutRunning && event.state !== 'crashed' && event.state !== 'completed') {
+          return 'idle';
+        }
         return event.state;
       case 'result':
-        return openTasks.size > 0 ? 'running' : 'completed';
+        return openTasks.size > 0 && !endedWithoutRunning ? 'running' : 'completed';
       case 'interrupted':
         return 'completed';
       case 'error':
+        if (NON_CRASHING_ERROR_KINDS.has(event.kind)) {
+          endedWithoutRunning = true;
+          break;
+        }
         return 'crashed';
       case 'permission':
-        return 'awaiting_input';
+        return endedWithoutRunning ? 'idle' : 'awaiting_input';
       default:
         break;
     }
   }
-  return 'running';
+  return endedWithoutRunning ? 'idle' : 'running';
 }

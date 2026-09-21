@@ -434,6 +434,13 @@ interface ProjectImage {
   usesConfiguredOverride: boolean;
 }
 
+type SandboxWakeFallbackReason =
+  | 'container_missing'
+  | 'container_running'
+  | 'ownership_mismatch'
+  | 'generation_missing'
+  | 'contract_mismatch';
+
 // The function form accepts an optional `forceRefresh`: the provision/recreate
 // path passes `true` to bypass the resolver's staleness cache and pin the
 // container to the CURRENT default digest (see createPublishedDefaultResolver).
@@ -467,6 +474,9 @@ export interface ProvisionerOptions {
   onContainerStarted?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
   onSandboxLifecycle?: ((event: ProjectSandboxLifecycleEvent) => void) | undefined;
+  /** Reports why a sleeping Sandbox could not use the retained-container fast path. */
+  onSandboxWakeFallback?:
+    ((event: { projectId: string; reason: SandboxWakeFallbackReason }) => void) | undefined;
   /** Fail-closed hook for generation-bound dependants such as public previews.
    * Runs after validation/warnings but before the old sandbox is mutated. */
   withContainerReplace?:
@@ -643,6 +653,8 @@ export interface ProvisionerOptions {
 }
 
 export const CLAUDE_EGRESS_GATEWAY_URL_LABEL = 'verity.claude-egress.gateway-url';
+/** Fingerprint of the client certificate mounted into this exact Sandbox. */
+export const AGENT_GATEWAY_PEER_FINGERPRINT_LABEL = 'verity.agent-gateway.peer-fingerprint-sha256';
 
 /** Read the canonical directory descriptors off a project row (post-canonical
  *  per §19.0/§19.1 — assumes the row was upserted through the slice-2 sync).
@@ -1461,6 +1473,7 @@ export interface Provisioner {
     projectId: string,
     requestingSessionId: string,
     queuedSessionIds?: ReadonlySet<string>,
+    options?: { requireFreshAgentGatewayIdentity?: boolean },
   ): Promise<boolean>;
   /** Admission barrier for every project turn: wait while an on-demand Sandbox
    * repair owns the project, so no backend can enter the container mid-recreate. */
@@ -2471,6 +2484,7 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     requestingSessionId: string,
     queuedSessionIds?: ReadonlySet<string>,
+    options: { requireFreshAgentGatewayIdentity?: boolean } = {},
   ): Promise<boolean> {
     const existing = this.turnSandboxRepairs.get(projectId);
     if (existing !== undefined) {
@@ -2481,7 +2495,7 @@ export class ProvisionerImpl implements Provisioner {
       return existing.promise;
     }
     const requestingSessionIds = new Set([requestingSessionId, ...(queuedSessionIds ?? [])]);
-    const attempt = this.repairSandboxForTurnOnce(projectId, requestingSessionIds);
+    const attempt = this.repairSandboxForTurnOnce(projectId, requestingSessionIds, options);
     this.turnSandboxRepairs.set(projectId, { promise: attempt, requestingSessionIds });
     try {
       return await attempt;
@@ -2730,6 +2744,14 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   async recoverInterruptedWake(projectId: string): Promise<ProjectRecord> {
+    // Reconciliation also runs from the project-list poll. If this process owns
+    // the wake, the durable `waking` row is live rather than interrupted; do not
+    // contend with its mutation barrier or wait for a potentially slow start.
+    if (this.projectWakeAttempts.has(projectId)) {
+      const project = await this.opts.store.getProject(projectId);
+      if (project === undefined) throw new ProvisioningError('project gone during wake recovery');
+      return project;
+    }
     return this.withProjectExclusiveMutation(projectId, async () => {
       const project = await this.opts.store.getProject(projectId);
       if (project === undefined) throw new ProvisioningError('project gone during wake recovery');
@@ -2801,26 +2823,50 @@ export class ProvisionerImpl implements Provisioner {
           }
           const reactivateRelay = this.opts.projectRelay.reactivate.bind(this.opts.projectRelay);
           const sleepRelay = this.opts.projectRelay.sleep?.bind(this.opts.projectRelay);
+          let inspect: ContainerInspect | null;
+          try {
+            inspect = await this.opts.docker.inspectContainer(project.containerName);
+          } catch (error) {
+            if (error instanceof DockerError && error.kind === 'container_not_found') {
+              inspect = null;
+            } else {
+              // An unavailable Docker API says nothing about the retained object.
+              // Keep it and the durable sleeping state intact so a retry can use
+              // the fast path instead of destructively recreating the Sandbox.
+              throw new ProvisioningError(
+                `project wake inspection failed: ${failureMessage(error)}`,
+                error,
+              );
+            }
+          }
+          const generation = inspect === null ? undefined : containerGenerationOf(inspect);
+          const fallbackReason =
+            inspect === null
+              ? 'container_missing'
+              : inspect.running
+                ? 'container_running'
+                : inspect.labels?.[PROJECT_ID_LABEL] !== project.id
+                  ? 'ownership_mismatch'
+                  : generation === undefined
+                    ? 'generation_missing'
+                    : sandboxSleepCompatibilityFingerprint(inspect) !==
+                        project.sleepCompatibilityFingerprint
+                      ? 'contract_mismatch'
+                      : undefined;
           await this.opts.store.updateProjectSleepState(project.id, 'waking', {
             sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
             sleepingSince: project.sleepingSince ?? null,
             wakeStartedAt: new Date(),
           });
-          const inspect = await this.opts.docker
-            .inspectContainer(project.containerName)
-            .catch(() => null);
-          const generation = inspect === null ? undefined : containerGenerationOf(inspect);
-          const compatible =
-            inspect !== null &&
-            !inspect.running &&
-            inspect.labels?.[PROJECT_ID_LABEL] === project.id &&
-            generation !== undefined &&
-            sandboxSleepCompatibilityFingerprint(inspect) === project.sleepCompatibilityFingerprint;
-          if (!compatible) {
+          if (fallbackReason !== undefined) {
             // The retained object is no longer the exact Sandbox we put to sleep.
             // Reuse the established replacement path rather than starting unknown
             // Docker state or trying to repair its mounts in place.
+            this.observeSandboxWakeFallback(project.id, fallbackReason);
             return this.recreateContainerOnce(project.id, { confirmWarnings: true });
+          }
+          if (inspect === null || generation === undefined) {
+            throw new Error('compatible retained Sandbox lost its identity');
           }
 
           let relayAwake = false;
@@ -2965,14 +3011,24 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  private observeSandboxWakeFallback(projectId: string, reason: SandboxWakeFallbackReason): void {
+    try {
+      this.opts.onSandboxWakeFallback?.({ projectId, reason });
+    } catch {
+      // Diagnostics never decide whether a retained Sandbox may be reused.
+    }
+  }
+
   private async repairSandboxForTurnOnce(
     projectId: string,
     requestingSessionIds: ReadonlySet<string>,
+    options: { requireFreshAgentGatewayIdentity?: boolean },
   ): Promise<boolean> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined || project.kind === 'control_plane') return false;
     const { classification, envDriftOnly } = await this.classifyProjectSandbox(project);
-    if (classification === 'migrated') return true;
+    if (classification === 'migrated' && options.requireFreshAgentGatewayIdentity !== true)
+      return true;
     // Someone else's container: never a Verity recreate target (spike §8).
     if (classification === 'foreign') return false;
     // The same budget the reconcile tick spends, and for the same reason: the loop
@@ -4835,6 +4891,7 @@ export class ProvisionerImpl implements Provisioner {
     // "unconfigured" to a TLS rejection at the gateway.
     let claudeEgressBinds: string[] = [];
     let egressConnectorEnv: string[] = [];
+    let agentGatewayPeerFingerprint: string | undefined;
     if (
       this.opts.claudeEgressIdentity !== undefined &&
       effectiveClaudeGatewayUrl !== undefined &&
@@ -4842,6 +4899,7 @@ export class ProvisionerImpl implements Provisioner {
       this.opts.gitSecretRoot !== undefined
     ) {
       const material = await this.opts.claudeEgressIdentity.sandboxMaterial(project.id);
+      agentGatewayPeerFingerprint = material.fingerprint256;
       const caPath = writeSecretFile(
         this.opts.gitSecretRoot,
         `egress_ca.${project.id}.crt`,
@@ -5035,6 +5093,9 @@ export class ProvisionerImpl implements Provisioner {
         ...(effectiveClaudeGatewayUrl === undefined
           ? {}
           : { [CLAUDE_EGRESS_GATEWAY_URL_LABEL]: effectiveClaudeGatewayUrl }),
+        ...(agentGatewayPeerFingerprint === undefined
+          ? {}
+          : { [AGENT_GATEWAY_PEER_FINGERPRINT_LABEL]: agentGatewayPeerFingerprint }),
         // Stamp the relay generation onto the sandbox (Stage 5) so migration can
         // tell a relay-era sandbox apart from a pre-relay legacy one. Only a
         // relay-activated generation carries it; the shared-network legacy path

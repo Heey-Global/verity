@@ -764,8 +764,8 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('closes and disables authority when async welcome persistence fails', async () => {
-    const { client, socket, store, disabled } = setup();
+  it('reports a local failure when async welcome persistence fails', async () => {
+    const { client, socket, store, disabled, log } = setup();
     store.updateVeritySettings.mockRejectedValueOnce(new Error('write failed'));
     client.start();
     await flush();
@@ -777,9 +777,13 @@ describe('UplinkControlClient', () => {
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
     });
     await flush();
-    expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message');
+    expect(socket.close).toHaveBeenCalledWith(1011, 'local welcome processing failed');
     expect(client.isAvailable()).toBe(false);
-    expect(disabled).toHaveBeenCalledWith('invalid Uplink control message');
+    expect(disabled).toHaveBeenCalledWith('failed to accept Uplink welcome');
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.any(Error), frameType: 'welcome' }),
+      'failed to accept Uplink welcome',
+    );
     await client.stop();
   });
 
@@ -806,6 +810,41 @@ describe('UplinkControlClient', () => {
       expect.objectContaining({ installationId: 'installation-1', firstEver: true }),
       'Uplink admitted this installation',
     );
+    await client.stop();
+  });
+
+  it('persists an admitted installation before retrying failed local cleanup', async () => {
+    let rejectCleanup!: (error: Error) => void;
+    const cleanup = new Promise<void>((_resolve, reject) => {
+      rejectCleanup = reject;
+    });
+    const { client, socket, store, settings } = setup({ disableFeatures: async () => cleanup });
+    settings.uplinkSubscriptionKey = '';
+    client.start();
+    await flush();
+    settings.uplinkSubscriptionKey = 'restored-key';
+    client.refreshCredentials();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+
+    // Admission has happened remotely at this point. Even though accepting
+    // authority remains blocked on local cleanup, the next hello must identify
+    // this installation instead of consuming another slot.
+    expect(store.updateVeritySettings).toHaveBeenCalledWith({
+      uplinkInstallationId: 'installation-1',
+    });
+    expect(client.isAvailable()).toBe(false);
+
+    rejectCleanup(new Error('local cleanup failed'));
+    await flush();
+    expect(socket.close).toHaveBeenCalledWith(1011, 'local welcome processing failed');
     await client.stop();
   });
 

@@ -69,6 +69,7 @@ export interface GatewayMtlsMaterial {
  */
 export interface SandboxEgressMaterial {
   readonly projectId: string;
+  readonly fingerprint256: string;
   readonly caCertPem: string;
   readonly clientCertPem: string;
   readonly clientKeyPem: string;
@@ -294,6 +295,7 @@ export function sandboxEgressMaterial(
 ): SandboxEgressMaterial {
   return {
     projectId: client.projectId,
+    fingerprint256: client.fingerprint256,
     caCertPem: ca.caCertPem,
     clientCertPem: client.certPem,
     clientKeyPem: client.keyPem,
