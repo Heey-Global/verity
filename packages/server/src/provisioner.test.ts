@@ -51,6 +51,7 @@ import {
   materializeOpenCodeSettings,
   RUNNER_BROKER_CAPABILITIES,
   CLAUDE_EGRESS_GATEWAY_URL_LABEL,
+  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   type ProvisionerOptions,
   type ProjectRelayControl,
   type GitRunner,
@@ -266,6 +267,7 @@ function fakeEgressIdentity(): { service: ClaudeEgressIdentityService; revoked: 
     async sandboxMaterial(projectId: string) {
       return {
         projectId,
+        fingerprint256: 'ab'.repeat(32),
         caCertPem: 'CA-CERT-PEM',
         clientCertPem: 'CLIENT-CERT-PEM',
         clientKeyPem: 'CLIENT-KEY-PEM',
@@ -3367,6 +3369,7 @@ describe('ProvisionerImpl (#174)', () => {
         ]),
       );
       expect(spec.labels?.[CLAUDE_EGRESS_GATEWAY_URL_LABEL]).toBe('https://relay:8443');
+      expect(spec.labels?.[AGENT_GATEWAY_PEER_FINGERPRINT_LABEL]).toBe('ab'.repeat(32));
       expect(startRelay).toHaveBeenCalledWith(
         expect.objectContaining({
           claudeGateway: { host: 'verity-agent-gateway', port: 9443 },
@@ -4391,6 +4394,7 @@ describe('ProvisionerImpl (#174)', () => {
           gatewayMaterial: vi.fn(),
           sandboxMaterial: vi.fn(async () => ({
             projectId: id,
+            fingerprint256: 'ab'.repeat(32),
             caCertPem: 'ca',
             clientCertPem: 'cert',
             clientKeyPem: 'key',
@@ -4481,6 +4485,7 @@ describe('ProvisionerImpl (#174)', () => {
           gatewayMaterial: vi.fn(),
           sandboxMaterial: vi.fn(async () => ({
             projectId: id,
+            fingerprint256: 'ab'.repeat(32),
             caCertPem: 'ca',
             clientCertPem: 'cert',
             clientKeyPem: 'key',
@@ -9482,6 +9487,23 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       true,
     );
     expect(recreate).not.toHaveBeenCalled();
+  });
+
+  it('recreates a migrated sandbox whose Agent Gateway identity is missing', async () => {
+    const migrated = await seedActive('turn-unbound', 'dev-turn-unbound');
+    const { client } = dockerInspecting({
+      'dev-turn-unbound': migratedInspect(migrated.id),
+    });
+    const provisioner = makeProvisioner(client);
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(migrated);
+
+    await expect(
+      provisioner.repairSandboxForTurn(migrated.id, 'requesting-session', undefined, {
+        requireFreshAgentGatewayIdentity: true,
+      }),
+    ).resolves.toBe(true);
+    expect(recreate).toHaveBeenCalledWith(migrated.id, { confirmWarnings: true });
   });
 
   it('repairs an env-drifted sandbox during turn preparation', async () => {
