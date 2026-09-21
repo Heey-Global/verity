@@ -170,6 +170,7 @@ import {
 import { defaultManifestConvert } from './github-manifest.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
+import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from './doppler-token.js';
 import {
   ProvisionerImpl,
@@ -3786,6 +3787,9 @@ export async function buildEmbeddedServer(
 
   const app = buildControlPlane({
     eventStore,
+    // The same root the provisioner mounts from, so the explorer and the sandbox
+    // are looking at one directory rather than two copies of an idea (ADR 0022).
+    ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
     ...(config.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: config.unlockClientIdentity }
       : {}),
@@ -4079,6 +4083,17 @@ export async function buildEmbeddedServer(
       permissionControl: true,
       // Capture each session's verbatim .jsonl so it survives + is resumable.
       transcript: transcriptStore,
+      ...(config.dataVolumeRoot !== undefined
+        ? {
+            projectOverview: async (projectId: string) => {
+              return readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
+                const approved = await eventStore.knowledge.getProjectOverview(projectId);
+                if (approved !== null) return approved.bodyMarkdown;
+                return (await eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
+              });
+            },
+          }
+        : {}),
       // ADR 0011 D3: expose the project's secret alias names to every turn whose
       // transport carries the brokered tools — ACP included, not just codex.
       brokeredSecretAliases,

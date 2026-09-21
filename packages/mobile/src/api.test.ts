@@ -2092,6 +2092,40 @@ describe('VerityClient session files', () => {
     expect(calls[0]?.url).toBe('http://host/sessions/s1/files');
   });
 
+  it('addresses knowledge roots for browse, delete, and move', async () => {
+    const responses = [
+      json({ path: 'imports', entries: [], truncated: false }),
+      json({ deleted: true, path: 'imports/offer.pdf' }),
+      json({ root: 'shared', path: 'offer.pdf' }),
+    ];
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const client = new VerityClient({
+      baseUrl: 'http://host',
+      fetch: async (input, init) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        calls.push({ url, ...(init ? { init } : {}) });
+        return responses.shift()!;
+      },
+    });
+
+    await client.listSessionFiles('s1', 'imports', 'knowledge');
+    await client.deleteSessionFile('s1', 'knowledge', 'imports/offer.pdf');
+    await client.moveSessionFile('s1', {
+      root: 'knowledge',
+      path: 'imports/offer.pdf',
+      toRoot: 'shared',
+    });
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/s1/files?root=knowledge&path=imports',
+      'http://host/sessions/s1/files?root=knowledge&path=imports%2Foffer.pdf',
+      'http://host/sessions/s1/files/move',
+    ]);
+    expect(calls[1]?.init?.method).toBe('DELETE');
+    expect(calls[2]?.init).toMatchObject({ method: 'POST' });
+  });
+
   it('loads text file content for preview', async () => {
     const payload = { path: 'README.md', content: '# Hello\n', size: 8 };
     const { fetch, calls } = fakeFetch(json(payload));

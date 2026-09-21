@@ -849,6 +849,7 @@ const googleDriveConnectResultSchema = z.object({
 });
 
 export const googleDriveImportResultSchema = z.object({
+  root: z.literal('knowledge'),
   path: z.string(),
   name: z.string(),
 });
@@ -1339,6 +1340,7 @@ export const sessionFileEntrySchema = z.object({
   modifiedAt: z.string().nullable(),
 });
 export type SessionFileEntry = z.infer<typeof sessionFileEntrySchema>;
+export type SessionFileRoot = 'worktree' | 'knowledge' | 'shared';
 
 export const sessionDirectorySchema = z.object({
   path: z.string(),
@@ -1887,16 +1889,16 @@ export class VerityClient {
       text?: string;
       attachments?: { filename: string; base64: string }[];
     },
-  ): Promise<KnowledgeDocument[]> {
+  ): Promise<string[]> {
     return z
-      .object({ documents: z.array(knowledgeDocumentSchema) })
+      .object({ paths: z.array(z.string()) })
       .parse(
         await this.knowledgeRequest(
           `/sessions/${encodeURIComponent(sessionId)}/knowledge-sources`,
           'POST',
           input,
         ),
-      ).documents;
+      ).paths;
   }
   async replaceKnowledgeSource(
     id: string,
@@ -2435,7 +2437,7 @@ export class VerityClient {
     await this.request('/google-drive/disconnect', { method: 'POST' });
   }
 
-  /** Import a Drive file into the session worktree under docs/reference/. */
+  /** Import a Drive file into the project's Knowledge imports folder. */
   async importGoogleDriveFile(sessionId: string, fileId: string): Promise<GoogleDriveImportResult> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/google-drive/import`,
@@ -3471,8 +3473,16 @@ export class VerityClient {
 
   /** Browse a session's local worktree. Includes uncommitted and generated files,
    * but the server blocks path escapes and `.git` internals. */
-  async listSessionFiles(id: string, path = ''): Promise<SessionDirectory> {
-    const qs = path ? `?path=${encodeURIComponent(path)}` : '';
+  async listSessionFiles(
+    id: string,
+    path = '',
+    root: SessionFileRoot = 'worktree',
+  ): Promise<SessionDirectory> {
+    const query = [
+      ...(root !== 'worktree' ? [`root=${root}`] : []),
+      ...(path ? [`path=${encodeURIComponent(path)}`] : []),
+    ].join('&');
+    const qs = query ? `?${query}` : '';
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/files${qs}`, {
       method: 'GET',
     });
@@ -3482,25 +3492,36 @@ export class VerityClient {
   /** Fetch a small text file from a session worktree for inline preview. Binary or
    * oversized files throw {@link VerityApiError}; use {@link sessionFileDownloadUrl}
    * for those. */
-  async getSessionFileContent(id: string, path: string): Promise<SessionFileContent> {
+  async getSessionFileContent(
+    id: string,
+    path: string,
+    root: SessionFileRoot = 'worktree',
+  ): Promise<SessionFileContent> {
+    const rootQuery = root === 'worktree' ? '' : `&root=${root}`;
     const res = await this.request(
-      `/sessions/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}`,
+      `/sessions/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}${rootQuery}`,
       { method: 'GET' },
     );
     return sessionFileContentSchema.parse(await res.json());
   }
 
   /** Direct URL for opening/downloading a session worktree file. */
-  sessionFileDownloadUrl(id: string, path: string): string {
-    return `${this.baseUrl}/sessions/${encodeURIComponent(id)}/files/download?path=${encodeURIComponent(path)}`;
+  sessionFileDownloadUrl(id: string, path: string, root: SessionFileRoot = 'worktree'): string {
+    const rootQuery = root === 'worktree' ? '' : `&root=${root}`;
+    return `${this.baseUrl}/sessions/${encodeURIComponent(id)}/files/download?path=${encodeURIComponent(path)}${rootQuery}`;
   }
 
   /** Fetch a session worktree file as bytes through the configured fetch
    * implementation. UI code can instead use {@link sessionFileDownloadUrl} for a
    * native browser/app download. */
-  async downloadSessionFile(id: string, path: string): Promise<Blob> {
+  async downloadSessionFile(
+    id: string,
+    path: string,
+    root: SessionFileRoot = 'worktree',
+  ): Promise<Blob> {
+    const rootQuery = root === 'worktree' ? '' : `&root=${root}`;
     const res = await this.request(
-      `/sessions/${encodeURIComponent(id)}/files/download?path=${encodeURIComponent(path)}`,
+      `/sessions/${encodeURIComponent(id)}/files/download?path=${encodeURIComponent(path)}${rootQuery}`,
       { method: 'GET' },
     );
     return res.blob();
@@ -3510,12 +3531,13 @@ export class VerityClient {
    * never overwritten. */
   async uploadSessionFile(
     id: string,
-    upload: { path: string; fileName: string; data: Blob },
+    upload: { path: string; fileName: string; data: Blob; root?: SessionFileRoot },
   ): Promise<SessionFileUploaded> {
     // Percent-encode explicitly (as every other call here does) instead of relying
     // on `URLSearchParams.toString()`: the app runs on React Native's polyfill, and
     // a name with an umlaut must not depend on whether that polyfill escapes.
-    const query = `path=${encodeURIComponent(upload.path)}&fileName=${encodeURIComponent(upload.fileName)}`;
+    const rootQuery = upload.root && upload.root !== 'worktree' ? `&root=${upload.root}` : '';
+    const query = `path=${encodeURIComponent(upload.path)}&fileName=${encodeURIComponent(upload.fileName)}${rootQuery}`;
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}/files?${query}`,
       {
@@ -3526,6 +3548,31 @@ export class VerityClient {
       this.uploadFetchImpl,
     );
     return sessionFileUploadedSchema.parse(await res.json());
+  }
+
+  async deleteSessionFile(id: string, root: Exclude<SessionFileRoot, 'worktree'>, path: string) {
+    await this.request(
+      `/sessions/${encodeURIComponent(id)}/files?root=${root}&path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async moveSessionFile(
+    id: string,
+    body: {
+      root: Exclude<SessionFileRoot, 'worktree'>;
+      path: string;
+      toRoot: Exclude<SessionFileRoot, 'worktree'>;
+      toPath?: string;
+      toFileName?: string;
+    },
+  ) {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/files/move`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return (await res.json()) as { path: string; root: SessionFileRoot };
   }
 
   /** Switch the session worktree's branch, keeping the chat (#91). Returns the

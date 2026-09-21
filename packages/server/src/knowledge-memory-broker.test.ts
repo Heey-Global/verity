@@ -1,61 +1,42 @@
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
-import Fastify from 'fastify';
-import { expect, it } from 'vitest';
-import { createTestDb } from '@verity/store/testing';
-import { registerProjectMemoryRoute } from './project-memory-route.js';
-import { markInternalConnections } from './internal-listener.js';
-import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 
-it('returns an HTTP conflict for legacy memory appends after overview approval', async () => {
-  const ctx = await createTestDb();
+import Fastify from 'fastify';
+import { expect, it, vi } from 'vitest';
+
+import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
+import { markInternalConnections } from './internal-listener.js';
+import { registerProjectMemoryRoute } from './project-memory-route.js';
+
+it('appends project memory through the authenticated overview writer', async () => {
   const app = Fastify();
+  const binding = {
+    projectId: 'p',
+    containerGeneration: 'generation',
+    owner: 'test',
+    repo: 'memory',
+  };
+  const connections = new EventEmitter();
+  markInternalConnections(connections as unknown as Server, binding);
+  app.addHook('onRequest', async (request) => {
+    connections.emit('connection', request.raw.socket);
+  });
+  const append = vi.fn().mockResolvedValue(24);
+  registerProjectMemoryRoute(app, {
+    append,
+    capabilities: { resolve: async () => binding } as unknown as GhTokenCapabilityRegistry,
+  });
   try {
-    await ctx.store.upsertProject({
-      id: 'p',
-      owner: 'test',
-      repo: 'memory',
-      containerName: 'memory',
-      state: 'active',
-      overviewVisible: true,
-    });
-    await ctx.store.appendProjectMemory('p', 'Legacy note retained');
-    const space = (await ctx.store.knowledge.getProjectSpace('p'))!;
-    const overview = await ctx.store.knowledge.createDocument({
-      folderId: space.wikiFolderId,
-      title: 'Overview',
-      bodyMarkdown: 'Approved orientation',
-    });
-    await ctx.store.knowledge.approveProjectOverview('p', overview.id, overview.currentRevisionId);
-    const binding = {
-      projectId: 'p',
-      containerGeneration: 'generation',
-      owner: 'test',
-      repo: 'memory',
-    };
-    const connections = new EventEmitter();
-    markInternalConnections(connections as unknown as Server, binding);
-    app.addHook('onRequest', async (request) => {
-      connections.emit('connection', request.raw.socket);
-    });
-    registerProjectMemoryRoute(app, {
-      store: ctx.store,
-      capabilities: { resolve: async () => binding } as unknown as GhTokenCapabilityRegistry,
-    });
     const response = await app.inject({
       method: 'POST',
       url: '/internal/project/memory',
       headers: { authorization: 'Bearer test-capability' },
-      payload: { text: 'This must not become approved guidance' },
+      payload: { text: 'Remember this' },
     });
-    expect(response.statusCode).toBe(409);
-    expect(response.json<{ error: string }>().error).toContain('approved Knowledge overview');
-    expect((await ctx.store.getProjectSettingsRaw('p'))?.memory).toBe('Legacy note retained');
-    expect((await ctx.store.knowledge.getProjectOverview('p'))?.bodyMarkdown).toBe(
-      'Approved orientation',
-    );
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, length: 24 });
+    expect(append).toHaveBeenCalledWith('p', 'Remember this');
   } finally {
     await app.close();
-    await ctx.close();
   }
 });
