@@ -23,12 +23,12 @@
     },
     "claudeCodeVersion": {
       "type": "string",
-      "default": "2.1.273",
+      "default": "2.1.276",
       "description": "Exact @anthropic-ai/claude-code npm version to pin."
     },
     "claudeAcpVersion": {
       "type": "string",
-      "default": "0.78.0",
+      "default": "0.79.0",
       "description": "Exact @agentclientprotocol/claude-agent-acp npm version to pin."
     },
     "installCodex": {
@@ -38,7 +38,7 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.154.0",
+      "default": "0.155.0",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {
