@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { adoptHandedOffSecretKey, startSecretKeyAdoption } from './secret-key-adopter.js';
 import {
@@ -446,6 +446,22 @@ describe('self-update handed-off key adoption', () => {
     expect(store.key).toBe(KEY);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('UNLOCKED');
+  });
+
+  it('does not append an undefined error to the successful handoff log', async () => {
+    const store = cipher();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await adoptHandedOffSecretKey({
+      cipher: store,
+      material: KEY,
+      activate: () => Promise.resolve(),
+    });
+
+    expect(warning).toHaveBeenCalledWith(
+      'verity: secret store UNLOCKED from the self-update key handoff',
+    );
+    warning.mockRestore();
   });
 
   /**

@@ -468,13 +468,14 @@ describe('Claude egress request reporting', () => {
       (denial) => denied.push(denial),
     );
 
-    await call(port, {
+    const result = await call(port, {
       path: '/v1/messages',
       method: 'POST',
       headers: { host: AUTHORITY, authorization: `Bearer ${CLAUDE_EGRESS_PLACEHOLDER}` },
     });
 
-    expect(denied[0]?.reason).toBe('policy-rejected');
+    expect(result.body).toContain('Sandbox has no Agent Gateway identity');
+    expect(denied[0]?.reason).toBe('peer-unbound');
     expect(denied[0]).not.toHaveProperty('projectId');
   });
 

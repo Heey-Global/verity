@@ -309,6 +309,7 @@ async function handleRequest(
     const unavailable = error instanceof CodexCredentialUnavailableError;
     const denied =
       error instanceof CodexEgressPolicyError || error instanceof OpenCodeEgressPolicyError;
+    const peerUnbound = denied && observedProjectId === undefined;
     const status = unavailable ? 503 : denied ? 403 : 502;
     response.writeHead(status, {
       'content-type': 'text/plain; charset=utf-8',
@@ -318,13 +319,21 @@ async function handleRequest(
     response.end(
       unavailable
         ? 'Codex egress denied: credential unavailable'
-        : denied
-          ? `Codex egress denied: ${error.message}`
-          : 'Codex egress denied: upstream unavailable',
+        : peerUnbound
+          ? 'Codex egress denied: Sandbox has no Agent Gateway identity — repair the project'
+          : denied
+            ? `Codex egress denied: ${error.message}`
+            : 'Codex egress denied: upstream unavailable',
     );
     report(
       'rejected',
-      unavailable ? 'credential-unavailable' : denied ? 'policy-rejected' : errorLabel(error),
+      unavailable
+        ? 'credential-unavailable'
+        : peerUnbound
+          ? 'peer-unbound'
+          : denied
+            ? 'policy-rejected'
+            : errorLabel(error),
     );
   }
 }

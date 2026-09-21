@@ -282,6 +282,7 @@ async function handleRequest(
     if (!authenticatedProjectId) {
       throw new ClaudeEgressPolicyError('Claude egress peer is not authenticated');
     }
+    observedProjectId = authenticatedProjectId;
     // Single-project (pinned) mode: the peer must be exactly this listener's
     // project. Multi-tenant mode (no pin): the authenticated peer IS the scope.
     if (options.projectId !== undefined && authenticatedProjectId !== options.projectId) {
@@ -361,14 +362,17 @@ async function handleRequest(
     }
     const unavailable = error instanceof ClaudeEgressCredentialUnavailableError;
     const denied = error instanceof ClaudeEgressPolicyError;
+    const peerUnbound = denied && observedProjectId === undefined;
     const status = unavailable ? 503 : denied ? 403 : 502;
     // Provider/network errors may contain upstream response details or secrets.
     // Only policy failures are safe to reflect to the untrusted sandbox.
     const message = unavailable
       ? 'Claude egress credential unavailable'
-      : denied
-        ? error.message
-        : 'upstream unavailable';
+      : peerUnbound
+        ? 'Sandbox has no Agent Gateway identity — repair the project'
+        : denied
+          ? error.message
+          : 'upstream unavailable';
     response.writeHead(status, {
       'content-type': 'text/plain; charset=utf-8',
       ...(unavailable ? { 'retry-after': '2' } : {}),
@@ -380,7 +384,13 @@ async function handleRequest(
     // fixed classification. Provider and network errors are classified too.
     report(
       'rejected',
-      unavailable ? 'credential-unavailable' : denied ? 'policy-rejected' : errorLabel(error),
+      unavailable
+        ? 'credential-unavailable'
+        : peerUnbound
+          ? 'peer-unbound'
+          : denied
+            ? 'policy-rejected'
+            : errorLabel(error),
     );
   }
 }

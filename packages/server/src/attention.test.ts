@@ -46,6 +46,7 @@ describe('attentionSignals', () => {
     expect(signals).toHaveLength(1);
     expect(signals[0]?.code).toBe('secret_sealed');
     expect(signals[0]?.message).toContain('sealed');
+    expect(signals[0]?.message).toContain('agent providers');
   });
 
   it('stays quiet about a Server that was never initialized or is unmanaged', () => {

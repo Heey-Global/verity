@@ -110,6 +110,7 @@ describe('Claude egress certificate issuance', () => {
     expect(Object.values(material)).not.toContain(ca.caKeyPem);
     expect(material).toEqual({
       projectId: 'project-1',
+      fingerprint256: projectOne.fingerprint256,
       caCertPem: ca.caCertPem,
       clientCertPem: projectOne.certPem,
       clientKeyPem: projectOne.keyPem,

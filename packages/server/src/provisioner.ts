@@ -643,6 +643,8 @@ export interface ProvisionerOptions {
 }
 
 export const CLAUDE_EGRESS_GATEWAY_URL_LABEL = 'verity.claude-egress.gateway-url';
+/** Fingerprint of the client certificate mounted into this exact Sandbox. */
+export const AGENT_GATEWAY_PEER_FINGERPRINT_LABEL = 'verity.agent-gateway.peer-fingerprint-sha256';
 
 /** Read the canonical directory descriptors off a project row (post-canonical
  *  per §19.0/§19.1 — assumes the row was upserted through the slice-2 sync).
@@ -1461,6 +1463,7 @@ export interface Provisioner {
     projectId: string,
     requestingSessionId: string,
     queuedSessionIds?: ReadonlySet<string>,
+    options?: { requireFreshAgentGatewayIdentity?: boolean },
   ): Promise<boolean>;
   /** Admission barrier for every project turn: wait while an on-demand Sandbox
    * repair owns the project, so no backend can enter the container mid-recreate. */
@@ -2471,6 +2474,7 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     requestingSessionId: string,
     queuedSessionIds?: ReadonlySet<string>,
+    options: { requireFreshAgentGatewayIdentity?: boolean } = {},
   ): Promise<boolean> {
     const existing = this.turnSandboxRepairs.get(projectId);
     if (existing !== undefined) {
@@ -2481,7 +2485,7 @@ export class ProvisionerImpl implements Provisioner {
       return existing.promise;
     }
     const requestingSessionIds = new Set([requestingSessionId, ...(queuedSessionIds ?? [])]);
-    const attempt = this.repairSandboxForTurnOnce(projectId, requestingSessionIds);
+    const attempt = this.repairSandboxForTurnOnce(projectId, requestingSessionIds, options);
     this.turnSandboxRepairs.set(projectId, { promise: attempt, requestingSessionIds });
     try {
       return await attempt;
@@ -2968,11 +2972,13 @@ export class ProvisionerImpl implements Provisioner {
   private async repairSandboxForTurnOnce(
     projectId: string,
     requestingSessionIds: ReadonlySet<string>,
+    options: { requireFreshAgentGatewayIdentity?: boolean },
   ): Promise<boolean> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined || project.kind === 'control_plane') return false;
     const { classification, envDriftOnly } = await this.classifyProjectSandbox(project);
-    if (classification === 'migrated') return true;
+    if (classification === 'migrated' && options.requireFreshAgentGatewayIdentity !== true)
+      return true;
     // Someone else's container: never a Verity recreate target (spike §8).
     if (classification === 'foreign') return false;
     // The same budget the reconcile tick spends, and for the same reason: the loop
@@ -4835,6 +4841,7 @@ export class ProvisionerImpl implements Provisioner {
     // "unconfigured" to a TLS rejection at the gateway.
     let claudeEgressBinds: string[] = [];
     let egressConnectorEnv: string[] = [];
+    let agentGatewayPeerFingerprint: string | undefined;
     if (
       this.opts.claudeEgressIdentity !== undefined &&
       effectiveClaudeGatewayUrl !== undefined &&
@@ -4842,6 +4849,7 @@ export class ProvisionerImpl implements Provisioner {
       this.opts.gitSecretRoot !== undefined
     ) {
       const material = await this.opts.claudeEgressIdentity.sandboxMaterial(project.id);
+      agentGatewayPeerFingerprint = material.fingerprint256;
       const caPath = writeSecretFile(
         this.opts.gitSecretRoot,
         `egress_ca.${project.id}.crt`,
@@ -5035,6 +5043,9 @@ export class ProvisionerImpl implements Provisioner {
         ...(effectiveClaudeGatewayUrl === undefined
           ? {}
           : { [CLAUDE_EGRESS_GATEWAY_URL_LABEL]: effectiveClaudeGatewayUrl }),
+        ...(agentGatewayPeerFingerprint === undefined
+          ? {}
+          : { [AGENT_GATEWAY_PEER_FINGERPRINT_LABEL]: agentGatewayPeerFingerprint }),
         // Stamp the relay generation onto the sandbox (Stage 5) so migration can
         // tell a relay-era sandbox apart from a pre-relay legacy one. Only a
         // relay-activated generation carries it; the shared-network legacy path
