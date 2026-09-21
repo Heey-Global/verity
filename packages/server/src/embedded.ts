@@ -3804,6 +3804,14 @@ export async function buildEmbeddedServer(
                     (id, state, provisionError, provisionWarning) =>
                       eventStore.updateProjectState(id, state, provisionError, provisionWarning),
                     (id) => provisioner?.isProjectProvisioning(id) === true,
+                    // A list poll can land after wake persisted `waking` but before
+                    // Docker starts the retained container. Give reconciliation the
+                    // same recovery hooks as the detail route: an in-process wake
+                    // owns the mutation barrier, so recovery declines and the
+                    // reconciler preserves `waking` instead of publishing a
+                    // momentary, operator-actionable `failed` state.
+                    provisioner?.recoverInterruptedSleep?.bind(provisioner),
+                    provisioner?.recoverInterruptedWake?.bind(provisioner),
                   )
                 : projects;
             const result = await reconciled;
