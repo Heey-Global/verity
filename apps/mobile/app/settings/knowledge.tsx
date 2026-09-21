@@ -98,7 +98,7 @@ function KnowledgeSettingsView({ client }: { client: VerityClient }) {
     >
       <SettingsGroup
         title="Knowledge model"
-        description="Every Wiki job — adding new Sources, reconciling after a deletion — runs on this model. The choice applies to all projects; each job still only reads the Sources and Wiki of the project it runs for."
+        description="Choose the model that keeps project Wikis up to date. It handles one project at a time and never mixes content between projects."
       >
         <SettingsPanel>
           {error !== undefined ? <Text style={styles.fieldError}>{error}</Text> : null}

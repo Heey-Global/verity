@@ -12,7 +12,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, Pressable, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
@@ -42,6 +42,8 @@ export function Library({
 }) {
   const navigation = useNavigation();
   const { theme } = useUnistyles();
+  const { width } = useWindowDimensions();
+  const split = width >= 900;
   const [folderAction, setFolderAction] = useState<'create' | 'rename' | null>(null);
   const [moreActions, setMoreActions] = useState(false);
   const [folders, setFolders] = useState<KnowledgeFolder[]>([]);
@@ -238,6 +240,19 @@ export function Library({
     });
   };
   const currentFolder = folders.find((f) => f.id === folderId);
+  const folderPathLabel = (folder: KnowledgeFolder): string => {
+    const names = [folder.name];
+    const seen = new Set([folder.id]);
+    let parentId = folder.parentId;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = folders.find((candidate) => candidate.id === parentId);
+      if (!parent) break;
+      names.unshift(parent.name);
+      parentId = parent.parentId;
+    }
+    return names.join(' / ');
+  };
   const path: KnowledgeFolder[] = [];
   let ancestor = currentFolder;
   const seen = new Set<string>();
@@ -361,6 +376,26 @@ export function Library({
           </View>
         );
       });
+  const loadMoreDocuments = hasMore ? (
+    <Button
+      label="Load more documents"
+      disabled={busy}
+      onPress={() => {
+        void run(async () => {
+          const next = await client.listKnowledgeDocuments(
+            folderId ?? undefined,
+            query || undefined,
+            documents.length,
+          );
+          setDocuments((current) => [
+            ...current,
+            ...next.filter((entry) => !current.some((old) => old.id === entry.id)),
+          ]);
+          setHasMore(next.length === 100);
+        });
+      }}
+    />
+  ) : null;
   return (
     // Keep fields visible when editing a deeply scrolled folder or document.
     <KeyboardAwareScrollView
@@ -386,564 +421,573 @@ export function Library({
           onSpace={onSpace}
         />
       ) : null}
-      {document || creating ? (
-        <View style={styles.group}>
-          {editing ? (
-            <>
-              <TextInput
-                accessibilityLabel="Document title"
-                style={styles.input}
-                value={title}
-                onChangeText={setTitle}
-                editable={!busy}
-              />
-              <TextInput
-                accessibilityLabel="Markdown source"
-                multiline
-                style={[styles.input, styles.editor]}
-                value={body}
-                onChangeText={setBody}
-                editable={!busy}
-              />
-              <View style={styles.row}>
-                <Button label="Save" disabled={busy || !title.trim()} onPress={save} />
-                <Button
-                  label="Cancel editing"
-                  disabled={busy}
-                  onPress={() =>
-                    leave(() => {
-                      setEditing(false);
-                      setCreating(false);
-                    })
-                  }
+      <View style={split && (document || creating) ? styles.knowledgeSplit : undefined}>
+        {split && (document || creating) ? (
+          <View style={styles.knowledgeMasterPane}>
+            <TextInput
+              accessibilityLabel="Search knowledge"
+              editable={!busy}
+              placeholder="Search documents"
+              placeholderTextColor={theme.colors.textMuted}
+              style={styles.input}
+              value={query}
+              onChangeText={setQuery}
+            />
+            {!query ? renderFolders(null, 0) : documents.map((entry) => renderDocument(entry, 0))}
+            {loadMoreDocuments}
+          </View>
+        ) : null}
+        {document || creating ? (
+          <View style={[styles.group, split ? styles.knowledgeDetailPane : null]}>
+            {editing ? (
+              <>
+                <TextInput
+                  accessibilityLabel="Document title"
+                  style={styles.input}
+                  value={title}
+                  onChangeText={setTitle}
+                  editable={!busy}
                 />
-                <Button
-                  label={preview ? 'Hide preview' : 'Preview'}
-                  onPress={() => setPreview(!preview)}
+                <TextInput
+                  accessibilityLabel="Markdown source"
+                  multiline
+                  style={[styles.input, styles.editor]}
+                  value={body}
+                  onChangeText={setBody}
+                  editable={!busy}
                 />
-              </View>
-              {preview ? <KnowledgeMarkdown body={body} onLink={openLinkedDocument} /> : null}
-            </>
-          ) : (
-            <>
-              <Text style={styles.heading}>{document?.title}</Text>
-              {document?.stale ? (
-                <Text style={styles.muted}>
-                  Source changed or removed. Review this Wiki page before relying on it.
-                </Text>
-              ) : null}
-              {document ? (
-                <KnowledgeOriginal
-                  client={client}
-                  document={document}
-                  onOriginal={setHasOriginal}
-                  onReplaced={async (next) => {
-                    setDocument(next);
-                    await refresh();
-                  }}
-                />
-              ) : null}
-              <KnowledgeMarkdown body={document?.bodyMarkdown ?? ''} onLink={openLinkedDocument} />
-              <View style={styles.row}>
-                <Button
-                  icon="arrow-left"
-                  iconOnly
-                  label="Back to folder"
-                  disabled={busy}
-                  onPress={() => openFolder(document?.folderId ?? folderId)}
-                />
-                {hasOriginal !== true ? (
+                <View style={styles.row}>
+                  <Button label="Save" disabled={busy || !title.trim()} onPress={save} />
                   <Button
-                    icon="edit-2"
-                    iconOnly
-                    label="Edit"
-                    disabled={busy || hasOriginal === null}
-                    onPress={startEdit}
+                    label="Cancel editing"
+                    disabled={busy}
+                    onPress={() =>
+                      leave(() => {
+                        setEditing(false);
+                        setCreating(false);
+                      })
+                    }
+                  />
+                  <Button
+                    label={preview ? 'Hide preview' : 'Preview'}
+                    onPress={() => setPreview(!preview)}
+                  />
+                </View>
+                {preview ? <KnowledgeMarkdown body={body} onLink={openLinkedDocument} /> : null}
+              </>
+            ) : (
+              <>
+                <Text style={styles.heading}>{document?.title}</Text>
+                {document?.stale ? (
+                  <Text style={styles.muted}>
+                    Source changed or removed. Review this Wiki page before relying on it.
+                  </Text>
+                ) : null}
+                {document ? (
+                  <KnowledgeOriginal
+                    client={client}
+                    document={document}
+                    onOriginal={setHasOriginal}
+                    onReplaced={async (next) => {
+                      setDocument(next);
+                      await refresh();
+                    }}
                   />
                 ) : null}
-                <Button
-                  icon="clock"
-                  iconOnly
-                  label="Revision history"
-                  disabled={busy}
-                  onPress={() => {
-                    void run(async () => {
-                      if (document) {
-                        const next = await client.listKnowledgeRevisions(document.id);
-                        setRevisions(next);
-                        setHasMoreRevisions(next.length === 100);
-                      }
-                    });
-                  }}
+                <KnowledgeMarkdown
+                  body={document?.bodyMarkdown ?? ''}
+                  onLink={openLinkedDocument}
                 />
-                <Button
-                  icon="share"
-                  iconOnly
-                  label="Export document"
-                  disabled={busy}
-                  onPress={() => {
-                    void run(async () => {
-                      if (!document) return;
-                      const file = new File(Paths.cache, `knowledge-${document.id}.md`);
-                      try {
-                        file.create({ overwrite: true });
-                        file.write(document.bodyMarkdown ?? '');
-                        await Sharing.shareAsync(file.uri, {
-                          mimeType: 'text/markdown',
-                          dialogTitle: document.title,
-                        });
-                      } finally {
-                        if (file.exists) file.delete();
-                      }
-                    });
-                  }}
-                />
-                <Button
-                  icon="corner-up-right"
-                  iconOnly
-                  label="Move document"
-                  disabled={busy}
-                  onPress={() => setMoving(!moving)}
-                />
-                <Button
-                  icon="trash-2"
-                  iconOnly
-                  label="Delete document"
-                  disabled={busy}
-                  onPress={() =>
-                    confirm(
-                      'Delete this document? Projects will lose access. Existing session contexts containing it must be retired.',
-                      () => {
-                        void run(async () => {
-                          if (document) await client.deleteKnowledgeDocument(document.id);
-                          setDocument(null);
-                          await refresh();
-                        });
-                      },
-                    )
-                  }
-                />
-              </View>
-            </>
-          )}
-          {revisions ? (
-            <View style={styles.group}>
-              <Text style={styles.heading}>Revision history</Text>
-              {hasMoreRevisions ? (
-                <Button
-                  label="Load more revisions"
-                  disabled={busy}
-                  onPress={() => {
-                    void run(async () => {
-                      if (!document) return;
-                      const next = await client.listKnowledgeRevisions(
-                        document.id,
-                        revisions.length,
-                      );
-                      setRevisions((current) => [...(current ?? []), ...next]);
-                      setHasMoreRevisions(next.length === 100);
-                    });
-                  }}
-                />
-              ) : null}
-              {revisions.map((r) => (
-                <Button
-                  key={r.id}
-                  label={`${new Date(r.createdAt).toLocaleString()} — ${r.authorIdentity === 'operator' ? 'You' : 'Agent'}${r.sessionId ? ` · ${r.sessionId.slice(0, 8)}` : ''}`}
-                  onPress={() => setRevision(r)}
-                />
-              ))}
-            </View>
-          ) : null}
-          {revision ? (
-            <View style={styles.group}>
-              <KnowledgeMarkdown body={revision.bodyMarkdown} />
-              {revision.sessionId ? (
-                <Button
-                  label="Open source session"
-                  onPress={() =>
-                    router.push({ pathname: '/session/[id]', params: { id: revision.sessionId! } })
-                  }
-                />
-              ) : null}
-              <Button
-                label="Restore this revision"
-                disabled={busy}
-                onPress={() =>
-                  confirm('Restore this version as a new revision?', () => {
-                    void run(async () => {
-                      if (document) {
-                        setDocument(
-                          await client.restoreKnowledgeRevision(
-                            document.id,
-                            revision.id,
-                            document.currentRevisionId,
-                          ),
-                        );
-                        setRevisions(null);
-                        setRevision(null);
-                        await refresh();
-                      }
-                    });
-                  })
-                }
-              />
-            </View>
-          ) : null}
-        </View>
-      ) : (
-        <View style={styles.group}>
-          <TextInput
-            accessibilityLabel="Search knowledge"
-            editable={!busy}
-            placeholder="Search documents"
-            placeholderTextColor={theme.colors.textMuted}
-            style={styles.input}
-            value={query}
-            onChangeText={setQuery}
-          />
-          <View style={styles.toolbar}>
-            {currentFolder ? (
-              <Button
-                icon="arrow-up"
-                iconOnly
-                label="Open parent folder"
-                disabled={busy}
-                onPress={() => openFolder(currentFolder.parentId)}
-              />
-            ) : null}
-            <Button
-              icon="folder-plus"
-              iconOnly
-              label="New folder"
-              disabled={busy}
-              onPress={() => {
-                setFolderAction('create');
-                setFolderName('');
-              }}
-            />
-            <Button
-              icon="file-plus"
-              iconOnly
-              label="New document"
-              disabled={busy || !folderId}
-              onPress={() => {
-                setCreating(true);
-                setTitle('');
-                setBody('');
-                setEditing(true);
-                setPreview(false);
-              }}
-            />
-            <Button
-              icon="upload"
-              iconOnly
-              label="Import Markdown files"
-              disabled={busy || !folderId}
-              onPress={() => {
-                void run(async () => {
-                  const picked = await DocumentPicker.getDocumentAsync({
-                    multiple: true,
-                    copyToCacheDirectory: true,
-                    type: ['text/markdown', 'text/plain'],
-                  });
-                  if (picked.canceled) return;
-                  const entries = [];
-                  try {
-                    if (picked.assets.length > 100)
-                      throw new Error('Import at most 100 documents at a time');
-                    if (
-                      picked.assets.reduce((sum, asset) => sum + (asset.size ?? 0), 0) >
-                      2 * 1024 * 1024
-                    )
-                      throw new Error('Import is limited to 2 MiB');
-                    for (const asset of picked.assets) {
-                      if ((asset.size ?? 0) > 256 * 1024)
-                        throw new Error('Each document is limited to 256 KiB');
-                      if (!asset.name.toLowerCase().endsWith('.md'))
-                        throw new Error('Only .md files can be imported');
-                      entries.push({
-                        path: asset.name,
-                        bodyMarkdown: await new File(asset.uri).text(),
-                      });
-                    }
-                    if (folderId) await client.importKnowledge(folderId, entries);
-                    await refresh();
-                  } finally {
-                    for (const asset of picked.assets) {
-                      try {
-                        new File(asset.uri).delete();
-                      } catch {
-                        /* Cache cleanup must not hide the import outcome. */
-                      }
-                    }
-                  }
-                });
-              }}
-            />
-            <Button
-              icon="upload-cloud"
-              iconOnly
-              label="Upload original files"
-              disabled={busy || !folderId}
-              onPress={() => {
-                void run(async () => {
-                  const picked = await DocumentPicker.getDocumentAsync({
-                    multiple: true,
-                    copyToCacheDirectory: true,
-                    type: '*/*',
-                  });
-                  if (picked.canceled) return;
-                  let uploaded = 0;
-                  let failure: unknown;
-                  try {
-                    for (const asset of picked.assets)
-                      if ((asset.size ?? 0) > 10 * 1024 * 1024)
-                        throw new Error('Each original is limited to 10 MiB');
-                    for (const asset of picked.assets) {
-                      if (folderId)
-                        await client.uploadKnowledgeSource({
-                          folderId,
-                          filename: asset.name,
-                          base64: await new File(asset.uri).base64(),
-                        });
-                      uploaded += 1;
-                    }
-                  } catch (error) {
-                    failure = error;
-                  } finally {
-                    for (const asset of picked.assets) {
-                      try {
-                        new File(asset.uri).delete();
-                      } catch {
-                        /* Preserve the upload outcome. */
-                      }
-                    }
-                  }
-                  if (uploaded > 0)
-                    try {
-                      await refresh();
-                    } catch (error) {
-                      failure ??= error;
-                    }
-                  if (failure) throw failure;
-                });
-              }}
-            />
-            <Button
-              icon="more-horizontal"
-              iconOnly
-              label="More folder actions"
-              disabled={busy || !folderId}
-              onPress={() => setMoreActions(!moreActions)}
-            />
-          </View>
-          {folderAction ? (
-            <View style={styles.row}>
-              <TextInput
-                accessibilityLabel="Folder name"
-                placeholder="Folder name"
-                placeholderTextColor={theme.colors.textMuted}
-                autoFocus
-                style={[styles.input, styles.cell]}
-                value={folderName}
-                onChangeText={setFolderName}
-                editable={!busy}
-              />
-              <Button
-                icon="check"
-                iconOnly
-                label={folderAction === 'create' ? 'Create folder' : 'Save folder name'}
-                disabled={busy || !folderName.trim()}
-                onPress={() => {
-                  void run(async () => {
-                    if (folderAction === 'create')
-                      await client.createKnowledgeFolder({ name: folderName, parentId: folderId });
-                    else if (folderId)
-                      await client.updateKnowledgeFolder(folderId, { name: folderName });
-                    setFolderName('');
-                    setFolderAction(null);
-                    await refresh();
-                  });
-                }}
-              />
-              <Button
-                icon="x"
-                iconOnly
-                label="Cancel folder editing"
-                disabled={busy}
-                onPress={() => setFolderAction(null)}
-              />
-            </View>
-          ) : null}
-          <Modal
-            visible={moreActions && !!folderId}
-            transparent
-            animationType="fade"
-            onRequestClose={() => setMoreActions(false)}
-          >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close folder actions"
-              style={styles.menuBackdrop}
-              onPress={() => setMoreActions(false)}
-            >
-              <Pressable style={styles.menuCard} onPress={() => undefined}>
-                <Text style={styles.heading}>Folder actions</Text>
-                <View style={styles.group}>
+                <View style={styles.row}>
+                  {!split ? (
+                    <Button
+                      icon="arrow-left"
+                      iconOnly
+                      label="Back to folder"
+                      disabled={busy}
+                      onPress={() => openFolder(document?.folderId ?? folderId)}
+                    />
+                  ) : null}
+                  {hasOriginal !== true ? (
+                    <Button
+                      icon="edit-2"
+                      iconOnly
+                      label="Edit"
+                      disabled={busy || hasOriginal === null}
+                      onPress={startEdit}
+                    />
+                  ) : null}
                   <Button
-                    icon="edit-2"
-                    label="Rename folder"
-                    disabled={busy || !!currentFolder?.role}
-                    onPress={() => {
-                      setMoreActions(false);
-                      setFolderAction('rename');
-                      setFolderName(currentFolder?.name ?? '');
-                    }}
-                  />
-                  <Button
-                    icon="corner-up-right"
-                    label="Move folder"
-                    disabled={busy || !!currentFolder?.role}
-                    onPress={() => {
-                      setMoreActions(false);
-                      setMoving(!moving);
-                    }}
-                  />
-                  <Button
-                    icon="trash-2"
-                    label="Delete folder"
-                    disabled={busy || !!currentFolder?.role}
-                    onPress={() => {
-                      const selectedFolderId = folderId;
-                      if (!selectedFolderId) return;
-                      setMoreActions(false);
-                      confirm(
-                        'Delete this folder and its contents? Project access changes may retire affected session contexts.',
-                        () => {
-                          void run(async () => {
-                            await client.deleteKnowledgeFolder(selectedFolderId);
-                            showFolder(currentFolder?.parentId ?? null);
-                          });
-                        },
-                      );
-                    }}
-                  />
-                  <Button
-                    icon="upload"
-                    label="Import source bundle"
+                    icon="clock"
+                    iconOnly
+                    label="Revision history"
                     disabled={busy}
                     onPress={() => {
-                      const selectedFolderId = folderId;
-                      if (!selectedFolderId) return;
-                      setMoreActions(false);
                       void run(async () => {
-                        const picked = await DocumentPicker.getDocumentAsync({
-                          multiple: false,
-                          copyToCacheDirectory: true,
-                          type: 'application/json',
-                        });
-                        if (picked.canceled) return;
-                        const asset = picked.assets[0];
-                        if (!asset) return;
-                        const file = new File(asset.uri);
-                        try {
-                          if ((asset.size ?? 0) > 20 * 1024 * 1024)
-                            throw new Error('Source bundles are limited to 20 MiB');
-                          const bundle: unknown = JSON.parse(await file.text());
-                          await client.importKnowledgeSourceBundle(selectedFolderId, bundle);
-                          await refresh();
-                        } finally {
-                          try {
-                            file.delete();
-                          } catch {
-                            /* Preserve the import outcome. */
-                          }
+                        if (document) {
+                          const next = await client.listKnowledgeRevisions(document.id);
+                          setRevisions(next);
+                          setHasMoreRevisions(next.length === 100);
                         }
                       });
                     }}
                   />
                   <Button
-                    icon="download"
-                    label="Export source bundle"
+                    icon="share"
+                    iconOnly
+                    label="Export document"
                     disabled={busy}
                     onPress={() => {
-                      const selectedFolderId = folderId;
-                      if (!selectedFolderId) return;
-                      setMoreActions(false);
                       void run(async () => {
-                        const bundle = await client.exportKnowledgeSourceBundle(selectedFolderId);
-                        const file = new File(Paths.cache, 'knowledge-sources.json');
+                        if (!document) return;
+                        const file = new File(Paths.cache, `knowledge-${document.id}.md`);
                         try {
                           file.create({ overwrite: true });
-                          file.write(JSON.stringify(bundle));
-                          await Sharing.shareAsync(file.uri, { mimeType: 'application/json' });
+                          file.write(document.bodyMarkdown ?? '');
+                          await Sharing.shareAsync(file.uri, {
+                            mimeType: 'text/markdown',
+                            dialogTitle: document.title,
+                          });
                         } finally {
                           if (file.exists) file.delete();
                         }
                       });
                     }}
                   />
-                  <Text style={styles.muted}>
-                    Source bundles include current originals and extracted content; full history is
-                    retained in server backups.
-                  </Text>
                   <Button
-                    icon="download"
-                    label="Import folder bundle"
+                    icon="corner-up-right"
+                    iconOnly
+                    label="Move document"
                     disabled={busy}
-                    onPress={() => {
-                      setMoreActions(false);
-                      setTransfer('');
-                    }}
+                    onPress={() => setMoving(!moving)}
                   />
                   <Button
-                    icon="share"
-                    label="Export Markdown bundle"
+                    icon="trash-2"
+                    iconOnly
+                    label="Delete document"
+                    disabled={busy}
+                    onPress={() =>
+                      confirm(
+                        'Delete this document? Projects will lose access. Existing session contexts containing it must be retired.',
+                        () => {
+                          void run(async () => {
+                            if (document) await client.deleteKnowledgeDocument(document.id);
+                            setDocument(null);
+                            await refresh();
+                          });
+                        },
+                      )
+                    }
+                  />
+                </View>
+              </>
+            )}
+            {revisions ? (
+              <View style={styles.group}>
+                <Text style={styles.heading}>Revision history</Text>
+                {hasMoreRevisions ? (
+                  <Button
+                    label="Load more revisions"
                     disabled={busy}
                     onPress={() => {
-                      const selectedFolderId = folderId;
-                      if (!selectedFolderId) return;
-                      setMoreActions(false);
                       void run(async () => {
-                        const exported = await client.exportKnowledge(selectedFolderId);
-                        setTransfer(JSON.stringify(exported, null, 2));
+                        if (!document) return;
+                        const next = await client.listKnowledgeRevisions(
+                          document.id,
+                          revisions.length,
+                        );
+                        setRevisions((current) => [...(current ?? []), ...next]);
+                        setHasMoreRevisions(next.length === 100);
                       });
                     }}
                   />
-                </View>
-              </Pressable>
-            </Pressable>
-          </Modal>
-          {!query ? renderFolders(null, 0) : null}
-          {query ? documents.map((d) => renderDocument(d, 0)) : null}
-          {!folders.length && !query ? (
-            <Text style={styles.muted}>Create a folder to start your library.</Text>
-          ) : null}
-          {hasMore ? (
-            <Button
-              label="Load more documents"
-              disabled={busy}
-              onPress={() => {
-                void run(async () => {
-                  const next = await client.listKnowledgeDocuments(
-                    folderId ?? undefined,
-                    query || undefined,
-                    documents.length,
-                  );
-                  setDocuments((current) => [
-                    ...current,
-                    ...next.filter((d) => !current.some((old) => old.id === d.id)),
-                  ]);
-                  setHasMore(next.length === 100);
-                });
-              }}
+                ) : null}
+                {revisions.map((r) => (
+                  <Button
+                    key={r.id}
+                    label={`${new Date(r.createdAt).toLocaleString()} — ${r.authorIdentity === 'operator' ? 'You' : 'Agent'}${r.sessionId ? ` · ${r.sessionId.slice(0, 8)}` : ''}`}
+                    onPress={() => setRevision(r)}
+                  />
+                ))}
+              </View>
+            ) : null}
+            {revision ? (
+              <View style={styles.group}>
+                <KnowledgeMarkdown body={revision.bodyMarkdown} />
+                {revision.sessionId ? (
+                  <Button
+                    label="Open source session"
+                    onPress={() =>
+                      router.push({
+                        pathname: '/session/[id]',
+                        params: { id: revision.sessionId! },
+                      })
+                    }
+                  />
+                ) : null}
+                <Button
+                  label="Restore this revision"
+                  disabled={busy}
+                  onPress={() =>
+                    confirm('Restore this version as a new revision?', () => {
+                      void run(async () => {
+                        if (document) {
+                          setDocument(
+                            await client.restoreKnowledgeRevision(
+                              document.id,
+                              revision.id,
+                              document.currentRevisionId,
+                            ),
+                          );
+                          setRevisions(null);
+                          setRevision(null);
+                          await refresh();
+                        }
+                      });
+                    })
+                  }
+                />
+              </View>
+            ) : null}
+          </View>
+        ) : (
+          <View style={styles.group}>
+            <TextInput
+              accessibilityLabel="Search knowledge"
+              editable={!busy}
+              placeholder="Search documents"
+              placeholderTextColor={theme.colors.textMuted}
+              style={styles.input}
+              value={query}
+              onChangeText={setQuery}
             />
-          ) : null}
-        </View>
-      )}
+            <View style={styles.toolbar}>
+              {currentFolder ? (
+                <Button
+                  icon="arrow-up"
+                  iconOnly
+                  label="Open parent folder"
+                  disabled={busy}
+                  onPress={() => openFolder(currentFolder.parentId)}
+                />
+              ) : null}
+              <Button
+                icon="folder-plus"
+                iconOnly
+                label="New folder"
+                disabled={busy}
+                onPress={() => {
+                  setFolderAction('create');
+                  setFolderName('');
+                }}
+              />
+              <Button
+                icon="file-plus"
+                iconOnly
+                label="New document"
+                disabled={busy || !folderId}
+                onPress={() => {
+                  setCreating(true);
+                  setTitle('');
+                  setBody('');
+                  setEditing(true);
+                  setPreview(false);
+                }}
+              />
+              <Button
+                icon="upload"
+                iconOnly
+                label="Import Markdown files"
+                disabled={busy || !folderId}
+                onPress={() => {
+                  void run(async () => {
+                    const picked = await DocumentPicker.getDocumentAsync({
+                      multiple: true,
+                      copyToCacheDirectory: true,
+                      type: ['text/markdown', 'text/plain'],
+                    });
+                    if (picked.canceled) return;
+                    const entries = [];
+                    try {
+                      if (picked.assets.length > 100)
+                        throw new Error('Import at most 100 documents at a time');
+                      if (
+                        picked.assets.reduce((sum, asset) => sum + (asset.size ?? 0), 0) >
+                        2 * 1024 * 1024
+                      )
+                        throw new Error('Import is limited to 2 MiB');
+                      for (const asset of picked.assets) {
+                        if ((asset.size ?? 0) > 256 * 1024)
+                          throw new Error('Each document is limited to 256 KiB');
+                        if (!asset.name.toLowerCase().endsWith('.md'))
+                          throw new Error('Only .md files can be imported');
+                        entries.push({
+                          path: asset.name,
+                          bodyMarkdown: await new File(asset.uri).text(),
+                        });
+                      }
+                      if (folderId) await client.importKnowledge(folderId, entries);
+                      await refresh();
+                    } finally {
+                      for (const asset of picked.assets) {
+                        try {
+                          new File(asset.uri).delete();
+                        } catch {
+                          /* Cache cleanup must not hide the import outcome. */
+                        }
+                      }
+                    }
+                  });
+                }}
+              />
+              <Button
+                icon="upload-cloud"
+                iconOnly
+                label="Upload original files"
+                disabled={busy || !folderId}
+                onPress={() => {
+                  void run(async () => {
+                    const picked = await DocumentPicker.getDocumentAsync({
+                      multiple: true,
+                      copyToCacheDirectory: true,
+                      type: '*/*',
+                    });
+                    if (picked.canceled) return;
+                    let uploaded = 0;
+                    let failure: unknown;
+                    try {
+                      for (const asset of picked.assets)
+                        if ((asset.size ?? 0) > 10 * 1024 * 1024)
+                          throw new Error('Each original is limited to 10 MiB');
+                      for (const asset of picked.assets) {
+                        if (folderId)
+                          await client.uploadKnowledgeSource({
+                            folderId,
+                            filename: asset.name,
+                            base64: await new File(asset.uri).base64(),
+                          });
+                        uploaded += 1;
+                      }
+                    } catch (error) {
+                      failure = error;
+                    } finally {
+                      for (const asset of picked.assets) {
+                        try {
+                          new File(asset.uri).delete();
+                        } catch {
+                          /* Preserve the upload outcome. */
+                        }
+                      }
+                    }
+                    if (uploaded > 0)
+                      try {
+                        await refresh();
+                      } catch (error) {
+                        failure ??= error;
+                      }
+                    if (failure) throw failure;
+                  });
+                }}
+              />
+              <Button
+                icon="more-horizontal"
+                iconOnly
+                label="More folder actions"
+                disabled={busy || !folderId}
+                onPress={() => setMoreActions(!moreActions)}
+              />
+            </View>
+            {folderAction ? (
+              <View style={styles.row}>
+                <TextInput
+                  accessibilityLabel="Folder name"
+                  placeholder="Folder name"
+                  placeholderTextColor={theme.colors.textMuted}
+                  autoFocus
+                  style={[styles.input, styles.cell]}
+                  value={folderName}
+                  onChangeText={setFolderName}
+                  editable={!busy}
+                />
+                <Button
+                  icon="check"
+                  iconOnly
+                  label={folderAction === 'create' ? 'Create folder' : 'Save folder name'}
+                  disabled={busy || !folderName.trim()}
+                  onPress={() => {
+                    void run(async () => {
+                      if (folderAction === 'create')
+                        await client.createKnowledgeFolder({
+                          name: folderName,
+                          parentId: folderId,
+                        });
+                      else if (folderId)
+                        await client.updateKnowledgeFolder(folderId, { name: folderName });
+                      setFolderName('');
+                      setFolderAction(null);
+                      await refresh();
+                    });
+                  }}
+                />
+                <Button
+                  icon="x"
+                  iconOnly
+                  label="Cancel folder editing"
+                  disabled={busy}
+                  onPress={() => setFolderAction(null)}
+                />
+              </View>
+            ) : null}
+            <Modal
+              visible={moreActions && !!folderId}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setMoreActions(false)}
+            >
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close folder actions"
+                style={styles.menuBackdrop}
+                onPress={() => setMoreActions(false)}
+              >
+                <Pressable style={styles.menuCard} onPress={() => undefined}>
+                  <Text style={styles.heading}>Folder actions</Text>
+                  <View style={styles.group}>
+                    <Button
+                      icon="edit-2"
+                      label="Rename folder"
+                      disabled={busy || !!currentFolder?.role}
+                      onPress={() => {
+                        setMoreActions(false);
+                        setFolderAction('rename');
+                        setFolderName(currentFolder?.name ?? '');
+                      }}
+                    />
+                    <Button
+                      icon="corner-up-right"
+                      label="Move folder"
+                      disabled={busy || !!currentFolder?.role}
+                      onPress={() => {
+                        setMoreActions(false);
+                        setMoving(!moving);
+                      }}
+                    />
+                    <Button
+                      icon="trash-2"
+                      label="Delete folder"
+                      disabled={busy || !!currentFolder?.role}
+                      onPress={() => {
+                        const selectedFolderId = folderId;
+                        if (!selectedFolderId) return;
+                        setMoreActions(false);
+                        confirm(
+                          'Delete this folder and its contents? Project access changes may retire affected session contexts.',
+                          () => {
+                            void run(async () => {
+                              await client.deleteKnowledgeFolder(selectedFolderId);
+                              showFolder(currentFolder?.parentId ?? null);
+                            });
+                          },
+                        );
+                      }}
+                    />
+                    <Button
+                      icon="upload"
+                      label="Import source bundle"
+                      disabled={busy}
+                      onPress={() => {
+                        const selectedFolderId = folderId;
+                        if (!selectedFolderId) return;
+                        setMoreActions(false);
+                        void run(async () => {
+                          const picked = await DocumentPicker.getDocumentAsync({
+                            multiple: false,
+                            copyToCacheDirectory: true,
+                            type: 'application/json',
+                          });
+                          if (picked.canceled) return;
+                          const asset = picked.assets[0];
+                          if (!asset) return;
+                          const file = new File(asset.uri);
+                          try {
+                            if ((asset.size ?? 0) > 20 * 1024 * 1024)
+                              throw new Error('Source bundles are limited to 20 MiB');
+                            const bundle: unknown = JSON.parse(await file.text());
+                            await client.importKnowledgeSourceBundle(selectedFolderId, bundle);
+                            await refresh();
+                          } finally {
+                            try {
+                              file.delete();
+                            } catch {
+                              /* Preserve the import outcome. */
+                            }
+                          }
+                        });
+                      }}
+                    />
+                    <Button
+                      icon="download"
+                      label="Export source bundle"
+                      disabled={busy}
+                      onPress={() => {
+                        const selectedFolderId = folderId;
+                        if (!selectedFolderId) return;
+                        setMoreActions(false);
+                        void run(async () => {
+                          const bundle = await client.exportKnowledgeSourceBundle(selectedFolderId);
+                          const file = new File(Paths.cache, 'knowledge-sources.json');
+                          try {
+                            file.create({ overwrite: true });
+                            file.write(JSON.stringify(bundle));
+                            await Sharing.shareAsync(file.uri, { mimeType: 'application/json' });
+                          } finally {
+                            if (file.exists) file.delete();
+                          }
+                        });
+                      }}
+                    />
+                    <Text style={styles.muted}>
+                      Source bundles include current originals and extracted content; full history
+                      is retained in server backups.
+                    </Text>
+                    <Button
+                      icon="download"
+                      label="Import folder bundle"
+                      disabled={busy}
+                      onPress={() => {
+                        setMoreActions(false);
+                        setTransfer('');
+                      }}
+                    />
+                    <Button
+                      icon="share"
+                      label="Export Markdown bundle"
+                      disabled={busy}
+                      onPress={() => {
+                        const selectedFolderId = folderId;
+                        if (!selectedFolderId) return;
+                        setMoreActions(false);
+                        void run(async () => {
+                          const exported = await client.exportKnowledge(selectedFolderId);
+                          setTransfer(JSON.stringify(exported, null, 2));
+                        });
+                      }}
+                    />
+                  </View>
+                </Pressable>
+              </Pressable>
+            </Modal>
+            {!query ? renderFolders(null, 0) : null}
+            {query ? documents.map((d) => renderDocument(d, 0)) : null}
+            {!folders.length && !query ? (
+              <Text style={styles.muted}>Create a folder to start your library.</Text>
+            ) : null}
+            {loadMoreDocuments}
+          </View>
+        )}
+      </View>
       {moving ? (
-        <View style={styles.group}>
+        <View style={[styles.group, split ? styles.knowledgeDetailAction : null]}>
           <Text style={styles.heading}>Move to folder</Text>
           {[
             ...(!document ? [{ id: '', name: 'Knowledge root', parentId: null }] : []),
@@ -951,7 +995,7 @@ export function Library({
           ].map((f) => (
             <Button
               key={f.id}
-              label={`Move to ${f.name}`}
+              label={`Move to ${f.id ? folderPathLabel(f) : f.name}`}
               disabled={busy}
               onPress={() => {
                 void run(async () => {
@@ -998,7 +1042,7 @@ export function Library({
         </View>
       ) : null}
       {transfer !== null ? (
-        <View style={styles.group}>
+        <View style={[styles.group, split ? styles.knowledgeDetailAction : null]}>
           <Text style={styles.heading}>Markdown transfer</Text>
           <Text style={styles.muted}>
             Portable JSON bundle: documents with relative path and bodyMarkdown. Folder structure is
