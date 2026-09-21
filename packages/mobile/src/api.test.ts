@@ -1634,6 +1634,61 @@ describe('VerityClient.createSession', () => {
       JSON.stringify({ prompt: 'go', project: 'heey-global/verity' }),
     );
   });
+
+  // The 202 carries the server's `publicProject` projection, not the raw project
+  // row: `kind` is omitted for a GitHub project, a sleep lifecycle state is folded
+  // into `active` with the detail in `lifecycleState`, and `sandboxUpdate` /
+  // `toolkitDrift` / the release fields ride along. A client that rejects any of
+  // that turns a "still provisioning, try again" into a failed create — the exact
+  // shape mismatch that used to put a schema dump in the session banner.
+  it('parses an awaiting-provisioning project in the server projection shape', async () => {
+    const project = {
+      id: 'p1',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      imageRef: null,
+      state: 'active',
+      lifecycleState: 'waking',
+      provisionError: null,
+      provisionWarning: null,
+      stateChangedAt: '2026-06-26T00:00:00.000Z',
+      latestReleaseTag: null,
+      latestReleaseName: null,
+      latestReleaseUrl: null,
+      latestReleasePublishedAt: null,
+      sandboxUpdate: {
+        state: 'unknown',
+        kind: null,
+        category: null,
+        reason: 'sandbox update checker is not configured',
+        current: null,
+        currentVersion: null,
+        currentRevision: null,
+        target: null,
+        targetVersion: null,
+        targetRevision: null,
+        selfRepair: 'converging',
+        turnBlocked: false,
+      },
+      toolkitDrift: null,
+      createdAt: '2026-06-26T00:00:00.000Z',
+      updatedAt: '2026-06-26T00:00:00.000Z',
+    };
+    const { fetch } = fakeFetch(json({ awaitingProvisioning: true, project }, 202));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    const result = await client.createSession({ prompt: 'go', project: 'heey-global/verity' });
+
+    expect(result).toMatchObject({ awaitingProvisioning: true });
+    expect('project' in result ? result.project : undefined).toMatchObject({
+      id: 'p1',
+      // Defaulted by the schema, because the server omits it for a GitHub project.
+      kind: 'github',
+      state: 'active',
+      lifecycleState: 'waking',
+    });
+  });
 });
 
 describe('VerityClient.openConciergeSession', () => {

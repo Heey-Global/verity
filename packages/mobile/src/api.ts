@@ -3379,7 +3379,9 @@ export class VerityClient {
       // operator would read a schema report where a sentence belongs. Every other
       // caller of a `.parse` here feeds a screen that can fall back to its empty
       // state; this one cannot.
-      throw new Error('The server answered the create with an unexpected response.');
+      throw new Error('The server answered the create with an unexpected response.', {
+        cause: parsed.error,
+      });
     }
     return parsed.data;
   }
