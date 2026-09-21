@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.4](https://github.com/Heey-Global/verity/compare/v1.4.3...v1.4.4) (2026-09-21)
+
+
+### Bug Fixes
+
+* **server:** reconcile sandbox gateway identities ([#604](https://github.com/Heey-Global/verity/issues/604)) ([a0cb3ee](https://github.com/Heey-Global/verity/commit/a0cb3ee19cb429513aab107007a3616ff1a269fc))
+* **status:** stop badging transient Sandbox lifecycle failures as crashed ([#605](https://github.com/Heey-Global/verity/issues/605)) ([b67908a](https://github.com/Heey-Global/verity/commit/b67908a92d4ae0962d85e5bad72a13bdbbcf10d2))
+
 ## [1.4.3](https://github.com/Heey-Global/verity/compare/v1.4.2...v1.4.3) (2026-09-21)
 
 
