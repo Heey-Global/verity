@@ -10659,10 +10659,12 @@ describe('POST /sessions with project field (#174)', () => {
         const session = await ctx.store.getSession(sessionId);
         expect(session?.projectId).toBe(projectId);
         // The worktree comes from the project's clone on the host, which the sleep
-        // never touched — a spawn needs no running container. Assert the call
-        // happened first: comparing against an absent mock result is `undefined ===
-        // undefined`, which would hold for a session that got no worktree at all.
+        // never touched — a spawn needs no running container. Assert the call and a
+        // concrete path under that clone: comparing against an absent mock result is
+        // `undefined === undefined`, which would hold for a session that got no
+        // worktree at all.
         expect(projectWorktrees.add).toHaveBeenCalledTimes(1);
+        expect(session?.worktree).toMatch(/^\/data\/dev\/heey-global-verity\/\.verity-sessions\/./);
         expect(session?.worktree).toBe(await projectWorktrees.add.mock.results[0]?.value);
         expect(p.provision).not.toHaveBeenCalled();
         // The spawn leaves the Sandbox where it found it — the first turn is what
