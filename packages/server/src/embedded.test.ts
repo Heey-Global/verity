@@ -1014,17 +1014,37 @@ describe('resolveToolkitFeatureRef (devcontainer build key)', () => {
   });
 });
 
+/**
+ * A source-level guard, and only that. The behaviour it stands in for — an
+ * embedded boot whose Uplink lines actually reach the Fastify logger — needs a
+ * configured Docker daemon and a `publicPreviews` config to reach the
+ * construction at all, so there is no cheap end-to-end assertion available
+ * here. What the two halves do have: `deferred-logger.test.ts` pins the
+ * forwarder's behaviour, `uplink-control-client.test.ts` pins that the client
+ * writes through the option it was handed, and this pins that `embedded.ts`
+ * hands it one. Reading the source is what covers the seam between them.
+ */
 describe('Uplink control client logging (#582 follow-up)', () => {
-  const source = readFileSync('packages/server/src/embedded.ts', 'utf8');
+  const source = readFileSync(new URL('./embedded.ts', import.meta.url), 'utf8');
+  const CONSTRUCTION = /new UplinkControlClient\(\s*\{/u;
 
-  /** The argument object of a call, read by balancing brackets from its opening
-   * one. Matching a closing brace by indentation instead would make this a test
-   * of how Prettier wrapped the call that day. */
-  const callArguments = (opening: string): string => {
-    const start = source.indexOf(opening);
-    expect(start, `${opening} not found in embedded.ts`).toBeGreaterThanOrEqual(0);
+  /** The argument object of the construction, read by balancing brackets from
+   * its opening one. Matching a closing brace by indentation instead would make
+   * this a test of how Prettier wrapped the call that day.
+   *
+   * It is not a parser: a bracket inside a string, comment or regex in the
+   * argument list would mis-slice the range. That shows up as this file's own
+   * assertion failing on a diff that touched this call, not as a wrong answer
+   * somewhere else. */
+  const construction = (): string => {
+    const match = CONSTRUCTION.exec(source);
+    expect(match, 'no UplinkControlClient construction in embedded.ts').not.toBeNull();
+    const start = match!.index;
     let depth = 0;
-    for (let index = start + opening.length - 1; index < source.length; index += 1) {
+    // From the identifier, not from the brace: nothing in `new
+    // UplinkControlClient` is a bracket, so the first one the scan meets is the
+    // call's own and the depth it counts is that call's.
+    for (let index = start; index < source.length; index += 1) {
       const character = source[index]!;
       if (character === '{' || character === '(') depth += 1;
       else if (character === '}' || character === ')') {
@@ -1032,7 +1052,7 @@ describe('Uplink control client logging (#582 follow-up)', () => {
         if (depth === 0) return source.slice(start, index + 1);
       }
     }
-    throw new Error(`unbalanced ${opening} in embedded.ts`);
+    throw new Error('unbalanced UplinkControlClient construction in embedded.ts');
   };
 
   it('constructs the Uplink control client with a logger', () => {
@@ -1042,30 +1062,30 @@ describe('Uplink control client logging (#582 follow-up)', () => {
     // that never connects and a control channel nobody configured produce the
     // same zero lines, which is how an Uplink outage ran for 13 days with no
     // server-side trace of the refusal that caused it.
-    const construction = callArguments('new UplinkControlClient({');
-    expect(construction).toMatch(/\blog:/u);
+    expect(construction()).toMatch(/\blog:/u);
   });
 
   it('binds that logger to the Fastify logger once there is one', () => {
-    const construction = callArguments('new UplinkControlClient({');
     // Derived from the construction, not restated: renaming the local would
     // otherwise leave this asserting against a name nothing passes any more.
-    const identifier = /\blog:\s*([A-Za-z_$][\w$]*)/u.exec(construction)?.[1];
+    const identifier = /\blog:\s*([A-Za-z_$][\w$]*)/u.exec(construction())?.[1];
     expect(identifier).toBeDefined();
 
     const bind = source.indexOf(`${identifier!}.bind(app.log)`);
     expect(bind, `${identifier!} is never bound to app.log`).toBeGreaterThanOrEqual(0);
 
-    // After `app` exists, not before. A bind hoisted above this line - or a
-    // logger that reached for `app.log` at construction - is the temporal dead
-    // zone that crash-looped every sealed boot once already.
+    // Source order, which is execution order here only because both are plain
+    // statements in the same function body - a bind moved into a branch or a
+    // callback would still satisfy this. It is kept for the one case it does
+    // catch: a bind hoisted above the `app` it reads, which is the temporal
+    // dead zone that crash-looped every sealed boot once already.
     const appDeclaration = source.indexOf('const app = buildControlPlane({');
     expect(appDeclaration).toBeGreaterThanOrEqual(0);
     expect(bind).toBeGreaterThan(appDeclaration);
   });
 
   it('keeps one construction site, so there is one client to wire', () => {
-    expect(source.split('new UplinkControlClient({').length - 1).toBe(1);
+    expect(source.split(CONSTRUCTION).length - 1).toBe(1);
   });
 });
 

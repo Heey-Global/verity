@@ -16,7 +16,20 @@
  * the bind go to the fallback rather than being dropped, because the boot
  * window is exactly when a client that cannot reach its service starts saying
  * so.
+ *
+ * A line written before the bind is a plain console line: not JSON, not level
+ * filtered, and past any pino redaction. That is the same trade the credential
+ * projection above it already makes, and it is bounded — the bind is the first
+ * statement after the Fastify instance exists. It holds only while nothing
+ * routed through here logs a secret. The one component wired to it today does
+ * not: the Uplink client logs protocol version, installation id, close code,
+ * close reason and refusal reason, and never the subscription key.
  */
+
+/** The levels are the ones `UplinkControlClientOptions['log']` declares. A
+ * component reaching for `debug` or `fatal` fails to compile against this
+ * rather than losing those lines quietly, which is the right direction for the
+ * failure to point. */
 export type LogSink = Pick<Console, 'info' | 'warn' | 'error'>;
 
 export interface DeferredLogger extends LogSink {
