@@ -301,6 +301,11 @@ function isProjectSessionModel(model: string | undefined): boolean {
 
 const PROJECT_MODEL_ERROR =
   'project sessions currently support Claude, Codex, and configured OpenCode models only';
+// Wiki maintenance rewrites every project's Wiki, so it never inherits a model
+// from the project or the server default: it runs on the one model an operator
+// chose for it in Settings, or it does not run.
+const KNOWLEDGE_MODEL_ERROR =
+  'set the Knowledge model in Verity settings before running Wiki maintenance';
 const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
   state: 'unknown',
   kind: null,
@@ -4581,7 +4586,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // configured it may sync installation repos into the cache before returning;
   // otherwise the route still returns the local cache so manually-added projects
   // work without GitHub App setup.
+  // Wiki maintenance is built further down — it needs the conductor — so the
+  // settings route reaches it through this slot instead of the reverse.
+  let resumeWikiMaintenance: (() => void) | undefined;
   const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
+    onKnowledgeModelChanged: () => resumeWikiMaintenance?.(),
     store: () => veritySettingsStore(deps.eventStore),
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
@@ -5665,6 +5674,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       store: deps.eventStore,
       conductor,
       onError: (error) => app.log.error({ err: error }, 'Wiki maintenance failed'),
+      paused: async () =>
+        !(await veritySettingsStore(deps.eventStore).getVeritySettingsRaw())?.knowledgeModel,
+      onPaused: (projectId) =>
+        app.log.warn(
+          { projectId },
+          'Wiki maintenance is held: no Knowledge model is set in Verity settings',
+        ),
       prepare: async (projectId, requestedModel) => {
         const project = await deps.eventStore.getProject(projectId);
         if (!project || project.hiddenAt !== null || projectsBeingDeleted.has(projectId))
@@ -5676,17 +5692,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               'conflict',
               'Activate the project workspace before starting Wiki maintenance',
             );
-          const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
-            projectId,
-          );
           const globalSettings = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
-          const available = await availableModels({ allowLegacyCodexFallback: true });
-          const model =
-            requestedModel ??
-            globalSettings?.knowledgeModel ??
-            settings?.defaultModel ??
-            available.default;
-          if (!model || !(await isConfiguredProjectSessionModel(model)))
+          const model = requestedModel ?? globalSettings?.knowledgeModel;
+          if (!model) throw new KnowledgeError('invalid', KNOWLEDGE_MODEL_ERROR);
+          if (!(await isConfiguredProjectSessionModel(model)))
             throw new KnowledgeError('invalid', PROJECT_MODEL_ERROR);
           return {
             model,
@@ -5699,6 +5708,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
       },
     });
+    resumeWikiMaintenance = () => {
+      void wikiJobs
+        .recover()
+        .catch((error: unknown) => app.log.error({ err: error }, 'Wiki maintenance failed'));
+    };
     app.addHook('onReady', () => wikiJobs.recover());
     app.addHook('onClose', () => wikiJobs.close());
     registerKnowledgeProjectRoutes(app, {

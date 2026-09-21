@@ -8,10 +8,27 @@ import { Library } from '../app/knowledge';
 import { ProjectKnowledgeGrants } from '../components/knowledge/ProjectKnowledgeGrants';
 import { KnowledgeOriginal } from '../components/knowledge/KnowledgeOriginal';
 
+const mockFocusEffects = new Set<() => undefined | (() => void)>();
+const refocus = () => {
+  for (const effect of [...mockFocusEffects]) effect();
+};
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
   useNavigation: () => ({ addListener: () => () => {}, dispatch: jest.fn() }),
   useLocalSearchParams: () => ({}),
+  // The real hook fires on mount and on every re-focus. Mounted callbacks are
+  // collected so a test can send the screen back into focus.
+  useFocusEffect: (effect: () => undefined | (() => void)) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    jest.requireActual<typeof import('react')>('react').useEffect(() => {
+      mockFocusEffects.add(effect);
+      const cleanup = effect();
+      return () => {
+        mockFocusEffects.delete(effect);
+        cleanup?.();
+      };
+    }, [effect]);
+  },
   router: { push: jest.fn() },
 }));
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn() }));
@@ -350,7 +367,7 @@ test('restoring a historical title refreshes the current folder listing', async 
     await act(async () => {
       alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Continue')?.onPress?.();
     });
-    fireEvent.press(screen.getByLabelText('Engineering'));
+    fireEvent.press(screen.getByLabelText('Back to folder'));
     expect(await screen.findByLabelText('Old title')).toBeTruthy();
     expect(screen.queryByLabelText('Standards')).toBeNull();
   } finally {
@@ -455,6 +472,19 @@ test('library folders expand and collapse without changing the library', async (
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
 });
 
+test('the library uses one compact parent action instead of repeating the folder path', async () => {
+  const client = fake();
+  render(<Library client={client as unknown as VerityClient} initialFolder="child" />);
+
+  await screen.findByLabelText('Open parent folder');
+  expect(screen.queryByLabelText('Knowledge root')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Open parent folder'));
+
+  await waitFor(() =>
+    expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith('root', undefined),
+  );
+});
+
 const managedSpace = {
   projectId: 'project',
   rootFolderId: 'root',
@@ -526,7 +556,11 @@ test('managed project folders stay connected and cannot grant Sources write acce
   );
 });
 
-test('Knowledge model selection is system-wide and source ingestion is automatic', async () => {
+// The model is a server setting. A control here would let one project's screen
+// rewrite the model every other project's Wiki jobs run on — which is exactly
+// how it shipped once. Reading the setting is allowed; writing it from a
+// project is the failure.
+test('a project never sets the system-wide Knowledge model and ingests automatically', async () => {
   const client = managedClient();
   render(
     <ProjectKnowledge
@@ -538,13 +572,51 @@ test('Knowledge model selection is system-wide and source ingestion is automatic
   expect(screen.queryByLabelText('Sources')).toBeNull();
   expect(screen.queryByLabelText('Wiki')).toBeNull();
   expect(screen.queryByLabelText('Refresh knowledge')).toBeNull();
-  fireEvent.press(await screen.findByLabelText('Knowledge model: automatic'));
-  fireEvent.press(await screen.findByLabelText('provider/model'));
-  await waitFor(() =>
-    expect(client.updateVeritySettings).toHaveBeenCalledWith({ knowledgeModel: 'provider/model' }),
-  );
+  await screen.findByText(/Knowledge model set in Settings/);
+  expect(screen.queryByLabelText(/Knowledge model:/)).toBeNull();
+  expect(client.listModels).not.toHaveBeenCalled();
+  expect(client.updateVeritySettings).not.toHaveBeenCalled();
   expect(client.createKnowledgeWikiJob).not.toHaveBeenCalled();
   expect(screen.queryByLabelText('Add this Source to the Wiki')).toBeNull();
+});
+
+// Without a model nothing runs, and the tab would otherwise look like a Wiki
+// that simply never updates. The silent failure is a paused queue read as a
+// broken one, on a screen that never names the setting holding it.
+test('an unset Knowledge model is named here as the reason maintenance is paused', async () => {
+  const client = managedClient();
+  render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
+
+  expect(await screen.findByText(/Wiki maintenance is paused/)).toBeTruthy();
+  fireEvent.press(screen.getByLabelText('Set the Knowledge model'));
+  expect(jest.requireMock('expo-router').router.push).toHaveBeenCalledWith('/settings/knowledge');
+});
+
+// The fix is one screen away, so the banner has to drop as soon as the user is
+// back. A banner still accusing after the model was set sends them round the
+// loop a second time.
+test('the paused warning clears once the model is set and the tab is focused again', async () => {
+  const client = managedClient();
+  render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
+  await screen.findByText(/Wiki maintenance is paused/);
+
+  client.getVeritySettings.mockResolvedValue({ knowledgeModel: 'provider/model' });
+  act(refocus);
+  await waitFor(() => expect(screen.queryByText(/Wiki maintenance is paused/)).toBeNull());
+  // Re-focusing re-reads the setting, nothing else — the tab does not reload.
+  expect(client.getProjectKnowledgeSpace).toHaveBeenCalledTimes(1);
+});
+
+test('a set Knowledge model leaves the project view without a paused warning', async () => {
+  const client = {
+    ...managedClient(),
+    getVeritySettings: jest.fn().mockResolvedValue({ knowledgeModel: 'provider/model' }),
+  };
+  render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
+
+  await screen.findByText(/Knowledge model set in Settings/);
+  expect(screen.queryByText(/Wiki maintenance is paused/)).toBeNull();
+  expect(screen.queryByLabelText('Set the Knowledge model')).toBeNull();
 });
 
 test('running Wiki jobs refresh their status automatically', async () => {
@@ -595,7 +667,7 @@ test('an additional shared source never offers project Wiki ingestion', async ()
       }}
     />,
   );
-  await screen.findByLabelText(/Knowledge model:/);
+  await screen.findByText(/Knowledge model set in Settings/);
   expect(screen.queryByLabelText('Add this Source to the Wiki')).toBeNull();
   expect(screen.queryByLabelText('Use as project briefing')).toBeNull();
 });
@@ -787,7 +859,7 @@ test('stale Wiki pages rely on automatic maintenance without a manual review act
       }}
     />,
   );
-  await screen.findByLabelText(/Knowledge model:/);
+  await screen.findByText(/Knowledge model set in Settings/);
   expect(screen.queryByLabelText('Review outdated Wiki page')).toBeNull();
   expect(client.createKnowledgeWikiJob).not.toHaveBeenCalled();
 });

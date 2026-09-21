@@ -25,7 +25,9 @@ async function setup(initial: Partial<VeritySettingsRecord> = {}) {
   const app = Fastify();
   apps.push(app);
   const changed = vi.fn();
+  const knowledgeModelChanged = vi.fn();
   const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
+    onKnowledgeModelChanged: knowledgeModelChanged,
     store: () => store,
     agentLogin: {} as AgentLoginService,
     parseSettingsPatch: (body) => body as VeritySettingsPatch,
@@ -36,8 +38,35 @@ async function setup(initial: Partial<VeritySettingsRecord> = {}) {
     onOpenCodeSettingsChanged: changed,
   });
   await app.ready();
-  return { app, store, changed, refreshOpenCodeModels };
+  return { app, store, changed, knowledgeModelChanged, refreshOpenCodeModels };
 }
+
+// Wiki maintenance pauses itself while no Knowledge model is set and never polls
+// for one. The silent failure is a save that looks successful while everything
+// queued before it stays frozen until the server restarts.
+describe('Knowledge model changes', () => {
+  it('signals a resume when the Knowledge model is set', async () => {
+    const { app, knowledgeModelChanged } = await setup();
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { knowledgeModel: 'codex/knowledge' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(knowledgeModelChanged).toHaveBeenCalledOnce();
+  });
+
+  it('leaves maintenance alone when the patch does not touch the model', async () => {
+    const { app, knowledgeModelChanged } = await setup({ knowledgeModel: 'codex/knowledge' });
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { gitUserName: 'Ada' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(knowledgeModelChanged).not.toHaveBeenCalled();
+  });
+});
 
 const credentials = { opencodeBaseUrl: 'https://provider.example/v1', opencodeApiKey: 'test-key' };
 const catalog = (...ids: string[]) => Response.json({ data: ids.map((id) => ({ id })) });

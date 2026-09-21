@@ -6,13 +6,12 @@ import type {
   KnowledgeWikiJob,
   VerityClient,
 } from '@verity/mobile';
-import { router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Text, View } from 'react-native';
 import { KnowledgeButton as Button } from './KnowledgeButton';
 import { KnowledgeMarkdown } from './KnowledgeMarkdown';
 import { styles } from './styles';
-import { loadVeritySettings, saveVeritySettings, useVeritySettings } from '../../lib/settingsStore';
 
 const jobStatusLabel: Record<KnowledgeWikiJob['status'], string> = {
   pending: 'Starting',
@@ -40,18 +39,16 @@ export function ProjectKnowledge({
   const [space, setSpace] = useState<KnowledgeSpace | null>(null);
   const [overview, setOverview] = useState<KnowledgeOverview | null>(null);
   const [jobs, setJobs] = useState<KnowledgeWikiJob[]>([]);
+  // Read-only: the model is picked in Settings. Kept here only so the tab can
+  // say why nothing is happening — without it, a paused queue looks like a
+  // broken one, and the reason lives on a screen nobody has a pointer to.
+  const [modelSet, setModelSet] = useState<boolean | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [models, setModels] = useState<string[]>([]);
-  const [chooseModel, setChooseModel] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const generation = useRef(0);
   const lock = useRef(false);
-  const { settings } = useVeritySettings();
-  useEffect(() => {
-    if (typeof client.getVeritySettings === 'function') void loadVeritySettings(client);
-  }, [client]);
   useEffect(() => {
     const current = ++generation.current;
     setSpace(null);
@@ -78,6 +75,26 @@ export function ProjectKnowledge({
       generation.current++;
     };
   }, [client, projectId, reload, onSpace]);
+  // Read on its own, and on every focus: the fix for an unset model is one
+  // screen away, and a banner that still accuses after the model was set is
+  // worse than none. The model is a hint, not part of the tab — a server too
+  // old for the endpoint, or one that fails the read, degrades to "cannot say"
+  // instead of taking the Wiki, the briefing and the job list down with it.
+  useFocusEffect(
+    useCallback(() => {
+      let current = true;
+      void (
+        typeof client.getVeritySettings === 'function'
+          ? client.getVeritySettings().catch(() => undefined)
+          : Promise.resolve(undefined)
+      ).then((settings) => {
+        if (current) setModelSet(settings === undefined ? null : Boolean(settings?.knowledgeModel));
+      });
+      return () => {
+        current = false;
+      };
+    }, [client]),
+  );
   useEffect(() => {
     if (!jobs.some((job) => job.status === 'pending' || job.status === 'running')) return;
     const timer = setTimeout(() => setReload((value) => value + 1), 2_000);
@@ -193,48 +210,27 @@ export function ProjectKnowledge({
       ) : null}
       {space ? (
         <>
-          <View style={styles.row}>
-            <Button
-              label={
-                settings?.knowledgeModel
-                  ? `Knowledge model: ${settings.knowledgeModel}`
-                  : 'Knowledge model: automatic'
-              }
-              disabled={busy || blocked}
-              onPress={() => {
-                void run(async () => {
-                  const result = await client.listModels();
-                  setModels(result.models);
-                  setChooseModel((value) => !value);
-                });
-              }}
-            />
-          </View>
-          {chooseModel ? (
-            <View style={styles.group}>
-              <Button
-                label="Choose automatically"
-                onPress={() => {
-                  void saveVeritySettings(client, { knowledgeModel: null });
-                  setChooseModel(false);
-                }}
-              />
-              {models.map((id) => (
-                <Button
-                  key={id}
-                  label={id}
-                  onPress={() => {
-                    void saveVeritySettings(client, { knowledgeModel: id });
-                    setChooseModel(false);
-                  }}
-                />
-              ))}
-            </View>
-          ) : null}
+          {/* The model is a server setting (Settings › Knowledge), not a project
+              one — offering it here made one project's screen silently rewrite
+              the model every other project's jobs run on. */}
           <Text style={styles.muted}>
-            New Sources are added to the Wiki automatically. This model is used system-wide; every
-            job remains limited to its project.
+            New Sources are added to the Wiki automatically, on the Knowledge model set in Settings.
+            Every job stays limited to this project.
           </Text>
+          {modelSet === false ? (
+            <>
+              <Text accessibilityRole="alert" style={styles.error}>
+                No Knowledge model is set yet, so Wiki maintenance is paused. Choose one in Settings
+                › Knowledge — it applies to every project, and queued work starts as soon as it is
+                set.
+              </Text>
+              <Button
+                icon="cpu"
+                label="Set the Knowledge model"
+                onPress={() => router.push('/settings/knowledge')}
+              />
+            </>
+          ) : null}
           {jobs.slice(0, 10).map((job) => (
             <View key={job.id} style={styles.row}>
               <Button

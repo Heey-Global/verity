@@ -362,12 +362,6 @@ export function Library({
       keyboardShouldPersistTaps="handled"
     >
       <Stack.Screen options={{ title: 'Knowledge', gestureEnabled: !dirty && !busy }} />
-      <View style={styles.row}>
-        <Button icon="home" label="Knowledge root" onPress={() => openFolder(null)} />
-        {path.map((f) => (
-          <Button icon="chevron-right" key={f.id} label={f.name} onPress={() => openFolder(f.id)} />
-        ))}
-      </View>
       {error ? (
         <Text accessibilityRole="alert" style={styles.error}>
           {error}
@@ -444,6 +438,13 @@ export function Library({
               ) : null}
               <KnowledgeMarkdown body={document?.bodyMarkdown ?? ''} onLink={openLinkedDocument} />
               <View style={styles.row}>
+                <Button
+                  icon="arrow-left"
+                  iconOnly
+                  label="Back to folder"
+                  disabled={busy}
+                  onPress={() => openFolder(document?.folderId ?? folderId)}
+                />
                 {hasOriginal !== true ? (
                   <Button
                     icon="edit-2"
@@ -595,6 +596,15 @@ export function Library({
             onChangeText={setQuery}
           />
           <View style={styles.toolbar}>
+            {currentFolder ? (
+              <Button
+                icon="arrow-up"
+                iconOnly
+                label="Open parent folder"
+                disabled={busy}
+                onPress={() => openFolder(currentFolder.parentId)}
+              />
+            ) : null}
             <Button
               icon="folder-plus"
               iconOnly

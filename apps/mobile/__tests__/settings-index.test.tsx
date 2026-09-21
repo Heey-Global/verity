@@ -51,6 +51,7 @@ describe('settings index — destinations', () => {
     ['GitHub', '/settings/github'],
     ['Connected services', '/settings/services'],
     ['Maintenance', '/settings/maintenance'],
+    ['Knowledge model', '/settings/knowledge'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage paired devices', '/devices'],
   ])('routes %s to %s', async (label, href) => {
@@ -95,6 +96,32 @@ describe('settings index — destinations', () => {
     expect(screen.getByText('Needs setup')).toBeOnTheScreen();
     // Technical App/installation identifiers never appear in a summary row.
     expect(screen.queryByText('78901234')).toBeNull();
+  });
+
+  // The model every project's Wiki jobs run on is the reason anyone opens this
+  // row, and reading it should not require tapping in — the complaint that put
+  // the setting here was "which model is writing my Wiki, and where do I change
+  // it".
+  it('names the pinned Knowledge model on the row itself', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { settings: makeSettings({ knowledgeModel: 'claude-opus-4-8' }) }),
+    );
+    render(<SettingsIndexScreen />);
+
+    await screen.findByLabelText('Knowledge model');
+    expect(screen.getByText('Claude Opus 4.8')).toBeOnTheScreen();
+  });
+
+  // Unset is a halt, not a default: nothing maintains any Wiki until someone
+  // picks a model, so the row has to read as an outstanding task rather than as
+  // a working configuration.
+  it('flags the Knowledge model as outstanding while none is pinned', async () => {
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+    render(<SettingsIndexScreen />);
+
+    await screen.findByLabelText('Knowledge model');
+    expect(screen.getByText('Not set')).toBeOnTheScreen();
+    expect(screen.getByText('Maintenance paused')).toBeOnTheScreen();
   });
 
   it('marks Connected services as locked while the store is sealed', async () => {
