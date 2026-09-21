@@ -574,6 +574,84 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('keeps the subscription key out of every line it logs', async () => {
+    // Serialized the way a transport renders it, so a key nested anywhere in
+    // the payload counts. Errors are rendered rather than stringified, because
+    // `JSON.stringify` turns one into `{}` and would hide a key sitting in its
+    // message - the shape every `{ error }` line here arrives in.
+    const render = (call: unknown[]): string => {
+      // Per call, not per suite: the client logs the same store and the same
+      // settings object from several call sites, and a `seen` shared across
+      // renders would collapse every line after the first that reached one into
+      // `[circular]` - scanning nothing while still reporting a pass.
+      const seen = new WeakSet<object>();
+      return call
+        .map((argument) =>
+          JSON.stringify(argument, (_key, value: unknown) => {
+            if (value instanceof Error) return `${value.name}: ${value.message} ${value.stack}`;
+            if (typeof value !== 'object' || value === null) return value;
+            if (seen.has(value)) return '[circular]';
+            seen.add(value);
+            return value;
+          }),
+        )
+        .join(' ');
+    };
+
+    const refused = setup();
+    refused.client.start();
+    await flush();
+    refused.socket.open();
+    refused.socket.emit('error', new Error(`connect ECONNREFUSED ${UPLINK_CONTROL_URL}`));
+    refused.socket.message({ type: 'reject', reason: 'limit_reached' });
+    await flush();
+
+    const admitted = setup();
+    admitted.client.start();
+    await flush();
+    admitted.socket.open();
+    admitted.socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    admitted.socket.message({ type: 'revoke', reason: 'subscription revoked' });
+    await flush();
+
+    // Every path this client was given logging for: the handshake, a transport
+    // error, a refusal, a withdrawal, an admission, and the closes those cause.
+    const logged = [refused.log, admitted.log].flatMap((log) => [
+      ...log.info.mock.calls,
+      ...log.warn.mock.calls,
+      ...log.error.mock.calls,
+    ]);
+    expect(logged.length).toBeGreaterThan(6);
+
+    // Read off the fixture rather than restated: a `setup` that stopped putting
+    // this key on the wire would leave a restated literal asserting that lines
+    // do not contain a string nothing ever had.
+    const key = refused.settings.uplinkSubscriptionKey;
+    expect(admitted.settings.uplinkSubscriptionKey).toBe(key);
+    // The key is in play at all: the client authenticates with it, so a line
+    // carrying it is a live possibility rather than a hypothetical one.
+    expect(admitted.socket.sent.join(' ')).toContain(key);
+    // And `render` would find it: a renderer that quietly produced `undefined`
+    // for the shape these lines arrive in would pass the loop below forever.
+    expect(render([{ frame: { auth: { subscriptionKey: key } } }])).toContain(key);
+
+    for (const call of logged) {
+      // The embedded boot hands this client a logger that writes to stderr
+      // until the Fastify one exists, which puts those lines past pino's
+      // redaction. That holds only while nothing here carries a credential, and
+      // a reading of the call sites is one added line from being out of date.
+      expect(render(call)).not.toContain(key);
+    }
+    await refused.client.stop();
+    await admitted.client.stop();
+  });
+
   it('records the close code, close reason, and whether it was ever admitted', async () => {
     const { client, socket, log } = setup();
     client.start();
