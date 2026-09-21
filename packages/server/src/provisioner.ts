@@ -434,6 +434,13 @@ interface ProjectImage {
   usesConfiguredOverride: boolean;
 }
 
+type SandboxWakeFallbackReason =
+  | 'container_missing'
+  | 'container_running'
+  | 'ownership_mismatch'
+  | 'generation_missing'
+  | 'contract_mismatch';
+
 // The function form accepts an optional `forceRefresh`: the provision/recreate
 // path passes `true` to bypass the resolver's staleness cache and pin the
 // container to the CURRENT default digest (see createPublishedDefaultResolver).
@@ -467,6 +474,9 @@ export interface ProvisionerOptions {
   onContainerStarted?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
   onSandboxLifecycle?: ((event: ProjectSandboxLifecycleEvent) => void) | undefined;
+  /** Reports why a sleeping Sandbox could not use the retained-container fast path. */
+  onSandboxWakeFallback?:
+    ((event: { projectId: string; reason: SandboxWakeFallbackReason }) => void) | undefined;
   /** Fail-closed hook for generation-bound dependants such as public previews.
    * Runs after validation/warnings but before the old sandbox is mutated. */
   withContainerReplace?:
@@ -2813,26 +2823,50 @@ export class ProvisionerImpl implements Provisioner {
           }
           const reactivateRelay = this.opts.projectRelay.reactivate.bind(this.opts.projectRelay);
           const sleepRelay = this.opts.projectRelay.sleep?.bind(this.opts.projectRelay);
+          let inspect: ContainerInspect | null;
+          try {
+            inspect = await this.opts.docker.inspectContainer(project.containerName);
+          } catch (error) {
+            if (error instanceof DockerError && error.kind === 'container_not_found') {
+              inspect = null;
+            } else {
+              // An unavailable Docker API says nothing about the retained object.
+              // Keep it and the durable sleeping state intact so a retry can use
+              // the fast path instead of destructively recreating the Sandbox.
+              throw new ProvisioningError(
+                `project wake inspection failed: ${failureMessage(error)}`,
+                error,
+              );
+            }
+          }
+          const generation = inspect === null ? undefined : containerGenerationOf(inspect);
+          const fallbackReason =
+            inspect === null
+              ? 'container_missing'
+              : inspect.running
+                ? 'container_running'
+                : inspect.labels?.[PROJECT_ID_LABEL] !== project.id
+                  ? 'ownership_mismatch'
+                  : generation === undefined
+                    ? 'generation_missing'
+                    : sandboxSleepCompatibilityFingerprint(inspect) !==
+                        project.sleepCompatibilityFingerprint
+                      ? 'contract_mismatch'
+                      : undefined;
           await this.opts.store.updateProjectSleepState(project.id, 'waking', {
             sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
             sleepingSince: project.sleepingSince ?? null,
             wakeStartedAt: new Date(),
           });
-          const inspect = await this.opts.docker
-            .inspectContainer(project.containerName)
-            .catch(() => null);
-          const generation = inspect === null ? undefined : containerGenerationOf(inspect);
-          const compatible =
-            inspect !== null &&
-            !inspect.running &&
-            inspect.labels?.[PROJECT_ID_LABEL] === project.id &&
-            generation !== undefined &&
-            sandboxSleepCompatibilityFingerprint(inspect) === project.sleepCompatibilityFingerprint;
-          if (!compatible) {
+          if (fallbackReason !== undefined) {
             // The retained object is no longer the exact Sandbox we put to sleep.
             // Reuse the established replacement path rather than starting unknown
             // Docker state or trying to repair its mounts in place.
+            this.observeSandboxWakeFallback(project.id, fallbackReason);
             return this.recreateContainerOnce(project.id, { confirmWarnings: true });
+          }
+          if (inspect === null || generation === undefined) {
+            throw new Error('compatible retained Sandbox lost its identity');
           }
 
           let relayAwake = false;
@@ -2974,6 +3008,14 @@ export class ProvisionerImpl implements Provisioner {
       });
     } catch {
       // Observability never changes Sandbox lifecycle behavior.
+    }
+  }
+
+  private observeSandboxWakeFallback(projectId: string, reason: SandboxWakeFallbackReason): void {
+    try {
+      this.opts.onSandboxWakeFallback?.({ projectId, reason });
+    } catch {
+      // Diagnostics never decide whether a retained Sandbox may be reused.
     }
   }
 

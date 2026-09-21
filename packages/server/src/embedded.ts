@@ -3336,6 +3336,9 @@ export async function buildEmbeddedServer(
         await projectAgentGatewayIdentity(true);
       },
       onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
+      onSandboxWakeFallback: (event) => {
+        app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
+      },
       ...(previewShareManager !== undefined
         ? {
             withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
