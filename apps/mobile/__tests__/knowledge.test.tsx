@@ -634,7 +634,8 @@ test('a project never sets the system-wide Knowledge model and ingests automatic
   expect(screen.queryByLabelText('Sources')).toBeNull();
   expect(screen.queryByLabelText('Wiki')).toBeNull();
   expect(screen.queryByLabelText('Refresh knowledge')).toBeNull();
-  await screen.findByText(/Knowledge model set in Settings/);
+  await waitFor(() => expect(client.getProjectKnowledgeSpace).toHaveBeenCalled());
+  expect(screen.queryByText(/New Sources are added/)).toBeNull();
   expect(screen.queryByLabelText(/Knowledge model:/)).toBeNull();
   expect(client.listModels).not.toHaveBeenCalled();
   expect(client.updateVeritySettings).not.toHaveBeenCalled();
@@ -649,7 +650,7 @@ test('an unset Knowledge model is named here as the reason maintenance is paused
   const client = managedClient();
   render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
 
-  expect(await screen.findByText(/Wiki maintenance is paused/)).toBeTruthy();
+  expect(await screen.findByText(/Choose a Knowledge model/)).toBeTruthy();
   fireEvent.press(screen.getByLabelText('Set the Knowledge model'));
   expect(jest.requireMock('expo-router').router.push).toHaveBeenCalledWith('/settings/knowledge');
 });
@@ -660,11 +661,11 @@ test('an unset Knowledge model is named here as the reason maintenance is paused
 test('the paused warning clears once the model is set and the tab is focused again', async () => {
   const client = managedClient();
   render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
-  await screen.findByText(/Wiki maintenance is paused/);
+  await screen.findByText(/Choose a Knowledge model/);
 
   client.getVeritySettings.mockResolvedValue({ knowledgeModel: 'provider/model' });
   act(refocus);
-  await waitFor(() => expect(screen.queryByText(/Wiki maintenance is paused/)).toBeNull());
+  await waitFor(() => expect(screen.queryByText(/Choose a Knowledge model/)).toBeNull());
   // Re-focusing re-reads the setting, nothing else — the tab does not reload.
   expect(client.getProjectKnowledgeSpace).toHaveBeenCalledTimes(1);
 });
@@ -676,8 +677,8 @@ test('a set Knowledge model leaves the project view without a paused warning', a
   };
   render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
 
-  await screen.findByText(/Knowledge model set in Settings/);
-  expect(screen.queryByText(/Wiki maintenance is paused/)).toBeNull();
+  await waitFor(() => expect(client.getProjectKnowledgeSpace).toHaveBeenCalled());
+  expect(screen.queryByText(/Choose a Knowledge model/)).toBeNull();
   expect(screen.queryByLabelText('Set the Knowledge model')).toBeNull();
 });
 
@@ -703,12 +704,13 @@ test('running Wiki jobs refresh their status automatically', async () => {
   try {
     render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
     await act(async () => Promise.resolve());
-    expect(screen.getByLabelText('Wiki review · Running · 0 sources')).toBeTruthy();
+    expect(screen.getByText('Wiki review running.')).toBeTruthy();
     await act(async () => {
       jest.advanceTimersByTime(2_000);
       await Promise.resolve();
     });
-    expect(screen.getByLabelText('Wiki review · Completed · 0 sources')).toBeTruthy();
+    expect(screen.queryByText('Wiki review running.')).toBeNull();
+    expect(screen.queryByLabelText('View details')).toBeNull();
     expect(client.listKnowledgeWikiJobs).toHaveBeenCalledTimes(2);
   } finally {
     jest.useRealTimers();
@@ -739,9 +741,44 @@ test('shows only the latest Wiki job when automatic retries have failed', async 
 
   render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
 
-  expect(await screen.findByLabelText('Wiki update · Failed · 0 sources')).toBeTruthy();
-  expect(screen.queryByLabelText('Wiki review · Failed · 0 sources')).toBeNull();
+  expect(await screen.findByText('Wiki update failed.')).toBeTruthy();
+  expect(screen.queryByText('Wiki review failed.')).toBeNull();
+  expect(screen.getByLabelText('View details')).toBeTruthy();
   expect(screen.getByLabelText('Try again')).toBeTruthy();
+});
+
+test('a successful retry does not resurface the older failed Wiki job', async () => {
+  const client = {
+    ...managedClient(),
+    listKnowledgeWikiJobs: jest.fn().mockResolvedValue([
+      {
+        id: 'retry',
+        projectId: 'project',
+        sessionId: 'retry-session',
+        kind: 'ingest' as const,
+        status: 'completed' as const,
+        sourceRevisions: [],
+        createdAt: 2,
+        error: null,
+      },
+      {
+        id: 'original',
+        projectId: 'project',
+        sessionId: 'original-session',
+        kind: 'ingest' as const,
+        status: 'failed' as const,
+        sourceRevisions: [],
+        createdAt: 1,
+        error: 'Isolation failed',
+      },
+    ]),
+  };
+
+  render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
+
+  await waitFor(() => expect(client.listKnowledgeWikiJobs).toHaveBeenCalled());
+  expect(screen.queryByText('Wiki update failed.')).toBeNull();
+  expect(screen.queryByLabelText('Try again')).toBeNull();
 });
 
 test('an additional shared source never offers project Wiki ingestion', async () => {
@@ -758,7 +795,7 @@ test('an additional shared source never offers project Wiki ingestion', async ()
       }}
     />,
   );
-  await screen.findByText(/Knowledge model set in Settings/);
+  await waitFor(() => expect(client.getProjectKnowledgeSpace).toHaveBeenCalled());
   expect(screen.queryByLabelText('Add this Source to the Wiki')).toBeNull();
   expect(screen.queryByLabelText('Use as project briefing')).toBeNull();
 });
@@ -950,7 +987,7 @@ test('stale Wiki pages rely on automatic maintenance without a manual review act
       }}
     />,
   );
-  await screen.findByText(/Knowledge model set in Settings/);
+  await waitFor(() => expect(client.getProjectKnowledgeSpace).toHaveBeenCalled());
   expect(screen.queryByLabelText('Review outdated Wiki page')).toBeNull();
   expect(client.createKnowledgeWikiJob).not.toHaveBeenCalled();
 });

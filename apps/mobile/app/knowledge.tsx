@@ -410,17 +410,6 @@ export function Library({
         </Text>
       ) : null}
       {busy ? <Text style={styles.muted}>Working…</Text> : null}
-      {activeProjectId ? (
-        <ProjectKnowledge
-          key={activeProjectId}
-          client={client}
-          projectId={activeProjectId}
-          document={document}
-          folders={folders}
-          blocked={busy || editing || creating}
-          onSpace={onSpace}
-        />
-      ) : null}
       <View style={split && (document || creating) ? styles.knowledgeSplit : undefined}>
         {split && (document || creating) ? (
           <View style={styles.knowledgeMasterPane}>
@@ -439,6 +428,17 @@ export function Library({
         ) : null}
         {document || creating ? (
           <View style={[styles.group, split ? styles.knowledgeDetailPane : null]}>
+            {activeProjectId ? (
+              <ProjectKnowledge
+                key={activeProjectId}
+                client={client}
+                projectId={activeProjectId}
+                document={document}
+                folders={folders}
+                blocked={busy || editing || creating}
+                onSpace={onSpace}
+              />
+            ) : null}
             {editing ? (
               <>
                 <TextInput
@@ -797,6 +797,16 @@ export function Library({
                 onPress={() => setMoreActions(!moreActions)}
               />
             </View>
+            {activeProjectId ? (
+              <ProjectKnowledge
+                key={activeProjectId}
+                client={client}
+                projectId={activeProjectId}
+                folders={folders}
+                blocked={busy || editing || creating}
+                onSpace={onSpace}
+              />
+            ) : null}
             {folderAction ? (
               <View style={styles.row}>
                 <TextInput
