@@ -67,6 +67,8 @@ interface CommitResult {
 }
 
 const manifestPath = 'apps/mobile/ota-promotion.json';
+/** Sources whose changes an OTA can carry; the manifest itself is mechanics. */
+const sourcePaths = ['apps/mobile', 'packages/mobile', 'packages/events'];
 const shaPattern = /^[0-9a-f]{40}$/;
 const versionPattern = /^\d+\.\d+\.\d+$/;
 const uuidPattern = /^[0-9a-f-]{36}$/;
@@ -311,9 +313,23 @@ export function stageArtifact(
   return group;
 }
 
+/**
+ * A merge moves the approved boundary minutes before the promotion publishes
+ * the release that `published()` reads. Staging inside that window plans the
+ * version the merged candidate already owns, and its promotion would abort on
+ * the public tag long after the manifest reached main. The merged manifest is
+ * the earlier, authoritative boundary; read it from main, not from a checkout
+ * that predates the merge.
+ */
 function assertBaseline(candidate: Candidate) {
-  if (published(candidate.runtime) !== candidate.baseline)
-    throw new Error('Published baseline changed; stage again');
+  const delivered = published(candidate.runtime);
+  if (delivered !== candidate.baseline) throw new Error('Published baseline changed; stage again');
+  const approved = api<{ content: string }>(
+    `repos/${repository()}/contents/${manifestPath}?ref=main`,
+  );
+  const merged = validateCandidate(JSON.parse(Buffer.from(approved.content, 'base64').toString()));
+  if (merged.tag.localeCompare(delivered, 'en', { numeric: true }) > 0)
+    throw new Error('An approved promotion is undelivered; stage again once it publishes');
 }
 
 function stage(runtime: string) {
@@ -371,15 +387,7 @@ function stage(runtime: string) {
   });
   candidate.group = group;
   candidate.notes = releaseNotes(
-    git(
-      'log',
-      '--format=%s',
-      `${candidate.baseline}..${commit}`,
-      '--',
-      'apps/mobile',
-      'packages/mobile',
-      'packages/events',
-    ),
+    git('log', '--format=%s', `${candidate.baseline}..${commit}`, '--', ...sourcePaths),
   );
   reserve(`ota-artifact/${candidate.tag}/${commit}`, candidate);
   assertBaseline(candidate);
@@ -662,7 +670,26 @@ function promote() {
   }
   eas('channel:edit', candidate.channel, '--branch', candidate.branch, '--non-interactive');
   verifyChannel(easJson('channel:view', candidate.channel, '--non-interactive'), candidate.branch);
-  if (latest === candidate.tag) return;
+  if (latest !== candidate.tag) finishRelease(candidate);
+  restage(candidate);
+}
+
+/**
+ * Delivery strands every candidate staged after this one was approved: its
+ * baseline is now the previous release, so its own promotion could only abort.
+ * The promotion commit is the sole push that follows, and staging skips it by
+ * design, so nothing on main re-triggers staging. Ask for it explicitly, after
+ * the release exists — a restage started earlier would plan this version again.
+ */
+function restage(candidate: Artifact) {
+  git('fetch', 'origin', 'main:refs/remotes/origin/main');
+  const pending = releaseNotes(
+    git('log', '--format=%s', `${candidate.commit}..origin/main`, '--', ...sourcePaths),
+  );
+  if (pending.length) gh('workflow', 'run', 'mobile-ota.yml', '--ref', 'main');
+}
+
+function finishRelease(candidate: Artifact) {
   const notesFile = `${process.env.RUNNER_TEMP}/mobile-ota-release.md`;
   writeFileSync(
     notesFile,

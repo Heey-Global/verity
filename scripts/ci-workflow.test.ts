@@ -63,7 +63,7 @@ describe('workflow token least privilege', () => {
         prune: { actions: 'write', contents: 'read' },
       },
       'mobile-ota-promote.yml': {
-        promote: { contents: 'write', 'pull-requests': 'read', checks: 'read' },
+        promote: { actions: 'write', contents: 'write', 'pull-requests': 'read', checks: 'read' },
       },
       'mobile-ota.yml': {
         update: { actions: 'write', contents: 'write', 'pull-requests': 'write' },
@@ -912,6 +912,24 @@ describe('mobile OTA promotion', () => {
     expect(steps.findIndex((step) => step.run === 'npm ci')).toBeLessThan(
       steps.findIndex((step) => step.run?.includes('scripts/mobile-ota-release.ts promote')),
     );
+  });
+
+  // A delivery strands candidates staged after its approval, and no push
+  // follows it. If the dispatch target, the trigger, or the promotion-commit
+  // skip drifts apart, the restage is simply never requested and the rolling
+  // PR sits unpromotable — with every workflow still green.
+  it('lets a promotion ask staging to restage onto the promotion commit', () => {
+    const staging = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
+      on: Record<string, unknown>;
+      jobs: { update: WorkflowJob };
+    };
+    const program = readFileSync('scripts/mobile-ota-release.ts', 'utf8');
+    const dispatched = program.match(/'workflow',\s*'run',\s*'([^']+)'/g) ?? [];
+
+    expect(dispatched).toContain("'workflow', 'run', 'mobile-ota.yml'");
+    expect(Object.keys(staging.on)).toContain('workflow_dispatch');
+    const skip = staging.jobs.update.steps.find((step) => step.id === 'release-kind');
+    expect(skip?.run).toMatch(/ota-promotion\.json'.*GITHUB_EVENT_NAME" == 'push'/);
   });
 
   it('does not compile the native app for an OTA promotion manifest', () => {

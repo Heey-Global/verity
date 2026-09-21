@@ -196,6 +196,8 @@ interface ServiceState {
   losePullCreation?: boolean;
   modelMetadataCommit?: boolean;
   invalidMetadata?: boolean;
+  approvedOnMain?: string;
+  deliveredWork?: string;
 }
 
 function serviceFixture(changes: Partial<ServiceState> = {}) {
@@ -227,10 +229,18 @@ const save = () => fs.writeFileSync(process.env.OTA_FAKE_STATE, JSON.stringify(s
 const out = value => {save(); process.stdout.write(typeof value === 'string' ? value : JSON.stringify(value)); process.exit(0);};
 const fail = () => {save(); process.exit(1);};
 const sha = candidate.commit;
+// main carries the last manifest that was merged: the delivered promotion,
+// or an approved one whose release has not published yet.
+const onMain = () => {
+  const version = s.approvedOnMain ?? s.released.replace('mobile-v','');
+  const parts = version.split('.');
+  const previous = parts[0]+'.'+parts[1]+'.'+(Number(parts[2])-1);
+  return {...candidate, version, tag:'mobile-v'+version, branch:'staging-mobile-v'+version+'-'+sha, baseline:'mobile-v'+previous};
+};
 if(tool === 'git') {
   if(args[0] === 'rev-parse') out(sha);
   if(args[0] === 'merge-base' || args[0] === 'fetch') out('');
-  if(args[0] === 'log') out(args.includes('--format=%s') ? 'fix(mobile): Show models (#451)' : sha);
+  if(args[0] === 'log') out(args.includes('--format=%s') ? (s.deliveredWork ?? 'fix(mobile): Show models (#451)') : sha);
   if(args[0] === 'ls-remote') {
     const ref=args.at(-1);
     if(ref.startsWith('refs/tags/')) { const tag=s.tags[ref.slice(10)]; out(tag ? tag.commit+'\\t'+ref : ''); }
@@ -265,7 +275,7 @@ if(tool === 'gh') {
       const id=Number(endpoint.split('/').at(-2));
       const review=s.reviews.find(r=>r.id===id);review.state='DISMISSED';out({});
     }
-    if(endpoint?.includes('/contents/')) out({content:Buffer.from(JSON.stringify(candidate)).toString('base64')});
+    if(endpoint?.includes('/contents/')) out({content:Buffer.from(JSON.stringify(endpoint.includes('ref=main')?onMain():candidate)).toString('base64')});
     if(endpoint?.includes('/check-runs?')) out([{check_runs:[{id:123,name:'ci-checks',conclusion:'success',app:{slug:'github-actions'}}]}]);
   }
   if(args[0] === 'pr' && args[1] === 'list') out(!s.noPullHistory && args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
@@ -485,5 +495,55 @@ describe('OTA CLI interrupted external operations', () => {
     expect(
       service.state().calls.filter((call) => call.includes('--force-with-lease')),
     ).toHaveLength(pushCount);
+  });
+
+  // The merge moves the boundary; the release that published() reads follows
+  // minutes later. Staging in between plans the merged candidate's version and
+  // publishes a bundle whose promotion can only abort on the public tag.
+  it('does not stage a version an approved promotion already owns', () => {
+    const service = serviceFixture({ approvedOnMain: '1.33.3' });
+    const result = service.run('stage');
+    expect(result.stderr).toContain('undelivered');
+    expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
+    expect(service.state().calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+  });
+
+  // Nothing pushes to main after a promotion, so a candidate stranded by this
+  // delivery would sit on its rolling PR conflicting and unpromotable forever.
+  it('asks for a restage once the delivery that stranded a candidate is published', () => {
+    const candidate = artifact();
+    const service = serviceFixture({
+      group,
+      tags: {
+        [`ota-artifact/${candidate.tag}/${sha}`]: {
+          commit: sha,
+          message: JSON.stringify(candidate),
+        },
+      },
+    });
+    expect(service.run('promote').status).toBe(0);
+    const calls = service.state().calls;
+    const dispatch = calls.findIndex((call) => call.startsWith('gh workflow run mobile-ota.yml'));
+    expect(calls).toContain('git fetch origin main:refs/remotes/origin/main');
+    expect(calls.some((call) => call.includes(`${candidate.commit}..origin/main`))).toBe(true);
+    expect(dispatch).toBeGreaterThan(calls.findIndex((call) => call.startsWith('gh release edit')));
+  });
+
+  // A restage with no source change behind it plans a candidate whose notes are
+  // empty, which its own validation rejects; the failure would land on staging.
+  it('does not ask for a restage when only release mechanics followed', () => {
+    const candidate = artifact();
+    const service = serviceFixture({
+      group,
+      deliveredWork: 'chore(mobile): promote OTA 1.33.3',
+      tags: {
+        [`ota-artifact/${candidate.tag}/${sha}`]: {
+          commit: sha,
+          message: JSON.stringify(candidate),
+        },
+      },
+    });
+    expect(service.run('promote').status).toBe(0);
+    expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
   });
 });
