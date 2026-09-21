@@ -7832,6 +7832,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // that have no usable Sandbox belong in the provisioning branch below —
         // sending a sleeping project there claims its row for CLONING and rebuilds
         // exactly the container the sleep was retaining.
+        //
+        // `sleeping_starting` is included deliberately, mid-transition and all: the
+        // sleep routine revokes authority and stops the container, and touches
+        // neither the clone nor the session worktrees, so the host-side `worktree
+        // add` below is independent of it. The turn that follows re-reads the state
+        // and either waits out the wake or reports the transition — where a spawn
+        // routed to the provisioner would instead re-clone the project out from
+        // under a sleep that is still finalizing.
         if (project.state !== 'active' && !isSleepLifecycleState(project.state)) {
           if (deps.secretCipher?.isSealed() === true) {
             reply.code(503);

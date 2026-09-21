@@ -1636,11 +1636,12 @@ describe('VerityClient.createSession', () => {
   });
 
   // The 202 carries the server's `publicProject` projection, not the raw project
-  // row: `kind` is omitted for a GitHub project, a sleep lifecycle state is folded
-  // into `active` with the detail in `lifecycleState`, and `sandboxUpdate` /
-  // `toolkitDrift` / the release fields ride along. A client that rejects any of
-  // that turns a "still provisioning, try again" into a failed create — the exact
-  // shape mismatch that used to put a schema dump in the session banner.
+  // row: `kind` is omitted for a GitHub project, and `sandboxUpdate` / `toolkitDrift`
+  // / the release fields ride along. A client that rejects any of that turns a
+  // "still provisioning, try again" into a failed create — the exact shape mismatch
+  // that used to put a schema dump in the session banner. `cloning` because only a
+  // project with no usable Sandbox reaches this answer at all; a sleeping one now
+  // spawns straight away.
   it('parses an awaiting-provisioning project in the server projection shape', async () => {
     const project = {
       id: 'p1',
@@ -1648,8 +1649,7 @@ describe('VerityClient.createSession', () => {
       repo: 'verity',
       containerName: 'dev-heey-global-verity',
       imageRef: null,
-      state: 'active',
-      lifecycleState: 'waking',
+      state: 'cloning',
       provisionError: null,
       provisionWarning: null,
       stateChangedAt: '2026-06-26T00:00:00.000Z',
@@ -1685,8 +1685,7 @@ describe('VerityClient.createSession', () => {
       id: 'p1',
       // Defaulted by the schema, because the server omits it for a GitHub project.
       kind: 'github',
-      state: 'active',
-      lifecycleState: 'waking',
+      state: 'cloning',
     });
   });
 });
