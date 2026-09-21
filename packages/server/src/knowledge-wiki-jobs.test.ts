@@ -9,6 +9,35 @@ import { registerKnowledgeProjectRoutes } from './knowledge-project-routes.js';
 
 let ctx: TestDb;
 let directory: string;
+/**
+ * Debounced work runs on real timers, so a fixed sleep turns a slow runner — coverage
+ * instrumentation, a loaded container — into a failure about the job that had not started yet
+ * rather than about the behaviour under test. The ceiling stays under the testTimeout configured
+ * in vitest.config.ts, so a genuine hang still fails on the waited-for condition rather than on a
+ * timeout that names nothing.
+ */
+const settled = { timeout: 5_000, interval: 20 } as const;
+/**
+ * Give a job the service should not have armed the time to start, so the count that follows sees
+ * it. The floor keeps the window from shrinking with the debounce below what a loaded runner needs
+ * to reach sendTurn, which would leave the counts passing whether or not the surplus job exists.
+ */
+const surplus = (debounceMs: number) =>
+  new Promise((resolve) => setTimeout(resolve, Math.max(debounceMs * 4, 50)));
+/**
+ * Waiting only for the first turn would let a job that should have been coalesced away escape the
+ * count that follows: close() clears every armed timer, so the surplus job never starts and the
+ * assertion reads one call either way. Wait for the queues to empty as well — a job still owed
+ * leaves its row behind — and then outlast the debounce it would have been armed with.
+ */
+async function drained(condition: () => void, debounceMs: number) {
+  await vi.waitFor(async () => {
+    condition();
+    expect(await ctx.store.knowledge.listWikiMaintenance('project')).toEqual([]);
+    expect(await ctx.store.knowledge.listWikiReconciliations()).toEqual([]);
+  }, settled);
+  await surplus(debounceMs);
+}
 beforeAll(async () => {
   ctx = await createTestDb();
   directory = await mkdtemp(join(tmpdir(), 'wiki-jobs-'));
@@ -132,18 +161,19 @@ it('debounces new Sources into one automatic maintenance job', async () => {
     stderr: '',
     aborted: false,
   }));
+  const debounceMs = 5;
   const jobs = createKnowledgeWikiJobs({
     store: ctx.store,
     conductor: { sendTurn, cancelTurn: vi.fn(async () => true) },
     prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
-    debounceMs: 5,
+    debounceMs,
     onError: (error) => {
       throw error;
     },
   });
   await jobs.enqueue('project', [source.id]);
   await jobs.enqueue('project', [second.id]);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await drained(() => expect(sendTurn).toHaveBeenCalled(), debounceMs);
   await jobs.close();
   expect(sendTurn).toHaveBeenCalledOnce();
   const [job] = await ctx.store.knowledge.listWikiJobs('project');
@@ -154,11 +184,12 @@ it('debounces new Sources into one automatic maintenance job', async () => {
 });
 it('recovers debounced maintenance after a server restart', async () => {
   const { source } = await setup();
+  const debounceMs = 10;
   const first = createKnowledgeWikiJobs({
     store: ctx.store,
     conductor: { sendTurn: vi.fn(), cancelTurn: vi.fn(async () => true) },
     prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
-    debounceMs: 10,
+    debounceMs,
     onError: () => {},
   });
   await first.enqueue('project', [source.id]);
@@ -180,7 +211,9 @@ it('recovers debounced maintenance after a server restart', async () => {
     },
   });
   await recovered.recover();
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // The recovered service re-arms from the due dates the first one stored, not from a debounce
+  // of its own; a surplus job would land within the window those were written with.
+  await drained(() => expect(sendTurn).toHaveBeenCalled(), debounceMs);
   await recovered.close();
   expect(sendTurn).toHaveBeenCalledOnce();
   expect(await ctx.store.knowledge.listWikiMaintenance('project')).toEqual([]);
@@ -203,7 +236,15 @@ it('retains automatic maintenance after a backend failure', async () => {
     onError: () => {},
   });
   await jobs.enqueue('project', [source.id]);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // The turn starting says nothing about the retention under test; wait for the failure to be
+  // recorded, or an entry still queued because the job never ran would read as one kept on purpose.
+  await vi.waitFor(
+    async () =>
+      expect(await ctx.store.knowledge.listWikiJobs('project')).toMatchObject([
+        { status: 'failed' },
+      ]),
+    settled,
+  );
   await jobs.close();
   expect(await ctx.store.knowledge.listWikiMaintenance('project')).toMatchObject([
     { projectId: 'project', sourceDocumentId: source.id },
@@ -234,10 +275,15 @@ it('reports a failed post-job queue read without leaking an unhandled rejection'
   });
   try {
     await jobs.enqueue('project', [source.id]);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(errors).toEqual([
-      expect.objectContaining({ message: 'database temporarily unavailable' }),
-    ]);
+    // The failed read arms its retry a minute out, so no settle window here could observe a second
+    // report; this waits for the one the run owes and checks nothing else reached the handler.
+    await vi.waitFor(
+      () =>
+        expect(errors).toEqual([
+          expect.objectContaining({ message: 'database temporarily unavailable' }),
+        ]),
+      settled,
+    );
   } finally {
     await jobs.close();
     list.mockRestore();
@@ -247,6 +293,7 @@ it('automatically reconciles the Wiki after its last Source is deleted', async (
   const { source } = await setup();
   await ctx.store.knowledge.deleteDocument(source.id);
   const prompts: string[] = [];
+  const debounceMs = 5;
   const jobs = createKnowledgeWikiJobs({
     store: ctx.store,
     conductor: {
@@ -257,14 +304,15 @@ it('automatically reconciles the Wiki after its last Source is deleted', async (
       cancelTurn: vi.fn(async () => true),
     },
     prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
-    debounceMs: 5,
+    debounceMs,
     onError: (error) => {
       throw error;
     },
   });
   await jobs.enqueueReconciliation('project');
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await drained(() => expect(prompts).toHaveLength(1), debounceMs);
   await jobs.close();
+  expect(prompts).toHaveLength(1);
   expect(prompts[0]).toContain('Reconcile the project Wiki after Sources were removed');
   expect((await ctx.store.knowledge.listWikiJobs('project'))[0]).toMatchObject({
     kind: 'reconcile',
@@ -276,6 +324,7 @@ it('automatically reconciles the Wiki after its last Source is deleted', async (
 it('runs reconciliation and ingestion separately when both are pending', async () => {
   const { source } = await setup();
   const kinds: string[] = [];
+  const debounceMs = 5;
   const jobs = createKnowledgeWikiJobs({
     store: ctx.store,
     conductor: {
@@ -286,14 +335,14 @@ it('runs reconciliation and ingestion separately when both are pending', async (
       cancelTurn: vi.fn(async () => true),
     },
     prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
-    debounceMs: 5,
+    debounceMs,
     onError: (error) => {
       throw error;
     },
   });
   await jobs.enqueue('project', [source.id]);
   await jobs.enqueueReconciliation('project');
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await drained(() => expect(kinds).toHaveLength(2), debounceMs);
   await jobs.close();
   expect(kinds).toEqual(['reconcile', 'ingest']);
   expect(await ctx.store.knowledge.listWikiMaintenance('project')).toEqual([]);
@@ -335,11 +384,12 @@ it('waits for active project maintenance before starting the next batch', async 
     }
     return { sessionId, exitCode: 0, stderr: '', aborted: false };
   });
+  const debounceMs = 5;
   const jobs = createKnowledgeWikiJobs({
     store: ctx.store,
     conductor: { sendTurn, cancelTurn: vi.fn(async () => true) },
     prepare: async () => ({ model: 'codex/knowledge', directory, release: () => {} }),
-    debounceMs: 5,
+    debounceMs,
     onError: (error) => {
       throw error;
     },
@@ -347,10 +397,12 @@ it('waits for active project maintenance before starting the next batch', async 
   await jobs.enqueue('project', [source.id]);
   await started;
   await jobs.enqueue('project', [second.id]);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  // Outlast the debounce the second batch was armed with: the overlap this guards against would
+  // start a job here, and no condition to wait for distinguishes "not yet" from "never".
+  await surplus(debounceMs);
   expect(sendTurn).toHaveBeenCalledOnce();
   finishFirst();
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await vi.waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(2), settled);
   await jobs.close();
   expect(sendTurn).toHaveBeenCalledTimes(2);
   expect(prompts[1]).toContain(second.id);
