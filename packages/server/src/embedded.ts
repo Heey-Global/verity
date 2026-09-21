@@ -99,6 +99,7 @@ import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } 
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
 import { PreviewShareManager, sweepOrphanedPreviewShares } from './preview-share-manager.js';
 import { UplinkControlClient } from './uplink-control-client.js';
+import { createDeferredLogger } from './deferred-logger.js';
 import { createDockerGvisorRuntimeVerifier } from './docker-gvisor-runtime-verifier.js';
 import { PINNED_RUNSC_ARGS, PINNED_RUNSC_PATH } from './gvisor-runtime-config.js';
 import {
@@ -2417,12 +2418,20 @@ export async function buildEmbeddedServer(
       }))
     : undefined;
   let previewShareManager: PreviewShareManager | undefined;
+  // The client dials from `start()` below, which is a long way before `app`
+  // exists, and every line it writes is conditional on this option being
+  // present. Without it the handshake, the close code, and the refusal reason
+  // are all no-ops, and a control channel that never connects is
+  // indistinguishable from one nobody configured. Bound to `app.log` the
+  // moment there is one.
+  const uplinkLog = createDeferredLogger();
   const uplinkControl =
     config.publicPreviews !== undefined && projectDocker !== undefined
       ? new UplinkControlClient({
           url: config.publicPreviews.uplinkUrl,
           store: eventStore,
           serverVersion: config.publicPreviews.serverVersion,
+          log: uplinkLog,
           onFeaturesDisabled: (reason) =>
             previewShareManager?.disableAll(reason) ?? Promise.resolve(),
           onShareExpired: (shareId) =>
@@ -4407,6 +4416,9 @@ export async function buildEmbeddedServer(
       },
     },
   });
+  // First statement after `app` exists, so the window in which the Uplink
+  // client logs to the console fallback is as short as the boot can make it.
+  uplinkLog.bind(app.log);
   // One-time reconciliation of backend transcripts left by sessions that no longer
   // exist (see `session-artifact-sweep.ts`). Deleting a session now takes its
   // transcripts with it, but everything deleted BEFORE that fix left its files behind

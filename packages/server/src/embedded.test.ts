@@ -1014,6 +1014,61 @@ describe('resolveToolkitFeatureRef (devcontainer build key)', () => {
   });
 });
 
+describe('Uplink control client logging (#582 follow-up)', () => {
+  const source = readFileSync('packages/server/src/embedded.ts', 'utf8');
+
+  /** The argument object of a call, read by balancing brackets from its opening
+   * one. Matching a closing brace by indentation instead would make this a test
+   * of how Prettier wrapped the call that day. */
+  const callArguments = (opening: string): string => {
+    const start = source.indexOf(opening);
+    expect(start, `${opening} not found in embedded.ts`).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    for (let index = start + opening.length - 1; index < source.length; index += 1) {
+      const character = source[index]!;
+      if (character === '{' || character === '(') depth += 1;
+      else if (character === '}' || character === ')') {
+        depth -= 1;
+        if (depth === 0) return source.slice(start, index + 1);
+      }
+    }
+    throw new Error(`unbalanced ${opening} in embedded.ts`);
+  };
+
+  it('constructs the Uplink control client with a logger', () => {
+    // Every log call in `uplink-control-client.ts` is `this.options.log?.…`, so
+    // omitting the option does not make the boot quieter - it makes the client
+    // permanently mute. That is not a state anything reports: a control channel
+    // that never connects and a control channel nobody configured produce the
+    // same zero lines, which is how an Uplink outage ran for 13 days with no
+    // server-side trace of the refusal that caused it.
+    const construction = callArguments('new UplinkControlClient({');
+    expect(construction).toMatch(/\blog:/u);
+  });
+
+  it('binds that logger to the Fastify logger once there is one', () => {
+    const construction = callArguments('new UplinkControlClient({');
+    // Derived from the construction, not restated: renaming the local would
+    // otherwise leave this asserting against a name nothing passes any more.
+    const identifier = /\blog:\s*([A-Za-z_$][\w$]*)/u.exec(construction)?.[1];
+    expect(identifier).toBeDefined();
+
+    const bind = source.indexOf(`${identifier!}.bind(app.log)`);
+    expect(bind, `${identifier!} is never bound to app.log`).toBeGreaterThanOrEqual(0);
+
+    // After `app` exists, not before. A bind hoisted above this line - or a
+    // logger that reached for `app.log` at construction - is the temporal dead
+    // zone that crash-looped every sealed boot once already.
+    const appDeclaration = source.indexOf('const app = buildControlPlane({');
+    expect(appDeclaration).toBeGreaterThanOrEqual(0);
+    expect(bind).toBeGreaterThan(appDeclaration);
+  });
+
+  it('keeps one construction site, so there is one client to wire', () => {
+    expect(source.split('new UplinkControlClient({').length - 1).toBe(1);
+  });
+});
+
 describe('devcontainerBuildOptionsForDockerBaseUrl (R3.1/#299)', () => {
   const ORIG = process.env.VERITY_SANDBOX_TOOLKIT_FEATURE_REF;
   afterEach(() => {
