@@ -457,17 +457,16 @@ test('a child can add write access while inheriting read access', async () => {
   ]);
 });
 
-test('library folders expand and collapse without changing the library', async () => {
+test('expanding a library folder selects it and shows its documents', async () => {
   const client = fake();
   render(<Library client={client as unknown as VerityClient} initialFolder={null} />);
   await screen.findByLabelText('Folder: Company');
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
   fireEvent.press(screen.getByLabelText('Expand folder: Company'));
   expect(screen.getByLabelText('Folder: Engineering')).toBeTruthy();
-  expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith(undefined, undefined);
   fireEvent.press(screen.getByLabelText('Expand folder: Engineering'));
-  fireEvent.press(screen.getByLabelText('Folder: Engineering'));
   expect(await screen.findByLabelText('Standards')).toBeTruthy();
+  expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith('child', undefined);
   fireEvent.press(screen.getByLabelText('Collapse folder: Company'));
   expect(screen.queryByLabelText('Folder: Engineering')).toBeNull();
 });

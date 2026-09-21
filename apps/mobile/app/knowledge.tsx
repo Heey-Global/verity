@@ -174,6 +174,20 @@ export function Library({
     setTransfer(null);
   };
   const openFolder = (id: string | null) => leave(() => showFolder(id));
+  const toggleFolder = (id: string, isOpen: boolean) => {
+    if (isOpen) {
+      setExpandedFolderIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      return;
+    }
+    leave(() => {
+      setExpandedFolderIds((current) => new Set(current).add(id));
+      showFolder(id);
+    });
+  };
   const openDocument = (id: string) =>
     leave(() => {
       void run(async () => {
@@ -311,14 +325,7 @@ export function Library({
                 accessibilityLabel={`${isOpen ? 'Collapse' : 'Expand'} folder: ${folder.name}`}
                 accessibilityState={{ expanded: isOpen }}
                 disabled={busy}
-                onPress={() =>
-                  setExpandedFolderIds((current) => {
-                    const next = new Set(current);
-                    if (isOpen) next.delete(folder.id);
-                    else next.add(folder.id);
-                    return next;
-                  })
-                }
+                onPress={() => toggleFolder(folder.id, isOpen)}
                 style={styles.explorerToggle}
               >
                 <Icon
