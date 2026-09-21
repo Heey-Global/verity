@@ -123,9 +123,12 @@ minutes. This matters in practice: `limit_reached` was sent on the hello path by
 it was a documented reject reason, and installations retried it every 30 seconds for thirteen days
 because they classified it as ordinary rather than as capacity.
 
-An installation that is refused has no `installationId` to send, because it is only ever learned
-from a `welcome`. A refused hello therefore looks identical to a first-ever hello from the Uplink's
-side, and the Uplink must not treat one as evidence of a new installation.
+An installation that has **never been welcomed** has no `installationId` to send, because the id is
+only ever learned from a `welcome`. Its hello is therefore indistinguishable from any other
+first-ever hello, and the Uplink must not treat one as evidence that a new installation exists.
+Once welcomed, an installation persists the id and keeps sending it — including on a hello that is
+subsequently refused — so a refusal carrying an id is a known installation being turned away, not a
+new one arriving.
 
 `features` is an explicit allow-list, for example `["sharing", "remote-control"]`. An absent feature
 is not enabled, and the client must not infer entitlement from anything else.
@@ -601,7 +604,8 @@ Aligning the two is an Uplink-side change; this table is the installation's half
 
 Both sides log the close code, the close reason, and whether the connection had been welcomed. A
 refusal that closes the socket without sending `reject` is otherwise indistinguishable from a
-network drop.
+network drop. One exclusion: a socket the installation has already superseded with a newer dial is
+closed without a record, since it no longer describes the connection that matters.
 
 ## Required changes in `packages/preview-tunnel`
 

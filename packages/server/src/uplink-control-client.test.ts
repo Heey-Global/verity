@@ -105,6 +105,31 @@ function setupReconnecting(options: { disableFeatures?: (reason: string) => Prom
   return { client, sockets, socketFactory, store, disabled, log };
 }
 
+/** Window used by the back-off ceiling guards, long enough that the doubling
+ * has saturated for most of it. */
+const CEILING_WINDOW_MS = RECONNECT_MAX_MS * 60;
+/** Dials the ordinary ceiling must produce across that window, halved for the
+ * jitter and for the dials lost to the doubling on the way up. The capacity
+ * ceiling is an order of magnitude below this, so the two never overlap. */
+const SATURATED_DIALS = CEILING_WINDOW_MS / RECONNECT_MAX_MS / 2;
+
+/** Counts how often the client redials across a window in which every dial
+ * fails, which is what makes the back-off *ceiling* observable: a single
+ * reconnect only ever shows the current delay, and that delay starts at its
+ * floor no matter which ceiling is in force. */
+async function dialsWhileFailing(sockets: FakeSocket[], windowMs: number): Promise<number> {
+  const before = sockets.length;
+  const step = RECONNECT_MAX_MS / 2;
+  for (let elapsed = 0; elapsed < windowMs; elapsed += step) {
+    for (const socket of sockets) {
+      if (socket.readyState !== WebSocket.CLOSED) socket.close(1006, '');
+    }
+    await flush();
+    await vi.advanceTimersByTimeAsync(step);
+  }
+  return sockets.length - before;
+}
+
 /** Brings a fixture to the state every share operation requires: connected,
  * welcomed, and granted the sharing entitlement. */
 async function welcomed(
@@ -303,6 +328,76 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('returns to the ordinary schedule once a welcome lands', async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
+    await flush();
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
+
+    sockets[1]!.open();
+    sockets[1]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    await flush();
+
+    // The slow schedule belongs to the refusal, not to the installation. An
+    // admission that leaves it in place makes every later network blip cost
+    // five minutes of downtime, which nothing in the logs would explain.
+    //
+    // Counting dials over a window is the only way to see this: the welcome
+    // also resets the *delay* to its floor, so the first reconnect after a
+    // drop is prompt either way. The ceiling only shows itself once the
+    // back-off has doubled its way up to it.
+    const dials = await dialsWhileFailing(sockets, CEILING_WINDOW_MS);
+    expect(dials).toBeGreaterThan(SATURATED_DIALS);
+    await client.stop();
+  });
+
+  it('does not inherit a capacity back-off across a stop and start', async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
+    await flush();
+    await client.stop();
+
+    // Restarting is an operator asking for a fresh attempt - most often right
+    // after changing something they expect to have fixed it. Carrying the old
+    // refusal's schedule over means the first evidence either way is minutes
+    // away, and it looks like nothing happened.
+    client.start();
+    await flush();
+    const dials = await dialsWhileFailing(sockets, CEILING_WINDOW_MS);
+    expect(dials).toBeGreaterThan(SATURATED_DIALS);
+    await client.stop();
+  });
+
+  it('clamps a refusal reason before pinning it into the app-facing message', async () => {
+    vi.useFakeTimers();
+    const { client, sockets, disabled } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    // An identity refusal is held until the credentials change, so whatever
+    // the far end sends here is what the app shows for as long as that lasts.
+    // The frame limit alone permits tens of kilobytes of it.
+    sockets[0]!.message({ type: 'reject', reason: `unknown_key${'x'.repeat(50_000)}` });
+    await flush();
+
+    const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
+    expect(surfaced.length).toBeLessThan(250);
+    await client.stop();
+  });
+
   it.each(['unknown_key', 'revoked', 'expired', 'protocol_unsupported'])(
     'stops dialling after the identity refusal %s and surfaces it verbatim',
     async (reason) => {
@@ -436,6 +531,36 @@ describe('UplinkControlClient', () => {
     // logs agree with whichever theory is read into them.
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({ installationId: 'installation-1', firstEver: false }),
+      'Uplink admitted this installation',
+    );
+    await client.stop();
+  });
+
+  it('records an admission that replaced the stored installation id', async () => {
+    const { client, socket, log } = setup({ installationId: 'installation-1' });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-2',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+
+    // This is the shape that exhausts an installation cap: the far end mints a
+    // fresh id on each admission, consuming a slot every time, while this side
+    // overwrites its stored id and carries on believing it is one installation.
+    // Without the previous id in the record the whole sequence reads as a
+    // series of ordinary reconnects.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: 'installation-2',
+        previousInstallationId: 'installation-1',
+        firstEver: false,
+        idChanged: true,
+      }),
       'Uplink admitted this installation',
     );
     await client.stop();

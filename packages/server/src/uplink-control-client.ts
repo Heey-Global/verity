@@ -21,6 +21,7 @@ export const RECONNECT_CAPACITY_MS = 5 * 60_000;
 const ABANDONED_REQUEST_TTL_MS = 9 * 60 * 60_000;
 const MAX_ABANDONED_CREATES = 1_024;
 const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
+const MAX_REFUSAL_REASON_CHARS = 200;
 export const UPLINK_CONTROL_URL = 'wss://uplink.verity.build/control';
 
 /** Refusals that are about who this installation is: dialling again with the
@@ -104,6 +105,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    // A stop/start cycle inside one process is a fresh attempt, not a
+    // continuation of whatever back-off the previous one ended on.
+    this.retryMs = 1_000;
+    this.retryCeilingMs = RECONNECT_MAX_MS;
     this.generation += 1;
     void this.connect();
   }
@@ -303,10 +308,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.socket = undefined;
       // Without the code and reason a refusal that closes before `reject` is
       // indistinguishable from a network drop, and both just look like silence.
-      this.options.log?.warn(
-        { code, reason: reason.toString(), welcomed: this.welcomed },
-        'Uplink control connection closed',
-      );
+      // A shutdown this side asked for is not a warning, though: making every
+      // graceful stop yellow is how a log stops being read.
+      const expected = this.stopped && code === 1000;
+      const record = { code, reason: reason.toString(), welcomed: this.welcomed };
+      if (expected) this.options.log?.info(record, 'Uplink control connection closed');
+      else this.options.log?.warn(record, 'Uplink control connection closed');
       this.clearAuthority('Uplink disconnected', !this.stopped);
       this.scheduleReconnect();
     });
@@ -374,15 +381,26 @@ export class UplinkControlClient implements PreviewEdgeControl {
       await this.awaitRequiredCleanup();
       this.applyLease(frame);
       const settings = await this.options.store.getVeritySettings();
-      // A first-ever admission and a re-admission of a known installation look
-      // the same in the logs otherwise, and they mean very different things
-      // when the service is counting installations against a cap.
-      const firstEver = !settings?.uplinkInstallationId;
-      if (settings?.uplinkInstallationId !== installationId) {
+      // A first-ever admission, a re-admission under the same id, and an
+      // admission that silently replaced the stored id look identical in the
+      // logs otherwise, and they mean very different things when the service is
+      // counting installations against a cap. The third is the one that
+      // exhausts it: an id that rotates on every admission consumes a slot each
+      // time while this side believes it is the same installation throughout.
+      const previousInstallationId = settings?.uplinkInstallationId ?? undefined;
+      const firstEver = !previousInstallationId;
+      const idChanged = !firstEver && previousInstallationId !== installationId;
+      if (previousInstallationId !== installationId) {
         await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
       }
       this.options.log?.info(
-        { installationId, firstEver, features: [...this.features] },
+        {
+          installationId,
+          previousInstallationId,
+          firstEver,
+          idChanged,
+          features: [...this.features],
+        },
         'Uplink admitted this installation',
       );
       this.welcomed = true;
@@ -408,7 +426,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'revoke') {
-      const reason = optionalString(frame.reason, 'subscription revoked');
+      const reason = refusalReason(frame.reason, 'subscription revoked');
       this.lastReject = { key, reason };
       this.options.log?.warn({ frameType: 'revoke', reason }, 'Uplink withdrew this installation');
       this.clearAuthority(reason);
@@ -416,7 +434,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'reject') {
-      const reason = optionalString(frame.reason, 'rejected');
+      const reason = refusalReason(frame.reason, 'rejected');
       const identity = IDENTITY_REJECTS.has(reason);
       if (identity) {
         this.lastReject = { key, reason };
@@ -650,6 +668,17 @@ function validatedBindingUrl(
 
 function optionalString(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
+/** A refusal reason is a protocol token, but it arrives as free text bounded
+ * only by the frame limit, and an identity-class one is then pinned into the
+ * message the app shows until the credentials change. Cap it at the point it
+ * enters that state rather than trusting the far end to be terse. */
+function refusalReason(value: unknown, fallback: string): string {
+  const reason = optionalString(value, fallback);
+  return reason.length <= MAX_REFUSAL_REASON_CHARS
+    ? reason
+    : `${reason.slice(0, MAX_REFUSAL_REASON_CHARS)}…`;
 }
 
 function validUplinkShareId(value: string): boolean {
