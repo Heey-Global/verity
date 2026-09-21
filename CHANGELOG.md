@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.2](https://github.com/Heey-Global/verity/compare/v1.4.1...v1.4.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **knowledge:** complete isolated home before ownership handoff ([#597](https://github.com/Heey-Global/verity/issues/597)) ([7373344](https://github.com/Heey-Global/verity/commit/7373344de46ec3c591ed15c22f386a4392d7cd99))
+* **mobile:** restage OTA after promotion ([#592](https://github.com/Heey-Global/verity/issues/592)) ([4d9b9b4](https://github.com/Heey-Global/verity/commit/4d9b9b45922a4ad6ec85ea75f7d918671377c2d4))
+
 ## [1.4.1](https://github.com/Heey-Global/verity/compare/v1.4.0...v1.4.1) (2026-09-21)
 
 
