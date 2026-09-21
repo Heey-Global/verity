@@ -1015,14 +1015,11 @@ describe('resolveToolkitFeatureRef (devcontainer build key)', () => {
 });
 
 /**
- * A source-level guard, and only that. The behaviour it stands in for — an
- * embedded boot whose Uplink lines actually reach the Fastify logger — needs a
- * configured Docker daemon and a `publicPreviews` config to reach the
- * construction at all, so there is no cheap end-to-end assertion available
- * here. What the two halves do have: `deferred-logger.test.ts` pins the
- * forwarder's behaviour, `uplink-control-client.test.ts` pins that the client
- * writes through the option it was handed, and this pins that `embedded.ts`
- * hands it one. Reading the source is what covers the seam between them.
+ * A source-level guard, and only that: reaching the construction for real needs
+ * a Docker daemon and a `publicPreviews` config. `deferred-logger.test.ts` pins
+ * the forwarder and `uplink-control-client.test.ts` pins that the client writes
+ * through the option it was handed; this pins the seam between them, which is
+ * that `embedded.ts` hands it one at all.
  */
 describe('Uplink control client logging (#582 follow-up)', () => {
   const source = readFileSync(new URL('./embedded.ts', import.meta.url), 'utf8');
@@ -1055,13 +1052,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
     throw new Error('unbalanced UplinkControlClient construction in embedded.ts');
   };
 
-  /** The identifier passed as the construction's own `log` option.
-   *
-   * Anchored to the indentation the slice itself opens with, so it cannot match
-   * a `log:` nested inside one of the callbacks the same object passes. Reading
-   * that width out of the text rather than writing `10` here is what keeps a
-   * rewrap from turning into a false pass on one side and a false failure on
-   * the other. */
+  /** The identifier passed as the construction's own `log` option. Anchored to
+   * the indentation the slice itself opens with, so it cannot match a `log:`
+   * nested inside one of the callbacks the same object passes, and so a rewrap
+   * moves both sides together. */
   const logOption = (): string => {
     const text = construction();
     const indent = /\{\n([ \t]+)/u.exec(text)?.[1];
@@ -1082,12 +1076,10 @@ describe('Uplink control client logging (#582 follow-up)', () => {
   };
 
   it('constructs the Uplink control client with a logger', () => {
-    // Every log call in `uplink-control-client.ts` is `this.options.log?.…`, so
-    // omitting the option does not make the boot quieter - it makes the client
-    // permanently mute. That is not a state anything reports: a control channel
-    // that never connects and a control channel nobody configured produce the
-    // same zero lines, which is how an Uplink outage ran for 13 days with no
-    // server-side trace of the refusal that caused it.
+    // Every log call in the client is `this.options.log?.…`, so omitting the
+    // option does not make the boot quieter - it makes the client permanently
+    // mute, and a control channel being refused then looks exactly like one
+    // nobody configured.
     expect(logOption()).toBeTruthy();
   });
 
@@ -1108,11 +1100,9 @@ describe('Uplink control client logging (#582 follow-up)', () => {
   });
 
   it('dials only after the logger is bound', () => {
-    // The handshake, the close code and the refusal reason are the lines this
-    // wiring exists for, and they are written within milliseconds of the dial.
-    // Started before the bind they would all land on the console fallback -
-    // legible, but unstructured, unfiltered and past any redaction, which is
-    // the fallback's job to cover and not its job to carry.
+    // The lines this wiring exists for are written within milliseconds of the
+    // dial. Started before the bind they would all land on the stderr fallback:
+    // legible, but unstructured, unfiltered and past any redaction.
     const identifier = logOption();
     const bind = positionOf(
       new RegExp(`\\b${identifier}\\.bind\\(\\s*app\\.log\\s*\\)`, 'u'),

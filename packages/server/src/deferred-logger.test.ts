@@ -95,15 +95,23 @@ describe('createDeferredLogger', () => {
     expect(second.calls).toEqual([['after']]);
   });
 
-  it('defaults its fallback to the console', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('defaults to writing every level to stderr', () => {
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stdout = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     try {
-      createDeferredLogger().warn('no sink yet');
-      // The default matters: a caller that omits the fallback is the boot path,
-      // and a default of "discard" would make the omission silent.
-      expect(spy).toHaveBeenCalledWith('no sink yet');
+      const log = createDeferredLogger();
+      log.info('handshake');
+      log.warn('refused');
+
+      // A default of "discard" would make an omitted fallback silent, and a
+      // default of `console` would put the info line on stdout - the stream
+      // carrying pino's JSON, where an unstructured line is a parse error for
+      // whatever reads it.
+      expect(stderr.mock.calls).toEqual([['handshake'], ['refused']]);
+      expect(stdout).not.toHaveBeenCalled();
     } finally {
-      spy.mockRestore();
+      stderr.mockRestore();
+      stdout.mockRestore();
     }
   });
 });

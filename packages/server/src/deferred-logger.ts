@@ -2,34 +2,17 @@
  * A logger for components the embedded boot constructs before the Fastify
  * instance exists.
  *
- * The control plane's logger is `app.log`, and `app` is built roughly a
- * thousand lines after the first long-lived clients are wired. A component
- * started in that window has three options today, and two of them are wrong:
- * capture `app` in a closure and risk the TDZ `ReferenceError` that once
- * crash-looped every sealed boot, or take no logger at all — which is not a
- * quieter boot but a permanently silent component, since the option is read at
- * every call site and an absent one makes each of them a no-op. That is how
- * ten log calls in the Uplink control client produced zero lines in production
- * while an incident ran.
- *
- * So: hand the component this, and bind it once `app.log` exists. Calls before
- * the bind go to the fallback rather than being dropped, because the boot
- * window is exactly when a client that cannot reach its service starts saying
- * so.
- *
- * A line written before the bind is a plain console line: not JSON, not level
- * filtered, and past any pino redaction. That is the same trade the credential
- * projection above it already makes, and it is bounded — the bind is the first
- * statement after the Fastify instance exists. It holds only while nothing
- * routed through here logs a secret. The one component wired to it today does
- * not: the Uplink client logs protocol version, installation id, close code,
- * close reason and refusal reason, and never the subscription key.
+ * `app.log` is the only real logger and `app` is built a thousand lines after
+ * the first long-lived clients are wired. Capturing it in a closure up there is
+ * the TDZ `ReferenceError` that once crash-looped every sealed boot; passing no
+ * logger is worse than it sounds, since a component reading `options.log?.…`
+ * does not get a quieter boot but a permanently silent one. Hand the component
+ * this instead, and bind it once `app.log` exists.
  */
 
 /** The levels are the ones `UplinkControlClientOptions['log']` declares. A
  * component reaching for `debug` or `fatal` fails to compile against this
- * rather than losing those lines quietly, which is the right direction for the
- * failure to point. */
+ * rather than losing those lines quietly. */
 export type LogSink = Pick<Console, 'info' | 'warn' | 'error'>;
 
 export interface DeferredLogger extends LogSink {
@@ -37,7 +20,19 @@ export interface DeferredLogger extends LogSink {
   bind(target: LogSink): void;
 }
 
-export function createDeferredLogger(fallback: LogSink = console): DeferredLogger {
+/** stderr at every level, rather than `console` itself: `console.info` writes
+ * to stdout, and stdout is where pino's JSON lines go. A plain line interleaved
+ * into that stream is a parse error for whatever reads it, while stderr is
+ * where text nobody parses belongs. A pre-bind line is unstructured, unfiltered
+ * and past any redaction wherever it lands, which is why the bind is the first
+ * statement after `app` and the dial is the second. */
+const STDERR: LogSink = {
+  info: (...args: unknown[]) => console.error(...args),
+  warn: (...args: unknown[]) => console.error(...args),
+  error: (...args: unknown[]) => console.error(...args),
+};
+
+export function createDeferredLogger(fallback: LogSink = STDERR): DeferredLogger {
   let target: LogSink | undefined;
   // Resolved per call, not captured: the whole point is that the component
   // holds this object from before the real logger exists, so the indirection
