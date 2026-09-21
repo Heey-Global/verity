@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   agentLoopConfigFingerprint,
   VerityApiError,
@@ -1604,10 +1605,13 @@ describe('VerityClient.createSession', () => {
       );
 
     expect(caught).toBeInstanceOf(Error);
-    const { message } = caught as Error;
+    const { message, cause } = caught as Error;
     expect(message).not.toContain('\n');
     expect(message).not.toContain('"code"');
     expect(message.length).toBeLessThan(120);
+    // Kept off the operator's screen, not thrown away: whoever debugs this needs
+    // the issue list the sentence above replaced.
+    expect(cause).toBeInstanceOf(z.ZodError);
   });
 
   it('parses the awaiting-provisioning response for project spawns', async () => {
