@@ -579,9 +579,13 @@ describe('UplinkControlClient', () => {
     // the payload counts. Errors are rendered rather than stringified, because
     // `JSON.stringify` turns one into `{}` and would hide a key sitting in its
     // message - the shape every `{ error }` line here arrives in.
-    const seen = new WeakSet<object>();
-    const render = (call: unknown[]): string =>
-      call
+    const render = (call: unknown[]): string => {
+      // Per call, not per suite: the client logs the same store and the same
+      // settings object from several call sites, and a `seen` shared across
+      // renders would collapse every line after the first that reached one into
+      // `[circular]` - scanning nothing while still reporting a pass.
+      const seen = new WeakSet<object>();
+      return call
         .map((argument) =>
           JSON.stringify(argument, (_key, value: unknown) => {
             if (value instanceof Error) return `${value.name}: ${value.message} ${value.stack}`;
@@ -592,6 +596,7 @@ describe('UplinkControlClient', () => {
           }),
         )
         .join(' ');
+    };
 
     const refused = setup();
     refused.client.start();
@@ -623,12 +628,25 @@ describe('UplinkControlClient', () => {
       ...log.error.mock.calls,
     ]);
     expect(logged.length).toBeGreaterThan(6);
+
+    // Read off the fixture rather than restated: a `setup` that stopped putting
+    // this key on the wire would leave a restated literal asserting that lines
+    // do not contain a string nothing ever had.
+    const key = refused.settings.uplinkSubscriptionKey;
+    expect(admitted.settings.uplinkSubscriptionKey).toBe(key);
+    // The key is in play at all: the client authenticates with it, so a line
+    // carrying it is a live possibility rather than a hypothetical one.
+    expect(admitted.socket.sent.join(' ')).toContain(key);
+    // And `render` would find it: a renderer that quietly produced `undefined`
+    // for the shape these lines arrive in would pass the loop below forever.
+    expect(render([{ frame: { auth: { subscriptionKey: key } } }])).toContain(key);
+
     for (const call of logged) {
       // The embedded boot hands this client a logger that writes to stderr
       // until the Fastify one exists, which puts those lines past pino's
       // redaction. That holds only while nothing here carries a credential, and
       // a reading of the call sites is one added line from being out of date.
-      expect(render(call)).not.toContain('subscription-fixture');
+      expect(render(call)).not.toContain(key);
     }
     await refused.client.stop();
     await admitted.client.stop();
