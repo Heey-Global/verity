@@ -326,6 +326,9 @@ export const agentEventSchema = z.discriminatedUnion('t', [
   z.object({
     t: z.literal('status'),
     state: agentStatusSchema,
+    // Optional live detail for a non-terminal status. Clients may render this as
+    // transient chrome and remove it when a later status supersedes this one.
+    message: z.string().optional(),
   }),
   z.object({
     t: z.literal('text'),

@@ -7404,11 +7404,10 @@ describe('Conductor — backend routing by model (#143)', () => {
     const prepared = events.filter((e) => e.t === 'notice' || e.t === 'status');
     expect(prepared).toEqual([
       {
-        t: 'notice',
-        text: 'Rebuilding the Sandbox — the turn continues by itself.',
-        role: 'agent',
+        t: 'status',
+        state: 'awaiting_dependency',
+        message: 'Rebuilding the Sandbox — the turn continues by itself.',
       },
-      { t: 'status', state: 'awaiting_dependency' },
       { t: 'status', state: 'running' },
     ]);
     expect(backend.ran).toHaveBeenCalled();
@@ -7430,13 +7429,11 @@ describe('Conductor — backend routing by model (#143)', () => {
     await expect(conductor.sendTurn('s-fail', 'go')).rejects.toThrow(/beyond repair/);
 
     const events = await ctx.store.getEvents('s-fail');
-    expect(events.filter((e) => e.t === 'notice')).toEqual([
-      { t: 'notice', text: 'first', role: 'agent' },
-    ]);
+    expect(events.filter((e) => e.t === 'notice')).toEqual([]);
     // Released back to `running`, so the terminal error the caller raises is what
     // decides the session's status — not a stale `awaiting_dependency`.
     expect(events.filter((e) => e.t === 'status')).toEqual([
-      { t: 'status', state: 'awaiting_dependency' },
+      { t: 'status', state: 'awaiting_dependency', message: 'first' },
       { t: 'status', state: 'running' },
     ]);
   });

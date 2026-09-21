@@ -431,6 +431,22 @@ describe('SessionReducer', () => {
     expect(r.running).toBe(false);
   });
 
+  it('shows dependency status transiently until preparation resumes', () => {
+    const r = new SessionReducer();
+    r.apply(1, {
+      t: 'status',
+      state: 'awaiting_dependency',
+      message: 'Waking project Sandbox…',
+    });
+
+    expect(r.messages).toMatchObject([
+      { kind: 'dependency-status', text: 'Waking project Sandbox…' },
+    ]);
+
+    r.apply(2, { t: 'status', state: 'running' });
+    expect(r.messages).toEqual([]);
+  });
+
   it('renders an operator notice as a standalone user text message without starting a turn', () => {
     const r = new SessionReducer();
     r.apply(1, {
