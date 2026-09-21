@@ -5,10 +5,13 @@ import {
   parseAgentEvent,
   SESSION_PROJECTION_EVENT_TYPES,
   sessionProjectionEvents,
+  turnFailureErrorKind,
   type AgentEvent,
   type AgentEventType,
 } from '@verity/events';
-import { describe, expect, it } from 'vitest';
+import type { ProjectRecord } from '@verity/store';
+import { describe, expect, it, vi } from 'vitest';
+import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import {
   deriveSessionStatus,
   deriveSessionStatusFromProjection,
@@ -58,6 +61,69 @@ describe('deriveSessionStatus', () => {
     expect(deriveSessionStatus([text, result])).toBe('completed');
     expect(deriveSessionStatus([text, error])).toBe('crashed');
     expect(deriveSessionStatus([text, permission])).toBe('awaiting_input');
+  });
+
+  it('does not freeze a session on `crashed` when only the Sandbox was asleep', async () => {
+    // The whole chain in one guard, because each link fails silently on its own:
+    // the readiness check stops marking its refusal as transient, the conductor
+    // writes the marked failure under another kind, or this projection's
+    // non-crashing set drifts away from that kind. Any one of them and a session
+    // whose Sandbox came back a minute later still badges red — and since the
+    // backward scan settles on that event, it stays red until the operator sends
+    // another message by hand.
+    const sleeping = { id: 'p1', state: 'sleeping' } as ProjectRecord;
+    const failure = await ensureProjectSandboxReadyForTurn({
+      project: sleeping,
+      getProject: async () => sleeping,
+      // A background resolution — an auto-title, or the reattach after a server
+      // restart. Those never wait out a wake; they fail fast, by design.
+      canWait: false,
+      waitingOn: vi.fn(),
+      ensureAwake: async () => ({ id: 'p1', state: 'active' }) as ProjectRecord,
+    }).then(
+      () => undefined,
+      (error: unknown) => error as Error,
+    );
+    expect(failure?.message).toMatch(/sleeping/);
+
+    const turn: AgentEvent[] = [{ t: 'prompt', text: 'go' }, text];
+    const persisted: AgentEvent = {
+      t: 'error',
+      kind: turnFailureErrorKind(failure),
+      message: failure?.message ?? '',
+    };
+    expect(deriveSessionStatus([...turn, persisted])).toBe('idle');
+    // …and the premise: a failure that is NOT the transient class still crashes
+    // the session, so the assertion above is not passing because the projection
+    // stopped badging `crashed` altogether.
+    const ranAndFailed: AgentEvent = {
+      t: 'error',
+      kind: turnFailureErrorKind(new Error('the agent died')),
+      message: 'the agent died',
+    };
+    expect(deriveSessionStatus([...turn, ranAndFailed])).toBe('crashed');
+
+    // The other direction, which is the dangerous one: a session that really did
+    // crash, then a background resolution that fails fast against the sleeping
+    // Sandbox behind it. Settling on the newest event would clear the red badge
+    // and leave a broken session reading `idle` — a false green nobody goes
+    // looking for. The transient event is walked past, so the crash survives it.
+    expect(deriveSessionStatus([...turn, ranAndFailed, persisted])).toBe('crashed');
+    expect(deriveSessionStatus([...turn, result, persisted])).toBe('completed');
+    // A live or waiting status belonged to the turn this error just ended. It
+    // must not remain stuck after the terminal transient failure.
+    expect(deriveSessionStatus([running, persisted])).toBe('idle');
+    expect(deriveSessionStatus([awaitingDep, persisted])).toBe('idle');
+    expect(deriveSessionStatus([permission, persisted])).toBe('idle');
+    expect(
+      deriveSessionStatus([
+        { t: 'task', id: 'background', phase: 'started', description: 'Background task' },
+        result,
+        persisted,
+      ]),
+    ).toBe('completed');
+    // Nothing older to speak for the session: still `idle`, never `running`.
+    expect(deriveSessionStatus([text, persisted])).toBe('idle');
   });
 
   it('treats an interrupted turn as terminal and non-crashed', () => {

@@ -10,7 +10,9 @@ import {
   MEMORY_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
+  SANDBOX_NOT_READY_ERROR_KIND,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
+  sandboxNotReadyError,
   TERMINOLOGY_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   type AgentEvent,
@@ -7436,6 +7438,41 @@ describe('Conductor — backend routing by model (#143)', () => {
       { t: 'status', state: 'awaiting_dependency', message: 'first' },
       { t: 'status', state: 'running' },
     ]);
+  });
+
+  it('persists a Sandbox that was not ready as a non-crashing terminal error', async () => {
+    // The Sandbox was asleep, not broken — it comes back, and the next turn runs
+    // on it. Writing that failure as the ordinary `run_failed` badged the session
+    // `crashed` and left it there: the status projection settles on that event,
+    // so nothing displaced it until the operator sent another message. And the
+    // resolutions that hit this are the ones the operator never asked for —
+    // auto-title, the reattach after a restart — which refuse to wait out a wake
+    // by design, so a healthy session went red for a state that repairs itself.
+    await ctx.store.createSession({ sessionId: 's-asleep', worktree: '/wt/a', model: 'claude-x' });
+    const reported: string[] = [];
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: recordingBackend(),
+      sessionBackend: async () => {
+        throw sandboxNotReadyError('project Sandbox is sleeping');
+      },
+      onTurnError: (_id, error) => reported.push(error.message),
+      worktreeExists: async () => true,
+    });
+
+    await conductor.dispatchTurn('s-asleep', 'go');
+    await vi.waitFor(async () => {
+      expect((await ctx.store.getEvents('s-asleep')).filter((e) => e.t === 'error')).toHaveLength(
+        1,
+      );
+    });
+
+    expect((await ctx.store.getEvents('s-asleep')).filter((e) => e.t === 'error')).toEqual([
+      { t: 'error', kind: SANDBOX_NOT_READY_ERROR_KIND, message: 'project Sandbox is sleeping' },
+    ]);
+    // Still diagnosable: a quieter badge must not cost the server log its record
+    // of why the turn never ran.
+    expect(reported).toEqual(['project Sandbox is sleeping']);
   });
 
   it('writes nothing when the backend resolves without reporting a wait', async () => {

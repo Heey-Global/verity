@@ -63,6 +63,13 @@ export { MEMORY_SYSTEM_PROMPT } from './memory.js';
 export { PULL_REQUEST_SYSTEM_PROMPT } from './pull-requests.js';
 export { REPO_CONVENTIONS_SYSTEM_PROMPT } from './repo-conventions.js';
 export { SANDBOX_RESOURCES_SYSTEM_PROMPT } from './sandbox-resources.js';
+export {
+  SANDBOX_NOT_READY_ERROR_KIND,
+  isSandboxNotReadyError,
+  markSandboxNotReady,
+  sandboxNotReadyError,
+  turnFailureErrorKind,
+} from './sandbox-lifecycle.js';
 export { TERMINOLOGY_SYSTEM_PROMPT } from './terminology.js';
 export { VISIBLE_MEDIA_SYSTEM_PROMPT } from './visible-media.js';
 export { appendExternalPromptData } from './external-content.js';
