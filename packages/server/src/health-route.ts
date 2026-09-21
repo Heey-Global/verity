@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 export interface HealthRouteDeps {
   version: string;
   pushEnabled: boolean;
-  publicPreviewsEnabled: boolean;
+  publicPreviewsEnabled: () => boolean;
   secretJobRuntimeReadiness?: () => Promise<void>;
 }
 
@@ -13,7 +13,10 @@ export function registerHealthRoute(app: FastifyInstance, deps: HealthRouteDeps)
     const base = {
       version: deps.version,
       pushEnabled: deps.pushEnabled,
-      publicPreviewsEnabled: deps.publicPreviewsEnabled,
+      // Uplink admission happens after the HTTP server is constructed and can
+      // disappear again when its lease or socket is lost. Resolve availability
+      // for every probe so clients do not retain the boot-time state forever.
+      publicPreviewsEnabled: deps.publicPreviewsEnabled(),
       // Capability, not a deployment gate: it is true wherever this build runs.
       // The app needs it because older servers silently drop `forceRebuild`.
       imageRebuildSupported: true,
