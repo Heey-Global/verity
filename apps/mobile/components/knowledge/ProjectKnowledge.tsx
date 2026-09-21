@@ -174,11 +174,7 @@ export function ProjectKnowledge({
             }
           />
         </View>
-      ) : (
-        <Text style={styles.muted}>
-          New sessions currently use the project notes from Settings.
-        </Text>
-      )}
+      ) : null}
       {space && document && inside(document.folderId, space.wikiFolderId) ? (
         <Button
           icon="check"
@@ -210,19 +206,10 @@ export function ProjectKnowledge({
       ) : null}
       {space ? (
         <>
-          {/* The model is a server setting (Settings › Knowledge), not a project
-              one — offering it here made one project's screen silently rewrite
-              the model every other project's jobs run on. */}
-          <Text style={styles.muted}>
-            New Sources are added to the Wiki automatically, on the Knowledge model set in Settings.
-            Every job stays limited to this project.
-          </Text>
           {modelSet === false ? (
             <>
               <Text accessibilityRole="alert" style={styles.error}>
-                No Knowledge model is set yet, so Wiki maintenance is paused. Choose one in Settings
-                › Knowledge — it applies to every project, and queued work starts as soon as it is
-                set.
+                Choose a Knowledge model before this Wiki can update.
               </Text>
               <Button
                 icon="cpu"
@@ -234,30 +221,36 @@ export function ProjectKnowledge({
           {/* The server retains jobs as session history. This surface only needs
               the latest state and retry action; rendering every automatic retry
               turns one infrastructure failure into a wall of identical rows. */}
-          {jobs.slice(0, 1).map((job) => (
-            <View key={job.id} style={styles.row}>
-              <Button
-                icon="message-circle"
-                label={`${job.kind === 'ingest' ? 'Wiki update' : 'Wiki review'} · ${jobStatusLabel[job.status]} · ${String(job.sourceRevisions.length)} source${job.sourceRevisions.length === 1 ? '' : 's'}${job.model ? ` · ${job.model}` : ''}`}
-                onPress={() =>
-                  router.push({ pathname: '/session/[id]', params: { id: job.sessionId } })
-                }
-              />
-              {job.error ? <Text style={styles.error}>{job.error}</Text> : null}
-              {job.status === 'failed' ? (
+          {jobs
+            .slice(0, 1)
+            .filter((job) => job.status !== 'completed')
+            .map((job) => (
+              <View key={job.id} style={styles.row}>
+                <Text style={job.status === 'failed' ? styles.error : styles.muted}>
+                  {job.kind === 'ingest' ? 'Wiki update' : 'Wiki review'}{' '}
+                  {jobStatusLabel[job.status].toLowerCase()}.
+                </Text>
                 <Button
-                  label="Try again"
-                  disabled={busy || blocked}
+                  icon="message-circle"
+                  label="View details"
                   onPress={() =>
-                    start(
-                      job.kind,
-                      job.sourceRevisions.map((source) => source.documentId),
-                    )
+                    router.push({ pathname: '/session/[id]', params: { id: job.sessionId } })
                   }
                 />
-              ) : null}
-            </View>
-          ))}
+                {job.status === 'failed' ? (
+                  <Button
+                    label="Try again"
+                    disabled={busy || blocked}
+                    onPress={() =>
+                      start(
+                        job.kind,
+                        job.sourceRevisions.map((source) => source.documentId),
+                      )
+                    }
+                  />
+                ) : null}
+              </View>
+            ))}
         </>
       ) : null}
     </View>
