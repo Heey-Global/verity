@@ -882,6 +882,12 @@ describe('ProvisionerImpl (#174)', () => {
     const first = provisioner.ensureProjectSandboxAwake(id);
     await vi.waitFor(() => expect(reactivate).toHaveBeenCalledOnce());
     await expect(ctx.store.getProject(id)).resolves.toMatchObject({ state: 'waking' });
+    // The overview reconciles on its polling path while the retained container
+    // is still stopped. It must observe the live wake without trying to recover
+    // it as an interrupted operation (or waiting for the slow start to finish).
+    await expect(provisioner.recoverInterruptedWake(id)).resolves.toMatchObject({
+      state: 'waking',
+    });
     const second = provisioner.ensureProjectSandboxAwake(id);
     release();
 

@@ -2734,6 +2734,14 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   async recoverInterruptedWake(projectId: string): Promise<ProjectRecord> {
+    // Reconciliation also runs from the project-list poll. If this process owns
+    // the wake, the durable `waking` row is live rather than interrupted; do not
+    // contend with its mutation barrier or wait for a potentially slow start.
+    if (this.projectWakeAttempts.has(projectId)) {
+      const project = await this.opts.store.getProject(projectId);
+      if (project === undefined) throw new ProvisioningError('project gone during wake recovery');
+      return project;
+    }
     return this.withProjectExclusiveMutation(projectId, async () => {
       const project = await this.opts.store.getProject(projectId);
       if (project === undefined) throw new ProvisioningError('project gone during wake recovery');
