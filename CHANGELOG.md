@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.1](https://github.com/Heey-Global/verity/compare/v1.4.0...v1.4.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **knowledge:** require a global maintenance model ([#590](https://github.com/Heey-Global/verity/issues/590)) ([fa8b5b1](https://github.com/Heey-Global/verity/commit/fa8b5b1360b979e2805cdd80aaa9341280ed56bd))
+* **server:** spawn into sleeping projects without reprovisioning ([#586](https://github.com/Heey-Global/verity/issues/586)) ([6bc4c45](https://github.com/Heey-Global/verity/commit/6bc4c45262ce326bbbe7e015683f10b4b5476bb6))
+* **server:** wire Uplink control logging ([#589](https://github.com/Heey-Global/verity/issues/589)) ([5cd3a19](https://github.com/Heey-Global/verity/commit/5cd3a1970fd020664d22361e9a23385fc6f0ff3e))
+
 ## [1.4.0](https://github.com/Heey-Global/verity/compare/v1.3.3...v1.4.0) (2026-09-21)
 
 
