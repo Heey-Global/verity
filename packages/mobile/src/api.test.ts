@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   agentLoopConfigFingerprint,
   VerityApiError,
@@ -1588,6 +1589,31 @@ describe('VerityClient.createSession', () => {
     await expect(client.createSession({ prompt: 'go' })).rejects.toThrow();
   });
 
+  // The chat screen opens before this call answers, so its rejection IS what the
+  // operator reads in the session banner — there is no session to fall back to.
+  // A ZodError's message is a pretty-printed JSON array of its issues, which the
+  // banner renders verbatim: a schema dump where a sentence belongs.
+  it('rejects a body it cannot parse with a readable reason, not a schema dump', async () => {
+    const { fetch } = fakeFetch(json({ awaitingProvisioning: true, project: { id: 'p1' } }, 202));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    const caught: unknown = await client
+      .createSession({ prompt: 'go', project: 'heey-global/verity' })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    expect(caught).toBeInstanceOf(Error);
+    const { message, cause } = caught as Error;
+    expect(message).not.toContain('\n');
+    expect(message).not.toContain('"code"');
+    expect(message.length).toBeLessThan(120);
+    // Kept off the operator's screen, not thrown away: whoever debugs this needs
+    // the issue list the sentence above replaced.
+    expect(cause).toBeInstanceOf(z.ZodError);
+  });
+
   it('parses the awaiting-provisioning response for project spawns', async () => {
     const project = {
       id: 'p1',
@@ -1611,6 +1637,60 @@ describe('VerityClient.createSession', () => {
     expect(calls[0]?.init?.body).toBe(
       JSON.stringify({ prompt: 'go', project: 'heey-global/verity' }),
     );
+  });
+
+  // The 202 carries the server's `publicProject` projection, not the raw project
+  // row: `kind` is omitted for a GitHub project, and `sandboxUpdate` / `toolkitDrift`
+  // / the release fields ride along. A client that rejects any of that turns a
+  // "still provisioning, try again" into a failed create — the exact shape mismatch
+  // that used to put a schema dump in the session banner. `cloning` because only a
+  // project with no usable Sandbox reaches this answer at all; a sleeping one now
+  // spawns straight away.
+  it('parses an awaiting-provisioning project in the server projection shape', async () => {
+    const project = {
+      id: 'p1',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      imageRef: null,
+      state: 'cloning',
+      provisionError: null,
+      provisionWarning: null,
+      stateChangedAt: '2026-06-26T00:00:00.000Z',
+      latestReleaseTag: null,
+      latestReleaseName: null,
+      latestReleaseUrl: null,
+      latestReleasePublishedAt: null,
+      sandboxUpdate: {
+        state: 'unknown',
+        kind: null,
+        category: null,
+        reason: 'sandbox update checker is not configured',
+        current: null,
+        currentVersion: null,
+        currentRevision: null,
+        target: null,
+        targetVersion: null,
+        targetRevision: null,
+        selfRepair: 'converging',
+        turnBlocked: false,
+      },
+      toolkitDrift: null,
+      createdAt: '2026-06-26T00:00:00.000Z',
+      updatedAt: '2026-06-26T00:00:00.000Z',
+    };
+    const { fetch } = fakeFetch(json({ awaitingProvisioning: true, project }, 202));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    const result = await client.createSession({ prompt: 'go', project: 'heey-global/verity' });
+
+    expect(result).toMatchObject({ awaitingProvisioning: true });
+    expect('project' in result ? result.project : undefined).toMatchObject({
+      id: 'p1',
+      // Defaulted by the schema, because the server omits it for a GitHub project.
+      kind: 'github',
+      state: 'cloning',
+    });
   });
 });
 

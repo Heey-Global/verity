@@ -10550,6 +10550,14 @@ describe('POST /sessions with project field (#174)', () => {
         repo: 'verity',
         state: 'absent',
       });
+      // Serialized like every other project payload. The raw row was handed out
+      // here instead, which put internal columns on the wire and produced a body
+      // no client schema accepts, so the app reported a schema dump where
+      // "provisioning, try again shortly" belongs.
+      expect(body.project).not.toHaveProperty('hiddenAt');
+      expect(body.project).not.toHaveProperty('sleepCompatibilityFingerprint');
+      expect(body.project).toHaveProperty('sandboxUpdate');
+      expect(body.project).toHaveProperty('toolkitDrift', null);
       // The provisioner was fired asynchronously (fire-and-forget)
       expect(p.provision).toHaveBeenCalledWith('p-absent', { confirmWarnings: false });
       // No session was started (we returned early)
@@ -10604,6 +10612,71 @@ describe('POST /sessions with project field (#174)', () => {
       await a.close();
     }
   });
+
+  // A Sandbox in a sleep lifecycle state is provisioned, not missing: its clone and
+  // worktrees are on the host, and `publicProject` even reports it to clients as
+  // `active`. Routing the spawn to the provisioner claimed the row for `cloning` —
+  // which drops the compatibility fingerprint the wake needs — and rebuilt the very
+  // container the sleep was retaining, while the app got a 202 for a project it was
+  // told is up. All three states are covered because all three reach this branch and
+  // all three own a container the provisioner would destroy.
+  it.each(['sleeping', 'sleeping_starting', 'waking'] as const)(
+    'spawns into a %s project without provisioning it',
+    async (state) => {
+      const projectId = `p-${state}`;
+      await ctx.store.upsertProject({
+        id: projectId,
+        owner: 'heey-global',
+        repo: 'verity',
+        containerName: 'dev-heey-global-verity',
+        state: 'active',
+      });
+      await ctx.store.updateProjectSleepState(projectId, state, {
+        sleepCompatibilityFingerprint: 'fingerprint-1',
+        sleepingSince: state === 'sleeping' ? new Date('2026-06-26T00:00:00.000Z') : null,
+        wakeStartedAt: state === 'waking' ? new Date('2026-06-26T00:01:00.000Z') : null,
+      });
+      const p = fakeProvisioner();
+      const projectWorktrees = fakeProjectWorktrees();
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner: p,
+        projectCloneRoot: '/data/dev/',
+        projectBackend: fakeProjectBackend,
+        projectWorktrees: () => projectWorktrees,
+        worktrees: { add: vi.fn(async () => '/wt/s-asleep'), remove: vi.fn(async () => {}) },
+      });
+      try {
+        const res = await a.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', projectId },
+        });
+        expect(res.statusCode).toBe(201);
+        const { sessionId }: { sessionId: string } = res.json();
+        const session = await ctx.store.getSession(sessionId);
+        expect(session?.projectId).toBe(projectId);
+        // The worktree comes from the project's clone on the host, which the sleep
+        // never touched — a spawn needs no running container. Assert the call and a
+        // concrete path under that clone: comparing against an absent mock result is
+        // `undefined === undefined`, which would hold for a session that got no
+        // worktree at all.
+        expect(projectWorktrees.add).toHaveBeenCalledTimes(1);
+        expect(session?.worktree).toMatch(/^\/data\/dev\/heey-global-verity\/\.verity-sessions\/./);
+        expect(session?.worktree).toBe(await projectWorktrees.add.mock.results[0]?.value);
+        expect(p.provision).not.toHaveBeenCalled();
+        // The spawn leaves the Sandbox where it found it — the first turn is what
+        // wakes it, and the fingerprint that wake depends on is still there.
+        const after = await ctx.store.getProject(projectId);
+        expect(after?.state).toBe(state);
+        expect(after?.sleepCompatibilityFingerprint).toBe('fingerprint-1');
+      } finally {
+        await a.close();
+      }
+    },
+  );
 
   it('creates a session for a local project addressed by project id', async () => {
     await ctx.store.createProject({
