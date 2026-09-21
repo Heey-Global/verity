@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.25",
+  "version": "1.33.26",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "6e77fe9ece6a1655d6fbf89a93af271221da79a9",
-  "tag": "mobile-v1.33.25",
-  "branch": "staging-mobile-v1.33.25-6e77fe9ece6a1655d6fbf89a93af271221da79a9",
-  "baseline": "mobile-v1.33.24",
-  "group": "010a1d12-1102-446d-95d9-e949e7a015b3",
+  "commit": "3d0cb1f6d921161ff2431bc0479c3f2d4448e333",
+  "tag": "mobile-v1.33.26",
+  "branch": "staging-mobile-v1.33.26-3d0cb1f6d921161ff2431bc0479c3f2d4448e333",
+  "baseline": "mobile-v1.33.25",
+  "group": "21c98633-bfd8-484d-9611-6bbf2bbad1c3",
   "notes": [
-    "automate wiki maintenance (#566)"
+    "show transient dependency status (#579)"
   ]
 }
