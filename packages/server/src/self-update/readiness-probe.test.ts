@@ -86,14 +86,13 @@ describe('readiness probe verdict', () => {
   it('rejects an answer that is not a Verity Server', async () => {
     for (const body of [{ status: 'ok' }, 'ok', { version: '10.6.0' }, null]) {
       const fetch = vi.fn(async () => Promise.resolve(answer(200, body)));
-      await expect(runReadinessProbe({ ...options, timeoutMs: 1, fetch })).resolves.toMatchObject({
-        ok: false,
-        attempts: 1,
-      });
+      await expect(
+        runReadinessProbe({ ...options, timeoutMs: 1, now: () => 0, fetch }),
+      ).resolves.toMatchObject({ ok: false, attempts: 1 });
     }
     const gateway = vi.fn(async () => Promise.resolve(answer(502, { status: 'ok', version: '1' })));
     await expect(
-      runReadinessProbe({ ...options, timeoutMs: 1, fetch: gateway }),
+      runReadinessProbe({ ...options, timeoutMs: 1, now: () => 0, fetch: gateway }),
     ).resolves.toMatchObject({ ok: false, detail: 'unhealthy response: HTTP 502' });
   });
 
