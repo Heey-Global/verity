@@ -5,6 +5,7 @@
 // the fold to find the thing that needs attention: the checklist names what is
 // unfinished, and each row below it is a destination, not a control.
 import {
+  modelDisplayName,
   settingsChecklist,
   settingsChecklistHeadline,
   commitAuthorReady,
@@ -192,6 +193,36 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             // nothing about the update it announced.
             status={updateAwaits ? { intent: 'needsSetup', label: 'Update available' } : undefined}
             onPress={() => router.push('/settings/maintenance')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+
+      {/* Wiki maintenance runs on one model for every project, so the choice is
+          a server setting and lives with the other server settings. The row
+          carries the current value because "which model is writing my Wiki" is
+          the question that brings anyone here. */}
+      <SettingsGroup title="Knowledge">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="book-open"
+            title="Knowledge model"
+            subtitle="Runs Wiki maintenance in every project"
+            // "Not set" is a claim about the server, so it waits for the
+            // settings to arrive rather than flashing on every open.
+            value={
+              settings
+                ? settings.knowledgeModel
+                  ? modelDisplayName(settings.knowledgeModel)
+                  : 'Not set'
+                : undefined
+            }
+            status={
+              settings && !settings.knowledgeModel
+                ? { intent: 'needsSetup', label: 'Maintenance paused' }
+                : undefined
+            }
+            onPress={() => router.push('/settings/knowledge')}
+            accessibilityLabel="Knowledge model"
           />
         </SettingsListPanel>
       </SettingsGroup>

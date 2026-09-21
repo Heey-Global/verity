@@ -13,6 +13,15 @@ interface WikiJobServiceDeps {
     model?: string,
   ): Promise<{ model: string; directory: string; release(): void }>;
   onError(error: unknown): void;
+  /**
+   * Holds the automatic queue while maintenance cannot run at all — no
+   * Knowledge model is configured. Unlike a failure this is not retried: a
+   * paused project keeps its queued work and only moves again once `recover`
+   * is called, so an unset model costs nothing instead of a session a minute.
+   */
+  paused?(): Promise<boolean> | boolean;
+  /** Reported whenever work is actually held, so a pause is visible to an operator who never opens the app. */
+  onPaused?(projectId: string): void;
   debounceMs?: number;
 }
 
@@ -24,6 +33,7 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
   const queued = new Map<string, { timer: ReturnType<typeof setTimeout>; dueAt: Date }>();
   const queueWrites = new Map<string, number>();
   const automatic = new Map<string, Promise<void>>();
+  const woken = new Set<string>();
   const start = async (projectId: string, input: WikiJobRequest) => {
     if (closing) throw new KnowledgeError('conflict', 'Server is shutting down');
     const prepared = await deps.prepare(projectId, input.model);
@@ -141,9 +151,22 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
     queued.set(projectId, { timer, dueAt });
   };
   const runAutomatic = (projectId: string) => {
-    if (closing || automatic.has(projectId) || (queueWrites.get(projectId) ?? 0) > 0) return;
+    if (closing) return;
+    // A wake that lands mid-pass is remembered rather than dropped. The pass
+    // read `paused` before the wake happened, so on its own it would decline to
+    // re-arm and freeze the queue until the next enqueue or a restart — which
+    // is the failure this pausing exists to avoid.
+    if (automatic.has(projectId)) {
+      woken.add(projectId);
+      return;
+    }
+    // A timer can expire while a serialized debounce write is still pending.
+    // That write always arms the project in its finally block, after the new
+    // due date is durable, so this pass must wait for it.
+    if ((queueWrites.get(projectId) ?? 0) > 0) return;
     const pending = (async () => {
       let retryAt: Date | undefined;
+      let paused = false;
       try {
         const records = await deps.store.knowledge.listWikiMaintenance(projectId);
         const reconciliation = (await deps.store.knowledge.listWikiReconciliations()).find(
@@ -151,6 +174,11 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
         );
         const sourceDocumentIds = records.map((record) => record.sourceDocumentId);
         if ((!sourceDocumentIds.length && !reconciliation) || closing) return;
+        if (await deps.paused?.()) {
+          paused = true;
+          deps.onPaused?.(projectId);
+          return;
+        }
         const launch = start(projectId, {
           kind: reconciliation ? 'reconcile' : 'ingest',
           sourceDocumentIds,
@@ -167,7 +195,11 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
         deps.onError(error);
       } finally {
         automatic.delete(projectId);
-        if (!closing) {
+        // A paused project must not be re-armed: its due dates are already in
+        // the past, so arming again would spin the timer without end. Unless
+        // something asked for a wake while the pass was running.
+        const resume = woken.delete(projectId);
+        if (!closing && (!paused || resume)) {
           try {
             const remaining = await deps.store.knowledge.listWikiMaintenance(projectId);
             const reconciliation = (await deps.store.knowledge.listWikiReconciliations()).find(
@@ -262,6 +294,7 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
       closing = true;
       for (const { timer } of queued.values()) clearTimeout(timer);
       queued.clear();
+      woken.clear();
       // A prepared start must settle before shutdown snapshots active sessions.
       await Promise.allSettled([...starting]);
       await Promise.all(

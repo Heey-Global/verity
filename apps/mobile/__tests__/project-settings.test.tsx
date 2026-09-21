@@ -24,6 +24,12 @@ jest.mock('expo-router', () => ({
   Link: ({ children }: { children?: unknown }) => children ?? null,
   router: { replace: jest.fn(), push: jest.fn(), dismissTo: jest.fn() },
   useLocalSearchParams: () => ({ id: 'p/1' }),
+  // The Knowledge tab re-reads the Knowledge model on focus; under test the
+  // screen is focused exactly once, on mount.
+  useFocusEffect: (effect: () => undefined | (() => void)) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    jest.requireActual<typeof import('react')>('react').useEffect(effect, [effect]);
+  },
 }));
 
 // The screen imports `../../lib/client` (from app/project/[id].tsx); jest.mock

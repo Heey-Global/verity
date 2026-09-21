@@ -169,6 +169,9 @@ export function makeSettings(overrides: Partial<VeritySettings> = {}): VeritySet
     googleDriveClientId: null,
     googleDriveAccountEmail: null,
     googleDriveConnected: false,
+    // The default state of a fresh server: no model chosen, so Wiki maintenance
+    // holds its queue rather than inheriting one.
+    knowledgeModel: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -210,6 +213,7 @@ export type ClientOverrides = {
   requestServerUpdate?: jest.Mock;
   listProjects?: jest.Mock;
   recreateProjectContainer?: jest.Mock;
+  listModels?: jest.Mock;
   listHttpMcpConnections?: jest.Mock | null;
   createHttpMcpConnection?: jest.Mock;
   deleteHttpMcpConnection?: jest.Mock;
@@ -258,6 +262,7 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
       opts.deleteHttpMcpConnection ?? jest.fn(notImplemented('deleteHttpMcpConnection')),
     completeHttpMcpOAuth:
       opts.completeHttpMcpOAuth ?? jest.fn(notImplemented('completeHttpMcpOAuth')),
+    listModels: opts.listModels ?? jest.fn(notImplemented('listModels')),
   };
   // `null` stands for a server too old to have the endpoint at all — the method
   // is absent, not failing, which is a case the MCP list has to tell apart.

@@ -30,6 +30,7 @@ export interface SettingsRouteDeps {
   };
   transcriptionConfigured: (settings: VeritySettingsRecord | null) => boolean;
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  onKnowledgeModelChanged?: (() => void) | undefined;
   onOpenCodeSettingsChanged?:
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
 }
@@ -195,6 +196,10 @@ export function registerSettingsRoutes(
       }
       if (settings === undefined) throw new Error('Verity settings disappeared after update');
       if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
+      // Wiki maintenance holds its queue while no Knowledge model is set, and
+      // nothing else re-checks it. Without this the work that piled up before
+      // the choice stays queued until the next restart.
+      if (patch.knowledgeModel !== undefined) deps.onKnowledgeModelChanged?.();
       if (changesOpenCode) {
         try {
           await deps.onOpenCodeSettingsChanged?.(settings);

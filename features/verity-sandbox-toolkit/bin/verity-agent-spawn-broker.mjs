@@ -781,8 +781,11 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   if (options.enforceRoot !== false) await validateImmutablePath(parent);
   const home = await mkdtemp(join(parent, 'job-'));
   try {
-    await chown(home, uid, gid);
+    // Set the mode while the broker still owns the inode. In rootless/user-
+    // namespace deployments, changing ownership can remove the broker's right
+    // to chmod the directory even though it was the process that created it.
     await chmod(home, 0o700);
+    await chown(home, uid, gid);
     for (const relative of ['claude', 'codex', 'config', 'data', 'state', 'cache', 'tmp']) {
       const directory = join(home, relative);
       await mkdir(directory, { mode: 0o700 });
