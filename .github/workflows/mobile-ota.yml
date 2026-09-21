@@ -30,6 +30,10 @@ on:
       - 'package-lock.json'
       - 'scripts/mobile-ota-release.ts'
       - 'scripts/mobile-native-compatibility.mjs'
+  # A delivered promotion strands any candidate staged after its approval, and
+  # its own commit is the only push that follows. The promotion workflow asks
+  # for the restage that no push would trigger.
+  workflow_dispatch:
 
 permissions: read-all
 
@@ -62,7 +66,9 @@ jobs:
         run: |
           set -euo pipefail
           changed="$(git diff --name-only HEAD^ HEAD)"
-          if [[ "$changed" == 'apps/mobile/ota-promotion.json' ]]; then
+          # A dispatch is the promotion workflow asking to restage onto exactly
+          # this commit, so its manifest change is an expected source here.
+          if [[ "$changed" == 'apps/mobile/ota-promotion.json' && "$GITHUB_EVENT_NAME" == 'push' ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "OTA promotion commit detected; the promotion workflow owns it."
           elif ! git diff --quiet HEAD^ HEAD -- apps/mobile/version.txt; then

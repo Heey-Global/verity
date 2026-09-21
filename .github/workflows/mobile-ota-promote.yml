@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      # A delivery strands later candidates; dispatching staging restages them.
+      actions: write
       contents: write
       pull-requests: read
       checks: read
