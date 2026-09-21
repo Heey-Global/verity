@@ -413,6 +413,26 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('strips control characters out of a refusal reason', async () => {
+    const { client, socket, disabled, log } = await welcomed(setup());
+    disabled.mockClear();
+    log.warn.mockClear();
+    // A reason carrying its own line breaks forges a record: pasted into a log
+    // it reads as several entries, one of which nobody wrote. The far end
+    // chooses this string, so the bound belongs on this side of the frame.
+    socket.message({ type: 'revoke', reason: 'revoked\nUplink: all clear ' });
+    await flush();
+
+    const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
+    expect(surfaced).not.toMatch(/\p{C}/u);
+    expect(surfaced).toContain('revoked');
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: expect.not.stringMatching(/\p{C}/u) }),
+      'Uplink withdrew this installation',
+    );
+    await client.stop();
+  });
+
   it('keeps a multi-byte refusal reason intact when it clamps it', async () => {
     vi.useFakeTimers();
     const { client, sockets, disabled } = setupReconnecting();
@@ -569,7 +589,7 @@ describe('UplinkControlClient', () => {
       expect.objectContaining({
         frameType: 'reject',
         reason: 'limit_reached',
-        identity: false,
+        identityReject: false,
         welcomed: false,
       }),
       'Uplink refused the control connection',
@@ -682,6 +702,32 @@ describe('UplinkControlClient', () => {
     expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message');
     expect(client.isAvailable()).toBe(false);
     expect(disabled).toHaveBeenCalledWith('invalid Uplink control message');
+    await client.stop();
+  });
+
+  it('records the admission even when persisting the installation id fails', async () => {
+    const { client, socket, store, log } = setup();
+    store.updateVeritySettings.mockRejectedValueOnce(new Error('write failed'));
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+
+    // A write that fails leaves the id unstored, so the next handshake
+    // introduces itself as a stranger and consumes another slot against the
+    // installation cap. If the record is written only after the write
+    // succeeds, that loop leaves nothing behind but repeated refusals with no
+    // trace of what rotated.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: 'installation-1', firstEver: true }),
+      'Uplink admitted this installation',
+    );
     await client.stop();
   });
 

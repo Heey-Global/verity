@@ -606,13 +606,20 @@ Sent by the preview edge (data connection, `packages/preview-tunnel`):
 **The 4000-range is not yet agreed across the boundary, and today it collides.** Observed against
 Uplink 2.1.0, the two sides read the same two numbers in opposite senses:
 
-| Code   | Installation (table above) | Hosted Uplink |
-| ------ | -------------------------- | ------------- |
-| `4001` | Lease expired              | Refusal       |
-| `4003` | Refused or withdrawn       | Lease expired |
+| Code   | Installation control connection | Hosted Uplink |
+| ------ | ------------------------------- | ------------- |
+| `4001` | Lease expired                   | Refusal       |
+| `4003` | Refused or withdrawn            | Lease expired |
+
+The preview edge assigns the same two numbers a third pair of meanings — `4001` "replaced by
+current connector", `4003` "share expired". That is not a comparison anyone has made against the
+hosted side, because the two never meet: the control connection and the data connection are
+separate sockets to separate endpoints, and a code read off one says nothing about the other. It is
+listed here so that a `4003` in a log is never assumed to be the control connection's.
 
 Until that is reconciled, **no diagnosis may be keyed on a close code alone**: use the
-`reject.reason` on the frame, which is unambiguous in both directions.
+`reject.reason` on the frame, which is unambiguous in both directions, and the socket the code came
+off.
 Aligning the two is an Uplink-side change; this table is the installation's half and is what
 `packages/server/src/uplink-control-client.ts` implements.
 

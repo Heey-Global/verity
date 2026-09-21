@@ -236,7 +236,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       // stays affordable: one line every five minutes is what makes the state
       // findable in a log nobody was watching at the time.
       this.options.log?.warn(
-        { reason: this.lastReject.reason, identity: true },
+        { reason: this.lastReject.reason, identityReject: true },
         'not dialling the Uplink: this key was refused',
       );
       this.clearAuthority(this.lastReject.reason);
@@ -407,9 +407,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
       const previousInstallationId = settings?.uplinkInstallationId ?? undefined;
       const firstEver = !previousInstallationId;
       const idChanged = !firstEver && previousInstallationId !== installationId;
-      if (previousInstallationId !== installationId) {
-        await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
-      }
+      // Recorded before the write, not after it: a failing write closes the
+      // connection from the catch around this handler, and an id that rotates
+      // on every admission is most likely to be noticed on exactly that path.
+      // Logging afterwards would drop the record precisely when it is needed.
       this.options.log?.info(
         {
           installationId,
@@ -420,6 +421,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
         },
         'Uplink admitted this installation',
       );
+      if (previousInstallationId !== installationId) {
+        await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
+      }
       this.welcomed = true;
       this.startHeartbeat();
       if (!this.features.has('sharing')) {
@@ -452,8 +456,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (frame.type === 'reject') {
       const reason = refusalReason(frame.reason, 'rejected');
-      const identity = IDENTITY_REJECTS.has(reason);
-      if (identity) {
+      const identityReject = IDENTITY_REJECTS.has(reason);
+      if (identityReject) {
         this.lastReject = { key, reason };
       } else {
         this.retryCeilingMs = RECONNECT_CAPACITY_MS;
@@ -463,7 +467,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       // had already admitted and then refused on a later frame. Those have
       // different causes, and the message alone would name only the first.
       this.options.log?.warn(
-        { frameType: 'reject', reason, identity, welcomed: this.welcomed },
+        { frameType: 'reject', reason, identityReject, welcomed: this.welcomed },
         'Uplink refused the control connection',
       );
       this.clearAuthority(reason);
@@ -695,7 +699,11 @@ function optionalString(value: unknown, fallback: string): string {
  * message the app shows until the credentials change. Cap it at the point it
  * enters that state rather than trusting the far end to be terse. */
 function refusalReason(value: unknown, fallback: string): string {
-  const reason = optionalString(value, fallback);
+  // Newlines and control characters go too, and for the same reason the length
+  // does: this string is pinned into an app-facing message and into a
+  // structured log line, and a reason carrying its own line breaks forges a
+  // record that reads as several.
+  const reason = optionalString(value, fallback).replace(/\p{C}/gu, ' ');
   if (reason.length <= MAX_REFUSAL_REASON_CHARS) return reason;
   // By code point, not by unit: slicing a string this side never chose the
   // shape of can otherwise end on half a surrogate pair, and the replacement
