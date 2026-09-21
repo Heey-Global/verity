@@ -36,6 +36,11 @@ export function deriveSessionStatus(events: readonly AgentEvent[]): SessionStatu
  * So every event preceding the most recent non-steered `prompt` is unreachable,
  * and a tail containing one carries everything the derivation can observe.
  *
+ * {@link permissionEventAwaitsInput} runs over the same tail wherever this one
+ * does, and is bounded by the same event for its own reasons: its backward scan
+ * returns on a non-steered `prompt`. The licence covers both, and a guard in
+ * `status.test.ts` holds it to that.
+ *
  * It is a predicate rather than a length, deliberately: "far enough back" is not
  * a number of events. One turn can emit an unbounded run of `task`, `status` and
  * `permission` events, so any fixed window is sometimes short — the caller has to

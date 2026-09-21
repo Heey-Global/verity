@@ -27,6 +27,7 @@ import {
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   TERMINOLOGY_SYSTEM_PROMPT,
+  type AgentEvent,
   type Attachment,
 } from '@verity/events';
 import {
@@ -3187,6 +3188,54 @@ describe('GET /sessions', () => {
         ],
       },
     ]);
+  });
+
+  it('still reports status and quota from a log far longer than the projection tail', async () => {
+    // The overview no longer reads a session's whole projection slice — it reads
+    // the end of it. Both things this route derives from a log can be decided by
+    // something OLDER than that tail: the quota state stands until the provider
+    // replaces it, and the status derivation needs the turn's `prompt`. A short
+    // log cannot tell those apart from a tail that simply held them, so this
+    // seeds past the bound and asks the route.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    // Deliberately does not import `PROJECTION_TAIL`: a guard that tracked the
+    // bound would follow it if it were raised, and stop asking the question.
+    // What it needs is a log whose ANSWER lives before the end of it.
+    const written: AgentEvent[] = [
+      { t: 'rate_limit', status: 'rejected', resetsAt: 1_700_000_042, window: 'weekly' },
+      { t: 'prompt', text: 'the turn still running in the background' },
+      { t: 'task', id: 'bg-open', phase: 'started' },
+      // Long enough to push everything above out of any plausible tail, and made
+      // of events the derivation reads but does not stop on.
+      ...Array.from({ length: 130 }, (_, at) => [
+        { t: 'task', id: `bg-${String(at)}`, phase: 'started' } as const,
+        { t: 'task', id: `bg-${String(at)}`, phase: 'ended' } as const,
+      ]).flat(),
+      {
+        t: 'result',
+        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        stopReason: 'end_turn',
+      },
+    ];
+    for (const event of written) await ctx.store.appendEvent('s1', event);
+
+    const res = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(res.statusCode).toBe(200);
+    const [summary] =
+      res.json<
+        { status: string; rateLimit?: { status: string; resetsAt: number }; eventCount: number }[]
+      >();
+    // `bg-open` never ended, so the turn's `result` does NOT mean completed —
+    // and its `started` is far out of reach of the tail. Read from the tail
+    // alone this session reports `completed`, and the operator watching a
+    // background task run sees the card go quiet.
+    expect(summary?.status).toBe('running');
+    // Likewise the quota: the newest state for the weekly window is the oldest
+    // event in the log. Dropped, the summary carries no `rateLimit` at all,
+    // which renders as "not limited".
+    expect(summary?.rateLimit).toMatchObject({ status: 'rejected', resetsAt: 1_700_000_042 });
+    // The counters stay facts about the whole log, whatever the tail read.
+    expect(summary?.eventCount).toBe(written.length);
   });
 
   it('enriches each summary with a compact `pr` once resolved (stale-while-revalidate)', async () => {

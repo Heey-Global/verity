@@ -142,6 +142,23 @@ describe('projectionTailIsSelfContained', () => {
       deriveSessionStatus([{ t: 'prompt', text: 'start' }, taskStarted, ...tail]),
     );
   });
+
+  it('licenses the permission reader over the same boundary', () => {
+    // The overview runs BOTH derivations over the same tail, so the predicate is
+    // only a licence if it covers both. `permissionEventAwaitsInput` stops at a
+    // non-steered `prompt` for its own reasons; if it ever reads past one, a tail
+    // accepted here starts answering a question about the previous turn — an
+    // answered permission card reappearing on a session that has moved on.
+    const earlier: AgentEvent[] = [{ t: 'prompt', text: 'old' }, permission];
+    const tail: AgentEvent[] = [{ t: 'prompt', text: 'new' }, text];
+    expect(projectionTailIsSelfContained(tail)).toBe(true);
+    expect(permissionEventAwaitsInput(tail)).toBe(
+      permissionEventAwaitsInput([...earlier, ...tail]),
+    );
+    // …and the premise: the earlier turn really does hold a permission event, so
+    // the agreement above is not two `false`s meeting by accident.
+    expect(permissionEventAwaitsInput(earlier)).toBe(true);
+  });
 });
 
 /**
