@@ -776,8 +776,15 @@ describe('ProvisionerImpl (#174)', () => {
     const retained = {
       id: 'container-1',
       running: false,
-      image: 'sandbox:test',
+      image: 'verity-devc-test:latest',
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      mounts: [
+        { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
+        { source: '/srv/verity/runners/p1', destination: '/run/verity-runner', readWrite: true },
+      ],
+      capDrop: ['ALL'],
+      capAdd: [...RUNNER_BROKER_CAPABILITIES],
+      securityOpt: ['no-new-privileges:true'],
     };
     await ctx.store.updateProjectSleepState(id, 'sleeping', {
       sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
@@ -830,10 +837,54 @@ describe('ProvisionerImpl (#174)', () => {
       expect.objectContaining({ projectId: id, containerGeneration: 'generation-1' }),
     ]);
     expect(calls).toContainEqual({ method: 'startContainer', payload: 'container-1' });
+    expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+    expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
     expect(lifecycle).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: id, operation: 'wake', outcome: 'succeeded' }),
     );
     expect(busyProbe).toHaveBeenCalledWith(id, requestingSessionIds);
+  });
+
+  it('keeps a retained sleeping Sandbox when Docker inspection fails transiently', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      id: 'container-1',
+      running: false,
+      image: 'verity-devc-test:latest',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: vi.fn(async () => {
+        throw new DockerError({ kind: 'network', cause: new Error('Docker API timeout') });
+      }),
+    });
+    const relay = defaultProjectRelay();
+    relay.reactivate = vi.fn();
+    const fallback = vi.fn();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+      onSandboxWakeFallback: fallback,
+    });
+
+    await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+      'project wake inspection failed',
+    );
+
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'sleeping' });
+    expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+    expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   it('coalesces concurrent automatic wakes for one sleeping project', async () => {
