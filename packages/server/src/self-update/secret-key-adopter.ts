@@ -305,7 +305,12 @@ export interface HandedOffKeyAdoptionDeps {
  * Returns whether the store came away unlocked.
  */
 export async function adoptHandedOffSecretKey(deps: HandedOffKeyAdoptionDeps): Promise<boolean> {
-  const warn = deps.warn ?? ((message, error) => console.warn(message, error));
+  const warn =
+    deps.warn ??
+    ((message, error) => {
+      if (error === undefined) console.warn(message);
+      else console.warn(message, error);
+    });
   deps.cipher.unlock(deps.material);
   try {
     await deps.activate();

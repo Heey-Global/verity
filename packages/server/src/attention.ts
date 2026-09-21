@@ -151,7 +151,8 @@ export function attentionSignals(inputs: AttentionInputs): AttentionSignal[] {
   if (inputs.secretStatus === 'sealed')
     signals.push({
       code: 'secret_sealed',
-      message: 'Server is sealed — sessions cannot sign commits or use GitHub until you unlock it',
+      message:
+        'Server is sealed — sessions cannot use agent providers, sign commits, or use GitHub until you unlock it',
     });
 
   const stalled = stalledUpdate(inputs);

@@ -203,7 +203,7 @@ describe('Codex egress gateway handler', () => {
     });
   });
 
-  it('records a policy rejection with fixed labels and no unauthenticated project', async () => {
+  it('reports an unbound peer separately from provider authentication failures', async () => {
     const events: CodexEgressRequestEnd[] = [];
     const port = await serve(
       vi.fn<CodexEgressForward>(),
@@ -212,7 +212,7 @@ describe('Codex egress gateway handler', () => {
       (event) => events.push(event),
       () => undefined,
     );
-    await call(port, {
+    const result = await call(port, {
       path: '/codex/models?token=attacker-value',
       headers: { host: AUTHORITY, authorization: 'Bearer attacker-value' },
     });
@@ -220,12 +220,13 @@ describe('Codex egress gateway handler', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       outcome: 'rejected',
-      reason: 'policy-rejected',
+      reason: 'peer-unbound',
       status: 403,
       path: '/codex/models',
       bytesForwarded: 0,
     });
     expect(events[0]).not.toHaveProperty('projectId');
+    expect(result.body).toContain('Sandbox has no Agent Gateway identity');
     expect(JSON.stringify(events)).not.toContain('attacker-value');
   });
 

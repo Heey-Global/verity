@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.3](https://github.com/Heey-Global/verity/compare/v1.4.2...v1.4.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* **knowledge:** restore Wiki runtime traversal ([#601](https://github.com/Heey-Global/verity/issues/601)) ([a79bb0c](https://github.com/Heey-Global/verity/commit/a79bb0c0eb95d09a8810583d930d9b92a262d7ba))
+* **server:** persist Uplink identity before cleanup ([#600](https://github.com/Heey-Global/verity/issues/600)) ([ed6d3e1](https://github.com/Heey-Global/verity/commit/ed6d3e11311abb7700a6402c8da0de211698c30d))
+
 ## [1.4.2](https://github.com/Heey-Global/verity/compare/v1.4.1...v1.4.2) (2026-09-21)
 
 
