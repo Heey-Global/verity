@@ -3158,18 +3158,23 @@ export function SessionChat({
             context row below — the title row gets the full width, so the session name
             no longer truncates on a phone. */}
         <View style={styles.headerSide}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Knowledge"
-            onPress={() =>
-              router.push(
-                projectId ? { pathname: '/knowledge', params: { projectId } } : '/knowledge',
-              )
-            }
-            hitSlop={12}
-          >
-            <Icon name="book-open" size={20} color={theme.colors.textMuted} />
-          </Pressable>
+          {/* The split view already has the app header's Knowledge action. Keep
+              this route-local action only on narrow screens where that header is
+              replaced by the session header. */}
+          {!embedded ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Knowledge"
+              onPress={() =>
+                router.push(
+                  projectId ? { pathname: '/knowledge', params: { projectId } } : '/knowledge',
+                )
+              }
+              hitSlop={12}
+            >
+              <Icon name="book-open" size={20} color={theme.colors.textMuted} />
+            </Pressable>
+          ) : null}
         </View>
       </View>
       {/* Context row under the title: the branch switcher (#91) and the bookmarks
