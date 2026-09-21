@@ -4,6 +4,13 @@ Companion specification to the separately maintained Subscription Uplink ADR (AD
 It defines the connections a Verity installation opens to the Uplink to use the paid Public Sharing
 and Remote Control features.
 
+**Every "ADR 0012" below means that separately maintained Uplink ADR, which is not in this
+repository.** `docs/adr/0012-claude-acp-transport.md` is a different document that happens to carry
+the same number, and it contains no D11, no D12, and nothing about the Uplink — so the citations
+here (D11 under Limits, D12 under Remote Control, the boundary table under Required changes) cannot
+be checked from a checkout. Renumbering is the Uplink side's call, not this document's; until then,
+do not follow those citations into `docs/adr/`.
+
 This document specifies the wire contract. It does not specify Uplink internals, billing, or the
 Kubernetes resources the Uplink creates on the installation's behalf.
 
@@ -18,6 +25,13 @@ deliberately are not, for the reason given where they are described — and the 
 and member tolerance were **added by the change that published these
 paragraphs**, so they postdate the marker rather than being readable at it. They are named by title
 below, and a rename falsifies this document silently — which is why they are named at all.
+
+The installation half of the close-code table and the identity/capacity split under Handshake
+describe `packages/server/src/uplink-control-client.ts` and were read at `ec544c305`, the commit
+that introduced them. The classification is pinned by tests in
+`packages/server/src/uplink-control-client.test.ts`; the close *codes* the control client sends are
+not individually pinned beyond the refusal path, so treat that column as read-at rather than
+enforced.
 
 ## Scope and relationship to the MVP tunnel
 
@@ -88,8 +102,30 @@ are several connections.
 ← reject  { reason }                                                on failure, connection closed
 ```
 
-`reject.reason` is one of `unknown_key`, `revoked`, `expired`, `protocol_unsupported`. The installation surfaces the reason in the app verbatim; it never retries a
-`revoked` or `unknown_key` rejection on a timer.
+`reject.reason` is one of `unknown_key`, `revoked`, `expired`, `protocol_unsupported`,
+`limit_reached`. The installation surfaces the reason in the app verbatim.
+
+Whether it retries depends on what the reason is about, and the two classes are not a matter of
+taste:
+
+- **Identity** — `unknown_key`, `revoked`, `expired`, `protocol_unsupported`. The answer is a
+  property of this key, so dialling again with the same key cannot change it. The installation stops
+  until its credentials change or it restarts.
+- **Capacity** — `limit_reached`, and every reason an installation does not recognise. The answer is
+  a property of the service at this moment, so it can change without the installation doing
+  anything. The installation keeps dialling on a slower schedule (five minutes) rather than the
+  ordinary back-off, so a freed slot is picked up without adding load to something already full.
+
+**Unknown reasons are capacity, not identity.** A newer Uplink refusing an older installation for a
+reason it has never heard of must not be able to take that installation permanently offline until
+someone notices and restarts it; the cost of the other direction is one connection every five
+minutes. This matters in practice: `limit_reached` was sent on the hello path by Uplink 2.1.0 before
+it was a documented reject reason, and installations retried it every 30 seconds for thirteen days
+because they classified it as ordinary rather than as capacity.
+
+An installation that is refused has no `installationId` to send, because it is only ever learned
+from a `welcome`. A refused hello therefore looks identical to a first-ever hello from the Uplink's
+side, and the Uplink must not treat one as evidence of a new installation.
 
 `features` is an explicit allow-list, for example `["sharing", "remote-control"]`. An absent feature
 is not enabled, and the client must not infer entitlement from anything else.
@@ -531,6 +567,41 @@ enforces them regardless. Limits exist for abuse containment, not billing (ADR 0
   terminal rejection.
 - On close, all streams are implicitly reset. Shares are re-announced after the next `welcome`,
   which lets the Uplink reconcile rather than trust client state.
+
+### Close codes
+
+Close codes are per-direction. A code carries no meaning on its own — read it together with the
+sender and with whether a `welcome` had been delivered on that connection.
+
+Sent by the installation (control connection):
+
+| Code   | Meaning                          | Sent when                                                 |
+| ------ | -------------------------------- | --------------------------------------------------------- |
+| `1000` | Normal closure                   | Server shutdown, or abandoning a connection made stale by a newer one |
+| `1002` | Protocol error                   | A control frame, response, or lease that did not parse or did not validate |
+| `4000` | Credentials changed              | The subscription key was replaced; the client redials immediately |
+| `4001` | Lease expired                    | `leaseUntil` passed without a `renewed`                   |
+| `4002` | Heartbeat timeout                | Pings went unanswered                                     |
+| `4003` | Refused or withdrawn             | Acknowledging a `reject` or a `revoke`                    |
+
+Sent by the preview edge (data connection, `packages/preview-tunnel`):
+
+| Code   | Meaning                          | Sent when                                                 |
+| ------ | -------------------------------- | --------------------------------------------------------- |
+| `1000` | Normal closure                   | The connector stopped                                     |
+| `4001` | Replaced by current connector    | A newer connector took over the share                     |
+| `4003` | Share expired                    | The share's lifetime ran out                              |
+
+**The 4000-range is not yet agreed across the boundary, and today it collides.** The hosted Uplink
+uses `4001` for the refusal that this document's table assigns to lease expiry, and `4003` for lease
+expiry — the inverse of both rows above. Until that is reconciled, **no diagnosis may be keyed on a
+close code alone**: use the `reject.reason` on the frame, which is unambiguous in both directions.
+Aligning the two is an Uplink-side change; this table is the installation's half and is what
+`packages/server/src/uplink-control-client.ts` implements.
+
+Both sides log the close code, the close reason, and whether the connection had been welcomed. A
+refusal that closes the socket without sending `reject` is otherwise indistinguishable from a
+network drop.
 
 ## Required changes in `packages/preview-tunnel`
 
