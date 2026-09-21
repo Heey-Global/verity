@@ -8,6 +8,7 @@ import type {
 import type {
   AgentTextMessage,
   ChoicesMessage,
+  DependencyStatusMessage,
   AgentLoopProposalMessage,
   Message,
   PendingPermission,
@@ -185,6 +186,16 @@ export class SessionReducer {
         break;
       case 'status':
         this._status = event.state;
+        this.removeDependencyStatus();
+        if (event.state === 'awaiting_dependency' && event.message !== undefined) {
+          const message: DependencyStatusMessage = {
+            kind: 'dependency-status',
+            id: `dependency-status-${String(seq)}`,
+            createdAt: ts,
+            text: event.message,
+          };
+          this._messages.push(message);
+        }
         // A `completed`/`crashed` status is the AUTHORITATIVE turn-end marker: a
         // backend emits it only when a turn truly ends (for ACP, once the prompt
         // settles; see `acp-backend.ts`). So clear `running` and drain the open-task
@@ -407,6 +418,12 @@ export class SessionReducer {
         // tool_call_start is rendered in a later slice. Any such event closes the
         // open streaming block so the next text/thinking delta starts a fresh message.
         this.active = null;
+    }
+  }
+
+  private removeDependencyStatus(): void {
+    for (let i = this._messages.length - 1; i >= 0; i -= 1) {
+      if (this._messages[i]?.kind === 'dependency-status') this._messages.splice(i, 1);
     }
   }
 

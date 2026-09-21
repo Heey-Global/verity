@@ -15,14 +15,14 @@
 # sandbox is reproducible, not whatever `python:3.14-bookworm` currently resolves
 # to. Renovate (docker:pinDigests) bumps tag+digest together.
 # renovate: datasource=docker depName=python
-ARG PYTHON_VERSION=3.14-bookworm@sha256:ecac9e212daacda8a702eae372fceebc0ee36f5805abe087880367e8d061fa5b
+ARG PYTHON_VERSION=3.14-bookworm@sha256:bfb689a7986adc6d5f16722e06c78e755efe4062e56276715fef450cbad09436
 FROM python:${PYTHON_VERSION} AS python-source
 
 # Digest-pinned alongside the tag so the runtime base is reproducible and
 # Renovate's stock docker manager (parses FROM natively) bumps tag+digest
 # together. Digest reused from the legacy dev-base pin.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm@sha256:6dac556d980b7f0e5498d08f08cee0ca67798b4ad6c23964a9214920e67758d0
+FROM node:24.21.0-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4
 
 # Build-time RUN shell with pipefail so `cmd1 | cmd2` failures aren't masked by
 # a successful cmd2 exit code. (Hadolint DL4006.)

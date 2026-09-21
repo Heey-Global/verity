@@ -23480,7 +23480,10 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
   }),
   import_zod.z.object({
     t: import_zod.z.literal("status"),
-    state: agentStatusSchema
+    state: agentStatusSchema,
+    // Optional live detail for a non-terminal status. Clients may render this as
+    // transient chrome and remove it when a later status supersedes this one.
+    message: import_zod.z.string().optional()
   }),
   import_zod.z.object({
     t: import_zod.z.literal("text"),

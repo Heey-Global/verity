@@ -834,6 +834,16 @@ function publicVeritySettings(
   };
 }
 
+/** Whether the project is in a sleep/wake transition or asleep. Such a Sandbox is
+ * provisioned — its clone, worktrees and retained container all still exist — which
+ * is why the wire projection reports it as `active` and why a spawn must not route
+ * it to the provisioner. */
+function isSleepLifecycleState(
+  state: ProjectRecord['state'],
+): state is Extract<ProjectRecord['state'], 'sleeping_starting' | 'sleeping' | 'waking'> {
+  return state === 'sleeping_starting' || state === 'sleeping' || state === 'waking';
+}
+
 function publicProject(
   project: ProjectRecord,
   release: ReleaseSummary | null,
@@ -845,7 +855,7 @@ function publicProject(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
   const { hiddenAt, kind, state, sleepCompatibilityFingerprint, ...visible } = project;
   void sleepCompatibilityFingerprint;
-  const sleeping = state === 'sleeping_starting' || state === 'sleeping' || state === 'waking';
+  const sleeping = isSleepLifecycleState(state);
   return {
     ...visible,
     state: sleeping ? 'active' : state,
@@ -1438,14 +1448,15 @@ const MAX_TURN_ATTACHMENT_BYTES = 50_000_000;
 // capped at 2 MB by its route) are not the thing that has to opt out, and far
 // below what an upload route needs — those declare their own.
 const DEFAULT_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
-// How many projection events `GET /sessions/:id/activity` reads before falling
-// back to the full slice. Not a correctness bound — `activityProjection` only
-// accepts a tail that provably answers like the whole log — so this trades how
+// How many projection events the status-derived routes read before falling back
+// to the full slice: `GET /sessions/:id/activity`, and the overview summaries
+// through `listSessionProjectionFacts`. Not a correctness bound — a tail is only
+// accepted when it provably answers like the whole log — so this trades how
 // often the fallback runs against what a tail costs when it does not. A turn
 // emitting more than this many `task`/`status`/`permission` events is rare; a
 // session whose LOG is longer than this is the ordinary case, and the one the
 // bound exists for.
-const ACTIVITY_PROJECTION_TAIL = 200;
+const PROJECTION_TAIL = 200;
 
 /** The log-derived half of an activity poll: the events the status derivation
  *  runs over, and whether the session has a task lifecycle at all. */
@@ -2366,7 +2377,7 @@ type SpawnResult =
   // call did not mint the session, so a caller that would follow a create with a
   // prepared first turn knows not to send it twice.
   | { sessionId: string; existing?: true }
-  | { project: ProjectRecord; awaitingProvisioning: true }
+  | { project: PublicProjectRecord; awaitingProvisioning: true }
   | { requiresConfirmation: true; warnings: string[] }
   | { error: string; status?: 'sealed' };
 
@@ -4228,6 +4239,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
   };
 
+  /**
+   * The quota states in force, most severe first.
+   *
+   * Takes the store's already-deduplicated `rateLimitEvents`, but keeps its own
+   * dedupe rather than assuming one event per key: the keying (`providerLabel`
+   * defaulting to Claude, `scope` to all models) is the same rule the store's
+   * `distinct on` groups by, and the one place both can be read side by side is
+   * right here. The `allowed`-without-`usedPercent` drop is NOT something the
+   * store can do — it decides whether a state is worth showing at all, after the
+   * newest per key has been chosen, and doing it in SQL would let an older,
+   * showable state resurface as the newest of its group.
+   */
   const latestRateLimitsFromSequenced = (events: readonly SequencedEvent[]): RateLimitState[] => {
     const seenLimits = new Set<string>();
     const latest: RateLimitState[] = [];
@@ -4256,19 +4279,43 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
   };
 
-  const latestRateLimitFromSequenced = (
-    events: readonly SequencedEvent[],
-  ): RateLimitState | undefined => latestRateLimitsFromSequenced(events)[0];
-
   /** A fresh zeroed fact set for a session the store returned nothing for. A
    *  shared constant would hand every caller the same mutable `events` array —
    *  the field is a plain array by contract, and the store's own path pushes into
    *  it. */
   const emptyProjectionFacts = (): SessionProjectionFacts => ({
     eventCount: 0,
+    lastEventSeq: 0,
     lastActivityAt: null,
     events: [],
+    eventsTruncated: false,
+    rateLimitEvents: [],
+    usage: aggregateUsage([]),
   });
+
+  /**
+   * The events the status projection runs over, taken from a fact set's tail
+   * wherever that is provably enough.
+   *
+   * Both readers of these events — `deriveSessionStatusFromProjection` and
+   * `permissionEventAwaitsInput` — stop at the most recent non-steered `prompt`,
+   * so a tail that reaches back past one answers identically to the whole slice;
+   * `projectionTailIsSelfContained` is where that argument lives. A tail short of
+   * the limit IS the whole slice. Anything else falls back to the full read: one
+   * turn can emit an unbounded run of `task` and `permission` events, and being
+   * slow on that session is better than being wrong about it.
+   */
+  const projectionEventsFor = async (
+    sessionId: string,
+    facts: SessionProjectionFacts,
+  ): Promise<AgentEvent[]> => {
+    const tail = facts.events.map((event) => event.event);
+    if (!facts.eventsTruncated || projectionTailIsSelfContained(tail)) return tail;
+    const full = (
+      await deps.eventStore.listSessionProjectionEvents([sessionId], facts.lastEventSeq)
+    ).get(sessionId);
+    return (full ?? []).map((event) => event.event);
+  };
 
   /**
    * Summarize several sessions with ONE pass over the event table.
@@ -4278,14 +4325,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * event kinds (`SESSION_PROJECTION_EVENT_TYPES`). Summarizing per session used
    * to hydrate each FULL log to get them, so this route's cost grew with total
    * history rather than with session count, on a path polled every ~2 s per
-   * device. `listSessionProjectionFacts` answers all of it over the narrow slice
-   * instead, in two batched queries per 500 sessions.
+   * device. `listSessionProjectionFacts` answers all of it without hydrating any
+   * of them: four batched queries per 500 sessions, and the only part that still
+   * carries payloads is bounded to `PROJECTION_TAIL` events per session.
    */
   const summarizeSessions = async (
     sessions: readonly SessionRecord[],
   ): Promise<SessionSummary[]> => {
     const facts = await deps.eventStore.listSessionProjectionFacts(
       sessions.map((session) => session.sessionId),
+      PROJECTION_TAIL,
     );
     return Promise.all(
       sessions.map((session) =>
@@ -4308,19 +4357,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * The tail is only accepted when it answers identically to the full slice, and
    * `projectionTailIsSelfContained` is where that argument lives. Two ways it can
    * be enough: the tail reaches back past a non-steered `prompt` (nothing earlier
-   * is observable), or it is short of `ACTIVITY_PROJECTION_TAIL` and is therefore
+   * is observable), or it is short of `PROJECTION_TAIL` and is therefore
    * the whole slice already. Otherwise this falls back to the full read — a
    * single turn can emit an unbounded run of `task` and `permission` events, and
    * being slow on one is better than being wrong on it.
    */
   const activityProjection = async (id: string): Promise<ActivityProjection> => {
-    const tail = await deps.eventStore.listRecentSessionProjectionEvents(
-      id,
-      ACTIVITY_PROJECTION_TAIL,
-    );
+    const tail = await deps.eventStore.listRecentSessionProjectionEvents(id, PROJECTION_TAIL);
     const events = tail.map((event) => event.event);
     // Short of the limit means the query ran out of rows, not out of budget.
-    const truncated = tail.length === ACTIVITY_PROJECTION_TAIL;
+    const truncated = tail.length === PROJECTION_TAIL;
     if (truncated && !projectionTailIsSelfContained(events)) {
       const full = ((await deps.eventStore.listSessionProjectionEvents([id])).get(id) ?? []).map(
         (event) => event.event,
@@ -4341,7 +4387,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   const summarizeSession = async (session: SessionRecord): Promise<SessionSummary> => {
-    const facts = await deps.eventStore.listSessionProjectionFacts([session.sessionId]);
+    const facts = await deps.eventStore.listSessionProjectionFacts(
+      [session.sessionId],
+      PROJECTION_TAIL,
+    );
     return summarizeSessionWithFacts(
       session,
       facts.get(session.sessionId) ?? emptyProjectionFacts(),
@@ -4352,11 +4401,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     session: SessionRecord,
     facts: SessionProjectionFacts,
   ): Promise<SessionSummary> => {
-    const sequencedEvents = facts.events;
-    const events = sequencedEvents.map((event) => event.event);
+    const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
-    const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
-    const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
+    // Not from `events`: the quota state in force can be older than any tail, so
+    // the store reads the newest one per window separately. See
+    // `SessionProjectionFacts.rateLimitEvents`.
+    const rateLimits = latestRateLimitsFromSequenced(facts.rateLimitEvents);
+    const rateLimit = rateLimits[0];
     const pendingPermissions = conductor.pendingPermissions(session.sessionId);
     const projectedStatus = liveStatusFromProjection(session.sessionId, events, facts.eventCount);
     // A permission event is durable so reconnect can rebuild its card, but its
@@ -4388,7 +4439,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
         ? { permissionAwaitingInput: true as const }
         : {}),
-      usage: aggregateUsage(events),
+      // Summed in SQL over the whole log rather than folded out of `events`: the
+      // slice is on its way to being a bounded tail, and a total taken from a
+      // tail would quietly shrink as a session got longer.
+      usage: facts.usage,
       lastActivityAt: facts.lastActivityAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
@@ -6663,11 +6717,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // latency in front of the first paint. The header's status, usage,
       // rate-limit and count fields all come out of the projection slice.
       const facts =
-        (await deps.eventStore.listSessionProjectionFacts([id])).get(id) ?? emptyProjectionFacts();
-      const sequencedEvents = facts.events;
-      const events = sequencedEvents.map((event) => event.event);
-      const rateLimits = latestRateLimitsFromSequenced(sequencedEvents);
-      const rateLimit = latestRateLimitFromSequenced(sequencedEvents);
+        (await deps.eventStore.listSessionProjectionFacts([id], PROJECTION_TAIL)).get(id) ??
+        emptyProjectionFacts();
+      const events = await projectionEventsFor(id, facts);
+      // As in `summarizeSessionWithFacts`: the quota states come from their own
+      // read, because the newest one for a window can predate any tail.
+      const rateLimits = latestRateLimitsFromSequenced(facts.rateLimitEvents);
+      const rateLimit = rateLimits[0];
       const pendingPermissions = conductor.pendingPermissions(id);
       const projectedStatus = liveStatusFromProjection(id, events, facts.eventCount);
       const status =
@@ -6688,7 +6744,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(status === 'awaiting_input' && pendingPermissions.length > 0
           ? { permissionAwaitingInput: true as const }
           : {}),
-        usage: aggregateUsage(events),
+        usage: facts.usage,
         ...(rateLimit ? { rateLimit } : {}),
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
         resumable: !knowledgeAccessRevoked && (await worktreeExists(session.worktree)),
@@ -7784,7 +7840,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(400);
           return { error: PROJECT_MODEL_ERROR };
         }
-        if (project.state !== 'active') {
+        // A Sandbox in a sleep lifecycle state is provisioned, not missing: its
+        // clone and worktrees sit on the host, and the first turn brings the
+        // container back through `ensureProjectSandboxReadyForTurn`. Only states
+        // that have no usable Sandbox belong in the provisioning branch below —
+        // sending a sleeping project there claims its row for CLONING and rebuilds
+        // exactly the container the sleep was retaining.
+        //
+        // `sleeping_starting` is included deliberately, mid-transition and all: the
+        // sleep routine revokes authority and stops the container, and touches
+        // neither the clone nor the session worktrees, so the host-side `worktree
+        // add` below is independent of it. The turn that follows re-reads the state
+        // and either waits out the wake or reports the transition — where a spawn
+        // routed to the provisioner would instead re-clone the project out from
+        // under a sleep that is still finalizing.
+        if (project.state !== 'active' && !isSleepLifecycleState(project.state)) {
           if (deps.secretCipher?.isSealed() === true) {
             reply.code(503);
             return { error: 'secret store is sealed', status: 'sealed' as const };
@@ -7816,7 +7886,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               ),
           );
           reply.code(202);
-          return { project, awaitingProvisioning: true };
+          // Same wire shape every other project payload uses: the raw row carries
+          // internal fields and lifecycle states no client schema accepts, and a
+          // client that cannot parse this answer reports a schema dump instead of
+          // "provisioning, try again".
+          //
+          // Release and Sandbox-update fields are the placeholders the sleep and
+          // wake actions hand out for the same reason: the clone this answer
+          // announces has no Sandbox to inspect and no release resolved yet. A
+          // client that wants those reads them from the project once it exists.
+          return {
+            project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
+            awaitingProvisioning: true,
+          };
         }
         projectId = project.id;
         const projectClone = projectClonePath(deps.projectCloneRoot, project);

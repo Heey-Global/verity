@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
   SESSION_PROJECTION_EVENT_TYPES,
+  type Usage,
+  type UsageTotals,
   externalizeToolResultImages,
   externalizeToolResultText,
   parseAgentEvent,
@@ -770,6 +772,53 @@ function idChunks<T>(items: readonly T[]): T[][] {
 }
 
 /**
+ * One token field of a `result` payload, summed across a group — see
+ * {@link EventStore.readUsageTotals}.
+ *
+ * The field name is emitted as a LITERAL rather than a bind parameter. `->>`
+ * takes `text` on the right, and a parameter arrives untyped, so Postgres
+ * resolves the operator against `jsonb ->> integer` as readily as the text form
+ * and answers with an array-index error on an object. The names come from
+ * {@link Usage}'s own keys, so there is no value here to smuggle anything in.
+ */
+function usageSum(field: keyof Usage) {
+  return sql<string>`sum(coalesce((payload -> 'usage' ->> ${sql.lit(field)})::bigint, 0))`;
+}
+
+/**
+ * One event row as the projections consume it.
+ *
+ * Same contract as {@link EventStore.getEventsAfter}: a payload that does not
+ * parse is a corrupted log, not a row to skip past. Events are validated on the
+ * way IN, so a row that fails on the way out means the database no longer holds
+ * what the server wrote, and a badge quietly rendered from the surviving rows
+ * would hide it.
+ */
+function sequencedEvent(
+  sessionId: string,
+  id: string | number,
+  payload: unknown,
+  createdAt: Date,
+): SequencedEvent {
+  const parsed = parseAgentEvent(payload);
+  if (!parsed.success) {
+    throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
+  }
+  return { seq: Number(id), ts: createdAt.getTime(), event: parsed.data };
+}
+
+/** What a session with no `result` events has spent. */
+function emptyUsageTotals(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    turns: 0,
+  };
+}
+
+/**
  * What the overview projections need from one session's log — see
  * {@link EventStore.listSessionProjectionFacts}.
  */
@@ -778,10 +827,31 @@ export interface SessionProjectionFacts {
    *  distinguishes an empty log (status `idle`) from one holding nothing the
    *  status projection reads (status `running`). */
   eventCount: number;
+  /** Highest event seq visible in the snapshot; bounds a later fallback read. */
+  lastEventSeq: number;
   /** `created_at` of the newest event in epoch ms; null for an empty log. */
   lastActivityAt: number | null;
-  /** Ascending by seq, filtered to {@link SESSION_PROJECTION_EVENT_TYPES}. */
+  /** Ascending by seq, filtered to {@link SESSION_PROJECTION_EVENT_TYPES} — and
+   *  bounded to the NEWEST `tailLimit` of them. Whether that is far enough back
+   *  is a fact about the derivation the caller is running, not about this read,
+   *  so the caller decides, using {@link eventsTruncated} to find out whether
+   *  there is anything older to miss. */
   events: SequencedEvent[];
+  /** Whether {@link events} hit its limit, i.e. older projected events exist. A
+   *  tail short of the limit IS the whole slice, and nothing asked about it can
+   *  be wrong. */
+  eventsTruncated: boolean;
+  /** The newest `rate_limit` event per provider/window/scope over the WHOLE log,
+   *  in no particular order — the quota states a session is currently under.
+   *
+   *  Separate from {@link events} because a quota state is the last word until
+   *  the provider sends another one: one observed hours ago, thousands of events
+   *  back, is still the truth about the session, and a tail cannot see it. Same
+   *  shape of problem as {@link EventStore.sessionHasTaskLifecycleEvent}. */
+  rateLimitEvents: SequencedEvent[];
+  /** Token totals over every `result` event in the log — summed in SQL, not
+   *  folded out of {@link events}, which is why the slice is free to be a tail. */
+  usage: UsageTotals;
 }
 
 /** A turn persisted in the durable backlog (issue #80): its retract handle, the
@@ -2945,6 +3015,23 @@ export class EventStore implements EventSink {
    * fetches, the JSON parse and the validation, which is where essentially all of
    * the cost was.
    *
+   * WHAT THE SLICE NO LONGER IS: the whole log's worth of projected events. Even
+   * narrowed to eight discriminants it still grew with history — ~1.6 KB per
+   * event on a seeded log — on a route polled every ~2 s per device, and V8 does
+   * not hand a peak like that back to the OS, so the churn settles in as resident
+   * memory. Each of the three now reads only what it can prove it needs:
+   *
+   * - usage sums in SQL over the whole log ({@link readUsageTotals}), so it never
+   *   needed the slice in the first place;
+   * - the rate-limit states come from a per-key `distinct on`
+   *   ({@link readLatestRateLimits}), because the newest quota state for a window
+   *   can be arbitrarily far back and a tail would silently drop it;
+   * - what is left — the status badge and the permission question — reads a
+   *   `tailLimit`-event TAIL, and both stop at the most recent non-steered
+   *   `prompt`, so a tail reaching past one answers identically to the full
+   *   slice. That is the caller's proof to make (`projectionTailIsSelfContained`
+   *   in the server), which is why `eventsTruncated` comes back with it.
+   *
    * WHAT IT DOES NOT REMOVE: the counters still scan one index entry per event,
    * because both are exact facts about the whole log — `count(*)` for the unread
    * badge, `max(id)` for "last activity", which an event OUTSIDE the slice (a
@@ -2956,39 +3043,57 @@ export class EventStore implements EventSink {
    * which is what the activity poll, the most frequent of these routes, does.
    *
    * BATCHED ON PURPOSE: `GET /sessions` needs every session at once, so this
-   * answers all of them in two queries (the slice, then the counters) rather than
-   * two per session — two per {@link PROJECTION_ID_CHUNK} sessions, precisely,
-   * since the bind-parameter ceiling forces a chunk loop above that many ids.
-   * Sessions with an empty log are present in the map with
+   * answers all of them in four queries (tails, rate-limit states, sums,
+   * counters) rather than four per session — four per {@link PROJECTION_ID_CHUNK}
+   * sessions, precisely, since the bind-parameter ceiling forces a chunk loop
+   * above that many ids. Sessions with an empty log are present in the map with
    * `eventCount: 0` — absent from the map means the session id was not asked for.
+   *
+   * `tailLimit` is how many projected events the caller wants at the end of each
+   * log. It is a parameter and not a constant here because "far enough back" is a
+   * property of what the caller derives, and this read cannot check it — see
+   * {@link listRecentSessionProjectionEvents}, which takes it for the same reason.
    */
   async listSessionProjectionFacts(
     sessionIds: readonly string[],
+    tailLimit: number,
   ): Promise<Map<string, SessionProjectionFacts>> {
     const facts = new Map<string, SessionProjectionFacts>(
       sessionIds.map((sessionId) => [
         sessionId,
-        { eventCount: 0, lastActivityAt: null, events: [] },
+        {
+          eventCount: 0,
+          lastEventSeq: 0,
+          lastActivityAt: null,
+          events: [],
+          eventsTruncated: false,
+          rateLimitEvents: [],
+          usage: emptyUsageTotals(),
+        },
       ]),
     );
     if (facts.size === 0) return facts;
     const chunks = idChunks([...facts.keys()]);
 
-    // The slice and totals must describe the SAME log prefix. Under Postgres'
+    // Every part of this must describe the SAME log prefix. Under Postgres'
     // default READ COMMITTED isolation each statement gets a new snapshot, so a
     // result or rate-limit event appended between them could appear in only one
     // half and briefly produce a status/usage combination that never existed.
     // REPEATABLE READ fixes the snapshot for the complete batched read, including
     // every chunk on installs large enough to cross the bind-parameter ceiling.
+    //
+    // That matters more now than it did when the slice answered three of these
+    // questions by itself: the tail, the quota states and the token sums are
+    // three separate reads of one log, and nothing else would keep "this turn
+    // finished", "this is what it cost" and "this is the quota it ran under"
+    // describing the same moment.
     await this.db
       .transaction()
       .setIsolationLevel('repeatable read')
       .execute(async (tx) => {
-        await this.readProjectionSlices(
-          chunks,
-          new Map([...facts].map(([sessionId, entry]) => [sessionId, entry.events])),
-          tx,
-        );
+        await this.readProjectionTails(chunks, facts, tailLimit, tx);
+        await this.readLatestRateLimits(chunks, facts, tx);
+        await this.readUsageTotals(chunks, facts, tx);
 
         // `count(*)` and the newest row's timestamp, in one index scan per session.
         //
@@ -3009,6 +3114,7 @@ export class EventStore implements EventSink {
             .select((eb) => [
               'session_id',
               eb.fn.countAll<string | number | bigint>().as('event_count'),
+              eb.fn.max<string | number>('id').as('last_event_seq'),
               sql<Date | null>`(select newest.created_at from events as newest
                  where newest.id = max(events.id))`.as('last_activity_at'),
             ])
@@ -3019,11 +3125,198 @@ export class EventStore implements EventSink {
             const entry = facts.get(row.session_id);
             if (entry === undefined) continue;
             entry.eventCount = Number(row.event_count);
+            entry.lastEventSeq = Number(row.last_event_seq);
             entry.lastActivityAt = row.last_activity_at?.getTime() ?? null;
           }
         }
       });
     return facts;
+  }
+
+  /**
+   * The newest `limit` projected events of each listed session, ascending by
+   * `seq` — the batched counterpart of {@link listRecentSessionProjectionEvents},
+   * and the reason {@link listSessionProjectionFacts} no longer grows with
+   * history.
+   *
+   * One statement per chunk, not one per session: a `cross join lateral` runs the
+   * same descending index range per id, so Postgres stops at `limit` rows for
+   * EACH session instead of fetching every projected row and discarding all but
+   * the end of it. A window function over the whole set would be the same query
+   * to read and a full scan to run.
+   *
+   * The ids ride in as ONE array parameter, so this statement binds two
+   * parameters whatever the chunk size. The chunk loop stays anyway: the other
+   * reads in this transaction still bind one parameter per id, and a tail read
+   * that silently diverged from them on chunk boundaries would be a trap for
+   * whoever changes this next.
+   *
+   * Each session's rows arrive newest-first, because that is the only way a
+   * `limit` lands on the end of a log; they are sorted back into `seq` order
+   * here, which is what every derivation over them assumes.
+   */
+  private async readProjectionTails(
+    chunks: readonly (readonly string[])[],
+    into: ReadonlyMap<string, { events: SequencedEvent[]; eventsTruncated: boolean }>,
+    limit: number,
+    db: Transaction<Database>,
+  ): Promise<void> {
+    for (const ids of chunks) {
+      const rows = await sql<{
+        session_id: string;
+        id: string | number;
+        payload: unknown;
+        created_at: Date;
+      }>`
+        select s.session_id, tail.id, tail.payload, tail.created_at
+        from unnest(${[...ids]}::text[]) as s(session_id)
+        cross join lateral (
+          select e.id, e.payload, e.created_at
+          from events e
+          where e.session_id = s.session_id
+            and e.type = any(${[...SESSION_PROJECTION_EVENT_TYPES]}::text[])
+          order by e.id desc
+          limit ${limit}
+        ) as tail
+      `.execute(db);
+      for (const row of rows.rows) {
+        const entry = into.get(row.session_id);
+        if (entry === undefined) continue;
+        entry.events.push(sequencedEvent(row.session_id, row.id, row.payload, row.created_at));
+      }
+      for (const id of ids) {
+        const entry = into.get(id);
+        if (entry === undefined) continue;
+        entry.events.sort((a, b) => a.seq - b.seq);
+        // At the limit means the scan stopped on budget rather than on rows, so
+        // older projected events exist and this tail is not the whole slice.
+        entry.eventsTruncated = entry.events.length === limit;
+      }
+    }
+  }
+
+  /**
+   * The newest `rate_limit` event per provider/window/scope of each listed
+   * session, over the WHOLE log.
+   *
+   * A quota state stands until the provider replaces it, so the one that matters
+   * can sit thousands of events back — a tail that missed it would not report a
+   * degraded state, it would report none, which reads as "no limit in force".
+   * `distinct on` answers it per key in one statement per chunk, walking each
+   * session's `rate_limit` rows newest-first and keeping the first of each key.
+   *
+   * The key expressions repeat `latestRateLimits`' defaults (`Claude`,
+   * `all_models`) rather than grouping on the raw fields. An older event that
+   * omits `providerLabel` and a newer one that spells it out are ONE quota state
+   * to the caller, and grouping them apart here would hand it two — and let the
+   * older of them survive as the newest of its group.
+   *
+   * Returned unsorted: the caller keys them itself and sorts the result by
+   * severity, and any order this imposed would be discarded there.
+   */
+  private async readLatestRateLimits(
+    chunks: readonly (readonly string[])[],
+    into: ReadonlyMap<string, { rateLimitEvents: SequencedEvent[] }>,
+    db: Transaction<Database>,
+  ): Promise<void> {
+    const providerLabel = sql`coalesce(e.payload ->> 'providerLabel', 'Claude')`;
+    const window = sql`coalesce(e.payload ->> 'window', '')`;
+    const scope = sql`coalesce(e.payload ->> 'scope', 'all_models')`;
+    for (const ids of chunks) {
+      const rows = await sql<{
+        session_id: string;
+        id: string | number;
+        payload: unknown;
+        created_at: Date;
+      }>`
+        select distinct on (e.session_id, ${providerLabel}, ${window}, ${scope})
+          e.session_id, e.id, e.payload, e.created_at
+        from events e
+        where e.session_id = any(${[...ids]}::text[])
+          and e.type = 'rate_limit'
+        order by e.session_id, ${providerLabel}, ${window}, ${scope}, e.id desc
+      `.execute(db);
+      for (const row of rows.rows) {
+        const entry = into.get(row.session_id);
+        if (entry === undefined) continue;
+        entry.rateLimitEvents.push(
+          sequencedEvent(row.session_id, row.id, row.payload, row.created_at),
+        );
+      }
+    }
+  }
+
+  /**
+   * Cumulative token usage per session, summed in the DATABASE — the totals half
+   * of {@link listSessionProjectionFacts}.
+   *
+   * `aggregateUsage` answers the same question by folding every `result` event of
+   * every listed session in the server process, which is why the overview has to
+   * hydrate whole logs it otherwise only reads the end of. It is the one consumer
+   * of the slice whose answer genuinely depends on the entire log, so it has to
+   * move before the slice can be bounded — see the note on `aggregateUsage`,
+   * which named a store-side SUM as the eventual path.
+   *
+   * Sums are taken as `bigint`: a busy session's `cacheReadTokens` runs to
+   * billions, and `int` would overflow long before the total stops being
+   * interesting. They come back as strings and are narrowed here, which is exact
+   * up to 2^53 — past that the process could not hold the number anyway.
+   *
+   * A session with no `result` events produces no row at all, which is why the
+   * caller seeds a zeroed total rather than letting an absent one read as missing.
+   *
+   * `events_session_id_type_id_idx` leads with `(session_id, type)`, so the scan
+   * reaches only the `result` rows — one per completed turn — rather than every
+   * event of every listed session. The payload still comes from the heap, which
+   * is the cost this read pays and the reason it sums four fields in one pass.
+   *
+   * Takes the transaction rather than defaulting to {@link EventStore.db}: these
+   * sums are only comparable to the slice and the counters when all three read
+   * the same snapshot, so there is no correct way to call this outside one.
+   */
+  private async readUsageTotals(
+    chunks: readonly (readonly string[])[],
+    into: ReadonlyMap<string, { usage: UsageTotals }>,
+    db: Transaction<Database>,
+  ): Promise<void> {
+    for (const ids of chunks) {
+      const rows = await db
+        .selectFrom('events')
+        .select((eb) => [
+          'session_id',
+          // `coalesce` INSIDE the sum, not around it: a single NULL addend turns
+          // the whole group's sum NULL, so one unreadable row would zero a total
+          // over rows that are fine. It should be unreachable — `usage` is
+          // required on a `result` event, events are validated on the way in, and
+          // {@link readProjectionSlices} refuses a payload that no longer parses
+          // earlier in this very transaction — which is exactly why it is worth a
+          // keyword rather than a branch.
+          //
+          // `turns` counts the `result` rows unconditionally, which is what
+          // `aggregateUsage` does with the same log: it adds a turn for every
+          // `result` event it sees, without consulting the payload.
+          usageSum('inputTokens').as('input_tokens'),
+          usageSum('outputTokens').as('output_tokens'),
+          usageSum('cacheReadTokens').as('cache_read_tokens'),
+          usageSum('cacheCreationTokens').as('cache_creation_tokens'),
+          eb.fn.countAll<string | number | bigint>().as('turns'),
+        ])
+        .where('session_id', 'in', ids)
+        .where('type', '=', 'result')
+        .groupBy('session_id')
+        .execute();
+      for (const row of rows) {
+        const entry = into.get(row.session_id);
+        if (entry === undefined) continue;
+        entry.usage = {
+          inputTokens: Number(row.input_tokens),
+          outputTokens: Number(row.output_tokens),
+          cacheReadTokens: Number(row.cache_read_tokens),
+          cacheCreationTokens: Number(row.cache_creation_tokens),
+          turns: Number(row.turns),
+        };
+      }
+    }
   }
 
   /**
@@ -3046,12 +3339,13 @@ export class EventStore implements EventSink {
    */
   async listSessionProjectionEvents(
     sessionIds: readonly string[],
+    throughSeq?: number,
   ): Promise<Map<string, SequencedEvent[]>> {
     const slices = new Map<string, SequencedEvent[]>(
       sessionIds.map((sessionId) => [sessionId, []]),
     );
     if (slices.size === 0) return slices;
-    await this.readProjectionSlices(idChunks([...slices.keys()]), slices);
+    await this.readProjectionSlices(idChunks([...slices.keys()]), slices, this.db, throughSeq);
     return slices;
   }
 
@@ -3135,16 +3429,16 @@ export class EventStore implements EventSink {
     chunks: readonly (readonly string[])[],
     into: ReadonlyMap<string, SequencedEvent[]>,
     db: Kysely<Database> | Transaction<Database> = this.db,
+    throughSeq?: number,
   ): Promise<void> {
     for (const ids of chunks) {
-      const rows = await db
+      let query = db
         .selectFrom('events')
         .select(['session_id', 'id', 'payload', 'created_at'])
         .where('session_id', 'in', ids)
-        .where('type', 'in', [...SESSION_PROJECTION_EVENT_TYPES])
-        .orderBy('session_id', 'asc')
-        .orderBy('id', 'asc')
-        .execute();
+        .where('type', 'in', [...SESSION_PROJECTION_EVENT_TYPES]);
+      if (throughSeq !== undefined) query = query.where('id', '<=', throughSeq);
+      const rows = await query.orderBy('session_id', 'asc').orderBy('id', 'asc').execute();
       for (const row of rows) {
         const events = into.get(row.session_id);
         if (events === undefined) continue;

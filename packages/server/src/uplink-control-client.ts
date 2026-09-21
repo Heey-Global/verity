@@ -10,11 +10,36 @@ import type {
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 120_000;
-const RECONNECT_MAX_MS = 30_000;
+/** Exported so the guards can derive their timings from the schedule rather
+ * than restating it. */
+export const RECONNECT_MAX_MS = 30_000;
+/** Back-off for a refusal that is about the service's capacity rather than this
+ * installation's standing. Dialling every 30s only adds load to whatever is
+ * already full, but giving up entirely would mean an operator freeing capacity
+ * never gets noticed. */
+export const RECONNECT_CAPACITY_MS = 5 * 60_000;
 const ABANDONED_REQUEST_TTL_MS = 9 * 60 * 60_000;
 const MAX_ABANDONED_CREATES = 1_024;
 const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
+const MAX_REFUSAL_REASON_CHARS = 200;
+/** Hard WebSocket limit on a close reason; `ws` throws above it. */
+const MAX_CLOSE_REASON_BYTES = 123;
 export const UPLINK_CONTROL_URL = 'wss://uplink.verity.build/control';
+
+/** Refusals that are about who this installation is: dialling again with the
+ * same key cannot change the answer, so the client stops and reports the reason.
+ * Everything else — a named capacity limit, a version mismatch, or a reason this
+ * client has never heard of — is treated as temporary and retried on the slower
+ * schedule. That default direction is the safe one: retrying a permanent refusal
+ * wastes a connection every few minutes, while giving up on a temporary one
+ * leaves sharing dead until someone restarts the server.
+ *
+ * `protocol_unsupported` belongs on the temporary side despite naming something
+ * this installation cannot change: a mixed-version fleet or a rolled-back
+ * deployment resolves it without anyone touching the installation, and the fix
+ * that *is* the installation's — upgrading it — restarts the process anyway, so
+ * treating it as permanent would buy nothing and cost the self-healing case. */
+const IDENTITY_REJECTS: ReadonlySet<string> = new Set(['unknown_key', 'revoked', 'expired']);
 
 interface SettingsStore extends EventStore {
   getVeritySettings(): Promise<VeritySettingsRecord | undefined>;
@@ -51,6 +76,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private socket: WebSocket | undefined;
   private stopped = true;
   private retryMs = 1_000;
+  private retryCeilingMs = RECONNECT_MAX_MS;
   private retryTimer: NodeJS.Timeout | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
   private leaseTimer: NodeJS.Timeout | undefined;
@@ -59,7 +85,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private pending = new Map<string, Pending>();
   private abandonedCreates = new Map<string, NodeJS.Timeout>();
   private orphanShareIds = new Set<string>();
-  private lastReject: string | undefined;
+  /** The key an identity-class rejection named, with the reason, so the reason
+   * reaches the app instead of a guess about which one it was. */
+  private lastReject: { key: string; reason: string } | undefined;
   private unansweredPings = 0;
   private generation = 0;
   private authorityLossNotified = false;
@@ -80,6 +108,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    // A stop/start cycle inside one process is a fresh attempt, not a
+    // continuation of whatever back-off the previous one ended on.
+    this.retryMs = 1_000;
+    this.retryCeilingMs = RECONNECT_MAX_MS;
     this.generation += 1;
     void this.connect();
   }
@@ -99,6 +131,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
    * than waiting for an unrelated network reconnect. */
   refreshCredentials(): void {
     this.lastReject = undefined;
+    this.retryMs = 1_000;
+    this.retryCeilingMs = RECONNECT_MAX_MS;
     this.generation += 1;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
@@ -195,9 +229,18 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.scheduleReconnect(RECONNECT_MAX_MS);
       return;
     }
-    if (this.lastReject === key) {
-      this.clearAuthority('Uplink subscription key was rejected');
-      this.scheduleReconnect(RECONNECT_MAX_MS);
+    if (this.lastReject?.key === key) {
+      // A stranded installation used to log its refusal once and then go quiet
+      // while looping every 30s, which reads exactly like a healthy server. Say
+      // so on every decline instead, on the slower schedule so that saying so
+      // stays affordable: one line every five minutes is what makes the state
+      // findable in a log nobody was watching at the time.
+      this.options.log?.warn(
+        { reason: this.lastReject.reason, identityReject: true },
+        'not dialling the Uplink: this key was refused',
+      );
+      this.clearAuthority(this.lastReject.reason);
+      this.scheduleReconnect(RECONNECT_CAPACITY_MS);
       return;
     }
     const socket =
@@ -211,6 +254,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
         socket.close(1000, 'stale connection');
         return;
       }
+      // Which half of the handshake fell over is only reconstructable later if
+      // the start of it was recorded too.
+      this.options.log?.info(
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          identified: Boolean(settings?.uplinkInstallationId),
+        },
+        'Uplink control handshake started',
+      );
       socket.send(
         JSON.stringify({
           type: 'hello',
@@ -263,9 +315,22 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.unansweredPings = 0;
     });
     socket.once('error', (error) => this.options.log?.warn({ error }, 'Uplink connection error'));
-    socket.once('close', () => {
+    socket.once('close', (code: number, reason?: Buffer) => {
       if (this.socket !== socket) return;
       this.socket = undefined;
+      // Without the code and reason a refusal that closes before `reject` is
+      // indistinguishable from a network drop, and both just look like silence.
+      //
+      // This does not fire on a graceful shutdown, and so needs no quieter
+      // branch for one: `stop()` drops its reference before `ws` delivers the
+      // event — which it does on a later tick, never inside `close()` — so the
+      // guard above returns first. `reason` is defensive for the same reason
+      // the factory is injectable: a throw here would abandon the reconnect
+      // below and strand the client silently.
+      this.options.log?.warn(
+        { code, reason: String(reason ?? ''), welcomed: this.welcomed },
+        'Uplink control connection closed',
+      );
       this.clearAuthority('Uplink disconnected', !this.stopped);
       this.scheduleReconnect();
     });
@@ -327,12 +392,36 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (frame.type === 'welcome') {
       const installationId = stringField(frame, 'installationId');
       this.retryMs = 1_000;
+      this.retryCeilingMs = RECONNECT_MAX_MS;
       this.validateLease(frame);
       this.controlReady = true;
       await this.awaitRequiredCleanup();
       this.applyLease(frame);
       const settings = await this.options.store.getVeritySettings();
-      if (settings?.uplinkInstallationId !== installationId) {
+      // A first-ever admission, a re-admission under the same id, and an
+      // admission that silently replaced the stored id look identical in the
+      // logs otherwise, and they mean very different things when the service is
+      // counting installations against a cap. The third is the one that
+      // exhausts it: an id that rotates on every admission consumes a slot each
+      // time while this side believes it is the same installation throughout.
+      const previousInstallationId = settings?.uplinkInstallationId ?? undefined;
+      const firstEver = !previousInstallationId;
+      const idChanged = !firstEver && previousInstallationId !== installationId;
+      // Recorded before the write, not after it: a failing write closes the
+      // connection from the catch around this handler, and an id that rotates
+      // on every admission is most likely to be noticed on exactly that path.
+      // Logging afterwards would drop the record precisely when it is needed.
+      this.options.log?.info(
+        {
+          installationId,
+          previousInstallationId,
+          firstEver,
+          idChanged,
+          features: [...this.features],
+        },
+        'Uplink admitted this installation',
+      );
+      if (previousInstallationId !== installationId) {
         await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
       }
       this.welcomed = true;
@@ -358,18 +447,31 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'revoke') {
-      this.lastReject = key;
-      this.clearAuthority(optionalString(frame.reason, 'subscription revoked'));
+      const reason = refusalReason(frame.reason, 'subscription revoked');
+      this.lastReject = { key, reason };
+      this.options.log?.warn({ frameType: 'revoke', reason }, 'Uplink withdrew this installation');
+      this.clearAuthority(reason);
       this.socket?.close(4003, 'revoked');
       return;
     }
     if (frame.type === 'reject') {
-      const reason = optionalString(frame.reason, 'rejected');
-      if (reason === 'unknown_key' || reason === 'revoked' || reason === 'expired') {
-        this.lastReject = key;
+      const reason = refusalReason(frame.reason, 'rejected');
+      const identityReject = IDENTITY_REJECTS.has(reason);
+      if (identityReject) {
+        this.lastReject = { key, reason };
+      } else {
+        this.retryCeilingMs = RECONNECT_CAPACITY_MS;
+        this.retryMs = RECONNECT_CAPACITY_MS;
       }
+      // `welcomed` distinguishes a handshake the Uplink turned away from one it
+      // had already admitted and then refused on a later frame. Those have
+      // different causes, and the message alone would name only the first.
+      this.options.log?.warn(
+        { frameType: 'reject', reason, identityReject, welcomed: this.welcomed },
+        'Uplink refused the control connection',
+      );
       this.clearAuthority(reason);
-      this.socket?.close(4003, reason);
+      this.socket?.close(4003, closeReason(reason, 'rejected'));
       return;
     }
     if (frame.type === 'share.expired') {
@@ -555,7 +657,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       void this.connect();
     }, delay + jitter);
     this.retryTimer.unref();
-    this.retryMs = Math.min(RECONNECT_MAX_MS, this.retryMs * 2);
+    this.retryMs = Math.min(this.retryCeilingMs, this.retryMs * 2);
   }
 }
 
@@ -590,6 +692,35 @@ function validatedBindingUrl(
 
 function optionalString(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
+/** A refusal reason is a protocol token, but it arrives as free text bounded
+ * only by the frame limit, and an identity-class one is then pinned into the
+ * message the app shows until the credentials change. Cap it at the point it
+ * enters that state rather than trusting the far end to be terse. */
+function refusalReason(value: unknown, fallback: string): string {
+  // Newlines and control characters go too, and for the same reason the length
+  // does: this string is pinned into an app-facing message and into a
+  // structured log line, and a reason carrying its own line breaks forges a
+  // record that reads as several.
+  const reason = optionalString(value, fallback).replace(/\p{C}/gu, ' ');
+  if (reason.length <= MAX_REFUSAL_REASON_CHARS) return reason;
+  // By code point, not by unit: slicing a string this side never chose the
+  // shape of can otherwise end on half a surrogate pair, and the replacement
+  // character that produces is exactly the kind of detail that gets read as
+  // corruption somewhere downstream.
+  return `${[...reason].slice(0, MAX_REFUSAL_REASON_CHARS).join('')}…`;
+}
+
+/** `ws` throws a RangeError on a close reason over 123 bytes. Thrown from here
+ * it would land in the frame handler's catch, which reports a refusal we
+ * understood perfectly as an unparseable frame and closes with 1002 instead of
+ * 4003 — turning the one log line that names the cause into a misleading one.
+ * The far end already knows why it refused us, so echoing anything at all is a
+ * courtesy; drop back to the fallback token rather than truncating into a
+ * split UTF-8 sequence. */
+function closeReason(reason: string, fallback: string): string {
+  return Buffer.byteLength(reason) <= MAX_CLOSE_REASON_BYTES ? reason : fallback;
 }
 
 function validUplinkShareId(value: string): boolean {

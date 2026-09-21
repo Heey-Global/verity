@@ -27,6 +27,7 @@ import {
   CHOICES_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   TERMINOLOGY_SYSTEM_PROMPT,
+  type AgentEvent,
   type Attachment,
 } from '@verity/events';
 import {
@@ -3187,6 +3188,54 @@ describe('GET /sessions', () => {
         ],
       },
     ]);
+  });
+
+  it('still reports status and quota from a log far longer than the projection tail', async () => {
+    // The overview no longer reads a session's whole projection slice — it reads
+    // the end of it. Both things this route derives from a log can be decided by
+    // something OLDER than that tail: the quota state stands until the provider
+    // replaces it, and the status derivation needs the turn's `prompt`. A short
+    // log cannot tell those apart from a tail that simply held them, so this
+    // seeds past the bound and asks the route.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    // Deliberately does not import `PROJECTION_TAIL`: a guard that tracked the
+    // bound would follow it if it were raised, and stop asking the question.
+    // What it needs is a log whose ANSWER lives before the end of it.
+    const written: AgentEvent[] = [
+      { t: 'rate_limit', status: 'rejected', resetsAt: 1_700_000_042, window: 'weekly' },
+      { t: 'prompt', text: 'the turn still running in the background' },
+      { t: 'task', id: 'bg-open', phase: 'started' },
+      // Long enough to push everything above out of any plausible tail, and made
+      // of events the derivation reads but does not stop on.
+      ...Array.from({ length: 130 }, (_, at) => [
+        { t: 'task', id: `bg-${String(at)}`, phase: 'started' } as const,
+        { t: 'task', id: `bg-${String(at)}`, phase: 'ended' } as const,
+      ]).flat(),
+      {
+        t: 'result',
+        usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        stopReason: 'end_turn',
+      },
+    ];
+    for (const event of written) await ctx.store.appendEvent('s1', event);
+
+    const res = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(res.statusCode).toBe(200);
+    const [summary] =
+      res.json<
+        { status: string; rateLimit?: { status: string; resetsAt: number }; eventCount: number }[]
+      >();
+    // `bg-open` never ended, so the turn's `result` does NOT mean completed —
+    // and its `started` is far out of reach of the tail. Read from the tail
+    // alone this session reports `completed`, and the operator watching a
+    // background task run sees the card go quiet.
+    expect(summary?.status).toBe('running');
+    // Likewise the quota: the newest state for the weekly window is the oldest
+    // event in the log. Dropped, the summary carries no `rateLimit` at all,
+    // which renders as "not limited".
+    expect(summary?.rateLimit).toMatchObject({ status: 'rejected', resetsAt: 1_700_000_042 });
+    // The counters stay facts about the whole log, whatever the tail read.
+    expect(summary?.eventCount).toBe(written.length);
   });
 
   it('enriches each summary with a compact `pr` once resolved (stale-while-revalidate)', async () => {
@@ -10501,6 +10550,14 @@ describe('POST /sessions with project field (#174)', () => {
         repo: 'verity',
         state: 'absent',
       });
+      // Serialized like every other project payload. The raw row was handed out
+      // here instead, which put internal columns on the wire and produced a body
+      // no client schema accepts, so the app reported a schema dump where
+      // "provisioning, try again shortly" belongs.
+      expect(body.project).not.toHaveProperty('hiddenAt');
+      expect(body.project).not.toHaveProperty('sleepCompatibilityFingerprint');
+      expect(body.project).toHaveProperty('sandboxUpdate');
+      expect(body.project).toHaveProperty('toolkitDrift', null);
       // The provisioner was fired asynchronously (fire-and-forget)
       expect(p.provision).toHaveBeenCalledWith('p-absent', { confirmWarnings: false });
       // No session was started (we returned early)
@@ -10555,6 +10612,71 @@ describe('POST /sessions with project field (#174)', () => {
       await a.close();
     }
   });
+
+  // A Sandbox in a sleep lifecycle state is provisioned, not missing: its clone and
+  // worktrees are on the host, and `publicProject` even reports it to clients as
+  // `active`. Routing the spawn to the provisioner claimed the row for `cloning` —
+  // which drops the compatibility fingerprint the wake needs — and rebuilt the very
+  // container the sleep was retaining, while the app got a 202 for a project it was
+  // told is up. All three states are covered because all three reach this branch and
+  // all three own a container the provisioner would destroy.
+  it.each(['sleeping', 'sleeping_starting', 'waking'] as const)(
+    'spawns into a %s project without provisioning it',
+    async (state) => {
+      const projectId = `p-${state}`;
+      await ctx.store.upsertProject({
+        id: projectId,
+        owner: 'heey-global',
+        repo: 'verity',
+        containerName: 'dev-heey-global-verity',
+        state: 'active',
+      });
+      await ctx.store.updateProjectSleepState(projectId, state, {
+        sleepCompatibilityFingerprint: 'fingerprint-1',
+        sleepingSince: state === 'sleeping' ? new Date('2026-06-26T00:00:00.000Z') : null,
+        wakeStartedAt: state === 'waking' ? new Date('2026-06-26T00:01:00.000Z') : null,
+      });
+      const p = fakeProvisioner();
+      const projectWorktrees = fakeProjectWorktrees();
+      const a = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner: p,
+        projectCloneRoot: '/data/dev/',
+        projectBackend: fakeProjectBackend,
+        projectWorktrees: () => projectWorktrees,
+        worktrees: { add: vi.fn(async () => '/wt/s-asleep'), remove: vi.fn(async () => {}) },
+      });
+      try {
+        const res = await a.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', projectId },
+        });
+        expect(res.statusCode).toBe(201);
+        const { sessionId }: { sessionId: string } = res.json();
+        const session = await ctx.store.getSession(sessionId);
+        expect(session?.projectId).toBe(projectId);
+        // The worktree comes from the project's clone on the host, which the sleep
+        // never touched — a spawn needs no running container. Assert the call and a
+        // concrete path under that clone: comparing against an absent mock result is
+        // `undefined === undefined`, which would hold for a session that got no
+        // worktree at all.
+        expect(projectWorktrees.add).toHaveBeenCalledTimes(1);
+        expect(session?.worktree).toMatch(/^\/data\/dev\/heey-global-verity\/\.verity-sessions\/./);
+        expect(session?.worktree).toBe(await projectWorktrees.add.mock.results[0]?.value);
+        expect(p.provision).not.toHaveBeenCalled();
+        // The spawn leaves the Sandbox where it found it — the first turn is what
+        // wakes it, and the fingerprint that wake depends on is still there.
+        const after = await ctx.store.getProject(projectId);
+        expect(after?.state).toBe(state);
+        expect(after?.sleepCompatibilityFingerprint).toBe('fingerprint-1');
+      } finally {
+        await a.close();
+      }
+    },
+  );
 
   it('creates a session for a local project addressed by project id', async () => {
     await ctx.store.createProject({
