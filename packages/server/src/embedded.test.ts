@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server } from 'node:net';
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import ts from 'typescript';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   deriveKeyFromPassword,
@@ -1115,6 +1116,73 @@ describe('Uplink control client logging (#582 follow-up)', () => {
 
   it('keeps one construction site, so there is one client to wire', () => {
     expect(source.split(CONSTRUCTION).length - 1).toBe(1);
+  });
+
+  it('leaves no way out of the boot between constructing the client and dialling it', () => {
+    // Moving the dial down the boot bought structured logs for the handshake
+    // and cost it two thousand lines of distance from the construction. A
+    // `return` taken in between now yields a server that runs with an Uplink
+    // client it never dialled: no connection, no error, and no line saying so,
+    // because the client only logs once something asks it to connect. A `throw`
+    // is not the same hazard - it takes the whole boot with it.
+    //
+    // Parsed rather than grepped. The stretch is mostly callbacks, and their
+    // returns outnumber the boot's own by about seventy to one, so every
+    // textual reading of it either drowns in those or misses `if (x) return;`.
+    const file = ts.createSourceFile(
+      'embedded.ts',
+      source,
+      ts.ScriptTarget.ESNext,
+      /* setParentNodes */ true,
+    );
+    const construction = positionOf(CONSTRUCTION, 'the construction');
+    const dial = positionOf(/\buplinkControl\??\.start\(\s*\)/u, 'the uplink dial');
+
+    const enclosing = (position: number): ts.SignatureDeclaration | undefined => {
+      let innermost: ts.SignatureDeclaration | undefined;
+      const walk = (node: ts.Node): void => {
+        if (node.getStart() > position || position >= node.getEnd()) return;
+        if (ts.isFunctionLike(node)) innermost = node;
+        node.forEachChild(walk);
+      };
+      file.forEachChild(walk);
+      return innermost;
+    };
+
+    const boot = enclosing(construction);
+    expect(boot, 'no function encloses the construction').toBeDefined();
+    // Same function, or "between them" is not a stretch of one execution and
+    // the rest of this test is answering a question nobody asked.
+    expect(enclosing(dial)).toBe(boot);
+
+    const body = (boot as ts.FunctionLikeDeclarationBase).body;
+    expect(body && ts.isBlock(body)).toBe(true);
+    const statements = (body as ts.Block).statements;
+    const statementAt = (position: number): ts.Statement | undefined =>
+      statements.find(
+        (statement) => statement.getStart() <= position && position < statement.getEnd(),
+      );
+    // Both belong to the boot's own statement list rather than to something
+    // nested inside it.
+    expect(statementAt(construction)).toBeDefined();
+    // And the dial is that statement, not merely inside it: wrapped in an `if`
+    // or a `try` it would be reached conditionally, which no count of returns
+    // would show. The construction gets no such check - it is the `? :` that
+    // decides whether there is a client at all.
+    const dialStatement = statementAt(dial);
+    expect(dialStatement && ts.isExpressionStatement(dialStatement)).toBe(true);
+
+    // Returns belonging to the boot itself - the walk stops at every nested
+    // function, so a callback's `return` is not mistaken for the boot's.
+    const returns: number[] = [];
+    const collect = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node)) return;
+      if (ts.isReturnStatement(node)) returns.push(node.getStart());
+      node.forEachChild(collect);
+    };
+    (body as ts.Block).forEachChild(collect);
+
+    expect(returns.filter((position) => position > construction && position < dial)).toEqual([]);
   });
 });
 
