@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.5](https://github.com/Heey-Global/verity/compare/v1.4.4...v1.4.5) (2026-09-21)
+
+
+### Bug Fixes
+
+* **server:** preserve active sandbox wake state ([#609](https://github.com/Heey-Global/verity/issues/609)) ([ace8380](https://github.com/Heey-Global/verity/commit/ace8380533407660be4aa04d2e3c2c323700cd20))
+* **server:** preserve sleeping sandbox on inspect failure ([#612](https://github.com/Heey-Global/verity/issues/612)) ([a9612a0](https://github.com/Heey-Global/verity/commit/a9612a0d7127482f3bd848c198cb0ead88f03132))
+* **server:** report live public preview availability ([#611](https://github.com/Heey-Global/verity/issues/611)) ([fa284e4](https://github.com/Heey-Global/verity/commit/fa284e416698936de28a4b50bb8377e00d5a8571))
+
 ## [1.4.4](https://github.com/Heey-Global/verity/compare/v1.4.3...v1.4.4) (2026-09-21)
 
 
