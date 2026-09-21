@@ -10,11 +10,32 @@ import type {
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 120_000;
-const RECONNECT_MAX_MS = 30_000;
+/** Exported so the guards can derive their timings from the schedule rather
+ * than restating it. */
+export const RECONNECT_MAX_MS = 30_000;
+/** Back-off for a refusal that is about the service's capacity rather than this
+ * installation's standing. Dialling every 30s only adds load to whatever is
+ * already full, but giving up entirely would mean an operator freeing capacity
+ * never gets noticed. */
+export const RECONNECT_CAPACITY_MS = 5 * 60_000;
 const ABANDONED_REQUEST_TTL_MS = 9 * 60 * 60_000;
 const MAX_ABANDONED_CREATES = 1_024;
 const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
 export const UPLINK_CONTROL_URL = 'wss://uplink.verity.build/control';
+
+/** Refusals that are about who this installation is: dialling again with the
+ * same key cannot change the answer, so the client stops and reports the reason.
+ * Everything else — a named capacity limit, or a reason this client has never
+ * heard of — is treated as temporary and retried on the slower schedule. That
+ * default direction is the safe one: retrying a permanent refusal wastes a
+ * connection every few minutes, while giving up on a temporary one leaves
+ * sharing dead until someone restarts the server. */
+const IDENTITY_REJECTS: ReadonlySet<string> = new Set([
+  'unknown_key',
+  'revoked',
+  'expired',
+  'protocol_unsupported',
+]);
 
 interface SettingsStore extends EventStore {
   getVeritySettings(): Promise<VeritySettingsRecord | undefined>;
@@ -51,6 +72,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private socket: WebSocket | undefined;
   private stopped = true;
   private retryMs = 1_000;
+  private retryCeilingMs = RECONNECT_MAX_MS;
   private retryTimer: NodeJS.Timeout | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
   private leaseTimer: NodeJS.Timeout | undefined;
@@ -59,7 +81,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private pending = new Map<string, Pending>();
   private abandonedCreates = new Map<string, NodeJS.Timeout>();
   private orphanShareIds = new Set<string>();
-  private lastReject: string | undefined;
+  /** The key an identity-class rejection named, with the reason, so the reason
+   * reaches the app instead of a guess about which one it was. */
+  private lastReject: { key: string; reason: string } | undefined;
   private unansweredPings = 0;
   private generation = 0;
   private authorityLossNotified = false;
@@ -99,6 +123,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
    * than waiting for an unrelated network reconnect. */
   refreshCredentials(): void {
     this.lastReject = undefined;
+    this.retryMs = 1_000;
+    this.retryCeilingMs = RECONNECT_MAX_MS;
     this.generation += 1;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
@@ -195,8 +221,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.scheduleReconnect(RECONNECT_MAX_MS);
       return;
     }
-    if (this.lastReject === key) {
-      this.clearAuthority('Uplink subscription key was rejected');
+    if (this.lastReject?.key === key) {
+      this.clearAuthority(this.lastReject.reason);
       this.scheduleReconnect(RECONNECT_MAX_MS);
       return;
     }
@@ -211,6 +237,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
         socket.close(1000, 'stale connection');
         return;
       }
+      // Which half of the handshake fell over is only reconstructable later if
+      // the start of it was recorded too.
+      this.options.log?.info(
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          identified: Boolean(settings?.uplinkInstallationId),
+        },
+        'Uplink control handshake started',
+      );
       socket.send(
         JSON.stringify({
           type: 'hello',
@@ -263,9 +298,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.unansweredPings = 0;
     });
     socket.once('error', (error) => this.options.log?.warn({ error }, 'Uplink connection error'));
-    socket.once('close', () => {
+    socket.once('close', (code: number, reason: Buffer) => {
       if (this.socket !== socket) return;
       this.socket = undefined;
+      // Without the code and reason a refusal that closes before `reject` is
+      // indistinguishable from a network drop, and both just look like silence.
+      this.options.log?.warn(
+        { code, reason: reason.toString(), welcomed: this.welcomed },
+        'Uplink control connection closed',
+      );
       this.clearAuthority('Uplink disconnected', !this.stopped);
       this.scheduleReconnect();
     });
@@ -327,14 +368,23 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (frame.type === 'welcome') {
       const installationId = stringField(frame, 'installationId');
       this.retryMs = 1_000;
+      this.retryCeilingMs = RECONNECT_MAX_MS;
       this.validateLease(frame);
       this.controlReady = true;
       await this.awaitRequiredCleanup();
       this.applyLease(frame);
       const settings = await this.options.store.getVeritySettings();
+      // A first-ever admission and a re-admission of a known installation look
+      // the same in the logs otherwise, and they mean very different things
+      // when the service is counting installations against a cap.
+      const firstEver = !settings?.uplinkInstallationId;
       if (settings?.uplinkInstallationId !== installationId) {
         await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
       }
+      this.options.log?.info(
+        { installationId, firstEver, features: [...this.features] },
+        'Uplink admitted this installation',
+      );
       this.welcomed = true;
       this.startHeartbeat();
       if (!this.features.has('sharing')) {
@@ -358,16 +408,26 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'revoke') {
-      this.lastReject = key;
-      this.clearAuthority(optionalString(frame.reason, 'subscription revoked'));
+      const reason = optionalString(frame.reason, 'subscription revoked');
+      this.lastReject = { key, reason };
+      this.options.log?.warn({ frameType: 'revoke', reason }, 'Uplink withdrew this installation');
+      this.clearAuthority(reason);
       this.socket?.close(4003, 'revoked');
       return;
     }
     if (frame.type === 'reject') {
       const reason = optionalString(frame.reason, 'rejected');
-      if (reason === 'unknown_key' || reason === 'revoked' || reason === 'expired') {
-        this.lastReject = key;
+      const identity = IDENTITY_REJECTS.has(reason);
+      if (identity) {
+        this.lastReject = { key, reason };
+      } else {
+        this.retryCeilingMs = RECONNECT_CAPACITY_MS;
+        this.retryMs = RECONNECT_CAPACITY_MS;
       }
+      this.options.log?.warn(
+        { frameType: 'reject', reason, identity },
+        'Uplink refused the control handshake',
+      );
       this.clearAuthority(reason);
       this.socket?.close(4003, reason);
       return;
@@ -555,7 +615,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       void this.connect();
     }, delay + jitter);
     this.retryTimer.unref();
-    this.retryMs = Math.min(RECONNECT_MAX_MS, this.retryMs * 2);
+    this.retryMs = Math.min(this.retryCeilingMs, this.retryMs * 2);
   }
 }
 
