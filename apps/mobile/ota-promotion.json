@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.27",
+  "version": "1.33.28",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "6bc4c45262ce326bbbe7e015683f10b4b5476bb6",
-  "tag": "mobile-v1.33.27",
-  "branch": "staging-mobile-v1.33.27-6bc4c45262ce326bbbe7e015683f10b4b5476bb6",
-  "baseline": "mobile-v1.33.26",
-  "group": "5b2ea500-c631-4cd9-8674-c20fa3f4cb3e",
+  "commit": "4d9b9b45922a4ad6ec85ea75f7d918671377c2d4",
+  "tag": "mobile-v1.33.28",
+  "branch": "staging-mobile-v1.33.28-4d9b9b45922a4ad6ec85ea75f7d918671377c2d4",
+  "baseline": "mobile-v1.33.27",
+  "group": "b7a5cec4-3c5c-41ab-a6ef-95527ddb92fa",
   "notes": [
-    "spawn into sleeping projects without reprovisioning (#586)"
+    "require a global maintenance model (#590)"
   ]
 }
