@@ -9,6 +9,8 @@ import { KnowledgeSessionClosedError } from '@verity/session';
 import { execFile } from 'node:child_process';
 import { constants as fsConstants, createReadStream, createWriteStream } from 'node:fs';
 import {
+  chmod,
+  copyFile,
   link,
   lstat,
   mkdtemp,
@@ -23,7 +25,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, extname, resolve, sep, join } from 'node:path';
+import { basename, dirname, extname, resolve, sep, join } from 'node:path';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
@@ -79,11 +81,23 @@ import {
   assertSessionRealPath,
   attachmentDisposition,
   contentTypeForDownload,
+  hiddenSessionFileNames,
+  isManagedKnowledgePath,
   isProbablyText,
+  ManagedKnowledgePathError,
   normalizeSessionRelativePath,
+  openKnowledgeFileSlot,
   sessionFilePath,
   toSessionFileEntry,
 } from './session-files.js';
+import { ensureProjectKnowledge, ensureSharedKnowledge } from './knowledge-folder.js';
+import {
+  extractKnowledgeFile,
+  knowledgeExtractionPath,
+  moveKnowledgeExtraction,
+  removeKnowledgeExtraction,
+  writeKnowledgeExtraction,
+} from './knowledge-file-ingest.js';
 import type { DevicePairingManager } from './device-pairing.js';
 import {
   currentPublishedProgress,
@@ -103,6 +117,7 @@ import type {
 } from '@verity/store';
 import {
   KnowledgeError,
+  PROJECT_MEMORY_MAX_CHARS,
   DeletedProjectError,
   DevServerPortRangeExhaustedError,
   SealedError,
@@ -197,6 +212,11 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
+import {
+  appendProjectOverview,
+  markProjectOverviewAuthoritative,
+  readOrMigrateProjectOverview,
+} from './project-overview-file.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
@@ -952,6 +972,13 @@ export interface ServerDeps {
   unlockClientIdentity?: ((request: FastifyRequest) => string | undefined) | undefined;
   eventStore: EventStore;
   /**
+   * Verity's data root. The knowledge folders live under `<dataRoot>/knowledge`
+   * (ADR 0022 D1) and the session explorer browses them from there. Absent —
+   * tests, and any deployment without a data root — leaves the explorer's
+   * knowledge roots reporting "not found" and changes nothing else.
+   */
+  dataRoot?: string | undefined;
+  /**
    * Delete the backend transcript files a session left on the runner runtime, so a
    * deleted session takes its conversation with it and not just its row (see
    * `session-artifacts.ts`). Called immediately BEFORE the store delete, because the
@@ -1481,6 +1508,22 @@ const MAX_SESSION_DIRECTORY_ENTRIES = 1_000;
 const MAX_SESSION_TEXT_FILE_BYTES = 1_000_000;
 const MAX_SESSION_DOWNLOAD_BYTES = 50_000_000;
 const MAX_SESSION_UPLOAD_BYTES = 250_000_000;
+
+/** Map an {@link openKnowledgeFileSlot} rejection onto the explorer's status
+ *  codes, keeping "you may not" (400) apart from "it is not there" (404). */
+function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: string } {
+  if (error instanceof ManagedKnowledgePathError) {
+    reply.code(400);
+    return { error: error.message };
+  }
+  if (error instanceof Error && error.message === 'invalid path') {
+    reply.code(400);
+    return { error: 'invalid path' };
+  }
+  reply.code(404);
+  return { error: 'path not found' };
+}
+
 export const VERITY_CONTROL_SESSION_NAME = 'Verity Control';
 export const VERITY_CONTROL_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
 
@@ -1781,7 +1824,7 @@ async function updateMeetingIndexFile(
   const handle = await open(
     indexAbs,
     fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
-    0o600,
+    0o644,
   );
   try {
     const stat = await handle.stat();
@@ -1853,23 +1896,29 @@ async function meetingAudioHash(path: string): Promise<string> {
   return hash.digest('hex').slice(0, 8);
 }
 
-async function ensureMeetingDirectory(worktree: string): Promise<string> {
+async function ensureMeetingDirectory(dataRoot: string, projectId: string): Promise<string> {
+  const projectDir = await ensureProjectKnowledge(dataRoot, projectId);
+  const meetingDir = join(projectDir, 'meetings');
+  const meetingReal = await realpath(meetingDir);
+  await assertSessionRealPath(projectDir, meetingReal);
+  return meetingReal;
+}
+
+/** Compatibility for tests and deployments without a configured data root. */
+async function ensureLegacyMeetingDirectory(worktree: string): Promise<string> {
   const rootReal = await realpath(worktree);
   const docsDir = join(worktree, 'docs');
   await mkdir(docsDir, { recursive: true });
   if ((await lstat(docsDir)).isSymbolicLink()) throw new Error('invalid meeting directory');
   const docsReal = await realpath(docsDir);
-  if (docsReal !== rootReal && !docsReal.startsWith(`${rootReal}${sep}`)) {
+  if (docsReal !== rootReal && !docsReal.startsWith(`${rootReal}${sep}`))
     throw new Error('invalid meeting directory');
-  }
-
   const meetingDir = join(docsDir, 'meetings');
   await mkdir(meetingDir, { recursive: true });
   if ((await lstat(meetingDir)).isSymbolicLink()) throw new Error('invalid meeting directory');
   const meetingReal = await realpath(meetingDir);
-  if (meetingReal !== rootReal && !meetingReal.startsWith(`${rootReal}${sep}`)) {
+  if (meetingReal !== rootReal && !meetingReal.startsWith(`${rootReal}${sep}`))
     throw new Error('invalid meeting directory');
-  }
   return meetingReal;
 }
 
@@ -1891,17 +1940,16 @@ async function existingMeetingTranscript(
 }
 
 async function writeMeetingTranscript(input: {
-  worktree: string;
   meetingDir: string;
   relPath: string;
   markdown: string;
 }): Promise<{ path: string; created: boolean }> {
-  sessionFilePath(input.worktree, input.relPath);
+  sessionFilePath(input.meetingDir, basename(input.relPath));
   try {
     await writeFile(join(input.meetingDir, basename(input.relPath)), input.markdown, {
       encoding: 'utf8',
       flag: 'wx',
-      mode: 0o600,
+      mode: 0o644,
     });
     return { path: input.relPath, created: true };
   } catch (error) {
@@ -4663,6 +4711,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerGoogleDriveRoutes(app, {
     eventStore: deps.eventStore,
+    ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.googleDriveClientId !== undefined
       ? { googleDriveClientId: deps.googleDriveClientId }
       : {}),
@@ -4819,7 +4868,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenMint !== undefined ? { mint: deps.ghTokenMint } : {}),
   });
   registerProjectMemoryRoute(app, {
-    store: deps.eventStore,
+    append: async (projectId, text) => {
+      if (deps.dataRoot !== undefined) {
+        await readOrMigrateProjectOverview(deps.dataRoot, projectId, async () => {
+          const approved = await deps.eventStore.knowledge.getProjectOverview(projectId);
+          if (approved !== null) return approved.bodyMarkdown;
+          return (await deps.eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
+        });
+        return appendProjectOverview(deps.dataRoot, projectId, text);
+      }
+      const settings = await deps.eventStore.appendProjectMemory(projectId, text);
+      return settings?.memory?.length;
+    },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   // `POST /internal/mcp` — the loopback MCP gateway (ADR 0014 D1), called by an ACP
@@ -5776,6 +5836,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     registerKnowledgeSourceRoutes(app, {
       knowledge: deps.eventStore.knowledge,
       store: deps.eventStore,
+      ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
       schedule: (projectId, sourceDocumentIds) => wikiJobs.enqueue(projectId, sourceDocumentIds),
       wakeMaintenance: (projectId) => wikiJobs.wake(projectId),
     });
@@ -6763,6 +6824,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
+      if (deps.dataRoot && !session.projectId) {
+        reply.code(409);
+        return { error: 'meeting knowledge storage requires a project session' };
+      }
       if (body.announceRequest !== false) {
         await emitMeetingTranscriptRequest({
           eventStore: deps.eventStore,
@@ -6806,8 +6871,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const title = sourceTitle || 'Meeting';
       const slug = slugifyMeetingTitle(title);
       const hash = createHash('sha256').update(audio).digest('hex').slice(0, 8);
-      const meetingDir = await ensureMeetingDirectory(session.worktree);
-      const relPath = `docs/meetings/${now.toISOString().slice(0, 10)}-${slug}-${hash}.md`;
+      const knowledgeMeeting = deps.dataRoot !== undefined && session.projectId !== null;
+      const meetingDir = knowledgeMeeting
+        ? await ensureMeetingDirectory(deps.dataRoot!, session.projectId!)
+        : await ensureLegacyMeetingDirectory(session.worktree);
+      const baseName = `${now.toISOString().slice(0, 10)}-${slug}-${hash}`;
+      const relPath = knowledgeMeeting ? `meetings/${baseName}.md` : `docs/meetings/${baseName}.md`;
+      const audioExtension = extname(body.fileName).replace(/[^A-Za-z0-9.]/g, '') || '.audio';
+      if (knowledgeMeeting) {
+        await writeFile(join(meetingDir, `${baseName}${audioExtension}`), audio, {
+          flag: 'wx',
+          mode: 0o644,
+        }).catch((error: unknown) => {
+          if ((error as { code?: string }).code !== 'EEXIST') throw error;
+        });
+        await chmod(join(meetingDir, `${baseName}${audioExtension}`), 0o644);
+      }
       const existing = await existingMeetingTranscript(meetingDir, relPath);
       if (existing) {
         await appendMeetingIndex(meetingDir, existing.path, title);
@@ -6911,7 +6990,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (controller.signal.aborted) throw new MeetingTranscriptionCancelledError();
         await withMeetingTranscriptCommitLock(meetingDir, relPath, async () => {
           const written = await writeMeetingTranscript({
-            worktree: session.worktree,
             meetingDir,
             relPath,
             markdown: renderMeetingTranscriptMarkdown({
@@ -6939,6 +7017,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             throw error;
           }
         });
+        if (knowledgeMeeting)
+          await writeKnowledgeExtraction(
+            dirname(meetingDir),
+            `meetings/${baseName}${audioExtension}`,
+            await readFile(join(meetingDir, basename(relPath)), 'utf8'),
+          );
         request.raw.off('aborted', abortOnDisconnect);
         reply.raw.off('close', abortOnDisconnect);
         await emitMeetingTranscriptSaved({
@@ -6980,6 +7064,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (!session) {
         reply.code(404);
         return { error: `session ${id} not found` };
+      }
+      if (deps.dataRoot && !session.projectId) {
+        reply.code(409);
+        return { error: 'meeting knowledge storage requires a project session' };
       }
       if (!isSupportedMeetingAudio(query.mediaType, query.fileName)) {
         reply.code(415);
@@ -7073,8 +7161,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const slug = slugifyMeetingTitle(title);
           const hash = await meetingAudioHash(audioPath);
           if (controller.signal.aborted) throw new MeetingTranscriptionCancelledError();
-          const meetingDir = await ensureMeetingDirectory(session.worktree);
-          const relPath = `docs/meetings/${now.toISOString().slice(0, 10)}-${slug}-${hash}.md`;
+          const knowledgeMeeting = deps.dataRoot !== undefined && session.projectId !== null;
+          const meetingDir = knowledgeMeeting
+            ? await ensureMeetingDirectory(deps.dataRoot!, session.projectId!)
+            : await ensureLegacyMeetingDirectory(session.worktree);
+          const baseName = `${now.toISOString().slice(0, 10)}-${slug}-${hash}`;
+          const relPath = knowledgeMeeting
+            ? `meetings/${baseName}.md`
+            : `docs/meetings/${baseName}.md`;
+          if (knowledgeMeeting)
+            await copyFile(
+              audioPath,
+              join(meetingDir, `${baseName}${extension}`),
+              fsConstants.COPYFILE_EXCL,
+            ).catch((error: unknown) => {
+              if ((error as { code?: string }).code !== 'EEXIST') throw error;
+            });
+          if (knowledgeMeeting) await chmod(join(meetingDir, `${baseName}${extension}`), 0o644);
           const existing = await existingMeetingTranscript(meetingDir, relPath);
           if (existing) {
             if (controller.signal.aborted) throw new MeetingTranscriptionCancelledError();
@@ -7106,7 +7209,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           await withMeetingTranscriptCommitLock(meetingDir, relPath, async () => {
             const written = await writeMeetingTranscript({
-              worktree: session.worktree,
               meetingDir,
               relPath,
               markdown: renderMeetingTranscriptMarkdown({
@@ -7134,6 +7236,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               throw error;
             }
           });
+          if (knowledgeMeeting)
+            await writeKnowledgeExtraction(
+              dirname(meetingDir),
+              `meetings/${baseName}${extension}`,
+              await readFile(join(meetingDir, basename(relPath)), 'utf8'),
+            );
           await emitMeetingTranscriptSaved({
             eventStore: deps.eventStore,
             bus: deps.bus,
@@ -7191,11 +7299,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerSessionFileRoutes(app, {
-    getWorktree: async (id) => (await deps.eventStore.getSession(id))?.worktree,
-    list: async (reply, worktree, path) => {
+    // A knowledge root is created on first browse rather than only at
+    // provisioning: the folder is the source of truth (ADR 0022 D1), so an
+    // explorer that can show it is the shortest path to one that exists.
+    resolveRoot: async (id, root) => {
+      const session = await deps.eventStore.getSession(id);
+      if (!session) return undefined;
+      if (root === 'worktree') return session.worktree;
+      if (deps.dataRoot === undefined) return undefined;
+      if (root === 'shared') return ensureSharedKnowledge(deps.dataRoot);
+      if (session.projectId === null) return undefined;
+      return ensureProjectKnowledge(deps.dataRoot, session.projectId);
+    },
+    list: async (reply, root, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(worktree, path);
+        target = sessionFilePath(root.dir, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -7207,7 +7326,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
         );
         await assertSessionRealPath(
-          worktree,
+          root.dir,
           await realpath(`/proc/self/fd/${String(directoryHandle.fd)}`),
         );
       } catch (error) {
@@ -7223,7 +7342,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         const descriptorPath = `/proc/self/fd/${String(directoryHandle.fd)}`;
         const dirents = await readdir(descriptorPath, { withFileTypes: true });
-        const visible = dirents.filter((entry) => entry.name !== '.git');
+        const hidden = hiddenSessionFileNames(root.root, target.rel);
+        const visible = dirents.filter((entry) => !hidden.includes(entry.name));
         const entries = await Promise.all(
           visible.slice(0, MAX_SESSION_DIRECTORY_ENTRIES).map(async (entry) => {
             const rel = normalizeSessionRelativePath(
@@ -7247,7 +7367,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await directoryHandle.close();
       }
     },
-    upload: async (request, reply, id, query) => {
+    upload: async (request, reply, root, query) => {
       const declaredSize = Number(request.headers['content-length']);
       if (!Number.isSafeInteger(declaredSize) || declaredSize < 0) {
         reply.code(411);
@@ -7257,21 +7377,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         reply.code(413);
         return { error: 'file exceeds the 250 MB upload limit' };
       }
-      const session = await deps.eventStore.getSession(id);
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      const { worktree } = session;
       let directory: { abs: string; rel: string };
       let target: { abs: string; rel: string };
       try {
-        directory = sessionFilePath(worktree, query.path);
+        directory = sessionFilePath(root.dir, query.path);
         target = sessionFilePath(
-          worktree,
+          root.dir,
           [directory.rel, query.fileName].filter(Boolean).join('/'),
         );
-        await assertSessionRealPath(worktree, directory.abs);
+        if (root.root !== 'worktree' && isManagedKnowledgePath(root.root, target.rel)) {
+          reply.code(400);
+          return { error: 'this path is managed by Verity' };
+        }
+        if (
+          root.root === 'knowledge' &&
+          target.rel === 'overview.md' &&
+          declaredSize > PROJECT_MEMORY_MAX_CHARS * 4
+        ) {
+          reply.code(413);
+          return { error: 'overview.md exceeds the project overview limit' };
+        }
+        await assertSessionRealPath(root.dir, directory.abs);
         const directoryStats = await lstat(directory.abs);
         if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
           reply.code(400);
@@ -7295,7 +7421,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const destinationPath = `${descriptorPath}/${query.fileName}`;
       try {
         const openedDirectoryReal = await realpath(descriptorPath);
-        await assertSessionRealPath(worktree, openedDirectoryReal);
+        await assertSessionRealPath(root.dir, openedDirectoryReal);
         const filesystem = await statfs(descriptorPath);
         const availableBytes = Number(filesystem.bavail) * Number(filesystem.bsize);
         const reserveBytes = Math.min(256_000_000, Math.floor(availableBytes * 0.1));
@@ -7324,8 +7450,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           createWriteStream(temporaryPath, { flags: 'wx' }),
         );
         const uploaded = await lstat(temporaryPath);
+        if (
+          root.root === 'knowledge' &&
+          target.rel === 'overview.md' &&
+          (await readFile(temporaryPath, 'utf8')).length > PROJECT_MEMORY_MAX_CHARS
+        ) {
+          await unlink(temporaryPath);
+          reply.code(413);
+          return { error: 'overview.md exceeds the project overview limit' };
+        }
         await link(temporaryPath, destinationPath);
         await unlink(temporaryPath);
+        if (root.root === 'knowledge' && target.rel === 'overview.md')
+          await markProjectOverviewAuthoritative(root.dir);
+        if (root.root !== 'worktree') await extractKnowledgeFile(root.dir, target.rel);
         return { path: target.rel, size: Number(uploaded.size) };
       } catch (error) {
         await unlink(temporaryPath).catch(() => undefined);
@@ -7347,10 +7485,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await directoryHandle.close();
       }
     },
-    content: async (reply, worktree, path) => {
+    content: async (reply, root, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(worktree, path);
+        target = sessionFilePath(root.dir, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -7359,7 +7497,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
-          worktree,
+          root.dir,
           await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
         );
       } catch (error) {
@@ -7377,12 +7515,38 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(404);
           return { error: 'file not found' };
         }
+        const extractedBytes =
+          root.root === 'worktree'
+            ? undefined
+            : await readFile(knowledgeExtractionPath(root.dir, target.rel)).catch(() => undefined);
         if (stats.size > MAX_SESSION_TEXT_FILE_BYTES) {
+          if (
+            extractedBytes !== undefined &&
+            extractedBytes.length <= MAX_SESSION_TEXT_FILE_BYTES &&
+            isProbablyText(extractedBytes)
+          ) {
+            return {
+              path: target.rel,
+              content: extractedBytes.toString('utf8'),
+              size: extractedBytes.length,
+            };
+          }
           reply.code(413);
           return { error: 'file is too large for text preview' };
         }
         const bytes = await fileHandle.readFile();
         if (!isProbablyText(bytes)) {
+          if (
+            extractedBytes !== undefined &&
+            extractedBytes.length <= MAX_SESSION_TEXT_FILE_BYTES &&
+            isProbablyText(extractedBytes)
+          ) {
+            return {
+              path: target.rel,
+              content: extractedBytes.toString('utf8'),
+              size: extractedBytes.length,
+            };
+          }
           reply.code(415);
           return { error: 'file is not a text file' };
         }
@@ -7391,10 +7555,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await fileHandle.close();
       }
     },
-    download: async (reply, worktree, path) => {
+    download: async (reply, root, path) => {
       let target: { abs: string; rel: string };
       try {
-        target = sessionFilePath(worktree, path);
+        target = sessionFilePath(root.dir, path);
       } catch {
         reply.code(400);
         return { error: 'invalid path' };
@@ -7403,7 +7567,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       try {
         fileHandle = await open(target.abs, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
         await assertSessionRealPath(
-          worktree,
+          root.dir,
           await realpath(`/proc/self/fd/${String(fileHandle.fd)}`),
         );
       } catch (error) {
@@ -7436,6 +7600,101 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return body;
       } finally {
         await fileHandle.close();
+      }
+    },
+    remove: async (reply, root, path) => {
+      let file;
+      try {
+        file = await openKnowledgeFileSlot(root, path);
+      } catch (error) {
+        return knowledgeSlotFailure(reply, error);
+      }
+      try {
+        const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
+        if (stats === undefined) {
+          reply.code(404);
+          return { error: 'file not found' };
+        }
+        if (!stats.isFile()) {
+          reply.code(400);
+          return { error: 'only files can be deleted' };
+        }
+        await unlink(`${file.directoryPath}/${file.name}`);
+        if (root.root === 'knowledge' && file.rel === 'overview.md')
+          await markProjectOverviewAuthoritative(root.dir);
+        await removeKnowledgeExtraction(root.dir, file.rel);
+        return { path: file.rel, deleted: true };
+      } finally {
+        await file.close();
+      }
+    },
+    move: async (reply, fromRoot, toRoot, body) => {
+      let source;
+      let destination;
+      try {
+        source = await openKnowledgeFileSlot(fromRoot, body.path);
+        destination = await openKnowledgeFileSlot(
+          toRoot,
+          [body.toPath, body.toFileName ?? basename(source.rel)].filter(Boolean).join('/'),
+        );
+      } catch (error) {
+        await source?.close();
+        return knowledgeSlotFailure(reply, error);
+      }
+      const sourcePath = `${source.directoryPath}/${source.name}`;
+      const destinationPath = `${destination.directoryPath}/${destination.name}`;
+      try {
+        const stats = await lstat(sourcePath).catch(() => undefined);
+        if (stats === undefined) {
+          reply.code(404);
+          return { error: 'file not found' };
+        }
+        if (!stats.isFile()) {
+          reply.code(400);
+          return { error: 'only files can be moved' };
+        }
+        if (
+          toRoot.root === 'knowledge' &&
+          destination.rel === 'overview.md' &&
+          (stats.size > PROJECT_MEMORY_MAX_CHARS * 4 ||
+            (await readFile(sourcePath, 'utf8')).length > PROJECT_MEMORY_MAX_CHARS)
+        ) {
+          reply.code(413);
+          return { error: 'overview.md exceeds the project overview limit' };
+        }
+        // Link-then-unlink rather than rename: `rename` would silently replace an
+        // existing destination, and a move between the project folder and the
+        // shared one is a scope change (ADR 0022 D1) — the one place where
+        // overwriting somebody else's file must fail loudly. Both roots live
+        // under the same data root, so the hard link always resolves.
+        await link(sourcePath, destinationPath);
+        await unlink(sourcePath);
+        if (fromRoot.root === 'knowledge' && source.rel === 'overview.md')
+          await markProjectOverviewAuthoritative(fromRoot.dir);
+        if (toRoot.root === 'knowledge' && destination.rel === 'overview.md')
+          await markProjectOverviewAuthoritative(toRoot.dir);
+        const movedExtraction = await moveKnowledgeExtraction(
+          fromRoot.dir,
+          source.rel,
+          toRoot.dir,
+          destination.rel,
+        );
+        if (!movedExtraction) await extractKnowledgeFile(toRoot.dir, destination.rel);
+        return { path: destination.rel, root: toRoot.root };
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          (error as { code?: unknown }).code === 'EEXIST'
+        ) {
+          reply.code(409);
+          return { error: `"${destination.name}" already exists` };
+        }
+        throw error;
+      } finally {
+        await source.close();
+        await destination.close();
       }
     },
   });

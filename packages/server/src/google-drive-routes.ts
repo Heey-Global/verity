@@ -1,4 +1,5 @@
 import type { EventStore, SealableSecretCipher, VeritySettingsRecord } from '@verity/store';
+import { chmod } from 'node:fs/promises';
 import { SealedError } from '@verity/store';
 import rateLimitPlugin from '@fastify/rate-limit';
 import type { FastifyInstance } from 'fastify';
@@ -20,8 +21,9 @@ import {
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
 import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
-import { ensureReferenceDirectory, writeReferenceDocFile } from './reference-docs.js';
-import { sessionFilePath } from './session-files.js';
+import { writeReferenceDocFile } from './reference-docs.js';
+import { ensureProjectKnowledge } from './knowledge-folder.js';
+import { extractKnowledgeFile } from './knowledge-file-ingest.js';
 
 const sessionParams = z.object({
   id: z
@@ -74,6 +76,7 @@ interface GoogleDriveRouteDeps {
     >;
   googleDriveClientId?: string;
   secretCipher?: SealableSecretCipher;
+  dataRoot?: string;
 }
 
 /** Google Drive PKCE connection, browsing, and reference-document import routes. */
@@ -385,6 +388,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(404);
       return { error: `session ${id} not found` };
     }
+    if (!session.projectId || !deps.dataRoot) {
+      reply.code(409);
+      return { error: 'Google Drive knowledge import requires a project session' };
+    }
     const token = await accessToken();
     if (token === undefined) {
       reply.code(409);
@@ -420,10 +427,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       return { error: `Could not download the Google Drive file (${reason})` };
     }
     const fileName = referenceDocFileName(file.name, plan.extension, fileId);
-    const referenceDir = await ensureReferenceDirectory(session.worktree);
-    const path = `docs/reference/${fileName}`;
-    sessionFilePath(session.worktree, path);
-    await writeReferenceDocFile(referenceDir, fileName, bytes);
-    return { path, name: file.name };
+    const root = await ensureProjectKnowledge(deps.dataRoot, session.projectId);
+    const importsDir = `${root}/imports`;
+    const path = `imports/${fileName}`;
+    await writeReferenceDocFile(importsDir, fileName, bytes);
+    await chmod(`${importsDir}/${fileName}`, 0o644);
+    await extractKnowledgeFile(root, path);
+    return { root: 'knowledge', path, name: file.name };
   });
 }

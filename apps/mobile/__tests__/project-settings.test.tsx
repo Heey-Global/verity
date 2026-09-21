@@ -10,7 +10,7 @@
 // `createVerityClient()` returns an in-memory fake whose methods we control. The
 // project is `absent` (inactive) so the Runtime section short-circuits without any
 // dev-server calls.
-import { type VerityClient, type ProjectDetail, type ProjectSettings } from '@verity/mobile';
+import { type VerityClient, type ProjectDetail } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { Alert, AppState } from 'react-native';
@@ -262,7 +262,7 @@ describe('ProjectDetailScreen — project settings', () => {
     );
   });
 
-  it('separates dev server, knowledge, automations, and settings with legacy notes collapsed', async () => {
+  it('keeps Knowledge and legacy Memory out of project settings', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient({ detail: makeDetail() }));
     render(<ProjectDetailScreen />);
 
@@ -273,10 +273,8 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.queryByText('Agent Loops')).toBeNull();
     expect(screen.queryByLabelText('Memory')).toBeNull();
 
-    fireEvent.press(await screen.findByText('Knowledge'));
-    expect(screen.queryByLabelText('Memory')).toBeNull();
-    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
-    expect(await screen.findByLabelText('Memory')).toBeOnTheScreen();
+    expect(screen.queryByText('Knowledge')).toBeNull();
+    expect(screen.queryByLabelText('Show preserved legacy notes')).toBeNull();
 
     fireEvent.press(screen.getByText('Automations'));
     expect(await screen.findByText('Agent Loops')).toBeOnTheScreen();
@@ -1069,33 +1067,6 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
   });
 
-  it('saves Memory without writing legacy Dev Server settings', async () => {
-    // Regression: the shared form is lifted above the loading gate, so its draft
-    // must repopulate from settings once they load. If it stayed on its empty
-    // initial seed, configured fields would render blank AND a save of one field
-    // would PATCH every other field to null.
-    const base = makeDetail();
-    if (base.settings === null) throw new Error('expected project settings fixture');
-    const detail: ProjectDetail = {
-      ...base,
-      settings: { ...base.settings, memory: 'Remember the docs' },
-    };
-    const updateProjectSettings = jest.fn().mockResolvedValue(detail.settings);
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByText('Knowledge'));
-    expect(screen.queryByLabelText('Memory')).toBeNull();
-    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
-    expect(await screen.findByDisplayValue('Remember the docs')).toBeOnTheScreen();
-
-    fireEvent.changeText(screen.getByLabelText('Memory'), 'Updated note');
-    fireEvent(screen.getByLabelText('Memory'), 'blur');
-    await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(1));
-    const [, patch] = updateProjectSettings.mock.calls[0];
-    expect(patch.memory).toBe('Updated note');
-  });
-
   it('shows persisted Agent Loops in the Automations tab', async () => {
     const listAgentLoops = jest.fn().mockResolvedValue([
       {
@@ -1224,63 +1195,6 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(message).toContain('sessions and their history');
     expect(message).not.toContain('stay in the list');
     alert.mockRestore();
-  });
-
-  it('saves an edited field without ever emitting a Doppler token key', async () => {
-    // The per-project manual Doppler token entry was removed (resolution is brokered centrally),
-    // so a normal settings save must never carry a `dopplerToken` key.
-    const updateProjectSettings = jest.fn().mockResolvedValue(makeDetail().settings);
-    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByText('Knowledge'));
-    expect(screen.queryByLabelText('Memory')).toBeNull();
-    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
-    fireEvent.changeText(await screen.findByLabelText('Memory'), 'Keep docs current');
-    fireEvent(screen.getByLabelText('Memory'), 'blur');
-
-    await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(1));
-    // Await the post-save re-render (onSaved → setDetail → reseed draft) so the
-    // trailing state update lands inside act rather than after the assertions.
-    expect(await screen.findByText(/All changes saved/)).toBeOnTheScreen();
-    const [, patch] = updateProjectSettings.mock.calls[0];
-    expect(patch).not.toHaveProperty('dopplerToken');
-    expect(patch.memory).toBe('Keep docs current');
-  });
-
-  it('preserves edits made while an earlier auto-save is in flight', async () => {
-    let resolveFirst: (settings: ProjectSettings) => void = () => undefined;
-    const firstSave = new Promise<ProjectSettings>((resolve) => {
-      resolveFirst = resolve;
-    });
-    const initial = makeDetail().settings;
-    if (initial === null) throw new Error('expected project settings fixture');
-    const updateProjectSettings = jest
-      .fn()
-      .mockReturnValueOnce(firstSave)
-      .mockResolvedValueOnce({ ...initial, memory: 'Keep docs current' });
-    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
-    render(<ProjectDetailScreen />);
-
-    fireEvent.press(await screen.findByText('Knowledge'));
-    expect(screen.queryByLabelText('Memory')).toBeNull();
-    fireEvent.press(await screen.findByLabelText('Show preserved legacy notes'));
-    const box = await screen.findByLabelText('Memory');
-    fireEvent.changeText(box, 'Draft one');
-    fireEvent(box, 'blur');
-    await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(1));
-
-    // Type a newer value while the first save is still airborne, then let the
-    // stale first response land. The in-flight merge must keep the newer text.
-    fireEvent.changeText(box, 'Keep docs current');
-    fireEvent(box, 'blur');
-    await act(async () => resolveFirst({ ...initial, memory: 'Draft one' }));
-
-    await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(2));
-    expect(updateProjectSettings.mock.calls[1]?.[1]).toMatchObject({
-      memory: 'Keep docs current',
-    });
-    expect(screen.getByDisplayValue('Keep docs current')).toBeOnTheScreen();
   });
 });
 
