@@ -395,42 +395,59 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.retryCeilingMs = RECONNECT_MAX_MS;
       this.validateLease(frame);
       this.controlReady = true;
-      await this.awaitRequiredCleanup();
-      this.applyLease(frame);
-      const settings = await this.options.store.getVeritySettings();
-      // A first-ever admission, a re-admission under the same id, and an
-      // admission that silently replaced the stored id look identical in the
-      // logs otherwise, and they mean very different things when the service is
-      // counting installations against a cap. The third is the one that
-      // exhausts it: an id that rotates on every admission consumes a slot each
-      // time while this side believes it is the same installation throughout.
-      const previousInstallationId = settings?.uplinkInstallationId ?? undefined;
-      const firstEver = !previousInstallationId;
-      const idChanged = !firstEver && previousInstallationId !== installationId;
-      // Recorded before the write, not after it: a failing write closes the
-      // connection from the catch around this handler, and an id that rotates
-      // on every admission is most likely to be noticed on exactly that path.
-      // Logging afterwards would drop the record precisely when it is needed.
-      this.options.log?.info(
-        {
-          installationId,
-          previousInstallationId,
-          firstEver,
-          idChanged,
-          features: [...this.features],
-        },
-        'Uplink admitted this installation',
-      );
-      if (previousInstallationId !== installationId) {
-        await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
-      }
-      this.welcomed = true;
-      this.startHeartbeat();
-      if (!this.features.has('sharing')) {
-        await this.disableFeaturesOnce('Uplink did not grant public preview entitlement');
-      }
-      for (const shareId of await this.options.store.listPendingUplinkShareRemovals()) {
-        this.orphanShareIds.add(shareId);
+      try {
+        const settings = await this.options.store.getVeritySettings();
+        // A first-ever admission, a re-admission under the same id, and an
+        // admission that silently replaced the stored id look identical in the
+        // logs otherwise, and they mean very different things when the service is
+        // counting installations against a cap. The third is the one that
+        // exhausts it: an id that rotates on every admission consumes a slot each
+        // time while this side believes it is the same installation throughout.
+        const previousInstallationId = settings?.uplinkInstallationId ?? undefined;
+        const firstEver = !previousInstallationId;
+        const idChanged = !firstEver && previousInstallationId !== installationId;
+        // Recorded before the write, not after it: a failing write closes the
+        // connection from the catch around this handler, and an id that rotates
+        // on every admission is most likely to be noticed on exactly that path.
+        // Logging afterwards would drop the record precisely when it is needed.
+        this.options.log?.info(
+          {
+            installationId,
+            previousInstallationId,
+            firstEver,
+            idChanged,
+            features: Array.isArray(frame.features)
+              ? frame.features.filter((value): value is string => typeof value === 'string')
+              : [],
+          },
+          'Uplink admitted this installation',
+        );
+        if (previousInstallationId !== installationId) {
+          await this.options.store.updateVeritySettings({ uplinkInstallationId: installationId });
+        }
+        // Persist the identity before local reconciliation. The Uplink has
+        // already admitted this installation, so losing its assigned id when a
+        // Docker/share cleanup fails makes the next hello look like another new
+        // installation. With a one-installation entitlement that strands the
+        // client behind the slot it just consumed until the lease expires.
+        await this.awaitRequiredCleanup();
+        this.applyLease(frame);
+        this.welcomed = true;
+        this.startHeartbeat();
+        if (!this.features.has('sharing')) {
+          await this.disableFeaturesOnce('Uplink did not grant public preview entitlement');
+        }
+        for (const shareId of await this.options.store.listPendingUplinkShareRemovals()) {
+          this.orphanShareIds.add(shareId);
+        }
+      } catch (error: unknown) {
+        // The frame was valid and the Uplink admitted us. A store or cleanup
+        // failure is local, so calling it an invalid control message sends the
+        // service-side investigation down the wrong protocol path.
+        this.options.log?.error({ error, frameType: 'welcome' }, 'failed to accept Uplink welcome');
+        this.clearAuthority('failed to accept Uplink welcome', !this.stopped);
+        this.socket?.close(1011, 'local welcome processing failed');
+        return;
       }
       void this.flushOrphanShares();
       return;
