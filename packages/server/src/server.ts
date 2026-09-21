@@ -3921,7 +3921,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerHealthRoute(app, {
     version: SERVER_VERSION,
     pushEnabled: deps.pushEnabled === true,
-    publicPreviewsEnabled: deps.previewShareManager?.isAvailable() === true,
+    publicPreviewsEnabled: () => deps.previewShareManager?.isAvailable() === true,
     ...(deps.secretJobRuntimeReadiness !== undefined
       ? { secretJobRuntimeReadiness: deps.secretJobRuntimeReadiness }
       : {}),
