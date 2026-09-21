@@ -7876,6 +7876,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // internal fields and lifecycle states no client schema accepts, and a
           // client that cannot parse this answer reports a schema dump instead of
           // "provisioning, try again".
+          //
+          // Release and Sandbox-update fields are the placeholders the sleep and
+          // wake actions hand out for the same reason: the clone this answer
+          // announces has no Sandbox to inspect and no release resolved yet. A
+          // client that wants those reads them from the project once it exists.
           return {
             project: publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
             awaitingProvisioning: true,

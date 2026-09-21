@@ -10551,10 +10551,9 @@ describe('POST /sessions with project field (#174)', () => {
         state: 'absent',
       });
       // Serialized like every other project payload. The raw row was handed out
-      // here instead, which put internal columns on the wire and — for a project
-      // whose `state` is one of the sleep lifecycle values the projection folds
-      // into `active` — produced a body no client can parse, so the app reported
-      // a schema dump where "provisioning, try again shortly" belongs.
+      // here instead, which put internal columns on the wire and produced a body
+      // no client schema accepts, so the app reported a schema dump where
+      // "provisioning, try again shortly" belongs.
       expect(body.project).not.toHaveProperty('hiddenAt');
       expect(body.project).not.toHaveProperty('sleepCompatibilityFingerprint');
       expect(body.project).toHaveProperty('sandboxUpdate');
@@ -10660,7 +10659,10 @@ describe('POST /sessions with project field (#174)', () => {
         const session = await ctx.store.getSession(sessionId);
         expect(session?.projectId).toBe(projectId);
         // The worktree comes from the project's clone on the host, which the sleep
-        // never touched — a spawn needs no running container.
+        // never touched — a spawn needs no running container. Assert the call
+        // happened first: comparing against an absent mock result is `undefined ===
+        // undefined`, which would hold for a session that got no worktree at all.
+        expect(projectWorktrees.add).toHaveBeenCalledTimes(1);
         expect(session?.worktree).toBe(await projectWorktrees.add.mock.results[0]?.value);
         expect(p.provision).not.toHaveBeenCalled();
         // The spawn leaves the Sandbox where it found it — the first turn is what
