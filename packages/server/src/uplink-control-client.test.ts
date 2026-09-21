@@ -2,7 +2,12 @@ import { EventEmitter } from 'node:events';
 import type { VeritySettingsPatch, EventStore } from '@verity/store';
 import WebSocket from 'ws';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { UplinkControlClient, UPLINK_CONTROL_URL } from './uplink-control-client.js';
+import {
+  RECONNECT_CAPACITY_MS,
+  RECONNECT_MAX_MS,
+  UplinkControlClient,
+  UPLINK_CONTROL_URL,
+} from './uplink-control-client.js';
 
 class FakeSocket extends EventEmitter {
   readyState: number = WebSocket.CONNECTING;
@@ -31,12 +36,13 @@ function setup(
     settingsRead?: Promise<{ uplinkSubscriptionKey: string; uplinkInstallationId: null }>;
     pendingRemovals?: string[];
     disableFeatures?: (reason: string) => Promise<void>;
+    installationId?: string;
   } = {},
 ) {
   const socket = new FakeSocket();
-  const settings = {
+  const settings: { uplinkSubscriptionKey: string; uplinkInstallationId: string | null } = {
     uplinkSubscriptionKey: 'subscription-fixture',
-    uplinkInstallationId: null,
+    uplinkInstallationId: options.installationId ?? null,
   };
   const store = {
     getVeritySettings: vi.fn(async () => {
@@ -63,6 +69,65 @@ function setup(
     log,
   });
   return { client, socket, socketFactory, store, settings, disabled, expired, log };
+}
+
+/** Like `setup`, but mints a fresh socket per dial. The shared-socket fixture
+ * cannot show a reconnect: its socket stays CLOSED, so a second dial would be
+ * indistinguishable from none at all. */
+function setupReconnecting(options: { disableFeatures?: (reason: string) => Promise<void> } = {}) {
+  const sockets: FakeSocket[] = [];
+  const settings = {
+    uplinkSubscriptionKey: 'subscription-fixture',
+    uplinkInstallationId: null,
+  };
+  const store = {
+    getVeritySettings: vi.fn(async () => settings),
+    updateVeritySettings: vi.fn(async (patch: VeritySettingsPatch) => ({ ...settings, ...patch })),
+    addPendingUplinkShareRemoval: vi.fn(async () => undefined),
+    listPendingUplinkShareRemovals: vi.fn(async () => []),
+    deletePendingUplinkShareRemoval: vi.fn(async () => undefined),
+  };
+  const disabled = vi.fn(options.disableFeatures ?? (async () => undefined));
+  const socketFactory = vi.fn(() => {
+    const socket = new FakeSocket();
+    sockets.push(socket);
+    return socket as unknown as WebSocket;
+  });
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const client = new UplinkControlClient({
+    url: UPLINK_CONTROL_URL,
+    store: store as unknown as EventStore & typeof store,
+    serverVersion: 'test',
+    webSocketFactory: socketFactory,
+    onFeaturesDisabled: disabled,
+    log,
+  });
+  return { client, sockets, socketFactory, store, disabled, log };
+}
+
+/** Window used by the back-off ceiling guards, long enough that the doubling
+ * has saturated for most of it. */
+const CEILING_WINDOW_MS = RECONNECT_MAX_MS * 60;
+/** Dials the ordinary ceiling must produce across that window, halved for the
+ * jitter and for the dials lost to the doubling on the way up. The capacity
+ * ceiling is an order of magnitude below this, so the two never overlap. */
+const SATURATED_DIALS = CEILING_WINDOW_MS / RECONNECT_MAX_MS / 2;
+
+/** Counts how often the client redials across a window in which every dial
+ * fails, which is what makes the back-off *ceiling* observable: a single
+ * reconnect only ever shows the current delay, and that delay starts at its
+ * floor no matter which ceiling is in force. */
+async function dialsWhileFailing(sockets: FakeSocket[], windowMs: number): Promise<number> {
+  const before = sockets.length;
+  const step = RECONNECT_MAX_MS / 2;
+  for (let elapsed = 0; elapsed < windowMs; elapsed += step) {
+    for (const socket of sockets) {
+      if (socket.readyState !== WebSocket.CLOSED) socket.close(1006, '');
+    }
+    await flush();
+    await vi.advanceTimersByTimeAsync(step);
+  }
+  return sockets.length - before;
 }
 
 /** Brings a fixture to the state every share operation requires: connected,
@@ -228,6 +293,399 @@ describe('UplinkControlClient', () => {
     expect(disabled).toHaveBeenCalledOnce();
   });
 
+  /**
+   * The two reject classes differ only in whether the installation may try
+   * again, and the difference is invisible in a single connection: both close
+   * the socket and both disable sharing. What separates them is what happens
+   * on the timer afterwards, which is what these two guards watch.
+   *
+   * Getting this wrong is silent in both directions. Treating a capacity
+   * refusal as terminal strands the installation until someone restarts it,
+   * long after the far end has room again; treating an identity refusal as
+   * temporary redials forever against an answer that cannot change — and
+   * against an Uplink that allocates per connection, each of those dials costs
+   * something.
+   */
+  it('keeps dialling after a capacity refusal, on the slower schedule', async () => {
+    vi.useFakeTimers();
+    const { client, socketFactory, sockets, disabled } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
+    await flush();
+
+    expect(disabled).toHaveBeenCalledWith('limit_reached');
+    // Still quiet at the ordinary ceiling: a capacity refusal must not be
+    // retried on the same schedule as a dropped connection.
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
+    expect(socketFactory).toHaveBeenCalledTimes(1);
+
+    // Dialled again once the slower schedule comes round, with no operator
+    // action: capacity freed on the far end has to be noticed on its own.
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
+    expect(socketFactory).toHaveBeenCalledTimes(2);
+    await client.stop();
+  });
+
+  it('returns to the ordinary schedule once a welcome lands', async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
+    await flush();
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
+
+    sockets[1]!.open();
+    sockets[1]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    await flush();
+
+    // The slow schedule belongs to the refusal, not to the installation. An
+    // admission that leaves it in place makes every later network blip cost
+    // five minutes of downtime, which nothing in the logs would explain.
+    //
+    // Counting dials over a window is the only way to see this: the welcome
+    // also resets the *delay* to its floor, so the first reconnect after a
+    // drop is prompt either way. The ceiling only shows itself once the
+    // back-off has doubled its way up to it.
+    const dials = await dialsWhileFailing(sockets, CEILING_WINDOW_MS);
+    expect(dials).toBeGreaterThan(SATURATED_DIALS);
+    await client.stop();
+  });
+
+  it('does not inherit a capacity back-off across a stop and start', async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
+    await flush();
+    await client.stop();
+
+    // Restarting is an operator asking for a fresh attempt - most often right
+    // after changing something they expect to have fixed it. Carrying the old
+    // refusal's schedule over means the first evidence either way is minutes
+    // away, and it looks like nothing happened.
+    client.start();
+    await flush();
+    const dials = await dialsWhileFailing(sockets, CEILING_WINDOW_MS);
+    expect(dials).toBeGreaterThan(SATURATED_DIALS);
+    await client.stop();
+  });
+
+  it('clamps a refusal reason before pinning it into the app-facing message', async () => {
+    vi.useFakeTimers();
+    const { client, sockets, disabled } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    // `revoke` is the refusal that carries free text: the reject reasons that
+    // are held are exact tokens, so only this path can store an arbitrary
+    // string. It is held until the credentials change, so whatever arrives
+    // here is what the app shows for as long as that lasts - and the frame
+    // limit alone permits tens of kilobytes of it.
+    //
+    // It has to be welcomed first. A revoke before a welcome is a protocol
+    // violation, and the parser's own short message would be the thing
+    // measured instead of the stored reason.
+    sockets[0]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    await flush();
+    disabled.mockClear();
+    sockets[0]!.message({ type: 'revoke', reason: 'x'.repeat(50_000) });
+    await flush();
+
+    const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
+    expect(surfaced).toMatch(/^x+…$/);
+    expect(surfaced.length).toBeLessThan(250);
+    await client.stop();
+  });
+
+  it('strips control characters out of a refusal reason', async () => {
+    const { client, socket, disabled, log } = await welcomed(setup());
+    disabled.mockClear();
+    log.warn.mockClear();
+    // A reason carrying its own line breaks forges a record: pasted into a log
+    // it reads as several entries, one of which nobody wrote. The far end
+    // chooses this string, so the bound belongs on this side of the frame.
+    socket.message({ type: 'revoke', reason: 'revoked\nUplink: all clear ' });
+    await flush();
+
+    const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
+    expect(surfaced).not.toMatch(/\p{C}/u);
+    expect(surfaced).toContain('revoked');
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: expect.not.stringMatching(/\p{C}/u) }),
+      'Uplink withdrew this installation',
+    );
+    await client.stop();
+  });
+
+  it('keeps a multi-byte refusal reason intact when it clamps it', async () => {
+    vi.useFakeTimers();
+    const { client, sockets, disabled } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+    await flush();
+    disabled.mockClear();
+    // An emoji is a surrogate pair. Clamping by code unit lands between its
+    // halves and emits a lone surrogate, which reaches the app as a
+    // replacement character and reads there as corrupted data rather than as
+    // a truncated message.
+    //
+    // The leading character matters: with pairs alone the cut lands on an even
+    // index, which is a pair boundary, and a code-unit slice would pass by
+    // luck. One BMP character ahead of them shifts every boundary by one.
+    sockets[0]!.message({ type: 'revoke', reason: `x${'🛰'.repeat(400)}` });
+    await flush();
+
+    const surfaced = String(disabled.mock.calls.at(0)?.[0] ?? '');
+    // With the `u` flag a well-formed pair is one code point outside this
+    // range, so the class matches only an unpaired half.
+    expect(surfaced).not.toMatch(/[\uD800-\uDFFF]/u);
+    expect(surfaced).toMatch(/^x🛰+…$/u);
+    await client.stop();
+  });
+
+  it('never hands a close reason to ws that ws would throw on', async () => {
+    vi.useFakeTimers();
+    const { client, sockets } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'capacity: '.repeat(40) });
+    await flush();
+
+    // Over 123 bytes `ws` throws a RangeError out of close(). Thrown from the
+    // frame handler it is caught by the parser's catch, which reports a refusal
+    // we parsed perfectly as an unparseable frame and closes 1002 instead of
+    // 4003 - destroying the one log line that names why sharing stopped.
+    const [, reason] = sockets[0]!.close.mock.calls.at(-1) ?? [];
+    expect(Buffer.byteLength(String(reason))).toBeLessThanOrEqual(123);
+    expect(sockets[0]!.close).not.toHaveBeenCalledWith(1002, expect.anything());
+    await client.stop();
+  });
+
+  it('keeps reporting a refusal it has stopped dialling on', async () => {
+    vi.useFakeTimers();
+    const { client, sockets, log } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'unknown_key' });
+    await flush();
+    log.warn.mockClear();
+
+    // The incident this change exists for ran 13 days. An installation that
+    // has given up must not look like one that is fine: if the only record is
+    // the single refusal at the moment it happened, whoever looks later sees
+    // an idle client and no reason.
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2.5);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'unknown_key' }),
+      'not dialling the Uplink: this key was refused',
+    );
+    await client.stop();
+  });
+
+  it.each(['unknown_key', 'revoked', 'expired'])(
+    'stops dialling after the identity refusal %s and surfaces it verbatim',
+    async (reason) => {
+      vi.useFakeTimers();
+      const { client, socketFactory, sockets, disabled } = setupReconnecting();
+      client.start();
+      await flush();
+      sockets[0]!.open();
+      sockets[0]!.message({ type: 'reject', reason });
+      await flush();
+
+      // Verbatim, per the protocol: three of these four are not about the key,
+      // and a message naming the key sends the reader to the wrong setting.
+      expect(disabled).toHaveBeenCalledWith(reason);
+      await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 4);
+      expect(socketFactory).toHaveBeenCalledTimes(1);
+      await client.stop();
+    },
+  );
+
+  it('reports the stored identity reason each time it declines to dial', async () => {
+    vi.useFakeTimers();
+    // A local cleanup that keeps failing is the one state in which authority
+    // loss is announced more than once — which is what makes the reason used by
+    // the "do not dial again" branch observable at all. Without it the first
+    // announcement wins and the branch's own string never leaves the process.
+    const { client, sockets, disabled } = setupReconnecting({
+      disableFeatures: async () => {
+        throw new Error('local cleanup failed');
+      },
+    });
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason: 'expired' });
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
+    // The Uplink said the subscription expired. Reporting "the key was
+    // rejected" here would send whoever reads it to re-enter a key that is
+    // perfectly valid.
+    expect(disabled).toHaveBeenLastCalledWith('expired');
+    await client.stop();
+  });
+
+  it.each([
+    // A reason added to the service after this version shipped. Defaulting to
+    // terminal would strand every installation that had not been updated yet.
+    'region_unavailable',
+    // Named, but still not this installation's standing: a mixed-version fleet
+    // or a rolled-back deployment answers differently on the next dial, and the
+    // upgrade that would fix it from this side restarts the process anyway.
+    'protocol_unsupported',
+  ])('treats the reject reason %s as capacity, not as terminal', async (reason) => {
+    vi.useFakeTimers();
+    const { client, socketFactory, sockets } = setupReconnecting();
+    client.start();
+    await flush();
+    sockets[0]!.open();
+    sockets[0]!.message({ type: 'reject', reason });
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
+    expect(socketFactory).toHaveBeenCalledTimes(2);
+    await client.stop();
+  });
+
+  it('records the close code, close reason, and whether it was ever admitted', async () => {
+    const { client, socket, log } = setup();
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({ type: 'reject', reason: 'limit_reached' });
+    await flush();
+
+    // The frame type belongs in the record too: a close code alone cannot say
+    // whether the refusal was the handshake or a later withdrawal, because the
+    // two sides of this protocol number their close codes independently.
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        frameType: 'reject',
+        reason: 'limit_reached',
+        identityReject: false,
+        welcomed: false,
+      }),
+      'Uplink refused the control connection',
+    );
+    // `welcomed: false` is the line that distinguishes "never admitted" from
+    // "was up and dropped" — the distinction this incident class turns on.
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 4003, reason: 'limit_reached', welcomed: false }),
+      'Uplink control connection closed',
+    );
+    await client.stop();
+  });
+
+  it('reports whether the handshake carried an installation id', async () => {
+    const { client, socket, log, store } = setup();
+    client.start();
+    await flush();
+    socket.open();
+    // Nothing was ever welcomed, so there is no id to send: every attempt looks
+    // new to the far end, and that is the state worth seeing from this side.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ identified: false }),
+      'Uplink control handshake started',
+    );
+
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    expect(store.updateVeritySettings).toHaveBeenCalledWith({
+      uplinkInstallationId: 'installation-1',
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: 'installation-1', firstEver: true }),
+      'Uplink admitted this installation',
+    );
+    await client.stop();
+  });
+
+  it('does not report a re-admitted installation as a new one', async () => {
+    const { client, socket, log } = setup({ installationId: 'installation-1' });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+
+    // A server that keeps reappearing as a brand-new installation is what
+    // exhausts an installation cap. If every admission logs firstEver the
+    // difference between that and an ordinary reconnect is invisible, and the
+    // logs agree with whichever theory is read into them.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: 'installation-1', firstEver: false }),
+      'Uplink admitted this installation',
+    );
+    await client.stop();
+  });
+
+  it('records an admission that replaced the stored installation id', async () => {
+    const { client, socket, log } = setup({ installationId: 'installation-1' });
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-2',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+
+    // This is the shape that exhausts an installation cap: the far end mints a
+    // fresh id on each admission, consuming a slot every time, while this side
+    // overwrites its stored id and carries on believing it is one installation.
+    // Without the previous id in the record the whole sequence reads as a
+    // series of ordinary reconnects.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installationId: 'installation-2',
+        previousInstallationId: 'installation-1',
+        firstEver: false,
+        idChanged: true,
+      }),
+      'Uplink admitted this installation',
+    );
+    await client.stop();
+  });
+
   it('closes and disables authority when async welcome persistence fails', async () => {
     const { client, socket, store, disabled } = setup();
     store.updateVeritySettings.mockRejectedValueOnce(new Error('write failed'));
@@ -244,6 +702,32 @@ describe('UplinkControlClient', () => {
     expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control message');
     expect(client.isAvailable()).toBe(false);
     expect(disabled).toHaveBeenCalledWith('invalid Uplink control message');
+    await client.stop();
+  });
+
+  it('records the admission even when persisting the installation id fails', async () => {
+    const { client, socket, store, log } = setup();
+    store.updateVeritySettings.mockRejectedValueOnce(new Error('write failed'));
+    client.start();
+    await flush();
+    socket.open();
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+
+    // A write that fails leaves the id unstored, so the next handshake
+    // introduces itself as a stranger and consumes another slot against the
+    // installation cap. If the record is written only after the write
+    // succeeds, that loop leaves nothing behind but repeated refusals with no
+    // trace of what rotated.
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: 'installation-1', firstEver: true }),
+      'Uplink admitted this installation',
+    );
     await client.stop();
   });
 
@@ -968,7 +1452,17 @@ describe('UplinkControlClient', () => {
 
       expect(socket.close).toHaveBeenCalledWith(1002, 'invalid control frame');
       expect(disabled).toHaveBeenCalledWith('invalid Uplink control frame');
-      expect(log.warn).not.toHaveBeenCalled();
+      // Not reported as a refused frame: the transport is not carrying the
+      // protocol, which the close code already says. The connection-close log
+      // below is a different record and is expected.
+      expect(log.warn).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'invalid Uplink control message',
+      );
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: 1002, welcomed: false }),
+        'Uplink control connection closed',
+      );
       await client.stop();
     },
   );
