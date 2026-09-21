@@ -715,6 +715,35 @@ test('running Wiki jobs refresh their status automatically', async () => {
   }
 });
 
+test('shows only the latest Wiki job when automatic retries have failed', async () => {
+  const failed = {
+    projectId: 'project',
+    status: 'failed' as const,
+    sourceRevisions: [],
+    createdAt: 2,
+    error: 'Isolation failed',
+  };
+  const client = {
+    ...managedClient(),
+    listKnowledgeWikiJobs: jest.fn().mockResolvedValue([
+      { ...failed, id: 'latest', sessionId: 'latest-session', kind: 'ingest' as const },
+      {
+        ...failed,
+        id: 'older',
+        sessionId: 'older-session',
+        kind: 'check' as const,
+        createdAt: 1,
+      },
+    ]),
+  };
+
+  render(<ProjectKnowledge client={client as unknown as VerityClient} projectId="project" />);
+
+  expect(await screen.findByLabelText('Wiki update · Failed · 0 sources')).toBeTruthy();
+  expect(screen.queryByLabelText('Wiki review · Failed · 0 sources')).toBeNull();
+  expect(screen.getByLabelText('Try again')).toBeTruthy();
+});
+
 test('an additional shared source never offers project Wiki ingestion', async () => {
   const client = managedClient();
   render(

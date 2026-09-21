@@ -231,7 +231,10 @@ export function ProjectKnowledge({
               />
             </>
           ) : null}
-          {jobs.slice(0, 10).map((job) => (
+          {/* The server retains jobs as session history. This surface only needs
+              the latest state and retry action; rendering every automatic retry
+              turns one infrastructure failure into a wall of identical rows. */}
+          {jobs.slice(0, 1).map((job) => (
             <View key={job.id} style={styles.row}>
               <Button
                 icon="message-circle"

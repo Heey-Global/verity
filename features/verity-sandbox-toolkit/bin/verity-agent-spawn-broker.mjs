@@ -781,19 +781,21 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   if (options.enforceRoot !== false) await validateImmutablePath(parent);
   const home = await mkdtemp(join(parent, 'job-'));
   try {
-    // Set the mode while the broker still owns the inode. In rootless/user-
-    // namespace deployments, changing ownership can remove the broker's right
-    // to chmod the directory even though it was the process that created it.
+    // Build the complete tree while the broker still owns its root. In
+    // rootless/user-namespace deployments, changing ownership of this 0700
+    // directory can remove the broker's right to create or traverse anything
+    // below it.
     await chmod(home, 0o700);
-    await chown(home, uid, gid);
+    const directories = [];
     for (const relative of ['claude', 'codex', 'config', 'data', 'state', 'cache', 'tmp']) {
       const directory = join(home, relative);
       await mkdir(directory, { mode: 0o700 });
-      await chown(directory, uid, gid);
+      directories.push(directory);
     }
+    const files = [];
     const writeConfig = async (path, content) => {
       await writeFile(path, content, { mode: 0o600 });
-      await chown(path, uid, gid);
+      files.push(path);
     };
     const gateway = new URL(connectorUrl);
     await writeConfig(
@@ -837,6 +839,11 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
         }),
       );
     }
+    // Transfer children before their 0700 parent, and the home itself last. No
+    // broker filesystem operation may follow this handoff.
+    for (const file of files) await chown(file, uid, gid);
+    for (const directory of directories) await chown(directory, uid, gid);
+    await chown(home, uid, gid);
     return home;
   } catch (error) {
     await rm(home, { recursive: true, force: true });
