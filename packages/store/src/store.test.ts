@@ -2,7 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { extractToolResultImages, sessionProjectionEvents, type AgentEvent } from '@verity/events';
+import {
+  aggregateUsage,
+  extractToolResultImages,
+  sessionProjectionEvents,
+  type AgentEvent,
+  type UsageTotals,
+} from '@verity/events';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -1685,6 +1691,7 @@ describe('EventStore — session projection facts', () => {
         eventCount: 0,
         lastActivityAt: null,
         events: [],
+        usage: aggregateUsage([]),
       });
     }
     expect(await ctx.store.listSessionProjectionFacts([])).toEqual(new Map());
@@ -1703,6 +1710,7 @@ describe('EventStore — session projection facts', () => {
       eventCount: 0,
       lastActivityAt: null,
       events: [],
+      usage: aggregateUsage([]),
     });
   });
 
@@ -1824,5 +1832,118 @@ describe('EventStore — session projection facts', () => {
     await expect(ctx.store.listSessionProjectionFacts(['s1', 's2'])).rejects.toThrow(
       /corrupt event payload in session s1/,
     );
+  });
+});
+
+describe('EventStore — session usage totals', () => {
+  const other = { sessionId: 's2', worktree: '/wt/agent-s2', model: 'claude-opus-5' };
+  /** The totals alone, so these read as being about the sums and not the slice. */
+  const sessionUsageTotals = async (ids: readonly string[]): Promise<Map<string, UsageTotals>> =>
+    new Map(
+      [...(await ctx.store.listSessionProjectionFacts(ids))].map(([id, facts]) => [
+        id,
+        facts.usage,
+      ]),
+    );
+  const result = (usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  }): AgentEvent => ({ t: 'result', usage, stopReason: 'end_turn' });
+
+  beforeEach(async () => {
+    await ctx.store.createSession(session);
+    await ctx.store.createSession(other);
+  });
+
+  it('totals what aggregateUsage folds out of the same log', async () => {
+    // The whole point of moving this into SQL is that the server stops reading
+    // the log to answer it. So the expectation is taken from the log — by the
+    // function whose result this replaces — rather than restated as numbers: a
+    // SUM that picked up the wrong JSON path, missed the `result` filter, or
+    // counted a turn twice would still agree with hand-written totals that were
+    // copied from the same mistake.
+    const written: AgentEvent[] = [
+      { t: 'prompt', text: 'go' },
+      result({ inputTokens: 11, outputTokens: 7, cacheReadTokens: 90, cacheCreationTokens: 3 }),
+      { t: 'text', delta: 'not a result' },
+      { t: 'status', state: 'running' },
+      result({ inputTokens: 5, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 64 }),
+    ];
+    for (const event of written) await ctx.store.appendEvent('s1', event);
+    for (const event of [{ t: 'prompt', text: 'nothing finished' } as AgentEvent]) {
+      await ctx.store.appendEvent('s2', event);
+    }
+
+    const totals = await sessionUsageTotals(['s1', 's2']);
+    for (const sessionId of ['s1', 's2']) {
+      const log = await ctx.store.getEventsAfter(sessionId, 0);
+      expect(totals.get(sessionId)).toEqual(aggregateUsage(log.map(({ event }) => event)));
+    }
+    // …and the premise: s1's log really does contain usage, so the comparison
+    // above is not two zeroed objects agreeing with each other.
+    expect(totals.get('s1')?.turns).toBe(2);
+    expect(totals.get('s1')?.inputTokens).toBeGreaterThan(0);
+  });
+
+  it('returns a zeroed total for a session without results and for an unknown id', async () => {
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'never finished' });
+
+    const totals = await sessionUsageTotals(['s1', 'nope']);
+    for (const sessionId of ['s1', 'nope']) {
+      // A group with no rows produces no row, and a caller that read the absence
+      // as `undefined` would put "no usage yet" and "session gone" on the same
+      // footing — the overview renders one and hides the other.
+      expect(totals.get(sessionId)).toEqual(
+        aggregateUsage([{ t: 'prompt', text: 'no results here' }]),
+      );
+    }
+    expect(await sessionUsageTotals([])).toEqual(new Map());
+  });
+
+  it('sums a total no 32-bit column could hold', async () => {
+    // Cache reads run to billions on a long-lived session, and `int` tops out at
+    // 2^31-1. The failure is not subtle in Postgres — the cast itself errors —
+    // but it only ever appears on the deployments with the most history, which
+    // are exactly the ones this read exists to keep cheap.
+    const huge = 3_000_000_000;
+    for (let turn = 0; turn < 2; turn += 1) {
+      await ctx.store.appendEvent(
+        's1',
+        result({
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: huge,
+          cacheCreationTokens: 0,
+        }),
+      );
+    }
+
+    const totals = await sessionUsageTotals(['s1']);
+    expect(totals.get('s1')?.cacheReadTokens).toBe(2 * huge);
+  });
+
+  it('answers for more sessions than one statement can bind', async () => {
+    // Same ceiling `listSessionProjectionFacts` chunks around: `GET /sessions`
+    // passes every session of a deployment, and Postgres refuses a statement over
+    // 65535 bind parameters outright. Unchunked, this read turns a large install
+    // into a route that throws rather than one that is slow.
+    const spent = result({
+      inputTokens: 13,
+      outputTokens: 4,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
+    await ctx.store.appendEvent('s1', spent);
+    // Last, so its row comes back from a chunk that is not the first one: a
+    // merge that wrote each chunk's rows over the accumulated map, instead of
+    // into it, would still answer correctly for everything in chunk one.
+    const ids = [...Array.from({ length: 70_000 }, (_, at) => `absent-${String(at)}`), 's1'];
+
+    const totals = await sessionUsageTotals(ids);
+    expect(totals.size).toBe(ids.length);
+    expect(totals.get('absent-69999')?.turns).toBe(0);
+    expect(totals.get('s1')).toEqual(aggregateUsage([spent]));
   });
 });

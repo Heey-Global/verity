@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
   SESSION_PROJECTION_EVENT_TYPES,
+  type Usage,
+  type UsageTotals,
   externalizeToolResultImages,
   externalizeToolResultText,
   parseAgentEvent,
@@ -770,6 +772,31 @@ function idChunks<T>(items: readonly T[]): T[][] {
 }
 
 /**
+ * One token field of a `result` payload, summed across a group — see
+ * {@link EventStore.readUsageTotals}.
+ *
+ * The field name is emitted as a LITERAL rather than a bind parameter. `->>`
+ * takes `text` on the right, and a parameter arrives untyped, so Postgres
+ * resolves the operator against `jsonb ->> integer` as readily as the text form
+ * and answers with an array-index error on an object. The names come from
+ * {@link Usage}'s own keys, so there is no value here to smuggle anything in.
+ */
+function usageSum(field: keyof Usage) {
+  return sql<string>`sum(coalesce((payload -> 'usage' ->> ${sql.lit(field)})::bigint, 0))`;
+}
+
+/** What a session with no `result` events has spent. */
+function emptyUsageTotals(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    turns: 0,
+  };
+}
+
+/**
  * What the overview projections need from one session's log — see
  * {@link EventStore.listSessionProjectionFacts}.
  */
@@ -782,6 +809,9 @@ export interface SessionProjectionFacts {
   lastActivityAt: number | null;
   /** Ascending by seq, filtered to {@link SESSION_PROJECTION_EVENT_TYPES}. */
   events: SequencedEvent[];
+  /** Token totals over every `result` event in the log — summed in SQL, not
+   *  folded out of {@link events}, so the slice stays free to be narrowed. */
+  usage: UsageTotals;
 }
 
 /** A turn persisted in the durable backlog (issue #80): its retract handle, the
@@ -2968,7 +2998,7 @@ export class EventStore implements EventSink {
     const facts = new Map<string, SessionProjectionFacts>(
       sessionIds.map((sessionId) => [
         sessionId,
-        { eventCount: 0, lastActivityAt: null, events: [] },
+        { eventCount: 0, lastActivityAt: null, events: [], usage: emptyUsageTotals() },
       ]),
     );
     if (facts.size === 0) return facts;
@@ -2980,6 +3010,9 @@ export class EventStore implements EventSink {
     // half and briefly produce a status/usage combination that never existed.
     // REPEATABLE READ fixes the snapshot for the complete batched read, including
     // every chunk on installs large enough to cross the bind-parameter ceiling.
+    // The token sums join that snapshot for the same reason: they are now read
+    // from the log rather than folded out of the slice, so nothing else would
+    // keep "this turn finished" and "this is what it cost" describing one log.
     await this.db
       .transaction()
       .setIsolationLevel('repeatable read')
@@ -2989,6 +3022,7 @@ export class EventStore implements EventSink {
           new Map([...facts].map(([sessionId, entry]) => [sessionId, entry.events])),
           tx,
         );
+        await this.readUsageTotals(chunks, facts, tx);
 
         // `count(*)` and the newest row's timestamp, in one index scan per session.
         //
@@ -3024,6 +3058,79 @@ export class EventStore implements EventSink {
         }
       });
     return facts;
+  }
+
+  /**
+   * Cumulative token usage per session, summed in the DATABASE — the totals half
+   * of {@link listSessionProjectionFacts}.
+   *
+   * `aggregateUsage` answers the same question by folding every `result` event of
+   * every listed session in the server process, which is why the overview has to
+   * hydrate whole logs it otherwise only reads the end of. It is the one consumer
+   * of the slice whose answer genuinely depends on the entire log, so it has to
+   * move before the slice can be bounded — see the note on `aggregateUsage`,
+   * which named a store-side SUM as the eventual path.
+   *
+   * Sums are taken as `bigint`: a busy session's `cacheReadTokens` runs to
+   * billions, and `int` would overflow long before the total stops being
+   * interesting. They come back as strings and are narrowed here, which is exact
+   * up to 2^53 — past that the process could not hold the number anyway.
+   *
+   * A session with no `result` events produces no row at all, which is why the
+   * caller seeds a zeroed total rather than letting an absent one read as missing.
+   *
+   * `events_session_id_type_id_idx` leads with `(session_id, type)`, so the scan
+   * reaches only the `result` rows — one per completed turn — rather than every
+   * event of every listed session. The payload still comes from the heap, which
+   * is the cost this read pays and the reason it sums four fields in one pass.
+   *
+   * Takes the transaction rather than defaulting to {@link EventStore.db}: these
+   * sums are only comparable to the slice and the counters when all three read
+   * the same snapshot, so there is no correct way to call this outside one.
+   */
+  private async readUsageTotals(
+    chunks: readonly (readonly string[])[],
+    into: ReadonlyMap<string, { usage: UsageTotals }>,
+    db: Transaction<Database>,
+  ): Promise<void> {
+    for (const ids of chunks) {
+      const rows = await db
+        .selectFrom('events')
+        .select((eb) => [
+          'session_id',
+          // `coalesce` INSIDE the sum, not around it: a single NULL addend turns
+          // the whole group's sum NULL, so one unreadable row would zero a total
+          // over rows that are fine. It should be unreachable — `usage` is
+          // required on a `result` event, events are validated on the way in, and
+          // {@link readProjectionSlices} refuses a payload that no longer parses
+          // earlier in this very transaction — which is exactly why it is worth a
+          // keyword rather than a branch.
+          //
+          // `turns` counts the `result` rows unconditionally, which is what
+          // `aggregateUsage` does with the same log: it adds a turn for every
+          // `result` event it sees, without consulting the payload.
+          usageSum('inputTokens').as('input_tokens'),
+          usageSum('outputTokens').as('output_tokens'),
+          usageSum('cacheReadTokens').as('cache_read_tokens'),
+          usageSum('cacheCreationTokens').as('cache_creation_tokens'),
+          eb.fn.countAll<string | number | bigint>().as('turns'),
+        ])
+        .where('session_id', 'in', ids)
+        .where('type', '=', 'result')
+        .groupBy('session_id')
+        .execute();
+      for (const row of rows) {
+        const entry = into.get(row.session_id);
+        if (entry === undefined) continue;
+        entry.usage = {
+          inputTokens: Number(row.input_tokens),
+          outputTokens: Number(row.output_tokens),
+          cacheReadTokens: Number(row.cache_read_tokens),
+          cacheCreationTokens: Number(row.cache_creation_tokens),
+          turns: Number(row.turns),
+        };
+      }
+    }
   }
 
   /**

@@ -4263,6 +4263,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     eventCount: 0,
     lastActivityAt: null,
     events: [],
+    usage: aggregateUsage([]),
   });
 
   /**
@@ -4383,7 +4384,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
         ? { permissionAwaitingInput: true as const }
         : {}),
-      usage: aggregateUsage(events),
+      // Summed in SQL over the whole log rather than folded out of `events`: the
+      // slice is on its way to being a bounded tail, and a total taken from a
+      // tail would quietly shrink as a session got longer.
+      usage: facts.usage,
       lastActivityAt: facts.lastActivityAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
@@ -6674,7 +6678,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(status === 'awaiting_input' && pendingPermissions.length > 0
           ? { permissionAwaitingInput: true as const }
           : {}),
-        usage: aggregateUsage(events),
+        usage: facts.usage,
         ...(rateLimit ? { rateLimit } : {}),
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
         resumable: !knowledgeAccessRevoked && (await worktreeExists(session.worktree)),
