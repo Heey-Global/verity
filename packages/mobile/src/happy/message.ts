@@ -98,6 +98,14 @@ export interface ModeSwitchMessage {
   event: AgentEvent;
 }
 
+/** Live infrastructure wait. A later status event removes it from the transcript. */
+export interface DependencyStatusMessage {
+  kind: 'dependency-status';
+  id: string;
+  createdAt: number;
+  text: string;
+}
+
 /**
  * A Quick-Action decision point (issue #97) — a Verity addition with no upstream
  * Happy analogue. Produced by the reducer from a canonical `choices` event; the
@@ -158,5 +166,6 @@ export type Message =
   | AgentTextMessage
   | ToolCallMessage
   | ModeSwitchMessage
+  | DependencyStatusMessage
   | ChoicesMessage
   | AgentLoopProposalMessage;

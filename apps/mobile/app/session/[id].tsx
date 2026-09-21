@@ -4548,6 +4548,8 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
       return <EventRow message={item.message} />;
+    case 'dependency-status':
+      return <DependencyStatusRow text={item.message.text} />;
     case 'choices':
       // Interactive only while this is the LATEST row; `renderItem` computes that from
       // the chat list order. Once the operator answers, a newer row makes it no longer
@@ -5482,6 +5484,15 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
           <Text style={styles.eventActionLabel}>Sign in to Claude</Text>
         </Pressable>
       ) : null}
+    </View>
+  );
+}
+
+function DependencyStatusRow({ text }: { text: string }) {
+  return (
+    <View style={styles.dependencyStatusRow} accessible accessibilityLabel={text}>
+      <WorkingDot size={7} />
+      <Text style={styles.dependencyStatusText}>{text}</Text>
     </View>
   );
 }
@@ -8594,6 +8605,18 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.sm,
+  },
+  dependencyStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+  },
+  dependencyStatusText: {
+    flex: 1,
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    lineHeight: 20 * theme.fontScale,
   },
   eventRowActionable: {
     flexDirection: 'column',

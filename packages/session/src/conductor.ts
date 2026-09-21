@@ -1101,10 +1101,9 @@ export class Conductor {
     }
   }
 
-  /** Park a session on `awaiting_dependency` with an operator-facing note. */
+  /** Park a session on `awaiting_dependency` with transient operator-facing detail. */
   private async parkOnDependency(sessionId: string, message: string): Promise<void> {
-    await this.emitEvent(sessionId, { t: 'notice', text: message, role: 'agent' });
-    await this.emitEvent(sessionId, { t: 'status', state: 'awaiting_dependency' });
+    await this.emitEvent(sessionId, { t: 'status', state: 'awaiting_dependency', message });
   }
 
   /** Persist a server-authored event and fan it out. Best-effort: callers use it for
