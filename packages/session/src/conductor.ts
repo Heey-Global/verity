@@ -8,6 +8,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   appendExternalPromptData,
+  SANDBOX_NOT_READY_ERROR_KIND,
+  turnFailureErrorKind,
   type AgentEvent,
   type Attachment,
   type AttachmentUpload,
@@ -743,8 +745,18 @@ function isSealedStoreRecoveryError(event: AgentEvent | undefined): boolean {
  * (`parse_error`, `adapter_schema_mismatch`, `adapter_invalid_event`) and the
  * sealed-store recovery error mid-stream WITHOUT ending the turn, so `t: 'error'`
  * alone must never be read as "the turn settled".
+ *
+ * `sandbox_not_ready` belongs here for the same reason `run_failed` does — the
+ * turn is over either way, and recovery must not append a second terminal marker
+ * beside it. What differs is only how it READS: the status projection badges it
+ * `idle` instead of `crashed`, and it fires no crash push.
  */
-const TERMINAL_ERROR_KINDS = new Set(['spawn_failed', 'run_failed', 'crashed']);
+const TERMINAL_ERROR_KINDS = new Set([
+  'spawn_failed',
+  'run_failed',
+  'crashed',
+  SANDBOX_NOT_READY_ERROR_KIND,
+]);
 
 /** One dispatch of a turn against a backend — the outcome plus what the retry
  *  paths need to decide whether to run another attempt. */
@@ -2056,12 +2068,25 @@ export class Conductor {
     }
   }
 
+  /**
+   * Persist a turn failure as its terminal `error` and route it to the logging
+   * sink.
+   *
+   * A Sandbox that was asleep, waking or mid-rebuild is written as
+   * `sandbox_not_ready` rather than `run_failed`: the turn ended either way, but
+   * only one of the two is a session the operator has to go and fix. The
+   * projection badges that kind `idle`, so the session recovers by itself once
+   * the Sandbox is back — which is what made this worth separating: background
+   * resolutions (auto-title, the reattach after a restart) fail fast against a
+   * sleeping project by design, and each of those failures used to pin a red
+   * `crashed` badge on a perfectly healthy session.
+   */
   private async reportBackgroundTurnFailure(sessionId: string, error: unknown): Promise<void> {
     const normalized = error instanceof Error ? error : new Error(String(error));
     try {
       const event: AgentEvent = {
         t: 'error',
-        kind: 'run_failed',
+        kind: turnFailureErrorKind(normalized),
         message: normalized.message,
       };
       const persisted = await this.deps.store.appendEvent(sessionId, event);

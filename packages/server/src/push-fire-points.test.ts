@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@verity/events';
+import { SANDBOX_NOT_READY_ERROR_KIND, type AgentEvent } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPushFirePoints, createPushForegroundPresence } from './push-fire-points.js';
@@ -241,6 +241,30 @@ describe('PushFirePoints', () => {
     expect(sender.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ data: { sessionId: 'session-1', kind: 'crashed' } }),
     );
+    await firePoints.close();
+  });
+
+  it('sends no crash notification when the turn only found the Sandbox asleep', async () => {
+    // This module keeps its own copy of the terminal error kinds, on purpose: what
+    // ends a turn and what is worth waking somebody for are different questions.
+    // `sandbox_not_ready` is the case where they diverge — the turn is over, but
+    // the Sandbox comes back on its own and there is nothing to act on. A phone
+    // buzzing "your session crashed" for that is the same false alarm as the red
+    // badge, just harder to ignore.
+    const sender = fakeSender();
+    const firePoints = createPushFirePoints({
+      sender,
+      presence: createPushForegroundPresence(),
+      debounceMs: 10,
+    });
+
+    firePoints.observe('session-1', event({ t: 'prompt', text: 'go' }));
+    firePoints.observe(
+      'session-1',
+      event({ t: 'error', kind: SANDBOX_NOT_READY_ERROR_KIND, message: 'x' }, 2),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sender.send).not.toHaveBeenCalled();
     await firePoints.close();
   });
 

@@ -1,4 +1,5 @@
 export { parsePort } from './deployment-port.js';
+import { sandboxNotReadyError } from '@verity/events';
 import {
   ALLOWED_PERMISSION_MODES,
   AcpClaudeBackend,
@@ -1731,7 +1732,10 @@ export function createProjectTurnPreparationSerializer(deps: {
   return async (projectId, sessionId, canWait, prepare) => {
     if (!canWait) {
       if (tails.has(projectId) || deps.repairInFlight(projectId)) {
-        throw new Error('project Sandbox preparation is already in progress');
+        // Transient by construction: something else is making this Sandbox ready
+        // right now. The background resolution declines to queue behind it, which
+        // must not end up as a `crashed` badge on a session that is fine.
+        throw sandboxNotReadyError('project Sandbox preparation is already in progress');
       }
       const backend = await prepare(new Set([sessionId]));
       return backend === undefined ? undefined : deps.wrapBackground(projectId, backend);
@@ -2827,7 +2831,10 @@ export async function buildEmbeddedServer(
   const withProjectSandboxActivity = (projectId: string, backend: Backend): Backend => {
     const use = async <T>(operation: () => Promise<T>): Promise<T> => {
       if (provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) {
-        throw new Error('project Sandbox repair is already in progress');
+        // Same transient class as the serializer above — this wrapper is only ever
+        // applied to a background resolution's backend, and a repair holding the
+        // activity lock resolves itself.
+        throw sandboxNotReadyError('project Sandbox repair is already in progress');
       }
       try {
         return await operation();
@@ -4452,9 +4459,16 @@ export async function buildEmbeddedServer(
                 );
               }
               if (!gatewayReady) {
-                throw new Error(
-                  'Sandbox has no valid Agent Gateway identity and could not be repaired automatically — repair the project, then send the message again',
-                );
+                const message =
+                  'Sandbox has no valid Agent Gateway identity and could not be repaired automatically — repair the project, then send the message again';
+                // A background resolution never attempted the rebuild above, so its
+                // failure says nothing about whether the Sandbox is repairable — only
+                // that this resolution would not wait for one. Reporting it as the
+                // transient class keeps it from freezing the session on `crashed` (the
+                // badge outlives the turn; the Sandbox usually does not). A foreground
+                // turn, whose repair genuinely ran and failed, keeps the red badge and
+                // the operator-facing instruction above.
+                throw preparation.canWait ? new Error(message) : sandboxNotReadyError(message);
               }
               // Binding issuance and revocation keep the routed set current: read the
               // latest rotating credential and wait for the gateway to acknowledge
