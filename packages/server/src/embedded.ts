@@ -2418,12 +2418,14 @@ export async function buildEmbeddedServer(
       }))
     : undefined;
   let previewShareManager: PreviewShareManager | undefined;
-  // The client dials from `start()` below, which is a long way before `app`
-  // exists, and every line it writes is conditional on this option being
-  // present. Without it the handshake, the close code, and the refusal reason
-  // are all no-ops, and a control channel that never connects is
-  // indistinguishable from one nobody configured. Bound to `app.log` the
-  // moment there is one.
+  // Every line the Uplink client writes is conditional on this option being
+  // present. Without it the handshake record, the close code and the refusal
+  // reason are all no-ops, and a control channel that is being refused is
+  // indistinguishable from one nobody configured - which is how an outage ran
+  // for 13 days with no server-side trace of its cause. It cannot simply be
+  // `app.log`: that does not exist yet here, and will not for another thousand
+  // lines. Allocated whether or not a client is built, so the binding below
+  // needs no second copy of the conditions that decide it.
   const uplinkLog = createDeferredLogger();
   const uplinkControl =
     config.publicPreviews !== undefined && projectDocker !== undefined
@@ -2467,7 +2469,11 @@ export async function buildEmbeddedServer(
       },
       edge: uplinkControl,
     });
-    uplinkControl.start();
+    // Dialled from below, once the logger it reports through is the real one.
+    // Nothing between here and there asks the client for anything: every share
+    // path goes through `isAvailable()`, which is false until a `welcome`
+    // lands, so a client dialling a thousand lines earlier is not a client that
+    // can serve a request any sooner.
   }
   let secretJobRuntimeReadiness = config.secretJobRuntimeReadiness;
   if (config.secretJobRuntimeRequired === true && secretJobRuntimeReadiness === undefined) {
@@ -4416,9 +4422,13 @@ export async function buildEmbeddedServer(
       },
     },
   });
-  // First statement after `app` exists, so the window in which the Uplink
-  // client logs to the console fallback is as short as the boot can make it.
+  // First statement after `app` exists, and the dial is the second. In that
+  // order the handshake, the close code and the refusal reason - the lines this
+  // wiring exists for - are pino records rather than console lines, and the
+  // fallback is left covering only what a component logs before it is asked to
+  // do anything.
   uplinkLog.bind(app.log);
+  uplinkControl?.start();
   // One-time reconciliation of backend transcripts left by sessions that no longer
   // exist (see `session-artifact-sweep.ts`). Deleting a session now takes its
   // transcripts with it, but everything deleted BEFORE that fix left its files behind

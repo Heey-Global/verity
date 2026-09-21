@@ -574,6 +574,51 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('keeps the subscription key out of every line it logs', async () => {
+    const { client, socket, log } = setup();
+    client.start();
+    await flush();
+    socket.open();
+    socket.emit('error', new Error(`connect ECONNREFUSED ${UPLINK_CONTROL_URL}`));
+    socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    socket.message({ type: 'revoke', reason: 'subscription revoked' });
+    await flush();
+
+    // The embedded boot hands this client a logger that writes to the console
+    // until the Fastify one exists, which puts those lines past pino's
+    // redaction. That is only acceptable while nothing here carries a
+    // credential - so this asserts the property the arrangement rests on rather
+    // than trusting a reading of the call sites, which is one added line from
+    // being out of date.
+    const logged = [...log.info.mock.calls, ...log.warn.mock.calls, ...log.error.mock.calls];
+    expect(logged.length).toBeGreaterThan(0);
+    for (const call of logged) {
+      // Serialized the way a transport would, so a key nested anywhere in the
+      // payload counts - not just one passed as a top-level field. Errors are
+      // rendered rather than stringified, because `JSON.stringify` turns one
+      // into `{}` and would hide a key sitting in its message - which is the
+      // shape `{ error }` logs arrive in.
+      const rendered = call
+        .map(
+          (argument) =>
+            JSON.stringify(argument, (_key, value: unknown) =>
+              value instanceof Error
+                ? `${value.name}: ${value.message} ${value.stack ?? ''}`
+                : value,
+            ) ?? '',
+        )
+        .join(' ');
+      expect(rendered).not.toContain('subscription-fixture');
+    }
+    await client.stop();
+  });
+
   it('records the close code, close reason, and whether it was ever admitted', async () => {
     const { client, socket, log } = setup();
     client.start();

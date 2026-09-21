@@ -1055,6 +1055,32 @@ describe('Uplink control client logging (#582 follow-up)', () => {
     throw new Error('unbalanced UplinkControlClient construction in embedded.ts');
   };
 
+  /** The identifier passed as the construction's own `log` option.
+   *
+   * Anchored to the indentation the slice itself opens with, so it cannot match
+   * a `log:` nested inside one of the callbacks the same object passes. Reading
+   * that width out of the text rather than writing `10` here is what keeps a
+   * rewrap from turning into a false pass on one side and a false failure on
+   * the other. */
+  const logOption = (): string => {
+    const text = construction();
+    const indent = /\{\n([ \t]+)/u.exec(text)?.[1];
+    expect(indent, 'could not read the property indentation').toBeDefined();
+    const property = new RegExp(`\\n${indent!}log:\\s*([A-Za-z_$][\\w$]*)\\b`, 'u').exec(text);
+    expect(property, 'the UplinkControlClient construction passes no log option').not.toBeNull();
+    return property![1]!;
+  };
+
+  /** Where a statement sits in the source. Both of the statements compared
+   * below are plain statements in the same function body, which is the only
+   * reason source order stands in for execution order here - one moved into a
+   * branch or a callback would still satisfy it. */
+  const positionOf = (pattern: RegExp, what: string): number => {
+    const match = pattern.exec(source);
+    expect(match, `${what} not found in embedded.ts`).not.toBeNull();
+    return match!.index;
+  };
+
   it('constructs the Uplink control client with a logger', () => {
     // Every log call in `uplink-control-client.ts` is `this.options.log?.…`, so
     // omitting the option does not make the boot quieter - it makes the client
@@ -1062,26 +1088,39 @@ describe('Uplink control client logging (#582 follow-up)', () => {
     // that never connects and a control channel nobody configured produce the
     // same zero lines, which is how an Uplink outage ran for 13 days with no
     // server-side trace of the refusal that caused it.
-    expect(construction()).toMatch(/\blog:/u);
+    expect(logOption()).toBeTruthy();
   });
 
   it('binds that logger to the Fastify logger once there is one', () => {
     // Derived from the construction, not restated: renaming the local would
     // otherwise leave this asserting against a name nothing passes any more.
-    const identifier = /\blog:\s*([A-Za-z_$][\w$]*)/u.exec(construction())?.[1];
-    expect(identifier).toBeDefined();
+    const identifier = logOption();
+    const bind = positionOf(
+      new RegExp(`\\b${identifier}\\.bind\\(\\s*app\\.log\\s*\\)`, 'u'),
+      `a bind of ${identifier} to app.log`,
+    );
+    const appDeclaration = positionOf(/\bconst app =[\s\S]{0,40}?buildControlPlane\(/u, 'app');
 
-    const bind = source.indexOf(`${identifier!}.bind(app.log)`);
-    expect(bind, `${identifier!} is never bound to app.log`).toBeGreaterThanOrEqual(0);
-
-    // Source order, which is execution order here only because both are plain
-    // statements in the same function body - a bind moved into a branch or a
-    // callback would still satisfy this. It is kept for the one case it does
-    // catch: a bind hoisted above the `app` it reads, which is the temporal
-    // dead zone that crash-looped every sealed boot once already.
-    const appDeclaration = source.indexOf('const app = buildControlPlane({');
-    expect(appDeclaration).toBeGreaterThanOrEqual(0);
+    // The one case this ordering catches: a bind hoisted above the `app` it
+    // reads, which is the temporal dead zone that crash-looped every sealed
+    // boot once already.
     expect(bind).toBeGreaterThan(appDeclaration);
+  });
+
+  it('dials only after the logger is bound', () => {
+    // The handshake, the close code and the refusal reason are the lines this
+    // wiring exists for, and they are written within milliseconds of the dial.
+    // Started before the bind they would all land on the console fallback -
+    // legible, but unstructured, unfiltered and past any redaction, which is
+    // the fallback's job to cover and not its job to carry.
+    const identifier = logOption();
+    const bind = positionOf(
+      new RegExp(`\\b${identifier}\\.bind\\(\\s*app\\.log\\s*\\)`, 'u'),
+      `a bind of ${identifier} to app.log`,
+    );
+    const dial = positionOf(/\buplinkControl\??\.start\(\s*\)/u, 'the uplink dial');
+
+    expect(dial).toBeGreaterThan(bind);
   });
 
   it('keeps one construction site, so there is one client to wire', () => {
