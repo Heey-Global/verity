@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, rm, writeFile, readFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -149,6 +149,47 @@ it('materializes only model gateway settings in a fresh OpenCode home and remove
     await expect(readFile(join(isolated.home, 'config', 'opencode.json'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  } finally {
+    await isolated.cleanup();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('hands an existing private runtime parent to the actual agent uid', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wiki-broker-uid-'));
+  const parent = join(root, 'wiki-homes');
+  const configPath = join(root, 'opencode.json');
+  const canChangeIdentity = process.getuid?.() === 0;
+  const agentUid = canChangeIdentity ? 65534 : process.getuid!();
+  const agentGid = canChangeIdentity ? 65534 : process.getgid!();
+  await chmod(root, 0o711);
+  await mkdir(parent, { mode: 0o700 });
+  await writeFile(configPath, JSON.stringify({ provider: { verity: { models: {} } } }));
+  const isolated = await materializeKnowledgeIsolation(
+    { command: 'opencode-acp' },
+    {
+      runtimeDir: root,
+      enforceRoot: false,
+      agentUid,
+      agentGid,
+      env: { OPENCODE_CONFIG: configPath },
+    },
+    'http://127.0.0.1:47821',
+  );
+  try {
+    expect((await stat(parent)).mode & 0o777).toBe(0o711);
+    if (canChangeIdentity)
+      await execFileAsync('/usr/bin/setpriv', [
+        `--reuid=${String(agentUid)}`,
+        `--regid=${String(agentGid)}`,
+        '--clear-groups',
+        '/usr/bin/test',
+        '-r',
+        join(isolated.home, 'config', 'opencode.json'),
+      ]);
+    else await readFile(join(isolated.home, 'config', 'opencode.json'));
+    await isolated.cleanup();
+    await expect(readFile(isolated.home)).rejects.toMatchObject({ code: 'ENOENT' });
   } finally {
     await isolated.cleanup();
     await rm(root, { recursive: true, force: true });

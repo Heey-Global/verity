@@ -779,6 +779,10 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
       : '/run/verity-knowledge';
   await mkdir(parent, { recursive: true, mode: 0o755 });
   if (options.enforceRoot !== false) await validateImmutablePath(parent);
+  // mkdir's mode only applies when it creates the directory. A runtime volume
+  // left at 0700 still lets the broker create a correctly owned job home, but
+  // the dropped agent uid cannot traverse the parent to reach it.
+  await chmod(parent, 0o711);
   const home = await mkdtemp(join(parent, 'job-'));
   try {
     // Build the complete tree while the broker still owns its root. In
@@ -846,16 +850,50 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
     await chown(home, uid, gid);
     return home;
   } catch (error) {
-    await rm(home, { recursive: true, force: true });
+    await removeKnowledgeIsolation(home, uid, gid, options.setprivPath);
     throw error;
   }
 }
 
+async function removeKnowledgeIsolation(home, uid, gid, setprivPath = '/usr/bin/setpriv') {
+  try {
+    await rm(home, { recursive: true, force: true });
+    return;
+  } catch {
+    // A rootless namespace can stop the broker traversing a 0700 tree after it
+    // hands that tree to the agent uid. Let that same unprivileged identity
+    // remove its descendants. GNU find does not follow encountered symlinks;
+    // even if the agent races this walk, it has no privilege beyond its own uid.
+    await new Promise((resolveCleanup, rejectCleanup) => {
+      const cleanup = spawn(
+        setprivPath,
+        [
+          `--reuid=${String(uid)}`,
+          `--regid=${String(gid)}`,
+          '--clear-groups',
+          '/usr/bin/find',
+          home,
+          '-mindepth',
+          '1',
+          '-delete',
+        ],
+        { stdio: 'ignore' },
+      );
+      cleanup.once('error', rejectCleanup);
+      cleanup.once('close', resolveCleanup);
+    });
+    // Removing the now-empty home only needs write access to its broker-owned
+    // parent; it does not require traversing the agent-owned 0700 directory.
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
 export async function materializeKnowledgeIsolation(request, options, connectorUrl) {
+  const { uid, gid } = validateIdentity(options);
   const home = await prepareKnowledgeIsolation(request, options, connectorUrl);
   return {
     home,
-    cleanup: () => rm(home, { recursive: true, force: true }),
+    cleanup: () => removeKnowledgeIsolation(home, uid, gid, options.setprivPath),
   };
 }
 
