@@ -21,7 +21,8 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
   const running = new Map<string, Promise<boolean>>();
   let closing = false;
   const starting = new Set<Promise<unknown>>();
-  const queued = new Map<string, ReturnType<typeof setTimeout>>();
+  const queued = new Map<string, { timer: ReturnType<typeof setTimeout>; dueAt: Date }>();
+  const queueWrites = new Map<string, number>();
   const automatic = new Map<string, Promise<void>>();
   const start = async (projectId: string, input: WikiJobRequest) => {
     if (closing) throw new KnowledgeError('conflict', 'Server is shutting down');
@@ -127,7 +128,8 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
   };
   const arm = (projectId: string, dueAt: Date) => {
     const previous = queued.get(projectId);
-    if (previous) clearTimeout(previous);
+    if (previous && previous.dueAt >= dueAt) return;
+    if (previous) clearTimeout(previous.timer);
     const timer = setTimeout(
       () => {
         queued.delete(projectId);
@@ -136,10 +138,10 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
       Math.max(0, dueAt.getTime() - Date.now()),
     );
     timer.unref();
-    queued.set(projectId, timer);
+    queued.set(projectId, { timer, dueAt });
   };
   const runAutomatic = (projectId: string) => {
-    if (closing || automatic.has(projectId)) return;
+    if (closing || automatic.has(projectId) || (queueWrites.get(projectId) ?? 0) > 0) return;
     const pending = (async () => {
       let retryAt: Date | undefined;
       try {
@@ -200,19 +202,33 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
     async enqueue(projectId: string, sourceDocumentIds: string[]) {
       if (closing || sourceDocumentIds.length === 0) return;
       const dueAt = new Date(Date.now() + (deps.debounceMs ?? 120_000));
-      await deps.store.knowledge.queueWikiMaintenance(
-        projectId,
-        sourceDocumentIds,
-        dueAt,
-        !automatic.has(projectId),
-      );
-      arm(projectId, dueAt);
+      queueWrites.set(projectId, (queueWrites.get(projectId) ?? 0) + 1);
+      try {
+        await deps.store.knowledge.queueWikiMaintenance(
+          projectId,
+          sourceDocumentIds,
+          dueAt,
+          !automatic.has(projectId),
+        );
+      } finally {
+        const remaining = (queueWrites.get(projectId) ?? 1) - 1;
+        if (remaining === 0) queueWrites.delete(projectId);
+        else queueWrites.set(projectId, remaining);
+        if (!closing) arm(projectId, dueAt);
+      }
     },
     async enqueueReconciliation(projectId: string) {
       if (closing) return;
       const dueAt = new Date(Date.now() + (deps.debounceMs ?? 120_000));
-      await deps.store.knowledge.queueWikiReconciliation(projectId, dueAt);
-      arm(projectId, dueAt);
+      queueWrites.set(projectId, (queueWrites.get(projectId) ?? 0) + 1);
+      try {
+        await deps.store.knowledge.queueWikiReconciliation(projectId, dueAt);
+      } finally {
+        const remaining = (queueWrites.get(projectId) ?? 1) - 1;
+        if (remaining === 0) queueWrites.delete(projectId);
+        else queueWrites.set(projectId, remaining);
+        if (!closing) arm(projectId, dueAt);
+      }
     },
     async wake(projectId: string) {
       const records = await deps.store.knowledge.listWikiMaintenance(projectId);
@@ -244,7 +260,7 @@ export function createKnowledgeWikiJobs(deps: WikiJobServiceDeps) {
     },
     async close() {
       closing = true;
-      for (const timer of queued.values()) clearTimeout(timer);
+      for (const { timer } of queued.values()) clearTimeout(timer);
       queued.clear();
       // A prepared start must settle before shutdown snapshots active sessions.
       await Promise.allSettled([...starting]);
