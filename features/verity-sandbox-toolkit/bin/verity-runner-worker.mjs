@@ -30001,38 +30001,7 @@ function send(socket, frame) {
 `);
   return true;
 }
-async function assertBrokerKnowledgeIsolation(socketPath) {
-  await new Promise((resolve3, reject) => {
-    const socket = createConnection(socketPath);
-    let text = "";
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error("Knowledge isolation broker probe timed out"));
-    }, 5e3);
-    socket.once("connect", () => send(socket, { protocolVersion: PROTOCOL_VERSION2, kind: "status" }));
-    socket.on("data", (chunk) => {
-      text += String(chunk);
-      if (text.length > 4096)
-        socket.destroy(new Error("Invalid broker status"));
-    });
-    socket.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    socket.once("end", () => {
-      clearTimeout(timer);
-      try {
-        const status = JSON.parse(text);
-        if (status.knowledgeIsolation !== true)
-          throw new Error("Spawn broker does not support isolated Wiki jobs");
-        resolve3();
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error("Invalid broker status"));
-      }
-    });
-  });
-}
-function createBrokerSpawner(socketPath, policy = {}) {
+function createBrokerSpawner(socketPath) {
   const spawner = (command, args, options) => {
     const socket = createConnection(socketPath);
     let processBuffered = () => void 0;
@@ -30084,7 +30053,6 @@ function createBrokerSpawner(socketPath, policy = {}) {
         command,
         args,
         cwd: options.cwd,
-        ...policy.knowledgeIsolation ? { knowledgeIsolation: true } : {},
         ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}
       });
     });
@@ -30210,8 +30178,6 @@ var LoopbackRunnerClient = class {
     this.runtimeNotice = runtimeNotice;
   }
   startTurn(opts, hooks) {
-    if (opts.knowledgeIsolation)
-      throw new Error("Wiki maintenance requires an isolated supervised backend");
     const externalSignal = opts.signal;
     const controller = new AbortController();
     if (externalSignal !== void 0) {
@@ -31106,7 +31072,6 @@ var startTurnRequestSchema = import_zod5.z.strictObject({
   disallowedTools: import_zod5.z.array(boundedString(4096)).max(256).optional(),
   timeoutMs: import_zod5.z.number().int().min(1).max(864e5).optional(),
   trustedCliExecution: import_zod5.z.boolean().optional(),
-  knowledgeIsolation: import_zod5.z.boolean().optional(),
   mcpGatewayToken: boundedString(512).min(1).optional(),
   mcpProxyToken: boundedString(512).min(1).optional(),
   mcpServers: import_zod5.z.array(httpMcpServerSchema).max(16).optional(),
@@ -31176,8 +31141,6 @@ var mcpServers = resolveRunnerMcpServers({
 var brokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
 if (brokerSocket === void 0)
   throw new Error("runner worker requires the agent spawn broker");
-if (request.knowledgeIsolation)
-  await assertBrokerKnowledgeIsolation(brokerSocket);
 var backends = {
   "claude-acp": () => new AcpClaudeBackend(),
   "codex-acp": () => new AcpCodexBackend(),
@@ -31215,9 +31178,7 @@ var turn = await server.run(join2(turnDir, "events.jsonl"), {
   // provisioned into the container, never carried by the request. A bearer without a
   // URL was refused above, so this condition can no longer make a turn run tool-less.
   ...request.mcpGatewayToken !== void 0 && mcpGatewayUrl !== void 0 ? { mcpGateway: { url: mcpGatewayUrl, token: request.mcpGatewayToken } } : {},
-  spawner: createBrokerSpawner(brokerSocket, {
-    knowledgeIsolation: request.knowledgeIsolation === true
-  })
+  spawner: createBrokerSpawner(brokerSocket)
 });
 var result = await turn.result;
 process.exitCode = result.exitCode;
