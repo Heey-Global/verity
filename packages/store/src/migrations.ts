@@ -10,6 +10,69 @@ import {
 } from './store.js';
 
 /**
+ * The legacy Wiki maintenance sessions: the ones a retired job row still names,
+ * plus the ones only recognisable by the name and worktree the removed runner
+ * gave them. Shared by 0103 and 0104 so the second sweep cannot drift from the
+ * first.
+ *
+ * Frozen. A database that already applied 0103 will never run it again, so
+ * editing this predicate changes what 0103 does only for the databases still
+ * behind it — two populations diverging on a difference no migration version
+ * records. A newly discovered legacy shape needs its own migration, not an edit
+ * here.
+ */
+const legacyWikiSessions = sql`select session_id from sessions where
+  session_id in (select session_id from knowledge_wiki_jobs)
+  or (
+    name in ('Incorporate into Wiki','Check Wiki','Reconcile Wiki')
+    and worktree like '%/knowledge-' || session_id
+  )`;
+
+/**
+ * Remove those sessions together with the durable log rows that reference them.
+ *
+ * `events` and `transcript_lines` hold their `session_id` under `on delete
+ * restrict` (0001/0002): the log is the source of truth and Postgres refuses to
+ * delete a session out from under it. So the child rows go first, in this
+ * migration's transaction, exactly as {@link EventStore.deleteSession} does it —
+ * every other foreign key into `sessions` is `cascade` or `set null` and needs
+ * nothing here.
+ *
+ * Deleting only `sessions` is what made 1.4.8 unreachable: one maintenance
+ * session that had ever produced an event aborted the migration, and since this
+ * runs before the Server listens, the candidate never passed its readiness probe
+ * and every retry failed identically on the same row.
+ *
+ * Fixing that in 0103 means editing a migration some databases have already
+ * recorded as applied, where the repair can never run again. It is enough only
+ * because 0104 repeats the same sweep: those databases are cleaned there
+ * instead. Do not "simplify" 0104 by dropping the repetition — it would strand
+ * every row 0103 left behind on exactly the deployments this fix is for.
+ *
+ * Lock the doomed parent rows before clearing their children. A retiring Server
+ * can still try to append a log row while the candidate migrates; its FK check
+ * takes a key-share lock on the session, so this lock makes that insert wait
+ * until the migration commits and then fail because the parent is gone. Without
+ * it, an insert committed after the delete statement's snapshot can remain
+ * invisible to its child deletes while still making the final FK check fail.
+ * The lock in 0104 does not cover this race — the name/worktree branch never
+ * reads `knowledge_wiki_jobs`, and 0103 takes no lock at all.
+ */
+async function deleteLegacyWikiSessions(db: Kysely<unknown>): Promise<void> {
+  await sql`select session_id from sessions
+    where session_id in (${legacyWikiSessions})
+    for update`.execute(db);
+  await sql`with doomed as materialized (${legacyWikiSessions}),
+    cleared_transcript as (
+      delete from transcript_lines where session_id in (select session_id from doomed)
+    ),
+    cleared_events as (
+      delete from events where session_id in (select session_id from doomed)
+    )
+    delete from sessions where session_id in (select session_id from doomed)`.execute(db);
+}
+
+/**
  * In-code migrations (not file-based) so the exact same set runs under tests
  * (pglite) and production (pg) without dist/src file-path resolution friction.
  */
@@ -2841,12 +2904,7 @@ const migrations: Record<string, Migration> = {
     async up(db: Kysely<unknown>): Promise<void> {
       // Wiki maintenance sessions were implementation-only jobs. Remove them from
       // the user-visible session history together with every pending job trigger.
-      await sql`delete from sessions where
-        session_id in (select session_id from knowledge_wiki_jobs)
-        or (
-          name in ('Incorporate into Wiki','Check Wiki','Reconcile Wiki')
-          and worktree like '%/knowledge-' || session_id
-        )`.execute(db);
+      await deleteLegacyWikiSessions(db);
       await sql`delete from knowledge_wiki_jobs`.execute(db);
       await sql`delete from knowledge_maintenance_queue`.execute(db);
       await sql`delete from knowledge_provenance`.execute(db);
@@ -2867,12 +2925,7 @@ const migrations: Record<string, Migration> = {
       // migration commits. Otherwise an old Server can commit a row between the
       // delete and constraint validation and make the upgrade fail.
       await sql`lock table knowledge_wiki_jobs in share row exclusive mode`.execute(db);
-      await sql`delete from sessions where
-        session_id in (select session_id from knowledge_wiki_jobs)
-        or (
-          name in ('Incorporate into Wiki','Check Wiki','Reconcile Wiki')
-          and worktree like '%/knowledge-' || session_id
-        )`.execute(db);
+      await deleteLegacyWikiSessions(db);
       await sql`delete from knowledge_wiki_jobs`.execute(db);
       await sql`delete from knowledge_maintenance_queue`.execute(db);
       await sql`delete from knowledge_provenance`.execute(db);
