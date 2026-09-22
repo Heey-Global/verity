@@ -115,8 +115,8 @@ The main source areas are:
 
 Start with the [contribution guide](CONTRIBUTING.md) for the full development and
 pull-request workflow. Architectural decisions are recorded in
-[`docs/adr`](docs/adr), and the detailed system design is documented in the
-[control-plane concept](docs/AGENT_CONTROL_PLANE_KONZEPT.md).
+[`docs/adr`](docs/adr), with supporting protocols, threat models, and runbooks
+under [`docs`](docs).
 
 ## Open-source scope
 

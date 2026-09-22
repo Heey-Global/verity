@@ -2,8 +2,7 @@
 
 - Status: decided — see §7 and ADR 0014. Retained as the measurement record.
 - Date: 2026-08-08 (decision recorded the same day)
-- Relates to: ADR 0012 invariant 6, `BROKERED_SECRETS_W3_W4_CONTRACTS.md` §4.1–4.2,
-  ADR 0011, ADR 0006
+- Relates to: ADR 0012 invariant 6, ADR 0011, ADR 0006
 
 The title says "attested" because that was the goal when the work started. The
 outcome is that the property could not be reconstructed on ACP and the channel
@@ -19,7 +18,7 @@ condition for lifting that:
 > slice: an authenticated HTTP-MCP tool channel with a per-turn token, which
 > codex-acp already accepts via `mcpCapabilities.http`.
 
-`BROKERED_SECRETS_W3_W4_CONTRACTS.md` §4.1 says of that exact shape:
+The brokered-secrets security contract says of that exact shape:
 
 > Merely configuring an MCP URL/token inside the agent child is not sufficient:
 > same-UID repository processes may call or steal that channel. Prompt

@@ -12,14 +12,14 @@ them as a footer section under the session overview (`apps/mobile/app/index.tsx:
 `IssuesSection`) with a detail screen that can seed a session from an issue
 (`apps/mobile/app/issue/[number].tsx`). No create, no update, no ordering, no planning.
 
-The operator wants a real planning layer:
+The proposed planning layer has these requirements:
 
 1. **Tasks = GitHub issues.** Each task lives in the repository it belongs to.
 2. **An inbox** for not-yet-assigned / not-yet-triaged tasks (no repo chosen yet).
 3. **Planning:** prioritize and manually reorder the backlog.
 4. **"Umsetzen" button:** hand a task to an agent session for implementation.
 5. **Voice-first capture:** speak an idea → an agent drafts a well-structured issue,
-   asks the operator clarifying questions until the blueprint is good enough that an
+   asks clarifying questions until the blueprint is good enough that an
    agent can actually implement it, then files it.
 6. **Navigation:** a clear top-level split between planning and the live session view.
 

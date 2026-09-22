@@ -6,21 +6,7 @@ Credential-Vermittlung
 
 **Verbindliche Entscheidung:**
 [ADR 0009](adr/0009-brokered-secrets-and-secret-job-executor.md)
-**Umsetzungsplanung:** Phase-0-Plan
-(`docs/BROKERED_SECRETS_PHASE_0_PLAN.md`, nicht im öffentlichen Snapshot)
 **Sicherheitsmodell:** [Threat Model](BROKERED_SECRETS_THREAT_MODEL.md)
-**W3/W4-Verträge:** Daten- und Protokollentwurf
-(`docs/BROKERED_SECRETS_W3_W4_CONTRACTS.md`, nicht im öffentlichen Snapshot)
-**W8-Redaction:** Redacted Events und Persistenz
-(`docs/BROKERED_SECRETS_W8_REDACTION.md`, nicht im öffentlichen Snapshot)
-**W9-Resultate:** Resultate, Artefakte, Audit und Cleanup
-(`docs/BROKERED_SECRETS_W9_RESULTS.md`, nicht im öffentlichen Snapshot)
-**W5-Executor:** Platzierung und Lifecycle
-(`docs/BROKERED_SECRETS_W5_EXECUTOR.md`, nicht im öffentlichen Snapshot)
-**W6-Snapshots:** Immutable Snapshot-Verträge
-(`docs/BROKERED_SECRETS_W6_SNAPSHOTS.md`, nicht im öffentlichen Snapshot)
-**W7-Egress:** Protokollbewusste Netzwerk-Policy
-(`docs/BROKERED_SECRETS_W7_EGRESS.md`, nicht im öffentlichen Snapshot)
 
 ## 1. Ziel
 
@@ -619,9 +605,7 @@ Produkt- und Technologieentscheidungen zu treffen:
 - Welche Container-/MicroVM-Technik implementiert die kurzlebige Job-Instanz und ihre verschlüsselte
   ephemere Storage-Grenze?
 - Die beiden nicht interaktiven Pilotprofile sind als fester Kubernetes-Read und tenantgebundener
-  HTTPS-JSON-Aufruf ausgewählt. Ihre Profile, Nachweise und vorläufigen SLO-Gates stehen im
-  W10-Pilotvertrag (`docs/BROKERED_SECRETS_W10_PILOTS.md`, nicht im öffentlichen Snapshot);
-  reale Messwerte bleiben vor Phase 1 offen.
+  HTTPS-JSON-Aufruf ausgewählt; reale Messwerte bleiben vor Phase 1 offen.
 - Welche konkrete Policy-Proxy-Technik erfüllt den festgelegten protokollbewussten Egress-Vertrag?
 - Welche strukturierten Ergebnis-Schemas sowie opaken `trusted`-Artefakttypen und Größen werden in
   Phase 2 unterstützt?

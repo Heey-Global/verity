@@ -11,8 +11,7 @@ ADR 0009 made Drive a **read-only source**: connect one account with `drive.read
 import into `docs/reference/`, commit. Native Slides files are exported to PDF
 (`packages/server/src/google-drive.ts:456`).
 
-The operator wants to edit presentations from the chat. The requirements that shape this
-decision, in the operator's own framing:
+Editing presentations from chat has these requirements:
 
 - **The deck stays in Google Drive as a native Slides file, because other people also edit it.**
   This is the constraint everything else follows from.

@@ -1,6 +1,6 @@
 # ADR 0011 — Pragmatic Secret Brokerage
 
-Status: Accepted (operator decision, 2026-07-25)
+Status: Accepted (2026-07-25)
 Supersedes in part: ADR 0009 (the Secret Job Executor buildout is deferred; the `restricted`
 maximal profile machinery is scaled back for brokered HTTP)
 

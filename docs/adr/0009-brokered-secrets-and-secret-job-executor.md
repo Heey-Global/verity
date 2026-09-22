@@ -247,11 +247,9 @@ mount complicates snapshot identity, race prevention, and audit reproducibility.
 
 ## Adoption and validation
 
-Implementation starts with the deliverables and exit criteria in
-Brokered Secrets Phase 0 Plan (`docs/BROKERED_SECRETS_PHASE_0_PLAN.md`, not in the public
-snapshot). Phase 1 is limited to one or two
-non-interactive `restricted` pilot profiles. The generic `trusted` fallback, interactive PTY support,
-and opaque artifacts follow only after the core boundary is validated.
+Implementation starts with a bounded Phase 0. Phase 1 is limited to one or two non-interactive
+`restricted` pilot profiles. The generic `trusted` fallback, interactive PTY support, and opaque
+artifacts follow only after the core boundary is validated.
 
 This ADR moves from **Proposed** to **Accepted** only after Phase 0 resolves the executor technology,
 policy-proxy technology, pilot profiles, protocol schemas, migration inventory, and measurable cost,
@@ -261,7 +259,6 @@ latency, cleanup, and security test criteria.
 
 - [Brokered Secrets concept](../BROKERED_SECRETS_KONZEPT.md)
 - [Brokered Secrets threat model](../BROKERED_SECRETS_THREAT_MODEL.md)
-- Brokered Secrets Phase 0 Plan (`docs/BROKERED_SECRETS_PHASE_0_PLAN.md`, not in the public snapshot)
 - [ADR 0002 — Credential and Isolation Architecture](0002-credential-and-isolation-architecture.md)
 - [ADR 0005 — Naming and Layering](0005-naming-and-layering.md)
 - [ADR 0006 — Runner-in-Sandbox Extraction](0006-runner-in-sandbox-extraction.md)

@@ -6,15 +6,11 @@
 
 ## Context
 
-The control-plane concept describes a nightly loop that reads session transcripts,
-classifies what went wrong, checks whether it recurs, proposes a guardrail, and rolls it
-out after operator approval — "Transkripte → klassifizieren → Rekurrenz → Vorschlag →
-Operator-Approval → Rollout" (`docs/AGENT_CONTROL_PLANE_KONZEPT.md:55`), listed at `:116`
-as the thing that makes the fleet worth owning.
+A proposed learning loop would read session transcripts, classify failures, identify
+recurrence, and propose a guardrail for explicit approval before rollout.
 
-That loop has never existed in this repository. The `/opt/optimizer` the concept names ran
-on the predecessor `dev`-CLI setup and was not carried over. On the roadmap it sits in
-Phase 2 (`:385`, "Lern-Loop-Inbox") and app v2 (`:330`); Phase 3 shipped ahead of it.
+That loop has never existed in this repository. An optimizer in the predecessor CLI setup
+was not carried over.
 
 ### What exists now that did not when the concept was written
 

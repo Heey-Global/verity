@@ -136,12 +136,10 @@ sockets the relay exposes — including Claude egress, which addresses the relay
 own container name rather than any shared origin. Nothing inside a project
 network resolves the Gateway, so there is nothing for an attachment to enable.
 
-Building it now would also reverse a decision taken deliberately elsewhere:
-`docs/TEMPORARY_PUBLIC_PREVIEWS_IMPLEMENTATION_SPIKE.md` rejects "one shared
-gateway attached to all project networks" for the high-security default, because
-a single gateway compromise becomes a cross-project pivot once that container
-belongs to every project network. The Gateway here would be the worse version of
-that container: updater-owned, and the Updater is host-root-equivalent.
+Building it now would also violate the project-isolation boundary. One shared gateway
+attached to every project network would turn a gateway compromise into a cross-project
+pivot. An updater-owned gateway would be worse because the Updater is
+host-root-equivalent.
 
 The refusal is therefore structural rather than merely absent, in three places
 that each fail closed on their own — the deployment spec pins the container
