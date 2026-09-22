@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.7](https://github.com/Heey-Global/verity/compare/v1.4.6...v1.4.7) (2026-09-22)
+
+
+### Bug Fixes
+
+* **files:** verify knowledge explorer roots ([#629](https://github.com/Heey-Global/verity/issues/629)) ([d0bb634](https://github.com/Heey-Global/verity/commit/d0bb63468377183861538a6da5dbc215db1d26b5))
+* **server:** recover from stalled Uplink lease close ([#632](https://github.com/Heey-Global/verity/issues/632)) ([8203fd5](https://github.com/Heey-Global/verity/commit/8203fd5d4d086948963a5ab8338eaac482809dcc))
+
 ## [1.4.6](https://github.com/Heey-Global/verity/compare/v1.4.5...v1.4.6) (2026-09-22)
 
 
