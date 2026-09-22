@@ -7402,6 +7402,87 @@ describe('POST /sessions/:id/turns', () => {
     expect(dispatchTurn).not.toHaveBeenCalled();
   });
 
+  it('names the empty attachments that made a turn unsendable (400)', async () => {
+    // The whole send is discarded over these — prompt and valid attachments
+    // included — so a 400 that identifies them only by array index leaves the
+    // operator re-picking every file to find the ones with no bytes.
+    const attachments = [
+      { kind: 'file', mediaType: 'application/pdf', fileName: 'quarterly.pdf', data: '' },
+      { kind: 'image', mediaType: 'image/png', data: 'aGk=' },
+      { kind: 'file', mediaType: 'application/pdf', fileName: 'notes.pdf', data: '' },
+    ];
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/turns',
+      payload: { prompt: 'review these', attachments },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json<{
+      error: string;
+      code: string;
+      attachments: { index: number }[];
+    }>();
+    expect(body.code).toBe('invalidAttachments');
+    const emptyIndices = attachments.flatMap((a, index) => (a.data.length === 0 ? [index] : []));
+    expect(body.attachments.map((a) => a.index)).toEqual(emptyIndices);
+    for (const index of emptyIndices) {
+      expect(body.error).toContain(attachments[index]!.fileName);
+    }
+    // The attachment that was fine is not blamed, and no payload is echoed back.
+    expect(body.error).not.toContain('aGk=');
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps a non-attachment rejection generic (400)', async () => {
+    // The error boundary deliberately never reflects schema detail; only the
+    // attachment path is exempt, and only for names the client itself sent.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/turns',
+      payload: { prompt: 'x', model: '' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'invalid request' });
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+
+  it('does not misreport malformed attachment data as oversized', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/turns',
+      payload: {
+        prompt: 'x',
+        attachments: [
+          { kind: 'file', mediaType: 'application/pdf', fileName: 'broken.pdf', data: 42 },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toBe('"broken.pdf" has invalid data');
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+
+  it('bounds an echoed attachment name instead of reflecting the body verbatim', async () => {
+    // A rejected body never passed the schema, so its `fileName` is arbitrary
+    // client input: a newline would forge a second line in the app's banner and
+    // in the warn log, and the schema's length cap never ran on it.
+    const fileName = `a\nb${'x'.repeat(400)}`;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/turns',
+      payload: {
+        prompt: 'x',
+        attachments: [{ kind: 'file', mediaType: 'application/pdf', fileName, data: '' }],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json<{ error: string; attachments: { fileName: string }[] }>();
+    const [rejected] = body.attachments;
+    expect(rejected!.fileName).not.toContain('\n');
+    expect(rejected!.fileName.length).toBeLessThanOrEqual(255);
+    expect(body.error).not.toContain('\n');
+  });
+
   it('accepts a turn body larger than Fastify’s 1 MiB default (real-screenshot size)', async () => {
     dispatchTurn.mockResolvedValueOnce({ queued: false });
     // ~2 MiB of base64 — over the 1 MiB default body limit, under the per-image cap.

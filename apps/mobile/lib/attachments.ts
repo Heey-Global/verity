@@ -42,6 +42,18 @@ function base64DecodedLength(data: string): number {
   return Math.floor((data.length * 3) / 4) - padding;
 }
 
+/** A file that reads back as 0 bytes must never be attached: the server refuses
+ * the whole turn over it, prompt and valid attachments included. On iPadOS the
+ * usual cause is an iCloud Drive placeholder — the picker returns a URI for a
+ * file whose contents were never downloaded, and reports no error for it — so
+ * the message names the files and the one action that fixes them. */
+function emptyAttachmentsMessage(fileNames: readonly string[]): string {
+  const subject = fileNames.map((name) => `"${name}"`).join(', ');
+  return fileNames.length === 1
+    ? `${subject} is empty (0 bytes) and was not attached. If it lives in iCloud Drive, open it once in the Files app to download it, then attach it again.`
+    : `${subject} are empty (0 bytes) and were not attached. If they live in iCloud Drive, open them once in the Files app to download them, then attach them again.`;
+}
+
 function truncateFileNamePreservingExtension(name: string, maxLength: number): string {
   if (name.length <= maxLength) return name;
   const extension = name.match(/(\.[^./\\]+)$/)?.[1] ?? '';
@@ -89,11 +101,16 @@ export async function readDroppedAttachments(
   remaining: number,
 ): Promise<AttachmentUpload[]> {
   const uploads: AttachmentUpload[] = [];
+  const empty: string[] = [];
   try {
     for (const [index, dropped] of files.entries()) {
       if (index >= remaining) continue;
       const file = new FsFile(dropped.uri);
       const data = await file.base64();
+      if (data.length === 0) {
+        empty.push(dropped.fileName);
+        continue;
+      }
       const imageType = droppedImageMediaType(dropped.mediaType, dropped.fileName);
       // A drop normally reports an honest UTType (`image/heic` → file attachment),
       // but a generic type falls back to the extension, so HEIF bytes carrying a
@@ -123,6 +140,9 @@ export async function readDroppedAttachments(
             },
       );
     }
+    // Reported once for the whole drop, like the size limit above: a batch that
+    // is partly unreadable is rejected as a batch rather than silently thinned.
+    if (empty.length > 0) throw new Error(emptyAttachmentsMessage(empty));
     return uploads;
   } finally {
     // A failure on one item must not strand later native temporary copies.
@@ -214,7 +234,10 @@ async function toImageUploads(
 ): Promise<AttachmentUpload[]> {
   const uploads: AttachmentUpload[] = [];
   for (const asset of assets) {
-    if (typeof asset.base64 !== 'string') continue;
+    // An empty payload is as unusable as a missing one — an iCloud-backed asset
+    // the picker could not materialize reads back as an empty string, and the
+    // callers turn "nothing usable" into a "could not be read" message.
+    if (typeof asset.base64 !== 'string' || asset.base64.length === 0) continue;
     const reportedType = asset.mimeType;
     const supported =
       reportedType === 'image/jpeg' ||
@@ -282,10 +305,15 @@ export async function pickFiles(remaining: number): Promise<AttachmentUpload[]> 
   });
   if (result.canceled) return [];
   const uploads: AttachmentUpload[] = [];
+  const empty: string[] = [];
   for (const asset of result.assets.slice(0, remaining)) {
     const file = new FsFile(asset.uri);
     try {
       const data = await file.base64();
+      if (data.length === 0) {
+        empty.push(asset.name);
+        continue;
+      }
       if (base64DecodedLength(data) > MAX_FILE_BYTES) {
         throw new Error(`"${asset.name}" is too large to attach (max 25 MB per file).`);
       }
@@ -303,6 +331,9 @@ export async function pickFiles(remaining: number): Promise<AttachmentUpload[]> 
       }
     }
   }
+  // Collected across the selection so one alert names every unreadable file,
+  // rather than the operator rediscovering them one re-pick at a time.
+  if (empty.length > 0) throw new Error(emptyAttachmentsMessage(empty));
   return uploads;
 }
 
