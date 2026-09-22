@@ -186,6 +186,22 @@ it('stores project chat selections as notes and imports while legacy sources sti
     });
     expect(second.json<{ paths: string[] }>().paths).toEqual([firstPaths[1]]);
     expect(readdirSync(join(projectRoot, 'imports'))).toHaveLength(1);
+    const decomposedUmlaut = await app.inject({
+      method: 'POST',
+      url: '/sessions/chat-session/knowledge-sources',
+      payload: {
+        attachments: [
+          {
+            filename: 'Meine Bedu\u0308rfnisse.md',
+            base64: Buffer.from('Unicode filename').toString('base64'),
+          },
+        ],
+      },
+    });
+    expect(decomposedUmlaut.statusCode).toBe(200);
+    const umlautPath = decomposedUmlaut.json<{ paths: string[] }>().paths[0]!;
+    expect(umlautPath).toMatch(/^imports\/Meine Bedürfnisse-[a-f0-9]{8}\.md$/u);
+    expect(readFileSync(join(projectRoot, umlautPath), 'utf8')).toBe('Unicode filename');
     const multibyte = await app.inject({
       method: 'POST',
       url: '/sessions/chat-session/knowledge-sources',

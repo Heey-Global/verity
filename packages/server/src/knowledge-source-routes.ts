@@ -121,7 +121,10 @@ export function registerKnowledgeSourceRoutes(
       }
       for (const attachment of decodedAttachments) {
         const { bytes } = attachment;
-        const safeName = attachment.filename.replace(/[^\p{L}\p{N}._ -]/gu, '_').slice(0, 150);
+        const safeName = attachment.filename
+          .normalize('NFC')
+          .replace(/[^\p{L}\p{N}._ -]/gu, '_')
+          .slice(0, 150);
         const extensionIndex = safeName.lastIndexOf('.');
         const rawStem = extensionIndex > 0 ? safeName.slice(0, extensionIndex) : safeName;
         const rawExtension = extensionIndex > 0 ? safeName.slice(extensionIndex) : '';
