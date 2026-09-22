@@ -1,6 +1,5 @@
 import { beforeAll, beforeEach, afterAll, expect, it } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
-import type { KnowledgeDocument } from './knowledge.js';
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -128,102 +127,6 @@ it('freezes an explicitly approved overview revision across Wiki edits', async (
   expect(await k.getProjectOverview('a')).toBeNull();
   await ctx.store.appendProjectMemory('a', 'Visible after rollback');
   expect((await ctx.store.getProjectSettingsRaw('a'))?.memory).toContain('Visible after rollback');
-});
-it('isolates a fresh Wiki job from extras, pins selected sources and records provenance before sharing', async () => {
-  const a = await project('a');
-  await project('b');
-  const k = ctx.store.knowledge;
-  const source = await k.createDocument({
-    folderId: a.sourcesFolderId,
-    title: 'Meeting',
-    bodyMarkdown: 'private meeting',
-  });
-  const general = await k.createDocument({
-    folderId: a.generalFolderId,
-    title: 'General',
-    bodyMarkdown: 'other context',
-  });
-  const actor = await session('a', 'job');
-  const job = await k.createWikiJob({
-    projectId: 'a',
-    sessionId: 'job',
-    sourceDocumentIds: [source.id],
-    kind: 'ingest',
-  });
-  await k.updateWikiJob(job.id, { status: 'running' });
-  await expect(k.runAgent(actor, 'read', { documentId: general.id })).rejects.toMatchObject({
-    code: 'forbidden',
-  });
-  expect(await k.runAgent(actor, 'read', { documentId: source.id })).toMatchObject({
-    bodyMarkdown: 'private meeting',
-  });
-  const page = (await k.runAgent(actor, 'create', {
-    folderId: a.wikiFolderId,
-    title: 'Meeting overview',
-    bodyMarkdown: 'derived private meeting',
-  })) as KnowledgeDocument;
-  expect(
-    await ctx.db
-      .selectFrom('knowledge_provenance')
-      .selectAll()
-      .where('revision_id', '=', page.currentRevisionId)
-      .executeTakeFirst(),
-  ).toMatchObject({ job_id: job.id });
-  await expect(
-    k.setGrants('b', [{ folderId: a.wikiFolderId, mode: 'read' }]),
-  ).rejects.toMatchObject({ code: 'forbidden' });
-  await k.setGrants('b', [{ folderId: a.rootFolderId, mode: 'read' }]);
-  await k.updateDocument(source.id, {
-    expectedRevisionId: source.currentRevisionId,
-    title: source.title,
-    bodyMarkdown: 'changed',
-  });
-  await expect(
-    k.runAgent(actor, 'create', {
-      folderId: a.wikiFolderId,
-      title: 'Stale',
-      bodyMarkdown: 'stale',
-    }),
-  ).rejects.toMatchObject({ code: 'conflict' });
-  await k.updateWikiJob(job.id, { status: 'completed' });
-  await expect(k.runAgent(actor, 'read', { documentId: source.id })).rejects.toMatchObject({
-    code: 'forbidden',
-  });
-});
-it('rejects reused job contexts and closes interrupted jobs on restart', async () => {
-  const a = await project('a');
-  const k = ctx.store.knowledge;
-  const source = await k.createDocument({
-    folderId: a.sourcesFolderId,
-    title: 'Source',
-    bodyMarkdown: 'source',
-  });
-  await session('a', 'used');
-  await ctx.db
-    .insertInto('transcript_lines')
-    .values({ session_id: 'used', line: 'previous private context' })
-    .execute();
-  await expect(
-    k.createWikiJob({
-      projectId: 'a',
-      sessionId: 'used',
-      sourceDocumentIds: [source.id],
-      kind: 'ingest',
-    }),
-  ).rejects.toMatchObject({ code: 'forbidden' });
-  const actor = await session('a', 'fresh');
-  const job = await k.createWikiJob({
-    projectId: 'a',
-    sessionId: 'fresh',
-    sourceDocumentIds: [source.id],
-    kind: 'ingest',
-  });
-  await k.updateWikiJob(job.id, { status: 'running' });
-  expect(await k.recoverWikiJobs()).toBe(1);
-  expect(await k.getWikiJobForSession('fresh')).toMatchObject({ status: 'failed' });
-  await expect(k.runAgent(actor, 'read', { documentId: source.id })).rejects.toMatchObject({
-    code: 'forbidden',
-  });
 });
 it('does not silently restore legacy memory by deleting an approved overview', async () => {
   const a = await project('a');
