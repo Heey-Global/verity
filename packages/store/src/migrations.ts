@@ -2837,6 +2837,23 @@ const migrations: Record<string, Migration> = {
       await sql`alter table verity_settings drop column knowledge_model`.execute(db);
     },
   },
+  '0103_remove_wiki_maintenance': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Wiki maintenance sessions were implementation-only jobs. Remove them from
+      // the user-visible session history together with every pending job trigger.
+      await sql`delete from sessions where session_id in (select session_id from knowledge_wiki_jobs)`.execute(
+        db,
+      );
+      await sql`delete from knowledge_wiki_jobs`.execute(db);
+      await sql`delete from knowledge_maintenance_queue`.execute(db);
+      await sql`delete from knowledge_provenance`.execute(db);
+      await sql`update project_knowledge_spaces set reconcile_due_at = null`.execute(db);
+      await sql`update verity_settings set knowledge_model = null`.execute(db);
+    },
+    async down(): Promise<void> {
+      // Removed maintenance jobs and sessions cannot be reconstructed.
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

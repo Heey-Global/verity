@@ -251,8 +251,6 @@ export class LoopbackRunnerClient implements RunnerClient {
   ) {}
 
   startTurn(opts: RunTurnOptions, hooks: StartTurnHooks): RunnerTurn {
-    if (opts.knowledgeIsolation)
-      throw new Error('Wiki maintenance requires an isolated supervised backend');
     // If the caller already threaded in a cancel signal (the Conductor registers a
     // handle synchronously at turn-accept, before this async start, so a cancel that
     // races the spawn still lands — #79), adopt its controller so `cancel()` aborts

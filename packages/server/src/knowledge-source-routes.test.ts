@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Fastify from 'fastify';
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 
@@ -120,16 +120,12 @@ it('stores project chat selections as notes and imports while legacy sources sti
     worktree: '/tmp/chat-knowledge',
     model: 'codex/default',
   });
-  const schedule = vi.fn();
-  const wakeMaintenance = vi.fn();
   const dataRoot = mkdtempSync(join(tmpdir(), 'verity-chat-knowledge-'));
   const app = Fastify();
   registerKnowledgeSourceRoutes(app, {
     knowledge: ctx.store.knowledge,
     store: ctx.store,
     dataRoot,
-    schedule,
-    wakeMaintenance,
   });
   try {
     const space = (await ctx.store.knowledge.getProjectSpace('chat-knowledge'))!;
@@ -146,9 +142,7 @@ it('stores project chat selections as notes and imports while legacy sources sti
         base64: Buffer.from('New research').toString('base64'),
       },
     });
-    expect(schedule).toHaveBeenCalledWith('chat-knowledge', [
-      uploaded.json<{ document: { id: string } }>().document.id,
-    ]);
+    expect(uploaded.statusCode).toBe(200);
     const importTarget = await ctx.store.knowledge.createFolder({
       parentId: space.sourcesFolderId,
       name: 'Imported',
@@ -162,8 +156,6 @@ it('stores project chat selections as notes and imports while legacy sources sti
       payload: { ...exported.json<Record<string, unknown>>(), folderId: importTarget.id },
     });
     expect(imported.statusCode).toBe(200);
-    expect(wakeMaintenance).toHaveBeenCalledWith('chat-knowledge');
-    schedule.mockClear();
     const attachment = {
       filename: 'decision.txt',
       base64: Buffer.from('Use the blue design.').toString('base64'),
@@ -194,7 +186,6 @@ it('stores project chat selections as notes and imports while legacy sources sti
     });
     expect(second.json<{ paths: string[] }>().paths).toEqual([firstPaths[1]]);
     expect(readdirSync(join(projectRoot, 'imports'))).toHaveLength(1);
-    expect(schedule).not.toHaveBeenCalled();
     const multibyte = await app.inject({
       method: 'POST',
       url: '/sessions/chat-session/knowledge-sources',
@@ -211,7 +202,6 @@ it('stores project chat selections as notes and imports while legacy sources sti
     const multibytePath = multibyte.json<{ paths: string[] }>().paths[0]!;
     expect(Buffer.byteLength(multibytePath.split('/').at(-1)!)).toBeLessThanOrEqual(255);
     expect(readFileSync(join(projectRoot, multibytePath), 'utf8')).toBe('Multibyte filename');
-    schedule.mockClear();
     const notesBeforeRejectedBatch = readdirSync(join(projectRoot, 'notes'));
     const rejected = await app.inject({
       method: 'POST',
@@ -223,25 +213,20 @@ it('stores project chat selections as notes and imports while legacy sources sti
     });
     expect(rejected.statusCode).toBe(400);
     expect(readdirSync(join(projectRoot, 'notes'))).toEqual(notesBeforeRejectedBatch);
-    expect(schedule).not.toHaveBeenCalled();
-    schedule.mockRejectedValueOnce(new Error('scheduler unavailable'));
-    const committedWithoutWake = await app.inject({
+    const additionalSource = await app.inject({
       method: 'POST',
       url: '/knowledge/sources',
       payload: {
         folderId: nested.id,
         filename: 'crash-safe.txt',
-        base64: Buffer.from('Persist before waking the scheduler.').toString('base64'),
+        base64: Buffer.from('Persist without a background scheduler.').toString('base64'),
       },
     });
-    expect(committedWithoutWake.statusCode).toBe(500);
-    const crashSafe = (await ctx.store.knowledge.listDocuments({ folderId: nested.id })).find(
+    expect(additionalSource.statusCode).toBe(200);
+    const saved = (await ctx.store.knowledge.listDocuments({ folderId: nested.id })).find(
       (document) => document.title.startsWith('crash-safe.txt'),
     );
-    expect(crashSafe).toBeDefined();
-    expect(await ctx.store.knowledge.listWikiMaintenance('chat-knowledge')).toEqual(
-      expect.arrayContaining([expect.objectContaining({ sourceDocumentId: crashSafe!.id })]),
-    );
+    expect(saved).toBeDefined();
   } finally {
     await app.close();
     rmSync(dataRoot, { recursive: true, force: true });

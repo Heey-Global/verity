@@ -1,7 +1,4 @@
-import {
-  KNOWLEDGE_CONTEXT_INSTRUCTIONS,
-  KNOWLEDGE_WIKI_CONTEXT_INSTRUCTIONS,
-} from '@verity/events';
+import { KNOWLEDGE_CONTEXT_INSTRUCTIONS } from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -332,14 +329,9 @@ class SessionTurnHandle implements RunnerTurn {
 /** Raised when knowledge context cannot accept a new conversation turn. */
 export class KnowledgeSessionClosedError extends Error {
   readonly statusCode = 409;
-  constructor(
-    readonly sessionId: string,
-    wikiJob = false,
-  ) {
+  constructor(readonly sessionId: string) {
     super(
-      wikiJob
-        ? 'Wiki maintenance sessions cannot accept conversation messages. Start a new Wiki job from Knowledge.'
-        : 'Knowledge access changed. This session is retained as history; start a new session to continue.',
+      'Knowledge access changed. This session is retained as history; start a new session to continue.',
     );
     this.name = 'KnowledgeSessionClosedError';
   }
@@ -1306,7 +1298,6 @@ export class Conductor {
     );
     const runOpts = {
       ...builtRunOpts,
-      knowledgeIsolation: false,
       ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
       // Internal runtime context for neutral helper commands such as
       // `verity-code-review`. This is not user configuration: it lets the helper
@@ -1322,23 +1313,17 @@ export class Conductor {
     // injected only when initializing a backend context. Resume turns still receive
     // the compact terminology prompt, but keep memory from their existing context
     // and must not have it re-injected.
-    const knowledgeJob = await this.deps.store.knowledge.getWikiJobForSession(sessionId);
-    if (resumeSessionId === undefined && !knowledgeJob) {
+    if (resumeSessionId === undefined) {
       const sessionSystemPrompt = (await this.deps.sessionSystemPrompt?.(session))?.trim();
       if (sessionSystemPrompt) runOpts.appendSystemPrompt += `\n\n${sessionSystemPrompt}`;
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
-    if (knowledgeJob) {
-      runOpts.knowledgeIsolation = true;
-      runOpts.appendSystemPrompt = KNOWLEDGE_WIKI_CONTEXT_INSTRUCTIONS;
-    } else {
-      runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session, backend);
-      runOpts.appendSystemPrompt = withBackendSystemPrompt(
-        runOpts.appendSystemPrompt,
-        backend,
-        await this.brokeredAliasesFor(session.projectId, backend),
-      );
-    }
+    runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session, backend);
+    runOpts.appendSystemPrompt = withBackendSystemPrompt(
+      runOpts.appendSystemPrompt,
+      backend,
+      await this.brokeredAliasesFor(session.projectId, backend),
+    );
     // ADR 0006 Stage 4: allocate this attempt's durable turn identity and bind it
     // onto the in-flight marker BEFORE the Runner launches (D2), so a crash-then-
     // recover can discover the turn on the Sandbox supervisor and repeat the
@@ -1434,13 +1419,8 @@ export class Conductor {
   }
 
   private async assertKnowledgeSessionOpen(sessionId: string): Promise<void> {
-    const job = await this.deps.store.knowledge.getWikiJobForSession(sessionId);
-    if (
-      (job && job.status !== 'pending' && job.status !== 'running') ||
-      (await this.deps.store.knowledge.isSessionInvalidated(sessionId))
-    ) {
-      throw new KnowledgeSessionClosedError(sessionId, !!job);
-    }
+    if (await this.deps.store.knowledge.isSessionInvalidated(sessionId))
+      throw new KnowledgeSessionClosedError(sessionId);
   }
 
   private async runBackendTurnWithResumeRecovery(
@@ -3040,9 +3020,6 @@ export class Conductor {
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
   ): Promise<{ queued: boolean }> {
-    // Public steering would import unrecorded conversation into the job's provenance.
-    if (await this.deps.store.knowledge.getWikiJobForSession(sessionId))
-      throw new KnowledgeSessionClosedError(sessionId, true);
     await this.assertKnowledgeSessionOpen(sessionId);
     const displayPrompt = dispatchOpts.displayPrompt ?? prompt;
     if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
@@ -3151,8 +3128,6 @@ export class Conductor {
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
   ): Promise<{ accepted: boolean }> {
-    if (await this.deps.store.knowledge.getWikiJobForSession(sessionId))
-      throw new KnowledgeSessionClosedError(sessionId, true);
     let session: SessionRecord;
     try {
       session = await this.accept(sessionId, prompt, opts); // lock held on success
@@ -4466,11 +4441,6 @@ export class Conductor {
    * concurrent start for the same worktree rejects with {@link SessionBusyError}.
    */
   async startSession(opts: StartOptions): Promise<{ sessionId: string }> {
-    if (
-      opts.sessionId !== undefined &&
-      (await this.deps.store.knowledge.getWikiJobForSession(opts.sessionId))
-    )
-      throw new KnowledgeSessionClosedError(opts.sessionId, true);
     if (opts.sessionId !== undefined) await this.assertKnowledgeSessionOpen(opts.sessionId);
     if (opts.prompt.trim().length === 0) throw new Error('turn prompt must be non-empty');
     // NB: on this path `SessionBusyError.sessionId` carries the WORKTREE (the
@@ -4593,21 +4563,12 @@ export class Conductor {
         // `startTurn` can raise a prompt (ADR 0014 D3). Without it a project-scoped
         // grant would stop auto-approving on a session's very first turn.
         handle.grantChannel = brokeredGrantChannel(backend);
-        const knowledgeJob =
-          opts.sessionId === undefined
-            ? null
-            : await this.deps.store.knowledge.getWikiJobForSession(opts.sessionId);
-        runOpts.appendSystemPrompt = knowledgeJob
-          ? KNOWLEDGE_WIKI_CONTEXT_INSTRUCTIONS
-          : withBackendSystemPrompt(
-              runOpts.appendSystemPrompt,
-              backend,
-              await this.brokeredAliasesFor(contextProjectId, backend),
-            );
-        const { opts: dispatchOpts, cleanup } = await this.prepareFileAttachments({
-          ...runOpts,
-          ...(knowledgeJob ? { knowledgeIsolation: true } : {}),
-        });
+        runOpts.appendSystemPrompt = withBackendSystemPrompt(
+          runOpts.appendSystemPrompt,
+          backend,
+          await this.brokeredAliasesFor(contextProjectId, backend),
+        );
+        const { opts: dispatchOpts, cleanup } = await this.prepareFileAttachments(runOpts);
         // On the fresh-spawn path the backend mints the session id during
         // `startTurn`, so it isn't known yet here: pass the pre-created id when the
         // caller supplied one, else `null` (never fabricate an id). The built-in
@@ -5240,7 +5201,6 @@ export class Conductor {
    */
   private async projectMemoryPrompt(session: SessionRecord): Promise<string> {
     if (session.projectId === null) return '';
-    if (await this.deps.store.knowledge.getWikiJobForSession(session.sessionId)) return '';
     if (this.deps.projectOverview !== undefined) {
       const overview = (await this.deps.projectOverview(session.projectId))?.trim();
       if (!overview) return '';
