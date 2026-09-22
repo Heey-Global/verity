@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.2](https://github.com/Heey-Global/verity/compare/website-v1.6.1...website-v1.6.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **deps:** update nginxinc/nginx-unprivileged:1.31-alpine docker digest to e75f898 ([#616](https://github.com/Heey-Global/verity/issues/616)) ([2b5ec38](https://github.com/Heey-Global/verity/commit/2b5ec388f45ae3ccc9b2132fa1cf0b835908e1f0))
+
 ## [1.6.1](https://github.com/Heey-Global/verity/compare/website-v1.6.0...website-v1.6.1) (2026-09-16)
 
 
