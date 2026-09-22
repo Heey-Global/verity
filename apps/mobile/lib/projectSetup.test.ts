@@ -1,10 +1,16 @@
-import type { DevServerDetection, ProjectRecord } from '@verity/mobile';
+import {
+  PROJECT_IMAGE_REBUILDING_WARNING,
+  projectBadge,
+  projectLifecycleBadge,
+  type DevServerDetection,
+  type ProjectRecord,
+} from '@verity/mobile';
 
 import {
   hasActionableToolkitDrift,
   hasPendingProjectSetup,
   hasUnreviewedDevServers,
-  projectOverviewSetupLabel,
+  projectOverviewStatus,
   projectOverviewWarning,
   projectSetupStatus,
   toolkitDriftNotice,
@@ -43,7 +49,7 @@ describe('project setup presentation', () => {
   });
 
   it.each([
-    ['sleeping_starting', 'Putting project to sleep…', 'progress'],
+    ['sleeping_starting', 'Pausing secure workspace…', 'progress'],
     ['sleeping', 'Sleeping', 'ready'],
     ['waking', 'Waking secure workspace…', 'progress'],
   ] as const)('presents %s as %s', (lifecycleState, label, intent) => {
@@ -55,16 +61,55 @@ describe('project setup presentation', () => {
     } as ProjectRecord;
 
     expect(projectSetupStatus(sleepingProject)).toMatchObject({ label, intent });
-    expect(projectOverviewSetupLabel(sleepingProject)).toBe(
+    expect(projectOverviewStatus(sleepingProject)?.label).toBe(
       lifecycleState === 'sleeping' ? undefined : label,
     );
+  });
+
+  // The wizard, the detail screen and the overview row all describe the same
+  // container. They used to each own a copy of the wording and drifted — a waking
+  // project said "Waking…" beside its dot and "Waking secure workspace…" on its
+  // row — so the step labels are now read out of the badge, not restated here.
+  it('reads its step labels out of the badge rather than restating them', () => {
+    for (const lifecycleState of [
+      'cloning',
+      'container_starting',
+      'sleeping_starting',
+      'sleeping',
+      'waking',
+    ] as const) {
+      const record = { ...project, state: 'active', lifecycleState } as ProjectRecord;
+      expect(projectSetupStatus(record).label).toBe(projectLifecycleBadge(record).label);
+    }
+    expect(projectSetupStatus({ ...project, state: 'absent' } as ProjectRecord).label).toBe(
+      'Paused',
+    );
+  });
+
+  // …out of the LIFECYCLE badge. The step numbers come from the lifecycle state
+  // too, and background work does not advance them: a rebuild in flight over a
+  // cloning project must not relabel step 1 of 5 as something that is not step 1.
+  it('keeps its step and its label describing the same thing', () => {
+    const cloningDuringRebuild = {
+      ...project,
+      provisionWarning: PROJECT_IMAGE_REBUILDING_WARNING,
+      sandboxUpdate: { state: 'available', selfRepair: 'converging' },
+    } as ProjectRecord;
+
+    expect(projectSetupStatus(cloningDuringRebuild)).toMatchObject({
+      label: 'Preparing repository…',
+      step: 1,
+    });
+    // The row outside the wizard has no step to contradict, so there the rebuild
+    // is the more useful answer — and that difference is the point of the split.
+    expect(projectOverviewStatus(cloningDuringRebuild)?.label).toBe('Rebuilding secure workspace…');
   });
 
   it('keeps pending setup live on the overview until setup is completed', () => {
     const pending = { ...project, state: 'active', setupStatus: 'pending' } as ProjectRecord;
 
-    expect(projectOverviewSetupLabel(pending)).toBe('Detecting Dev Server…');
-    expect(projectOverviewSetupLabel(pending, detection)).toBe('1 Dev Server found');
+    expect(projectOverviewStatus(pending)?.label).toBe('Detecting Dev Server…');
+    expect(projectOverviewStatus(pending, detection)?.label).toBe('1 Dev Server found');
     expect(hasPendingProjectSetup([pending])).toBe(true);
     expect(hasPendingProjectSetup([{ ...project, setupStatus: undefined }])).toBe(true);
     expect(hasPendingProjectSetup([{ ...pending, setupStatus: 'complete' }])).toBe(false);
@@ -81,15 +126,16 @@ describe('project setup presentation', () => {
       provisionError: 'Sandbox container stopped — Repair to restart it.',
     } as ProjectRecord;
 
-    expect(projectOverviewSetupLabel(failed)).toBe(
-      'Sandbox container stopped — Repair to restart it.',
-    );
+    expect(projectOverviewStatus(failed)).toEqual({
+      label: 'Sandbox container stopped — Repair to restart it.',
+      tone: 'danger',
+    });
     // Still explains itself when the server sent no reason, and while setup is
     // pending (where the label would otherwise fall through to a progress step).
-    expect(projectOverviewSetupLabel({ ...failed, provisionError: null })).toBe(
+    expect(projectOverviewStatus({ ...failed, provisionError: null })?.label).toBe(
       'Project setup needs attention',
     );
-    expect(projectOverviewSetupLabel({ ...failed, setupStatus: 'pending' })).toBe(
+    expect(projectOverviewStatus({ ...failed, setupStatus: 'pending' })?.label).toBe(
       'Sandbox container stopped — Repair to restart it.',
     );
   });
@@ -98,7 +144,117 @@ describe('project setup presentation', () => {
     const complete = { ...project, state: 'active', setupStatus: 'complete' } as ProjectRecord;
     const reviewed = { ...detection, reviewedFingerprint: detection.fingerprint };
 
-    expect(projectOverviewSetupLabel(complete, reviewed)).toBeUndefined();
+    expect(projectOverviewStatus(complete, reviewed)).toBeUndefined();
+  });
+});
+
+// The row has ONE line for this, and everything below used to be able to claim it
+// at the same time — a setup step, an attention line and a self-repairing sandbox
+// update with a spinner of its own, all beside a release tag.
+describe('the project row status line', () => {
+  const active = { ...project, state: 'active', setupStatus: 'complete' } as ProjectRecord;
+  const converging = { state: 'available', selfRepair: 'converging' };
+
+  // The reported bug: a green "Running" dot, a grey spinner and "Waiting to
+  // update sandbox…" all on a row that was, in fact, working.
+  it('reports a self-repairing sandbox update as work in progress', () => {
+    expect(
+      projectOverviewStatus({ ...active, sandboxUpdate: converging } as ProjectRecord),
+    ).toEqual({ label: 'Updating secure workspace…', tone: 'working' });
+  });
+
+  // Whatever the pulsing dot means is what the line next to it has to say.
+  // Anything else is the row reporting two states of one container.
+  it('agrees with its own dot whenever Verity is working on the container', () => {
+    for (const record of [
+      { ...project, state: 'cloning' },
+      { ...active, lifecycleState: 'waking' },
+      { ...active, lifecycleState: 'sleeping_starting' },
+      { ...active, sandboxUpdate: converging },
+      { ...project, state: 'absent', setupStatus: 'pending' },
+    ] as ProjectRecord[]) {
+      const badge = projectBadge(record);
+      expect(badge.pulsing).toBe(true);
+      expect(projectOverviewStatus(record)).toEqual({ label: badge.label, tone: 'working' });
+    }
+  });
+
+  // A finding that was already there a second ago is not more urgent than the
+  // transition in flight, and it is still there when the transition ends. Two
+  // texts in this slot is how a status message and a version tag collided.
+  it('lets the transition in flight speak alone', () => {
+    const drifted = {
+      ...active,
+      lifecycleState: 'waking',
+      provisionWarning: 'remoteUser=root',
+      toolkitDrift: { verdict: 'drifted', carrier: 'devcontainer' },
+      sandboxUpdate: converging,
+    } as ProjectRecord;
+
+    expect(projectOverviewStatus(drifted)).toEqual({
+      label: 'Waking secure workspace…',
+      tone: 'working',
+    });
+  });
+
+  // One rebuild wording, from the badge, not a second differently-phrased one
+  // ("Rebuilding image…") in the attention slot beside it.
+  it('reports a running image rebuild once', () => {
+    const rebuilding = {
+      ...active,
+      provisionWarning: 'Project image rebuild is in progress.',
+    } as ProjectRecord;
+
+    expect(projectOverviewStatus(rebuilding)).toEqual({
+      label: 'Rebuilding secure workspace…',
+      tone: 'working',
+    });
+    expect(projectOverviewWarning(rebuilding)).toBeUndefined();
+  });
+
+  // The one thing that outranks work in progress. `state: 'failed'` does not clear
+  // the warning that was true a moment earlier, so a container that died mid-rebuild
+  // arrives here carrying both — and reporting the rebuild would hide, behind a
+  // reassuring magenta line, the only row on the screen with something to press.
+  it('gives a dead container the line even while a rebuild warning is attached', () => {
+    const diedMidRebuild = {
+      ...active,
+      state: 'failed',
+      provisionWarning: PROJECT_IMAGE_REBUILDING_WARNING,
+      provisionError: 'Sandbox container stopped — Repair to restart it.',
+      sandboxUpdate: converging,
+    } as ProjectRecord;
+
+    expect(projectOverviewStatus(diedMidRebuild)).toEqual({
+      label: 'Sandbox container stopped — Repair to restart it.',
+      tone: 'danger',
+    });
+    // And the dot agrees, rather than pulsing magenta over a danger-red line.
+    expect(projectBadge(diedMidRebuild)).toMatchObject({ pulsing: false, needsRepair: true });
+  });
+
+  it('gives the slot to an attention line only once nothing is happening', () => {
+    expect(
+      projectOverviewStatus({ ...active, provisionWarning: 'remoteUser=root' } as ProjectRecord),
+    ).toEqual({ label: 'remoteUser=root', tone: 'attention' });
+  });
+
+  // Nothing to report is a result: the row is then free to spend the line on the
+  // project's own metadata (its release tag), which is what the caller renders
+  // when this returns nothing.
+  it('says nothing about a settled, healthy project', () => {
+    expect(projectOverviewStatus(active)).toBeUndefined();
+    // The grey moon in the dot gutter already says "sleeping".
+    expect(
+      projectOverviewStatus({ ...active, lifecycleState: 'sleeping' } as ProjectRecord),
+    ).toBeUndefined();
+  });
+
+  it('still names a deliberately paused project, which has no symbol of its own', () => {
+    expect(projectOverviewStatus({ ...active, state: 'absent' } as ProjectRecord)).toEqual({
+      label: 'Paused',
+      tone: 'idle',
+    });
   });
 });
 
@@ -126,13 +282,16 @@ describe('environment warnings on the overview', () => {
     ).toBe('Runner supervisor is disabled after boundary attestation failed.');
   });
 
-  it('uses a compact overview label while an image rebuild is running', () => {
+  // A rebuild in progress is work, not a finding, and `projectBadge` already
+  // reports it with the same magenta pulse and wording as every other transition
+  // — so this must NOT add a second, differently-phrased rebuild line beside it.
+  it('leaves a running image rebuild to the badge', () => {
     expect(
       projectOverviewWarning({
         ...active,
         provisionWarning: 'Project image rebuild is in progress.',
       } as ProjectRecord),
-    ).toBe('Rebuilding image…');
+    ).toBeUndefined();
   });
 
   // The chip is a call to action, so it narrows to the population a repair

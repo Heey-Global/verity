@@ -6,6 +6,7 @@ import {
   PROJECT_IMAGE_REBUILDING_WARNING,
   canCreatePublicPreviewTarget,
   projectBadge,
+  REBUILDING_PROJECT_BADGE,
   projectDisplayName,
   publishProjectStatusMutation,
   publishAgentLoopMutation,
@@ -640,14 +641,22 @@ function EnvironmentSection({
     working === 'rebuild' ||
     (project.provisionWarning != null &&
       project.provisionWarning === PROJECT_IMAGE_REBUILDING_WARNING);
-  const statusLabel = rebuilding ? 'Rebuilding…' : badge.label;
-  const statusIntent: StatusPillIntent = rebuilding
-    ? 'transient'
-    : running
-      ? 'ready'
-      : badge.needsRepair
-        ? 'needsSetup'
-        : 'optional';
+  // `working === 'rebuild'` is optimistic local state the badge cannot see, so it
+  // borrows the badge's own rebuild wording rather than keeping a third copy of
+  // it — this pill used to say "Rebuilding…" next to an overview row saying
+  // "Rebuilding secure workspace…" about the same container.
+  const statusLabel = rebuilding ? REBUILDING_PROJECT_BADGE.label : badge.label;
+  // `pulsing` is the badge's own "Verity is working on this", and a transient
+  // pill is how this screen says it. Without it a running project mid-update read
+  // as a settled green "ready" while its label said it was updating.
+  const statusIntent: StatusPillIntent =
+    rebuilding || badge.pulsing
+      ? 'transient'
+      : running
+        ? 'ready'
+        : badge.needsRepair
+          ? 'needsSetup'
+          : 'optional';
 
   // Start / Repair: (re)provision the environment. Preserves the sealed-secret
   // redirect and the server-warning confirmation from the old Reprovision path.

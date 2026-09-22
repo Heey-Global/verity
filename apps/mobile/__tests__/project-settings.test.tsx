@@ -729,7 +729,13 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.getByText('Secrets')).toBeOnTheScreen();
     expect(screen.getByText('Project information')).toBeOnTheScreen();
     expect(screen.queryByText('Container')).toBeNull();
-    expect(await screen.findByLabelText('Running')).toBeOnTheScreen();
+    // Not "Running": Verity is recreating this container onto the new image, and
+    // the pill reads the same badge the overview dot pulses on. A green settled
+    // "Running" beside a row saying a rebuild is in flight is the screen
+    // reporting two states of one container.
+    expect(await screen.findByLabelText('Updating secure workspace…')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Running')).toBeNull();
+    // Still pausable — an update in flight is not a lifecycle transition.
     expect(screen.getByLabelText('Pause project')).toBeOnTheScreen();
     // The slim update row appears only because an update is available.
     expect(screen.getByLabelText('Update project environment')).toBeOnTheScreen();
@@ -883,7 +889,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
-    expect(await screen.findByLabelText('Rebuilding…')).toBeOnTheScreen();
+    expect(await screen.findByLabelText('Rebuilding secure workspace…')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Running')).toBeNull();
   });
 
@@ -922,7 +928,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
-    expect(await screen.findByLabelText('Starting…')).toBeOnTheScreen();
+    expect(await screen.findByLabelText('Starting secure workspace…')).toBeOnTheScreen();
     expect(screen.queryByLabelText('container_starting')).toBeNull();
     expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
   });
