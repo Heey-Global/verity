@@ -360,4 +360,69 @@ describe('dragged attachments', () => {
     expect(mockDelete).toHaveBeenCalledWith('file:///tmp/oversize.pdf');
     expect(mockDelete).toHaveBeenCalledWith('file:///tmp/later.txt');
   });
+
+  it('refuses picked files that read back empty and names every one of them', async () => {
+    // An iCloud Drive placeholder the picker never downloaded reads as 0 bytes
+    // and raises no error. Attaching it costs the operator the WHOLE send: the
+    // server rejects the turn, prompt and readable attachments included.
+    mockFileData.set('file:///cache/downloaded.pdf', 'cGRm');
+    mockGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [
+        {
+          uri: 'file:///cache/placeholder.pdf',
+          name: 'placeholder.pdf',
+          mimeType: 'application/pdf',
+        },
+        {
+          uri: 'file:///cache/downloaded.pdf',
+          name: 'downloaded.pdf',
+          mimeType: 'application/pdf',
+        },
+        {
+          uri: 'file:///cache/second.key',
+          name: 'second.key',
+          mimeType: 'application/octet-stream',
+        },
+      ],
+    });
+
+    const error = (await pickFiles(3).catch((reason: unknown) => reason)) as Error;
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('placeholder.pdf');
+    expect(error.message).toContain('second.key');
+    // Names the action that fixes it; "invalid request" is what it replaces.
+    expect(error.message).toContain('Files app');
+    // The readable file is not blamed, and no cache copy is left behind.
+    expect(error.message).not.toContain('downloaded.pdf');
+    expect(mockDelete).toHaveBeenCalledWith('file:///cache/placeholder.pdf');
+    expect(mockDelete).toHaveBeenCalledWith('file:///cache/downloaded.pdf');
+  });
+
+  it('refuses a dropped file that reads back empty', async () => {
+    mockFileData.set('file:///tmp/real.txt', 'aGk=');
+
+    await expect(
+      readDroppedAttachments(
+        [
+          { uri: 'file:///tmp/real.txt', fileName: 'real.txt', mediaType: 'text/plain' },
+          { uri: 'file:///tmp/ghost.pdf', fileName: 'ghost.pdf', mediaType: 'application/pdf' },
+        ],
+        2,
+      ),
+    ).rejects.toThrow('ghost.pdf');
+    expect(mockDelete).toHaveBeenCalledWith('file:///tmp/ghost.pdf');
+  });
+
+  it('treats an unreadable library asset with empty bytes as unreadable', async () => {
+    // `base64: ''` is what an asset the picker could not materialize looks like;
+    // pushed through, it becomes an image attachment the server refuses.
+    mockLaunchImageLibraryAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'file:///tmp/cloud.jpg', mimeType: 'image/jpeg', base64: '' }],
+    });
+
+    await expect(pickImagesFromLibrary(1)).rejects.toThrow('could not be read');
+    expect(mockManipulateAsync).not.toHaveBeenCalled();
+  });
 });

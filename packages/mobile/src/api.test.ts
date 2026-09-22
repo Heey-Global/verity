@@ -1456,6 +1456,21 @@ describe('VerityClient.sendTurn', () => {
     await expect(client.sendTurn('s1', body)).rejects.toMatchObject({ status: 502 });
   });
 
+  it('carries the rejected attachment detail of a 400 through to the caller', async () => {
+    // The screen renders this message verbatim as "Send failed: …". Collapsing
+    // it to a status-derived string is the failure this pins: the operator would
+    // be back to re-picking every file to find the one the server refused.
+    const error = '"quarterly.pdf" is empty; attachment 3 is empty';
+    const { fetch } = fakeFetch(json({ error, code: 'invalidAttachments' }, 400));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.sendTurn('s1', body)).rejects.toMatchObject({
+      name: 'VerityApiError',
+      status: 400,
+      message: error,
+      code: 'invalidAttachments',
+    });
+  });
+
   it('falls back to a status message when the JSON error body has no string error', async () => {
     // JSON body present but no usable `error` key → status-derived fallback.
     const { fetch } = fakeFetch(json({ detail: 42 }, 500));

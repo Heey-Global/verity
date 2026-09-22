@@ -1635,6 +1635,92 @@ const turnAttachment = attachmentUploadSchema.refine(
   { message: 'attachment exceeds the size limit', path: ['data'] },
 );
 
+/** One rejected attachment, named the way the operator sees it in the composer. */
+interface RejectedTurnAttachment {
+  index: number;
+  fileName?: string;
+  reason: string;
+}
+
+/** Ceiling on a file name echoed back in an error. The schema caps a VALID name
+ * at 255, but this reads the REJECTED body, where nothing has been validated. */
+const MAX_ECHOED_FILE_NAME_LEN = 255;
+
+/** The submitted name of an attachment, or undefined when it carries none (an
+ * image upload) or an unusable one. Control characters are stripped: a crafted
+ * name must not be able to forge line structure in the client's banner or in the
+ * log line this reason is written to. */
+function echoableFileName(attachment: unknown): string | undefined {
+  if (typeof attachment !== 'object' || attachment === null) return undefined;
+  const { fileName } = attachment as { fileName?: unknown };
+  if (typeof fileName !== 'string') return undefined;
+  const cleaned = fileName.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
+  return cleaned.length > 0 ? cleaned.slice(0, MAX_ECHOED_FILE_NAME_LEN) : undefined;
+}
+
+/** Why one attachment was rejected, in words the operator can act on. Derived
+ * from the issue's position, not its message: Zod's own text ("expected string
+ * to have >=1 characters") describes the schema, not the file. */
+function attachmentIssueReason(issue: ZodError['issues'][number]): string {
+  const field = issue.path[2];
+  if (field === 'data') {
+    if (issue.code === 'too_small') return 'is empty';
+    if (issue.code === 'custom' && issue.message === 'attachment exceeds the size limit') {
+      return 'exceeds the size limit';
+    }
+    return 'has invalid data';
+  }
+  if (field === 'mediaType') return 'has an unsupported media type';
+  if (field === 'fileName') return 'has an unusable file name';
+  return 'is not a valid attachment';
+}
+
+/**
+ * Recover WHICH attachments a turn body failed on. Zod identifies them by array
+ * index, which the operator never sees — the app shows file names — so an
+ * index-only 400 leaves them re-picking every file to find the one that was
+ * empty. Everything echoed here is the client's own input coming back; nothing
+ * from the schema or the driver.
+ *
+ * Issues without an attachment index (the count cap, the total-size refine) are
+ * not attachment-level and yield nothing, so those keep the generic 400.
+ */
+function describeRejectedTurnAttachments(body: unknown, error: ZodError): RejectedTurnAttachment[] {
+  const submitted =
+    typeof body === 'object' &&
+    body !== null &&
+    Array.isArray((body as { attachments?: unknown }).attachments)
+      ? (body as { attachments: unknown[] }).attachments
+      : [];
+  const byIndex = new Map<number, RejectedTurnAttachment>();
+  for (const issue of error.issues) {
+    const [root, index] = issue.path;
+    if (root !== 'attachments' || typeof index !== 'number') continue;
+    // One line per attachment: the first issue is the one to fix, and a
+    // union member failing on several fields at once would otherwise repeat it.
+    if (byIndex.has(index)) continue;
+    const fileName = echoableFileName(submitted[index]);
+    byIndex.set(index, {
+      index,
+      ...(fileName !== undefined ? { fileName } : {}),
+      reason: attachmentIssueReason(issue),
+    });
+  }
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
+
+/** The sentence the client shows for {@link describeRejectedTurnAttachments}.
+ * An image upload carries no file name, so it falls back to its 1-based position
+ * in the composer. */
+function rejectedTurnAttachmentsMessage(rejected: readonly RejectedTurnAttachment[]): string {
+  return rejected
+    .map(
+      (attachment) =>
+        `${attachment.fileName !== undefined ? `"${attachment.fileName}"` : `attachment ${String(attachment.index + 1)}`} ${attachment.reason}`,
+    )
+    .join('; ');
+}
+
 function isSupportedMeetingAudio(mediaType: string, fileName: string): boolean {
   const lowerName = fileName.toLowerCase();
   return (
@@ -8234,7 +8320,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerSessionTurnRoute(app, {
     dispatch: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
-      const body = turnBody.parse(request.body);
+      const parsedBody = turnBody.safeParse(request.body);
+      if (!parsedBody.success) {
+        // Attachment-level failures are the one rejection worth reporting in
+        // detail: the operator can only fix them by knowing WHICH files were
+        // refused, and the whole send — prompt and valid attachments included —
+        // is discarded until they do. Anything else falls through to the error
+        // boundary's generic 400.
+        const rejectedAttachments = describeRejectedTurnAttachments(request.body, parsedBody.error);
+        if (rejectedAttachments.length === 0) throw parsedBody.error;
+        request.log.warn(
+          {
+            attachments: rejectedAttachments.map(({ index, reason }) => ({ index, reason })),
+          },
+          'verity: turn carried invalid attachments',
+        );
+        reply.code(400);
+        return {
+          error: rejectedTurnAttachmentsMessage(rejectedAttachments),
+          code: 'invalidAttachments',
+          attachments: rejectedAttachments,
+        };
+      }
+      const body = parsedBody.data;
       const prompt = stripRepeatedOperatorInstructions(body.prompt);
       if (prompt.trim().length === 0 && (body.attachments?.length ?? 0) === 0) {
         reply.code(400);
