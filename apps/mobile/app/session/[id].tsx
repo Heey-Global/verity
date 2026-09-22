@@ -4433,7 +4433,7 @@ function SessionFilesSheet({
           ) : null}
           <Pressable
             onPress={uploadFiles}
-            disabled={uploading || mutating}
+            disabled={uploading || mutating || error !== null}
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel={`Upload files to /${path}`}

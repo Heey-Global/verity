@@ -91,6 +91,7 @@ describe('session explorer knowledge roots', () => {
     });
 
     expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ root: 'knowledge', path: '' });
     const names = res.json<{ entries: { name: string }[] }>().entries.map(({ name }) => name);
     expect(names).toEqual([...PROJECT_KNOWLEDGE_SUBDIRS].sort());
     // Both exist on disk and are deliberately absent from the listing: `.text/`
@@ -106,6 +107,7 @@ describe('session explorer knowledge roots', () => {
   it('browses the shared folder through its own root', async () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=shared' });
     expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ root: 'shared', path: '' });
 
     writeFileSync(join(sharedKnowledgeDir(dataRoot), 'Preisliste.md'), '# Preise\n');
     const listed = await app.inject({

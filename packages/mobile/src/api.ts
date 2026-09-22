@@ -1343,6 +1343,7 @@ export type SessionFileEntry = z.infer<typeof sessionFileEntrySchema>;
 export type SessionFileRoot = 'worktree' | 'knowledge' | 'shared';
 
 export const sessionDirectorySchema = z.object({
+  root: z.enum(['worktree', 'knowledge', 'shared']).optional(),
   path: z.string(),
   entries: z.array(sessionFileEntrySchema),
   truncated: z.boolean(),
@@ -3486,7 +3487,15 @@ export class VerityClient {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/files${qs}`, {
       method: 'GET',
     });
-    return sessionDirectorySchema.parse(await res.json());
+    const directory = sessionDirectorySchema.parse(await res.json());
+    // Servers predating filesystem-backed Knowledge ignore the unknown `root`
+    // query and return the worktree with a 200. Never present that repository as
+    // Knowledge (or allow writes through that mistaken view): non-worktree roots
+    // must be explicitly echoed by a server that understands them.
+    if (root !== 'worktree' && directory.root !== root) {
+      throw new Error('Update the Verity server to browse Knowledge files');
+    }
+    return directory;
   }
 
   /** Fetch a small text file from a session worktree for inline preview. Binary or

@@ -2094,7 +2094,7 @@ describe('VerityClient session files', () => {
 
   it('addresses knowledge roots for browse, delete, and move', async () => {
     const responses = [
-      json({ path: 'imports', entries: [], truncated: false }),
+      json({ root: 'knowledge', path: 'imports', entries: [], truncated: false }),
       json({ deleted: true, path: 'imports/offer.pdf' }),
       json({ root: 'shared', path: 'offer.pdf' }),
     ];
@@ -2124,6 +2124,15 @@ describe('VerityClient session files', () => {
     ]);
     expect(calls[1]?.init?.method).toBe('DELETE');
     expect(calls[2]?.init).toMatchObject({ method: 'POST' });
+  });
+
+  it('rejects an older server that returns the worktree for a knowledge root', async () => {
+    const { fetch } = fakeFetch(json({ path: '', entries: [], truncated: false }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.listSessionFiles('s1', '', 'knowledge')).rejects.toThrow(
+      'Update the Verity server to browse Knowledge files',
+    );
   });
 
   it('loads text file content for preview', async () => {
