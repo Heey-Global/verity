@@ -227,7 +227,7 @@ function GoogleDrivePicker({
       void (async () => {
         try {
           const result = await client.importGoogleDriveFile(sessionId, file.id);
-          Alert.alert('Added to project', `${file.name}\n→ ${result.path}`, [
+          Alert.alert('Added to project', `${file.name}\n→ Knowledge/${result.path}`, [
             { text: 'Done', onPress: () => router.back() },
             { text: 'Add another' },
           ]);

@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import Fastify from 'fastify';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createTestDb, type TestDb } from '@verity/store/testing';
@@ -101,7 +105,7 @@ it('does not expose originals by revision id belonging to another document', asy
   }
 });
 
-it('stores project chat selections under Chat uploads, deduplicates files, and schedules maintenance', async () => {
+it('stores project chat selections as notes and imports while legacy sources still migrate', async () => {
   await ctx.store.upsertProject({
     id: 'chat-knowledge',
     owner: 'example',
@@ -118,10 +122,12 @@ it('stores project chat selections under Chat uploads, deduplicates files, and s
   });
   const schedule = vi.fn();
   const wakeMaintenance = vi.fn();
+  const dataRoot = mkdtempSync(join(tmpdir(), 'verity-chat-knowledge-'));
   const app = Fastify();
   registerKnowledgeSourceRoutes(app, {
     knowledge: ctx.store.knowledge,
     store: ctx.store,
+    dataRoot,
     schedule,
     wakeMaintenance,
   });
@@ -172,29 +178,41 @@ it('stores project chat selections under Chat uploads, deduplicates files, and s
       },
     });
     expect(first.statusCode).toBe(200);
-    const firstDocuments = first.json<{ documents: { id: string; folderId: string }[] }>()
-      .documents;
-    expect(firstDocuments).toHaveLength(2);
+    const firstPaths = first.json<{ paths: string[] }>().paths;
+    expect(firstPaths).toHaveLength(2);
+    expect(firstPaths[0]).toMatch(/^notes\//u);
+    expect(firstPaths[1]).toMatch(/^imports\/decision-[a-f0-9]{8}\.txt$/u);
+    const projectRoot = join(dataRoot, 'knowledge', 'chat-knowledge');
+    expect(readFileSync(join(projectRoot, firstPaths[0]!), 'utf8')).toContain(
+      'Approved the launch plan.',
+    );
+    expect(readFileSync(join(projectRoot, firstPaths[1]!), 'utf8')).toBe('Use the blue design.');
     const second = await app.inject({
       method: 'POST',
       url: '/sessions/chat-session/knowledge-sources',
       payload: { attachments: [attachment] },
     });
-    expect(second.json<{ documents: { id: string }[] }>().documents[0]!.id).toBe(
-      firstDocuments[1]!.id,
-    );
-    const folders = await ctx.store.knowledge.listFolders();
-    expect(folders.find((folder) => folder.id === firstDocuments[0]!.folderId)?.name).toBe(
-      'Chat uploads',
-    );
-    expect(schedule).toHaveBeenCalledWith(
-      'chat-knowledge',
-      expect.arrayContaining(firstDocuments.map((document) => document.id)),
-    );
-    schedule.mockClear();
-    const beforeRejectedBatch = await ctx.store.knowledge.listDocuments({
-      folderId: firstDocuments[0]!.folderId,
+    expect(second.json<{ paths: string[] }>().paths).toEqual([firstPaths[1]]);
+    expect(readdirSync(join(projectRoot, 'imports'))).toHaveLength(1);
+    expect(schedule).not.toHaveBeenCalled();
+    const multibyte = await app.inject({
+      method: 'POST',
+      url: '/sessions/chat-session/knowledge-sources',
+      payload: {
+        attachments: [
+          {
+            filename: `${'資'.repeat(100)}.txt`,
+            base64: Buffer.from('Multibyte filename').toString('base64'),
+          },
+        ],
+      },
     });
+    expect(multibyte.statusCode).toBe(200);
+    const multibytePath = multibyte.json<{ paths: string[] }>().paths[0]!;
+    expect(Buffer.byteLength(multibytePath.split('/').at(-1)!)).toBeLessThanOrEqual(255);
+    expect(readFileSync(join(projectRoot, multibytePath), 'utf8')).toBe('Multibyte filename');
+    schedule.mockClear();
+    const notesBeforeRejectedBatch = readdirSync(join(projectRoot, 'notes'));
     const rejected = await app.inject({
       method: 'POST',
       url: '/sessions/chat-session/knowledge-sources',
@@ -204,9 +222,7 @@ it('stores project chat selections under Chat uploads, deduplicates files, and s
       },
     });
     expect(rejected.statusCode).toBe(400);
-    expect(
-      await ctx.store.knowledge.listDocuments({ folderId: firstDocuments[0]!.folderId }),
-    ).toEqual(beforeRejectedBatch);
+    expect(readdirSync(join(projectRoot, 'notes'))).toEqual(notesBeforeRejectedBatch);
     expect(schedule).not.toHaveBeenCalled();
     schedule.mockRejectedValueOnce(new Error('scheduler unavailable'));
     const committedWithoutWake = await app.inject({
@@ -228,6 +244,7 @@ it('stores project chat selections under Chat uploads, deduplicates files, and s
     );
   } finally {
     await app.close();
+    rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 

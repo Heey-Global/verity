@@ -313,6 +313,7 @@ export {
   type SessionDirectory,
   type SessionFileContent,
   type SessionFileEntry,
+  type SessionFileRoot,
   type SessionHistoryPage,
   type SessionStatus,
   type SessionGoogleWorkspaceFile,

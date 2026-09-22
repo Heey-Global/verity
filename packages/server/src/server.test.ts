@@ -1294,11 +1294,13 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
 
   it('transcribes meeting audio into a markdown file and index entry', async () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-meeting-test-'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'verity-meeting-knowledge-'));
     const meetingApp = buildServer({
       eventStore: ctx.store,
       bus,
       conductor,
       spawnWorktreeRoot: worktreeRoot,
+      dataRoot,
       meetingTranscriber: {
         transcribe: async (input) => {
           expect(input.fileName).toBe('planning.m4a');
@@ -1316,7 +1318,19 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       },
     });
     try {
-      await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
+      await ctx.store.upsertProject({
+        id: 'meeting-project',
+        owner: 'test',
+        repo: 'meeting',
+        containerName: 'meeting-project',
+        state: 'active',
+      });
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree,
+        model: 'm',
+        projectId: 'meeting-project',
+      });
       const res = await meetingApp.inject({
         method: 'POST',
         url: '/sessions/s1/meetings/transcripts',
@@ -1335,19 +1349,24 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
         title: 'Planning Sync',
         segments: 2,
       });
-      expect(body.path).toMatch(
-        /^docs\/meetings\/\d{4}-\d{2}-\d{2}-planning-sync-[a-f0-9]{8}\.md$/,
-      );
-      const transcript = readFileSync(join(worktree, body.path), 'utf8');
+      expect(body.path).toMatch(/^meetings\/\d{4}-\d{2}-\d{2}-planning-sync-[a-f0-9]{8}\.md$/);
+      const knowledgeRoot = join(dataRoot, 'knowledge', 'meeting-project');
+      const transcript = readFileSync(join(knowledgeRoot, body.path), 'utf8');
       expect(transcript).toContain('# Planning Sync');
       expect(transcript).toContain('- Language: en');
       expect(transcript).toContain('**Alice** (00:00): Ship the RAG recovery.');
       expect(transcript).toContain('**Bob** (01:02): Keep the index updated.');
       const fileName = body.path.split('/').at(-1) ?? '';
       expect(fileName).not.toBe('');
-      expect(readFileSync(join(worktree, 'docs', 'meetings', 'index.md'), 'utf8')).toContain(
+      expect(readFileSync(join(knowledgeRoot, 'meetings', 'index.md'), 'utf8')).toContain(
         `- [Planning Sync](${fileName})`,
       );
+      const audioName = fileName.replace(/\.md$/u, '.m4a');
+      expect(readFileSync(join(knowledgeRoot, 'meetings', audioName), 'utf8')).toBe('audio');
+      expect(lstatSync(join(knowledgeRoot, 'meetings', audioName)).mode & 0o777).toBe(0o644);
+      expect(
+        readFileSync(join(knowledgeRoot, '.text', 'meetings', `${audioName}.md`), 'utf8'),
+      ).toContain('Ship the RAG recovery.');
       const events = await ctx.store.getEvents('s1');
       expect(events.filter((event) => event.t === 'notice')).toEqual([
         {
@@ -1370,6 +1389,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     } finally {
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 

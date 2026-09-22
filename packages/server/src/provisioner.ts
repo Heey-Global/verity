@@ -68,6 +68,11 @@ import {
   signingBrokerTokenHash,
 } from './git-signer.js';
 import { signHistoryForPush } from './sign-history.js';
+import {
+  ensureProjectKnowledge,
+  ensureSharedKnowledge,
+  knowledgeSandboxBinds,
+} from './knowledge-folder.js';
 import { OPENCODE_EGRESS_PLACEHOLDER } from './opencode-egress-policy.js';
 import { RUNNER_CLAUDE_HOME_DIRNAME, RUNNER_CODEX_SESSIONS_DIRNAME } from './runner-transcript.js';
 import {
@@ -5051,6 +5056,25 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
     }
+    // Both knowledge mount sources have to exist before the container is created:
+    // a bind onto a missing directory fails the create, and a named-volume subpath
+    // is not conjured up either. Idempotent, so this runs on every provision.
+    let knowledgeBinds: string[] = [];
+    if (
+      this.opts.dataVolumeRoot !== undefined &&
+      existsSync(this.opts.dataVolumeRoot) &&
+      statSync(this.opts.dataVolumeRoot).isDirectory()
+    ) {
+      try {
+        await ensureSharedKnowledge(this.opts.dataVolumeRoot);
+        await ensureProjectKnowledge(this.opts.dataVolumeRoot, project.id);
+        knowledgeBinds = knowledgeSandboxBinds(this.opts.dataVolumeRoot, project.id);
+      } catch (cause) {
+        const message = `knowledge folder could not be prepared: ${failureMessage(cause)}`;
+        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        throw new ProvisioningError(message, cause);
+      }
+    }
     // Per-project data (the /work clone + materialized secrets) lives under the
     // data volume, so those mounts become named-volume subpaths a sibling can
     // resolve by name; deploy-level mounts (agent-seed, /dev/null, devcontainer)
@@ -5062,6 +5086,7 @@ export class ProvisionerImpl implements Provisioner {
         ...(runnerRuntimePath !== undefined
           ? [`${runnerRuntimePath}:${RUNNER_RUNTIME_TARGET}`]
           : []),
+        ...knowledgeBinds,
         `${agentSeedHostPath}:/opt/agent-seed:ro`,
         '/dev/null:/etc/profile.d/gh-token.sh:ro',
         ...ghTokenBrokerBinds,

@@ -219,7 +219,6 @@ function HydratedRoot() {
                 options={{ title: 'Add MCP connection' }}
               />
               <Stack.Screen name="settings/maintenance" options={{ title: 'Maintenance' }} />
-              <Stack.Screen name="knowledge" options={{ title: 'Knowledge' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
               <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />
               <Stack.Screen name="unlock-device" options={{ headerShown: false }} />
@@ -380,24 +379,6 @@ function AppHeader({
         </Text>
         <View style={[styles.headerSide, styles.headerSideRight]}>
           {options.headerRight?.({ canGoBack: back !== undefined, tintColor: theme.colors.text })}
-          {route.name !== 'knowledge' ? (
-            <Link
-              href={
-                route.name === 'project/[id]' &&
-                route.params &&
-                'id' in route.params &&
-                typeof route.params.id === 'string'
-                  ? { pathname: '/knowledge', params: { projectId: route.params.id } }
-                  : '/knowledge'
-              }
-              accessibilityLabel="Knowledge"
-              asChild
-            >
-              <Pressable style={styles.headerIconButton} accessibilityRole="button">
-                <Icon name="book-open" size={20} color={theme.colors.textMuted} />
-              </Pressable>
-            </Link>
-          ) : null}
           {showMessageSearch ? (
             <>
               <Link
