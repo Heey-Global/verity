@@ -101,35 +101,18 @@ it('loads the requested history page and preserves the originating session', asy
   expect(transport.mock.calls[0]?.[0]).toContain('/revisions?offset=100&limit=50');
 });
 
-it('keeps fixed grant metadata and sends explicit overview revision approval', async () => {
+it('keeps fixed grant metadata', async () => {
   const transport = vi
     .fn<typeof fetch>()
     .mockResolvedValueOnce(
       new Response(
         JSON.stringify({ grants: [{ folderId: 'sources', mode: 'read', fixed: 'project' }] }),
       ),
-    )
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          overview: {
-            documentId: 'doc',
-            revisionId: 'v2',
-            title: 'Overview',
-            bodyMarkdown: 'Approved',
-          },
-        }),
-      ),
     );
   const client = new VerityClient({ baseUrl: 'https://example.test', fetch: transport });
   expect(await client.listKnowledgeGrants('project')).toEqual([
     { folderId: 'sources', mode: 'read', fixed: 'project' },
   ]);
-  await client.approveProjectKnowledgeOverview('project', 'doc', 'v2');
-  expect(JSON.parse(transport.mock.calls[1]?.[1]?.body as string)).toEqual({
-    documentId: 'doc',
-    expectedRevisionId: 'v2',
-  });
 });
 
 it('downloads exact original bytes and URL-encodes source revisions', async () => {

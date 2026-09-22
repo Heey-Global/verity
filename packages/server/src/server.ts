@@ -1,7 +1,5 @@
 import { knowledgeSourceToolResult } from './knowledge-source-tool-result.js';
-import { registerKnowledgeProjectRoutes } from './knowledge-project-routes.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
-import { createKnowledgeWikiJobs } from './knowledge-wiki-jobs.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
@@ -116,7 +114,6 @@ import type {
   SessionRecord,
 } from '@verity/store';
 import {
-  KnowledgeError,
   PROJECT_MEMORY_MAX_CHARS,
   DeletedProjectError,
   DevServerPortRangeExhaustedError,
@@ -321,11 +318,6 @@ function isProjectSessionModel(model: string | undefined): boolean {
 
 const PROJECT_MODEL_ERROR =
   'project sessions currently support Claude, Codex, and configured OpenCode models only';
-// Wiki maintenance rewrites every project's Wiki, so it never inherits a model
-// from the project or the server default: it runs on the one model an operator
-// chose for it in Settings, or it does not run.
-const KNOWLEDGE_MODEL_ERROR =
-  'set the Knowledge model in Verity settings before running Wiki maintenance';
 const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
   state: 'unknown',
   kind: null,
@@ -825,8 +817,10 @@ function publicVeritySettings(
     googleDriveRefreshToken,
     uplinkSubscriptionKey,
     advancedModeEnabled,
+    knowledgeModel,
     ...rest
   } = settings;
+  void knowledgeModel;
   return {
     ...rest,
     advancedModeEnabled: advancedModeEnabled === true,
@@ -3693,7 +3687,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const recover = (conductor as { recover?: () => Promise<void> }).recover?.bind(conductor);
     if (recover === undefined) return;
     queuedTurnRecovery = Promise.resolve()
-      .then(() => deps.eventStore.knowledge?.recoverWikiJobs())
       .then(() => recover())
       .then(async () => {
         if (deps.eventStore.knowledge !== undefined) await reconcileKnowledgeInvalidations();
@@ -4688,11 +4681,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // configured it may sync installation repos into the cache before returning;
   // otherwise the route still returns the local cache so manually-added projects
   // work without GitHub App setup.
-  // Wiki maintenance is built further down — it needs the conductor — so the
-  // settings route reaches it through this slot instead of the reverse.
-  let resumeWikiMaintenance: (() => void) | undefined;
   const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
-    onKnowledgeModelChanged: () => resumeWikiMaintenance?.(),
     store: () => veritySettingsStore(deps.eventStore),
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
@@ -5238,25 +5227,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           (await deps.eventStore.knowledge?.isSessionInvalidated(caller.sessionId))
         )
           return undefined;
-        if (caller !== undefined) {
-          const job = await deps.eventStore.knowledge?.getWikiJobForSession(caller.sessionId);
-          if (job) {
-            if (job.status !== 'running') return undefined;
-            return { ...caller, knowledgeOnly: true };
-          }
-        }
         return caller;
       },
       // Runs before the card, so a caller that may not use these tools is turned away without
       // an operator being asked to read a briefing their answer could not have delivered. The
       // tools re-check it themselves on the way in; this only decides when it is caught.
       authorizeCall: async ({ projectId, sessionId, toolName }) => {
-        const wikiJob = await deps.eventStore.knowledge?.getWikiJobForSession(sessionId);
-        if (wikiJob && (wikiJob.status !== 'running' || toolName !== 'verity_knowledge')) {
-          throw new ControlPlaneSessionAuthorityError(
-            'Wiki jobs may only use their scoped knowledge tool',
-          );
-        }
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
           if (
@@ -5784,68 +5760,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isUniqueViolation,
   });
   if (deps.eventStore.knowledge !== undefined) {
-    const wikiJobs = createKnowledgeWikiJobs({
-      store: deps.eventStore,
-      conductor,
-      onError: (error) => app.log.error({ err: error }, 'Wiki maintenance failed'),
-      paused: async () =>
-        !(await veritySettingsStore(deps.eventStore).getVeritySettingsRaw())?.knowledgeModel,
-      onPaused: (projectId) =>
-        app.log.warn(
-          { projectId },
-          'Wiki maintenance is held: no Knowledge model is set in Verity settings',
-        ),
-      prepare: async (projectId, requestedModel) => {
-        const project = await deps.eventStore.getProject(projectId);
-        if (!project || project.hiddenAt !== null || projectsBeingDeleted.has(projectId))
-          throw new KnowledgeError('not_found');
-        const release = beginProjectSpawn(projectId);
-        try {
-          if (project.state !== 'active' || !deps.projectCloneRoot || !deps.projectBackend)
-            throw new KnowledgeError(
-              'conflict',
-              'Activate the project workspace before starting Wiki maintenance',
-            );
-          const globalSettings = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
-          const model = requestedModel ?? globalSettings?.knowledgeModel;
-          if (!model) throw new KnowledgeError('invalid', KNOWLEDGE_MODEL_ERROR);
-          if (!(await isConfiguredProjectSessionModel(model)))
-            throw new KnowledgeError('invalid', PROJECT_MODEL_ERROR);
-          return {
-            model,
-            directory: join(projectClonePath(deps.projectCloneRoot, project), '.verity-sessions'),
-            release,
-          };
-        } catch (error) {
-          release();
-          throw error;
-        }
-      },
-    });
-    resumeWikiMaintenance = () => {
-      void wikiJobs
-        .recover()
-        .catch((error: unknown) => app.log.error({ err: error }, 'Wiki maintenance failed'));
-    };
-    app.addHook('onReady', () => wikiJobs.recover());
-    app.addHook('onClose', () => wikiJobs.close());
-    registerKnowledgeProjectRoutes(app, {
-      knowledge: deps.eventStore.knowledge,
-      startWikiJob: (projectId, input) => wikiJobs.start(projectId, input),
-    });
     registerKnowledgeSourceRoutes(app, {
       knowledge: deps.eventStore.knowledge,
       store: deps.eventStore,
       ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
-      schedule: (projectId, sourceDocumentIds) => wikiJobs.enqueue(projectId, sourceDocumentIds),
-      wakeMaintenance: (projectId) => wikiJobs.wake(projectId),
     });
     registerKnowledgeRoutes(app, {
       knowledge: deps.eventStore.knowledge,
       reconcileInvalidations: reconcileKnowledgeInvalidations,
-      schedule: (projectId, sourceDocumentIds) => wikiJobs.enqueue(projectId, sourceDocumentIds),
-      scheduleReconciliation: (projectId) => wikiJobs.enqueueReconciliation(projectId),
-      wakeMaintenance: (projectId) => wikiJobs.wake(projectId),
     });
   }
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
@@ -5925,7 +5847,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   const veritySettingsBody = z.object({
-    knowledgeModel: z.string().trim().min(1).max(256).nullable().optional(),
     advancedModeEnabled: z.boolean().optional(),
     gitUserName: z.string().nullable().optional(),
     gitUserEmail: z.string().nullable().optional(),

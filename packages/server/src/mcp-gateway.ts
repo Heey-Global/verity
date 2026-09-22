@@ -371,15 +371,8 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     deps.servedTools ?? ['verity_http_request', 'verity_secret_run'],
   );
   if (served.size === 0) throw new Error('MCP gateway must serve at least one tool');
-  const toolsForProject = (
-    projectId: string,
-    caller?: McpGatewayCaller,
-  ): ReadonlySet<GatewayToolName> =>
-    new Set(
-      [...served, ...(deps.extraToolsForProject?.(projectId) ?? [])].filter(
-        (tool) => !caller?.knowledgeOnly || tool === 'verity_knowledge',
-      ),
-    );
+  const toolsForProject = (projectId: string): ReadonlySet<GatewayToolName> =>
+    new Set([...served, ...(deps.extraToolsForProject?.(projectId) ?? [])]);
 
   /** Record a refusal, then answer. A failed audit write cannot un-refuse the call, so it
    *  only downgrades the reply — the caller was getting nothing either way. */
@@ -461,7 +454,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     // same 401 whichever name it used, so the served set stays unlearnable from outside.
     const parsedName = gatewayToolNameSchema.safeParse(requested);
     const toolName =
-      parsedName.success && toolsForProject(projectId, caller).has(parsedName.data)
+      parsedName.success && toolsForProject(projectId).has(parsedName.data)
         ? parsedName.data
         : undefined;
     if (toolName === undefined) {
@@ -769,7 +762,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         case 'ping':
           return jsonRpcResult(id, {});
         case 'tools/list':
-          return jsonRpcResult(id, { tools: toolDeclarations(toolsForProject(projectId, caller)) });
+          return jsonRpcResult(id, { tools: toolDeclarations(toolsForProject(projectId)) });
         case 'tools/call':
           return callTool(projectId, id, params, token, caller);
         default:

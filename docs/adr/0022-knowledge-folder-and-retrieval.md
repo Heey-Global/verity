@@ -1,6 +1,6 @@
 # ADR 0022 — Filesystem-backed project knowledge
 
-**Status:** Proposed · **Date:** 2026-09-21
+**Status:** Accepted · **Date:** 2026-09-21
 
 **Supersedes:** [ADR 0018](0018-knowledge-realms-and-namespaces.md)
 
@@ -42,9 +42,10 @@ and one separate folder contains explicitly shared material.
 The project folder is mounted read-only at `/knowledge` in that project's sandboxes. The
 shared folder is mounted at `/knowledge/shared`. A sandbox cannot write either mount.
 
-The existing database-backed library remains available internally as a migration and
-compatibility source during the transition. New content described by this ADR is written to
-the filesystem.
+The existing database-backed library remains available internally only as a migration source
+for stored content. New content described by this ADR is written to the filesystem. Its Wiki
+maintenance jobs, routes, model setting, and special agent runtime were removed once the
+filesystem experience shipped.
 
 ### Explorer roots
 
@@ -117,8 +118,9 @@ performed incrementally:
 | Approved overview or legacy memory | `<projectId>/overview.md` |
 | General/shared documents | `shared/` |
 
-Database tables and compatibility routes may be removed only after a separate migration has
-written and verified all required files. This ADR does not authorize dropping stored data.
+Stored documents must not be dropped until a separate migration has written and verified the
+required files. The retired Wiki execution path does not remain available as a compatibility
+route: upgrades remove its queued jobs and implementation-only sessions.
 
 ## Security and operational boundaries
 

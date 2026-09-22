@@ -724,7 +724,6 @@ export const veritySettingsSchema = z.object({
   googleDriveAccountEmail: z.string().nullable(),
   googleDriveConnected: z.boolean(),
   advancedModeEnabled: z.boolean().default(false),
-  knowledgeModel: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -866,7 +865,6 @@ const sessionGoogleWorkspaceFileSchema = z.object({
 export type SessionGoogleWorkspaceFile = z.infer<typeof sessionGoogleWorkspaceFileSchema>;
 
 type VeritySettingsKey =
-  | 'knowledgeModel'
   | 'advancedModeEnabled'
   | 'gitUserName'
   | 'gitUserEmail'
@@ -1665,7 +1663,7 @@ export interface MobileScrollDiagnostic {
 }
 
 const knowledgeFolderSchema = z.object({
-  role: z.enum(['project', 'general', 'sources', 'wiki']).optional(),
+  role: z.enum(['project', 'general', 'sources']).optional(),
   projectId: z.string().optional(),
   archived: z.boolean().optional(),
   id: z.string(),
@@ -1719,33 +1717,6 @@ const knowledgeMovePreviewSchema = z.object({
 });
 export type KnowledgeMovePreview = z.infer<typeof knowledgeMovePreviewSchema>;
 
-const knowledgeSpaceSchema = z.object({
-  projectId: z.string(),
-  rootFolderId: z.string(),
-  generalFolderId: z.string(),
-  sourcesFolderId: z.string(),
-  wikiFolderId: z.string(),
-});
-export type KnowledgeSpace = z.infer<typeof knowledgeSpaceSchema>;
-const knowledgeOverviewSchema = z.object({
-  documentId: z.string(),
-  revisionId: z.string(),
-  title: z.string(),
-  bodyMarkdown: z.string(),
-});
-export type KnowledgeOverview = z.infer<typeof knowledgeOverviewSchema>;
-const knowledgeWikiJobSchema = z.object({
-  id: z.string(),
-  projectId: z.string(),
-  sessionId: z.string(),
-  kind: z.enum(['ingest', 'check', 'reconcile']),
-  status: z.enum(['pending', 'running', 'completed', 'failed']),
-  sourceRevisions: z.array(z.object({ documentId: z.string(), revisionId: z.string() })),
-  model: z.string().nullable().optional(),
-  createdAt: z.union([z.string(), z.number()]),
-  error: z.string().nullable(),
-});
-export type KnowledgeWikiJob = z.infer<typeof knowledgeWikiJobSchema>;
 const knowledgeSourceSchema = z.object({
   revisionId: z.string(),
   filename: z.string(),
@@ -1808,60 +1779,6 @@ export class VerityClient {
         : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
     });
     return response.json();
-  }
-  async getProjectKnowledgeSpace(id: string): Promise<KnowledgeSpace> {
-    return z
-      .object({ space: knowledgeSpaceSchema })
-      .parse(await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-space`))
-      .space;
-  }
-  async getProjectKnowledgeOverview(id: string): Promise<KnowledgeOverview | null> {
-    return z
-      .object({ overview: knowledgeOverviewSchema.nullable() })
-      .parse(await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-overview`))
-      .overview;
-  }
-  async approveProjectKnowledgeOverview(
-    id: string,
-    documentId: string,
-    expectedRevisionId: string,
-  ): Promise<KnowledgeOverview> {
-    return z
-      .object({ overview: knowledgeOverviewSchema })
-      .parse(
-        await this.knowledgeRequest(
-          `/projects/${encodeURIComponent(id)}/knowledge-overview`,
-          'PUT',
-          { documentId, expectedRevisionId },
-        ),
-      ).overview;
-  }
-  async clearProjectKnowledgeOverview(id: string): Promise<void> {
-    await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-overview`, 'DELETE');
-  }
-  async createKnowledgeWikiJob(
-    id: string,
-    input: {
-      sourceDocumentIds: string[];
-      kind: 'ingest' | 'check' | 'reconcile';
-      model?: string;
-    },
-  ): Promise<KnowledgeWikiJob> {
-    return z
-      .object({ job: knowledgeWikiJobSchema })
-      .parse(
-        await this.knowledgeRequest(
-          `/projects/${encodeURIComponent(id)}/knowledge-wiki-jobs`,
-          'POST',
-          input,
-        ),
-      ).job;
-  }
-  async listKnowledgeWikiJobs(id: string): Promise<KnowledgeWikiJob[]> {
-    return z
-      .object({ jobs: z.array(knowledgeWikiJobSchema) })
-      .parse(await this.knowledgeRequest(`/projects/${encodeURIComponent(id)}/knowledge-wiki-jobs`))
-      .jobs;
   }
   async exportKnowledgeSourceBundle(folderId: string) {
     return knowledgeSourceBundleSchema.parse(
