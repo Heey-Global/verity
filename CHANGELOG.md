@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.6](https://github.com/Heey-Global/verity/compare/v1.4.5...v1.4.6) (2026-09-22)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/websocket to v11.3.1 ([#621](https://github.com/Heey-Global/verity/issues/621)) ([e8ef31a](https://github.com/Heey-Global/verity/commit/e8ef31ade26373a2df850cdfc60a9adf87299a36))
+
 ## [1.4.5](https://github.com/Heey-Global/verity/compare/v1.4.4...v1.4.5) (2026-09-21)
 
 
