@@ -215,7 +215,7 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # renovate: datasource=npm depName=@devcontainers/cli
 RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.276
+RUN npm install -g @anthropic-ai/claude-code@2.1.278
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.79.0
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
@@ -231,7 +231,7 @@ RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.m
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
 # renovate: datasource=npm depName=@openai/codex
-RUN npm install -g @openai/codex@0.155.0
+RUN npm install -g @openai/codex@0.155.1
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 RUN npm install -g @agentclientprotocol/codex-acp@1.12.0
 # renovate: datasource=npm depName=opencode-ai
