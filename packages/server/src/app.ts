@@ -83,6 +83,10 @@ export interface ControlPlaneDeps {
   authRegistry?: AuthTokenRegistry | undefined;
   /** Enable the ADR 0008 Expo push-token registration surface. */
   pushEnabled?: boolean | undefined;
+  /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
+  previewShareManager?: ServerDeps['previewShareManager'];
+  /** Reconnect the Uplink after its encrypted credential changes. */
+  onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
   /** Standing brokered-secret grants for a project (ADR 0011 D2). */
   listBrokeredGrants?: ((projectId: string) => Promise<BrokeredGrantRecord[]>) | undefined;
   /** Ends one standing grant — the only exit a `forever` grant has. */
@@ -327,6 +331,12 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
+    ...(deps.previewShareManager !== undefined
+      ? { previewShareManager: deps.previewShareManager }
+      : {}),
+    ...(deps.onUplinkCredentialsChanged !== undefined
+      ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
     ...(deps.listBrokeredGrants !== undefined
       ? { listBrokeredGrants: deps.listBrokeredGrants }
       : {}),
