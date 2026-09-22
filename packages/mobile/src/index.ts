@@ -43,7 +43,10 @@ export {
 } from './ui/sessionBadge.js';
 export {
   projectBadge,
+  projectLifecycleBadge,
   projectNeedsRepair,
+  sandboxUpdateConverging,
+  REBUILDING_PROJECT_BADGE,
   UNAVAILABLE_PROJECT_BADGE,
   UNTRACKED_PROJECT_BADGE,
   type ProjectBadge,

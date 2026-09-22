@@ -88,8 +88,8 @@ import { repairProject } from '../lib/projectRepair';
 import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
 import {
   hasPendingProjectSetup,
-  projectOverviewSetupLabel,
-  projectOverviewWarning,
+  projectOverviewStatus,
+  type ProjectOverviewStatus,
 } from '../lib/projectSetup';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
@@ -98,10 +98,10 @@ type SessionProjectGroup = {
   id: string;
   title: string;
   subtitle: string;
-  setupLabel?: string;
-  /** Attention line for a project that is otherwise running — a provision
-   *  warning, or a toolkit drift verdict a re-provision would repair. */
-  warningLabel?: string;
+  /** The single line the row says about what is happening to this project — a
+   *  transition in flight, a failure, or an attention line. Shown INSTEAD of
+   *  `subtitle`, which is metadata and can wait. */
+  status?: ProjectOverviewStatus;
   portLinks: ProjectPortLink[];
   project?: ProjectRecord;
   // Set on an "orphan" group — sessions whose project is INACTIVE (`absent`, so
@@ -1008,7 +1008,6 @@ function projectGroups(
 
   const groups: SessionProjectGroup[] = projects.map((project) => {
     const detection = detectionsByProject.get(project.id);
-    const setupLabel = projectOverviewSetupLabel(project, detection);
     const portLinks = (devServersByProject.get(project.id) ?? []).flatMap((server) => {
       const url = baseUrl ? devServerUrl(baseUrl, server) : null;
       return server.running && server.hostPort && url
@@ -1019,8 +1018,7 @@ function projectGroups(
       id: project.id,
       title: projectTitle(project),
       subtitle: project.latestReleaseTag ?? '',
-      setupLabel,
-      warningLabel: projectOverviewWarning(project),
+      status: projectOverviewStatus(project, detection),
       portLinks,
       project,
       sessions: byProject.get(project.id) ?? [],
@@ -1082,6 +1080,21 @@ function isReorderableGroup(group: SessionProjectGroup): boolean {
     group.project.state !== 'absent' &&
     !isVerityControlPlaneProject(group.project)
   );
+}
+
+/** Resolves the semantic status tone to the row's text style. Exhaustive over
+ *  `ProjectOverviewStatus['tone']`, so a new tone cannot reach the row untyped. */
+function statusToneStyle(tone: ProjectOverviewStatus['tone']) {
+  switch (tone) {
+    case 'working':
+      return styles.projectStatusWorking;
+    case 'attention':
+      return styles.projectStatusAttention;
+    case 'danger':
+      return styles.projectStatusDanger;
+    case 'idle':
+      return styles.projectStatusIdle;
+  }
 }
 
 function ProjectGroup({
@@ -1165,9 +1178,6 @@ function ProjectGroup({
     : undefined;
   const updating =
     group.project !== undefined && updatingProjectIds?.has(group.project.id) === true;
-  const sandboxUpdatePending =
-    group.project?.sandboxUpdate?.state === 'available' &&
-    group.project.sandboxUpdate.selfRepair === 'converging';
   // Both heights are reported as the row's pitch — the measured height plus the
   // gap to the next row and, on wide layouts, the card border — so that their
   // difference is exactly the session block a fold removes. The compact one is
@@ -1231,16 +1241,16 @@ function ProjectGroup({
               <Text style={styles.projectTitle} numberOfLines={1}>
                 {group.title}
               </Text>
-              {group.portLinks.length > 0 ||
-              group.setupLabel ||
-              group.warningLabel ||
-              group.subtitle ||
-              sandboxUpdatePending ? (
+              {group.portLinks.length > 0 || group.status || group.subtitle ? (
                 <View style={styles.projectMetaRow}>
                   {group.portLinks.map((port) => (
                     <ProjectPortChip key={port.id} port={port} />
                   ))}
-                  {group.setupLabel ? (
+                  {/* Exactly one text: whatever is happening to the project wins
+                    the slot outright, and its metadata (the release tag) is only
+                    shown when nothing is. Both at once is what made a status
+                    message and a version number share — and squeeze — one line. */}
+                  {group.status ? (
                     group.project?.setupStatus === 'pending' ? (
                       <Pressable
                         accessibilityRole="button"
@@ -1252,48 +1262,25 @@ function ProjectGroup({
                           })
                         }
                       >
-                        <Text style={styles.projectSetupLabel} numberOfLines={1}>
-                          {group.setupLabel}
+                        <Text
+                          style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
+                          numberOfLines={1}
+                        >
+                          {group.status.label}
                         </Text>
                       </Pressable>
                     ) : (
                       <Text
-                        style={[
-                          styles.projectSetupLabel,
-                          badge.needsRepair ? styles.projectSetupLabelBroken : null,
-                        ]}
+                        style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
                         numberOfLines={1}
                       >
-                        {group.setupLabel}
+                        {group.status.label}
                       </Text>
                     )
                   ) : group.subtitle ? (
-                    <Text
-                      style={[
-                        styles.projectSubtitle,
-                        badge.needsRepair ? styles.projectSetupLabelBroken : null,
-                      ]}
-                      numberOfLines={1}
-                    >
+                    <Text style={styles.projectSubtitle} numberOfLines={1}>
                       {group.subtitle}
                     </Text>
-                  ) : null}
-                  {/* Sits alongside the setup label rather than replacing it: a
-                    project can be mid-setup AND carry a provision warning, and
-                    dropping either one loses information the other doesn't
-                    carry. */}
-                  {group.warningLabel ? (
-                    <Text style={styles.projectWarningLabel} numberOfLines={1}>
-                      {group.warningLabel}
-                    </Text>
-                  ) : null}
-                  {sandboxUpdatePending ? (
-                    <View style={styles.projectUpdatePending} accessibilityRole="progressbar">
-                      <ActivityIndicator size="small" color={theme.colors.textMuted} />
-                      <Text style={styles.projectSubtitle} numberOfLines={1}>
-                        Waiting to update sandbox…
-                      </Text>
-                    </View>
                   ) : null}
                 </View>
               ) : null}
@@ -2548,34 +2535,33 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     lineHeight: 17 * theme.fontScale,
   },
-  projectSetupLabel: {
+  projectStatusLabel: {
     minWidth: 0,
     flexShrink: 1,
-    color: theme.colors.textMuted,
     fontSize: theme.text.xs,
     fontWeight: '600',
   },
-  // A failure reason has to be legible as a failure — muted grey made "Sandbox
-  // container stopped" look like just another progress step.
-  projectSetupLabelBroken: {
-    color: theme.colors.tone.danger,
+  // Work in progress stays muted on purpose. The pulsing magenta dot in the
+  // gutter is the signal that something is happening; painting the sentence the
+  // same magenta would double it, and in the dark theme `accent` and
+  // `tone.attention` are the same neon — a working row and a row that needs
+  // looking at would become indistinguishable.
+  projectStatusWorking: {
+    color: theme.colors.textMuted,
+  },
+  projectStatusIdle: {
+    color: theme.colors.textMuted,
   },
   // Attention, not danger: the project is running. A stale attestation verdict
   // means it needs re-checking, not that it is broken — `danger` here would put
   // a working project in the same colour as a stopped container.
-  projectWarningLabel: {
-    minWidth: 0,
-    flexShrink: 1,
+  projectStatusAttention: {
     color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
   },
-  projectUpdatePending: {
-    minWidth: 0,
-    flexShrink: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
+  // A failure reason has to be legible as a failure — muted grey made "Sandbox
+  // container stopped" look like just another progress step.
+  projectStatusDanger: {
+    color: theme.colors.tone.danger,
   },
   projectActions: {
     flexDirection: 'row',

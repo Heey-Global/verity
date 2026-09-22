@@ -1,7 +1,10 @@
 import {
   PROJECT_IMAGE_REBUILDING_WARNING,
+  projectBadge,
+  projectLifecycleBadge,
   type DevServerDetection,
   type ProjectRecord,
+  type ProjectTone,
 } from '@verity/mobile';
 
 export interface ProjectSetupStatus {
@@ -19,27 +22,36 @@ export function projectSetupStatus(
   project: ProjectRecord,
   detection?: DevServerDetection | null,
 ): ProjectSetupStatus {
+  // Every lifecycle label below is the badge's, not a second copy of it. The two
+  // were written independently and drifted — the same waking project read
+  // "Waking…" next to its dot and "Waking secure workspace…" on its row — so the
+  // wizard, the detail screen and the overview now spend one vocabulary between
+  // them and this function only decides the step and the intent.
+  //
+  // The LIFECYCLE badge specifically: the step numbers below come from the same
+  // lifecycle state, and background work does not advance them. Taking the full
+  // `projectBadge` here would let a cloning project with an image rebuild in
+  // flight report step 1 of 5 under the label "Rebuilding secure workspace…",
+  // numbering one thing and naming another.
+  const { label } = projectLifecycleBadge(project);
   switch (projectLifecycleState(project)) {
     case 'absent':
       return project.setupStatus === 'pending'
-        ? { label: 'Preparing project…', step: 0, total: 5, intent: 'progress' }
-        : { label: 'Paused', step: 0, total: 5, intent: 'ready' };
+        ? { label, step: 0, total: 5, intent: 'progress' }
+        : { label, step: 0, total: 5, intent: 'ready' };
     case 'cloning':
-      return { label: 'Preparing repository…', step: 1, total: 5, intent: 'progress' };
+      return { label, step: 1, total: 5, intent: 'progress' };
     case 'container_starting':
-      return {
-        label: 'Starting secure workspace…',
-        step: 2,
-        total: 5,
-        intent: 'progress',
-      };
+      return { label, step: 2, total: 5, intent: 'progress' };
     case 'sleeping_starting':
-      return { label: 'Putting project to sleep…', step: 0, total: 5, intent: 'progress' };
+      return { label, step: 0, total: 5, intent: 'progress' };
     case 'sleeping':
-      return { label: 'Sleeping', step: 0, total: 5, intent: 'ready' };
+      return { label, step: 0, total: 5, intent: 'ready' };
     case 'waking':
-      return { label: 'Waking secure workspace…', step: 2, total: 5, intent: 'progress' };
+      return { label, step: 2, total: 5, intent: 'progress' };
     case 'failed':
+      // Not the badge's "Needs repair", which is the label on an action. This is
+      // the wizard's own sentence about where setup stopped.
       return { label: 'Project setup needs attention', step: 0, total: 5, intent: 'error' };
     case 'active': {
       if (!detection) {
@@ -67,21 +79,63 @@ export function hasUnreviewedDevServers(detection?: DevServerDetection | null): 
   );
 }
 
-export function projectOverviewSetupLabel(
+export interface ProjectOverviewStatus {
+  label: string;
+  /** Resolved to a colour by the RN layer. `working` is the same magenta as the
+   *  pulsing dot the row draws beside it. */
+  tone: Exclude<ProjectTone, 'done'> | 'attention';
+}
+
+/**
+ * The ONE line a project row says about itself, or nothing.
+ *
+ * Deliberately one line and one function. The row used to compose up to three
+ * independently-derived texts — a setup step, an attention line, and a sandbox
+ * update with a spinner of its own — into a single narrow strip next to a
+ * version tag, and on a phone they collided: an updating project showed a green
+ * "running" dot, a grey spinner and a release tag fighting for the same 200
+ * points of width. So the order below is a priority, not a layout, and whatever
+ * wins is the only thing the row shows.
+ *
+ * The first branch is what makes the row agree with its own dot: if the badge
+ * pulses, Verity is doing something to this container, and the badge's label is
+ * exactly what that pulsing magenta dot means. Nothing else may speak over it —
+ * a background finding is not more urgent than the transition in flight, and it
+ * is still there afterwards.
+ */
+export function projectOverviewStatus(
   project: ProjectRecord,
   detection?: DevServerDetection | null,
-): string | undefined {
-  // A failed project explains itself: the reconciler writes an operator-facing
-  // reason ("Sandbox container stopped — Repair to restart it."), which says far
-  // more than the generic setup-step label, so it wins over every other line here.
+): ProjectOverviewStatus | undefined {
+  const badge = projectBadge(project);
+  // Before the pulse, not after. A failed project explains itself — the
+  // reconciler writes an operator-facing reason ("Sandbox container stopped —
+  // Repair to restart it.") — and an error the operator has to act on must not
+  // lose the row to any progress line, whatever order the badge resolves its own
+  // overrides in.
+  if (badge.needsRepair) {
+    return {
+      label: project.provisionError ?? projectSetupStatus(project).label,
+      tone: 'danger',
+    };
+  }
+  if (badge.pulsing) return { label: badge.label, tone: 'working' };
   const state = projectLifecycleState(project);
-  if (state === 'failed') return project.provisionError ?? projectSetupStatus(project).label;
-  if (project.setupStatus === 'pending') return projectSetupStatus(project, detection).label;
+  if (project.setupStatus === 'pending') {
+    const status = projectSetupStatus(project, detection);
+    return { label: status.label, tone: status.intent === 'progress' ? 'working' : 'idle' };
+  }
+  const warning = projectOverviewWarning(project);
+  if (warning) return { label: warning, tone: 'attention' };
   // The grey moon in the shared status gutter already communicates the stable
   // sleeping state; repeating it as metadata wastes the narrow overview row.
   if (state === 'sleeping') return undefined;
-  if (state !== 'active') return projectSetupStatus(project).label;
-  if (hasUnreviewedDevServers(detection)) return projectSetupStatus(project, detection).label;
+  if (state !== 'active') return { label: badge.label, tone: 'idle' };
+  if (hasUnreviewedDevServers(detection)) {
+    return { label: projectSetupStatus(project, detection).label, tone: 'idle' };
+  }
+  // Nothing is happening and nothing needs looking at — the row is free to spend
+  // its second line on the project's own metadata instead.
   return undefined;
 }
 
@@ -114,8 +168,8 @@ export function hasActionableToolkitDrift(project: ProjectRecord): boolean {
 /**
  * The attention line for a project that is otherwise running fine.
  *
- * Kept separate from {@link projectOverviewSetupLabel} on purpose: that function
- * answers "where is setup", and correctly returns nothing for a healthy active
+ * Kept separate from {@link projectSetupStatus} on purpose: that function answers
+ * "where is setup", and correctly reports a settled state for a healthy active
  * project. "This project is running, and something about it still needs looking
  * at" is a different question, and folding it into the setup label would make a
  * running project report a setup step it is not in.
@@ -128,11 +182,15 @@ export function projectOverviewWarning(project: ProjectRecord): string | undefin
   // A failed project already surfaces `provisionError` through the setup label,
   // and stacking a second attention line on the same row buries it.
   if (project.state === 'failed') return undefined;
+  // A running image rebuild is work in progress, not a finding, and `projectBadge`
+  // already reports it as one — same magenta pulse, same "Rebuilding secure
+  // workspace…" wording as every other transition. Repeating it here as a second,
+  // differently-phrased attention line is what put two rebuild texts on one row.
   if (
     project.provisionWarning != null &&
     project.provisionWarning === PROJECT_IMAGE_REBUILDING_WARNING
   )
-    return 'Rebuilding image…';
+    return undefined;
   if (project.provisionWarning) return project.provisionWarning;
   // Not "outdated" and not "will fail": toolkit identities are content hashes
   // with no ordering, and the identity covers the boundary policy too, so a
