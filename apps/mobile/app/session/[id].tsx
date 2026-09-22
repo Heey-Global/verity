@@ -3537,13 +3537,11 @@ export function SessionChat({
                     drawDistance={500}
                     // Visual inversion: newest-first data flipped back the right way up.
                     // Each row is counter-flipped in renderItem (styles.invertedItem).
-                    style={[
-                      styles.invertedList,
-                      {
-                        marginLeft: embedded ? 0 : insets.left,
-                        marginRight: embedded ? 0 : insets.right,
-                      },
-                    ]}
+                    style={{
+                      ...styles.invertedList,
+                      marginLeft: embedded ? 0 : insets.left,
+                      marginRight: embedded ? 0 : insets.right,
+                    }}
                     contentContainerStyle={styles.listContent}
                     onScroll={onListScroll}
                     onTouchEnd={clearSearchHighlightAfterTouch}
