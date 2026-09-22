@@ -6,7 +6,9 @@ import type { IconName } from '../components/Icon';
 import { MEETING_AUDIO_ENABLED } from './featureFlags';
 
 export type AttachMenuRow =
-  { divider: true } | { icon: IconName; label: string; onPress: () => void };
+  | { section: string }
+  | { divider: true }
+  | { icon: IconName; label: string; detail?: string; onPress: () => void };
 
 export interface AttachMenuHandlers {
   onCapturePhoto: () => void;
@@ -18,10 +20,9 @@ export interface AttachMenuHandlers {
 }
 
 /**
- * Two groups separated by a divider: transient per-turn attachments (photo /
- * file) above, and durable "write into the repo" actions (meeting transcript,
- * Google Drive import → docs/) below. The divider makes the two kinds legible
- * instead of one long undifferentiated list.
+ * The menu groups actions by what they do. Content sources can feed the current
+ * conversation and Project Knowledge, while Workspace opens a live-synced
+ * document for editing. Service names alone do not communicate that distinction.
  *
  * `meetingAudioEnabled` defaults to the build-time flag; callers pass it only in
  * tests.
@@ -31,14 +32,21 @@ export function attachMenuRows(
   { meetingAudioEnabled = MEETING_AUDIO_ENABLED }: { meetingAudioEnabled?: boolean } = {},
 ): AttachMenuRow[] {
   return [
+    { section: 'Add content' },
     { icon: 'camera', label: 'Take photo', onPress: handlers.onCapturePhoto },
     { icon: 'image', label: 'Choose photo', onPress: handlers.onPickPhotos },
     { icon: 'file', label: 'Choose file', onPress: handlers.onPickFiles },
-    { divider: true },
     ...(meetingAudioEnabled
       ? [{ icon: 'mic' as IconName, label: 'Meeting audio', onPress: handlers.onPickMeetingAudio }]
       : []),
     { icon: 'cloud', label: 'Google Drive', onPress: handlers.onPickGoogleDrive },
-    { icon: 'grid', label: 'Google Workspace', onPress: handlers.onPickGoogleWorkspace },
+    { divider: true },
+    { section: 'Connect & edit' },
+    {
+      icon: 'grid',
+      label: 'Google Workspace',
+      detail: 'Live synced',
+      onPress: handlers.onPickGoogleWorkspace,
+    },
   ];
 }
