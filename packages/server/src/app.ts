@@ -43,6 +43,10 @@ import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
   eventStore: EventStore;
+  /** Durable server root for filesystem-backed project Knowledge. Forwarded to
+   * the route layer; provisioning the same folder does not make it visible to
+   * HTTP handlers unless this value crosses the composition boundary too. */
+  dataRoot?: ServerDeps['dataRoot'];
   /** TLS termination options for the public direct-server listener. */
   https?: ServerDeps['https'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
@@ -290,6 +294,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
 
   return buildServer({
     eventStore: deps.eventStore,
+    ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.https !== undefined ? { https: deps.https } : {}),
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }

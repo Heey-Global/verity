@@ -41,6 +41,11 @@ function forward(deps: Partial<Parameters<typeof buildControlPlane>[0]>): Server
 }
 
 describe('buildControlPlane dependency forwarding', () => {
+  it('passes the Knowledge data root through to the session file routes', () => {
+    const got = forward({ dataRoot: '/srv/verity' });
+    expect(got.dataRoot).toBe('/srv/verity');
+  });
+
   it('passes direct-listener TLS and device-pairing authority through', () => {
     const https = { key: 'key', cert: 'certificate' };
     const devicePairing = {
@@ -87,6 +92,7 @@ describe('buildControlPlane dependency forwarding', () => {
 
   it('omits an absent dep instead of forwarding an explicit undefined', () => {
     const got = forward({});
+    expect('dataRoot' in got).toBe(false);
     expect('sandboxGit' in got).toBe(false);
     expect('reconcileProjectState' in got).toBe(false);
   });
