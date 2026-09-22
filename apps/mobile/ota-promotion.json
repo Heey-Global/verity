@@ -1,14 +1,12 @@
 {
   "schema": 1,
-  "version": "1.33.35",
+  "version": "1.33.36",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "5dc6a16bc90c68a523994318582247d52087c6c9",
-  "tag": "mobile-v1.33.35",
-  "branch": "staging-mobile-v1.33.35-5dc6a16bc90c68a523994318582247d52087c6c9",
-  "baseline": "mobile-v1.33.34",
-  "group": "58375ec1-b606-44a7-bf4b-b116c8794929",
-  "notes": [
-    "unify project status labels and pulse the magenta dot (#634)"
-  ]
+  "commit": "822de20dfa83a4942bfb8d17f880a62295c0687b",
+  "tag": "mobile-v1.33.36",
+  "branch": "staging-mobile-v1.33.36-822de20dfa83a4942bfb8d17f880a62295c0687b",
+  "baseline": "mobile-v1.33.35",
+  "group": "533fffbb-b65a-4e66-9c01-c0412732ab84",
+  "notes": []
 }
