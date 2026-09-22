@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.8](https://github.com/Heey-Global/verity/compare/v1.4.7...v1.4.8) (2026-09-22)
+
+
+### Bug Fixes
+
+* **knowledge:** retire legacy Wiki job writes ([#642](https://github.com/Heey-Global/verity/issues/642)) ([c209088](https://github.com/Heey-Global/verity/commit/c2090880ae2eea18f5f8c4ba7d64897b6eb6c3ea))
+* **server:** forward knowledge data root ([#641](https://github.com/Heey-Global/verity/issues/641)) ([262c0cc](https://github.com/Heey-Global/verity/commit/262c0cc8071292f6695b93f5f347ede5735fdb45))
+* **server:** forward Uplink control-plane dependencies ([#638](https://github.com/Heey-Global/verity/issues/638)) ([1b9eff6](https://github.com/Heey-Global/verity/commit/1b9eff6d594904cbd7d9bc552fdc1334d43c522d))
+
 ## [1.4.7](https://github.com/Heey-Global/verity/compare/v1.4.6...v1.4.7) (2026-09-22)
 
 
