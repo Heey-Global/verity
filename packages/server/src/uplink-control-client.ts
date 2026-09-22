@@ -10,6 +10,9 @@ import type {
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 120_000;
+/** A WebSocket close handshake is cooperative. Do not let a peer that never
+ * completes it strand the control client in CLOSING forever. */
+export const CLOSE_TIMEOUT_MS = 5_000;
 /** Exported so the guards can derive their timings from the schedule rather
  * than restating it. */
 export const RECONNECT_MAX_MS = 30_000;
@@ -454,7 +457,14 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (frame.type === 'renewed') {
       const hadSharing = this.features.has('sharing');
-      this.applyLease(frame);
+      const leaseUntil = this.applyLease(frame);
+      this.options.log?.info(
+        {
+          leaseUntil: new Date(leaseUntil).toISOString(),
+          features: [...this.features],
+        },
+        'Uplink lease renewed',
+      );
       if (hadSharing && !this.features.has('sharing')) {
         const reason = 'Uplink removed public preview entitlement';
         this.cancelPending(reason);
@@ -498,7 +508,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     throw new Error(`unknown Uplink control frame: ${frameType || 'missing type'}`);
   }
 
-  private applyLease(frame: Record<string, unknown>): void {
+  private applyLease(frame: Record<string, unknown>): number {
     const leaseUntil = this.validateLease(frame);
     this.features = new Set(
       Array.isArray(frame.features)
@@ -509,17 +519,53 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (this.renewalTimer) clearTimeout(this.renewalTimer);
     this.leaseTimer = setTimeout(
       () => {
+        this.options.log?.warn(
+          { leaseUntil: new Date(leaseUntil).toISOString() },
+          'Uplink lease expired',
+        );
         this.clearAuthority('Uplink lease expired');
-        this.socket?.close(4001, 'lease expired');
+        this.closeAndReconnect(4001, 'lease expired');
       },
       Math.max(0, leaseUntil - Date.now()),
     );
     const renewIn = Math.max(1_000, Math.floor((leaseUntil - Date.now()) * 0.6));
     this.renewalTimer = setTimeout(() => {
-      if (this.socket?.readyState === WebSocket.OPEN)
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.options.log?.info(
+          { leaseUntil: new Date(leaseUntil).toISOString() },
+          'requesting Uplink lease renewal',
+        );
         this.socket.send(JSON.stringify({ type: 'renew' }));
+      }
     }, renewIn);
     this.renewalTimer.unref();
+    return leaseUntil;
+  }
+
+  /** Retire a connection without trusting its close event to make progress.
+   * `ws.close()` can remain in CLOSING forever when the peer or intermediary
+   * disappears during the handshake. Detach first so the reconnect timer can
+   * dial a replacement; terminate the old transport if it has not closed on
+   * its own. */
+  private closeAndReconnect(code: number, reason: string): void {
+    const socket = this.socket;
+    if (!socket) {
+      this.scheduleReconnect();
+      return;
+    }
+    this.socket = undefined;
+    socket.close(code, reason);
+    const closeTimer = setTimeout(() => {
+      if (socket.readyState === WebSocket.CLOSED) return;
+      this.options.log?.warn(
+        { code, reason, readyState: socket.readyState },
+        'terminating stalled Uplink close handshake',
+      );
+      socket.terminate();
+    }, CLOSE_TIMEOUT_MS);
+    closeTimer.unref();
+    socket.once('close', () => clearTimeout(closeTimer));
+    this.scheduleReconnect();
   }
 
   private validateLease(frame: Record<string, unknown>): number {

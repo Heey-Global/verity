@@ -3,6 +3,7 @@ import type { VeritySettingsPatch, EventStore } from '@verity/store';
 import WebSocket from 'ws';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CLOSE_TIMEOUT_MS,
   RECONNECT_CAPACITY_MS,
   RECONNECT_MAX_MS,
   UplinkControlClient,
@@ -15,6 +16,10 @@ class FakeSocket extends EventEmitter {
   close = vi.fn((code?: number, reason?: string) => {
     this.readyState = WebSocket.CLOSED;
     this.emit('close', code, Buffer.from(reason ?? ''));
+  });
+  terminate = vi.fn(() => {
+    this.readyState = WebSocket.CLOSED;
+    this.emit('close', 1006, Buffer.alloc(0));
   });
   ping = vi.fn();
   send(value: string, callback?: (error?: Error) => void): void {
@@ -220,6 +225,79 @@ describe('UplinkControlClient', () => {
     expect(client.isAvailable()).toBe(false);
     await pendingAssertion;
     expect(disabled).toHaveBeenCalledWith('Uplink removed public preview entitlement');
+    await client.stop();
+  });
+
+  it('logs renewal requests and the lease returned by renewed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-22T06:00:00.000Z'));
+    const fixture = setup();
+    const { client, socket, log } = fixture;
+    await welcomed(fixture, 10_000);
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: 'renew' });
+    expect(log.info).toHaveBeenCalledWith(
+      { leaseUntil: '2026-09-22T06:00:10.000Z' },
+      'requesting Uplink lease renewal',
+    );
+
+    socket.message({
+      type: 'renewed',
+      features: ['sharing'],
+      leaseUntil: '2026-09-22T06:01:00.000Z',
+    });
+    await flush();
+    expect(log.info).toHaveBeenCalledWith(
+      { leaseUntil: '2026-09-22T06:01:00.000Z', features: ['sharing'] },
+      'Uplink lease renewed',
+    );
+    await client.stop();
+  });
+
+  it('redials and terminates a control socket whose lease-expiry close stalls', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-22T06:00:00.000Z'));
+    const { client, sockets, socketFactory, log } = setupReconnecting();
+    client.start();
+    await flush();
+    const expiredSocket = sockets[0]!;
+    expiredSocket.open();
+    expiredSocket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      leaseUntil: '2026-09-22T06:00:10.000Z',
+    });
+    await flush();
+    // Model the production failure: close enters CLOSING but never emits close.
+    expiredSocket.close.mockImplementation(() => {
+      expiredSocket.readyState = WebSocket.CLOSING;
+    });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(client.isAvailable()).toBe(false);
+    expect(expiredSocket.close).toHaveBeenCalledWith(4001, 'lease expired');
+    expect(log.warn).toHaveBeenCalledWith(
+      { leaseUntil: '2026-09-22T06:00:10.000Z' },
+      'Uplink lease expired',
+    );
+
+    // Reconnection does not wait for either close or forced termination.
+    await vi.advanceTimersByTimeAsync(CLOSE_TIMEOUT_MS - 1);
+    expect(socketFactory).toHaveBeenCalledTimes(2);
+    expect(expiredSocket.terminate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(expiredSocket.terminate).toHaveBeenCalledOnce();
+    expect(log.warn).toHaveBeenCalledWith(
+      { code: 4001, reason: 'lease expired', readyState: WebSocket.CLOSING },
+      'terminating stalled Uplink close handshake',
+    );
+
+    // A delayed close from the retired transport cannot schedule another dial.
+    expiredSocket.emit('close', 4001, Buffer.from('lease expired'));
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
+    expect(socketFactory).toHaveBeenCalledTimes(2);
     await client.stop();
   });
 
