@@ -36,6 +36,7 @@ export function attachMenuRows(
     { icon: 'camera', label: 'Take photo', onPress: handlers.onCapturePhoto },
     { icon: 'image', label: 'Choose photo', onPress: handlers.onPickPhotos },
     { icon: 'file', label: 'Choose file', onPress: handlers.onPickFiles },
+    { divider: true },
     ...(meetingAudioEnabled
       ? [{ icon: 'mic' as IconName, label: 'Meeting audio', onPress: handlers.onPickMeetingAudio }]
       : []),
