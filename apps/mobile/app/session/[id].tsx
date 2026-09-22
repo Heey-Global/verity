@@ -7413,7 +7413,11 @@ function AttachMenu({
       />
       <View style={[styles.menuCard, { width: MENU_WIDTH }, cardPos]}>
         {rows.map((row, index) =>
-          'divider' in row ? (
+          'section' in row ? (
+            <Text key={row.section} style={styles.menuSectionLabel}>
+              {row.section}
+            </Text>
+          ) : 'divider' in row ? (
             <View key={`divider-${String(index)}`} style={styles.menuDivider} />
           ) : (
             <Pressable
@@ -7421,10 +7425,13 @@ function AttachMenu({
               style={({ pressed }) => [styles.menuRow, pressed ? styles.menuRowPressed : null]}
               onPress={row.onPress}
               accessibilityRole="button"
-              accessibilityLabel={row.label}
+              accessibilityLabel={row.detail ? `${row.label}, ${row.detail}` : row.label}
             >
               <Icon name={row.icon} size={20} color={theme.colors.textMuted} />
-              <Text style={styles.menuRowLabel}>{row.label}</Text>
+              <View style={styles.menuRowText}>
+                <Text style={styles.menuRowLabel}>{row.label}</Text>
+                {row.detail ? <Text style={styles.menuRowDetail}>{row.detail}</Text> : null}
+              </View>
             </Pressable>
           ),
         )}
@@ -9359,7 +9366,19 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
   },
   menuRowPressed: { backgroundColor: theme.colors.surfaceAlt },
+  menuRowText: { flex: 1 },
   menuRowLabel: { color: theme.colors.text, fontSize: theme.text.md },
+  menuRowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs, marginTop: 1 },
+  menuSectionLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    paddingTop: theme.spacing.xs,
+    paddingBottom: 2,
+    paddingHorizontal: theme.spacing.md,
+  },
   menuDivider: {
     height: 1,
     backgroundColor: theme.colors.border,
