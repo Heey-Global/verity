@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.33",
+  "version": "1.33.34",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "e90cffc9ddb90d825b291e1131d1a1ac3ce961a1",
-  "tag": "mobile-v1.33.33",
-  "branch": "staging-mobile-v1.33.33-e90cffc9ddb90d825b291e1131d1a1ac3ce961a1",
-  "baseline": "mobile-v1.33.32",
-  "group": "6d9d4fdb-6b6f-4f57-a521-78e1d093d198",
+  "commit": "0bd7071913148e8a98eaf033991cb8cb613b9120",
+  "tag": "mobile-v1.33.34",
+  "branch": "staging-mobile-v1.33.34-0bd7071913148e8a98eaf033991cb8cb613b9120",
+  "baseline": "mobile-v1.33.33",
+  "group": "31997e1a-b810-4b3f-a6cf-cb84eeccb646",
   "notes": [
-    "clarify attachment menu actions (#627)"
+    "compact iPhone landscape chat (#633)",
+    "verify knowledge explorer roots (#629)"
   ]
 }
