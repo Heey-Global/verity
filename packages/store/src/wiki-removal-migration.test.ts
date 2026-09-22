@@ -19,7 +19,10 @@ it('removes legacy Wiki jobs and their maintenance sessions', async () => {
     await sql`insert into sessions(session_id,worktree,model,project_id) values('wiki-session','/tmp/wiki','default','project')`.execute(
       ctx.db,
     );
-    await sql`insert into sessions(session_id,worktree,model,project_id) values('ordinary-session','/tmp/work','default','project')`.execute(
+    await sql`insert into sessions(session_id,worktree,model,project_id,name) values('ordinary-session','/tmp/work','default','project','Check Wiki')`.execute(
+      ctx.db,
+    );
+    await sql`insert into sessions(session_id,worktree,model,project_id,name) values('orphan-wiki-session','/tmp/knowledge-orphan-wiki-session','default','project','Incorporate into Wiki')`.execute(
       ctx.db,
     );
     await sql`insert into knowledge_wiki_jobs(id,project_id,session_id,kind,status,source_revisions) values('job','project','wiki-session','check','failed','[]')`.execute(
@@ -45,6 +48,21 @@ it('removes legacy Wiki jobs and their maintenance sessions', async () => {
     );
     await store.updateVeritySettings({ knowledgeModel: 'codex/default' });
 
+    const firstRemoval = await migrator.migrateTo('0103_remove_wiki_maintenance');
+    if (firstRemoval.error) throw new Error('Migration failed', { cause: firstRemoval.error });
+
+    // A retiring pre-0103 Server can finish one debounce after the first cleanup.
+    // This is the silent upgrade race the follow-up migration must close.
+    await sql`insert into sessions(session_id,worktree,model,project_id) values('late-wiki-session','/tmp/late-wiki','default','project')`.execute(
+      ctx.db,
+    );
+    await sql`insert into knowledge_wiki_jobs(id,project_id,session_id,kind,status,source_revisions) values('late-job','project','late-wiki-session','check','failed','[]')`.execute(
+      ctx.db,
+    );
+    await sql`insert into sessions(session_id,worktree,model,project_id,name) values('late-orphan-wiki-session','/tmp/knowledge-late-orphan-wiki-session','default','project','Incorporate into Wiki')`.execute(
+      ctx.db,
+    );
+
     const result = await migrator.migrateToLatest();
     if (result.error) throw new Error('Migration failed', { cause: result.error });
 
@@ -55,10 +73,25 @@ it('removes legacy Wiki jobs and their maintenance sessions', async () => {
       rows: [],
     });
     expect(
+      await sql`select session_id from sessions where session_id = 'late-wiki-session'`.execute(
+        ctx.db,
+      ),
+    ).toMatchObject({ rows: [] });
+    expect(
+      await sql`select session_id from sessions where session_id = 'late-orphan-wiki-session'`.execute(
+        ctx.db,
+      ),
+    ).toMatchObject({ rows: [] });
+    expect(
       await sql`select session_id from sessions where session_id = 'ordinary-session'`.execute(
         ctx.db,
       ),
     ).toMatchObject({ rows: [{ session_id: 'ordinary-session' }] });
+    expect(
+      await sql`select session_id from sessions where session_id = 'orphan-wiki-session'`.execute(
+        ctx.db,
+      ),
+    ).toMatchObject({ rows: [] });
     expect(
       await sql`select project_id from knowledge_maintenance_queue`.execute(ctx.db),
     ).toMatchObject({ rows: [] });
@@ -74,6 +107,14 @@ it('removes legacy Wiki jobs and their maintenance sessions', async () => {
     expect(await store.knowledge.getDocument(wikiDocument.id)).toMatchObject({
       bodyMarkdown: 'Preserved document',
     });
+    await sql`insert into sessions(session_id,worktree,model,project_id) values('rejected-wiki-session','/tmp/rejected-wiki','default','project')`.execute(
+      ctx.db,
+    );
+    await expect(
+      sql`insert into knowledge_wiki_jobs(id,project_id,session_id,kind,status,source_revisions) values('rejected-job','project','rejected-wiki-session','check','pending','[]')`.execute(
+        ctx.db,
+      ),
+    ).rejects.toThrow();
   } finally {
     await ctx.close();
   }

@@ -2841,9 +2841,12 @@ const migrations: Record<string, Migration> = {
     async up(db: Kysely<unknown>): Promise<void> {
       // Wiki maintenance sessions were implementation-only jobs. Remove them from
       // the user-visible session history together with every pending job trigger.
-      await sql`delete from sessions where session_id in (select session_id from knowledge_wiki_jobs)`.execute(
-        db,
-      );
+      await sql`delete from sessions where
+        session_id in (select session_id from knowledge_wiki_jobs)
+        or (
+          name in ('Incorporate into Wiki','Check Wiki','Reconcile Wiki')
+          and worktree like '%/knowledge-' || session_id
+        )`.execute(db);
       await sql`delete from knowledge_wiki_jobs`.execute(db);
       await sql`delete from knowledge_maintenance_queue`.execute(db);
       await sql`delete from knowledge_provenance`.execute(db);
@@ -2852,6 +2855,35 @@ const migrations: Record<string, Migration> = {
     },
     async down(): Promise<void> {
       // Removed maintenance jobs and sessions cannot be reconstructed.
+    },
+  },
+  '0104_retire_wiki_job_writes': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // During a rolling self-update the retiring Server can finish a maintenance
+      // debounce after 0103 committed. Sweep those late rows and make the retired
+      // job table reject every future insert; the old runner then follows its
+      // existing failure cleanup and removes the session it prepared first.
+      // Take the insert-conflicting lock before the sweep and hold it until the
+      // migration commits. Otherwise an old Server can commit a row between the
+      // delete and constraint validation and make the upgrade fail.
+      await sql`lock table knowledge_wiki_jobs in share row exclusive mode`.execute(db);
+      await sql`delete from sessions where
+        session_id in (select session_id from knowledge_wiki_jobs)
+        or (
+          name in ('Incorporate into Wiki','Check Wiki','Reconcile Wiki')
+          and worktree like '%/knowledge-' || session_id
+        )`.execute(db);
+      await sql`delete from knowledge_wiki_jobs`.execute(db);
+      await sql`delete from knowledge_maintenance_queue`.execute(db);
+      await sql`delete from knowledge_provenance`.execute(db);
+      await sql`update project_knowledge_spaces set reconcile_due_at = null`.execute(db);
+      await sql`update verity_settings set knowledge_model = null`.execute(db);
+      await sql`alter table knowledge_wiki_jobs
+        add constraint knowledge_wiki_jobs_retired check (false)`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table knowledge_wiki_jobs
+        drop constraint knowledge_wiki_jobs_retired`.execute(db);
     },
   },
 };
