@@ -72,7 +72,7 @@ describe('knowledge session closure', () => {
 
 describe('knowledge discovery context', () => {
   it.each(RUNNER_SUPERVISOR_BACKENDS)(
-    'announces newly granted knowledge on resumed %s turns',
+    'announces filesystem knowledge on fresh and resumed %s turns',
     async (runnerSupervisorBackend) => {
       const seen: string[] = [];
       const backend: Backend = {
@@ -90,12 +90,12 @@ describe('knowledge discovery context', () => {
       });
       await conductor.sendTurn('s', 'Hello');
       expect(seen[0]).toContain('## Project knowledge');
-      const folder = await ctx.store.knowledge.createFolder({ name: 'Personal' });
-      await ctx.store.knowledge.setGrants('p', [{ folderId: folder.id, mode: 'read' }]);
+      expect(seen[0]).toContain('mounted read-only at `/knowledge`');
+      expect(seen[0]).not.toContain('verity_knowledge');
       await conductor.sendTurn('s', 'What are my values?');
       expect(seen[1]).toContain('## Project knowledge');
-      expect(seen[1]).toContain('use verity_knowledge to list');
-      expect(seen[1]).toContain('unavailable verity-memory');
+      expect(seen[1]).toContain('`/knowledge/.text`');
+      expect(seen[1]).toContain('`verity-memory append`');
     },
   );
 });

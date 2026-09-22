@@ -2107,10 +2107,11 @@ describe('VerityClient session files', () => {
     expect(calls[0]?.url).toBe('http://host/sessions/s1/files');
   });
 
-  it('addresses knowledge roots for browse, delete, and move', async () => {
+  it('addresses explorer roots for browse, delete, and move', async () => {
     const responses = [
       json({ root: 'knowledge', path: 'imports', entries: [], truncated: false }),
       json({ deleted: true, path: 'imports/offer.pdf' }),
+      json({ deleted: true, path: 'notes.txt' }),
       json({ root: 'shared', path: 'offer.pdf' }),
     ];
     const calls: { url: string; init?: RequestInit }[] = [];
@@ -2126,6 +2127,7 @@ describe('VerityClient session files', () => {
 
     await client.listSessionFiles('s1', 'imports', 'knowledge');
     await client.deleteSessionFile('s1', 'knowledge', 'imports/offer.pdf');
+    await client.deleteSessionFile('s1', 'worktree', 'notes.txt');
     await client.moveSessionFile('s1', {
       root: 'knowledge',
       path: 'imports/offer.pdf',
@@ -2135,10 +2137,12 @@ describe('VerityClient session files', () => {
     expect(calls.map(({ url }) => url)).toEqual([
       'http://host/sessions/s1/files?root=knowledge&path=imports',
       'http://host/sessions/s1/files?root=knowledge&path=imports%2Foffer.pdf',
+      'http://host/sessions/s1/files?root=worktree&path=notes.txt',
       'http://host/sessions/s1/files/move',
     ]);
     expect(calls[1]?.init?.method).toBe('DELETE');
-    expect(calls[2]?.init).toMatchObject({ method: 'POST' });
+    expect(calls[2]?.init?.method).toBe('DELETE');
+    expect(calls[3]?.init).toMatchObject({ method: 'POST' });
   });
 
   it('rejects an older server that returns the worktree for a knowledge root', async () => {

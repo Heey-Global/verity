@@ -207,7 +207,6 @@ import {
   EXTERNAL_PERMISSION_ABORT_MESSAGE,
   RESUME_SYSTEM_PROMPT,
   carriesBrokeredSecretTools,
-  carriesKnowledgeTools,
   turnSystemPrompt,
   withBackendSystemPrompt,
   type ExternalPermissionAnswer,
@@ -1318,7 +1317,7 @@ export class Conductor {
       if (sessionSystemPrompt) runOpts.appendSystemPrompt += `\n\n${sessionSystemPrompt}`;
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
-    runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session, backend);
+    runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
@@ -4554,7 +4553,7 @@ export class Conductor {
           const session = await this.deps.store.getSession(opts.sessionId);
           if (session !== undefined) {
             runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
-            runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session, backend);
+            runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
             contextProjectId = session.projectId;
           }
         }
@@ -5215,15 +5214,10 @@ export class Conductor {
     return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
   }
 
-  private async projectKnowledgePrompt(session: SessionRecord, backend: Backend): Promise<string> {
-    if (
-      session.projectId === null ||
-      !carriesKnowledgeTools(backend) ||
-      !(await this.deps.store.knowledge.hasProjectKnowledge(session.projectId))
-    )
-      return '';
-    // Grants may be added after the backend context was created. Keep discovery current
-    // on resumed turns without re-injecting the project's curated memory.
+  private projectKnowledgePrompt(session: SessionRecord): string {
+    if (session.projectId === null) return '';
+    // Keep the mount instructions present on resumed turns without re-injecting
+    // the project's curated overview.
     return `\n\n## Project knowledge\n${KNOWLEDGE_CONTEXT_INSTRUCTIONS}`;
   }
 

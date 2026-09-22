@@ -3476,7 +3476,7 @@ export class VerityClient {
     return sessionFileUploadedSchema.parse(await res.json());
   }
 
-  async deleteSessionFile(id: string, root: Exclude<SessionFileRoot, 'worktree'>, path: string) {
+  async deleteSessionFile(id: string, root: SessionFileRoot, path: string) {
     await this.request(
       `/sessions/${encodeURIComponent(id)}/files?root=${root}&path=${encodeURIComponent(path)}`,
       { method: 'DELETE' },
