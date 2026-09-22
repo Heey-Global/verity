@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.34",
+  "version": "1.33.35",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "0bd7071913148e8a98eaf033991cb8cb613b9120",
-  "tag": "mobile-v1.33.34",
-  "branch": "staging-mobile-v1.33.34-0bd7071913148e8a98eaf033991cb8cb613b9120",
-  "baseline": "mobile-v1.33.33",
-  "group": "31997e1a-b810-4b3f-a6cf-cb84eeccb646",
+  "commit": "5dc6a16bc90c68a523994318582247d52087c6c9",
+  "tag": "mobile-v1.33.35",
+  "branch": "staging-mobile-v1.33.35-5dc6a16bc90c68a523994318582247d52087c6c9",
+  "baseline": "mobile-v1.33.34",
+  "group": "58375ec1-b606-44a7-bf4b-b116c8794929",
   "notes": [
-    "compact iPhone landscape chat (#633)",
-    "verify knowledge explorer roots (#629)"
+    "unify project status labels and pulse the magenta dot (#634)"
   ]
 }
