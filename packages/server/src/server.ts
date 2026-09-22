@@ -7359,6 +7359,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
         });
         return {
+          root: root.root,
           path: target.rel,
           entries,
           truncated: visible.length > MAX_SESSION_DIRECTORY_ENTRIES,

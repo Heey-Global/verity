@@ -2043,6 +2043,7 @@ describe('session worktree files', () => {
     const root = await app.inject({ method: 'GET', url: '/sessions/s1/files' });
     expect(root.statusCode).toBe(200);
     expect(root.json()).toMatchObject({
+      root: 'worktree',
       path: '',
       truncated: false,
       entries: [
