@@ -66,6 +66,7 @@ import {
   devcontainerProvisionerOptionsForDockerBaseUrl,
   resolveInstallationListToken,
   resolveRepoWorktreeFetchAuthHeader,
+  resolveKnowledgeDataRoot,
   materializeControlPlaneAgentEnv,
   createProjectTurnPreparationSerializer,
   startClaudeCredentialSync,
@@ -2110,6 +2111,23 @@ const testProjectRelayConfig = {
   agentGatewayControlSocket: '/tmp/verity-test-agent-gateway.sock',
   agentGatewayUnsealKey: 'test-unseal-key',
 } as const;
+
+describe('resolveKnowledgeDataRoot', () => {
+  it('keeps Knowledge available for embedded servers without a Docker data volume', () => {
+    expect(resolveKnowledgeDataRoot({ dataDir: '/var/lib/verity' })).toBe('/var/lib/verity');
+    expect(resolveKnowledgeDataRoot({ workspacesDir: '/srv/verity/sessions' })).toBe('/srv/verity');
+  });
+
+  it('uses the mounted data volume when the project runtime supplies one', () => {
+    expect(
+      resolveKnowledgeDataRoot({
+        dataVolumeRoot: '/volume',
+        dataDir: '/database',
+        workspacesDir: '/workspaces/sessions',
+      }),
+    ).toBe('/volume');
+  });
+});
 
 describe('buildEmbeddedServer', () => {
   it('validates Secret Job activation atomically and requires direct unix attach', async () => {

@@ -48,7 +48,7 @@ import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
@@ -886,6 +886,19 @@ export interface EmbeddedServer {
   /** Stop the server and close the database. Idempotent — repeat/concurrent
    * calls coalesce onto the first teardown (a double SIGINT/SIGTERM is safe). */
   close: (options?: { preserveProjectRelays?: boolean }) => Promise<void>;
+}
+
+/** Resolve the durable root used by the filesystem-backed Knowledge explorer.
+ * A named Docker data volume is the production preference, while embedded
+ * deployments can keep the same state beside their database or workspaces. */
+export function resolveKnowledgeDataRoot(
+  config: Pick<EmbeddedServerConfig, 'dataVolumeRoot' | 'dataDir' | 'workspacesDir'>,
+): string | undefined {
+  return (
+    config.dataVolumeRoot ??
+    config.dataDir ??
+    (config.workspacesDir === undefined ? undefined : dirname(config.workspacesDir))
+  );
 }
 
 /**
@@ -1768,6 +1781,11 @@ export function createProjectTurnPreparationSerializer(deps: {
 export async function buildEmbeddedServer(
   config: EmbeddedServerConfig = {},
 ): Promise<EmbeddedServer> {
+  // Knowledge is ordinary durable server state, not a Docker-only facility. Some
+  // embedders configure the persistent workspace/data directory without enabling
+  // the named-volume project runtime; tying the explorer exclusively to
+  // `dataVolumeRoot` made every project session in those deployments return 404.
+  const knowledgeDataRoot = resolveKnowledgeDataRoot(config);
   const untypedConfig = config as EmbeddedServerConfig & Record<string, unknown>;
   for (const removed of [
     'signingBrokerUrl',
@@ -3826,7 +3844,7 @@ export async function buildEmbeddedServer(
     eventStore,
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
-    ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
+    ...(knowledgeDataRoot !== undefined ? { dataRoot: knowledgeDataRoot } : {}),
     ...(config.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: config.unlockClientIdentity }
       : {}),
@@ -4157,10 +4175,10 @@ export async function buildEmbeddedServer(
       permissionControl: true,
       // Capture each session's verbatim .jsonl so it survives + is resumable.
       transcript: transcriptStore,
-      ...(config.dataVolumeRoot !== undefined
+      ...(knowledgeDataRoot !== undefined
         ? {
             projectOverview: async (projectId: string) => {
-              return readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
+              return readOrMigrateProjectOverview(knowledgeDataRoot, projectId, async () => {
                 const approved = await eventStore.knowledge.getProjectOverview(projectId);
                 if (approved !== null) return approved.bodyMarkdown;
                 return (await eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
