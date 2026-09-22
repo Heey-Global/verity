@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.9](https://github.com/Heey-Global/verity/compare/v1.4.8...v1.4.9) (2026-09-22)
+
+
+### Bug Fixes
+
+* **store:** clear session log rows in the legacy Wiki cleanup ([#644](https://github.com/Heey-Global/verity/issues/644)) ([c4942ce](https://github.com/Heey-Global/verity/commit/c4942ceb972cf2c6d9bdede480ad0ee7f06346f5)), closes [#643](https://github.com/Heey-Global/verity/issues/643)
+
 ## [1.4.8](https://github.com/Heey-Global/verity/compare/v1.4.7...v1.4.8) (2026-09-22)
 
 
