@@ -507,7 +507,10 @@ export function SessionChat({
   retrySecret?: string;
 }) {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const { theme } = useUnistyles();
+  const compactLandscape =
+    Platform.OS === 'ios' && !Platform.isPad && windowWidth > windowHeight && !embedded;
   const {
     session,
     streamError,
@@ -3135,8 +3138,24 @@ export function SessionChat({
   // owns the route header): no back button (no pane-local back nav) and `theme.spacing.sm`
   // top padding instead of the safe-area inset (the pane sits below the app header).
   const headerBar = (
-    <View style={[styles.header, { paddingTop: embedded ? theme.spacing.xs : insets.top }]}>
-      <View style={[styles.headerRow, embedded && styles.headerRowEmbedded]}>
+    <View
+      style={[
+        styles.header,
+        compactLandscape && styles.headerCompact,
+        {
+          paddingTop: embedded ? theme.spacing.xs : insets.top,
+          paddingLeft: embedded ? 0 : insets.left,
+          paddingRight: embedded ? 0 : insets.right,
+        },
+      ]}
+    >
+      <View
+        style={[
+          styles.headerRow,
+          embedded && styles.headerRowEmbedded,
+          compactLandscape && styles.headerRowCompact,
+        ]}
+      >
         {embedded ? (
           <View style={styles.headerSide} />
         ) : (
@@ -3164,10 +3183,10 @@ export function SessionChat({
           jump-list (#bookmarks), plus the Issue chip when present. Moved down off the
           title row so the title reads full-width; the engine switcher lives on the
           input bar's action row. */}
-      <View style={styles.headerMetaRow}>
+      <View style={[styles.headerMetaRow, compactLandscape && styles.headerMetaRowCompact]}>
         {/* Left slot: the Issue chip when present, left-aligned so it never nudges the
             centered branch switcher. */}
-        <View style={styles.headerMetaSide}>
+        <View style={[styles.headerMetaSide, compactLandscape && styles.headerMetaSideCompact]}>
           {issueNumber !== null ? (
             <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
           ) : null}
@@ -3192,7 +3211,14 @@ export function SessionChat({
         </Pressable>
         {/* Right slot: the bookmarks jump-list (#bookmarks), pinned to the right edge
             when any exist — it appears without shifting the centered branch. */}
-        <View style={[styles.headerMetaSide, styles.headerMetaSideRight]}>
+        <View
+          style={[
+            styles.headerMetaSide,
+            styles.headerMetaSideRight,
+            compactLandscape && styles.headerMetaSideCompact,
+            compactLandscape && styles.headerMetaSideRightCompact,
+          ]}
+        >
           {kind === 'agent_loop' ? (
             <Pressable
               onPress={() => setLoopCockpitOpen(true)}
@@ -3511,7 +3537,11 @@ export function SessionChat({
                     drawDistance={500}
                     // Visual inversion: newest-first data flipped back the right way up.
                     // Each row is counter-flipped in renderItem (styles.invertedItem).
-                    style={styles.invertedList}
+                    style={{
+                      ...styles.invertedList,
+                      marginLeft: embedded ? 0 : insets.left,
+                      marginRight: embedded ? 0 : insets.right,
+                    }}
                     contentContainerStyle={styles.listContent}
                     onScroll={onListScroll}
                     onTouchEnd={clearSearchHighlightAfterTouch}
@@ -3702,6 +3732,10 @@ export function SessionChat({
           setEnginePickerOpen(true);
         }}
         bottomInset={keyboardHeight === null ? insets.bottom : 0}
+        horizontalInsets={
+          embedded ? { left: 0, right: 0 } : { left: insets.left, right: insets.right }
+        }
+        compact={compactLandscape}
         keyboardHeight={keyboardHeight}
         onHeightChange={setInputBarHeight}
         attachments={attachments}
@@ -7125,6 +7159,8 @@ function InputBar({
   engineBusy,
   onEnginePress,
   bottomInset,
+  horizontalInsets,
+  compact,
   keyboardHeight,
   onHeightChange,
   attachments,
@@ -7163,6 +7199,8 @@ function InputBar({
   /** Open the engine/model picker sheet. */
   onEnginePress: () => void;
   bottomInset: number;
+  horizontalInsets: { left: number; right: number };
+  compact: boolean;
   /** Height of the on-screen keyboard right now, `null` when none is up. Decides what
    * Return does: a full software keyboard inserts a newline, the shortcut bar or no
    * keyboard at all sends (see `shouldSubmitOnReturn`). */
@@ -7223,7 +7261,14 @@ function InputBar({
   // width is clean and lines wrap correctly.
   return (
     <DropZone
-      style={[styles.inputBarWrap, { paddingBottom: bottomInset + 4 }]}
+      style={[
+        styles.inputBarWrap,
+        {
+          paddingBottom: bottomInset + (compact ? 2 : 4),
+          paddingLeft: horizontalInsets.left,
+          paddingRight: horizontalInsets.right,
+        },
+      ]}
       onLayout={(e) => onHeightChange(e.nativeEvent.layout.height)}
       enabled={!dead && attachments.length < MAX_ATTACHMENTS_PER_TURN}
       maxFiles={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
@@ -7262,11 +7307,17 @@ function InputBar({
           on top, and the action buttons sit in a row UNDERNEATH it — so the field is
           never squeezed between inline buttons. Padding lives on this card (not the
           TextInput) so the input's content-size measurement isn't skewed (RN#35234). */}
-      <View style={[styles.inputCard, dropActive ? styles.inputCardDropActive : null]}>
+      <View
+        style={[
+          styles.inputCard,
+          compact && styles.inputCardCompact,
+          dropActive ? styles.inputCardDropActive : null,
+        ]}
+      >
         <TextInput
           key={sendNonce}
           ref={inputRef}
-          style={styles.input}
+          style={[styles.input, compact && styles.inputCompact]}
           value={value}
           onChangeText={onComposerChangeText}
           onKeyPress={onComposerKeyPress}
@@ -7285,7 +7336,7 @@ function InputBar({
           keyboardAppearance="dark"
           accessibilityLabel="Message input"
         />
-        <View style={styles.actionRow}>
+        <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
           {/* Left: attach + the engine/model chip (moved here from the header, like
               the Claude app — it sits with the composer instead of the nav bar). */}
           <View style={styles.actionRowLeft}>
@@ -7808,6 +7859,13 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.border,
   },
+  // An iPhone has very little vertical room in landscape. Put the title and context
+  // controls on one line; the inline safe-area padding keeps both clear of the camera
+  // cutout regardless of which way the phone is rotated.
+  headerCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   headerRow: {
     height: 44,
     flexDirection: 'row',
@@ -7820,6 +7878,12 @@ const styles = StyleSheet.create((theme) => ({
   // the two bars up on the same baseline. The phone header keeps the full 44px.
   headerRowEmbedded: {
     height: 38,
+  },
+  headerRowCompact: {
+    flex: 1,
+    minWidth: 0,
+    height: 44,
+    paddingRight: 0,
   },
   headerBack: {
     paddingRight: theme.spacing.xs,
@@ -7926,6 +7990,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.sm,
     paddingBottom: theme.spacing.xs,
   },
+  headerMetaRowCompact: {
+    flexShrink: 0,
+    height: 44,
+    paddingLeft: 0,
+    paddingBottom: 0,
+  },
   // Equal-flex side slots flanking the centered branch switcher: the left holds the
   // Issue chip (left-aligned), the right holds the bookmarks opener (right-aligned, see
   // headerMetaSideRight). Equal flex keeps the branch centered regardless of what — if
@@ -7935,6 +8005,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  headerMetaSideCompact: {
+    flex: 0,
+  },
   headerMetaSideRight: {
     justifyContent: 'flex-end',
     gap: theme.spacing.md,
@@ -7942,6 +8015,11 @@ const styles = StyleSheet.create((theme) => ({
     // on the slot (not a margin on the button) keeps both side slots equal-flex, so the
     // centered branch switcher stays put.
     paddingRight: theme.spacing.sm,
+  },
+  headerMetaSideRightCompact: {
+    paddingRight: 0,
+    paddingLeft: theme.spacing.sm,
+    gap: theme.spacing.sm,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
   // in a row, so the whole affordance reads as one button on the meta row.
@@ -9252,6 +9330,16 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
+  // The landscape composer uses the phone's width to recover vertical transcript
+  // space: text and controls share one row instead of stacking into two tiers.
+  inputCardCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    paddingTop: 3,
+    paddingBottom: 3,
+    gap: theme.spacing.sm,
+  },
   inputCardDropActive: {
     borderColor: theme.colors.primary,
     backgroundColor: `${theme.colors.primary}14`,
@@ -9262,6 +9350,11 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  actionRowCompact: {
+    flexShrink: 0,
+    justifyContent: 'flex-start',
+    gap: theme.spacing.sm,
   },
   actionRowLeft: {
     flexDirection: 'row',
@@ -9444,6 +9537,11 @@ const styles = StyleSheet.create((theme) => ({
     padding: 0,
     paddingTop: 2,
     textAlignVertical: 'top',
+  },
+  inputCompact: {
+    flex: 1,
+    minWidth: 80,
+    maxHeight: 21 * 3,
   },
   // Action-slot + attach buttons share one clear circular footprint; the visible
   // button matches its tap target so edge taps are less surprising.
