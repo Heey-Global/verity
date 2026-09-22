@@ -73,6 +73,24 @@ function oneShotBackend(reply: string, prompts: string[] = []): Backend {
 }
 
 describe('buildControlPlane', () => {
+  it('reports public previews when the forwarded Uplink manager is available', async () => {
+    const previewShareManager = {
+      isAvailable: vi.fn(() => true),
+    } as unknown as NonNullable<Parameters<typeof buildControlPlane>[0]['previewShareManager']>;
+    const app = buildControlPlane({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      previewShareManager,
+    });
+    try {
+      const response = await app.inject({ method: 'GET', url: '/healthz' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().publicPreviewsEnabled).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('preserves TLS through the control-plane composition boundary', async () => {
     const ca = await createProjectEgressCa({ validityDays: 1 });
     const certificate = await issueGatewayServerCertificate(ca, {

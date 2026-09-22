@@ -85,9 +85,21 @@ describe('buildControlPlane dependency forwarding', () => {
     expect(got.refreshProjectToken).toBe(refreshProjectToken);
   });
 
+  it('passes the Uplink lifecycle dependencies through', () => {
+    const previewShareManager = {
+      isAvailable: vi.fn(() => true),
+    } as unknown as NonNullable<ServerDeps['previewShareManager']>;
+    const onUplinkCredentialsChanged = vi.fn();
+    const got = forward({ previewShareManager, onUplinkCredentialsChanged });
+    expect(got.previewShareManager).toBe(previewShareManager);
+    expect(got.onUplinkCredentialsChanged).toBe(onUplinkCredentialsChanged);
+  });
+
   it('omits an absent dep instead of forwarding an explicit undefined', () => {
     const got = forward({});
     expect('sandboxGit' in got).toBe(false);
     expect('reconcileProjectState' in got).toBe(false);
+    expect('previewShareManager' in got).toBe(false);
+    expect('onUplinkCredentialsChanged' in got).toBe(false);
   });
 });
