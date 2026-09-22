@@ -2863,6 +2863,10 @@ const migrations: Record<string, Migration> = {
       // debounce after 0103 committed. Sweep those late rows and make the retired
       // job table reject every future insert; the old runner then follows its
       // existing failure cleanup and removes the session it prepared first.
+      // Take the insert-conflicting lock before the sweep and hold it until the
+      // migration commits. Otherwise an old Server can commit a row between the
+      // delete and constraint validation and make the upgrade fail.
+      await sql`lock table knowledge_wiki_jobs in share row exclusive mode`.execute(db);
       await sql`delete from sessions where
         session_id in (select session_id from knowledge_wiki_jobs)
         or (
