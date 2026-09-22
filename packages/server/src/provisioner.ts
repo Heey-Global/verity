@@ -5056,7 +5056,7 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
     }
-    // Both knowledge mount sources have to exist before the container is created:
+    // Every knowledge mount source has to exist before the container is created:
     // a bind onto a missing directory fails the create, and a named-volume subpath
     // is not conjured up either. Idempotent, so this runs on every provision.
     let knowledgeBinds: string[] = [];

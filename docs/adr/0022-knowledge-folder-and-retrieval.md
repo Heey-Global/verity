@@ -32,15 +32,17 @@ and one separate folder contains explicitly shared material.
 ├── shared/
 └── <projectId>/
     ├── overview.md
-    ├── meetings/
-    ├── imports/
-    ├── notes/
+    ├── sources/
+    │   ├── documents/
+    │   └── meetings/
+    ├── insights/
     ├── shared/
     └── .text/
 ```
 
-The project folder is mounted read-only at `/knowledge` in that project's sandboxes. The
-shared folder is mounted at `/knowledge/shared`. A sandbox cannot write either mount.
+The project folder is mounted read-only at `/knowledge` in that project's sandboxes, with
+one nested read-write mount at `/knowledge/insights`. The shared folder is mounted read-only
+at `/knowledge/shared` and mirrors the `sources/` and `insights/` organization.
 
 The existing database-backed library remains available internally only as a migration source
 for stored content. New content described by this ADR is written to the filesystem. Its Wiki
@@ -67,10 +69,10 @@ Content is placed according to its source:
 
 | Source | Destination |
 | --- | --- |
-| Saved chat text | `notes/` |
-| Saved chat attachment | `imports/` |
-| Google Drive import | `imports/` |
-| Meeting audio and transcript | `meetings/` |
+| Saved chat text | `insights/` |
+| Saved chat attachment | `sources/documents/` |
+| Google Drive or web source | `sources/documents/` |
+| Meeting audio and transcript | `sources/meetings/` |
 | Explorer upload | selected private or shared directory |
 
 Saving chat attachments remains opt-in. Meeting recordings are retained automatically.
@@ -89,7 +91,7 @@ unchanged content is not processed again. Original and derived-file mutations ar
 serialized per path.
 
 This first stage does not add a retrieval index. Agents use normal filesystem tools over
-the read-only mount. Full-text or embedding-based retrieval can be added later as a derived
+the protected extraction area. Full-text or embedding-based retrieval can be added later as a derived
 index without changing the storage layout.
 
 ### Project overview
@@ -113,8 +115,8 @@ performed incrementally:
 
 | Existing artifact | Filesystem destination |
 | --- | --- |
-| Project Sources and originals | `<projectId>/imports/` |
-| Project Wiki pages | `<projectId>/notes/wiki/` |
+| Project Sources and originals | `<projectId>/sources/documents/` |
+| Project Wiki pages | `<projectId>/insights/wiki/` |
 | Approved overview or legacy memory | `<projectId>/overview.md` |
 | General/shared documents | `shared/` |
 
@@ -127,7 +129,8 @@ route: upgrades remove its queued jobs and implementation-only sessions.
 - Project identifiers are validated before they become path components.
 - Private project folders are mounted only into sandboxes for that project.
 - Moving a file to or from `shared` is an explicit scope change.
-- Mounts are read-only; controlled server routes perform mutations.
+- Sources, extracted text, overview, and Shared are read-only in sandboxes; only project
+  `insights/` is writable, and publishing to Shared uses the project-bound tool.
 - Explorer operations reject traversal, managed paths, symlink escapes, and overwrites.
 - `overview.md` uses the existing project-memory character limit and is validated on read,
   upload, move, and broker append.
@@ -149,7 +152,7 @@ state and must not become the source of truth.
 
 ## Implementation sequence
 
-1. Create project and shared folder layouts and read-only sandbox mounts.
+1. Create project and shared folder layouts with a writable project `insights/` mount.
 2. Add root-aware explorer operations and derived-text extraction.
 3. Redirect chat saves, Drive imports, and meeting recordings to the folders.
 4. Materialize and inject `overview.md`; keep legacy fallback until migration is marked.

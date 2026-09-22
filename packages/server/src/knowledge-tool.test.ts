@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 
 describe('knowledge tool boundary', () => {
+  it('accepts a bounded Shared insight publication', () => {
+    expect(
+      knowledgeToolRequestSchema.parse({
+        operation: 'publish_shared',
+        path: 'coaching/profile.md',
+        sharedPath: 'coaching/profile.md',
+        expectedDigest: 'a'.repeat(64),
+      }),
+    ).toMatchObject({ operation: 'publish_shared', path: 'coaching/profile.md' });
+  });
   it('requires a revision for edits and refuses caller-supplied authority', () => {
     const edit = { operation: 'edit', documentId: 'doc', title: 'Notes', bodyMarkdown: 'text' };
     expect(knowledgeToolRequestSchema.safeParse(edit).success).toBe(false);

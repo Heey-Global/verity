@@ -10,7 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   EXTRACTED_TEXT_DIR,
-  PROJECT_KNOWLEDGE_SUBDIRS,
+  PROJECT_KNOWLEDGE_TOP_LEVEL_DIRS,
   projectKnowledgeDir,
   SHARED_KNOWLEDGE_DIR,
   sharedKnowledgeDir,
@@ -94,7 +94,7 @@ describe('session explorer knowledge roots', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ root: 'knowledge', path: '' });
     const names = res.json<{ entries: { name: string }[] }>().entries.map(({ name }) => name);
-    expect(names).toEqual([...PROJECT_KNOWLEDGE_SUBDIRS].sort());
+    expect(names).toEqual([...PROJECT_KNOWLEDGE_TOP_LEVEL_DIRS].sort());
     // Both exist on disk and are deliberately absent from the listing: `.text/`
     // mirrors every file, and `shared/` is an empty mount point whose real
     // contents are reachable under the Shared root. Showing either would put the
@@ -110,10 +110,10 @@ describe('session explorer knowledge roots', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ root: 'shared', path: '' });
 
-    writeFileSync(join(sharedKnowledgeDir(dataRoot), 'Preisliste.md'), '# Preise\n');
+    writeFileSync(join(sharedKnowledgeDir(dataRoot), 'insights/Preisliste.md'), '# Preise\n');
     const listed = await app.inject({
       method: 'GET',
-      url: '/sessions/s-knowledge/files?root=shared',
+      url: '/sessions/s-knowledge/files?root=shared&path=insights',
     });
     expect(listed.json<{ entries: { name: string }[] }>().entries).toMatchObject([
       { name: 'Preisliste.md', kind: 'file' },
@@ -134,28 +134,31 @@ describe('session explorer knowledge roots', () => {
 
   it('uploads into a knowledge folder', async () => {
     const res = await upload(
-      '/sessions/s-knowledge/files?root=knowledge&path=imports&fileName=Angebot.txt',
+      '/sessions/s-knowledge/files?root=knowledge&path=sources/documents&fileName=Angebot.txt',
       'Angebot',
     );
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ path: 'imports/Angebot.txt' });
+    expect(res.json()).toMatchObject({ path: 'sources/documents/Angebot.txt' });
     expect(
-      readFileSync(join(projectKnowledgeDir(dataRoot, 'p-1'), 'imports/Angebot.txt'), 'utf8'),
+      readFileSync(
+        join(projectKnowledgeDir(dataRoot, 'p-1'), 'sources/documents/Angebot.txt'),
+        'utf8',
+      ),
     ).toBe('Angebot');
     // The worktree is untouched: the two roots are separate directories, not two
     // views of one.
-    expect(existsSync(join(worktree, 'imports/Angebot.txt'))).toBe(false);
+    expect(existsSync(join(worktree, 'sources/documents/Angebot.txt'))).toBe(false);
   });
 
   it('deletes a knowledge file', async () => {
-    const file = join(projectKnowledgeDir(dataRoot, 'p-1'), 'notes/gedanke.md');
+    const file = join(projectKnowledgeDir(dataRoot, 'p-1'), 'insights/gedanke.md');
     await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
     writeFileSync(file, 'note\n');
 
     const res = await app.inject({
       method: 'DELETE',
-      url: '/sessions/s-knowledge/files?root=knowledge&path=notes/gedanke.md',
+      url: '/sessions/s-knowledge/files?root=knowledge&path=insights/gedanke.md',
     });
 
     expect(res.statusCode).toBe(200);
@@ -207,30 +210,39 @@ describe('session explorer knowledge roots', () => {
     // readable by every project, what is in the project folder is not.
     await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
-    writeFileSync(join(dir, 'imports/Preisliste.md'), '# Preise\n');
-    mkdirSync(join(dir, EXTRACTED_TEXT_DIR, 'imports'), { recursive: true });
+    writeFileSync(join(dir, 'sources/documents/Preisliste.md'), '# Preise\n');
+    mkdirSync(join(dir, EXTRACTED_TEXT_DIR, 'sources/documents'), { recursive: true });
     writeFileSync(
-      join(dir, EXTRACTED_TEXT_DIR, 'imports/Preisliste.md.md'),
-      '# Preisliste.md\n\nSource: imports/Preisliste.md\n\ntrusted transcript\n',
+      join(dir, EXTRACTED_TEXT_DIR, 'sources/documents/Preisliste.md.md'),
+      '# Preisliste.md\n\nSource: sources/documents/Preisliste.md\n\ntrusted transcript\n',
     );
 
     const res = await app.inject({
       method: 'POST',
       url: '/sessions/s-knowledge/files/move',
-      payload: { root: 'knowledge', path: 'imports/Preisliste.md', toRoot: 'shared', toPath: '' },
+      payload: {
+        root: 'knowledge',
+        path: 'sources/documents/Preisliste.md',
+        toRoot: 'shared',
+        toPath: 'sources/documents',
+      },
     });
 
     expect(res.statusCode).toBe(200);
-    expect(existsSync(join(dir, 'imports/Preisliste.md'))).toBe(false);
-    expect(readFileSync(join(sharedKnowledgeDir(dataRoot), 'Preisliste.md'), 'utf8')).toBe(
-      '# Preise\n',
-    );
+    expect(existsSync(join(dir, 'sources/documents/Preisliste.md'))).toBe(false);
+    expect(
+      readFileSync(join(sharedKnowledgeDir(dataRoot), 'sources/documents/Preisliste.md'), 'utf8'),
+    ).toBe('# Preise\n');
     expect(
       readFileSync(
-        join(sharedKnowledgeDir(dataRoot), EXTRACTED_TEXT_DIR, 'Preisliste.md.md'),
+        join(
+          sharedKnowledgeDir(dataRoot),
+          EXTRACTED_TEXT_DIR,
+          'sources/documents/Preisliste.md.md',
+        ),
         'utf8',
       ),
-    ).toBe('# Preisliste.md\n\nSource: Preisliste.md\n\ntrusted transcript\n');
+    ).toBe('# Preisliste.md\n\nSource: sources/documents/Preisliste.md\n\ntrusted transcript\n');
   });
 
   it('never overwrites on a move', async () => {
@@ -239,20 +251,28 @@ describe('session explorer knowledge roots', () => {
     await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=knowledge' });
     await app.inject({ method: 'GET', url: '/sessions/s-knowledge/files?root=shared' });
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
-    writeFileSync(join(dir, 'imports/Preisliste.md'), 'mine\n');
-    writeFileSync(join(sharedKnowledgeDir(dataRoot), 'Preisliste.md'), 'theirs\n');
+    writeFileSync(join(dir, 'sources/documents/Preisliste.md'), 'mine\n');
+    writeFileSync(
+      join(sharedKnowledgeDir(dataRoot), 'sources/documents/Preisliste.md'),
+      'theirs\n',
+    );
 
     const res = await app.inject({
       method: 'POST',
       url: '/sessions/s-knowledge/files/move',
-      payload: { root: 'knowledge', path: 'imports/Preisliste.md', toRoot: 'shared' },
+      payload: {
+        root: 'knowledge',
+        path: 'sources/documents/Preisliste.md',
+        toRoot: 'shared',
+        toPath: 'sources/documents',
+      },
     });
 
     expect(res.statusCode).toBe(409);
-    expect(readFileSync(join(sharedKnowledgeDir(dataRoot), 'Preisliste.md'), 'utf8')).toBe(
-      'theirs\n',
-    );
-    expect(readFileSync(join(dir, 'imports/Preisliste.md'), 'utf8')).toBe('mine\n');
+    expect(
+      readFileSync(join(sharedKnowledgeDir(dataRoot), 'sources/documents/Preisliste.md'), 'utf8'),
+    ).toBe('theirs\n');
+    expect(readFileSync(join(dir, 'sources/documents/Preisliste.md'), 'utf8')).toBe('mine\n');
   });
 
   it('refuses a move that leaves the knowledge folders', async () => {

@@ -22,7 +22,7 @@ import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
 import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
 import { writeReferenceDocFile } from './reference-docs.js';
-import { ensureProjectKnowledge } from './knowledge-folder.js';
+import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from './knowledge-folder.js';
 import { extractKnowledgeFile } from './knowledge-file-ingest.js';
 
 const sessionParams = z.object({
@@ -428,8 +428,8 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     }
     const fileName = referenceDocFileName(file.name, plan.extension, fileId);
     const root = await ensureProjectKnowledge(deps.dataRoot, session.projectId);
-    const importsDir = `${root}/imports`;
-    const path = `imports/${fileName}`;
+    const importsDir = `${root}/${KNOWLEDGE_DOCUMENTS_DIR}`;
+    const path = `${KNOWLEDGE_DOCUMENTS_DIR}/${fileName}`;
     await writeReferenceDocFile(importsDir, fileName, bytes);
     await chmod(`${importsDir}/${fileName}`, 0o644);
     await extractKnowledgeFile(root, path);

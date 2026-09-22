@@ -3,6 +3,8 @@ import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
+import { publishSharedInsight } from './knowledge-publish.js';
+import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import { KnowledgeSessionClosedError } from '@verity/session';
 import { execFile } from 'node:child_process';
 import { constants as fsConstants, createReadStream, createWriteStream } from 'node:fs';
@@ -88,7 +90,11 @@ import {
   sessionFilePath,
   toSessionFileEntry,
 } from './session-files.js';
-import { ensureProjectKnowledge, ensureSharedKnowledge } from './knowledge-folder.js';
+import {
+  ensureProjectKnowledge,
+  ensureSharedKnowledge,
+  KNOWLEDGE_MEETINGS_DIR,
+} from './knowledge-folder.js';
 import {
   extractKnowledgeFile,
   knowledgeExtractionPath,
@@ -1978,7 +1984,7 @@ async function meetingAudioHash(path: string): Promise<string> {
 
 async function ensureMeetingDirectory(dataRoot: string, projectId: string): Promise<string> {
   const projectDir = await ensureProjectKnowledge(dataRoot, projectId);
-  const meetingDir = join(projectDir, 'meetings');
+  const meetingDir = join(projectDir, KNOWLEDGE_MEETINGS_DIR);
   const meetingReal = await realpath(meetingDir);
   await assertSessionRealPath(projectDir, meetingReal);
   return meetingReal;
@@ -5397,6 +5403,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       invokeTool: async (input) => {
         if (input.toolName === 'verity_knowledge') {
           const request = knowledgeToolRequestSchema.parse(input.request);
+          if (request.operation === 'publish_shared') {
+            if (deps.dataRoot === undefined) throw new Error('Knowledge storage is unavailable');
+            return publishSharedInsight(deps.dataRoot, input.projectId, request);
+          }
           const value = await deps.eventStore.knowledge.runAgent(
             {
               projectId: input.projectId,
@@ -6883,7 +6893,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ? await ensureMeetingDirectory(deps.dataRoot!, session.projectId!)
         : await ensureLegacyMeetingDirectory(session.worktree);
       const baseName = `${now.toISOString().slice(0, 10)}-${slug}-${hash}`;
-      const relPath = knowledgeMeeting ? `meetings/${baseName}.md` : `docs/meetings/${baseName}.md`;
+      const relPath = knowledgeMeeting
+        ? `${KNOWLEDGE_MEETINGS_DIR}/${baseName}.md`
+        : `docs/meetings/${baseName}.md`;
       const audioExtension = extname(body.fileName).replace(/[^A-Za-z0-9.]/g, '') || '.audio';
       if (knowledgeMeeting) {
         await writeFile(join(meetingDir, `${baseName}${audioExtension}`), audio, {
@@ -7026,8 +7038,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         });
         if (knowledgeMeeting)
           await writeKnowledgeExtraction(
-            dirname(meetingDir),
-            `meetings/${baseName}${audioExtension}`,
+            dirname(dirname(meetingDir)),
+            `${KNOWLEDGE_MEETINGS_DIR}/${baseName}${audioExtension}`,
             await readFile(join(meetingDir, basename(relPath)), 'utf8'),
           );
         request.raw.off('aborted', abortOnDisconnect);
@@ -7174,7 +7186,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             : await ensureLegacyMeetingDirectory(session.worktree);
           const baseName = `${now.toISOString().slice(0, 10)}-${slug}-${hash}`;
           const relPath = knowledgeMeeting
-            ? `meetings/${baseName}.md`
+            ? `${KNOWLEDGE_MEETINGS_DIR}/${baseName}.md`
             : `docs/meetings/${baseName}.md`;
           if (knowledgeMeeting)
             await copyFile(
@@ -7245,8 +7257,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           });
           if (knowledgeMeeting)
             await writeKnowledgeExtraction(
-              dirname(meetingDir),
-              `meetings/${baseName}${extension}`,
+              dirname(dirname(meetingDir)),
+              `${KNOWLEDGE_MEETINGS_DIR}/${baseName}${extension}`,
               await readFile(join(meetingDir, basename(relPath)), 'utf8'),
             );
           await emitMeetingTranscriptSaved({
@@ -7467,7 +7479,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
-        await link(temporaryPath, destinationPath);
+        const releaseMutation =
+          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        try {
+          await link(temporaryPath, destinationPath);
+        } finally {
+          releaseMutation?.();
+        }
         await unlink(temporaryPath);
         if (root.root === 'knowledge' && target.rel === 'overview.md')
           await markProjectOverviewAuthoritative(root.dir);
@@ -7618,20 +7636,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return knowledgeSlotFailure(reply, error);
       }
       try {
-        const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
-        if (stats === undefined) {
-          reply.code(404);
-          return { error: 'file not found' };
+        const releaseMutation =
+          root.root === 'shared' ? await acquireKnowledgeMutationLock(root.dir) : undefined;
+        try {
+          const stats = await lstat(`${file.directoryPath}/${file.name}`).catch(() => undefined);
+          if (stats === undefined) {
+            reply.code(404);
+            return { error: 'file not found' };
+          }
+          if (!stats.isFile()) {
+            reply.code(400);
+            return { error: 'only files can be deleted' };
+          }
+          await unlink(`${file.directoryPath}/${file.name}`);
+          if (root.root === 'knowledge' && file.rel === 'overview.md')
+            await markProjectOverviewAuthoritative(root.dir);
+          if (root.root !== 'worktree') await removeKnowledgeExtraction(root.dir, file.rel);
+          return { path: file.rel, deleted: true };
+        } finally {
+          releaseMutation?.();
         }
-        if (!stats.isFile()) {
-          reply.code(400);
-          return { error: 'only files can be deleted' };
-        }
-        await unlink(`${file.directoryPath}/${file.name}`);
-        if (root.root === 'knowledge' && file.rel === 'overview.md')
-          await markProjectOverviewAuthoritative(root.dir);
-        if (root.root !== 'worktree') await removeKnowledgeExtraction(root.dir, file.rel);
-        return { path: file.rel, deleted: true };
       } finally {
         await file.close();
       }
@@ -7651,6 +7675,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const sourcePath = `${source.directoryPath}/${source.name}`;
       const destinationPath = `${destination.directoryPath}/${destination.name}`;
+      const sharedRoot =
+        fromRoot.root === 'shared'
+          ? fromRoot.dir
+          : toRoot.root === 'shared'
+            ? toRoot.dir
+            : undefined;
+      const releaseMutation =
+        sharedRoot === undefined ? undefined : await acquireKnowledgeMutationLock(sharedRoot);
       try {
         const stats = await lstat(sourcePath).catch(() => undefined);
         if (stats === undefined) {
@@ -7701,6 +7733,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         throw error;
       } finally {
+        releaseMutation?.();
         await source.close();
         await destination.close();
       }

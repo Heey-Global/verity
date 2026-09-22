@@ -1349,7 +1349,9 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
         title: 'Planning Sync',
         segments: 2,
       });
-      expect(body.path).toMatch(/^meetings\/\d{4}-\d{2}-\d{2}-planning-sync-[a-f0-9]{8}\.md$/);
+      expect(body.path).toMatch(
+        /^sources\/meetings\/\d{4}-\d{2}-\d{2}-planning-sync-[a-f0-9]{8}\.md$/,
+      );
       const knowledgeRoot = join(dataRoot, 'knowledge', 'meeting-project');
       const transcript = readFileSync(join(knowledgeRoot, body.path), 'utf8');
       expect(transcript).toContain('# Planning Sync');
@@ -1358,14 +1360,18 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       expect(transcript).toContain('**Bob** (01:02): Keep the index updated.');
       const fileName = body.path.split('/').at(-1) ?? '';
       expect(fileName).not.toBe('');
-      expect(readFileSync(join(knowledgeRoot, 'meetings', 'index.md'), 'utf8')).toContain(
+      expect(readFileSync(join(knowledgeRoot, 'sources/meetings', 'index.md'), 'utf8')).toContain(
         `- [Planning Sync](${fileName})`,
       );
       const audioName = fileName.replace(/\.md$/u, '.m4a');
-      expect(readFileSync(join(knowledgeRoot, 'meetings', audioName), 'utf8')).toBe('audio');
-      expect(lstatSync(join(knowledgeRoot, 'meetings', audioName)).mode & 0o777).toBe(0o644);
+      expect(readFileSync(join(knowledgeRoot, 'sources/meetings', audioName), 'utf8')).toBe(
+        'audio',
+      );
+      expect(lstatSync(join(knowledgeRoot, 'sources/meetings', audioName)).mode & 0o777).toBe(
+        0o644,
+      );
       expect(
-        readFileSync(join(knowledgeRoot, '.text', 'meetings', `${audioName}.md`), 'utf8'),
+        readFileSync(join(knowledgeRoot, '.text', 'sources/meetings', `${audioName}.md`), 'utf8'),
       ).toContain('Ship the RAG recovery.');
       const events = await ctx.store.getEvents('s1');
       expect(events.filter((event) => event.t === 'notice')).toEqual([

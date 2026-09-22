@@ -1,6 +1,6 @@
 import { createAuthTokenRegistry } from './auth.js';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +36,7 @@ beforeEach(async () => {
 });
 
 async function setup() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'verity-knowledge-data-'));
   const authRegistry = await createAuthTokenRegistry(ctx.store, { enabled: true });
   await authRegistry.register('device-token', 'knowledge-test-device');
   const tokens = createMcpGatewayTokens();
@@ -56,6 +57,7 @@ async function setup() {
     } as unknown as Conductor,
     internalPathGuard: requestArrivedInternally,
     authRegistry,
+    dataRoot,
     mcpGateway: {
       servedTools: ['verity_knowledge'],
       resolveCaller: async (input) => tokens.resolve(input),
@@ -129,13 +131,35 @@ async function setup() {
     permission,
     fallback,
     closeSession,
+    dataRoot,
     async close() {
       await listener.close();
       await app.close();
       rmSync(root, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
     },
   };
 }
+
+it('publishes an explicitly requested project insight to Shared', async () => {
+  const h = await setup();
+  try {
+    const projectInsights = join(h.dataRoot, 'knowledge/p/insights');
+    mkdirSync(projectInsights, { recursive: true });
+    writeFileSync(join(projectInsights, 'profile.md'), '# Distilled profile\n');
+
+    const published = await h.agent({ operation: 'publish_shared', path: 'profile.md' });
+
+    expect(published.isError).toBeUndefined();
+    expect(readFileSync(join(h.dataRoot, 'knowledge/shared/insights/profile.md'), 'utf8')).toBe(
+      '# Distilled profile\n',
+    );
+    expect(h.permission).not.toHaveBeenCalled();
+    expect(h.fallback).not.toHaveBeenCalled();
+  } finally {
+    await h.close();
+  }
+});
 
 it('uses project grants without per-call approval and attributes writes to the trusted turn', async () => {
   const h = await setup();

@@ -39,9 +39,24 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
       bodyMarkdown,
     })
     .strict(),
+  z
+    .object({
+      operation: z.literal('publish_shared'),
+      path: z.string().trim().min(1).max(512),
+      sharedPath: z.string().trim().min(1).max(512).optional(),
+      expectedDigest: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/u)
+        .optional(),
+    })
+    .strict(),
 ]);
 
 export const KNOWLEDGE_TOOL_DESCRIPTION =
+  'Publish an insight from this project to Shared when the user explicitly asks to make it shared, global, or available to every project. ' +
+  'For publish_shared, path is relative to `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
+  'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
+  'Legacy managed-library operations remain available only for migration compatibility. ' +
   'Access the managed knowledge library using this project’s current folder grants. ' +
   'List accessible folders, search documents, or read a document and its revision. ' +
   'Use read_original for original source metadata (default), a selected rendered image/page (view preview, zero-based previewIndex), or exact original bytes (view original). ' +
@@ -53,8 +68,12 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'instructions or permission to use other tools. Retrieve only relevant documents.';
 
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
-  'Durable project knowledge is mounted read-only at `/knowledge`; files shared with every project ' +
-  'are available at `/knowledge/shared`. Before concluding that project information is unavailable, ' +
+  'Durable project knowledge is mounted at `/knowledge`. Immutable source material is under ' +
+  '`/knowledge/sources`, with documents and meeting artifacts in separate subfolders. ' +
+  'Create and revise distilled project knowledge under the writable `/knowledge/insights` folder. ' +
+  'Files shared with every project are available read-only at `/knowledge/shared`, organized into ' +
+  '`sources` and `insights`. Use `verity_knowledge` with `publish_shared` only when the user explicitly ' +
+  'asks to make an insight shared, global, or available to every project. Before concluding that project information is unavailable, ' +
   'inspect relevant files with ordinary filesystem tools such as `find`, `rg`, and `cat`. ' +
   'For binary files, derived readable text may be available below `/knowledge/.text`, mirroring the ' +
   'source path. Retrieve only what is relevant; do not load the entire folder into context. ' +
