@@ -51,7 +51,7 @@
     "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "5.0.1",
     "esbuild": "0.28.2",
-    "eslint": "10.10.0",
+    "eslint": "10.11.0",
     "ignore": "7.0.9",
     "knip": "6.36.0",
     "metro": "0.84.5",
