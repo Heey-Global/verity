@@ -7544,7 +7544,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await unlink(`${file.directoryPath}/${file.name}`);
         if (root.root === 'knowledge' && file.rel === 'overview.md')
           await markProjectOverviewAuthoritative(root.dir);
-        await removeKnowledgeExtraction(root.dir, file.rel);
+        if (root.root !== 'worktree') await removeKnowledgeExtraction(root.dir, file.rel);
         return { path: file.rel, deleted: true };
       } finally {
         await file.close();

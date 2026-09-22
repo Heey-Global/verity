@@ -141,7 +141,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../../components/Icon';
 import { AgentLoopCockpit } from '../../components/AgentLoopCockpit';
-import { DRAG_OUT_SUPPORTED, DragSource } from '../../components/DragSource';
+import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
 import { ImageLightbox } from '../../components/ImageLightbox';
 import { WorkingDot } from '../../components/WorkingDot';
@@ -4250,14 +4250,14 @@ function SessionFilesSheet({
     modifierClick.current = { anchor: null, range: [] };
   }, []);
 
-  const deleteSelectedKnowledge = useCallback(() => {
-    if (mutating || root === 'worktree' || selected.length === 0) return;
+  const deleteSelectedFiles = useCallback(() => {
+    if (mutating || selected.length === 0) return;
     setMutating(true);
     Alert.alert(
-      selected.length === 1
-        ? 'Delete knowledge file?'
-        : `Delete ${selected.length} knowledge files?`,
-      'This removes the files and their extracted text.',
+      selected.length === 1 ? 'Delete file?' : `Delete ${selected.length} files?`,
+      root === 'worktree'
+        ? 'This permanently removes the selected files from the workspace.'
+        : 'This removes the files and their extracted text.',
       [
         { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
         {
@@ -4389,7 +4389,7 @@ function SessionFilesSheet({
     return byPath;
   }, [entries, selected, downloadUrlFor]);
 
-  const canSelect = useMemo(() => DRAG_OUT_SUPPORTED && entries.some(isSelectableFile), [entries]);
+  const canSelect = useMemo(() => entries.some(isSelectableFile), [entries]);
 
   // React Native lays a `<Text>` out as one native text node, so the whole body in a
   // single node silently renders blank well below the server's 1 MB preview limit (a
@@ -4441,24 +4441,26 @@ function SessionFilesSheet({
               />
             </Pressable>
           ) : null}
-          {selecting && root !== 'worktree' && selected.length > 0 ? (
+          {selecting && selected.length > 0 ? (
             <>
+              {root !== 'worktree' ? (
+                <Pressable
+                  onPress={moveSelectedKnowledge}
+                  disabled={mutating}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Knowledge'}
+                  style={styles.bookmarkRemove}
+                >
+                  <Icon name="repeat" size={18} color={theme.colors.textMuted} />
+                </Pressable>
+              ) : null}
               <Pressable
-                onPress={moveSelectedKnowledge}
+                onPress={deleteSelectedFiles}
                 disabled={mutating}
                 hitSlop={8}
                 accessibilityRole="button"
-                accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Knowledge'}
-                style={styles.bookmarkRemove}
-              >
-                <Icon name="repeat" size={18} color={theme.colors.textMuted} />
-              </Pressable>
-              <Pressable
-                onPress={deleteSelectedKnowledge}
-                disabled={mutating}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Delete selected knowledge files"
+                accessibilityLabel="Delete selected files"
                 style={styles.bookmarkRemove}
               >
                 <Icon name="trash-2" size={18} color={theme.colors.tone.danger} />

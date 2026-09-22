@@ -101,9 +101,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     return { root, dir };
   };
 
-  /** Deleting and moving are knowledge-folder actions (ADR 0022 D2). The
-   *  worktree belongs to the agent and to git, which already have their own
-   *  ways to remove a file; the explorer must not grow a second one. */
+  /** Moving is a knowledge-folder scope change. */
   const knowledgeOnly = (root: SessionFileRootName, reply: FastifyReply): boolean => {
     if (isKnowledgeRoot(root)) return true;
     reply.code(400).send({ error: 'only knowledge files can be changed this way' });
@@ -145,7 +143,6 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
   app.delete('/sessions/:id/files', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const { root, path } = sessionFileDeleteQuery.parse(request.query);
-    if (!knowledgeOnly(root, reply)) return reply;
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
     return deps.remove(reply, value, path);

@@ -67,6 +67,7 @@ describe('session explorer knowledge roots', () => {
     rmSync(join(dataRoot, 'knowledge'), { recursive: true, force: true });
     rmSync(join(worktree, 'ok.txt'), { force: true });
     rmSync(join(worktree, 'README.md'), { force: true });
+    rmSync(join(worktree, EXTRACTED_TEXT_DIR), { recursive: true, force: true });
     await ctx.store.upsertProject({
       id: 'p-1',
       owner: 'heey-global',
@@ -161,19 +162,21 @@ describe('session explorer knowledge roots', () => {
     expect(existsSync(file)).toBe(false);
   });
 
-  it('refuses to delete anything in the worktree', async () => {
-    // The agent and git own the worktree and both already have ways to remove a
-    // file. A second one behind a file browser is how a session loses work that
-    // was never committed.
+  it('deletes a worktree file', async () => {
     writeFileSync(join(worktree, 'ok.txt'), 'ok');
+    mkdirSync(join(worktree, EXTRACTED_TEXT_DIR), { recursive: true });
+    writeFileSync(join(worktree, EXTRACTED_TEXT_DIR, 'ok.txt.md'), 'unrelated worktree file');
 
     const res = await app.inject({
       method: 'DELETE',
       url: '/sessions/s-knowledge/files?root=worktree&path=ok.txt',
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(existsSync(join(worktree, 'ok.txt'))).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(existsSync(join(worktree, 'ok.txt'))).toBe(false);
+    expect(readFileSync(join(worktree, EXTRACTED_TEXT_DIR, 'ok.txt.md'), 'utf8')).toBe(
+      'unrelated worktree file',
+    );
   });
 
   it('refuses to delete derived text or the shared mount point', async () => {
