@@ -32,11 +32,6 @@ if (Platform.OS === 'ios' && requireOptionalNativeModule('VerityDragZone')) {
   NativeDragZone = requireNativeViewManager('VerityDragZone');
 }
 
-/** True when this build can drag files out to Finder / another app. False on
- * Android and web, and on an iOS build made before the native module existed —
- * OTA updates ship JS only, so a stale native shell must not advertise it. */
-export const DRAG_OUT_SUPPORTED = NativeDragZone !== null;
-
 /**
  * Wraps one file-browser row as a drag source. `items` is what THIS row drags —
  * the row alone, or the whole selection when the row belongs to one; see
