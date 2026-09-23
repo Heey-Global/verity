@@ -6,6 +6,7 @@ import {
   type PublicPreviewShareState,
 } from '@verity/store';
 import { DockerError, type DockerClient } from './docker.js';
+import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import { projectClonePath, projectNetworkName, RUNNER_BROKER_CAPABILITIES } from './provisioner.js';
 import { relative, posix, resolve, join } from 'node:path';
@@ -876,7 +877,7 @@ function assertEligibleSandbox(
   }
   const containerUser = sandbox.user?.split(':', 1)[0];
   if (
-    sandbox.runtime !== 'runsc' ||
+    sandbox.runtime !== PROJECT_RUNSC_RUNTIME ||
     containerUser === undefined ||
     containerUser === '' ||
     containerUser === '0' ||

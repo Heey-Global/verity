@@ -368,6 +368,8 @@ function createProvisioner(
     ...rest
   } = options;
   return new ProvisionerImpl({
+    // No real supervisor runs here; tests that care pass their own.
+    supervisorReachable: async () => undefined,
     ...rest,
     projectRelay,
     claudeEgressGatewayUrl,
@@ -2684,13 +2686,19 @@ describe('ProvisionerImpl (#174)', () => {
       ]);
     }
 
-    async function recreateDevcontainerProject(agentInRuntime: boolean): Promise<{
+    async function recreateDevcontainerProject(
+      agentInRuntime: boolean,
+      overrides: Partial<ProvisionerOptions> = {},
+    ): Promise<{
       warning: string | null;
       imageRef: string | null;
       toolkitIdentity: string | null | undefined;
       spec: ContainerSpec;
       prepareRunnerRuntime: ReturnType<typeof vi.fn>;
       collector: ReturnType<typeof vi.fn<ImageEvidenceCollector>>;
+      error?: unknown;
+      provisionError?: string | null | undefined;
+      dockerMethods: string[];
     }> {
       const root = mkdtempSync(join(tmpdir(), 'verity-attest-'));
       try {
@@ -2709,6 +2717,12 @@ describe('ProvisionerImpl (#174)', () => {
         const { client: docker, calls: dockerCalls } = fakeDocker({
           imageExists: vi.fn(async () => true),
           createdContainerId: 'cid-attested',
+          // The relay, as Docker reports it on the project network.
+          inspectContainer: vi.fn(async (name: string) => ({
+            id: name,
+            running: true,
+            networks: { [projectNetworkName(id)]: { ipAddress: '172.30.0.2' } },
+          })),
         });
         const provisioner = createProvisioner({
           store: ctx.store,
@@ -2723,7 +2737,10 @@ describe('ProvisionerImpl (#174)', () => {
           dataVolumeRoot: '/srv/verity',
           runnerSupervisor: true,
           runnerSupervisorTrustedDefaultImage: true,
-          sandboxRuntime: 'runsc',
+          sandboxRuntime: 'runsc-project',
+          verifySandboxRuntime: vi.fn(async () => undefined),
+          sandboxDnsServers: ['192.0.2.53'],
+          gitSecretRoot: join(root, 'secrets'),
           dockerHostForBuild: 'unix:///var/run/docker.sock',
           devcontainerBuild: vi.fn<DevcontainerBuildSpawner>(async () => ({
             stdout: '',
@@ -2742,18 +2759,29 @@ describe('ProvisionerImpl (#174)', () => {
           imageEvidenceCollector: collector,
           runnerBoundaryFeatureDir: 'features/verity-sandbox-toolkit',
           isDirectory: (path) => path === `/srv/verity/runners/${id}` || path === devcontainerDir,
+          ...overrides,
         });
 
-        const result = await provisioner.recreateContainer(id);
-        expect(result.state).toBe('active');
+        let result: Awaited<ReturnType<typeof provisioner.recreateContainer>> | undefined;
+        let error: unknown;
+        try {
+          result = await provisioner.recreateContainer(id);
+        } catch (caught) {
+          if (Object.keys(overrides).length === 0) throw caught;
+          error = caught;
+        }
+        if (error === undefined) expect(result?.state).toBe('active');
+        const stored = await ctx.store.getProject(id);
         return {
-          warning: result.provisionWarning,
-          imageRef: result.imageRef,
-          toolkitIdentity: (await ctx.store.getProject(id))?.toolkitIdentity,
+          warning: result?.provisionWarning ?? null,
+          imageRef: result?.imageRef ?? null,
+          toolkitIdentity: stored?.toolkitIdentity,
           spec: dockerCalls.find((call) => call.method === 'createContainer')
             ?.payload as ContainerSpec,
           prepareRunnerRuntime,
           collector,
+          ...(error === undefined ? {} : { error, provisionError: stored?.provisionError }),
+          dockerMethods: dockerCalls.map((call) => call.method),
         };
       } finally {
         rmSync(root, { recursive: true, force: true });
@@ -2769,7 +2797,13 @@ describe('ProvisionerImpl (#174)', () => {
       // this image's boundary bytes were compared against exactly these.
       expect(toolkitIdentity).toBe(await trustedToolkitIdentity('features/verity-sandbox-toolkit'));
       expect(prepareRunnerRuntime).toHaveBeenCalledOnce();
-      expect(spec.runtime).toBe('runsc');
+      expect(spec.runtime).toBe('runsc-project');
+      // gVisor cannot reach Docker's embedded resolver: the relay is pinned by the
+      // address Docker gave it, and upstream resolvers replace resolv.conf.
+      expect(spec.extraHosts).toEqual(['relay:172.30.0.2']);
+      expect(spec.binds).toContainEqual(
+        expect.stringMatching(/\/dns\/resolv\.[^:]+\.conf:\/etc\/resolv\.conf:ro$/u),
+      );
       expect(spec.capAdd).toEqual([...RUNNER_BROKER_CAPABILITIES]);
       expect(spec.env).toContain('VERITY_RUNNER_RUNTIME=/run/verity-runner');
       // Evidence is collected from the exact derived image that will run.
@@ -2777,6 +2811,42 @@ describe('ProvisionerImpl (#174)', () => {
         expect.objectContaining({ imageRef: expect.stringContaining('verity-devc-') }),
       );
       expect(imageRef).toMatch(/^verity-devc-/u);
+    });
+
+    // v1.5.1: the launcher's readiness probe ran inside gVisor, where the socket existed,
+    // so Repair marked the project active while every turn failed with "the project
+    // supervisor socket is missing". The Server's own view of the socket is the one that
+    // counts, and a Sandbox it cannot reach must not be left behind as "active".
+    it('fails provisioning when the Server cannot reach the supervisor it started', async () => {
+      const unreachable = new Error('the Server cannot reach supervisor.sock (ENOENT)');
+      const { error, provisionError, dockerMethods } = await recreateDevcontainerProject(false, {
+        supervisorReachable: vi.fn(async () => {
+          throw unreachable;
+        }),
+      });
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(provisionError).toContain('Runner supervisor failed to start');
+      expect(provisionError).toContain('cannot reach supervisor.sock');
+      expect(dockerMethods.lastIndexOf('removeContainer')).toBeGreaterThan(
+        dockerMethods.lastIndexOf('createContainer'),
+      );
+    });
+
+    // A host that never registered runsc-project (or registered it with other arguments)
+    // must keep the Sandbox it has, not trade it for a create that cannot work — and must
+    // never land on runc instead.
+    it('refuses to replace a Sandbox when the project gVisor runtime is not registered', async () => {
+      const { error, provisionError, dockerMethods } = await recreateDevcontainerProject(false, {
+        verifySandboxRuntime: vi.fn(async () => {
+          throw new Error('Docker runtime runsc-project is missing');
+        }),
+      });
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(provisionError).toContain('runsc-project is missing');
+      expect(provisionError).toContain('install-runsc-host.sh');
+      expect(dockerMethods).not.toContain('stopContainer');
+      expect(dockerMethods).not.toContain('removeContainer');
+      expect(dockerMethods).not.toContain('createContainer');
     });
 
     it('keeps the loopback path and names the failed check when attestation fails', async () => {

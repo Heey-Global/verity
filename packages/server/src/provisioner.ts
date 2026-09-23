@@ -111,6 +111,9 @@ export {
 import type { GitHubInstallationTokenMint, GitHubProjectTokenMint } from './github-app-token.js';
 import type { ProjectRelayActivation, ProjectRelayBinding } from './project-relay-lifecycle.js';
 import { selectedOpenCodeModels } from './opencode-model-selection.js';
+import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
+import { requestRunnerSupervisor } from '@verity/session';
+import { relayHostEntries, sandboxResolvConf } from './gvisor-project-network.js';
 import type { ProjectSandboxLifecycleEvent } from './project-lifecycle-telemetry.js';
 import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
 import {
@@ -614,9 +617,24 @@ export interface ProvisionerOptions {
   /** Capabilities to add back on top of the default `CapDrop: ALL` — for a project
    *  that genuinely needs one (e.g. `NET_BIND_SERVICE`). */
   sandboxCapAdd?: string[] | undefined;
-  /** OCI runtime for project sandboxes. Public-preview deployments select `runsc`
-   *  so internet-facing dev servers stay behind the gVisor kernel boundary. */
-  sandboxRuntime?: 'runsc' | undefined;
+  /** OCI runtime for project sandboxes. Public-preview deployments select
+   *  `runsc-project` so internet-facing dev servers stay behind the gVisor kernel
+   *  boundary. Never the Secret-job `runsc` registration: its `--network=none` and
+   *  default `--host-uds=none` leave a Runner with no relay and a supervisor socket
+   *  the Server cannot see (`gvisor-runtime-config.ts`). */
+  sandboxRuntime?: typeof PROJECT_RUNSC_RUNTIME | undefined;
+  /** Attest {@link sandboxRuntime}'s daemon registration (path + arguments) before a
+   *  Sandbox is replaced. Throws when it is missing or drifted; never falls back to runc. */
+  verifySandboxRuntime?: ((runtime: string) => Promise<void>) | undefined;
+  /** Prove the Server can reach the supervisor it just started, through the Server's own
+   *  path to `<runners>/<project>/supervisor.sock`. The launcher's readiness probe runs
+   *  INSIDE the Sandbox, so it passes wherever the socket exists only there — which is
+   *  how a gVisor runtime without `--host-uds=create` left projects "active" whose every
+   *  turn failed with "the project supervisor socket is missing". Tests inject this. */
+  supervisorReachable?: ((runtimePath: string) => Promise<void>) | undefined;
+  /** Upstream resolvers written into a gVisor Sandbox's resolv.conf. Docker's
+   *  embedded resolver is unreachable from gVisor's netstack (`gvisor-project-network.ts`). */
+  sandboxDnsServers?: readonly string[] | undefined;
   /** Opt OUT of `no-new-privileges` for sandboxes whose devcontainer relies on
    *  `sudo` (which privilege-escalation blocking would break). Default false
    *  (hardened). */
@@ -1347,6 +1365,31 @@ function devcontainerFailureHint(output: string): string | undefined {
     );
   }
   return undefined;
+}
+
+const SUPERVISOR_REACHABLE_TIMEOUT_MS = 10_000;
+
+/** Default {@link ProvisionerOptions.supervisorReachable}: the Server's own `status` request. */
+async function serverCanReachSupervisor(runtimePath: string): Promise<void> {
+  const socketPath = join(runtimePath, 'supervisor.sock');
+  const deadline = Date.now() + SUPERVISOR_REACHABLE_TIMEOUT_MS;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      await requestRunnerSupervisor(socketPath, { kind: 'status' }, 2_000);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    }
+  }
+  const code = (lastError as NodeJS.ErrnoException | undefined)?.code;
+  throw new Error(
+    `the supervisor is ready inside the Sandbox but the Server cannot reach ${socketPath}` +
+      `${code === undefined ? '' : ` (${code})`}. The container runtime is not exposing ` +
+      'Unix sockets bound in the Runner volume to the host; gVisor needs --host-uds=create ' +
+      '(the runsc-project runtime from deploy/gvisor/install-runsc-host.sh).',
+  );
 }
 
 function commandFailureMessage(error: unknown): string {
@@ -2141,6 +2184,27 @@ export class ProvisionerImpl implements Provisioner {
         ? { featureDir: this.opts.runnerBoundaryFeatureDir }
         : {}),
     });
+  }
+
+  /**
+   * Attest the project gVisor runtime before a running Sandbox is removed: a host that lacks
+   * it (or registered it with other arguments) keeps what it has rather than losing it to a
+   * create that cannot succeed, and never lands on runc instead.
+   */
+  private async ensureSandboxRuntime(project: ProjectRecord): Promise<void> {
+    if (this.opts.sandboxRuntime === undefined) return;
+    try {
+      if (this.opts.verifySandboxRuntime === undefined) {
+        throw new Error('no runtime verifier is configured');
+      }
+      await this.opts.verifySandboxRuntime(this.opts.sandboxRuntime);
+    } catch (cause) {
+      const message =
+        `Sandbox runtime ${this.opts.sandboxRuntime} is not usable: ${failureMessage(cause)}. ` +
+        'Register it on the Docker host with deploy/gvisor/install-runsc-host.sh.';
+      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      throw new ProvisioningError(message, cause);
+    }
   }
 
   private prepareRunnerRuntime(projectId: string, enabled: boolean): string | undefined {
@@ -3789,6 +3853,7 @@ export class ProvisionerImpl implements Provisioner {
 
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
+      await this.ensureSandboxRuntime(project);
       replacementStarted = true;
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
 
@@ -4697,8 +4762,12 @@ export class ProvisionerImpl implements Provisioner {
           ? `Runner supervisor is disabled for this Sandbox because the ADR 0006 boundary attestation failed: ${runnerBoundaryAttestation.reason}.`
           : 'Runner supervisor is disabled for this Sandbox because the ADR 0006 security boundary rejects added capabilities or privilege escalation.'
         : null;
+    const gvisorDnsWarning =
+      this.opts.sandboxRuntime !== undefined && (this.opts.sandboxDnsServers?.length ?? 0) === 0
+        ? 'No upstream DNS resolvers are configured for this gVisor Sandbox (VERITY_SANDBOX_DNS_SERVERS), so it resolves only its relay: internet hostnames will not resolve inside it.'
+        : null;
     const provisionWarning =
-      [devcontainerWarning, runnerBoundaryWarning]
+      [devcontainerWarning, runnerBoundaryWarning, gvisorDnsWarning]
         .filter((warning): warning is string => warning !== null)
         .join(' ') || null;
     const { selected: projectClaudeGateway, url: claudeGateway } =
@@ -4713,6 +4782,8 @@ export class ProvisionerImpl implements Provisioner {
     await this.opts.docker.ensureNetwork!(sandboxNetwork, {
       labels: { 'verity.project-id': project.id },
     });
+    // Before the running Sandbox is removed (see ensureSandboxRuntime).
+    await this.ensureSandboxRuntime(project);
     // Capabilities are currently one-row-per-project, so two generations cannot
     // authenticate concurrently. Fail closed: retire the old Sandbox before
     // revoking its relay, then construct the complete replacement generation.
@@ -4734,6 +4805,37 @@ export class ProvisionerImpl implements Provisioner {
     // fails the handshake and the connector reports a 502.
     const effectiveClaudeServerName =
       projectClaudeGateway?.serverName ?? this.opts.claudeEgressServerName;
+    // gVisor cannot use Docker's embedded resolver; see gvisor-project-network.ts.
+    let gvisorExtraHosts: string[] = [];
+    let gvisorResolvBinds: string[] = [];
+    if (this.opts.sandboxRuntime !== undefined) {
+      try {
+        gvisorExtraHosts = await relayHostEntries(this.opts.docker, sandboxNetwork, [
+          effectiveBrokerUrl,
+          effectiveClaudeGatewayUrl,
+          effectiveCodexGatewayUrl,
+        ]);
+        const servers = this.opts.sandboxDnsServers ?? [];
+        if (servers.length > 0) {
+          if (this.opts.gitSecretRoot === undefined) {
+            throw new Error('no secret root is configured for the Sandbox resolv.conf');
+          }
+          const resolvPath = writeSecretFile(
+            this.opts.gitSecretRoot,
+            `resolv.${project.id}.conf`,
+            sandboxResolvConf(servers),
+            'dns',
+            0o644,
+            0o755,
+          );
+          gvisorResolvBinds = [`${resolvPath}:/etc/resolv.conf:ro`];
+        }
+      } catch (cause) {
+        const message = `gVisor Sandbox name resolution could not be prepared: ${failureMessage(cause)}`;
+        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        throw new ProvisioningError(message, cause);
+      }
+    }
     // Commit-signing broker (audit H1): active when the deployment configured a
     // broker URL, a signing key exists, and Verity can materialize bind-mounted
     // secrets. Then the private key is NOT mounted; the sandbox signs via
@@ -5104,6 +5206,7 @@ export class ProvisionerImpl implements Provisioner {
           this.opts.claudeConnectorPort,
         ),
         ...(devcontainerRuntime.binds ?? []),
+        ...gvisorResolvBinds,
       ],
       this.opts.dataVolume,
       this.opts.dataVolumeRoot,
@@ -5228,6 +5331,7 @@ export class ProvisionerImpl implements Provisioner {
       // stays writable because devcontainers install tools and build artifacts at
       // runtime; the preview eligibility check accounts for that profile.
       ...(this.opts.sandboxRuntime !== undefined ? { runtime: this.opts.sandboxRuntime } : {}),
+      ...(gvisorExtraHosts.length > 0 ? { extraHosts: gvisorExtraHosts } : {}),
       // Runtime hardening (security review C1): contain a malicious dependency by
       // default rather than launching with Docker's permissive defaults. Drop all
       // capabilities, block privilege escalation (setuid), and cap PIDs (fork-bomb
@@ -5356,6 +5460,9 @@ export class ProvisionerImpl implements Provisioner {
               ? 'verity-runner-stack-start'
               : 'verity-egress-connector-start --standalone',
         });
+        if (runnerRuntimePath !== undefined) {
+          await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runnerRuntimePath);
+        }
       } catch (cause) {
         const component =
           runnerRuntimePath !== undefined ? 'Runner supervisor' : 'Sandbox egress connector';

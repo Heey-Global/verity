@@ -22,6 +22,6 @@ RUN set -eu; \
     chmod 0755 "$install_path"; \
     test "$("$install_path" --version | head -n 1)" = "runsc version $RUNSC_RELEASE"; \
     install -d -m 0755 /etc/docker; \
-    printf '{"runtimes":{"runsc":{"path":"%s","runtimeArgs":["--platform=systrap","--network=none"]}}}\n' \
-      "$install_path" >/etc/docker/daemon.json; \
+    printf '{"runtimes":{"runsc":{"path":"%s","runtimeArgs":["--platform=systrap","--network=none"]},"runsc-project":{"path":"%s","runtimeArgs":["--platform=systrap","--network=sandbox","--host-uds=create"]}}}\n' \
+      "$install_path" "$install_path" >/etc/docker/daemon.json; \
     rm -f /tmp/versions.env
