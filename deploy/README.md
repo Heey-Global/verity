@@ -707,7 +707,8 @@ container and its memory limit, and under gVisor there is no in-Sandbox OOM kill
 when the combined workload outgrows the limit, the host kills the gVisor Sentry and
 every session in the Sandbox dies together. A turn over the cap shows a waiting
 notice and starts as soon as a slot frees up; Stop cancels it while it waits.
-Turns that survive a Server restart still count toward the cap. Raise the cap together with `VERITY_SANDBOX_MEMORY`, or set `0` to disable it.
+A turn waiting on a permission card keeps its slot, because its agent is still
+loaded in the Sandbox. Turns that survive a Server restart still count toward the cap. Raise the cap together with `VERITY_SANDBOX_MEMORY`, or set `0` to disable it.
 
 Active project Sandboxes sleep after 30 minutes without a running turn, Agent
 Loop, dev server, or public preview. New turns and Agent Loops wake them
