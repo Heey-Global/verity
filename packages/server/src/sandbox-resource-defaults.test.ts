@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { parse } from 'yaml';
 import { parseByteSize, parseCpuCores, parseSwapSize } from './embedded.js';
 import {
   DEFAULT_SANDBOX_MEMORY_BYTES,
@@ -10,13 +9,18 @@ import {
 
 const repoRoot = new URL('../../../', import.meta.url);
 
-/** The `${NAME:-default}` fallback Compose ships for `name` on the Server. */
+/** The `${NAME:-default}` fallback Compose ships for `name`. Read as text rather
+ *  than parsed as YAML: `packages/server` declares no YAML parser, and the Server
+ *  environment is one anchored block that every Server-shaped service inherits,
+ *  so the name is assigned exactly once. */
 function composeDefault(name: string): string | undefined {
-  const compose = parse(readFileSync(new URL('deploy/docker-compose.yml', repoRoot), 'utf8')) as {
-    services: Record<string, { environment?: Record<string, string> }>;
-  };
-  const interpolated = compose.services['verity']?.environment?.[name];
-  return new RegExp(`^\\$\\{${name}:-([^}]*)\\}$`).exec(interpolated ?? '')?.[1];
+  const compose = readFileSync(new URL('deploy/docker-compose.yml', repoRoot), 'utf8');
+  const assignments = [
+    ...compose.matchAll(new RegExp(`^\\s+${name}: \\$\\{${name}:-([^}]*)\\}$`, 'gm')),
+  ];
+  // A second assignment would make "the" default ambiguous; fail rather than pick one.
+  expect(assignments).toHaveLength(1);
+  return assignments[0]?.[1];
 }
 
 describe('sandbox resource defaults', () => {
