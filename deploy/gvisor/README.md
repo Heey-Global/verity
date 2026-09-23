@@ -60,9 +60,15 @@ A project Runner cannot work under the Secret-job arguments, which is why it has
   cannot connect to sockets the host created.
 
 Docker's embedded DNS (127.0.0.11) is not reachable from gVisor's netstack. The Server therefore
-pins the relay in the Sandbox's `/etc/hosts` and writes a `resolv.conf` with upstream resolvers:
-`VERITY_SANDBOX_DNS_SERVERS` (comma-separated IPs) when set, otherwise the upstream servers Docker's
-resolver forwards to, read from the Server container's own `/etc/resolv.conf`.
+pins the relay in the Sandbox's `/etc/hosts` and writes a `resolv.conf` naming the relay itself.
+The relay runs under runc on the same project network and forwards DNS (UDP and TCP, port 53) to
+its own 127.0.0.11, so the Sandbox resolves what a runc container would, through whatever the host
+uses — systemd-resolved, Tailscale MagicDNS, search domains — with no host configuration.
+`VERITY_SANDBOX_DNS_SERVERS` (comma-separated IPs) replaces the relay with fixed resolvers.
+
+`sudo deploy/bin/verity-project-check` checks every running project Sandbox from the host — DNS,
+HTTPS, npm, git, the relay, the Runner supervisor and the workspace — without changing anything,
+and exits non-zero when a check fails.
 
 The smoke checks both registrations and runs a `runsc-project` container that binds a Unix socket
 in a volume and serves TCP on an internal network, and fails unless a `runc` peer reaches both.

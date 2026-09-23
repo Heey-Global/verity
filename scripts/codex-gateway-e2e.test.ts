@@ -191,6 +191,7 @@ describe('Codex gateway end-to-end cutover', () => {
         brokerPort: 0,
         claudePort: 0,
         codexPort: 0,
+        dnsPort: 0,
         brokerSocketPath: join(root, 'unused-broker.sock'),
         claudeSocketPath: join(root, 'unused-claude.sock'),
         codexSocketPath: unixListener.socketPath,

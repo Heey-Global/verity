@@ -14,6 +14,8 @@ import {
 } from 'node:net';
 import type { Duplex } from 'node:stream';
 
+import { DOCKER_EMBEDDED_DNS, DNS_PORT, startDnsForwarder, type DnsForwarder } from './dns.js';
+
 export const BROKER_SOCKET_PATH = '/run/verity-relay/broker/broker.sock';
 export const CLAUDE_SOCKET_PATH = '/run/verity-relay/claude/claude.sock';
 export const CODEX_SOCKET_PATH = '/run/verity-relay/codex/codex.sock';
@@ -171,6 +173,7 @@ export interface StartedRelay {
   readonly brokerPort: number;
   readonly claudePort: number;
   readonly codexPort: number;
+  readonly dnsPort: number;
   close(): Promise<void>;
 }
 
@@ -261,6 +264,8 @@ export async function startRelay(
     claudeSocketPath?: string;
     codexPort?: number;
     codexSocketPath?: string;
+    dnsPort?: number;
+    dnsUpstream?: { host: string; port: number };
   } = {},
 ): Promise<StartedRelay> {
   const host = options.host ?? '0.0.0.0';
@@ -269,10 +274,18 @@ export async function startRelay(
   );
   const claude = createClaudeRelayServer(options.claudeSocketPath);
   const codex = createClaudeRelayServer(options.codexSocketPath ?? CODEX_SOCKET_PATH);
+  let dns: DnsForwarder;
   try {
     await listen(broker, options.brokerPort ?? BROKER_PORT, host);
     await listen(claude, options.claudePort ?? CLAUDE_PORT, host);
     await listen(codex, options.codexPort ?? CODEX_PORT, host);
+    // The gVisor Sandbox's only resolver (see dns.ts). The capability-less relay binds port 53
+    // under the `net.ipv4.ip_unprivileged_port_start` sysctl its container is created with.
+    dns = await startDnsForwarder({
+      host,
+      port: options.dnsPort ?? DNS_PORT,
+      upstream: options.dnsUpstream ?? DOCKER_EMBEDDED_DNS,
+    });
   } catch (error) {
     await Promise.allSettled([closeServer(broker), closeServer(claude), closeServer(codex)]);
     throw error;
@@ -281,8 +294,14 @@ export async function startRelay(
     brokerPort: boundPort(broker),
     claudePort: boundPort(claude),
     codexPort: boundPort(codex),
+    dnsPort: dns.udpPort,
     async close(): Promise<void> {
-      await Promise.all([closeServer(broker), closeServer(claude), closeServer(codex)]);
+      await Promise.all([
+        closeServer(broker),
+        closeServer(claude),
+        closeServer(codex),
+        dns.close(),
+      ]);
     },
   };
 }

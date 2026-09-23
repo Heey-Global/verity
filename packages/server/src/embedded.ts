@@ -108,7 +108,6 @@ import {
   PINNED_RUNSC_PATH,
   PROJECT_RUNSC_RUNTIME,
 } from './gvisor-runtime-config.js';
-import { upstreamResolversFromDockerResolvConf } from './gvisor-project-network.js';
 import {
   createBrokeredSecretJobExecutor,
   type BrokeredSecretJobExecutor,
@@ -803,7 +802,7 @@ export interface EmbeddedServerConfig {
   sandboxCapAdd?: string[] | undefined;
   sandboxAllowPrivilegeEscalation?: boolean | undefined;
   /** Upstream resolvers for gVisor project Sandboxes (`VERITY_SANDBOX_DNS_SERVERS`). Unset →
-   *  the ones Docker's embedded resolver forwards to, read from this process's resolv.conf. */
+   *  the project relay, which forwards to Docker's embedded resolver. */
   sandboxDnsServers?: readonly string[] | undefined;
   /** Port for a SECOND, non-published HTTP listener that serves the `/internal/*`
    *  routes (audit H1 follow-up). When set, `/internal/*` (the commit-signing
@@ -3392,7 +3391,9 @@ export async function buildEmbeddedServer(
             return {
               sandboxRuntime: PROJECT_RUNSC_RUNTIME,
               verifySandboxRuntime: (runtime: string) => verifier.verify(runtime),
-              sandboxDnsServers: config.sandboxDnsServers ?? dockerUpstreamResolvers(),
+              ...(config.sandboxDnsServers !== undefined
+                ? { sandboxDnsServers: config.sandboxDnsServers }
+                : {}),
             };
           })()
         : {}),
@@ -5146,13 +5147,4 @@ export function createProjectWorktreeFactory(mint: GitHubProjectTokenMint): (
         return token ? gitAuthHeader(token) : undefined;
       },
     });
-}
-
-/** The resolvers Docker's embedded resolver forwards to for this (user-network) container. */
-function dockerUpstreamResolvers(): string[] {
-  try {
-    return upstreamResolversFromDockerResolvConf(readFileSync('/etc/resolv.conf', 'utf8'));
-  } catch {
-    return [];
-  }
 }

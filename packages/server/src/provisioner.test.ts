@@ -2699,6 +2699,7 @@ describe('ProvisionerImpl (#174)', () => {
       error?: unknown;
       provisionError?: string | null | undefined;
       dockerMethods: string[];
+      resolvConf: string | undefined;
     }> {
       const root = mkdtempSync(join(tmpdir(), 'verity-attest-'));
       try {
@@ -2739,7 +2740,6 @@ describe('ProvisionerImpl (#174)', () => {
           runnerSupervisorTrustedDefaultImage: true,
           sandboxRuntime: 'runsc-project',
           verifySandboxRuntime: vi.fn(async () => undefined),
-          sandboxDnsServers: ['192.0.2.53'],
           gitSecretRoot: join(root, 'secrets'),
           dockerHostForBuild: 'unix:///var/run/docker.sock',
           devcontainerBuild: vi.fn<DevcontainerBuildSpawner>(async () => ({
@@ -2772,7 +2772,12 @@ describe('ProvisionerImpl (#174)', () => {
         }
         if (error === undefined) expect(result?.state).toBe('active');
         const stored = await ctx.store.getProject(id);
+        const created = dockerCalls.find((call) => call.method === 'createContainer')?.payload as
+          ContainerSpec | undefined;
+        const resolvBind = created?.binds?.find((bind) => bind.endsWith(':/etc/resolv.conf:ro'));
         return {
+          resolvConf:
+            resolvBind === undefined ? undefined : readFileSync(resolvBind.split(':')[0]!, 'utf8'),
           warning: result?.provisionWarning ?? null,
           imageRef: result?.imageRef ?? null,
           toolkitIdentity: stored?.toolkitIdentity,
@@ -2789,8 +2794,15 @@ describe('ProvisionerImpl (#174)', () => {
     }
 
     it('enables the supervisor for an image Verity did not build once it proves the boundary', async () => {
-      const { warning, imageRef, toolkitIdentity, spec, prepareRunnerRuntime, collector } =
-        await recreateDevcontainerProject(false);
+      const {
+        warning,
+        imageRef,
+        toolkitIdentity,
+        spec,
+        prepareRunnerRuntime,
+        collector,
+        resolvConf,
+      } = await recreateDevcontainerProject(false);
 
       expect(warning).toBeNull();
       // A passing attestation is the only thing that earns a recorded identity:
@@ -2798,12 +2810,13 @@ describe('ProvisionerImpl (#174)', () => {
       expect(toolkitIdentity).toBe(await trustedToolkitIdentity('features/verity-sandbox-toolkit'));
       expect(prepareRunnerRuntime).toHaveBeenCalledOnce();
       expect(spec.runtime).toBe('runsc-project');
-      // gVisor cannot reach Docker's embedded resolver: the relay is pinned by the
-      // address Docker gave it, and upstream resolvers replace resolv.conf.
+      // gVisor cannot reach Docker's embedded resolver: the relay is pinned by the address
+      // Docker gave it, and answers the Sandbox's DNS in place of 127.0.0.11.
       expect(spec.extraHosts).toEqual(['relay:172.30.0.2']);
       expect(spec.binds).toContainEqual(
         expect.stringMatching(/\/dns\/resolv\.[^:]+\.conf:\/etc\/resolv\.conf:ro$/u),
       );
+      expect(resolvConf).toBe('nameserver 172.30.0.2\noptions ndots:0\n');
       expect(spec.capAdd).toEqual([...RUNNER_BROKER_CAPABILITIES]);
       expect(spec.env).toContain('VERITY_RUNNER_RUNTIME=/run/verity-runner');
       // Evidence is collected from the exact derived image that will run.
@@ -2811,6 +2824,14 @@ describe('ProvisionerImpl (#174)', () => {
         expect.objectContaining({ imageRef: expect.stringContaining('verity-devc-') }),
       );
       expect(imageRef).toMatch(/^verity-devc-/u);
+    });
+
+    it('writes operator-named resolvers into a gVisor Sandbox instead of its relay', async () => {
+      const { resolvConf, error } = await recreateDevcontainerProject(false, {
+        sandboxDnsServers: ['192.0.2.53'],
+      });
+      expect(error).toBeUndefined();
+      expect(resolvConf).toBe('nameserver 192.0.2.53\noptions ndots:0\n');
     });
 
     // v1.5.1: the launcher's readiness probe ran inside gVisor, where the socket existed,

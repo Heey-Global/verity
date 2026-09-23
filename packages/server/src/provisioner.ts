@@ -113,7 +113,11 @@ import type { ProjectRelayActivation, ProjectRelayBinding } from './project-rela
 import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
 import { requestRunnerSupervisor } from '@verity/session';
-import { relayHostEntries, sandboxResolvConf } from './gvisor-project-network.js';
+import {
+  relayHostEntries,
+  relayResolverAddress,
+  sandboxResolvConf,
+} from './gvisor-project-network.js';
 import type { ProjectSandboxLifecycleEvent } from './project-lifecycle-telemetry.js';
 import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
 import {
@@ -632,8 +636,9 @@ export interface ProvisionerOptions {
    *  how a gVisor runtime without `--host-uds=create` left projects "active" whose every
    *  turn failed with "the project supervisor socket is missing". Tests inject this. */
   supervisorReachable?: ((runtimePath: string) => Promise<void>) | undefined;
-  /** Upstream resolvers written into a gVisor Sandbox's resolv.conf. Docker's
-   *  embedded resolver is unreachable from gVisor's netstack (`gvisor-project-network.ts`). */
+  /** Resolvers written into a gVisor Sandbox's resolv.conf instead of its relay, which
+   *  otherwise answers for it: Docker's embedded resolver is unreachable from gVisor's
+   *  netstack (`gvisor-project-network.ts`). */
   sandboxDnsServers?: readonly string[] | undefined;
   /** Opt OUT of `no-new-privileges` for sandboxes whose devcontainer relies on
    *  `sudo` (which privilege-escalation blocking would break). Default false
@@ -4762,12 +4767,8 @@ export class ProvisionerImpl implements Provisioner {
           ? `Runner supervisor is disabled for this Sandbox because the ADR 0006 boundary attestation failed: ${runnerBoundaryAttestation.reason}.`
           : 'Runner supervisor is disabled for this Sandbox because the ADR 0006 security boundary rejects added capabilities or privilege escalation.'
         : null;
-    const gvisorDnsWarning =
-      this.opts.sandboxRuntime !== undefined && (this.opts.sandboxDnsServers?.length ?? 0) === 0
-        ? 'No upstream DNS resolvers are configured for this gVisor Sandbox (VERITY_SANDBOX_DNS_SERVERS), so it resolves only its relay: internet hostnames will not resolve inside it.'
-        : null;
     const provisionWarning =
-      [devcontainerWarning, runnerBoundaryWarning, gvisorDnsWarning]
+      [devcontainerWarning, runnerBoundaryWarning]
         .filter((warning): warning is string => warning !== null)
         .join(' ') || null;
     const { selected: projectClaudeGateway, url: claudeGateway } =
@@ -4815,21 +4816,22 @@ export class ProvisionerImpl implements Provisioner {
           effectiveClaudeGatewayUrl,
           effectiveCodexGatewayUrl,
         ]);
-        const servers = this.opts.sandboxDnsServers ?? [];
-        if (servers.length > 0) {
-          if (this.opts.gitSecretRoot === undefined) {
-            throw new Error('no secret root is configured for the Sandbox resolv.conf');
-          }
-          const resolvPath = writeSecretFile(
-            this.opts.gitSecretRoot,
-            `resolv.${project.id}.conf`,
-            sandboxResolvConf(servers),
-            'dns',
-            0o644,
-            0o755,
-          );
-          gvisorResolvBinds = [`${resolvPath}:/etc/resolv.conf:ro`];
+        const servers =
+          this.opts.sandboxDnsServers !== undefined && this.opts.sandboxDnsServers.length > 0
+            ? this.opts.sandboxDnsServers
+            : [relayResolverAddress(effectiveClaudeGatewayUrl, gvisorExtraHosts)];
+        if (this.opts.gitSecretRoot === undefined) {
+          throw new Error('no secret root is configured for the Sandbox resolv.conf');
         }
+        const resolvPath = writeSecretFile(
+          this.opts.gitSecretRoot,
+          `resolv.${project.id}.conf`,
+          sandboxResolvConf(servers),
+          'dns',
+          0o644,
+          0o755,
+        );
+        gvisorResolvBinds = [`${resolvPath}:/etc/resolv.conf:ro`];
       } catch (cause) {
         const message = `gVisor Sandbox name resolution could not be prepared: ${failureMessage(cause)}`;
         await this.opts.store.updateProjectState(project.id, 'failed', message);
