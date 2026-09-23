@@ -73,7 +73,7 @@ export function lifecycleSignalsFromMeta(
   return signals;
 }
 
-/** Stateful signal → canonical event mapper shared by ACP, OpenCode and future Pi. */
+/** Stateful signal → canonical event mapper shared by ACP and OpenCode. */
 export class StructuredLifecycleMapper {
   private readonly compactions = new Set<string>();
   private readonly taskPhase = new Map<string, StructuredLifecycleSignal & { type: 'task' }>();

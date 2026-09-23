@@ -4463,7 +4463,7 @@ describe('Conductor.startSession', () => {
 
     const appended = await brokeredTurnSystemPrompt(
       's-alias-unadmitted',
-      'pi-acp' as RunnerSupervisorBackend,
+      'unadmitted-acp' as RunnerSupervisorBackend,
       { brokeredSecretAliases },
     );
 

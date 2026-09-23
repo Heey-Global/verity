@@ -55,8 +55,8 @@ const OVERSIZE_DRAIN_GRACE_MS = 2_000;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 // What the start-turn request validator will parse at all — the outermost gate, wider
-// than what any given supervisor was launched for (`workerBackends`). Since `pi` was
-// dropped it holds the same three names as ACP_WORKER_BACKENDS below. That is a
+// than what any given supervisor was launched for (`workerBackends`). It currently
+// holds the same three names as ACP_WORKER_BACKENDS below. That is a
 // coincidence of the current fleet, not an identity: the two answer different questions
 // ("is this a backend name" vs. "may it spend the operator's secrets"), and they are
 // kept as separate literals for the same reason the next set is — see below.
@@ -87,8 +87,8 @@ const ACP_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp'])
 // as well. A backend with no worker adapter — no argv, no child to spawn, the position
 // OpenCode held as a long-lived HTTP server client before `opencode acp` (ADR 0012
 // Amendment 4) — stays on the loopback path and MUST NOT be listed here, or its turns
-// would fail at start-turn. There is no such backend at the moment; `pi` was the last
-// one and was dropped rather than adapted.
+// would fail at start-turn. There is no such backend at the moment; this boundary
+// remains explicit for future adapters.
 export const SUPERVISED_WORKER_BACKENDS = Object.freeze([
   'claude-acp',
   'codex-acp',

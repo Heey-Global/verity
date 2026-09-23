@@ -269,8 +269,8 @@ export interface SessionArtifactPurge {
    * {@link SessionArtifacts.speculative} for what is left out and why.
    *
    * This is the field to gate a "found nothing where it should have been" alert on.
-   * Gating on {@link absent} would fire for every OpenCode-only or Pi-only session
-   * delete, and for every session that was deleted before it ever ran a claude turn,
+   * Gating on {@link absent} would fire for every OpenCode-only session delete, and
+   * for every session that was deleted before it ever ran a claude turn,
    * because a delete always resolves the speculative pair and those sessions never had
    * the file. An alert that fires on the routine case is not read when the real one
    * arrives.

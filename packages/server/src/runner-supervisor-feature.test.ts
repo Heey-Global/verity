@@ -5433,8 +5433,8 @@ input.on('line', (line) => {
           sessionId: 'session-unsupported',
           // A backend the request validator parses but this supervisor was not
           // launched for — the gate under test. It has to be a parseable name:
-          // `opencode` and `pi` are not backend names any more, so either would be
-          // refused one step earlier and prove nothing about `workerBackends`.
+          // A retired or invented name would be refused one step earlier and prove
+          // nothing about `workerBackends`.
           backend: unsupportedBackend,
           worktree: runtimeDir,
           cwd: runtimeDir,
