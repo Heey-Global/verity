@@ -50,6 +50,8 @@ import {
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
   RUNNER_BROKER_CAPABILITIES,
+  DEFAULT_SANDBOX_MEMORY_BYTES,
+  DEFAULT_SANDBOX_NANO_CPUS,
   CLAUDE_EGRESS_GATEWAY_URL_LABEL,
   AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   type ProvisionerOptions,
@@ -1073,17 +1075,17 @@ describe('ProvisionerImpl (#174)', () => {
     );
     expect(spec.labels?.['verity.project-id']).toBe(id);
     expect(spec.restartPolicy).toBe('unless-stopped');
-    // A hard memory ceiling is ALWAYS set (default 4 GiB) so a runaway sandbox
-    // OOMs inside its own cgroup instead of taking the whole host down.
+    // A hard memory ceiling is ALWAYS set so a runaway sandbox OOMs inside its own
+    // cgroup instead of taking the whole host down.
     expect(spec.pidsLimit).toBe(512);
-    expect(spec.memoryBytes).toBe(4 * 1024 * 1024 * 1024);
+    expect(spec.memoryBytes).toBe(DEFAULT_SANDBOX_MEMORY_BYTES);
     // …and the combined ceiling matches it, so the container cannot swap. Omitting it
     // lets Docker default to twice the memory limit, which turns the OOM this cap
     // exists to produce into an unbounded swap-thrash the session never recovers from.
     expect(spec.memorySwapBytes).toBe(spec.memoryBytes);
     // The CPU quota is safe-by-default too; otherwise one project build can starve
     // the control plane and every neighbouring sandbox on the same host.
-    expect(spec.nanoCpus).toBe(2_000_000_000);
+    expect(spec.nanoCpus).toBe(DEFAULT_SANDBOX_NANO_CPUS);
     // A crashing worker must not dump core into the session worktree.
     expect(spec.ulimits).toEqual([{ name: 'core', soft: 0, hard: 0 }]);
   });
@@ -2470,6 +2472,34 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.nanoCpus).toBe(3_000_000_000);
   });
 
+  it('adds a configured swap allowance on top of the memory ceiling', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      sandboxMemoryBytes: 6 * 1024 ** 3,
+      sandboxSwapBytes: 2 * 1024 ** 3,
+    });
+
+    await provisioner.provision(id);
+
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    // Docker's `MemorySwap` is memory PLUS swap. Passing the swap amount through on
+    // its own would read as a combined ceiling BELOW the memory limit, which the
+    // Docker layer drops, and the sandbox would get Docker's default of swap equal
+    // to its memory: 6 GiB of host swap instead of the 2 GiB configured.
+    expect(spec.memoryBytes).toBe(6 * 1024 ** 3);
+    expect(spec.memorySwapBytes).toBe(8 * 1024 ** 3);
+  });
+
   it('weights a sandbox below the containers it shares the host with', async () => {
     const id = await seedProject();
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
@@ -2502,7 +2532,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(cgroupV2CpuWeight(spec.cpuShares)).toBeLessThan(CGROUP_V2_DEFAULT_CPU_WEIGHT);
     // ...and only a tie-break: the quota the sandbox runs out to when the host is
     // quiet is untouched, so no workload is narrowed to buy the ordering.
-    expect(spec.nanoCpus).toBe(2_000_000_000);
+    expect(spec.nanoCpus).toBe(DEFAULT_SANDBOX_NANO_CPUS);
   });
 
   it('lets a deployment opt out of sandbox CPU weighting', async () => {

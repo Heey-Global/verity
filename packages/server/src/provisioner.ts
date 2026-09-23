@@ -164,14 +164,24 @@ const execFileAsync = promisify(execFile);
 // GLOBAL OOM that thrashes the whole box unreachable (observed in prod: one
 // sandbox process ballooned and took the dev-server down). Capping each sandbox
 // keeps an OOM contained to that container's cgroup — the box stays healthy.
-// Safe-by-default for a modest single-host install; override per-host with
-// VERITY_SANDBOX_MEMORY (main.ts) where a higher/lower ceiling fits the
-// available RAM.
-const DEFAULT_SANDBOX_MEMORY_BYTES = 4 * 1024 * 1024 * 1024; // 4 GiB
+//
+// Sized for gVisor, the default project runtime. Under runsc the whole guest is
+// one Sentry process whose memory is a host shmem file charged to this cgroup,
+// and there is no guest OOM killer: when the ceiling is hit the HOST kills the
+// Sentry, and every session of the project dies with it rather than one runaway
+// build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
+// shmem), so the ceiling has to fit a project's concurrent turns (see
+// VERITY_PROJECT_MAX_CONCURRENT_TURNS), not a single process. Override per-host
+// with VERITY_SANDBOX_MEMORY (server-main.ts) where the available RAM differs.
+export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
+// Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
+// Off by default; see the `memorySwapBytes` comment at the container spec.
+export const DEFAULT_SANDBOX_SWAP_BYTES = 0;
 // Keep CPU-heavy builds from starving the control plane and neighbouring
-// sandboxes. Two cores matches the reference Compose deployment and remains
-// overridable through VERITY_SANDBOX_CPUS for larger or smaller hosts.
-const DEFAULT_SANDBOX_NANO_CPUS = 2 * 1e9;
+// sandboxes. Four cores is the ceiling one project may run out to; the CPU
+// weight below still ranks it under the control plane when cores are contended.
+// Overridable through VERITY_SANDBOX_CPUS for larger or smaller hosts.
+export const DEFAULT_SANDBOX_NANO_CPUS = 4 * 1e9;
 // Relative CPU weight per project sandbox (HostConfig.CpuShares). The ceiling
 // above is per-container and says nothing about how many of them run at once, so
 // on a host with more projects than cores every sandbox's ceiling is real and
@@ -614,9 +624,12 @@ export interface ProvisionerOptions {
    *  a project whose devcontainer legitimately needs more. */
   /** Max PIDs per sandbox (fork-bomb guard). Default 512. */
   sandboxPidsLimit?: number | undefined;
-  /** Hard memory ceiling per sandbox, in bytes. Default 4 GiB. */
+  /** Hard memory ceiling per sandbox, in bytes. Default 6 GiB. */
   sandboxMemoryBytes?: number | undefined;
-  /** CPU quota per sandbox in nano-CPUs (1e9 = one core). Default 2 cores. */
+  /** Swap a sandbox may use beyond {@link sandboxMemoryBytes}, in bytes. Default 0
+   *  (swap disabled). Only takes effect on a host that has swap configured. */
+  sandboxSwapBytes?: number | undefined;
+  /** CPU quota per sandbox in nano-CPUs (1e9 = one core). Default 4 cores. */
   sandboxNanoCpus?: number | undefined;
   /** Relative CPU weight per sandbox, deciding who yields once those per-container
    *  quotas oversubscribe the host. Default 512 — below the control plane and the
@@ -5196,8 +5209,9 @@ export class ProvisionerImpl implements Provisioner {
       this.opts.dataVolume,
       this.opts.dataVolumeRoot,
     );
-    // Bound once, then used for BOTH `Memory` and `MemorySwap` below, so the two can
-    // never drift apart when someone changes where the ceiling comes from.
+    // Bound once, then used for BOTH `Memory` and `MemorySwap` below, so the swap
+    // allowance cannot drift away from the ceiling it is added to when someone
+    // changes where the ceiling comes from.
     const sandboxMemoryBytes = this.opts.sandboxMemoryBytes ?? DEFAULT_SANDBOX_MEMORY_BYTES;
     const spec: ContainerSpec = {
       image: image.imageRef,
@@ -5335,18 +5349,22 @@ export class ProvisionerImpl implements Provisioner {
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? 512,
       memoryBytes: sandboxMemoryBytes,
-      // Pin the combined memory+swap ceiling TO the memory ceiling, which is how a
-      // cgroup is told the container may not swap. Leaving it out is not neutral:
-      // Docker then grants twice the memory limit as the combined ceiling, so every
-      // sandbox silently gained an extra 4 GiB of swap allowance (observed in prod:
-      // mem=4G/memswap=8G on all five sandboxes, against 4 GiB of host swap in total).
-      // The effect is the opposite of what the memory cap is for — a runaway test run
-      // does not OOM inside its own cgroup where the session can see it and report it,
-      // it swaps, gets orders of magnitude slower, never finishes, and drags every
-      // other container on the host down with it through the shared swap device.
-      // Raise VERITY_SANDBOX_MEMORY if a project legitimately needs more headroom;
-      // do not give the swap back.
-      memorySwapBytes: sandboxMemoryBytes,
+      // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
+      // from the memory ceiling: equal to it means no swap. Leaving it out is not
+      // neutral: Docker then grants twice the memory limit as the combined ceiling,
+      // so every sandbox silently gained a swap allowance as large as its memory
+      // (observed in prod: mem=4G/memswap=8G on all five sandboxes, against 4 GiB of
+      // host swap in total). Unasked-for swap turns a runaway test run into one that
+      // pages, gets orders of magnitude slower, never finishes, and drags every
+      // other container down through the shared swap device.
+      //
+      // VERITY_SANDBOX_SWAP opts in deliberately, as an amount on top of the memory
+      // ceiling. Under gVisor that is the one thing that can spare a Sandbox from the
+      // host OOM killer, which has no process to pick but the Sentry: the guest's
+      // shmem-backed memory can be paged out instead. It only helps if the host has
+      // swap, and that swap is shared by every container on the host.
+      memorySwapBytes:
+        sandboxMemoryBytes + (this.opts.sandboxSwapBytes ?? DEFAULT_SANDBOX_SWAP_BYTES),
       // No core dumps. `kernel.core_pattern` is a shared host setting and is commonly
       // a relative filename, in which case the kernel writes the dump into the crashing
       // process's cwd — for an agent that is the session worktree, hundreds of MB per

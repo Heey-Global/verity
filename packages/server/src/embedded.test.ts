@@ -45,6 +45,7 @@ import {
   candidateRunnerProjectIds,
   acpSupervisorWiringRefusal,
   parseByteSize,
+  parseSwapSize,
   parseCpuCores,
   parseDefaultOnFlag,
   parseNonNegativeInt,
@@ -503,6 +504,18 @@ describe('sandbox hardening env parsers (C1)', () => {
     expect(() => parseByteSize('lots')).toThrow(/invalid byte size/);
     expect(() => parseByteSize('999999999999999999999t')).toThrow(/supported range/);
     expect(() => parseByteSize('0')).toThrow(/supported range/);
+  });
+
+  it('parseSwapSize: 0 means no swap, anything else parses like a memory size', () => {
+    expect(parseSwapSize(undefined)).toBeUndefined();
+    expect(parseSwapSize('')).toBeUndefined();
+    // The Compose default. Routed through parseByteSize this would throw at startup,
+    // and every Compose deployment would refuse to boot on the value it ships.
+    expect(parseSwapSize('0')).toBe(0);
+    expect(parseSwapSize('0g')).toBe(0);
+    expect(parseSwapSize('2g')).toBe(2 * 1024 ** 3);
+    expect(() => parseSwapSize('-1g')).toThrow(/invalid byte size/);
+    expect(() => parseSwapSize('lots')).toThrow(/invalid byte size/);
   });
 
   it('parseCpuCores: cores → nano-CPUs, invalid throws', () => {
