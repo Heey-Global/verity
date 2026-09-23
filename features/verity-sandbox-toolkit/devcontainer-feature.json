@@ -68,7 +68,7 @@
     },
     "piVersion": {
       "type": "string",
-      "default": "0.85.1",
+      "default": "0.86.0",
       "description": "Exact @earendil-works/pi-coding-agent npm version to pin."
     },
     "runnerUid": {
