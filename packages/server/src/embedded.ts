@@ -1528,7 +1528,7 @@ export function parseByteSize(value: string | undefined): number | undefined {
  *  {@link parseByteSize}, plus `0` for "no swap" — the one value a memory ceiling
  *  must never take, and the default here. Unset/empty → `undefined` (default). */
 export function parseSwapSize(value: string | undefined): number | undefined {
-  if (value !== undefined && /^\s*0+(?:\.0*)?\s*([kmgt])?b?\s*$/i.test(value)) return 0;
+  if (value !== undefined && /^0+(?:\.0+)?\s*[kmgt]?b?$/i.test(value.trim())) return 0;
   return parseByteSize(value);
 }
 

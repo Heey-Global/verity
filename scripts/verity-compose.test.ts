@@ -198,7 +198,7 @@ describe('deploy/bin/verity-compose', () => {
     );
   });
 
-  it('lets the managed topology seal the sandbox CPU weight as an env source', () => {
+  it('lets the managed topology seal the sandbox CPU weight and swap as env sources', () => {
     // On the managed topology Compose does not create the Server — the Updater does,
     // from the env SOURCES sealed at bootstrap. Bootstrap seals by rule rather than by
     // a hand-kept list: every VERITY_* name present, minus an explicit set of
@@ -221,6 +221,9 @@ describe('deploy/bin/verity-compose', () => {
     expect(excluded).toBeDefined();
     expect(excluded).toContain("'VERITY_SERVER_IMAGE'");
     expect(excluded).not.toContain('VERITY_SANDBOX_CPU_SHARES');
+    // Same failure for the swap allowance: excluded, the documented opt-in would be
+    // inert on every managed host while Compose hosts honoured it.
+    expect(excluded).not.toContain('VERITY_SANDBOX_SWAP');
   });
 
   it('gives bootstrap and the Updater the same managed ACP environment sources', () => {

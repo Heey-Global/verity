@@ -513,6 +513,9 @@ describe('sandbox hardening env parsers (C1)', () => {
     // and every Compose deployment would refuse to boot on the value it ships.
     expect(parseSwapSize('0')).toBe(0);
     expect(parseSwapSize('0g')).toBe(0);
+    expect(parseSwapSize(' 0.0 GB ')).toBe(0);
+    // Zero takes the same grammar as every other size, not a looser one of its own.
+    expect(() => parseSwapSize('0.')).toThrow(/invalid byte size/);
     expect(parseSwapSize('2g')).toBe(2 * 1024 ** 3);
     expect(() => parseSwapSize('-1g')).toThrow(/invalid byte size/);
     expect(() => parseSwapSize('lots')).toThrow(/invalid byte size/);
