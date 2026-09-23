@@ -2189,7 +2189,7 @@ export interface SupervisorRunnerRecoveryOptions {
 }
 
 /** Discovery adapter the conductor's startup recovery and liveness sweep probe a
- * `running` turn marker through (wired in `server-main.ts` and `embedded.ts`). */
+ * `running` turn marker through (wired in `embedded.ts`). */
 export class SupervisorRunnerRecovery implements RunnerRecovery {
   constructor(private readonly options: SupervisorRunnerRecoveryOptions) {}
 
