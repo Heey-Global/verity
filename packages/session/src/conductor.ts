@@ -1444,7 +1444,8 @@ export class Conductor {
    * Waiting happens with the durable marker already written and the in-flight lock
    * held, so the turn is a normal running turn to everything else: Stop aborts the
    * wait (settling as `interrupted`), and the liveness sweep leaves it alone because
-   * no Runner identity is bound until the backend actually starts.
+   * no Runner identity is bound until the backend actually starts. A session without
+   * a project shares no project Sandbox, so it is not gated.
    */
   private async runBackendTurnWithResumeRecovery(
     sessionId: string,
@@ -1452,16 +1453,21 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
   ): Promise<RunResult> {
-    const key = session.projectId ?? '';
+    const key = session.projectId;
+    if (key === null) return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
     const signal = this.turns.get(sessionId)?.controller.signal;
-    if (this.projectTurnGate.wouldWait(key)) {
-      await this.emitEvent(sessionId, {
+    let notice: Promise<void> | undefined;
+    const release = await this.projectTurnGate.acquire(key, signal, () => {
+      notice = this.emitEvent(sessionId, {
         t: 'notice',
         role: 'agent',
         text: projectTurnWaitNotice(this.projectTurnGate.runningCount(key)),
+      }).catch((error: unknown) => {
+        this.reportTurnError(sessionId, error);
       });
-    }
-    const release = await this.projectTurnGate.acquire(key, signal);
+    });
+    // Keep the notice ahead of the turn's own events in the transcript.
+    await notice;
     if (release === undefined) {
       return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
     }

@@ -39,11 +39,17 @@ export class ProjectTurnGate {
   /**
    * Wait for a slot. Resolves with an idempotent release function, or `undefined` if
    * `signal` aborted first — the caller then has no slot and must not run the turn.
+   * `onQueued` runs synchronously, only when the caller really has to wait.
    */
-  async acquire(key: string, signal?: AbortSignal): Promise<(() => void) | undefined> {
+  async acquire(
+    key: string,
+    signal?: AbortSignal,
+    onQueued?: () => void,
+  ): Promise<(() => void) | undefined> {
     if (!this.enabled) return () => undefined;
     if (signal?.aborted === true) return undefined;
     if (!this.wouldWait(key)) return this.take(key);
+    onQueued?.();
     return await new Promise<(() => void) | undefined>((resolve) => {
       const queue = this.waiters.get(key) ?? [];
       const wake = (): void => {

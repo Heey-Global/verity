@@ -9352,12 +9352,28 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
 });
 
 describe('Conductor per-project turn cap', () => {
+  async function capSession(sessionId: string, projectId: string | null): Promise<void> {
+    if (projectId !== null) {
+      await ctx.store.upsertProject({
+        id: projectId,
+        owner: 'acme',
+        repo: projectId,
+        containerName: `verity-acme-${projectId}`,
+        state: 'active',
+      });
+    }
+    await ctx.store.createSession({
+      sessionId,
+      worktree: `/wt/${sessionId}`,
+      model: 'm',
+      ...(projectId !== null ? { projectId } : {}),
+    });
+  }
+
   // A cap that only counts what already started would admit every turn dispatched in
   // one burst; the sandbox that dies from that burst takes every session with it.
   it('holds a turn over the cap until a running one settles, then starts it', async () => {
-    for (const id of ['cap-a', 'cap-b', 'cap-c']) {
-      await ctx.store.createSession({ sessionId: id, worktree: `/wt/${id}`, model: 'm' });
-    }
+    for (const id of ['cap-a', 'cap-b', 'cap-c']) await capSession(id, 'p-cap');
     const { backend, releases, calls } = releasableBackend();
     const conductor = new Conductor({
       store: ctx.store,
@@ -9385,9 +9401,7 @@ describe('Conductor per-project turn cap', () => {
   });
 
   it('settles a waiting turn as interrupted on Stop without ever running it', async () => {
-    for (const id of ['stop-a', 'stop-b']) {
-      await ctx.store.createSession({ sessionId: id, worktree: `/wt/${id}`, model: 'm' });
-    }
+    for (const id of ['stop-a', 'stop-b']) await capSession(id, 'p-stop');
     const { backend, releases, calls } = releasableBackend();
     const conductor = new Conductor({
       store: ctx.store,
@@ -9413,5 +9427,28 @@ describe('Conductor per-project turn cap', () => {
     releases[1]?.();
     await waitFor(() => !conductor.isBusy('stop-b'));
     expect(calls).toHaveLength(2);
+  });
+
+  // The cap exists because one project's sessions share one Sandbox. Keying anything
+  // else into the same pool would serialize unrelated work behind a busy project.
+  it('never holds turns of another project or of project-less sessions', async () => {
+    await capSession('own-a', 'p-busy');
+    await capSession('other-b', 'p-other');
+    await capSession('loose-c', null);
+    const { backend, releases, calls } = releasableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+      maxConcurrentProjectTurns: 1,
+    });
+
+    await conductor.dispatchTurn('own-a', 'one');
+    await waitFor(() => releases.length === 1);
+    await conductor.dispatchTurn('other-b', 'two');
+    await conductor.dispatchTurn('loose-c', 'three');
+    await waitFor(() => calls.length === 3);
+    for (const release of releases) release();
+    await waitFor(() => !['own-a', 'other-b', 'loose-c'].some((id) => conductor.isBusy(id)));
   });
 });
