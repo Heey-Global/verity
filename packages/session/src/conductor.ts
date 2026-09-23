@@ -255,6 +255,11 @@ class SessionTurnHandle implements RunnerTurn {
    * backend has been resolved, which is fail-closed at both readers: no
    * auto-approval, and no grant persisted. */
   grantChannel: BrokeredGrantChannel | undefined;
+  /** Frees this turn's {@link ProjectTurnGate} slot (idempotent). Normally freed when
+   * the Runner's result settles; the force-settle frees it too, because a Runner that
+   * is confirmed dead or wedged may never resolve that result. A plain Stop does not:
+   * the Runner still occupies the Sandbox until its cancel lands. */
+  releaseProjectSlot: (() => void) | undefined;
   /** Which settle path owns this turn's terminal writes + release: the turn's own
    * run loop (`'run'`) or the stop watchdog's force-settle (`'force'`). Claimed
    * SYNCHRONOUSLY before any terminal side effect, so exactly one owner ever
@@ -1472,14 +1477,17 @@ export class Conductor {
     if (release === undefined) {
       return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
     }
-    // Same rule as a reattached turn: a Runner settled from outside (Stop, a dead
-    // verdict, the stop watchdog) may never resolve the backend promise, and holding the
-    // slot until it does would leak it for the life of the Server.
-    signal?.addEventListener('abort', release, { once: true });
+    // Stop can land between the slot handoff and this continuation: give the slot
+    // straight back rather than start a Runner the operator already cancelled.
+    if (signal?.aborted === true) {
+      release();
+      return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
+    }
+    const handle = this.turns.get(sessionId);
+    if (handle !== undefined) handle.releaseProjectSlot = release;
     try {
       return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
     } finally {
-      signal?.removeEventListener('abort', release);
       release();
     }
   }
@@ -2563,6 +2571,7 @@ export class Conductor {
       // never keep the session fenced. `clearRunningTurn` catches + reports its
       // own store errors.
       this.releaseInFlight(sessionId);
+      handle.releaseProjectSlot?.();
       // Scoped to the wedged turn's own prompt_seq: even a delayed delete can then
       // never erase a successor turn's marker (crash-recovery anchor). An
       // undefined markerSeq means the wedge happened before this turn ever wrote
@@ -4212,12 +4221,10 @@ export class Conductor {
       });
       boundHandle.delegate = turn;
       // The recovered Runner is still using its project Sandbox, so it counts against
-      // the per-project cap until it ends — or until this side gives up on it. A Runner
-      // the sweep confirms dead never resolves its result, and Stop, the dead verdict
-      // and the stop watchdog all abort the handle first.
+      // the per-project cap until its result settles or the force-settle gives up on it.
       if (session.projectId !== null) {
         const releaseSlot = this.projectTurnGate.hold(session.projectId);
-        boundHandle.controller.signal.addEventListener('abort', releaseSlot, { once: true });
+        boundHandle.releaseProjectSlot = releaseSlot;
         void turn.result.finally(releaseSlot).catch(() => undefined);
       }
       // A recovered process may outlive a permission change; attach only to stop it.

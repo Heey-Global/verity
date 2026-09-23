@@ -9575,6 +9575,33 @@ describe('Conductor per-project turn cap', () => {
     expect(calls).toHaveLength(2);
   });
 
+  // Stop only asks the Runner to go; its agent and builds keep their memory until it
+  // has. Handing the slot on at the button press would start the next turn on top.
+  it("keeps a stopped turn's slot until its Runner has actually ended", async () => {
+    for (const id of ['held-a', 'held-b']) await capSession(id, 'p-held');
+    const { backend, releases, calls } = releasableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+      maxConcurrentProjectTurns: 1,
+    });
+
+    await conductor.dispatchTurn('held-a', 'one');
+    await waitFor(() => releases.length === 1);
+    await conductor.dispatchTurn('held-b', 'two');
+    await waitFor(() => conductor.isBusy('held-b'));
+    const stopped = conductor.cancelTurn('held-a');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toHaveLength(1);
+
+    releases[0]?.();
+    await stopped;
+    await waitFor(() => calls.length === 2);
+    releases[1]?.();
+    await waitFor(() => !conductor.isBusy('held-b'));
+  });
+
   // The cap exists because one project's sessions share one Sandbox. Keying anything
   // else into the same pool would serialize unrelated work behind a busy project.
   it('never holds turns of another project or of project-less sessions', async () => {
