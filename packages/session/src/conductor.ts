@@ -27,6 +27,7 @@ import { materializeFileAttachments } from './file-attachments.js';
 import { buildHandoffPrompt } from './handoff.js';
 import { isNoSessionInitFailure } from './ingest.js';
 import { withMeetingContext } from './meeting-context.js';
+import { ProjectTurnGate } from './project-turn-gate.js';
 import {
   buildBranchPrompt,
   buildTitlePrompt,
@@ -84,6 +85,14 @@ const UNCERTAIN_RECOVERY_EXHAUSTED_NOTICE =
   'This turn was left in flight by a restart and its Runner could not be reached to ' +
   'confirm whether it is still alive. Verity has stopped waiting and released the ' +
   'session — send the message again if the work did not finish.';
+/** Transcript wording while a turn waits for a {@link ProjectTurnGate} slot. */
+function projectTurnWaitNotice(running: number): string {
+  return (
+    `Waiting for a free slot: ${String(running)} other turn${running === 1 ? ' is' : 's are'} ` +
+    "already running in this project's sandbox. This turn starts automatically when " +
+    'one finishes; Stop cancels it.'
+  );
+}
 /** How often the in-flight liveness sweep runs. */
 const TURN_LIVENESS_SWEEP_MS = 30_000;
 /** How many consecutive sweeps an in-flight turn may append NO event before its
@@ -620,6 +629,12 @@ export interface ConductorDeps {
    * further enqueue throws {@link QueueFullError}. Defaults to 10. */
   maxQueuedTurns?: number | undefined;
   /**
+   * Max turns that may execute at once per project Sandbox (sessions without a
+   * project share one key). A turn over the cap waits — visibly, cancellably — for a
+   * slot before its backend starts. Omit or ≤ 0 for no cap. See {@link ProjectTurnGate}.
+   */
+  maxConcurrentProjectTurns?: number | undefined;
+  /**
    * How often a backend-confirmed pre-execution failure is replayed on its own.
    * This deliberately excludes mid-turn crashes and every failure whose execution
    * phase is unknown: re-submitting a prompt after it may have caused an external
@@ -994,6 +1009,7 @@ export class Conductor {
   private readonly maintenanceLocks = new Set<string>();
   private readonly deferredAfterCurrentTurn = new Map<string, Array<() => void>>();
   private readonly maxQueue: number;
+  private readonly projectTurnGate: ProjectTurnGate;
   // Auto-title bookkeeping (in-memory). `autoTitleDone` holds sessions whose titling
   // is settled — named by the operator, generated, or attempted-and-given-up — so we
   // never revisit them; `autoTitleInFlight` guards against two overlapping settles
@@ -1027,6 +1043,7 @@ export class Conductor {
 
   constructor(private readonly deps: ConductorDeps) {
     this.maxQueue = deps.maxQueuedTurns ?? 10;
+    this.projectTurnGate = new ProjectTurnGate(deps.maxConcurrentProjectTurns ?? 0);
     this.autoResumeAttempts = deps.autoResumeAttempts ?? 1;
     this.autoResumeDelayMs = deps.autoResumeDelayMs ?? AUTO_RESUME_DELAY_MS;
     this.backend = deps.backend ?? new AcpClaudeBackend();
@@ -1422,7 +1439,40 @@ export class Conductor {
       throw new KnowledgeSessionClosedError(sessionId);
   }
 
+  /**
+   * Run the backend turn inside one of its project's {@link ProjectTurnGate} slots.
+   * Waiting happens with the durable marker already written and the in-flight lock
+   * held, so the turn is a normal running turn to everything else: Stop aborts the
+   * wait (settling as `interrupted`), and the liveness sweep leaves it alone because
+   * no Runner identity is bound until the backend actually starts.
+   */
   private async runBackendTurnWithResumeRecovery(
+    sessionId: string,
+    prompt: string,
+    session: SessionRecord,
+    opts: TurnOptions,
+  ): Promise<RunResult> {
+    const key = session.projectId ?? '';
+    const signal = this.turns.get(sessionId)?.controller.signal;
+    if (this.projectTurnGate.wouldWait(key)) {
+      await this.emitEvent(sessionId, {
+        t: 'notice',
+        role: 'agent',
+        text: projectTurnWaitNotice(this.projectTurnGate.runningCount(key)),
+      });
+    }
+    const release = await this.projectTurnGate.acquire(key, signal);
+    if (release === undefined) {
+      return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
+    }
+    try {
+      return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
+    } finally {
+      release();
+    }
+  }
+
+  private async runGatedBackendTurn(
     sessionId: string,
     prompt: string,
     session: SessionRecord,
@@ -3654,10 +3704,11 @@ export class Conductor {
       await this.deps.store.latestEventSeq(marker.sessionId),
       marker.promptSeq,
     );
-    if ((this.pendingPermissionRequests.get(marker.sessionId)?.size ?? 0) > 0) {
-      this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes: 0 });
-      return;
-    }
+    // A turn waiting on the operator is legitimately silent, so it can never count as
+    // STALLED. It is still probed: a Sandbox that died under an open permission card
+    // leaves the card unanswerable (its control socket is gone), and skipping the probe
+    // here kept exactly that turn `running` forever. Only a confirmed-dead verdict acts.
+    const awaitingOperator = (this.pendingPermissionRequests.get(marker.sessionId)?.size ?? 0) > 0;
     const seen = this.livenessSeen.get(marker.sessionId);
     if (seen === undefined || seen.seq !== newest) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes: 0 });
@@ -3677,7 +3728,7 @@ export class Conductor {
     // `uncertain` proves nothing and resets the confirmed-live count. `live` is a
     // positive observation: the Runner exists, but an unchanged transcript says
     // its turn is making no visible progress.
-    const liveProbes = outcome.status === 'live' ? seen.liveProbes + 1 : 0;
+    const liveProbes = outcome.status === 'live' && !awaitingOperator ? seen.liveProbes + 1 : 0;
     const stalled = outcome.status === 'live' && liveProbes >= TURN_LIVENESS_STALLED_WINDOWS;
     if (outcome.status !== 'dead' && !stalled) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes });

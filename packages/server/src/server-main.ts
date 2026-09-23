@@ -881,6 +881,9 @@ async function main(): Promise<void> {
       // A devcontainer that needs sudo can set
       // VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION=1 (or add caps via CAP_ADD).
       sandboxPidsLimit: parseNonNegativeInt(process.env.VERITY_SANDBOX_PIDS_LIMIT),
+      maxConcurrentProjectTurns: parseNonNegativeInt(
+        process.env.VERITY_PROJECT_MAX_CONCURRENT_TURNS,
+      ),
       sandboxMemoryBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY),
       sandboxNanoCpus: parseCpuCores(process.env.VERITY_SANDBOX_CPUS),
       sandboxCpuShares: parseNonNegativeInt(process.env.VERITY_SANDBOX_CPU_SHARES),

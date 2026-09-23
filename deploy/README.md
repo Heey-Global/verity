@@ -701,6 +701,14 @@ VERITY_SANDBOX_CPUS=2
 VERITY_SANDBOX_CPU_SHARES=512
 ```
 
+`VERITY_PROJECT_MAX_CONCURRENT_TURNS` (default `2`) caps how many turns execute
+at once inside one project Sandbox. Every session of a project shares that one
+container and its memory limit, and under gVisor there is no in-Sandbox OOM killer:
+when the combined workload outgrows the limit, the host kills the gVisor Sentry and
+every session in the Sandbox dies together. A turn over the cap shows a waiting
+notice and starts as soon as a slot frees up; Stop cancels it while it waits. Raise
+the cap together with `VERITY_SANDBOX_MEMORY`, or set `0` to disable it.
+
 Active project Sandboxes sleep after 30 minutes without a running turn, Agent
 Loop, dev server, or public preview. New turns and Agent Loops wake them
 automatically. This is a product lifecycle rule rather than a deployment setting.

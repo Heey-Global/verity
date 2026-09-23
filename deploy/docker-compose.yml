@@ -126,6 +126,10 @@ services:
       # 100), not as a fraction of Docker's nominal 1024. 0 restores the default.
       VERITY_SANDBOX_CPU_SHARES: ${VERITY_SANDBOX_CPU_SHARES:-512}
       VERITY_SANDBOX_PIDS_LIMIT: ${VERITY_SANDBOX_PIDS_LIMIT:-512}
+      # Turns executing at once per project sandbox. All of a project's sessions
+      # share one container and its memory limit; under gVisor an overrun kills the
+      # whole sandbox, so further turns wait for a slot instead. 0 disables the cap.
+      VERITY_PROJECT_MAX_CONCURRENT_TURNS: ${VERITY_PROJECT_MAX_CONCURRENT_TURNS:-2}
       # Escape hatch for a project whose devcontainer needs sudo or a capability:
       # VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION: '1'   # keep sudo working
       # VERITY_SANDBOX_CAP_ADD: NET_BIND_SERVICE          # add back specific caps

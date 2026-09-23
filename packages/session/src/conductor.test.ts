@@ -3160,6 +3160,55 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     }
   });
 
+  it('settles a dead Runner even while a permission card is still open', async () => {
+    // A Sandbox that dies while its turn waits on the operator used to skip every probe:
+    // the open card read as "the silence is expected", so the turn stayed running for
+    // good and the card could never be answered either.
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-dies-under-card');
+      let outcome: RunnerRecoveryOutcome = {
+        status: 'live',
+        target: {
+          turnId: 'turn-dies-under-card',
+          sessionId: 's1',
+          eventFilePath: '/rt/events.jsonl',
+          controlSocketPath: '/rt/control.sock',
+        },
+      };
+      const recovery: RunnerRecovery = { discover: async () => outcome };
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined));
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: recovery,
+      });
+
+      await conductor.recover();
+      void conductor
+        .requestExternalPermission({
+          sessionId: 's1',
+          toolUseId: 'tu-open-card',
+          toolName: 'verity_http_request',
+          input: {},
+          channel: 'acp',
+        })
+        .catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(conductor.pendingPermissions('s1')).toContain('tu-open-card');
+      outcome = { status: 'dead' };
+      for (let i = 0; i < 12 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      expect(await ctx.store.listRunningTurns()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not sweep markers while startup recovery still owns them', async () => {
     // Recovery owns every open marker while it runs: the ones it has not reached yet
     // are not in `uncertainRecovery`, so a sweep overlapping it would happily probe
@@ -9299,5 +9348,70 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
     await expect(ask(conductor, 'ghost', 'toolu_nowhere')).rejects.toThrow();
     expect(conductor.pendingPermissions('ghost')).toEqual([]);
+  });
+});
+
+describe('Conductor per-project turn cap', () => {
+  // A cap that only counts what already started would admit every turn dispatched in
+  // one burst; the sandbox that dies from that burst takes every session with it.
+  it('holds a turn over the cap until a running one settles, then starts it', async () => {
+    for (const id of ['cap-a', 'cap-b', 'cap-c']) {
+      await ctx.store.createSession({ sessionId: id, worktree: `/wt/${id}`, model: 'm' });
+    }
+    const { backend, releases, calls } = releasableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+      maxConcurrentProjectTurns: 2,
+    });
+
+    await conductor.dispatchTurn('cap-a', 'one');
+    await conductor.dispatchTurn('cap-b', 'two');
+    await waitFor(() => releases.length === 2);
+    await conductor.dispatchTurn('cap-c', 'three');
+    await waitFor(() => conductor.isBusy('cap-c'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toHaveLength(2);
+    expect(conductor.isBusy('cap-c')).toBe(true);
+    const waiting = (await ctx.store.getEvents('cap-c')).filter((e) => e.t === 'notice');
+    expect(waiting).toHaveLength(1);
+
+    releases[0]?.();
+    await waitFor(() => calls.length === 3);
+    releases[1]?.();
+    releases[2]?.();
+    await waitFor(() => !conductor.isBusy('cap-c'));
+  });
+
+  it('settles a waiting turn as interrupted on Stop without ever running it', async () => {
+    for (const id of ['stop-a', 'stop-b']) {
+      await ctx.store.createSession({ sessionId: id, worktree: `/wt/${id}`, model: 'm' });
+    }
+    const { backend, releases, calls } = releasableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+      maxConcurrentProjectTurns: 1,
+    });
+
+    await conductor.dispatchTurn('stop-a', 'one');
+    await waitFor(() => releases.length === 1);
+    await conductor.dispatchTurn('stop-b', 'two');
+    await waitFor(() => conductor.isBusy('stop-b'));
+
+    await expect(conductor.cancelTurn('stop-b')).resolves.toBe(true);
+    await waitFor(() => !conductor.isBusy('stop-b'));
+    expect((await ctx.store.getEvents('stop-b')).map((e) => e.t)).toContain('interrupted');
+
+    // The cancelled waiter must not have kept a claim on the slot it never got.
+    releases[0]?.();
+    await waitFor(() => !conductor.isBusy('stop-a'));
+    await conductor.dispatchTurn('stop-b', 'again');
+    await waitFor(() => calls.length === 2);
+    releases[1]?.();
+    await waitFor(() => !conductor.isBusy('stop-b'));
+    expect(calls).toHaveLength(2);
   });
 });

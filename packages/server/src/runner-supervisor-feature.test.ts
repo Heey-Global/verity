@@ -6115,6 +6115,44 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
     }
   });
 
+  // After a whole-Sandbox kill every worker is gone, but a probe that cannot decide at
+  // boot (here: a lock path it cannot open) used to drop the turn for good. Its state
+  // stayed `running` beside a stale `control.sock`, which the Server reads as a live
+  // Runner — the session then badged `running` with nothing left to ever settle it.
+  it('keeps retrying a turn whose boot-time probe was undecided until it settles', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-undecided', startCommandId: 'start-turn-undecided' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-undecided');
+    const lockPath = join(runtimeDir, 'turns/turn-undecided/worker.lock');
+    await mkdir(lockPath);
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await expect(readTurnState(runtimeDir, 'turn-undecided')).resolves.toMatchObject({
+        status: 'claimed',
+      });
+      await rm(lockPath, { recursive: true });
+      await vi.waitFor(
+        async () => {
+          await expect(readTurnState(runtimeDir, 'turn-undecided')).resolves.toMatchObject({
+            status: 'settled',
+            workerError: 'worker missing during supervisor recovery',
+          });
+        },
+        { timeout: 5000, interval: 20 },
+      );
+    } finally {
+      await supervisor.close();
+    }
+  });
+
   // The same recovery, for a turn the operator had already stopped. The worker is
   // equally missing, but "the system lost your worker" and "you cancelled this" are
   // different things to be told, and the durable tombstone is the only thing left

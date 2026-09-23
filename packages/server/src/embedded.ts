@@ -795,6 +795,9 @@ export interface EmbeddedServerConfig {
    *  all capabilities, blocks privilege escalation, and caps PIDs by default; these
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
+  /** Max turns executing at once per project Sandbox (`VERITY_PROJECT_MAX_CONCURRENT_TURNS`).
+   *  Omit for {@link DEFAULT_MAX_CONCURRENT_PROJECT_TURNS}; 0 disables the cap. */
+  maxConcurrentProjectTurns?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
@@ -1521,6 +1524,14 @@ export function parseByteSize(value: string | undefined): number | undefined {
   }
   return bytes;
 }
+
+/**
+ * Default cap on turns executing at once inside one project Sandbox. All of a
+ * project's sessions share one container and one memory limit, and under gVisor an
+ * overrun kills the whole Sandbox (every session in it) rather than one process —
+ * two concurrent turns is what a 4–6 GiB Sandbox holds with builds and tests running.
+ */
+export const DEFAULT_MAX_CONCURRENT_PROJECT_TURNS = 2;
 
 /** Parse a CPU-core count (`VERITY_SANDBOX_CPUS`, e.g. `1.5`) into Docker
  *  nano-CPUs (1 core = 1e9). Unset/empty → `undefined` (unlimited). Invalid THROWS. */
@@ -4179,6 +4190,8 @@ export async function buildEmbeddedServer(
     // are configured — same guard as `refreshProjectToken`).
     ...(projectWorktrees !== undefined ? { projectWorktrees } : {}),
     conductor: {
+      maxConcurrentProjectTurns:
+        config.maxConcurrentProjectTurns ?? DEFAULT_MAX_CONCURRENT_PROJECT_TURNS,
       // Stable ACP v1 is the only Claude transport (ADR 0012); the native
       // stream-json backend it replaced has been removed, rollback included.
       backend: new AcpClaudeBackend(),

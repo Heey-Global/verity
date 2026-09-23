@@ -2211,8 +2211,19 @@ export function createTurnAdopter(runtimeDir, options = {}) {
     }
   };
 
+  // Turns whose boot-time probe could not decide. Kept apart from `adopted`, which
+  // authorizes control over a LIVE worker: an undecided turn must not gain that, but it
+  // must not be dropped either. Dropping it left its state `running` with a stale
+  // `control.sock` beside it after a whole-Sandbox kill — which the Server reads as a
+  // live Runner, so the turn badged `running` with nothing left to ever settle it.
+  // Retried on a slower cadence than the adopted poll: each probe forks a `flock`, and
+  // what keeps a turn undecided (a corrupt state file) can persist indefinitely.
+  const unresolved = new Set();
+  const unresolvedRetryMs = options.unresolvedRetryMs ?? 5000;
+  let nextUnresolvedAt = 0;
+
   const schedule = () => {
-    if (closed || adopted.size === 0 || timer !== undefined) return;
+    if (closed || (adopted.size === 0 && unresolved.size === 0) || timer !== undefined) return;
     timer = setTimeout(() => {
       timer = undefined;
       void poll();
@@ -2227,6 +2238,15 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       for (const turnId of [...adopted]) {
         const disposition = await probe(turnId, false).catch(() => 'uncertain');
         if (disposition === 'dead') adopted.delete(turnId);
+      }
+      const retryUnresolved = Date.now() >= nextUnresolvedAt;
+      if (retryUnresolved) nextUnresolvedAt = Date.now() + unresolvedRetryMs;
+      for (const turnId of retryUnresolved ? [...unresolved] : []) {
+        if (closed) break;
+        const disposition = await probe(turnId, true).catch(() => 'uncertain');
+        if (disposition === 'uncertain') continue;
+        unresolved.delete(turnId);
+        if (disposition === 'live') adopted.add(turnId);
       }
     } finally {
       polling = false;
@@ -2243,6 +2263,7 @@ export function createTurnAdopter(runtimeDir, options = {}) {
         if (state.workerLock !== true) continue;
         const disposition = await probe(state.turnId, true).catch(() => 'uncertain');
         if (disposition === 'live') adopted.add(state.turnId);
+        else if (disposition === 'uncertain') unresolved.add(state.turnId);
       }
       schedule();
     },
@@ -2252,6 +2273,7 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       timer = undefined;
       while (polling) await new Promise((resolvePoll) => setTimeout(resolvePoll, 1));
       adopted.clear();
+      unresolved.clear();
     },
   };
 }
