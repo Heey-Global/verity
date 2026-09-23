@@ -2939,6 +2939,22 @@ const migrations: Record<string, Migration> = {
         drop constraint knowledge_wiki_jobs_retired`.execute(db);
     },
   },
+  '0105_project_google_drive_folder': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('project_settings')
+        .addColumn('google_drive_folder_id', 'text')
+        .addColumn('google_drive_folder_name', 'text')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('project_settings')
+        .dropColumn('google_drive_folder_name')
+        .dropColumn('google_drive_folder_id')
+        .execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

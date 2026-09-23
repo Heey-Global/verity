@@ -451,6 +451,8 @@ export const projectSettingsSchema = z.object({
   // session's runtime system prompt. Optional so a producer predating the field is
   // tolerated; `null` when unset.
   memory: z.string().nullable().optional(),
+  googleDriveFolderId: z.string().nullable().optional(),
+  googleDriveFolderName: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -828,6 +830,8 @@ export const driveFileSchema = z.object({
   size: z.string().optional(),
   iconLink: z.string().optional(),
   canEdit: z.boolean().optional(),
+  parents: z.array(z.string()).optional(),
+  webViewLink: z.string().optional(),
 });
 export type DriveFile = z.infer<typeof driveFileSchema>;
 
@@ -2320,7 +2324,7 @@ export class VerityClient {
     query?: string;
     sharedWithMe?: boolean;
     pageToken?: string;
-    purpose?: 'import' | 'workspace';
+    purpose?: 'import' | 'workspace' | 'folder';
   }): Promise<DriveFileList> {
     const search = new URLSearchParams();
     if (params?.parentId) search.set('parentId', params.parentId);
@@ -2353,6 +2357,80 @@ export class VerityClient {
 
   async disconnectGoogleDrive(): Promise<void> {
     await this.request('/google-drive/disconnect', { method: 'POST' });
+  }
+
+  async connectProjectGoogleDriveFolder(
+    projectId: string,
+    fileId: string,
+  ): Promise<{ id: string; name: string }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folder`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fileId }),
+      },
+    );
+    return z
+      .object({ folder: z.object({ id: z.string(), name: z.string() }) })
+      .parse(await res.json()).folder;
+  }
+
+  async disconnectProjectGoogleDriveFolder(projectId: string): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/google-drive/folder`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listProjectGoogleDriveFiles(
+    projectId: string,
+    folderId: string,
+    params: { parentId?: string; pageToken?: string } = {},
+  ): Promise<DriveFileList> {
+    const search = new URLSearchParams();
+    if (params.parentId) search.set('parentId', params.parentId);
+    if (params.pageToken) search.set('pageToken', params.pageToken);
+    const query = search.toString();
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files${query ? `?${query}` : ''}`,
+      { method: 'GET' },
+    );
+    return driveFileListSchema.parse(await res.json());
+  }
+
+  async uploadProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    upload: { parentId?: string; fileName: string; mimeType: string; data: Blob },
+  ): Promise<DriveFile> {
+    const search = new URLSearchParams({ name: upload.fileName, mimeType: upload.mimeType });
+    if (upload.parentId) search.set('parentId', upload.parentId);
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/upload?${search.toString()}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: uploadBodyWithMimeType(upload.data),
+      },
+      this.uploadFetchImpl,
+    );
+    return z.object({ file: driveFileSchema }).parse(await res.json()).file;
+  }
+
+  projectGoogleDriveDownloadUrl(projectId: string, folderId: string, fileId: string): string {
+    return `${this.baseUrl}/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}/download`;
+  }
+
+  async importProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+  ): Promise<{ path: string; fileName: string }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}/import`,
+      { method: 'POST' },
+    );
+    return z.object({ path: z.string(), fileName: z.string() }).parse(await res.json());
   }
 
   /** Import a Drive file into the project's Knowledge imports folder. */
