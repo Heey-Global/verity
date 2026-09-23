@@ -372,6 +372,9 @@ function createProvisioner(
   return new ProvisionerImpl({
     // No real supervisor runs here; tests that care pass their own.
     supervisorReachable: async () => undefined,
+    // A host larger than any quota asserted here, so CPU expectations do not depend
+    // on the machine running the suite. The clamp itself is tested on its own.
+    hostCpuCount: () => 64,
     ...rest,
     projectRelay,
     claudeEgressGatewayUrl,
@@ -2470,6 +2473,32 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.memoryBytes).toBe(6 * 1024 * 1024 * 1024);
     expect(spec.memorySwapBytes).toBe(6 * 1024 * 1024 * 1024);
     expect(spec.nanoCpus).toBe(3_000_000_000);
+  });
+
+  it('never asks Docker for more CPUs than the host has', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      hostCpuCount: () => 1,
+    });
+
+    await provisioner.provision(id);
+
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    // dockerd rejects a `NanoCpus` above its CPU count at create time, and the fake
+    // Docker here does not. Unclamped, the default would pass this suite and then
+    // fail every sandbox create on a host smaller than the default ceiling.
+    expect(DEFAULT_SANDBOX_NANO_CPUS).toBeGreaterThan(1e9);
+    expect(spec.nanoCpus).toBe(1e9);
   });
 
   it('adds a configured swap allowance on top of the memory ceiling', async () => {

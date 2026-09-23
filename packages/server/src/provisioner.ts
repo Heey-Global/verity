@@ -55,7 +55,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpus, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type Kysely } from 'kysely';
@@ -182,6 +182,12 @@ export const DEFAULT_SANDBOX_SWAP_BYTES = 0;
 // weight below still ranks it under the control plane when cores are contended.
 // Overridable through VERITY_SANDBOX_CPUS for larger or smaller hosts.
 export const DEFAULT_SANDBOX_NANO_CPUS = 4 * 1e9;
+
+/** `nanoCpus` capped at `hostCpus` whole cores. `hostCpus` of 0 means the count is
+ *  unknown, and the request is passed through for the daemon to judge. */
+export function clampNanoCpusToHost(nanoCpus: number, hostCpus: number): number {
+  return hostCpus > 0 ? Math.min(nanoCpus, hostCpus * 1e9) : nanoCpus;
+}
 // Relative CPU weight per project sandbox (HostConfig.CpuShares). The ceiling
 // above is per-container and says nothing about how many of them run at once, so
 // on a host with more projects than cores every sandbox's ceiling is real and
@@ -635,6 +641,10 @@ export interface ProvisionerOptions {
    *  quotas oversubscribe the host. Default 512 — below the control plane and the
    *  relays, which stay at the daemon default. 0 opts out. */
   sandboxCpuShares?: number | undefined;
+  /** Online CPUs on the Docker host, which bounds {@link sandboxNanoCpus}. Defaults
+   *  to this process's `os.cpus()`, which is the same host kernel. A result of 0
+   *  (unknown) leaves the quota unclamped. Injectable for tests. */
+  hostCpuCount?: (() => number) | undefined;
   /** Capabilities to add back on top of the default `CapDrop: ALL` — for a project
    *  that genuinely needs one (e.g. `NET_BIND_SERVICE`). */
   sandboxCapAdd?: string[] | undefined;
@@ -5370,7 +5380,14 @@ export class ProvisionerImpl implements Provisioner {
       // process's cwd — for an agent that is the session worktree, hundreds of MB per
       // crashed worker into a git checkout on a disk that is already the scarce resource.
       ulimits: [{ name: 'core', soft: 0, hard: 0 }],
-      nanoCpus: this.opts.sandboxNanoCpus ?? DEFAULT_SANDBOX_NANO_CPUS,
+      // Clamped to the host: dockerd refuses a create whose `NanoCpus` exceeds its
+      // CPU count, so an unclamped 4-core default would stop every sandbox on a
+      // 2-core host from being provisioned, repaired, or updated. A smaller host
+      // simply gets all of its cores as the ceiling.
+      nanoCpus: clampNanoCpusToHost(
+        this.opts.sandboxNanoCpus ?? DEFAULT_SANDBOX_NANO_CPUS,
+        (this.opts.hostCpuCount ?? (() => cpus().length))(),
+      ),
       // The ceiling above bounds ONE sandbox; this decides which container yields
       // when several of them, plus the control plane, want the host's cores at the
       // same moment. Without it every container shares one flat default weight and

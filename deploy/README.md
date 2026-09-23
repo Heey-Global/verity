@@ -791,6 +791,10 @@ On the managed topology this variable has the same catch as
 no sealed source for it, so setting it in `.env` there has no effect and swap
 stays off.
 
+The CPU ceiling is capped at the host's CPU count, because Docker refuses to
+create a container that asks for more. On a 2-core host the default of 4 therefore
+gives each sandbox both cores.
+
 Memory, swap, and CPU ceilings are applied when a sandbox container is
 **created**. An existing sandbox keeps the limits it was created with until it
 is next provisioned, repaired, or updated to a new image. To apply new limits to

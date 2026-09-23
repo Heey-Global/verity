@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseByteSize, parseCpuCores, parseSwapSize } from './embedded.js';
 import {
+  clampNanoCpusToHost,
   DEFAULT_SANDBOX_MEMORY_BYTES,
   DEFAULT_SANDBOX_NANO_CPUS,
   DEFAULT_SANDBOX_SWAP_BYTES,
@@ -42,5 +43,15 @@ describe('sandbox resource defaults', () => {
     expect(readFileSync(new URL('packages/server/src/server-main.ts', repoRoot), 'utf8')).toContain(
       `process.env.${name}`,
     );
+  });
+});
+
+describe('clampNanoCpusToHost', () => {
+  it('caps at the host, passes smaller requests through, and defers when unknown', () => {
+    expect(clampNanoCpusToHost(4e9, 2)).toBe(2e9);
+    expect(clampNanoCpusToHost(1.5e9, 8)).toBe(1.5e9);
+    // `os.cpus()` can come back empty in a restricted environment. Clamping to zero
+    // cores would drop the quota entirely, since Docker reads 0 as "unset".
+    expect(clampNanoCpusToHost(4e9, 0)).toBe(4e9);
   });
 });
