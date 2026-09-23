@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.4](https://github.com/Heey-Global/verity/compare/v1.5.3...v1.5.4) (2026-09-23)
+
+
+### Bug Fixes
+
+* **relay:** answer DNS for gVisor project sandboxes through the relay ([#664](https://github.com/Heey-Global/verity/issues/664)) ([451c4f6](https://github.com/Heey-Global/verity/commit/451c4f6499043dbbc32dccd754c0ba24142c0245))
+
 ## [1.5.3](https://github.com/Heey-Global/verity/compare/v1.5.2...v1.5.3) (2026-09-23)
 
 
