@@ -767,11 +767,16 @@ Under gVisor, the default project runtime, the ceiling is hit harder than it
 looks. The whole Sandbox is one gVisor Sentry process, and its guest memory is a
 shared-memory file charged to the container. gVisor has no OOM killer of its
 own, so there is no runaway process inside the guest for the kernel to pick:
-it kills the Sentry, and every session of the project goes down together. That
-is why the default is 6 GiB rather than 4 GiB, and why
-`VERITY_PROJECT_MAX_CONCURRENT_TURNS` limits how many turns share one Sandbox.
-Keeping a margin below the limit does not help, because nothing inside the
-guest ever uses that margin.
+it kills the Sentry, and every session of the project goes down together.
+Keeping a margin below the limit does not help, because nothing inside the guest
+ever uses that margin. That is why the default is 6 GiB rather than 4 GiB, and
+why `VERITY_PROJECT_MAX_CONCURRENT_TURNS` limits how many turns share one
+Sandbox.
+
+The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
+not capped to the host, so on a small machine (8 GiB or less) set
+`VERITY_SANDBOX_MEMORY` to what one sandbox can actually get next to the Server
+and Postgres.
 
 `VERITY_SANDBOX_SWAP` lets a sandbox use that much swap on top of
 `VERITY_SANDBOX_MEMORY`. It defaults to `0` (no swap). Unset, Docker would allow
