@@ -1374,7 +1374,8 @@ describe('createDockerClient (#174)', () => {
     });
     await expect(docker.hostCpuCount?.()).resolves.toBe(2);
     // A daemon that reports no usable count must read as unknown, not as zero cores:
-    // the provisioner then leaves the quota alone instead of clamping it to nothing.
+    // the provisioner then falls back to its own CPU count instead of clamping the
+    // quota to nothing.
     const silent = createDockerClient({
       baseUrl: 'http://docker:2375/v1.41',
       fetch: fakeFetch([{ match: /\/info$/, method: 'GET', resp: res({ NCPU: 0 }) }]),
