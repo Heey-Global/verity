@@ -3228,6 +3228,84 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     await waitFor(() => !conductor.isBusy('s2'));
   });
 
+  // A Runner the sweep confirms dead never resolves its result: its frame tail just
+  // stops. Keeping the slot until that result would lock the project for good once
+  // `limit` such turns had died, every later turn stuck on the waiting notice.
+  it("frees a reattached turn's project slot when the sweep settles its dead Runner", async () => {
+    vi.useFakeTimers();
+    try {
+      await ctx.store.upsertProject({
+        id: 'p-dead',
+        owner: 'acme',
+        repo: 'dead',
+        containerName: 'verity-acme-dead',
+        state: 'active',
+      });
+      for (const sessionId of ['s1', 's2']) {
+        await ctx.store.createSession({
+          sessionId,
+          worktree: `/wt/${sessionId}`,
+          model: 'm',
+          projectId: 'p-dead',
+        });
+      }
+      const { seq } = await ctx.store.appendEvent('s1', { t: 'prompt', text: 'go' });
+      await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: seq });
+      await ctx.store.bindTurnIdentity('s1', {
+        turnId: 'turn-dies',
+        startCommandId: 'start-dies',
+      });
+      let freshStarts = 0;
+      const idle = (result: Promise<RunResult>): RunnerTurn => ({
+        result,
+        steer: () => Promise.resolve(false),
+        answerPermission: () => Promise.resolve(false),
+        cancel: () => Promise.resolve(false),
+      });
+      const client: RunnerClient = {
+        startTurn: () => {
+          freshStarts += 1;
+          return idle(
+            Promise.resolve({ sessionId: undefined, exitCode: 0, stderr: '', aborted: false }),
+          );
+        },
+        attach: () => idle(new Promise<RunResult>(() => undefined)),
+      };
+      let outcome: RunnerRecoveryOutcome = {
+        status: 'live',
+        target: {
+          turnId: 'turn-dies',
+          sessionId: 's1',
+          eventFilePath: '/rt/events.jsonl',
+          controlSocketPath: '/rt/control.sock',
+        },
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: () => client,
+        runnerRecovery: { discover: async () => outcome },
+        maxConcurrentProjectTurns: 1,
+      });
+
+      await conductor.recover();
+      outcome = { status: 'dead' };
+      for (let i = 0; i < 12 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+
+      await conductor.dispatchTurn('s2', 'after the dead one');
+      for (let i = 0; i < 50 && freshStarts === 0; i += 1) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(freshStarts).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('settles a dead Runner even while a permission card is still open', async () => {
     // A Sandbox that dies while its turn waits on the operator used to skip every probe:
     // the open card read as "the silence is expected", so the turn stayed running for

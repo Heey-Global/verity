@@ -1472,9 +1472,14 @@ export class Conductor {
     if (release === undefined) {
       return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
     }
+    // Same rule as a reattached turn: a Runner settled from outside (Stop, a dead
+    // verdict, the stop watchdog) may never resolve the backend promise, and holding the
+    // slot until it does would leak it for the life of the Server.
+    signal?.addEventListener('abort', release, { once: true });
     try {
       return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
     } finally {
+      signal?.removeEventListener('abort', release);
       release();
     }
   }
@@ -4207,10 +4212,12 @@ export class Conductor {
       });
       boundHandle.delegate = turn;
       // The recovered Runner is still using its project Sandbox, so it counts against
-      // the per-project cap until it ends. Tied to the Runner's own result rather than
-      // to this settle, which a stop watchdog can take over while the Runner lives on.
+      // the per-project cap until it ends — or until this side gives up on it. A Runner
+      // the sweep confirms dead never resolves its result, and Stop, the dead verdict
+      // and the stop watchdog all abort the handle first.
       if (session.projectId !== null) {
         const releaseSlot = this.projectTurnGate.hold(session.projectId);
+        boundHandle.controller.signal.addEventListener('abort', releaseSlot, { once: true });
         void turn.result.finally(releaseSlot).catch(() => undefined);
       }
       // A recovered process may outlive a permission change; attach only to stop it.
