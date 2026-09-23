@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/Heey-Global/verity/compare/v1.5.2...v1.5.3) (2026-09-23)
+
+
+### Bug Fixes
+
+* **deploy:** reconcile host Docker runtimes before activating a release ([#660](https://github.com/Heey-Global/verity/issues/660)) ([b5053a3](https://github.com/Heey-Global/verity/commit/b5053a345e5ac661e5188c46d18dcc428c107eb7))
+
 ## [1.5.2](https://github.com/Heey-Global/verity/compare/v1.5.1...v1.5.2) (2026-09-23)
 
 
