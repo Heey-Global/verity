@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.0.0](https://github.com/Heey-Global/verity/compare/v1.5.4...v2.0.0) (2026-09-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** the verity-sandbox-toolkit Feature no longer accepts `installPi` / `piVersion`, and images built from it carry no `pi` binary.
+
+### Features
+
+* **models:** add Claude Opus 5.5 ([#667](https://github.com/Heey-Global/verity/issues/667)) ([73b4df4](https://github.com/Heey-Global/verity/commit/73b4df4e07675c5e105ed97ed989c01b2a0426b7))
+
+
+### Miscellaneous Chores
+
+* **sandbox:** drop the pi coding agent ([#666](https://github.com/Heey-Global/verity/issues/666)) ([20ed9d2](https://github.com/Heey-Global/verity/commit/20ed9d2b2d20e40b81bb05dd89fba9f8eb026547))
+
 ## [1.5.4](https://github.com/Heey-Global/verity/compare/v1.5.3...v1.5.4) (2026-09-23)
 
 
