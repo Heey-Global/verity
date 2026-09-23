@@ -133,6 +133,11 @@ export interface DockerClient {
   /** Read one daemon-registered OCI runtime from `GET /info`. The real client always implements
    *  this; optional only so older injected test doubles remain source-compatible. */
   inspectRuntime?(name: string): Promise<DockerRuntimeRegistration | undefined>;
+  /** The daemon's CPU count (`NCPU` from `GET /info`): the bound dockerd checks a
+   *  create's `NanoCpus` against. `undefined` when the daemon does not report one.
+   *  Optional so pre-existing test fakes stay valid; the real
+   *  {@link createDockerClient} always provides it. */
+  hostCpuCount?(): Promise<number | undefined>;
   /** List images on the daemon (Engine `GET /images/json`). Read by the disk GC
    *  to find superseded devcontainer image generations. Optional so pre-existing
    *  test fakes stay valid; the real {@link createDockerClient} always provides it. */
@@ -1847,6 +1852,14 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         });
       }
       return { path: candidate.path, args: candidate.runtimeArgs };
+    },
+    hostCpuCount: async () => {
+      const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { NCPU?: unknown };
+      return typeof json.NCPU === 'number' && Number.isInteger(json.NCPU) && json.NCPU > 0
+        ? json.NCPU
+        : undefined;
     },
     imageExists: async (ref) => {
       // GET /images/{ref}/json — 200 = present, 404 = absent (the daemon reports

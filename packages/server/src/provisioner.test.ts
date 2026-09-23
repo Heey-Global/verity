@@ -2475,20 +2475,21 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.nanoCpus).toBe(3_000_000_000);
   });
 
-  it('never asks Docker for more CPUs than the host has', async () => {
+  it('never asks Docker for more CPUs than the daemon has', async () => {
     const id = await seedProject();
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
     const { client: docker, calls } = fakeDocker();
     const provisioner = createProvisioner({
       store: ctx.store,
       db: ctx.db,
-      docker,
+      docker: { ...docker, hostCpuCount: async () => 1 },
       git,
       projectTokenMint: async () => 'tok',
       defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
       hostCloneRoot: '/var/lib/verity-dev',
       isDirectory: () => false,
-      hostCpuCount: () => 1,
+      // Ask the daemon, as production does, rather than the helper's fixed host.
+      hostCpuCount: undefined,
     });
 
     await provisioner.provision(id);

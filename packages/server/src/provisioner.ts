@@ -641,9 +641,10 @@ export interface ProvisionerOptions {
    *  quotas oversubscribe the host. Default 512 — below the control plane and the
    *  relays, which stay at the daemon default. 0 opts out. */
   sandboxCpuShares?: number | undefined;
-  /** Online CPUs on the Docker host, which bounds {@link sandboxNanoCpus}. Defaults
-   *  to this process's `os.cpus()`, which is the same host kernel. A result of 0
-   *  (unknown) leaves the quota unclamped. Injectable for tests. */
+  /** CPUs on the Docker host, which bounds {@link sandboxNanoCpus}. Unset → the
+   *  daemon's own count (`DockerClient.hostCpuCount`), falling back to this
+   *  process's `os.cpus()` when the daemon cannot say. A result of 0 (unknown)
+   *  leaves the quota unclamped. Injectable for tests. */
   hostCpuCount?: (() => number) | undefined;
   /** Capabilities to add back on top of the default `CapDrop: ALL` — for a project
    *  that genuinely needs one (e.g. `NET_BIND_SERVICE`). */
@@ -4657,6 +4658,19 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  /** The daemon's CPU count, cached once it has answered: a host does not gain or
+   *  lose cores under a running Server often enough to ask on every create. A
+   *  failed query is not cached, and falls back to `os.cpus()` rather than failing
+   *  the create over a limit that only exists to keep the create valid. */
+  private daemonCpuCount: number | undefined;
+  private async resolveHostCpuCount(): Promise<number> {
+    if (this.opts.hostCpuCount !== undefined) return this.opts.hostCpuCount();
+    if (this.daemonCpuCount === undefined) {
+      this.daemonCpuCount = await this.opts.docker.hostCpuCount?.().catch(() => undefined);
+    }
+    return this.daemonCpuCount ?? cpus().length;
+  }
+
   private async runContainerPhaseAttempt(
     project: ProjectRecord,
     forcePull = false,
@@ -5223,6 +5237,7 @@ export class ProvisionerImpl implements Provisioner {
     // allowance cannot drift away from the ceiling it is added to when someone
     // changes where the ceiling comes from.
     const sandboxMemoryBytes = this.opts.sandboxMemoryBytes ?? DEFAULT_SANDBOX_MEMORY_BYTES;
+    const hostCpus = await this.resolveHostCpuCount();
     const spec: ContainerSpec = {
       image: image.imageRef,
       name: dirs.containerName,
@@ -5386,7 +5401,7 @@ export class ProvisionerImpl implements Provisioner {
       // simply gets all of its cores as the ceiling.
       nanoCpus: clampNanoCpusToHost(
         this.opts.sandboxNanoCpus ?? DEFAULT_SANDBOX_NANO_CPUS,
-        (this.opts.hostCpuCount ?? (() => cpus().length))(),
+        hostCpus,
       ),
       // The ceiling above bounds ONE sandbox; this decides which container yields
       // when several of them, plus the control plane, want the host's cores at the

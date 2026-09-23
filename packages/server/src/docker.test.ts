@@ -1367,6 +1367,21 @@ describe('createDockerClient (#174)', () => {
     await expect(docker.inspectRuntime?.('missing')).resolves.toBeUndefined();
   });
 
+  it('hostCpuCount reads the daemon CPU count from /info', async () => {
+    const docker = createDockerClient({
+      baseUrl: 'http://docker:2375/v1.41',
+      fetch: fakeFetch([{ match: /\/info$/, method: 'GET', resp: res({ NCPU: 2 }) }]),
+    });
+    await expect(docker.hostCpuCount?.()).resolves.toBe(2);
+    // A daemon that reports no usable count must read as unknown, not as zero cores:
+    // the provisioner then leaves the quota alone instead of clamping it to nothing.
+    const silent = createDockerClient({
+      baseUrl: 'http://docker:2375/v1.41',
+      fetch: fakeFetch([{ match: /\/info$/, method: 'GET', resp: res({ NCPU: 0 }) }]),
+    });
+    await expect(silent.hostCpuCount?.()).resolves.toBeUndefined();
+  });
+
   it('strips a trailing slash from the base URL', async () => {
     const fetch = fakeFetch([
       {
