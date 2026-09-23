@@ -208,7 +208,7 @@ the point of decision — and the Server does re-spread that field conditionally
 it builds a backend for a Sandbox turn. Reading absence as `native` would let a
 future wrapper hand itself the attested channel's unbounded grants by omission.
 Reading it as `acp` costs nothing today: every genuinely native backend declares
-the field, and the backends that omit it (OpenCode/Pi on the loopback path) have no
+the field, and OpenCode, which omits it on the loopback path, has no
 permission bridging, so they raise no brokered prompt to redeem a grant against.
 
 **What the grant costs, stated plainly.** While a grant is live, matching calls
