@@ -1416,11 +1416,18 @@ export interface ServerDeps {
 
 /**
  * The Claude models the picker always offers (ADR 0001 / #143): BARE ids (no `/`) so
- * the conductor routes them to the Claude Code backend, with `claude-opus-5` first as
+ * the conductor routes them to the Claude Code backend, with `claude-opus-5-5` first as
  * the spawn default. These are the canonical ids the rest of the store/tests use; the
  * Claude CLI itself supports more, but the picker surfaces this curated set.
+ *
+ * An id here must also be in the pinned Claude CLI's own model catalog (`deploy/Dockerfile`).
+ * The CLI does not reject one it does not know — it warns `unrecognized_model` and then
+ * assumes a 200K context window, so a session on a 1M-token model would auto-compact at a
+ * fifth of its real window with nothing failing. Adding a model on release day therefore
+ * waits for the CLI pin; `scripts/agent-cli-pins.test.ts` holds that floor.
  */
 export const CLAUDE_MODELS = [
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-fable-5-1',
   'claude-sonnet-5',

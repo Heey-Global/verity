@@ -36,7 +36,7 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.278}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.280}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.79.0}"
 # renovate: datasource=github-releases depName=cli/cli

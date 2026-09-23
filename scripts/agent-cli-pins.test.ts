@@ -1,5 +1,23 @@
 import { readFile } from 'node:fs/promises';
+import semver from 'semver';
 import { describe, expect, it } from 'vitest';
+
+import { CLAUDE_MODELS } from '../packages/server/src/server.js';
+
+/**
+ * The first `@anthropic-ai/claude-code` release whose own model catalog describes each
+ * curated Claude id. A model missing from that catalog is NOT rejected by the CLI: it
+ * logs `unrecognized_model` and then assumes a 200K context window, so a session on a
+ * 1M-token model auto-compacts at a fifth of its real window and every turn still
+ * succeeds. Nothing downstream can see the difference, which is why this floor is
+ * recorded here rather than left to the release that happens to be pinned.
+ *
+ * Only models whose floor is ABOVE the version a fresh pin would already satisfy need an
+ * entry; an id absent from this map is assumed to predate every supported pin.
+ */
+const CLAUDE_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
+  'claude-opus-5-5': '2.1.280',
+};
 
 /**
  * Two images install the agent CLIs: the devcontainer Feature builds project
@@ -53,6 +71,34 @@ describe('agent CLI version pins', () => {
     );
     for (const name of shared) {
       expect(image.get(name), `${name} is pinned to different versions`).toBe(sandbox.get(name));
+    }
+  });
+
+  it('pins a Claude CLI whose model catalog describes every curated Claude model', async () => {
+    const [dockerfile, feature] = await Promise.all([
+      readFile('deploy/Dockerfile', 'utf8'),
+      readFile('features/verity-sandbox-toolkit/install.sh', 'utf8'),
+    ]);
+    const name = '@anthropic-ai/claude-code';
+    const pins = [
+      ['deploy/Dockerfile', dockerfilePins(dockerfile).get(name)],
+      ['features/verity-sandbox-toolkit/install.sh', featurePins(feature).get(name)],
+    ] as const;
+    // The floors are only meaningful against a pin that was actually extracted. Without
+    // this the whole test passes for free once either extraction stops matching.
+    for (const [file, pin] of pins) expect(pin, `no ${name} pin found in ${file}`).toBeDefined();
+    // Read the requirement off the curated list rather than restating it: a model added
+    // to CLAUDE_MODELS with a floor above the pin fails here, on release day, instead of
+    // shipping as a silently 200K-capped default.
+    for (const model of CLAUDE_MODELS) {
+      const floor = CLAUDE_MODEL_CLI_FLOOR[model];
+      if (floor === undefined) continue;
+      for (const [file, pin] of pins) {
+        expect(
+          semver.gte(pin!, floor),
+          `${file} pins ${name}@${pin!}, which predates ${model} (needs >= ${floor})`,
+        ).toBe(true);
+      }
     }
   });
 
