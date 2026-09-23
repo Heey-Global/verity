@@ -278,6 +278,8 @@ export interface ContainerSpec {
   readOnlyRootfs?: boolean;
   /** Ephemeral in-memory mounts keyed by their absolute container path (`HostConfig.Tmpfs`). */
   tmpfs?: Record<string, string>;
+  /** Namespaced kernel parameters (`HostConfig.Sysctls`), e.g. the unprivileged-port floor. */
+  sysctls?: Record<string, string>;
   /** Runtime hardening (security review C1). Sandboxes are otherwise launched with
    *  Docker's permissive defaults — full cap set, privilege escalation allowed, no
    *  resource ceilings — which does not contain a malicious dependency. These map
@@ -1136,6 +1138,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
         ...(spec.readOnlyRootfs !== undefined ? { ReadonlyRootfs: spec.readOnlyRootfs } : {}),
         ...(spec.tmpfs !== undefined ? { Tmpfs: spec.tmpfs } : {}),
+        ...(spec.sysctls !== undefined ? { Sysctls: spec.sysctls } : {}),
         // Runtime hardening (C1) — emitted only when the spec sets it, so an
         // un-hardened caller is byte-for-byte unchanged.
         ...(spec.capDrop?.length ? { CapDrop: spec.capDrop } : {}),

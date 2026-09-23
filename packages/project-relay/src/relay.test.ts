@@ -791,6 +791,7 @@ describe('relay limits and lifecycle', () => {
       host: '127.0.0.1',
       brokerPort: 0,
       claudePort: 0,
+      dnsPort: 0,
       brokerSocketPath: join(dir, 'broker.sock'),
       claudeSocketPath: join(dir, 'claude.sock'),
     });
@@ -798,6 +799,8 @@ describe('relay limits and lifecycle', () => {
       expect(started.brokerPort).toBeGreaterThan(0);
       expect(started.claudePort).toBeGreaterThan(0);
       expect(started.brokerPort).not.toBe(started.claudePort);
+      // The resolver a gVisor Sandbox is pointed at; a relay without it resolves nothing there.
+      expect(started.dnsPort).toBeGreaterThan(0);
       // Bound and reachable, not merely reported.
       const answer = await rawCall(
         started.brokerPort,
@@ -832,6 +835,7 @@ describe('relay limits and lifecycle', () => {
         host: '127.0.0.1',
         brokerPort,
         claudePort,
+        dnsPort: 0,
         brokerSocketPath: join(dir, 'broker.sock'),
         claudeSocketPath: join(dir, 'claude.sock'),
       }).then(
@@ -883,6 +887,7 @@ describe('parallel agent gateway relays', () => {
       host: '127.0.0.1',
       brokerPort: 0,
       claudePort: 0,
+      dnsPort: 0,
       codexPort: 0,
       brokerSocketPath: join(dir, 'broker.sock'),
       claudeSocketPath,

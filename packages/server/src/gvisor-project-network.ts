@@ -13,9 +13,10 @@ import type { DockerClient } from './docker.js';
  * (Claude/Codex egress, the MCP gateway, the signing broker), and not the internet.
  *
  * The relay is pinned in `/etc/hosts` by the address Docker gave it on the project network, and
- * the sandbox gets a resolv.conf naming the upstream resolvers Docker's embedded resolver would
- * have forwarded to. Only the relay's names are pinned: other containers stay unresolvable, as
- * nothing in the sandbox needs them.
+ * the sandbox's resolv.conf names the relay itself: it runs under runc on the same network and
+ * forwards queries to its own 127.0.0.11 (packages/project-relay/src/dns.ts), so the sandbox
+ * resolves what a runc container would, through whatever resolvers the host uses. Operators may
+ * name upstream resolvers instead (`VERITY_SANDBOX_DNS_SERVERS`).
  */
 
 /** `host:ip` entries for every relay hostname the sandbox is configured to reach. */
@@ -46,17 +47,15 @@ export async function relayHostEntries(
 }
 
 /**
- * The upstream resolvers Docker's embedded resolver forwards to, read from the comment Docker
- * writes into a user-network container's resolv.conf (`# ExtServers: [host(1.1.1.1) ...]`). The
- * Server runs on such a network, so its own file names the host's resolvers. Loopback entries are
- * dropped: inside the sandbox they would name the sandbox itself.
+ * The address a sandbox uses as its resolver: the relay's, from the entries
+ * {@link relayHostEntries} pinned for it. The relay is addressed by container name, or by IP.
  */
-export function upstreamResolversFromDockerResolvConf(contents: string): string[] {
-  const line = contents.split('\n').find((candidate) => /^#\s*ExtServers:/u.test(candidate));
-  if (line === undefined) return [];
-  return [...line.matchAll(/host\(([^)]+)\)/gu)]
-    .map((match) => match[1]!.trim())
-    .filter((address) => isIP(address) !== 0 && !isLoopback(address));
+export function relayResolverAddress(relayUrl: string, entries: readonly string[]): string {
+  const host = new URL(relayUrl).hostname;
+  if (isIP(host) !== 0) return host;
+  const entry = entries.find((candidate) => candidate.startsWith(`${host}:`));
+  if (entry === undefined) throw new Error(`${host} has no pinned address`);
+  return entry.slice(host.length + 1);
 }
 
 /** Validate operator-configured resolvers (`VERITY_SANDBOX_DNS_SERVERS`). */

@@ -129,6 +129,10 @@ export function createDockerProjectRelayStarter(
       restartPolicy: 'no',
       readOnlyRootfs: true,
       tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=1m' },
+      // The relay answers DNS for a gVisor Sandbox on port 53 (project-relay/src/dns.ts) with no
+      // capabilities. Docker already sets this floor to 0 for bridge-networked containers; the
+      // relay states it rather than depend on that default.
+      sysctls: { 'net.ipv4.ip_unprivileged_port_start': '53' },
       capDrop: ['ALL'],
       securityOpt: ['no-new-privileges:true'],
       pidsLimit: 32,
