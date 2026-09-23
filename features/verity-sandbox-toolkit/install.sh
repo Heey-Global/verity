@@ -52,7 +52,7 @@ CODEX_ACP_VERSION="${CODEXACPVERSION:-1.12.0}"
 # renovate: datasource=npm depName=opencode-ai
 OPENCODE_VERSION="${OPENCODEVERSION:-1.18.31}"
 # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
-PI_VERSION="${PIVERSION:-0.85.1}"
+PI_VERSION="${PIVERSION:-0.86.0}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
