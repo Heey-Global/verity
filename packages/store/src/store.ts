@@ -656,6 +656,8 @@ export interface VeritySettingsRecord {
   googleDriveClientId: string | null;
   googleDriveAccountEmail: string | null;
   googleDriveRefreshToken: string | null;
+  /** True after OAuth consent has explicitly included Gmail read/compose scopes. */
+  gmailAuthorized: boolean;
   /** Verity Uplink subscription credential, encrypted at rest. */
   uplinkSubscriptionKey?: string | null;
   /** Stable identity assigned and validated by the Uplink. */
@@ -695,12 +697,19 @@ type VeritySettingsKey =
   | 'googleDriveClientId'
   | 'googleDriveAccountEmail'
   | 'googleDriveRefreshToken'
+  | 'gmailAuthorized'
   | 'uplinkSubscriptionKey'
   | 'uplinkInstallationId';
 
 export type VeritySettingsPatch = {
   [K in VeritySettingsKey]?: VeritySettingsRecord[K] | undefined;
 };
+
+export interface SessionGmailConnection {
+  sessionId: string;
+  accountEmail: string;
+  enabledAt: Date;
+}
 
 /** Master-password key-derivation metadata (non-secret): the scrypt salt and a
  *  verifier (a fixed marker encrypted under the derived key). The raw key is
@@ -1484,6 +1493,53 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .where('kind', '=', 'slides')
       .execute();
+  }
+
+  async getSessionGmailConnection(sessionId: string): Promise<SessionGmailConnection | undefined> {
+    const row = await this.db
+      .selectFrom('session_gmail_connections')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : {
+          sessionId: row.session_id,
+          accountEmail: row.account_email,
+          enabledAt: row.enabled_at,
+        };
+  }
+
+  async enableSessionGmail(
+    sessionId: string,
+    accountEmail: string,
+  ): Promise<SessionGmailConnection> {
+    const row = await this.db
+      .insertInto('session_gmail_connections')
+      .values({ session_id: sessionId, account_email: accountEmail })
+      .onConflict((conflict) =>
+        conflict.column('session_id').doUpdateSet({ account_email: accountEmail }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    return (
+      (await this.getSessionGmailConnection(sessionId)) ?? {
+        sessionId,
+        accountEmail,
+        enabledAt: row!.enabled_at,
+      }
+    );
+  }
+
+  async disableSessionGmail(sessionId: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_gmail_connections')
+      .where('session_id', '=', sessionId)
+      .execute();
+  }
+
+  async clearSessionGmailConnections(): Promise<void> {
+    await this.db.deleteFrom('session_gmail_connections').execute();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.
@@ -5009,6 +5065,7 @@ export class EventStore implements EventSink {
       google_drive_client_id: string | null;
       google_drive_account_email: string | null;
       google_drive_refresh_token: string | null;
+      gmail_authorized: boolean;
       uplink_subscription_key: string | null;
       uplink_installation_id: string | null;
       advanced_mode_enabled: boolean;
@@ -5065,6 +5122,7 @@ export class EventStore implements EventSink {
       googleDriveRefreshToken: decrypt
         ? this.decryptSecret(row.google_drive_refresh_token)
         : row.google_drive_refresh_token,
+      gmailAuthorized: row.gmail_authorized,
       uplinkSubscriptionKey: decrypt
         ? this.decryptSecret(row.uplink_subscription_key)
         : row.uplink_subscription_key,
@@ -5104,6 +5162,7 @@ export class EventStore implements EventSink {
     'google_drive_client_id',
     'google_drive_account_email',
     'google_drive_refresh_token',
+    'gmail_authorized',
     'uplink_subscription_key',
     'uplink_installation_id',
     'advanced_mode_enabled',
@@ -5172,6 +5231,7 @@ export class EventStore implements EventSink {
       google_drive_refresh_token: this.encryptSecret(
         normalizeSetting(patch.googleDriveRefreshToken),
       ),
+      gmail_authorized: patch.gmailAuthorized ?? false,
       uplink_subscription_key: this.encryptSecret(normalizeSetting(patch.uplinkSubscriptionKey)),
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
     };
@@ -5284,6 +5344,9 @@ export class EventStore implements EventSink {
                   normalizeSetting(patch.googleDriveRefreshToken),
                 ),
               }
+            : {}),
+          ...(patch.gmailAuthorized !== undefined
+            ? { gmail_authorized: patch.gmailAuthorized }
             : {}),
           ...(patch.uplinkSubscriptionKey !== undefined
             ? {

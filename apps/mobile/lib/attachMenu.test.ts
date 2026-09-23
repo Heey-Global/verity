@@ -6,8 +6,7 @@ const handlers = {
   onPickPhotos: jest.fn(),
   onPickFiles: jest.fn(),
   onPickMeetingAudio: jest.fn(),
-  onPickGoogleDrive: jest.fn(),
-  onPickGoogleWorkspace: jest.fn(),
+  onConnectGmail: jest.fn(),
 };
 
 function labels(rows: AttachMenuRow[]): string[] {
@@ -17,7 +16,7 @@ function labels(rows: AttachMenuRow[]): string[] {
 }
 
 describe('attachMenuRows', () => {
-  it('separates content imports from the live editing connection', () => {
+  it('separates content imports from connected services', () => {
     expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: true }))).toEqual([
       '[Add content]',
       'Take photo',
@@ -25,16 +24,15 @@ describe('attachMenuRows', () => {
       'Choose file',
       '—',
       'Meeting audio',
-      'Google Drive',
       '—',
-      '[Connect & edit]',
-      'Google Workspace',
+      '[Connect]',
+      'Gmail',
     ]);
     expect(
       attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
-        (row) => 'label' in row && row.label === 'Google Workspace',
+        (row) => 'label' in row && row.label === 'Gmail',
       ),
-    ).toMatchObject({ detail: 'Live synced' });
+    ).toMatchObject({ icon: 'mail', detail: 'Read & draft' });
   });
 
   it('drops the row but keeps the divider group when the flag is off', () => {
@@ -44,10 +42,9 @@ describe('attachMenuRows', () => {
       'Choose photo',
       'Choose file',
       '—',
-      'Google Drive',
       '—',
-      '[Connect & edit]',
-      'Google Workspace',
+      '[Connect]',
+      'Gmail',
     ]);
   });
 

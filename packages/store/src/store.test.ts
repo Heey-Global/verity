@@ -47,6 +47,24 @@ const sampleEvents: AgentEvent[] = [
 ];
 
 describe('EventStore — session Google Slides assignment', () => {
+  it('enables Gmail per session idempotently and cascades the grant on session deletion', async () => {
+    await ctx.store.createSession(session);
+    const first = await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    const second = await ctx.store.enableSessionGmail('s1', 'me@example.test');
+
+    expect(second).toEqual(first);
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toEqual(first);
+
+    const rebound = await ctx.store.enableSessionGmail('s1', 'other@example.test');
+    expect(rebound.accountEmail).toBe('other@example.test');
+
+    await ctx.store.disableSessionGmail('s1');
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
+    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.deleteSession('s1');
+    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
+  });
+
   it('keeps exactly one deck per session and clears it without deleting the session', async () => {
     await ctx.store.createSession(session);
     const firstAssignment = await ctx.store.setSessionSlideDeck({

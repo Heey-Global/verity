@@ -188,6 +188,7 @@ import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } 
 import type { GitHubTaskService } from './github-tasks.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
+import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
 import { registerPushTokenRoute } from './push-token-route.js';
@@ -1016,6 +1017,8 @@ export interface ServerDeps {
    *  uses it for the code exchange + refresh. Omit → the Drive feature reports
    *  "not configured". */
   googleDriveClientId?: string | undefined;
+  /** Invalidate access tokens minted from shared Google credentials after OAuth reconnects. */
+  onGoogleCredentialsChanged?: (() => void) | undefined;
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
    *  Omit → the secret store is treated as an unmanaged always-unlocked no-op. */
   secretCipher?: SealableSecretCipher | undefined;
@@ -4798,6 +4801,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
   });
+  registerGmailRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.onGoogleCredentialsChanged !== undefined
+      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
+      : {}),
+  });
 
   // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────
   // The cipher holds the at-rest key in memory only. `status` reports the
@@ -5343,9 +5354,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (
           toolName === 'verity_google_slides' ||
           toolName === 'verity_google_docs' ||
-          toolName === 'verity_google_sheets'
+          toolName === 'verity_google_sheets' ||
+          toolName === 'verity_gmail'
         ) {
           const session = await deps.eventStore.getSession(sessionId);
+          if (toolName === 'verity_gmail') {
+            const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
+            const settings = await deps.eventStore.getVeritySettings();
+            if (
+              session === undefined ||
+              session.projectId !== projectId ||
+              connection === undefined ||
+              settings?.gmailAuthorized !== true ||
+              settings.googleDriveAccountEmail?.toLowerCase() !==
+                connection.accountEmail.toLowerCase()
+            ) {
+              throw new ControlPlaneSessionAuthorityError(
+                'Gmail requires access enabled for the calling session',
+              );
+            }
+            return;
+          }
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           const expectedKind = toolName.slice('verity_google_'.length);
           if (
@@ -5395,11 +5424,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (
           toolName !== 'verity_google_slides' &&
           toolName !== 'verity_google_docs' &&
-          toolName !== 'verity_google_sheets'
+          toolName !== 'verity_google_sheets' &&
+          toolName !== 'verity_gmail'
         )
           return false;
         const session = await deps.eventStore.getSession(sessionId);
         if (session === undefined || session.projectId !== projectId) return false;
+        if (toolName === 'verity_gmail') {
+          const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
+          const settings = await deps.eventStore.getVeritySettings();
+          return (
+            connection !== undefined &&
+            settings?.gmailAuthorized === true &&
+            settings.googleDriveAccountEmail?.toLowerCase() ===
+              connection.accountEmail.toLowerCase()
+          );
+        }
         const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
         return file?.kind === toolName.slice('verity_google_'.length);
       },

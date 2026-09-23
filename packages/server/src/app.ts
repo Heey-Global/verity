@@ -91,6 +91,8 @@ export interface ControlPlaneDeps {
   previewShareManager?: ServerDeps['previewShareManager'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
+  /** Invalidate cached access tokens after shared Google OAuth credentials change. */
+  onGoogleCredentialsChanged?: ServerDeps['onGoogleCredentialsChanged'];
   /** Standing brokered-secret grants for a project (ADR 0011 D2). */
   listBrokeredGrants?: ((projectId: string) => Promise<BrokeredGrantRecord[]>) | undefined;
   /** Ends one standing grant — the only exit a `forever` grant has. */
@@ -341,6 +343,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
+    ...(deps.onGoogleCredentialsChanged !== undefined
+      ? { onGoogleCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
     ...(deps.listBrokeredGrants !== undefined
       ? { listBrokeredGrants: deps.listBrokeredGrants }

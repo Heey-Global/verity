@@ -847,6 +847,14 @@ const googleDriveConnectResultSchema = z.object({
   accountEmail: z.string().nullable(),
 });
 
+const gmailSessionConnectionSchema = z.object({
+  enabled: z.boolean(),
+  accountEmail: z.string().nullable(),
+  clientId: z.string().nullable(),
+  connected: z.boolean(),
+});
+export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
+
 export const googleDriveImportResultSchema = z.object({
   root: z.literal('knowledge'),
   path: z.string(),
@@ -2353,6 +2361,38 @@ export class VerityClient {
 
   async disconnectGoogleDrive(): Promise<void> {
     await this.request('/google-drive/disconnect', { method: 'POST' });
+  }
+
+  async getSessionGmailConnection(sessionId: string): Promise<GmailSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async connectGmail(input: {
+    code: string;
+    codeVerifier: string;
+    redirectUri: string;
+  }): Promise<{ accountEmail: string | null }> {
+    const res = await this.request('/gmail/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const parsed = googleDriveConnectResultSchema.parse(await res.json());
+    return { accountEmail: parsed.accountEmail };
+  }
+
+  async enableSessionGmail(sessionId: string): Promise<GmailSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableSessionGmail(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, { method: 'DELETE' });
   }
 
   /** Import a Drive file into the project's Knowledge imports folder. */

@@ -25,6 +25,10 @@ const SCOPES = [
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',
 ];
+const GMAIL_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.compose',
+];
 
 /**
  * The redirect URI for a Google *iOS* OAuth client: the reversed client id as a
@@ -47,14 +51,25 @@ export type GoogleDriveAuthResult =
  * mint a refresh token every time (so a reconnect always yields a fresh token).
  */
 export async function runGoogleDriveAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  return runGoogleAuth(clientId, SCOPES);
+}
+
+/** Authorize Gmail while retaining the existing Workspace grants. Google can
+ * replace the stored refresh token during incremental authorization, so the
+ * request deliberately includes the full union rather than Gmail alone. */
+export async function runGmailAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  return runGoogleAuth(clientId, [...SCOPES, ...GMAIL_SCOPES]);
+}
+
+async function runGoogleAuth(clientId: string, scopes: string[]): Promise<GoogleDriveAuthResult> {
   const redirectUri = googleDriveRedirectUri(clientId);
   const request = new AuthSession.AuthRequest({
     clientId,
-    scopes: SCOPES,
+    scopes,
     redirectUri,
     usePKCE: true,
     responseType: AuthSession.ResponseType.Code,
-    extraParams: { access_type: 'offline', prompt: 'consent' },
+    extraParams: { access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true' },
   });
   // Building the URL generates and stores the PKCE code verifier on the request.
   await request.makeAuthUrlAsync(DISCOVERY);

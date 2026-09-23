@@ -65,6 +65,7 @@ export interface GoogleTokens {
   accessToken: string;
   refreshToken?: string;
   expiresInSeconds: number;
+  scopes?: string[];
 }
 
 /** A stable, redaction-safe failure. `.reason` is a short machine code
@@ -84,6 +85,7 @@ interface GoogleTokenResponse {
   access_token?: unknown;
   refresh_token?: unknown;
   expires_in?: unknown;
+  scope?: unknown;
   error?: unknown;
   error_description?: unknown;
 }
@@ -134,6 +136,9 @@ async function postToken(
       ? { refreshToken: payload.refresh_token }
       : {}),
     expiresInSeconds: expiresIn,
+    ...(typeof payload.scope === 'string'
+      ? { scopes: payload.scope.split(/\s+/u).filter((scope) => scope.length > 0) }
+      : {}),
   };
 }
 

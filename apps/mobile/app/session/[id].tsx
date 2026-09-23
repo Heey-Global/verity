@@ -82,6 +82,7 @@ import {
   trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
+  type GmailSessionConnection,
   type RestoredQueuedTurn,
   type Row,
   type ToolCallTone,
@@ -173,6 +174,7 @@ import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
+import { runGmailAuth } from '../../lib/googleDrive';
 import {
   type ClickModifiers,
   type DragFileItem,
@@ -2171,6 +2173,7 @@ export function SessionChat({
     if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
+  const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2178,6 +2181,12 @@ export function SessionChat({
         .getSessionGoogleWorkspaceFile(sessionId)
         .then((file) => {
           if (active) setWorkspaceFile(file);
+        })
+        .catch(() => undefined);
+      void client
+        .getSessionGmailConnection(sessionId)
+        .then((connection) => {
+          if (active) setGmailConnection(connection);
         })
         .catch(() => undefined);
       return () => {
@@ -2750,19 +2759,52 @@ export function SessionChat({
     if (Platform.OS === 'ios') pendingMeetingAudioRef.current = true;
     else uploadMeetingAudio();
   }, [uploadMeetingAudio]);
-  const onPickGoogleDrive = useCallback(() => {
+  const onConnectGmail = useCallback(() => {
     setAttachMenuOpen(false);
-    // A route navigation (not a native picker), so it can run immediately without
-    // the iOS modal-dismiss deferral the meeting-audio path needs.
-    router.push({ pathname: '/google-drive/[sessionId]', params: { sessionId } });
-  }, [sessionId]);
-  const onPickGoogleWorkspace = useCallback(() => {
-    setAttachMenuOpen(false);
-    router.push({
-      pathname: '/google-drive/[sessionId]',
-      params: { sessionId, purpose: 'workspace' },
-    });
-  }, [sessionId]);
+    void (async () => {
+      try {
+        let connection = gmailConnection ?? (await client.getSessionGmailConnection(sessionId));
+        if (!connection.connected) {
+          if (!connection.clientId) {
+            Alert.alert(
+              'Gmail not set up',
+              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+            );
+            return;
+          }
+          const auth = await runGmailAuth(connection.clientId);
+          if (auth.kind === 'cancelled') return;
+          await client.connectGmail({
+            code: auth.code,
+            codeVerifier: auth.codeVerifier,
+            redirectUri: auth.redirectUri,
+          });
+        }
+        connection = await client.enableSessionGmail(sessionId);
+        setGmailConnection(connection);
+      } catch (error) {
+        Alert.alert(
+          'Could not connect Gmail',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  }, [client, gmailConnection, sessionId]);
+  const disableGmail = useCallback(() => {
+    void client
+      .disableSessionGmail(sessionId)
+      .then(() =>
+        setGmailConnection((connection) =>
+          connection === null ? null : { ...connection, enabled: false },
+        ),
+      )
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not disconnect Gmail',
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+  }, [client, sessionId]);
   const clearWorkspaceFile = useCallback(() => {
     if (workspaceFile === null) return;
     Alert.alert(
@@ -3347,6 +3389,24 @@ export function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {gmailConnection?.enabled ? (
+        <View style={styles.workspaceFileBar}>
+          <View style={styles.slideDeckLink}>
+            <Icon name="mail" size={16} color={theme.colors.primary} />
+            <Text style={styles.slideDeckName} numberOfLines={1}>
+              Gmail{gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
+            </Text>
+          </View>
+          <Pressable
+            onPress={disableGmail}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Disconnect Gmail from this session"
+          >
+            <Icon name="x" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
+      ) : null}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
       ) : null}
@@ -3756,8 +3816,7 @@ export function SessionChat({
         onPickPhotos={onPickPhotos}
         onPickFiles={onPickFiles}
         onPickMeetingAudio={onPickMeetingAudio}
-        onPickGoogleDrive={onPickGoogleDrive}
-        onPickGoogleWorkspace={onPickGoogleWorkspace}
+        onConnectGmail={onConnectGmail}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
@@ -7215,7 +7274,7 @@ function InputBar({
   knowledgeEnabled: boolean;
   saveAttachmentsToKnowledge: boolean;
   onToggleSaveAttachmentsToKnowledge: () => void;
-  /** Open the attach menu, docked to the paperclip (its measured screen rect). */
+  /** Open the add menu, docked to the plus button (its measured screen rect). */
   onAttach: (anchor: AttachAnchor) => void;
   /** Attach Finder/Desktop files dropped anywhere on the composer. */
   onDropFiles: (files: Parameters<typeof readDroppedAttachments>[0]) => void;
@@ -7350,10 +7409,10 @@ function InputBar({
               hitSlop={4}
               accessibilityRole="button"
               accessibilityState={{ disabled: dead }}
-              accessibilityLabel="Add attachment"
+              accessibilityLabel="Add content or connect a service"
             >
               <Icon
-                name="paperclip"
+                name="plus"
                 size={22}
                 color={dead ? theme.colors.textFaint : theme.colors.textMuted}
               />
@@ -7405,7 +7464,7 @@ function InputBar({
 // Screen-space rect of the attach button, so the menu can dock to it.
 type AttachAnchor = { x: number; y: number; width: number; height: number };
 
-// The attach menu (mirrors Claude's): the composer's paperclip opens this small
+// The add menu: the composer's plus button opens this small
 // popover docked to it — a source per row (camera, photo library, or an arbitrary
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
@@ -7415,8 +7474,7 @@ function AttachMenu({
   onPickPhotos,
   onPickFiles,
   onPickMeetingAudio,
-  onPickGoogleDrive,
-  onPickGoogleWorkspace,
+  onConnectGmail,
   onClose,
   onDismiss,
 }: {
@@ -7426,8 +7484,7 @@ function AttachMenu({
   onPickPhotos: () => void;
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
-  onPickGoogleDrive: () => void;
-  onPickGoogleWorkspace: () => void;
+  onConnectGmail: () => void;
   onClose: () => void;
   onDismiss: () => void;
 }) {
@@ -7438,8 +7495,7 @@ function AttachMenu({
     onPickPhotos,
     onPickFiles,
     onPickMeetingAudio,
-    onPickGoogleDrive,
-    onPickGoogleWorkspace,
+    onConnectGmail,
   });
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).
@@ -9438,7 +9494,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     textAlign: 'center',
   },
-  // Compact attach popover docked to the paperclip (Claude-style), not a bottom sheet.
+  // Compact add popover docked to the plus button, not a bottom sheet.
   menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
   menuCard: {
     position: 'absolute',

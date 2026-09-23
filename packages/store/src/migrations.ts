@@ -2939,6 +2939,21 @@ const migrations: Record<string, Migration> = {
         drop constraint knowledge_wiki_jobs_retired`.execute(db);
     },
   },
+  '0105_gmail_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table verity_settings
+        add column gmail_authorized boolean not null default false`.execute(db);
+      await sql`create table session_gmail_connections (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        account_email text not null,
+        enabled_at timestamptz not null default now()
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_gmail_connections`.execute(db);
+      await sql`alter table verity_settings drop column gmail_authorized`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

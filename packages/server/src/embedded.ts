@@ -76,6 +76,7 @@ import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-g
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createGoogleDocsTool } from './google-docs-tool.js';
+import { createGmailTool } from './gmail-tool.js';
 import { createGoogleSheetsTool } from './google-sheets-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import {
@@ -1878,6 +1879,8 @@ export async function buildEmbeddedServer(
   const googleSheetsTool = createGoogleSheetsTool({ eventStore, googleAccessToken });
   const invokeGoogleSheets: typeof googleSheetsTool.invoke = (input) =>
     googleSheetsTool.invoke(input);
+  const gmailTool = createGmailTool({ eventStore, googleAccessToken });
+  const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
@@ -1948,6 +1951,7 @@ export async function buildEmbeddedServer(
             'verity_google_docs',
             'verity_knowledge',
             'verity_google_sheets',
+            'verity_gmail',
           ]
         : [
             'verity_http_request',
@@ -1956,6 +1960,7 @@ export async function buildEmbeddedServer(
             'verity_google_docs',
             'verity_knowledge',
             'verity_google_sheets',
+            'verity_gmail',
           ],
     // Control-plane session tools are handled in `buildServer`, which owns session
     // creation and dispatch. Keep their advertisement scoped to the control project.
@@ -1988,6 +1993,7 @@ export async function buildEmbeddedServer(
       googleSlides: invokeGoogleSlides,
       googleDocs: invokeGoogleDocs,
       googleSheets: invokeGoogleSheets,
+      gmail: invokeGmail,
     }),
     recordCall: async ({ projectId, kind, ...gateway }) => {
       await secretAuditLog.append({
@@ -3894,6 +3900,7 @@ export async function buildEmbeddedServer(
     ...(config.googleDriveClientId !== undefined
       ? { googleDriveClientId: config.googleDriveClientId }
       : {}),
+    onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
     persistAgentCredentials: async (patch, persist) => {
       await claudeCredentialSync.persistCredentials(patch, persist);
