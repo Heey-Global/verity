@@ -2,7 +2,7 @@
   "id": "verity-sandbox-toolkit",
   "version": "0.0.0-managed",
   "name": "Verity Sandbox Toolkit",
-  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + claude-code + codex + opencode + pi CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
+  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + claude-code + codex + opencode CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
   "documentationURL": "https://github.com/Heey-Global/verity/tree/main/features/verity-sandbox-toolkit",
   "installsAfter": ["ghcr.io/devcontainers/features/node"],
   "customizations": {
@@ -56,20 +56,10 @@
       "default": "1.18.31",
       "description": "Exact opencode-ai npm version to pin."
     },
-    "installPi": {
-      "type": "boolean",
-      "default": true,
-      "description": "Install the @earendil-works/pi-coding-agent CLI globally (requires node on PATH)."
-    },
     "installRunnerSupervisor": {
       "type": "boolean",
       "default": false,
       "description": "Reserve the dedicated UID/GID and install the ADR 0006 Runner supervisor. Verity enables this for its managed default sandbox and for project devcontainer builds alike; a project devcontainer must additionally pass the provisioner's D1 boundary attestation before the supervisor is started."
-    },
-    "piVersion": {
-      "type": "string",
-      "default": "0.86.0",
-      "description": "Exact @earendil-works/pi-coding-agent npm version to pin."
     },
     "runnerUid": {
       "type": "string",

@@ -718,7 +718,6 @@ Backend release readiness is therefore explicit:
 | Claude | ACP worker for every managed project session plus a dedicated isolated control-plane supervisor | managed-container live smoke covers the real ACP adapter, Server `SIGKILL`, offline completion, replay, exactly-once settlement, and credential scrubbing | managed-container recreate smoke removes the entire Sandbox and Runner runtime, restores the transcript from PostgreSQL into a fresh runtime, and verifies ACP resume | ACP-only; project and control-plane turns fail closed without their supervisor |
 | Codex | native worker | generic file/control cutover covered | managed-container recreate smoke persists rollout JSONL in PostgreSQL and restores it into a fresh `CODEX_HOME` before native resume | recreate gate covered |
 | OpenCode | HTTP server client, no native worker | outside this supervisor transport | not evaluated by this ADR gate | unchanged loopback/HTTP path |
-| Pi | no native worker | outside this supervisor transport | not evaluated by this ADR gate | unchanged loopback path |
 
 Consequently fresh deployments enable `VERITY_RUNNER_SUPERVISOR` by default. Claude
 has passed the ACP restart and recreate release gates and has no native production

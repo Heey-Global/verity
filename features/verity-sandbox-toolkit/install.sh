@@ -51,8 +51,6 @@ CODEX_VERSION="${CODEXVERSION:-0.155.1}"
 CODEX_ACP_VERSION="${CODEXACPVERSION:-1.12.0}"
 # renovate: datasource=npm depName=opencode-ai
 OPENCODE_VERSION="${OPENCODEVERSION:-1.18.31}"
-# renovate: datasource=npm depName=@earendil-works/pi-coding-agent
-PI_VERSION="${PIVERSION:-0.86.0}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -74,7 +72,6 @@ INSTALL_CLAUDE_ACP="$INSTALL_CLAUDE"
 INSTALL_CODEX="${INSTALLCODEX:-true}"
 INSTALL_CODEX_ACP="$INSTALL_CODEX"
 INSTALL_OPENCODE="${INSTALLOPENCODE:-true}"
-INSTALL_PI="${INSTALLPI:-true}"
 TZ_VALUE="${TZ:-UTC}"
 
 # Fixed-neutral runtime bind paths (config references only).
@@ -346,7 +343,7 @@ if [ "$INSTALL_CLAUDE" = "true" ]; then
 fi
 
 # ─── F4c. Additional agent CLIs (optional, pinned) ────────────────────────
-# codex / opencode / pi were previously provided only by the legacy dev-base
+# codex / opencode were previously provided only by the legacy dev-base
 # image. Ported here so verity-sandbox-toolkit is the SINGLE source for every agent CLI
 # as dev-base is retired. Same model as claude: pinned + Renovate-driven bumps
 # (renovate.json); no runtime self-update — new versions arrive via image
@@ -375,12 +372,8 @@ if command -v npm >/dev/null 2>&1; then
     printf '{\n  "autoupdate": false\n}\n' > "$REMOTE_HOME/.config/opencode/opencode.json"
     WRITTEN_PATHS+=("$REMOTE_HOME/.config/opencode")
   fi
-  if [ "$INSTALL_PI" = "true" ]; then
-    echo ">> verity-sandbox-toolkit: installing @earendil-works/pi-coding-agent@$PI_VERSION"
-    npm install -g --ignore-scripts=false "@earendil-works/pi-coding-agent@${PI_VERSION}"
-  fi
 else
-  echo "!! verity-sandbox-toolkit: npm not on PATH — skipping codex/opencode/pi." >&2
+  echo "!! verity-sandbox-toolkit: npm not on PATH — skipping codex/opencode." >&2
   # Make the skip real state, not just a message: F10 below still reads
   # INSTALL_OPENCODE, and left at `true` it would treat a CLI that was never
   # installed as one that should be there and abort the build.
@@ -395,7 +388,7 @@ else
   # claude-acp are equally absent — and that is a pre-existing property of such
   # images, not something the opencode wrapper can repair.
   #
-  # Only INSTALL_OPENCODE is read past this point; the other three flags would be
+  # Only INSTALL_OPENCODE is read past this point; the other flags would be
   # dead assignments and are left alone.
   INSTALL_OPENCODE=false
 fi
@@ -492,13 +485,11 @@ install -d \
   /run/verity/ssh \
   /run/verity/claude \
   /run/verity/codex \
-  /run/verity/xdg/opencode \
-  /run/verity/pi
+  /run/verity/xdg/opencode
 WRITTEN_PATHS+=(
   "/run/verity/claude"
   "/run/verity/codex"
   "/run/verity/xdg/opencode"
-  "/run/verity/pi"
 )
 SSH_DIR="$REMOTE_HOME/.ssh"
 mkdir -p "$SSH_DIR"

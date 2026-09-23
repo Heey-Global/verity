@@ -22,7 +22,6 @@ titles. A signal is one object or an array of objects with these shapes:
 | Claude ACP 0.66.0 | Patched into ACP metadata | Patched from `task_*` SDK messages | Patched from synthetic user messages |
 | Codex ACP 1.1.14 | Native `contextCompaction` metadata | Not exposed as a complete lifecycle | Not exposed |
 | OpenCode 1.18.15 | Native `session.compacted` event | Native `task` / `agent` tool snapshots | Not exposed |
-| Pi 0.84.1 | Mapper ready; no Verity Pi backend exists yet | Mapper ready; no Verity Pi backend exists yet | Mapper ready; no Verity Pi backend exists yet |
 
 The Claude patch is tied to the pinned adapter source and fails the image build
 when any owned seam moves. A dependency update must therefore either re-derive

@@ -736,7 +736,6 @@ export interface EmbeddedServerConfig {
   devcontainerFeatureRefConfigured?: boolean | undefined;
   claudeConfigVolume?: string | undefined;
   codexConfigVolume?: string | undefined;
-  piConfigVolume?: string | undefined;
   /** Origin allowlist for the WebSocket upgrade (anti-CSWSH, audit C1). Only
    *  enforced when non-empty; native mobile clients (no Origin) always pass. */
   wsAllowedOrigins?: readonly string[] | undefined;
@@ -3406,7 +3405,6 @@ export async function buildEmbeddedServer(
         : {}),
       claudeConfigVolume: config.claudeConfigVolume ?? 'claude-config-verity',
       codexConfigVolume: config.codexConfigVolume ?? 'codex-config-verity',
-      piConfigVolume: config.piConfigVolume ?? 'pi-config-verity',
       // ghcr auth for devcontainer builds: mint a `packages:read` installation token
       // so the build resolves the PRIVATE verity-sandbox-toolkit Feature + pulls the
       // base image AS THE APP — no operator PAT or persistent docker login needed.
@@ -3638,9 +3636,9 @@ export async function buildEmbeddedServer(
    * — which is what Verity did until now — meant every session ever deleted was still
    * readable on disk, verbatim prompts and replies included.
    *
-   * Undefined without `dataVolumeRoot`: there is no runner runtime then, and the
-   * loopback backends (OpenCode, Pi) keep their state inside the Sandbox container's own
-   * overlay, which dies with the container.
+   * Undefined without `dataVolumeRoot`: there is no runner runtime then, and a backend
+   * without one (OpenCode) keeps its state inside the Sandbox container's own overlay,
+   * which dies with the container.
    */
   const dataVolumeRoot = config.dataVolumeRoot;
   /**
@@ -4392,7 +4390,7 @@ export async function buildEmbeddedServer(
             return await controlPlaneRunnerTurn(acpControlPlaneBackend);
           }
           // Whatever is left is a loopback backend with no Verity-held provider
-          // credential of its own (Pi), so it inherits the control-plane agent
+          // credential of its own, so it inherits the control-plane agent
           // environment and nothing else.
           return withControlPlaneAgentCredentials(sessionSelected, async (inherited) =>
             materializeControlPlaneAgentEnv(secretRoot, inherited),

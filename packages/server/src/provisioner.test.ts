@@ -1019,7 +1019,6 @@ describe('ProvisionerImpl (#174)', () => {
       hostCloneRoot: '/var/lib/verity-dev',
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
-      piConfigVolume: 'pi-config-verity',
       git,
       isDirectory: isDir,
     });
@@ -1064,7 +1063,6 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.binds).not.toContain('claude-config-verity:/home/dev/.claude');
     expect(spec.binds).not.toContain('codex-config-verity:/home/dev/.codex');
     expect(spec.binds).not.toContain('opencode-config-verity:/home/dev/.config/opencode');
-    expect(spec.binds).toContain('pi-config-verity:/home/dev/.pi');
     expect(spec.env).toEqual(
       expect.arrayContaining([
         'CLAUDE_CONFIG_DIR=/home/dev/.claude',
@@ -2382,7 +2380,6 @@ describe('ProvisionerImpl (#174)', () => {
       hostCloneRoot: '/var/lib/verity-dev',
       claudeConfigVolume: 'claude-config-verity',
       codexConfigVolume: 'codex-config-verity',
-      piConfigVolume: 'pi-config-verity',
       git,
       isDirectory: () => false,
     });
@@ -6325,7 +6322,6 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
           'CLAUDE_CONFIG_DIR=/run/verity/claude',
           'CODEX_HOME=/run/verity/codex',
           'XDG_CONFIG_HOME=/run/verity/xdg',
-          'PI_CONFIG_DIR=/run/verity/pi',
         ]),
       );
       expect(spec.entrypoint).toEqual(['/bin/sh', '-lc']);

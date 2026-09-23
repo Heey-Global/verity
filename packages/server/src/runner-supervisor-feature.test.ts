@@ -257,10 +257,8 @@ describe('verity-runner supervisor runtime', () => {
     expect(SUPERVISED_WORKER_BACKENDS).toContain('claude-acp');
     expect(SUPERVISED_WORKER_BACKENDS).toContain('codex-acp');
     expect(SUPERVISED_WORKER_BACKENDS).toContain('opencode-acp');
-    // `opencode` is the retired native HTTP transport, not a backend name any more;
-    // `pi` has no worker adapter yet and stays on the loopback path.
+    // `opencode` is the retired native HTTP transport, not a backend name any more.
     expect(SUPERVISED_WORKER_BACKENDS).not.toContain('opencode');
-    expect(SUPERVISED_WORKER_BACKENDS).not.toContain('pi');
     // The production main block must launch from the constant — through the
     // installed-adapter filter, never a bare literal — so re-narrowing to
     // ['claude'] can never silently regress the gate again.
@@ -5402,11 +5400,20 @@ input.on('line', (line) => {
           ? spawn(process.execPath, [args[7], ...args.slice(8)], options)
           : spawn(args[7]!, args.slice(8), options),
     });
+    // The gate under test refuses a backend this supervisor was not launched for, so
+    // it needs a parseable backend name that is NOT in this list. Both halves are
+    // pinned below rather than left to the reader: widening the list to every
+    // supervised backend would otherwise leave the refusal assertion with no invalid
+    // input and pass for the wrong reason.
+    const launchedBackends = ['codex-acp', 'claude-acp'];
+    const unsupportedBackend = 'opencode-acp';
+    expect(launchedBackends).not.toContain(unsupportedBackend);
+    expect(SUPERVISED_WORKER_BACKENDS).toContain(unsupportedBackend);
     const supervisor = await runSupervisor({
       runtimeDir,
       workerCommand: process.execPath,
       workerArgs: [resolve('features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs')],
-      workerBackends: ['codex-acp', 'claude-acp'],
+      workerBackends: launchedBackends,
       workerEnv: {
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         // Derive the rest exactly the way the production entry does, from a stand-in
@@ -5428,11 +5435,10 @@ input.on('line', (line) => {
           startCommandId: 'start-unsupported',
           sessionId: 'session-unsupported',
           // A backend the request validator parses but this supervisor was not
-          // launched for — the gate under test. `opencode` used to play that part
-          // and cannot any more: since the ACP migration it is not a parseable
-          // backend name at all, so it would be refused one step earlier and prove
+          // launched for — the gate under test. It has to be a parseable name:
+          // A retired or invented name would be refused one step earlier and prove
           // nothing about `workerBackends`.
-          backend: 'pi',
+          backend: unsupportedBackend,
           worktree: runtimeDir,
           cwd: runtimeDir,
           prompt: 'must not be claimed',

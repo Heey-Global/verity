@@ -13,9 +13,8 @@
 
 ## Context
 
-Verity Sandboxes ship four vendor coding-agent CLIs — **claude-code**, **codex**
-(`@openai/codex`), **opencode** (`opencode-ai`), **pi** (`@earendil-works/pi-coding-agent`).
-All four are global npm packages.
+Verity Sandboxes ship three vendor coding-agent CLIs — **claude-code**, **codex**
+(`@openai/codex`), and **opencode** (`opencode-ai`). All three are global npm packages.
 
 Trigger: a new Claude version (Fable 5) did not appear because the pinned CLI was stale
 **and** the in-container auto-updater was silently failing (`no_permissions`, root-owned
@@ -56,18 +55,18 @@ called out explicitly so the build doesn't inherit the review's findings as bugs
 ## Decisions
 
 Distribute at **build time**, pin via **Renovate**, disable in-container auto-updaters for
-**all four**, publish the toolkit and reference it **by digest**, and surface updates
+**all three**, publish the toolkit and reference it **by digest**, and surface updates
 per-project in the app.
 
-### D1 — Pin all four CLIs; Renovate drives bumps, **merge is manual**
+### D1 — Pin all three CLIs; Renovate drives bumps, **merge is manual**
 
 Each CLI is a pinned version in `install.sh` (mirrored as a manifest option default),
 tracked by the `renovate.json` custom managers. Per **org-wide Renovate policy**: **manual
 merge, no auto-merge**, with **stability days** (cooldown) applied org-wide. Our project rule
-keeps only the **grouping** (the four CLIs land in one PR); it does **not** set `automerge`
+keeps only the **grouping** (the three CLIs land in one PR); it does **not** set `automerge`
 or a custom `schedule`. This gives one reviewable, cooled-off PR — a human sees every bump.
 
-### D2 — Disable the in-container auto-updater for **all four** CLIs (uniform)
+### D2 — Disable the in-container auto-updater for **all three** CLIs (uniform)
 
 They fail today (permissions) and would install broken binaries if "fixed" (finding 2).
 No CLI self-updates in-container; updates arrive only via image rebuild / toolkit republish.
@@ -76,7 +75,6 @@ Disabled uniformly in `install.sh`:
 - **claude-code** — `/etc/claude-code/managed-settings.json` → `{"autoUpdates": false}`.
 - **opencode** — `OPENCODE_DISABLE_AUTOUPDATE`.
 - **codex** — its config knob / notify-only (verify at implementation).
-- **pi** — its documented "disable update" mechanism.
 
 ### D3 — Publish the toolkit to ghcr; reference it **by digest**
 
@@ -193,7 +191,7 @@ in-repo base):
 |---|---|---|
 | **Publish toolkit → ghcr** (digest, `version` bump, security/changelog metadata) | injection + external repos | ❌ to build |
 | **Rebuild Sandbox image** (`verity-sandbox`, digest-tagged + rollback `:sha-` tag) | baked/blank projects | ⚠️ exists as `verity-base.yml`; add rollback tag |
-| **Smoke test all four CLIs** (actually launch `--version`/`--help` via a pseudo-terminal) | gate before merge/publish | ❌ to build |
+| **Smoke test all three CLIs** (actually launch `--version`/`--help` via a pseudo-terminal) | gate before merge/publish | ❌ to build |
 | **Server image** (`verity-server`, digest-tagged + rollback `:sha-` tag) | deployable control-plane image | ✅ verified by `ci.yml` (`server-image` job) |
 
 ## Consumers & what rebuilds on a bump (target)
@@ -223,13 +221,13 @@ in-repo base):
 2. **Digest identity + `version` auto-bump + CI guard** (D3 prerequisites); recreate force-pull.
 3. **Publish workflow** → ghcr (digest + `version` bump + security/changelog metadata).
 4. **Poller + per-project built-from persistence + marker** (icons; security from metadata).
-5. **codex/pi disable + smoke-test CI + F5 fail-loud + pin sync-check.**
+5. **codex disable + smoke-test CI + F5 fail-loud + pin sync-check.**
 6. **D5 settings** (nightly auto: Off/Security/All, drain via `status`).
 
 ## Work already in flight (PR #343)
 
-- **D1 pins** for all four CLIs (`install.sh` + manifest + `renovate.json` managers). ✓
-- **D2 (claude)** managed-settings `autoUpdates:false`. ✓ (opencode/codex/pi pending — D2 4/4.)
+- **D1 pins** for all three CLIs (`install.sh` + manifest + `renovate.json` managers). ✓
+- **D2 (claude)** managed-settings `autoUpdates:false`. ✓ (opencode/codex pending — D2 3/3.)
 - **`renovate.json`**: dropped `automerge` + `schedule`, kept grouping (D1). ✓
 
 **Follow-up tickets:** cosign/provenance; `.npmrc` script-toggle neutralisation; full pin

@@ -127,9 +127,9 @@ function claudeArtifacts(input: SessionArtifactInput, id: string): string[] {
 /**
  * What each backend leaves behind, one entry per value `session_backend_state.backend`
  * can hold. `Conductor.backendKey` (`packages/session/src/conductor.ts`) is the single
- * writer of that column and produces exactly `codex`, `opencode`, or `claude`; `pi` is
- * listed ahead of its backend registration so the file it will or will not write is a
- * decision someone made here rather than an omission.
+ * writer of that column and produces exactly `codex`, `opencode`, or `claude`. A backend
+ * added there belongs here in the same change, so the file it will or will not write is a
+ * decision someone made rather than an omission.
  *
  * A backend absent from this table is reported by {@link purgeSessionArtifacts} as
  * unknown instead of being silently skipped — the failure mode this whole module
@@ -199,13 +199,6 @@ const BACKEND_ARTIFACTS: Readonly<Record<string, BackendArtifacts>> = {
    * namespace naming which worker binary runs the turn.
    */
   opencode: () => [],
-
-  /**
-   * Reserved, same shape as OpenCode: `/home/dev/.pi` is a shared config volume, and
-   * no `pi` backend writes to the runner runtime today. Present so that registering
-   * the backend surfaces this file rather than quietly inheriting the unknown path.
-   */
-  pi: () => [],
 };
 
 /** What one session left on disk, and which of its backends this module cannot place. */
@@ -276,8 +269,8 @@ export interface SessionArtifactPurge {
    * {@link SessionArtifacts.speculative} for what is left out and why.
    *
    * This is the field to gate a "found nothing where it should have been" alert on.
-   * Gating on {@link absent} would fire for every OpenCode-only or Pi-only session
-   * delete, and for every session that was deleted before it ever ran a claude turn,
+   * Gating on {@link absent} would fire for every OpenCode-only session delete, and
+   * for every session that was deleted before it ever ran a claude turn,
    * because a delete always resolves the speculative pair and those sessions never had
    * the file. An alert that fires on the routine case is not read when the real one
    * arrives.
