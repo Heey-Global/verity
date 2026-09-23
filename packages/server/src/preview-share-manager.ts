@@ -1,14 +1,21 @@
 import { randomBytes } from 'node:crypto';
-import { lstat, realpath } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import {
   type EventStore,
   type PublicPreviewShareRecord,
   type PublicPreviewShareState,
 } from '@verity/store';
 import { DockerError, type DockerClient } from './docker.js';
+import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
 import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
 import { containerGenerationOf } from './project-relay-migration.js';
-import { projectClonePath, projectNetworkName, RUNNER_BROKER_CAPABILITIES } from './provisioner.js';
+import {
+  codexGatewayConfig,
+  projectClonePath,
+  projectNetworkName,
+  RUNNER_AGENT_UID,
+  RUNNER_BROKER_CAPABILITIES,
+} from './provisioner.js';
 import { relative, posix, resolve, join } from 'node:path';
 
 const COMPONENT_LABEL = 'verity.component';
@@ -69,6 +76,17 @@ export interface PreviewShareManagerOptions {
   connectorReadyTimeoutMs?: number;
   connectorReadyPollMs?: number;
   wait?: (milliseconds: number) => Promise<void>;
+  inspectArtifact?: (
+    path: string,
+    readContents?: boolean,
+  ) => Promise<{
+    uid: number;
+    gid: number;
+    mode: number;
+    kind: 'file' | 'directory';
+    contents?: string;
+  }>;
+  listArtifactDirectory?: (path: string) => Promise<string[]>;
 }
 
 export interface CreatePreviewShareInput {
@@ -167,7 +185,14 @@ export class PreviewShareManager {
     if (!sandbox.running || !generation) {
       throw new PreviewShareConflictError('sandbox is not running with a relay generation');
     }
-    assertEligibleSandbox(sandbox, projectNetworkName(project.id));
+    const workspaceSubpath = projectWorkspaceSubpath(project, this.options);
+    await assertEligibleSandbox(
+      sandbox,
+      projectNetworkName(project.id),
+      project.id,
+      workspaceSubpath,
+      this.options,
+    );
     const staticMount = isStatic ? this.staticMount(project) : undefined;
 
     if (this.options.edge.isAvailable?.() === false) {
@@ -303,7 +328,13 @@ export class PreviewShareManager {
       if (!after.running || containerGenerationOf(after) !== generation) {
         throw new Error('sandbox generation changed while the share was being created');
       }
-      assertEligibleSandbox(after, projectNetworkName(project.id));
+      await assertEligibleSandbox(
+        after,
+        projectNetworkName(project.id),
+        project.id,
+        workspaceSubpath,
+        this.options,
+      );
       if (devServer) {
         const currentDevServer = await this.options.store.getDevServer(devServer.id);
         if (
@@ -854,10 +885,16 @@ function devServerLifecycleKey(
   });
 }
 
-function assertEligibleSandbox(
+async function assertEligibleSandbox(
   sandbox: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   expectedNetwork: string,
-): void {
+  projectId: string,
+  workspaceSubpath: string,
+  options: Pick<
+    PreviewShareManagerOptions,
+    'dataVolume' | 'dataVolumeRoot' | 'inspectArtifact' | 'listArtifactDirectory'
+  >,
+): Promise<void> {
   const networks = Object.keys(sandbox.networks ?? {});
   if (networks.length !== 1 || networks[0] !== expectedNetwork) {
     throw new PreviewShareConflictError('sandbox is attached to unexpected networks');
@@ -890,6 +927,10 @@ function assertEligibleSandbox(
   if (sandbox.mounts === undefined || sandbox.mountCount !== sandbox.mounts.length) {
     throw new PreviewShareConflictError('sandbox mount metadata is incomplete');
   }
+  const allowedSensitivePathEnv = new Map([
+    ['VERITY_GH_BROKER_CAPABILITY_FILE', '/run/verity/gh-token-capability'],
+    ['VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE', '/run/verity/claude-egress/client.key'],
+  ]);
   const nonSecretBrokerCoordinates = new Set([
     'VERITY_GH_TOKEN_URL',
     'VERITY_GH_TOKEN_DOCKER_CONTAINER',
@@ -900,6 +941,9 @@ function assertEligibleSandbox(
   const secretEnv = sandbox.env.some((entry) => {
     const separator = entry.indexOf('=');
     const name = (separator < 0 ? entry : entry.slice(0, separator)).toUpperCase();
+    const value = separator < 0 ? '' : entry.slice(separator + 1);
+    const allowedPath = allowedSensitivePathEnv.get(name);
+    if (allowedPath !== undefined) return value !== allowedPath;
     if (nonSecretBrokerCoordinates.has(name)) return false;
     return (
       /(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|ACCESS_KEY|CREDENTIALS?)(_|$)/.test(
@@ -918,7 +962,7 @@ function assertEligibleSandbox(
     ['/run/verity/ssh/known_hosts', '/git/known_hosts'],
     ['/run/verity/ssh/allowed_signers', '/git/allowed_signers'],
   ]);
-  const credentialMount = sandbox.mounts.some((mount) => {
+  for (const mount of sandbox.mounts) {
     const allowedSourceSuffix =
       mount.destination === undefined ? undefined : publicSshDestinations.get(mount.destination);
     if (
@@ -926,36 +970,282 @@ function assertEligibleSandbox(
       allowedSourceSuffix !== undefined &&
       mount.source?.endsWith(allowedSourceSuffix) === true
     ) {
-      return false;
+      continue;
     }
     if (
       mount.destination === '/work' &&
       mount.type === 'volume' &&
+      mount.name === options.dataVolume &&
       mount.readWrite === true &&
-      mount.source !== undefined &&
-      !mount.source.includes('/')
+      mount.subpath === workspaceSubpath
     ) {
-      return false;
+      continue;
     }
     if (
       mount.readWrite === false &&
       mount.destination === '/opt/agent-seed' &&
       mount.source?.endsWith('/agent-seed') === true
     ) {
-      return false;
+      continue;
     }
     if (
       mount.readWrite === false &&
       mount.destination === '/etc/profile.d/gh-token.sh' &&
       mount.source === '/dev/null'
     ) {
-      return false;
+      continue;
     }
-    return true;
-  });
-  if (credentialMount) {
+    if (
+      mount.destination === '/run/verity-runner' &&
+      mount.type === 'volume' &&
+      mount.name === options.dataVolume &&
+      mount.readWrite === true &&
+      mount.subpath === `runners/${projectId}`
+    ) {
+      continue;
+    }
+    if (
+      await knownPreviewArtifact(
+        mount,
+        projectId,
+        sandbox.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL],
+        options,
+      )
+    )
+      continue;
     throw new PreviewShareConflictError('sandbox contains mounted credentials');
   }
+}
+
+function projectWorkspaceSubpath(
+  project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+  options: Pick<PreviewShareManagerOptions, 'dataVolumeRoot' | 'hostCloneRoot'>,
+): string {
+  if (options.dataVolumeRoot === undefined || options.hostCloneRoot === undefined) {
+    throw new PreviewShareConflictError('public preview storage is not configured');
+  }
+  const subpath = relative(options.dataVolumeRoot, projectClonePath(options.hostCloneRoot, project))
+    .split('\\')
+    .join('/');
+  if (!subpath || subpath === '.' || posix.isAbsolute(subpath) || subpath.startsWith('../')) {
+    throw new PreviewShareConflictError('project is outside Verity storage');
+  }
+  return subpath;
+}
+
+type SandboxMount = NonNullable<
+  Awaited<ReturnType<DockerClient['inspectContainer']>>['mounts']
+>[number];
+
+async function knownPreviewArtifact(
+  mount: SandboxMount,
+  projectId: string,
+  signingCapabilityDigest: string | undefined,
+  options: Pick<
+    PreviewShareManagerOptions,
+    'dataVolume' | 'dataVolumeRoot' | 'inspectArtifact' | 'listArtifactDirectory'
+  >,
+): Promise<boolean> {
+  if (mount.readWrite !== false || options.dataVolumeRoot === undefined) return false;
+  const specs = [
+    {
+      destination: '/run/verity/gh-token-capability',
+      relative: `secrets/git/gh_token_capability.${projectId}`,
+      mode: 0o600,
+      kind: 'file' as const,
+    },
+    {
+      destination: '/run/verity/ssh/signing_broker_token',
+      relative:
+        signingCapabilityDigest === undefined
+          ? undefined
+          : `secrets/git/signing_broker_token.${signingCapabilityDigest}`,
+      mode: 0o600,
+      kind: 'file' as const,
+    },
+    {
+      destination: '/run/verity/claude-egress/ca.crt',
+      relative: `secrets/claude-egress/egress_ca.${projectId}.crt`,
+      mode: 0o644,
+      kind: 'file' as const,
+    },
+    {
+      destination: '/run/verity/claude-egress/client.crt',
+      relative: `secrets/claude-egress/egress_client.${projectId}.crt`,
+      mode: 0o644,
+      kind: 'file' as const,
+    },
+    {
+      destination: '/run/verity/claude-egress/client.key',
+      relative: `secrets/claude-egress/egress_client.${projectId}.key`,
+      mode: 0o040,
+      gid: 1101,
+      kind: 'file' as const,
+    },
+    {
+      destination: '/run/verity/codex/config.toml',
+      relative: 'secrets/codex/config.toml',
+      mode: 0o644,
+      kind: 'file' as const,
+      validate: validCodexGatewayConfig,
+    },
+    {
+      destination: '/run/verity/opencode-config',
+      relative: 'secrets/opencode',
+      mode: 0o755,
+      kind: 'directory' as const,
+      child: 'opencode.json',
+      childMode: 0o644,
+      validate: validOpenCodeGatewayConfig,
+    },
+  ];
+  const spec = specs.find((candidate) => candidate.destination === mount.destination);
+  if (spec === undefined) return false;
+  const relative = spec.relative;
+  if (relative === undefined) return false;
+  if (!mountMatchesProjectData(mount, relative, options.dataVolume, options.dataVolumeRoot))
+    return false;
+  const inspect = options.inspectArtifact ?? inspectPreviewArtifact;
+  const ownerUid = RUNNER_AGENT_UID;
+  const artifact = await inspect(
+    join(options.dataVolumeRoot, relative),
+    spec.validate !== undefined,
+  ).catch(() => undefined);
+  if (artifact === undefined) return false;
+  if (
+    artifact.kind !== spec.kind ||
+    artifact.uid !== ownerUid ||
+    artifact.mode !== spec.mode ||
+    (spec.gid !== undefined && artifact.gid !== spec.gid)
+  ) {
+    return false;
+  }
+  if (spec.child !== undefined) {
+    const directory = join(options.dataVolumeRoot, relative);
+    const entries = await listArtifactDirectory(options, directory).catch(() => undefined);
+    if (entries === undefined || entries.length !== 1 || entries[0] !== spec.child) return false;
+    const child = await inspect(join(directory, spec.child), true).catch(() => undefined);
+    return (
+      child !== undefined &&
+      child.kind === 'file' &&
+      child.uid === ownerUid &&
+      child.mode === spec.childMode &&
+      child.contents !== undefined &&
+      spec.validate?.(child.contents) === true
+    );
+  }
+  return (
+    spec.validate === undefined ||
+    (artifact.contents !== undefined && spec.validate(artifact.contents))
+  );
+}
+
+async function listArtifactDirectory(
+  options: Pick<PreviewShareManagerOptions, 'listArtifactDirectory'>,
+  path: string,
+): Promise<string[]> {
+  if (options.listArtifactDirectory !== undefined) return options.listArtifactDirectory(path);
+  return readdir(path);
+}
+
+function validCodexGatewayConfig(contents: string): boolean {
+  const port = /^base_url = "http:\/\/127\.0\.0\.1:(\d+)\/codex"$/mu.exec(contents)?.[1];
+  if (port === undefined) return false;
+  try {
+    return contents.trim() === codexGatewayConfig(Number(port)).trim();
+  } catch {
+    return false;
+  }
+}
+
+function exactKeys(value: object, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function validOpenCodeGatewayConfig(contents: string): boolean {
+  try {
+    const parsed = JSON.parse(contents) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+    if (!exactKeys(parsed, ['$schema', 'autoupdate', 'provider'])) return false;
+    const { $schema, autoupdate, provider } = parsed as {
+      $schema?: unknown;
+      autoupdate?: unknown;
+      provider?: unknown;
+    };
+    if ($schema !== 'https://opencode.ai/config.json' || autoupdate !== false) return false;
+    if (typeof provider !== 'object' || provider === null || Array.isArray(provider)) return false;
+    if (!exactKeys(provider, ['verity'])) return false;
+    const verity = (provider as { verity?: unknown }).verity;
+    if (typeof verity !== 'object' || verity === null || Array.isArray(verity)) return false;
+    if (!exactKeys(verity, ['npm', 'name', 'options', 'models'])) return false;
+    const {
+      npm,
+      name,
+      options: gateway,
+      models,
+    } = verity as {
+      npm?: unknown;
+      name?: unknown;
+      options?: unknown;
+      models?: unknown;
+    };
+    if (npm !== '@ai-sdk/openai-compatible' || name !== 'OpenAI-compatible') return false;
+    if (typeof gateway !== 'object' || gateway === null || Array.isArray(gateway)) return false;
+    if (!exactKeys(gateway, ['baseURL', 'apiKey'])) return false;
+    const { baseURL, apiKey } = gateway as { baseURL?: unknown; apiKey?: unknown };
+    if (
+      typeof baseURL !== 'string' ||
+      !/^http:\/\/127\.0\.0\.1:\d+\/opencode$/u.test(baseURL) ||
+      apiKey !== 'verity-opencode-gateway-placeholder-v1'
+    )
+      return false;
+    if (typeof models !== 'object' || models === null || Array.isArray(models)) return false;
+    const entries = Object.entries(models as Record<string, unknown>);
+    return (
+      entries.length > 0 &&
+      entries.every(([model, value]) => {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+        return exactKeys(value, ['name']) && (value as { name?: unknown }).name === model;
+      })
+    );
+  } catch {
+    return false;
+  }
+}
+
+function mountMatchesProjectData(
+  mount: SandboxMount,
+  relative: string,
+  dataVolume: string | undefined,
+  dataVolumeRoot: string,
+): boolean {
+  if (mount.type === 'volume') {
+    return mount.name === dataVolume && mount.subpath === relative;
+  }
+  return mount.type === 'bind' && mount.source === join(dataVolumeRoot, relative);
+}
+
+async function inspectPreviewArtifact(
+  path: string,
+  readContents = false,
+): Promise<{
+  uid: number;
+  gid: number;
+  mode: number;
+  kind: 'file' | 'directory';
+  contents?: string;
+}> {
+  const stats = await lstat(path);
+  if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory())) {
+    throw new PreviewShareConflictError('sandbox artifact is not a regular file or directory');
+  }
+  return {
+    uid: stats.uid,
+    gid: stats.gid,
+    mode: stats.mode & 0o777,
+    kind: stats.isDirectory() ? 'directory' : 'file',
+    ...(stats.isFile() && readContents ? { contents: await readFile(path, 'utf8') } : {}),
+  };
 }
 
 function normalizedHttps(value: string): string {

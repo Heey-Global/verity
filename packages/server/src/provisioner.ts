@@ -208,7 +208,7 @@ const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
 /** In-container path of the read-only GitHub-token-broker capability file. The
  *  credential helper / gh wrapper read it to authenticate to the token broker. */
-const GH_TOKEN_CAPABILITY_FILE = '/run/verity/gh-token-capability';
+const GH_BROKER_CAPABILITY_FILE = '/run/verity/gh-token-capability';
 
 /** In-container path of the read-only PUBLIC SSH signing key — what
  *  `user.signingkey` points at. The `/home/dev/.ssh` spelling is mounted in home
@@ -2954,14 +2954,14 @@ export class ProvisionerImpl implements Provisioner {
                 rewriteMountedSecretFile(
                   join(this.opts.gitSecretRoot, 'git', `signing_broker_token.${oldSigningDigest}`),
                   activation.signingCapability,
-                  0o644,
+                  0o600,
                 );
               }
-              if (mountedDestinations.has(GH_TOKEN_CAPABILITY_FILE)) {
+              if (mountedDestinations.has(GH_BROKER_CAPABILITY_FILE)) {
                 rewriteMountedSecretFile(
                   join(this.opts.gitSecretRoot, 'git', `gh_token_capability.${project.id}`),
                   activation.githubCapability,
-                  0o644,
+                  0o600,
                 );
               }
               if (
@@ -4911,7 +4911,7 @@ export class ProvisionerImpl implements Provisioner {
             `signing_broker_token.${signingBrokerTokenHash(signingBrokerToken)}`,
             signingBrokerToken,
             'git',
-            0o644,
+            0o600,
           )
         : undefined;
     const signingBrokerBinds =
@@ -4952,19 +4952,19 @@ export class ProvisionerImpl implements Provisioner {
         `gh_token_capability.${project.id}`,
         capability,
         'git',
-        0o644,
+        0o600,
       );
     }
     const ghTokenBrokerBinds =
       ghTokenCapabilityPath !== undefined
-        ? [`${ghTokenCapabilityPath}:${GH_TOKEN_CAPABILITY_FILE}:ro`]
+        ? [`${ghTokenCapabilityPath}:${GH_BROKER_CAPABILITY_FILE}:ro`]
         : [];
     const ghTokenBrokerEnv =
       ghTokenCapabilityPath !== undefined
         ? [
             `VERITY_GH_TOKEN_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/github/token`,
             `VERITY_GH_TOKEN_DOCKER_CONTAINER=${project.containerName}`,
-            `VERITY_GH_TOKEN_CAPABILITY_FILE=${GH_TOKEN_CAPABILITY_FILE}`,
+            `VERITY_GH_BROKER_CAPABILITY_FILE=${GH_BROKER_CAPABILITY_FILE}`,
             // Per-project agent memory broker (ADR 0008). Same internal listener and
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
@@ -5052,7 +5052,7 @@ export class ProvisionerImpl implements Provisioner {
         `VERITY_CODEX_EGRESS_AUTHORITY=${new URL(canonicalCodexGatewayUrl).host}`,
         `VERITY_CLAUDE_EGRESS_CA=${CLAUDE_EGRESS_CA_FILE}`,
         `VERITY_CLAUDE_EGRESS_CERT=${CLAUDE_EGRESS_CERT_FILE}`,
-        `VERITY_CLAUDE_EGRESS_KEY=${CLAUDE_EGRESS_KEY_FILE}`,
+        `VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=${CLAUDE_EGRESS_KEY_FILE}`,
         ...(effectiveClaudeServerName !== undefined
           ? [`VERITY_CLAUDE_EGRESS_SERVERNAME=${effectiveClaudeServerName}`]
           : []),
@@ -5502,7 +5502,7 @@ export class ProvisionerImpl implements Provisioner {
             ? [`test -r ${SSH_SIGNING_PUBLIC_KEY_FILE}`]
             : [];
           if (ghTokenCapabilityPath !== undefined) {
-            readinessChecks.unshift(`test -r ${GH_TOKEN_CAPABILITY_FILE}`);
+            readinessChecks.unshift(`test -r ${GH_BROKER_CAPABILITY_FILE}`);
           }
           if (readinessChecks.length > 0) {
             await this.containerCommand({

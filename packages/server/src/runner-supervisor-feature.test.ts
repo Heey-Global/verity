@@ -590,7 +590,7 @@ describe('verity-runner supervisor runtime', () => {
         env: {
           PATH: '/usr/bin',
           CLAUDE_CODE_OAUTH_TOKEN: 'must-not-cross',
-          VERITY_CLAUDE_EGRESS_KEY: 'must-not-cross',
+          VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: 'must-not-cross',
           ANTHROPIC_API_KEY: 'must-not-cross',
         },
       },
@@ -603,7 +603,7 @@ describe('verity-runner supervisor runtime', () => {
       VERITY_CLAUDE_EGRESS: '1',
     });
     expect(spec.spawnOptions.detached).toBe(true);
-    expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_CLAUDE_EGRESS_KEY');
+    expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE');
     expect(spec.spawnOptions.env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 
@@ -2338,7 +2338,7 @@ describe('verity-runner supervisor runtime', () => {
         env: { ...env, VERITY_RUNNER_RUNTIME_UID: '0' },
       }),
     ).rejects.toThrow(/non-root/u);
-    await chmod(env.VERITY_CLAUDE_EGRESS_KEY, 0o644);
+    await chmod(env.VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE, 0o644);
     await expect(execFileAsync(connectorLauncher, ['--validate-config'], { env })).rejects.toThrow(
       /other users/u,
     );
@@ -2347,10 +2347,10 @@ describe('verity-runner supervisor runtime', () => {
   it('rejects connector TLS paths that traverse a symlink', async () => {
     const env = await connectorValidationEnv();
     const alias = join(runtimeDir, 'client-key-alias.pem');
-    await symlink(env.VERITY_CLAUDE_EGRESS_KEY, alias);
+    await symlink(env.VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE, alias);
     await expect(
       execFileAsync(connectorLauncher, ['--validate-config'], {
-        env: { ...env, VERITY_CLAUDE_EGRESS_KEY: alias },
+        env: { ...env, VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: alias },
       }),
     ).rejects.toThrow(/TLS material/u);
   });
@@ -2358,7 +2358,7 @@ describe('verity-runner supervisor runtime', () => {
   it('changes the desired connector identity when TLS material rotates', async () => {
     const env = await connectorValidationEnv();
     const first = await execFileAsync(connectorLauncher, ['--config-fingerprint'], { env });
-    await writeFile(env.VERITY_CLAUDE_EGRESS_KEY, 'rotated-test-key', { mode: 0o640 });
+    await writeFile(env.VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE, 'rotated-test-key', { mode: 0o640 });
     const second = await execFileAsync(connectorLauncher, ['--config-fingerprint'], { env });
     expect(first.stdout).toMatch(/^[a-f0-9]{64}\n$/u);
     expect(second.stdout).toMatch(/^[a-f0-9]{64}\n$/u);
@@ -5702,7 +5702,7 @@ input.on('line', (line) => {
 
 async function connectorValidationEnv(): Promise<
   NodeJS.ProcessEnv & {
-    VERITY_CLAUDE_EGRESS_KEY: string;
+    VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: string;
   }
 > {
   const ca = join(runtimeDir, 'ca.pem');
@@ -5724,7 +5724,7 @@ async function connectorValidationEnv(): Promise<
     VERITY_CLAUDE_EGRESS_AUTHORITY: 'gateway.internal:8443',
     VERITY_CLAUDE_EGRESS_CA: ca,
     VERITY_CLAUDE_EGRESS_CERT: cert,
-    VERITY_CLAUDE_EGRESS_KEY: key,
+    VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: key,
   };
 }
 

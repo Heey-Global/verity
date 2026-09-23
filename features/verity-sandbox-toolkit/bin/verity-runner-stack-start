@@ -227,7 +227,7 @@ EGRESS_VARS=(
   VERITY_CLAUDE_EGRESS_AUTHORITY
   VERITY_CLAUDE_EGRESS_CA
   VERITY_CLAUDE_EGRESS_CERT
-  VERITY_CLAUDE_EGRESS_KEY
+  VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE
   VERITY_CODEX_EGRESS_URL
   VERITY_CODEX_EGRESS_AUTHORITY
 )
@@ -296,7 +296,7 @@ if [ "${VERITY_RUNNER_FOREGROUND:-0}" = '1' ]; then
       mv -f "$_ack_tmp" "$RUNTIME_DIR/claude-egress-generation"
     }
     (
-      GENERATION_FILE="$(dirname "$VERITY_CLAUDE_EGRESS_KEY")/generation"
+      GENERATION_FILE="$(dirname "$VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE")/generation"
       LAST_GENERATION="$(cat "$GENERATION_FILE" 2>/dev/null || true)"
       if [ -n "$LAST_GENERATION" ]; then publish_generation_ack "$LAST_GENERATION"; fi
       while sleep "$RECONCILE_SECONDS"; do

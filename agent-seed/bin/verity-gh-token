@@ -29,7 +29,7 @@ try_docker_fallback() {
   return 0
 }
 
-cap_file="${VERITY_GH_TOKEN_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
+cap_file="${VERITY_GH_BROKER_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
 [ -n "${VERITY_GH_TOKEN_URL:-}" ] && [ -r "$cap_file" ] || {
   try_docker_fallback && exit 0
   exit 1

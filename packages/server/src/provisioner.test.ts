@@ -3492,7 +3492,7 @@ describe('ProvisionerImpl (#174)', () => {
           'VERITY_CLAUDE_EGRESS_URL=https://relay:8443',
           'VERITY_CLAUDE_EGRESS_CA=/run/verity/claude-egress/ca.crt',
           'VERITY_CLAUDE_EGRESS_CERT=/run/verity/claude-egress/client.crt',
-          'VERITY_CLAUDE_EGRESS_KEY=/run/verity/claude-egress/client.key',
+          'VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=/run/verity/claude-egress/client.key',
           'VERITY_CLAUDE_EGRESS_SERVERNAME=verity-agent-gateway',
           'OPENCODE_CONFIG=/run/verity/opencode-config/opencode.json',
         ]),
@@ -4043,7 +4043,7 @@ describe('ProvisionerImpl (#174)', () => {
       const tokenHash = signingBrokerTokenHash(token);
       const tokenPath = join(secretRoot, 'git', `signing_broker_token.${tokenHash}`);
       expect(readFileSync(tokenPath, 'utf8')).toBe(`${token}\n`);
-      expect(statSync(tokenPath).mode & 0o777).toBe(0o644);
+      expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
       expect(binds).toContain(`${tokenPath}:${SIGNING_BROKER_TOKEN_FILE}:ro`);
       expect(spec.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL]).toBe(tokenHash);
       // git is pointed at the broker wrapper via GIT_CONFIG_* env (image-agnostic).
@@ -5331,10 +5331,13 @@ describe('ProvisionerImpl (#174)', () => {
       // The capability is materialized as a read-only file and mounted (never env).
       const capPath = join(secretRoot, 'git', `gh_token_capability.${id}`);
       expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
-      expect(statSync(capPath).mode & 0o777).toBe(0o644);
+      expect(statSync(capPath).mode & 0o777).toBe(0o600);
       // The endpoint URL is non-secret env; no gh-token file anywhere.
       expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
       expect(spec.env).toContain(`VERITY_GH_TOKEN_DOCKER_CONTAINER=${spec.name}`);
+      expect(spec.env).toContain(
+        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
+      );
       // The memory broker (ADR 0008) rides the same capability + broker URL.
       expect(spec.env).toContain(
         'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
