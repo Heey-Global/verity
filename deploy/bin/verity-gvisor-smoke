@@ -145,20 +145,23 @@ project_diagnostics() {
   docker logs --tail 40 "$id" 2>&1 | sed 's/^/runsc-project sandbox log: /' >&2 || true
 }
 # 1. The Sandbox binds a Unix socket in its volume; a runc peer (the Server's side) must connect.
+# volume-nocopy everywhere: Docker otherwise copies the image directory's owner onto the empty
+# volume at first mount, and the chown below would not survive into the Sandbox.
+smoke_mount() { printf 'type=volume,src=%s,dst=%s,volume-nocopy' "$project_suffix" "$1"; }
 docker run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges:true \
-  --network none --entrypoint /bin/sh -v "$project_suffix:/v" "$image" \
-  -c 'chown 65532:65532 /v' >/dev/null
+  --network none --entrypoint /bin/sh --mount "$(smoke_mount /verity-gvisor-smoke)" "$image" \
+  -c 'chown 65532:65532 /verity-gvisor-smoke' >/dev/null
 project_ids+=("$(docker run --detach --runtime runsc-project --network "$project_suffix" \
-  "${hardening[@]}" -v "$project_suffix:/run/verity-runner" "$image" -e \
-  'require("node:net").createServer((s)=>s.end("uds-ok\n")).listen("/run/verity-runner/smoke.sock");
+  "${hardening[@]}" --mount "$(smoke_mount /verity-gvisor-smoke)" "$image" -e \
+  'require("node:net").createServer((s)=>s.end("uds-ok\n")).listen("/verity-gvisor-smoke/smoke.sock");
    require("node:net").createServer((s)=>s.end("tcp-ok\n")).listen(8080);
    setTimeout(()=>{},60000)')")
 peer_script='const [kind,target]=process.argv.slice(1);const net=require("node:net");
   const deadline=Date.now()+15000;const attempt=()=>{const c=kind==="uds"?net.createConnection(target):net.createConnection(8080,target);
   c.on("data",(d)=>{process.stdout.write(String(d));process.exit(0)});
   c.on("error",(e)=>{if(Date.now()>deadline){console.error(`peer: ${e.code??e.message}`);process.exit(1)}setTimeout(attempt,250)})};attempt()'
-uds_output="$(docker run --rm --network none "${hardening[@]}" -v "$project_suffix:/srv" "$image" \
-  -e "$peer_script" uds /srv/smoke.sock)" || true
+uds_output="$(docker run --rm --network none "${hardening[@]}" --mount "$(smoke_mount /srv/runner)" \
+  "$image" -e "$peer_script" uds /srv/runner/smoke.sock)" || true
 [[ $uds_output == *uds-ok* ]] || {
   project_diagnostics
   echo 'a Unix socket bound inside runsc-project is not reachable from the host side (--host-uds=create)' >&2
