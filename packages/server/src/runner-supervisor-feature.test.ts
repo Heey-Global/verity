@@ -103,6 +103,8 @@ function runAgentSpawnBroker(options: Parameters<typeof runAgentSpawnBrokerRunti
       ? { agentUid: process.getuid?.() ?? 0, agentGid: process.getgid?.() ?? 0 }
       : {};
   return runAgentSpawnBrokerRuntime({
+    // The helper is not installed on a test host; script-isolation.test.ts owns the probe.
+    scriptIsolation: { available: true },
     ...options,
     ...testIdentity,
     env: { ...options.env, PATH: options.env?.PATH ?? IMMUTABLE_EXECUTABLE_PATH },
@@ -115,6 +117,7 @@ function runSupervisor(options: RunSupervisorOptions = {}) {
   return runSupervisorRuntime({
     uid: process.getuid?.() ?? 0,
     gid: process.getgid?.() ?? 0,
+    scriptIsolation: { available: true },
     ...options,
   });
 }

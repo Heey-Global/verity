@@ -52,6 +52,7 @@ const OPENCODE_STATE_DIR = '/run/verity/opencode';
 export const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
 export const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
 export const DEFAULT_WORKTREE_ROOT = '/work';
+export const DEFAULT_SCRIPT_SANDBOX_PATH = '/usr/local/bin/verity-script-sandbox';
 /**
  * The ONE additional namespace a Runner may be told about, and it is a literal
  * here rather than anything a caller can name.
@@ -942,7 +943,7 @@ export function agentLaunchSpec(request, options) {
       ),
       ...(request.knowledgeIsolation
         ? [
-            options.scriptSandboxPath ?? '/usr/local/bin/verity-script-sandbox',
+            options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH,
             '--root',
             request.cwd,
             '--cwd',
@@ -1485,6 +1486,63 @@ function trustedCliSecretPath(name, options, correlationId) {
 
 const TRUSTED_CLI_SECRET_LEAK_ERROR = 'trusted CLI secret file could not be removed';
 
+export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR =
+  'trusted CLI entry-script isolation is unavailable in this Sandbox';
+const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Ask the helper whether this kernel will enforce its Landlock policy. The helper
+ * applies a real ruleset in `--probe`, so exit 0 means a command it launches would
+ * be confined; anything else means it would refuse to launch one.
+ *
+ * A container runtime can lack Landlock outright: gVisor (`runsc`), which
+ * public-preview deployments select, implements none of the three syscalls and
+ * answers ENOSYS. That is a property of the container, not of a request, so the
+ * broker asks once and refuses the requests that depend on it rather than
+ * materializing an approved script and its secrets for a launch that can only
+ * exit 126. The helper stays the enforcement point either way: a probe that
+ * wrongly reported success would still end in the helper's own refusal.
+ */
+export async function probeScriptSandbox(
+  helperPath = DEFAULT_SCRIPT_SANDBOX_PATH,
+  timeoutMs = SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+) {
+  return await new Promise((resolveProbe) => {
+    let child;
+    try {
+      child = spawn(helperPath, ['--probe'], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        timeout: timeoutMs,
+      });
+    } catch {
+      resolveProbe({ available: false, reason: 'script sandbox helper could not be started' });
+      return;
+    }
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      if (stderr.length < 512) stderr += chunk;
+    });
+    child.once('error', () =>
+      resolveProbe({ available: false, reason: 'script sandbox helper could not be started' }),
+    );
+    child.once('close', (code, signal) => {
+      if (code === 0) {
+        resolveProbe({ available: true });
+        return;
+      }
+      const line = stderr.split('\n', 1)[0].trim().slice(0, 256);
+      resolveProbe({
+        available: false,
+        reason:
+          line !== ''
+            ? line
+            : `script sandbox probe exited with ${signal === null ? `code ${String(code)}` : signal}`,
+      });
+    });
+  });
+}
+
 // Never forward arbitrary exception text: it can contain argv or secret values.
 const TRUSTED_CLI_VALIDATION_CODES = new Map([
   ['invalid trusted CLI spawn request', 'validation_invalid_request'],
@@ -1530,6 +1588,7 @@ const TRUSTED_CLI_VALIDATION_CODES = new Map([
     'validation_code_loading_environment_mutable',
   ],
   ['trusted CLI interpreter operand does not exist', 'validation_interpreter_operand_missing'],
+  [SCRIPT_ISOLATION_UNAVAILABLE_ERROR, 'validation_script_isolation_unavailable'],
 ]);
 
 function trustedCliFailureCode(phase, error) {
@@ -1788,7 +1847,7 @@ export function trustedCliLaunchSpec(request, options) {
     request.entrySandbox === undefined
       ? [request.command, ...request.args]
       : [
-          options.scriptSandboxPath ?? '/usr/local/bin/verity-script-sandbox',
+          options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH,
           '--root',
           request.entrySandbox.root,
           '--cwd',
@@ -2207,6 +2266,14 @@ export async function runAgentSpawnBroker(options = {}) {
     throw new Error('runner uid and gid must be configured together');
   }
   validateRunnerRuntimeStats(stats, options);
+  const scriptIsolation =
+    options.scriptIsolation ??
+    (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
+  if (!scriptIsolation.available) {
+    process.stderr.write(
+      `verity-agent-spawn-broker: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
+    );
+  }
   const lock = await acquireLock(join(controlDir, 'agent-spawn-broker.lock'));
   await removeLegacyTrustedCliSecretFiles(options);
   const socketPath = join(controlDir, 'agent-spawn-broker.sock');
@@ -2287,7 +2354,8 @@ export async function runAgentSpawnBroker(options = {}) {
           send(socket, {
             ok: true,
             protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION,
-            knowledgeIsolation: true,
+            knowledgeIsolation: scriptIsolation.available,
+            scriptIsolation: scriptIsolation.available,
           });
           socket.end();
           return;
@@ -2298,6 +2366,16 @@ export async function runAgentSpawnBroker(options = {}) {
         }
         const request = await validateSpawnRequest(raw, options);
         if (request.kind === 'trusted-cli') trustedCliCorrelationId = request.correlationId;
+        // Still inside validation: nothing of the request is on disk yet. Both launch
+        // paths below wrap the command in the script sandbox, which cannot confine it
+        // here, so refuse now rather than stage an approved script and its secrets.
+        if (
+          !scriptIsolation.available &&
+          ((request.kind === 'trusted-cli' && request.entryScript !== undefined) ||
+            (request.kind === 'agent' && request.knowledgeIsolation))
+        ) {
+          throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
+        }
         if (closing || connectionClosed) throw new Error('agent spawn request was detached');
         const connectorUrl =
           request.kind === 'agent'

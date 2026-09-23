@@ -413,6 +413,7 @@ export type TrustedCliBrokerFailureCode =
   | 'validation_env_option_mutable'
   | 'validation_code_loading_environment_mutable'
   | 'validation_interpreter_operand_missing'
+  | 'validation_script_isolation_unavailable'
   | 'materialization_secret_file_exists'
   | 'materialization_path_permissions'
   | 'materialization_path_missing'
@@ -425,7 +426,8 @@ export type TrustedCliSupervisorRefusal =
   | 'trusted CLI is unavailable for this turn'
   | 'trusted CLI turn capability is no longer active'
   | 'invalid trusted CLI request'
-  | 'runner worker is not installed';
+  | 'runner worker is not installed'
+  | 'worktree script isolation is unavailable';
 
 /** A closed, secret-safe classification for failures before a trusted CLI result exists. */
 export class TrustedCliDispatchError extends Error {
@@ -545,6 +547,7 @@ export async function runSupervisorTrustedCli(
         'validation_env_option_mutable',
         'validation_code_loading_environment_mutable',
         'validation_interpreter_operand_missing',
+        'validation_script_isolation_unavailable',
         'materialization_secret_file_exists',
         'materialization_path_permissions',
         'materialization_path_missing',
@@ -579,6 +582,7 @@ export async function runSupervisorTrustedCli(
         'trusted CLI turn capability is no longer active',
         'invalid trusted CLI request',
         'runner worker is not installed',
+        'worktree script isolation is unavailable',
       ];
       throw new TrustedCliDispatchError(
         'runner supervisor response',

@@ -1,6 +1,14 @@
 export const SUPERVISOR_PROTOCOL_VERSION: number;
 export const MIN_SUPPORTED_SUPERVISOR_PROTOCOL_VERSION: number;
 export const DEFAULT_RUNTIME_DIR: string;
+export const DEFAULT_SCRIPT_SANDBOX_PATH: string;
+export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR: string;
+export type ScriptSandboxProbe = { available: true } | { available: false; reason: string };
+/** Run `verity-script-sandbox --probe`: whether this kernel enforces its Landlock policy. */
+export function probeScriptSandbox(
+  helperPath?: string,
+  timeoutMs?: number,
+): Promise<ScriptSandboxProbe>;
 /** Kept 1:1 with `MAX_SUPERVISOR_REQUEST_BYTES` in @verity/session. */
 export const MAX_START_REQUEST_BYTES: number;
 export const SUPERVISED_WORKER_BACKENDS: readonly string[];
@@ -171,6 +179,8 @@ export function handleSupervisorRequest(
   onTrustedCliStarted?: () => void,
   /** Invoked once the start has been accepted and queued, before the worker is up. */
   onStartAccepted?: () => void,
+  /** What this Sandbox can enforce, probed once by {@link runSupervisor}. */
+  capabilities?: { scriptIsolation: boolean },
 ): Promise<Record<string, unknown>>;
 export function createTurnAdopter(
   runtimeDir: string,
@@ -197,6 +207,9 @@ export function runSupervisor(options?: {
   brokerSocket?: string;
   maxConcurrentStarts?: number;
   maxQueuedStarts?: number;
+  scriptSandboxPath?: string;
+  /** The result of {@link probeScriptSandbox}, for tests. Production probes the helper. */
+  scriptIsolation?: ScriptSandboxProbe;
 }): Promise<{
   runtimeDir: string;
   socketPath: string;
