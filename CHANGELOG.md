@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/Heey-Global/verity/compare/v1.5.0...v1.5.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **runner:** start the Runner when the sandbox runtime lacks Landlock ([#656](https://github.com/Heey-Global/verity/issues/656)) ([60650cd](https://github.com/Heey-Global/verity/commit/60650cd0e9b21b808d959b7f0ff213d94cc0eef1))
+
 ## [1.5.0](https://github.com/Heey-Global/verity/compare/v1.4.9...v1.5.0) (2026-09-23)
 
 
