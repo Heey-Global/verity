@@ -132,8 +132,18 @@ cleanup_project_best_effort() {
 trap cleanup_project_best_effort EXIT INT TERM
 docker network create --internal "$project_suffix" >/dev/null
 docker volume create "$project_suffix" >/dev/null
-hardening=(--cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64 --memory 256m
+# The limits leave room for gVisor itself: the sentry's threads and memory are charged to the
+# container's cgroup, so a limit sized for a bare `sh` (the Secret-job smoke) starves node.
+hardening=(--cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 --memory 1g
   --user 65532:65532 --restart no --entrypoint node)
+project_diagnostics() {
+  local id="${project_ids[0]:-}"
+  [[ -n $id ]] || return 0
+  docker inspect --format \
+    'runsc-project sandbox: status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' \
+    "$id" >&2 || true
+  docker logs --tail 40 "$id" 2>&1 | sed 's/^/runsc-project sandbox log: /' >&2 || true
+}
 # 1. The Sandbox binds a Unix socket in its volume; a runc peer (the Server's side) must connect.
 docker run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges:true \
   --network none --entrypoint /bin/sh -v "$project_suffix:/v" "$image" \
@@ -146,10 +156,11 @@ project_ids+=("$(docker run --detach --runtime runsc-project --network "$project
 peer_script='const [kind,target]=process.argv.slice(1);const net=require("node:net");
   const deadline=Date.now()+15000;const attempt=()=>{const c=kind==="uds"?net.createConnection(target):net.createConnection(8080,target);
   c.on("data",(d)=>{process.stdout.write(String(d));process.exit(0)});
-  c.on("error",()=>{if(Date.now()>deadline){process.exit(1)}setTimeout(attempt,250)})};attempt()'
+  c.on("error",(e)=>{if(Date.now()>deadline){console.error(`peer: ${e.code??e.message}`);process.exit(1)}setTimeout(attempt,250)})};attempt()'
 uds_output="$(docker run --rm --network none "${hardening[@]}" -v "$project_suffix:/srv" "$image" \
   -e "$peer_script" uds /srv/smoke.sock)" || true
 [[ $uds_output == *uds-ok* ]] || {
+  project_diagnostics
   echo 'a Unix socket bound inside runsc-project is not reachable from the host side (--host-uds=create)' >&2
   exit 1
 }
@@ -158,6 +169,7 @@ sandbox_ip="$(docker inspect --format "{{(index .NetworkSettings.Networks \"$pro
 tcp_output="$(docker run --rm --network "$project_suffix" "${hardening[@]}" "$image" \
   -e "$peer_script" tcp "$sandbox_ip")" || true
 [[ $tcp_output == *tcp-ok* ]] || {
+  project_diagnostics
   echo 'runsc-project has no working network on a project network (--network=sandbox)' >&2
   exit 1
 }
