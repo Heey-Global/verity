@@ -26,7 +26,7 @@ the `/run/verity/pi` runtime dir with its `PI_CONFIG_DIR`/`piConfigVolume` mount
 where it never appeared).
 
 The decisions below are unchanged in substance; read every "all four" / "four CLIs" in
-them as claude-code, codex, and opencode.
+them as the three that remain — claude-code, codex, and opencode.
 
 ## Context
 
