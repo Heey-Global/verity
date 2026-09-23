@@ -9,7 +9,11 @@ import {
 } from '@verity/store';
 import { z } from 'zod';
 import { processKnowledgeSource } from './knowledge-source-processing.js';
-import { ensureProjectKnowledge } from './knowledge-folder.js';
+import {
+  ensureProjectKnowledge,
+  KNOWLEDGE_DOCUMENTS_DIR,
+  KNOWLEDGE_INSIGHTS_DIR,
+} from './knowledge-folder.js';
 import { ingestKnowledgeBytes } from './knowledge-file-ingest.js';
 
 const id = z.string().min(1).max(128);
@@ -107,7 +111,7 @@ export function registerKnowledgeSourceRoutes(
         const suffix = body.messageId
           ? `-${body.messageId.replace(/[^A-Za-z0-9_-]/gu, '').slice(0, 24)}`
           : `-${randomUUID()}`;
-        const path = `notes/${stamp}${suffix}.md`;
+        const path = `${KNOWLEDGE_INSIGHTS_DIR}/${stamp}${suffix}.md`;
         paths.push(
           await ingestKnowledgeBytes(
             root,
@@ -132,7 +136,11 @@ export function registerKnowledgeSourceRoutes(
         const extension = truncateUtf8(rawExtension, 40);
         const stem = truncateUtf8(rawStem, 200 - Buffer.byteLength(extension)) || 'file';
         paths.push(
-          await ingestKnowledgeBytes(root, `imports/${stem}-${digest}${extension}`, bytes),
+          await ingestKnowledgeBytes(
+            root,
+            `${KNOWLEDGE_DOCUMENTS_DIR}/${stem}-${digest}${extension}`,
+            bytes,
+          ),
         );
       }
       return { paths };

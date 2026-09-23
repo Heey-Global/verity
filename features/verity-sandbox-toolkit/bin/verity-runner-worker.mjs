@@ -24640,6 +24640,12 @@ var knowledgeToolRequestSchema = import_zod4.z.discriminatedUnion("operation", [
     expectedRevisionId: id,
     title,
     bodyMarkdown
+  }).strict(),
+  import_zod4.z.object({
+    operation: import_zod4.z.literal("publish_shared"),
+    path: import_zod4.z.string().trim().min(1).max(512),
+    sharedPath: import_zod4.z.string().trim().min(1).max(512).optional(),
+    expectedDigest: import_zod4.z.string().regex(/^[a-f0-9]{64}$/u).optional()
   }).strict()
 ]);
 

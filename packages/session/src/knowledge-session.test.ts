@@ -90,8 +90,8 @@ describe('knowledge discovery context', () => {
       });
       await conductor.sendTurn('s', 'Hello');
       expect(seen[0]).toContain('## Project knowledge');
-      expect(seen[0]).toContain('mounted read-only at `/knowledge`');
-      expect(seen[0]).not.toContain('verity_knowledge');
+      expect(seen[0]).toContain('writable `/knowledge/insights`');
+      expect(seen[0]).toContain('`publish_shared`');
       await conductor.sendTurn('s', 'What are my values?');
       expect(seen[1]).toContain('## Project knowledge');
       expect(seen[1]).toContain('`/knowledge/.text`');

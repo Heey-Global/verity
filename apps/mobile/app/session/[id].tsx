@@ -4302,7 +4302,7 @@ function SessionFilesSheet({
             root,
             path: filePath,
             toRoot: destination,
-            toPath: destination === 'knowledge' ? 'imports' : '',
+            toPath: filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '',
           });
           moved.push(filePath);
         }

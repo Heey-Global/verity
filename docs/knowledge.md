@@ -9,17 +9,19 @@ Verity creates this layout automatically:
 
 ```text
 overview.md
-meetings/
-imports/
-notes/
+sources/
+  documents/
+  meetings/
+insights/
 ```
 
 - `overview.md` is the short project context supplied to fresh agent sessions.
   The `verity-memory append` command adds operator-requested facts to this file.
-- `meetings/` keeps meeting audio and its transcript automatically.
-- `imports/` receives chat attachments selected with **Save to knowledge**,
-  Google Drive imports, and files uploaded in the explorer.
-- `notes/` receives chat messages saved through their Knowledge action.
+- `sources/documents/` receives chat attachments selected with **Save to knowledge**,
+  Google Drive imports, web sources, and source files uploaded in the explorer.
+- `sources/meetings/` keeps meeting audio and its transcript automatically.
+- `insights/` contains knowledge distilled from those sources. Agents may create and
+  revise Markdown here with ordinary filesystem tools.
 
 The assignment is determined by the entry point; no folder choice is required.
 The attachment checkbox remains off by default. Meeting recordings are retained
@@ -27,14 +29,15 @@ automatically.
 
 ## Agent access and extracted text
 
-The project folder is mounted read-only at `/knowledge` in every project
-Sandbox. Shared files are available at `/knowledge/shared`. Agents use ordinary
+The project folder is mounted at `/knowledge` in every project Sandbox. The mount is
+read-only except for `/knowledge/insights`. Shared files are available read-only at
+`/knowledge/shared`, with the same `sources/` and `insights/` organization. Agents use ordinary
 file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool
 or Wiki maintenance flow.
 
 Binary imports are processed into Markdown under a hidden `.text/` directory,
-mirroring the source path. For example, `imports/offer.pdf` produces
-`.text/imports/offer.pdf.md`. The app hides this implementation directory and
+mirroring the source path. For example, `sources/documents/offer.pdf` produces
+`.text/sources/documents/offer.pdf.md`. The app hides this implementation directory and
 shows the extracted text when the original binary is previewed. The original is
 always retained if extraction is unsupported or fails.
 
@@ -48,6 +51,12 @@ as originals with an extraction note.
 Upload, delete, and move files from the explorer. Moving a file to Shared makes
 it readable by every project; moving it back to Knowledge limits it to the
 current project. The hidden extracted text follows its source file.
+
+Agents publish a finished project insight to `shared/insights/` with the
+`verity_knowledge` `publish_shared` operation only when explicitly asked to make it
+shared, global, or available to every project. Existing shared insights require their
+current digest before replacement, so concurrent edits are not silently lost. Original
+sources remain read-only to agents.
 
 Knowledge folders are separate from repositories. Code, tests, build
 instructions, and versioned architecture decisions still belong in the project

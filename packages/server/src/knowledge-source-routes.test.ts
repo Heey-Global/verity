@@ -172,8 +172,8 @@ it('stores project chat selections as notes and imports while legacy sources sti
     expect(first.statusCode).toBe(200);
     const firstPaths = first.json<{ paths: string[] }>().paths;
     expect(firstPaths).toHaveLength(2);
-    expect(firstPaths[0]).toMatch(/^notes\//u);
-    expect(firstPaths[1]).toMatch(/^imports\/decision-[a-f0-9]{8}\.txt$/u);
+    expect(firstPaths[0]).toMatch(/^insights\//u);
+    expect(firstPaths[1]).toMatch(/^sources\/documents\/decision-[a-f0-9]{8}\.txt$/u);
     const projectRoot = join(dataRoot, 'knowledge', 'chat-knowledge');
     expect(readFileSync(join(projectRoot, firstPaths[0]!), 'utf8')).toContain(
       'Approved the launch plan.',
@@ -185,7 +185,7 @@ it('stores project chat selections as notes and imports while legacy sources sti
       payload: { attachments: [attachment] },
     });
     expect(second.json<{ paths: string[] }>().paths).toEqual([firstPaths[1]]);
-    expect(readdirSync(join(projectRoot, 'imports'))).toHaveLength(1);
+    expect(readdirSync(join(projectRoot, 'sources/documents'))).toHaveLength(1);
     const decomposedUmlaut = await app.inject({
       method: 'POST',
       url: '/sessions/chat-session/knowledge-sources',
@@ -200,7 +200,7 @@ it('stores project chat selections as notes and imports while legacy sources sti
     });
     expect(decomposedUmlaut.statusCode).toBe(200);
     const umlautPath = decomposedUmlaut.json<{ paths: string[] }>().paths[0]!;
-    expect(umlautPath).toMatch(/^imports\/Meine Bedürfnisse-[a-f0-9]{8}\.md$/u);
+    expect(umlautPath).toMatch(/^sources\/documents\/Meine Bedürfnisse-[a-f0-9]{8}\.md$/u);
     expect(readFileSync(join(projectRoot, umlautPath), 'utf8')).toBe('Unicode filename');
     const multibyte = await app.inject({
       method: 'POST',
@@ -218,7 +218,7 @@ it('stores project chat selections as notes and imports while legacy sources sti
     const multibytePath = multibyte.json<{ paths: string[] }>().paths[0]!;
     expect(Buffer.byteLength(multibytePath.split('/').at(-1)!)).toBeLessThanOrEqual(255);
     expect(readFileSync(join(projectRoot, multibytePath), 'utf8')).toBe('Multibyte filename');
-    const notesBeforeRejectedBatch = readdirSync(join(projectRoot, 'notes'));
+    const notesBeforeRejectedBatch = readdirSync(join(projectRoot, 'insights'));
     const rejected = await app.inject({
       method: 'POST',
       url: '/sessions/chat-session/knowledge-sources',
@@ -228,7 +228,7 @@ it('stores project chat selections as notes and imports while legacy sources sti
       },
     });
     expect(rejected.statusCode).toBe(400);
-    expect(readdirSync(join(projectRoot, 'notes'))).toEqual(notesBeforeRejectedBatch);
+    expect(readdirSync(join(projectRoot, 'insights'))).toEqual(notesBeforeRejectedBatch);
     const additionalSource = await app.inject({
       method: 'POST',
       url: '/knowledge/sources',
