@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.4](https://github.com/Heey-Global/verity/compare/website-v1.6.3...website-v1.6.4) (2026-09-23)
+
+
+### Bug Fixes
+
+* **deploy:** reconcile host Docker runtimes before activating a release ([#660](https://github.com/Heey-Global/verity/issues/660)) ([b5053a3](https://github.com/Heey-Global/verity/commit/b5053a345e5ac661e5188c46d18dcc428c107eb7))
+
 ## [1.6.3](https://github.com/Heey-Global/verity/compare/website-v1.6.2...website-v1.6.3) (2026-09-23)
 
 
