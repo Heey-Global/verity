@@ -34,6 +34,8 @@ const FAILURE_DETAIL: Record<string, string> = {
   'pulling-failed': 'The new version could not be downloaded.',
   'verifying-image-failed': 'The new version failed signature verification.',
   'preflight-failed': 'The new version failed its readiness check.',
+  'host-runtime-failed':
+    'The new version needs a Docker runtime this host does not have yet. Re-run the Verity installer on the host, then retry the update.',
   'creating-standby-failed': 'The new version could not be prepared.',
 };
 

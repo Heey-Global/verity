@@ -4,12 +4,21 @@ Brokered Secret jobs use Docker's `runsc` runtime; project Sandboxes that serve 
 `runsc-project`, a second registration of the same pinned binary. Both belong to the Docker host,
 not the Verity server or project-sandbox image.
 
-`versions.env` pins the upstream release and SHA-512 checksum for both supported architectures.
-The CI smoke runs natively on amd64 and arm64; it does not use emulation for this security boundary.
-`install-runsc-host.sh` downloads that exact artifact, verifies it, installs it at the versioned
-path `/opt/verity/runsc/<release>/runsc`, merges the `runsc` registration into
-`/etc/docker/daemon.json`, and reloads Docker. Run it through the host's normal image/Ansible/cloud-
-init rollout, not from an agent session:
+`versions.env` pins the upstream release, the SHA-512 checksum for both supported architectures, and
+the arguments of both registrations. The CI smoke runs natively on amd64 and arm64; it does not use
+emulation for this security boundary.
+
+Managed installations need nothing done by hand. `deploy/bin/verity-install` installs the host
+component `deploy/host/verity-host-runtime` (with a systemd path unit) and uses it to download the
+pinned artifact, verify its checksum and version, install it at `/opt/verity/runsc/<release>/runsc`,
+merge exactly the `runsc` and `runsc-project` entries into `/etc/docker/daemon.json`, and reload
+Docker. A reload re-reads the runtimes without restarting any container; a reload Docker does not
+take restores the previous `daemon.json`. Afterwards the managed Updater asks the same component
+before it activates a release that declares runtimes the host lacks (see
+[ADR 0008 Amendment 2](../../docs/adr/0008-verity-server-self-update.md)).
+
+Hosts without the managed installer, or rolled out through image/Ansible/cloud-init, run the same
+implementation directly:
 
 ```sh
 sudo deploy/gvisor/install-runsc-host.sh

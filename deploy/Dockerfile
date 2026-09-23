@@ -340,6 +340,15 @@ ENV VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${VERITY_BUNDLED_PROJECT_RELAY_IMAGE}
 ARG VERITY_BUNDLED_POSTGRES_IMAGE=
 LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}
 
+# The Docker runtime registrations this release needs on its host (ADR 0008 Amendment 2):
+# deploy/gvisor/versions.env, as JSON. The managed Updater reads it off the pulled target
+# image and, before creating the standby, has the host component `verity-host-runtime`
+# register whatever the host lacks, then verifies it through Docker — so a release that needs
+# a new runtime can never be activated on a host that does not have it. A literal and not a
+# build-arg on purpose: every build of this Dockerfile, release or not, declares the same
+# pins its own code verifies against; gvisor-runtime-config.test.ts keeps the three in step.
+LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{\"x86_64\":\"75c092fe87d84078f06ac40937cb5207fb5a1a92511b38b4790c915801555daadc59fef33de8db4dd92e1892a6de390c8a2e390a7a3bd0e2d3731d9ed6a3a6e8\",\"aarch64\":\"ee39fa48121797db60919dacb77145d604c9a54616323a00304f8482fca87af20e8e78b079cb193ab7bef7230ad3f79096a3491e12c09ba11625c7be5130e084\"},\"runtimes\":{\"runsc\":[\"--platform=systrap\",\"--network=none\"],\"runsc-project\":[\"--platform=systrap\",\"--network=sandbox\",\"--host-uds=create\"]}}"
+
 # The Google Drive OAuth iOS client id (ADR 0009), injected by release.yml as a
 # build-arg so the running server has it WITHOUT runtime Doppler access (the
 # customer deployment cannot reach the vendor Doppler). Non-secret — the same id

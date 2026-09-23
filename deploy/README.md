@@ -26,14 +26,19 @@ Phase A (the ADR lands with PR #303).
   plugin** (`docker compose`; the standalone `docker-compose` binary is not used).
 - An **amd64** or **arm64** Linux host. Both architectures receive the Server,
   sandbox, toolkit, relay, preview images, and signed self-update channel.
-- Brokered Secret jobs are supported on **amd64 and arm64** and require the pinned gVisor host
-  runtime. Install and verify it with [`deploy/gvisor`](gvisor/README.md). The Compose wrapper
-  always runs a real `runsc` preflight before every deployment change.
+- Brokered Secret jobs and project Sandboxes are supported on **amd64 and arm64** and require the
+  pinned gVisor host runtime, registered twice (`runsc`, `runsc-project`). `verity-install` installs
+  and registers it through the host component `verity-host-runtime`; see
+  [`deploy/gvisor`](gvisor/README.md). The Compose wrapper always runs a real `runsc` and
+  `runsc-project` preflight before every deployment change.
 
-Existing installations must install the pinned host runtime before taking a release with this
-topology. If an automatic update reaches such a host first, the candidate reports `503` from
-`/healthz`; the managed updater keeps the current generation serving and rolls the candidate back.
-Install gVisor on the host and retry the update—no insecure compatibility mode is available.
+A release declares the runtimes it needs (the `org.verity.host-runtimes` image label). Before the
+managed Updater creates a candidate, it compares that declaration with what Docker reports and, when
+the host lacks something, asks `verity-host-runtime` to register it and verifies the result. If that
+is not possible the update fails as `host-runtime-failed` before anything is activated, and the
+current generation keeps serving. The candidate's own `/healthz` does not guard this: the readiness
+probe accepts a `degraded` 503 on purpose. A host installed before the host component existed is
+told to re-run the Verity installer (the Quick start command below) once; no insecure compatibility mode is available.
 
 That's it — Verity's data lives on the Docker-managed `verity-data` volume, which
 the daemon creates on first use and initializes with the right owner (the image
@@ -58,7 +63,7 @@ Rootless Docker is not accepted as a source for code that will execute as root.
 
 Every run starts with an aggregated host preflight and reports all missing
 requirements before pulling an image or changing installation state. To run only
-that check, or to let the bootstrap install missing `tar`, `flock`, and OpenSSL packages through
+that check, or to let the bootstrap install missing `tar`, `flock`, OpenSSL, `curl` and `jq` packages through
 a supported host package manager, use:
 
 ```sh

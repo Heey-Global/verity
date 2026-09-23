@@ -19,6 +19,9 @@ function executable(path, body) {
   chmodSync(path, 0o755);
 }
 
+// The tools the bootstrap installs itself; the last two are the host runtime service's.
+const SYSTEM_TOOLS = ['tar', 'flock', 'openssl', 'curl', 'jq'];
+
 function host({ architecture = 'x86_64', installTools = false, uid = 0 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verity-bootstrap-'));
   workspaces.push(root);
@@ -37,17 +40,17 @@ function host({ architecture = 'x86_64', installTools = false, uid = 0 } = {}) {
     join(root, 'docker'),
     `if [[ $* == *--format* ]]; then printf '%s\\n' 25.0.0; fi`,
   );
-  for (const tool of ['awk', 'grep', 'mktemp']) executable(join(root, tool), ':');
+  for (const tool of ['awk', 'grep', 'mktemp', 'sha512sum']) executable(join(root, tool), ':');
   if (!installTools) {
-    for (const tool of ['tar', 'flock', 'openssl']) executable(join(root, tool), ':');
+    for (const tool of SYSTEM_TOOLS) executable(join(root, tool), ':');
   } else {
     executable(
       join(root, 'apt-get'),
       `if [[ \${1-} == install ]]; then
-         printf '%s\\n' '#!/bin/bash' ':' >"$VERITY_TEST_BIN/tar"
-         printf '%s\\n' '#!/bin/bash' ':' >"$VERITY_TEST_BIN/flock"
-         printf '%s\\n' '#!/bin/bash' ':' >"$VERITY_TEST_BIN/openssl"
-         /usr/bin/chmod 0755 "$VERITY_TEST_BIN/tar" "$VERITY_TEST_BIN/flock" "$VERITY_TEST_BIN/openssl"
+         for tool in ${SYSTEM_TOOLS.join(' ')}; do
+           printf '%s\\n' '#!/bin/bash' ':' >"$VERITY_TEST_BIN/$tool"
+           /usr/bin/chmod 0755 "$VERITY_TEST_BIN/$tool"
+         done
        fi`,
     );
   }
@@ -97,7 +100,7 @@ test('install-missing installs basic tools and repeats the preflight', () => {
   const result = run(host({ installTools: true }), '--preflight', '--install-missing');
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /installing missing system tools: tar flock openssl/);
+  assert.match(result.stdout, /installing missing system tools: tar flock openssl curl jq/);
   assert.match(result.stdout, /preflight passed/);
 });
 
@@ -106,9 +109,7 @@ test('install-missing preserves the aggregated report without root or sudo', () 
 
   assert.equal(result.status, 1);
   assert.doesNotMatch(result.stdout, /installing missing system tools/);
-  assert.match(result.stderr, /preflight failed \(4 issues\)/);
-  assert.match(result.stderr, /tar is required/);
-  assert.match(result.stderr, /flock is required/);
-  assert.match(result.stderr, /openssl is required/);
+  assert.match(result.stderr, /preflight failed \(6 issues\)/);
+  for (const tool of SYSTEM_TOOLS) assert.match(result.stderr, new RegExp(`${tool} is required`));
   assert.match(result.stderr, /root access is required/);
 });

@@ -2843,7 +2843,7 @@ describe('ProvisionerImpl (#174)', () => {
       });
       expect(error).toBeInstanceOf(ProvisioningError);
       expect(provisionError).toContain('runsc-project is missing');
-      expect(provisionError).toContain('install-runsc-host.sh');
+      expect(provisionError).toMatch(/re-run the Verity installer/i);
       expect(dockerMethods).not.toContain('stopContainer');
       expect(dockerMethods).not.toContain('removeContainer');
       expect(dockerMethods).not.toContain('createContainer');

@@ -1261,3 +1261,55 @@ cutover, at the one point where there is nothing to fall back to.
 crash loop — remove the Server container so the Updater takes the create path —
 including its cost: one hard control-plane restart, no drain, in-flight sessions
 lost.
+
+
+## Amendment 2 — host runtime prerequisites are reconciled before activation (2026-09-23)
+
+**Context.** v1.5.0 moved project Sandboxes to gVisor and v1.5.2 to a second Docker runtime
+registration, `runsc-project`. Runtime registrations live in the host's `/etc/docker/daemon.json`,
+which nothing in this ADR's topology can change: `verity-install` is a one-shot, operator-run
+process, and the Updater is a container holding the Docker socket with no host mount of
+`/etc/docker` and no way to reload dockerd. The Updater also had no host-prerequisite gate — the
+readiness probe accepts a `degraded` 503 by design — so v1.5.2 was activated on hosts that only had
+`runsc`, and every project there failed its turns.
+
+**Decision.**
+
+1. A release declares its host runtime requirements as the OCI label `org.verity.host-runtimes`
+   (release, per-architecture SHA-512, the argument list of `runsc` and `runsc-project`), a literal
+   in `deploy/Dockerfile` kept identical to `deploy/gvisor/versions.env` and to the Server's
+   verifier constants by `gvisor-runtime-config.test.ts`. Like `org.verity.postgres-image` it is
+   read off the pulled, verified target and never enters a container's environment.
+2. The host gains exactly one Verity component, `verity-host-runtime`: a root-owned script plus a
+   systemd path unit, installed by `verity-install`. It does one thing — download the pinned runsc,
+   verify checksum and version, merge the two runtime entries into `daemon.json`
+   (`dockerd --validate` first), reload Docker (a reload, never a restart), and restore the previous
+   file if Docker does not take it. It accepts only the two runtime names and a fixed allowlist of
+   arguments, so the Updater cannot widen what this root process writes. Every step is idempotent,
+   and each state an interruption leaves is one the next run finishes from.
+3. The Updater and the component talk through a root-owned host directory
+   (`/var/lib/verity/host-runtime`, bind-mounted into the Updater): `request.json` in, `result.json`
+   out, keyed by the update id so a resumed operation reuses its answer. `agent.json`, written by
+   the installer, tells the Updater whether anything can answer.
+4. Preparation reconciles after `preflight` and before `creating-standby`: compare the label with
+   `GET /info`, request and await reconciliation when they differ, verify again through Docker. Any
+   shortfall fails the operation with the public code `host-runtime-failed` and an operator message
+   naming the fix; nothing from the target has been created, so the current generation keeps
+   serving.
+
+**Not chosen.** A privileged, host-PID helper container started by the Updater would have reached
+hosts already on v1.5.2 without an operator, but it grows the Updater's allowlist with exactly the
+container shape ADR 0017 is removing from the socket's reach. The price of the host component is one
+re-run of the Verity installer on hosts installed before it existed; the same run applies the
+missing `runsc-project` registration, and every later runtime change is applied by the Updater.
+
+**Transition.** Preparation runs in the Updater that is already installed, so the gate guards
+updates made FROM the first release that carries it. An Updater from before it activates that
+release as it always did. A paired host re-running the installer gets the installer of its sealed
+release. The order for an existing host is therefore: update to the first release carrying this
+amendment, then re-run the installer once, then Repair the affected projects.
+
+**Limits.** A release that needs a runtime argument outside the component's allowlist has to ship a
+new copy of the component, which reaches a host through `verity-install`. Hosts without systemd
+(e.g. Docker-in-Docker) get the component's reconciliation at install time only; their Updater
+reports `host-runtime-failed` with the instruction to re-run the installer.

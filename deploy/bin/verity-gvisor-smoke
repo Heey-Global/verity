@@ -39,7 +39,7 @@ jq --exit-status \
   --arg path "$runtime_path" \
   '.path == $path and .runtimeArgs == ["--platform=systrap", "--network=sandbox", "--host-uds=create"]' \
   <<<"$project_registration" >/dev/null || {
-    echo 'Docker runsc-project registration does not match the pinned path and arguments; run deploy/gvisor/install-runsc-host.sh' >&2
+    echo 'Docker runsc-project registration does not match the pinned path and arguments; re-run the Verity installer (or deploy/gvisor/install-runsc-host.sh) on this host' >&2
     exit 1
   }
 

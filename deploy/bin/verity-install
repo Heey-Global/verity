@@ -223,6 +223,10 @@ select_pairing_host() {
 
 command -v docker >/dev/null || die 'docker is required'
 command -v flock >/dev/null || die 'the host flock utility is required'
+# The host runtime service registers the gVisor runtimes with these; refuse before any state changes.
+for tool in curl jq sha512sum; do
+  command -v "$tool" >/dev/null || die "the host $tool utility is required (the gVisor runtime registration uses it)"
+done
 
 docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
 [ -n "$docker_version" ] || die 'cannot talk to the Docker daemon — is it running, and can this user reach the socket?'
@@ -900,6 +904,47 @@ pairing_uri="$(VERITY_STATE_DIR="$STATE_DIR" \
   VERITY_SERVER_UID="${VERITY_SERVER_UID:-1000}" \
   VERITY_SERVER_GID="${VERITY_SERVER_GID:-1000}" \
   "$repo_root/deploy/bin/verity-pairing-material")"
+
+# ── host runtime service (ADR 0008 Amendment 2) ────────────────────────────
+# Verity's releases run project Sandboxes and Secret jobs under two Docker runtime
+# registrations of one pinned gVisor binary. Those live in the host's daemon.json, which
+# the managed Updater cannot change: it is a container with the Docker socket and nothing
+# else. So this installer — the one Verity process that runs as root on the host — puts a
+# single fixed-purpose host component in place (deploy/host/verity-host-runtime plus a
+# systemd path unit), then uses it to register the runtimes this release pins. Afterwards
+# the Updater asks the same component, through a root-owned request directory, before it
+# activates any release that needs something the host lacks, and fails the update with an
+# actionable message instead of activating a release the host cannot run.
+HOST_RUNTIME_LIBEXEC="${VERITY_HOST_RUNTIME_LIBEXEC:-/usr/local/libexec/verity}"
+HOST_RUNTIME_DIR="${VERITY_HOST_RUNTIME_DIR:-/var/lib/verity/host-runtime}"
+SYSTEMD_UNIT_DIR="${VERITY_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+SYSTEMD_RUN_DIR="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
+heading 'Container runtimes'
+[ ! -L "$HOST_RUNTIME_DIR" ] || die "$HOST_RUNTIME_DIR must not be a symlink"
+install -d -m 0755 -o root -g root "$HOST_RUNTIME_LIBEXEC"
+install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-runtime" \
+  "$HOST_RUNTIME_LIBEXEC/verity-host-runtime"
+install -d -m 0700 -o root -g root "$HOST_RUNTIME_DIR"
+host_runtime_trigger=none
+if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
+  for unit in verity-host-runtime.path verity-host-runtime.service; do
+    install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
+  done
+  systemctl daemon-reload
+  systemctl enable --now verity-host-runtime.path >/dev/null 2>&1 \
+    || die 'could not enable verity-host-runtime.path — see `systemctl status verity-host-runtime.path`'
+  host_runtime_trigger=systemd-path
+else
+  note 'No systemd on this host: runtime migrations that a later release needs will ask you to re-run the Verity installer'
+fi
+agent_tmp="$(mktemp "$HOST_RUNTIME_DIR/.agent.json.XXXXXX")"
+printf '{"version":1,"trigger":"%s"}\n' "$host_runtime_trigger" >"$agent_tmp"
+chmod 0644 "$agent_tmp"
+mv -f "$agent_tmp" "$HOST_RUNTIME_DIR/agent.json"
+note 'Registering the gVisor runtimes runsc and runsc-project (running containers are not restarted)'
+VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" \
+  "$HOST_RUNTIME_LIBEXEC/verity-host-runtime" apply-pins "$repo_root/deploy/gvisor/versions.env" \
+  || die 'the gVisor runtimes could not be registered (see the reason above); the running installation was not changed'
 
 # ── hand over to the guarded migration ─────────────────────────────────────
 heading 'Starting Verity'
