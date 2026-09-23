@@ -495,12 +495,16 @@ export interface ProvisionerOptions {
   hostCloneRoot: string;
   /** Host-visible agent-seed directory mounted into sandboxes at /opt/agent-seed. */
   agentSeedHostPath?: string | undefined;
-  /** Shared Claude Code config/auth volume mounted into project containers. */
+  /**
+   * Legacy shared Claude Code config/auth volume. Accepted for compatibility and
+   * deliberately NOT mounted: subscription credentials are server-owned now and
+   * materialized from Verity settings, so mounting the shared volume would let a
+   * clean server inherit stale credentials from an older dogfood container.
+   */
   claudeConfigVolume?: string | undefined;
-  /** Shared Codex CLI config/auth volume mounted into project containers. */
+  /** Legacy shared Codex CLI config/auth volume — not mounted, see
+   * {@link ProvisionerOptions.claudeConfigVolume}. */
   codexConfigVolume?: string | undefined;
-  /** Shared pi config/auth volume mounted into project containers. */
-  piConfigVolume?: string | undefined;
   /** Central Verity settings provider for git identity/signing material. */
   veritySettings?: (() => Promise<VeritySettingsRecord | undefined>) | undefined;
   /** Opens the pull request that carries a linked local project's history onto a
@@ -1539,26 +1543,6 @@ function projectPortBindings(
   return bindings;
 }
 
-function agentConfigBinds(
-  opts: Pick<ProvisionerOptions, 'claudeConfigVolume' | 'codexConfigVolume' | 'piConfigVolume'>,
-  mode: 'home' | 'neutral' = 'home',
-): string[] {
-  const paths =
-    mode === 'neutral'
-      ? {
-          pi: '/run/verity/pi',
-        }
-      : {
-          pi: '/home/dev/.pi',
-        };
-  return [
-    // Subscription credentials are server-owned now and materialized from Verity
-    // settings below. Do not mount legacy shared config volumes into project
-    // sandboxes, or a clean server can inherit stale credentials from an older
-    // dogfood container.
-    ...(opts.piConfigVolume !== undefined ? [`${opts.piConfigVolume}:${paths.pi}`] : []),
-  ];
-}
 function writeSecretFile(
   root: string,
   name: string,
@@ -5091,7 +5075,6 @@ export class ProvisionerImpl implements Provisioner {
         '/dev/null:/etc/profile.d/gh-token.sh:ro',
         ...ghTokenBrokerBinds,
         ...claudeEgressBinds,
-        ...agentConfigBinds(this.opts, pathMode),
         ...openCodeBinds,
         ...gitBinds,
         ...signingBrokerBinds,
@@ -5192,9 +5175,7 @@ export class ProvisionerImpl implements Provisioner {
         // That allowlist was fixed in #1632; the name is corrected here so the
         // next var added for a non-Claude leg is not dropped the same way.
         ...egressConnectorEnv,
-        ...(pathMode === 'neutral'
-          ? ['XDG_CONFIG_HOME=/run/verity/xdg', 'PI_CONFIG_DIR=/run/verity/pi']
-          : []),
+        ...(pathMode === 'neutral' ? ['XDG_CONFIG_HOME=/run/verity/xdg'] : []),
         ...(openCodeBinds.length > 0
           ? ['OPENCODE_CONFIG=/run/verity/opencode-config/opencode.json']
           : []),

@@ -254,10 +254,8 @@ describe('verity-runner supervisor runtime', () => {
     expect(SUPERVISED_WORKER_BACKENDS).toContain('claude-acp');
     expect(SUPERVISED_WORKER_BACKENDS).toContain('codex-acp');
     expect(SUPERVISED_WORKER_BACKENDS).toContain('opencode-acp');
-    // `opencode` is the retired native HTTP transport, not a backend name any more;
-    // `pi` has no worker adapter yet and stays on the loopback path.
+    // `opencode` is the retired native HTTP transport, not a backend name any more.
     expect(SUPERVISED_WORKER_BACKENDS).not.toContain('opencode');
-    expect(SUPERVISED_WORKER_BACKENDS).not.toContain('pi');
     // The production main block must launch from the constant — through the
     // installed-adapter filter, never a bare literal — so re-narrowing to
     // ['claude'] can never silently regress the gate again.
@@ -5425,11 +5423,11 @@ input.on('line', (line) => {
           startCommandId: 'start-unsupported',
           sessionId: 'session-unsupported',
           // A backend the request validator parses but this supervisor was not
-          // launched for — the gate under test. `opencode` used to play that part
-          // and cannot any more: since the ACP migration it is not a parseable
-          // backend name at all, so it would be refused one step earlier and prove
-          // nothing about `workerBackends`.
-          backend: 'pi',
+          // launched for (`workerBackends` above omits it) — the gate under test.
+          // It has to be a parseable name: `opencode` and `pi` are not backend names
+          // any more, so either would be refused one step earlier and prove nothing
+          // about `workerBackends`.
+          backend: 'opencode-acp',
           worktree: runtimeDir,
           cwd: runtimeDir,
           prompt: 'must not be claimed',

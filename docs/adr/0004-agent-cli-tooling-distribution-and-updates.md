@@ -11,6 +11,23 @@
 > red-team) — see the companion **`docs/adr/0004-review-notes.md`**, which is not part of the
 > public snapshot.
 
+## Amendment 1 — pi dropped (2026-09-23)
+
+**pi** (`@earendil-works/pi-coding-agent`) is no longer shipped. OpenCode is the agent
+this fleet settled on, and pi never gained a worker adapter — it stayed on the loopback
+path, was never a value `Conductor.backendKey` could write, and so was a pinned,
+Renovate-tracked, smoke-tested CLI that no session could run.
+
+Removed with it: the `installPi`/`piVersion` Feature options and the install-time pin,
+the `renovate.json` group member and manifest manager, the `pi --version` CI smoke check,
+the `/run/verity/pi` runtime dir with its `PI_CONFIG_DIR`/`piConfigVolume` mount, the
+`pi` entry in `session-artifacts.ts`, and `pi` from the supervisor's `WORKER_BACKENDS`
+(which realigns that set with `RUNNER_SUPERVISOR_BACKENDS` in `packages/session/src/backend.ts`,
+where it never appeared).
+
+The decisions below are unchanged in substance; read every "all four" / "four CLIs" in
+them as claude-code, codex, and opencode.
+
 ## Context
 
 Verity Sandboxes ship four vendor coding-agent CLIs — **claude-code**, **codex**

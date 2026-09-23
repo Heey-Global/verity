@@ -241,7 +241,7 @@ jobs:
             echo "::endgroup::"
 
             echo "::group::Agent CLIs — launch --version under a pseudo-terminal"
-            # claude/codex/opencode/pi block on TTY detection without a pty
+            # claude/codex/opencode block on TTY detection without a pty
             # (claude waits on auth-state init). Allocate a REAL pty via python
             # (openpty+fork — no host TTY needed, unlike `docker run -t`), and
             # timeout-guard each so a hang fails loud instead of stalling CI.
@@ -251,7 +251,6 @@ jobs:
             pty_run claude --version
             pty_run codex --version
             pty_run opencode --version
-            pty_run pi --version
             echo "::endgroup::"
 
             echo "::group::Helper scripts present + executable"
@@ -610,7 +609,7 @@ jobs:
           running=$(docker inspect -f '{{.State.Running}}' "$SMOKE_ENTRYPOINT")
           pid1=$(docker exec "$SMOKE_ENTRYPOINT" sh -c "tr '\0' ' ' </proc/1/cmdline" || true)
           agents=$(docker exec "$SMOKE_ENTRYPOINT" sh -c \
-            'for c in /proc/[0-9]*/comm; do cat "$c" 2>/dev/null; done | grep -E "^(claude|codex|opencode|pi)$" || true' || true)
+            'for c in /proc/[0-9]*/comm; do cat "$c" 2>/dev/null; done | grep -E "^(claude|codex|opencode)$" || true' || true)
           gitname=$(docker exec "$SMOKE_ENTRYPOINT" git config --global --get user.name || true)
           gitemail=$(docker exec "$SMOKE_ENTRYPOINT" git config --global --get user.email || true)
           credhelper=$(docker exec "$SMOKE_ENTRYPOINT" sh -c 'git config --global --get credential.helper >/dev/null 2>&1 && echo set || echo unset' || true)

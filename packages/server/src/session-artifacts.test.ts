@@ -211,15 +211,12 @@ describe('sessionArtifactPaths', () => {
     expect(paths).toEqual([]);
   });
 
-  it('treats opencode and pi as having no runner-runtime state, not as unknown', async () => {
+  it('treats opencode as having no runner-runtime state, not as unknown', async () => {
     const { paths, unknownBackends } = await sessionArtifactPaths({
       runtimeDir,
       sandboxCwd: SANDBOX_CWD,
       sessionId: VERITY_SESSION_ID,
-      bindings: [
-        { backend: 'opencode', backendSessionId: 'oc-1' },
-        { backend: 'pi', backendSessionId: 'pi-1' },
-      ],
+      bindings: [{ backend: 'opencode', backendSessionId: 'oc-1' }],
       scope: 'session-delete',
     });
 
