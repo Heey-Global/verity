@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  PINNED_PROJECT_RUNSC_ARGS,
+  PINNED_RUNSC_ARGS,
+} from '../packages/server/src/gvisor-runtime-config.js';
+
 const execFileAsync = promisify(execFile);
 const release = 'release-20260714.0';
 const digest = 'a'.repeat(64);
@@ -49,10 +54,18 @@ afterEach(() => {
   tempRoot = null;
 });
 
+const registration = (args: readonly string[]) =>
+  JSON.stringify({ path: `/opt/verity/runsc/${release}/runsc`, runtimeArgs: [...args] });
+
 function harness(
   startBody = "printf '%s\\n' verity-gvisor-smoke-ok",
   removeBody = ':',
   inspectBody = JSON.stringify([validInspect]),
+  project: {
+    registration?: string;
+    /** What the host-side peer prints after connecting to the Sandbox's Unix socket. */
+    udsBody?: string;
+  } = {},
 ) {
   tempRoot = mkdtempSync(join(tmpdir(), 'verity-gvisor-smoke-test-'));
   const bin = join(tempRoot, 'bin');
@@ -67,11 +80,26 @@ function harness(
     `#!/bin/sh
 printf '%s\\n' "$*" >> '${calls}'
 case "$1" in
-  info) printf '%s\\n' '{"path":"/opt/verity/runsc/${release}/runsc","runtimeArgs":["--platform=systrap","--network=none"]}' ;;
+  info)
+    case "$*" in
+      *runsc-project*) printf '%s\\n' '${project.registration ?? registration(PINNED_PROJECT_RUNSC_ARGS)}' ;;
+      *) printf '%s\\n' '${registration(PINNED_RUNSC_ARGS)}' ;;
+    esac ;;
   create) printf '%s\\n' container-1 ;;
-  inspect) printf '%s\\n' '${inspectBody}' ;;
+  inspect)
+    case "$*" in
+      *IPAddress*) printf '%s\\n' 172.30.0.2 ;;
+      *State.Status*) printf '%s\\n' 'runsc-project sandbox: status=running exit=0 oom=false error=' ;;
+      *) printf '%s\\n' '${inspectBody}' ;;
+    esac ;;
   start) ${startBody} ;;
   rm) ${removeBody} ;;
+  run)
+    case "$*" in
+      *--detach*) printf '%s\\n' project-sandbox-1 ;;
+      *" uds "*) ${project.udsBody ?? "printf 'uds-ok\\n'"} ;;
+      *" tcp "*) printf 'tcp-ok\\n' ;;
+    esac ;;
 esac
 `,
     { mode: 0o755 },
@@ -106,6 +134,47 @@ describeSmoke('deploy/bin/verity-gvisor-smoke', () => {
     expect(calls).toContain('--runtime runsc --network none --read-only');
     expect(calls).toContain('start --attach');
     expect(calls).toContain('rm --force container-1');
+  });
+
+  // v1.5.x ran project Sandboxes under the Secret-job registration: the Runner's socket never
+  // reached the Server and it had no network. The smoke is the deploy gate for both.
+  it('exercises a runsc-project Sandbox the way a project Runner uses it', async () => {
+    const test = harness();
+    const result = await execFileAsync('deploy/bin/verity-gvisor-smoke', { env: test.env });
+
+    expect(result.stdout).toContain('runsc-project Sandbox with host-visible sockets');
+    const calls = readFileSync(test.calls, 'utf8');
+    expect(calls).toContain('info --format {{json (index .Runtimes "runsc-project")}}');
+    expect(calls).toMatch(
+      /run --detach --runtime runsc-project --network verity-gvisor-project-smoke-/u,
+    );
+    // The Sandbox's volume must not inherit the image directory's owner.
+    expect(calls).toMatch(/volume-nocopy/u);
+    expect(calls).toMatch(/ uds \/srv\/runner\/smoke\.sock/u);
+    expect(calls).toMatch(/ tcp 172\.30\.0\.2/u);
+    expect(calls).toMatch(/volume rm --force verity-gvisor-project-smoke-/u);
+    expect(calls).toMatch(/network rm verity-gvisor-project-smoke-/u);
+  });
+
+  it('fails closed on a host that only has the Secret-job registration', async () => {
+    const test = harness(undefined, undefined, undefined, { registration: 'null' });
+    await expect(
+      execFileAsync('deploy/bin/verity-gvisor-smoke', { env: test.env }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('runsc-project registration does not match'),
+    });
+    expect(readFileSync(test.calls, 'utf8')).not.toContain('create ');
+  });
+
+  it('fails when a socket bound inside the Sandbox never reaches the host side', async () => {
+    const test = harness(undefined, undefined, undefined, { udsBody: 'exit 1' });
+    await expect(
+      execFileAsync('deploy/bin/verity-gvisor-smoke', { env: test.env }),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining('--host-uds=create') });
+    const calls = readFileSync(test.calls, 'utf8');
+    // The diagnostics name the Sandbox's state and log, and nothing is left behind.
+    expect(calls).toContain('logs --tail 40 project-sandbox-1');
+    expect(calls).toContain('rm --force project-sandbox-1');
   });
 
   it('rejects a mutable smoke image before creating a container', async () => {
