@@ -22,7 +22,7 @@ const NATIVE_EXPORTS: Record<string, { mimeType: string; text: boolean }> = {
   },
 };
 
-export interface GoogleDriveAgentToolStore {
+interface GoogleDriveAgentToolStore {
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   getProjectSettings(projectId: string): Promise<ProjectSettingsRecord | undefined>;
   setSessionWorkspaceFile(input: {
@@ -148,7 +148,7 @@ async function isWithinFolder(
 }
 
 /** Resolve a file only when its parent chain reaches the folder linked to this project. */
-export async function resolveProjectDriveFile(input: {
+async function resolveProjectDriveFile(input: {
   drive: Pick<GoogleDriveAgentApi, 'get' | 'list'>;
   token: string;
   rootId: string;

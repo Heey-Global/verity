@@ -42,7 +42,7 @@ const uploadQuery = z.object({
   mimeType: z.string().trim().min(1).max(255),
 });
 
-export interface ProjectGoogleDriveFolder {
+interface ProjectGoogleDriveFolder {
   projectId: string;
   folderId: string;
   name: string;
@@ -112,6 +112,13 @@ export function registerProjectGoogleDriveRoutes(
   app: FastifyInstance,
   deps: ProjectGoogleDriveRouteDeps,
 ): void {
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof GoogleDriveFolderAuthorityError) {
+      return reply.code(403).send({ error: error.message });
+    }
+    return reply.send(error);
+  });
+
   const context = async (projectId: string, folderId: string) => {
     const [folder, accessToken] = await Promise.all([
       deps.getLinkedFolder(projectId, folderId),

@@ -3364,7 +3364,7 @@ export function SessionChat({
         <SessionFilesSheet
           client={client}
           sessionId={sessionId}
-          projectId={projectId}
+          projectId={projectId ?? null}
           baseUrl={baseUrl}
           initialFilePath={filesInitialPath}
           onClose={() => setFilesOpen(false)}
