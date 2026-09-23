@@ -1,12 +1,16 @@
 {
   "schema": 1,
-  "version": "1.33.36",
+  "version": "1.33.37",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "822de20dfa83a4942bfb8d17f880a62295c0687b",
-  "tag": "mobile-v1.33.36",
-  "branch": "staging-mobile-v1.33.36-822de20dfa83a4942bfb8d17f880a62295c0687b",
-  "baseline": "mobile-v1.33.35",
-  "group": "533fffbb-b65a-4e66-9c01-c0412732ab84",
-  "notes": []
+  "commit": "917d95beac1efd9c48c9663d0803f807987239a2",
+  "tag": "mobile-v1.33.37",
+  "branch": "staging-mobile-v1.33.37-917d95beac1efd9c48c9663d0803f807987239a2",
+  "baseline": "mobile-v1.33.36",
+  "group": "164ef17d-37f4-4c18-87be-41044abdfa34",
+  "notes": [
+    "add writable insights and shared publishing (#651)",
+    "delete files across roots (#647)",
+    "report empty files before send (#648)"
+  ]
 }
