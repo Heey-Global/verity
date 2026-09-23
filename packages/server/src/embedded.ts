@@ -3365,6 +3365,7 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
+      ...(config.publicPreviews !== undefined ? { sandboxRuntime: 'runsc' as const } : {}),
       ...(config.sandboxAllowPrivilegeEscalation !== undefined
         ? { sandboxAllowPrivilegeEscalation: config.sandboxAllowPrivilegeEscalation }
         : {}),

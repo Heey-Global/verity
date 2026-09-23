@@ -11,7 +11,7 @@ import {
   PreviewShareNotFoundError,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
-import { projectNetworkName } from './provisioner.js';
+import { projectNetworkName, RUNNER_BROKER_CAPABILITIES } from './provisioner.js';
 
 const digest = `ghcr.io/heey-global/verity/preview-connector@sha256:${'a'.repeat(64)}`;
 const project = {
@@ -65,10 +65,10 @@ function fixture() {
     mounts: [],
     privileged: false,
     deviceCount: 0,
-    capAdd: [],
+    capAdd: [...RUNNER_BROKER_CAPABILITIES],
     capDrop: ['ALL'],
     securityOpt: ['no-new-privileges:true'],
-    readOnlyRootfs: true,
+    readOnlyRootfs: false,
     runtime: 'runsc',
     user: 'dev',
   };
@@ -286,7 +286,6 @@ describe('PreviewShareManager', () => {
     const { manager, docker, edge, inspect } = fixture();
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
-      readOnlyRootfs: false,
       runtime: 'runc',
       user: '0:0',
       capDrop: undefined,
@@ -295,6 +294,18 @@ describe('PreviewShareManager', () => {
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).rejects.toThrow(/public preview hardening/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks capabilities outside the runner broker profile', async () => {
+    const { manager, docker, edge, inspect } = fixture();
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      capAdd: [...RUNNER_BROKER_CAPABILITIES, 'SYS_ADMIN'],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/security metadata is incomplete or privileged/);
     expect(edge.create).not.toHaveBeenCalled();
   });
 
