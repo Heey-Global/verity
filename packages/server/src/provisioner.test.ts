@@ -2723,6 +2723,7 @@ describe('ProvisionerImpl (#174)', () => {
           dataVolumeRoot: '/srv/verity',
           runnerSupervisor: true,
           runnerSupervisorTrustedDefaultImage: true,
+          sandboxRuntime: 'runsc',
           dockerHostForBuild: 'unix:///var/run/docker.sock',
           devcontainerBuild: vi.fn<DevcontainerBuildSpawner>(async () => ({
             stdout: '',
@@ -2768,6 +2769,7 @@ describe('ProvisionerImpl (#174)', () => {
       // this image's boundary bytes were compared against exactly these.
       expect(toolkitIdentity).toBe(await trustedToolkitIdentity('features/verity-sandbox-toolkit'));
       expect(prepareRunnerRuntime).toHaveBeenCalledOnce();
+      expect(spec.runtime).toBe('runsc');
       expect(spec.capAdd).toEqual([...RUNNER_BROKER_CAPABILITIES]);
       expect(spec.env).toContain('VERITY_RUNNER_RUNTIME=/run/verity-runner');
       // Evidence is collected from the exact derived image that will run.

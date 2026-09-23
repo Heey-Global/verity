@@ -614,6 +614,9 @@ export interface ProvisionerOptions {
   /** Capabilities to add back on top of the default `CapDrop: ALL` — for a project
    *  that genuinely needs one (e.g. `NET_BIND_SERVICE`). */
   sandboxCapAdd?: string[] | undefined;
+  /** OCI runtime for project sandboxes. Public-preview deployments select `runsc`
+   *  so internet-facing dev servers stay behind the gVisor kernel boundary. */
+  sandboxRuntime?: 'runsc' | undefined;
   /** Opt OUT of `no-new-privileges` for sandboxes whose devcontainer relies on
    *  `sudo` (which privilege-escalation blocking would break). Default false
    *  (hardened). */
@@ -5219,6 +5222,12 @@ export class ProvisionerImpl implements Provisioner {
           }
         : {}),
       restartPolicy: 'unless-stopped',
+      // Public traffic reaches project dev servers through the preview connector.
+      // Keep those workloads behind gVisor's userspace-kernel boundary rather than
+      // exposing a runc workload to arbitrary internet input. The root filesystem
+      // stays writable because devcontainers install tools and build artifacts at
+      // runtime; the preview eligibility check accounts for that profile.
+      ...(this.opts.sandboxRuntime !== undefined ? { runtime: this.opts.sandboxRuntime } : {}),
       // Runtime hardening (security review C1): contain a malicious dependency by
       // default rather than launching with Docker's permissive defaults. Drop all
       // capabilities, block privilege escalation (setuid), and cap PIDs (fork-bomb

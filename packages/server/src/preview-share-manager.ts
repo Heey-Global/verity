@@ -7,8 +7,7 @@ import {
 } from '@verity/store';
 import { DockerError, type DockerClient } from './docker.js';
 import { containerGenerationOf } from './project-relay-migration.js';
-import { projectNetworkName } from './provisioner.js';
-import { projectClonePath } from './provisioner.js';
+import { projectClonePath, projectNetworkName, RUNNER_BROKER_CAPABILITIES } from './provisioner.js';
 import { relative, posix, resolve, join } from 'node:path';
 
 const COMPONENT_LABEL = 'verity.component';
@@ -862,18 +861,21 @@ function assertEligibleSandbox(
   if (networks.length !== 1 || networks[0] !== expectedNetwork) {
     throw new PreviewShareConflictError('sandbox is attached to unexpected networks');
   }
+  const capAdd = [...(sandbox.capAdd ?? [])].sort();
+  const allowedCapabilities = [...RUNNER_BROKER_CAPABILITIES].sort();
   if (
     sandbox.privileged !== false ||
     sandbox.deviceCount === undefined ||
     sandbox.deviceCount > 0 ||
     sandbox.capAdd === undefined ||
-    sandbox.capAdd.length > 0
+    (capAdd.length > 0 &&
+      (capAdd.length !== allowedCapabilities.length ||
+        capAdd.some((capability, index) => capability !== allowedCapabilities[index])))
   ) {
     throw new PreviewShareConflictError('sandbox security metadata is incomplete or privileged');
   }
   const containerUser = sandbox.user?.split(':', 1)[0];
   if (
-    sandbox.readOnlyRootfs !== true ||
     sandbox.runtime !== 'runsc' ||
     containerUser === undefined ||
     containerUser === '' ||
