@@ -4222,6 +4222,10 @@ export class Conductor {
       boundHandle.delegate = turn;
       // The recovered Runner is still using its project Sandbox, so it counts against
       // the per-project cap until its result settles or the force-settle gives up on it.
+      // Accepted window: the Server admits dispatches while recovery walks its markers,
+      // so a turn dispatched in the seconds before recovery reaches this one is not
+      // held back by it. Closing that would mean blocking dispatch on recovery, which a
+      // sealed secret store can defer indefinitely.
       if (session.projectId !== null) {
         const releaseSlot = this.projectTurnGate.hold(session.projectId);
         boundHandle.releaseProjectSlot = releaseSlot;

@@ -2241,6 +2241,10 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       }
       const retryUnresolved = Date.now() >= nextUnresolvedAt;
       if (retryUnresolved) nextUnresolvedAt = Date.now() + unresolvedRetryMs;
+      // Boot-mode probes stay safe after boot: every unresolved turn was claimed under
+      // an earlier supervisor's `runnerInstanceId`, so `claimTurn` answers a retried
+      // start for it as a runner-instance mismatch — this supervisor never launches a
+      // worker for it, and no fresh claim can be caught before its worker lock.
       for (const turnId of retryUnresolved ? [...unresolved] : []) {
         if (closed) break;
         const disposition = await probe(turnId, true).catch(() => 'uncertain');
