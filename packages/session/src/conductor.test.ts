@@ -9612,6 +9612,64 @@ describe('Conductor per-project turn cap', () => {
     await waitFor(() => !conductor.isBusy('held-b'));
   });
 
+  // A waiting turn has a `running` marker and a silent transcript for as long as the
+  // turns ahead of it run — hours, for a long build. It has no Runner identity yet, so
+  // the liveness sweep must never read it as a dead Runner and settle it.
+  it('keeps a turn waiting behind the cap alive across many liveness sweeps', async () => {
+    vi.useFakeTimers();
+    try {
+      for (const id of ['long-a', 'long-b']) await capSession(id, 'p-long');
+      const { backend, releases, calls } = releasableBackend();
+      const probed: string[] = [];
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend,
+        worktreeExists: async () => true,
+        maxConcurrentProjectTurns: 1,
+        runnerRecovery: {
+          discover: async (marker) => {
+            probed.push(marker.sessionId);
+            return marker.sessionId === 'long-b'
+              ? { status: 'dead' }
+              : {
+                  status: 'live',
+                  target: {
+                    turnId: marker.turnId,
+                    sessionId: marker.sessionId,
+                    eventFilePath: '/rt/events.jsonl',
+                    controlSocketPath: '/rt/control.sock',
+                  },
+                };
+          },
+        },
+      });
+      await conductor.recover(); // arms the sweep
+
+      await conductor.dispatchTurn('long-a', 'one');
+      for (let i = 0; i < 50 && releases.length === 0; i += 1) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      await conductor.dispatchTurn('long-b', 'two');
+      for (let i = 0; i < 12; i += 1) await vi.advanceTimersByTimeAsync(30_000);
+      expect(probed).not.toContain('long-b');
+      expect(conductor.isBusy('long-b')).toBe(true);
+      expect(calls).toHaveLength(1);
+
+      releases[0]?.();
+      for (let i = 0; i < 50 && calls.length < 2; i += 1) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(calls).toHaveLength(2);
+      releases[1]?.();
+      for (let i = 0; i < 50 && conductor.isBusy('long-b'); i += 1) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(conductor.isBusy('long-b')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The cap exists because one project's sessions share one Sandbox. Keying anything
   // else into the same pool would serialize unrelated work behind a busy project.
   it('never holds turns of another project or of project-less sessions', async () => {

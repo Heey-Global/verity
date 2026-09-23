@@ -1461,7 +1461,11 @@ export class Conductor {
   ): Promise<RunResult> {
     const key = session.projectId;
     if (key === null) return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
-    const signal = this.turns.get(sessionId)?.controller.signal;
+    // Both callers register the handle before the run starts. Without it the wait
+    // could be neither stopped nor force-freed, so refuse rather than queue blind.
+    const handle = this.turns.get(sessionId);
+    if (handle === undefined) throw new Error(`turn ${sessionId} has no in-flight handle`);
+    const signal = handle.controller.signal;
     let notice: Promise<void> | undefined;
     const release = await this.projectTurnGate.acquire(key, signal, () => {
       notice = this.emitEvent(sessionId, {
@@ -1479,12 +1483,11 @@ export class Conductor {
     }
     // Stop can land between the slot handoff and this continuation: give the slot
     // straight back rather than start a Runner the operator already cancelled.
-    if (signal?.aborted === true) {
+    if (signal.aborted) {
       release();
       return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
     }
-    const handle = this.turns.get(sessionId);
-    if (handle !== undefined) handle.releaseProjectSlot = release;
+    handle.releaseProjectSlot = release;
     try {
       return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
     } finally {
