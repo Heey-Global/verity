@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/Heey-Global/verity/compare/v1.4.9...v1.5.0) (2026-09-23)
+
+
+### Features
+
+* **explorer:** delete files across roots ([#647](https://github.com/Heey-Global/verity/issues/647)) ([eb35172](https://github.com/Heey-Global/verity/commit/eb35172f39863b0f1635f9012b020be429866adb))
+* **knowledge:** add writable insights and shared publishing ([#651](https://github.com/Heey-Global/verity/issues/651)) ([917d95b](https://github.com/Heey-Global/verity/commit/917d95beac1efd9c48c9663d0803f807987239a2))
+
+
+### Bug Fixes
+
+* **attachments:** report empty files before send ([#648](https://github.com/Heey-Global/verity/issues/648)) ([7ea0d65](https://github.com/Heey-Global/verity/commit/7ea0d65570c8577478f665c30942a25f4c72c8cd))
+* **knowledge:** preserve Unicode attachment names ([#646](https://github.com/Heey-Global/verity/issues/646)) ([9040ca7](https://github.com/Heey-Global/verity/commit/9040ca70585e96d74f3fc2eef20e55b221faecd4))
+
 ## [1.4.9](https://github.com/Heey-Global/verity/compare/v1.4.8...v1.4.9) (2026-09-22)
 
 
