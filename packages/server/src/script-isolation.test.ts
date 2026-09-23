@@ -317,10 +317,9 @@ describe('spawn broker entry scripts', () => {
 
       // The rest of trusted CLI keeps working in the same Sandbox. Fresh secrets: the
       // client blanks the ones it sent once a request settles.
-      const { entryScript: _entryScript, ...withoutEntryScript } = request;
       const plain = await runTrustedCliViaBroker(
         {
-          ...withoutEntryScript,
+          turnId: request.turnId,
           secrets: [{ secretAlias: 'DEPLOY_TOKEN', env: 'DEPLOY_TOKEN', secret: 'canary-value' }],
           command: ['/bin/sh', '-c', 'echo "$DEPLOY_TOKEN"'],
         },
