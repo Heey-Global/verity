@@ -5732,12 +5732,13 @@ describe('GET /models (#143)', () => {
   // default) must be reflected, so an accidental CLAUDE_MODELS edit is caught in exactly one spot.
   it('pins the curated Claude model list and the spawn default (the single source of record)', () => {
     expect(CLAUDE_MODELS).toEqual([
+      'claude-opus-5-5',
       'claude-opus-5',
       'claude-fable-5-1',
       'claude-sonnet-5',
       'claude-haiku-4-5-20251001',
     ]);
-    expect(DEFAULT_MODEL).toBe('claude-opus-5');
+    expect(DEFAULT_MODEL).toBe('claude-opus-5-5');
   });
 
   it('returns no subscription models before any agent login is configured', async () => {
@@ -5754,7 +5755,7 @@ describe('GET /models (#143)', () => {
     expect(res.statusCode).toBe(200);
     const body: { models: string[]; default?: string } = res.json();
     expect(body.models).toEqual([...CLAUDE_SORTED]);
-    expect(body.default).toBe('claude-opus-5');
+    expect(body.default).toBe(DEFAULT_MODEL);
     expect(body.default).not.toContain('/');
   });
 
@@ -5815,7 +5816,7 @@ describe('GET /models (#143)', () => {
           'codex/gpt-5.3-codex-spark',
         ],
         moreModels: ['codex/gpt-5.5', 'codex/gpt-5.3-codex-spark'],
-        default: 'claude-opus-5',
+        default: DEFAULT_MODEL,
       });
     } finally {
       await withModels.close();
@@ -5840,7 +5841,7 @@ describe('GET /models (#143)', () => {
         'deepinfra/moonshotai/Kimi-K2.7-Code',
         'deepinfra/zai-org/GLM-5.2',
       ]);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }
@@ -5859,7 +5860,7 @@ describe('GET /models (#143)', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.models).toEqual([...CLAUDE_SORTED]);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }
@@ -5878,7 +5879,7 @@ describe('GET /models (#143)', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.models).toEqual([...CLAUDE_SORTED, 'codex/gpt-5.6-sol']);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }
@@ -5897,7 +5898,7 @@ describe('GET /models (#143)', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.models).toEqual([...CLAUDE_SORTED]);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }

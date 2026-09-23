@@ -22,8 +22,7 @@ const sessionParams = z.object({
     .regex(/^[A-Za-z0-9_-]+$/),
 });
 const REQUIRED_GMAIL_SCOPES = new Set([
-  'https://www.googleapis.com/auth/drive.readonly',
-  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/presentations',
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',

@@ -5,11 +5,12 @@ import { Alert } from 'react-native';
 const mockBack = jest.fn();
 const mockCreateVerityClient = jest.fn<VerityClient | null, []>();
 const mockRunGoogleDriveAuth = jest.fn();
+let mockParams = { sessionId: 'session-1', purpose: 'workspace' };
 
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
   router: { back: () => mockBack() },
-  useLocalSearchParams: () => ({ sessionId: 'session-1', purpose: 'workspace' }),
+  useLocalSearchParams: () => mockParams,
 }));
 jest.mock('../lib/client', () => ({
   createVerityClient: () => mockCreateVerityClient(),
@@ -25,6 +26,40 @@ afterEach(() => {
   mockBack.mockReset();
   mockCreateVerityClient.mockReset();
   mockRunGoogleDriveAuth.mockReset();
+  mockParams = { sessionId: 'session-1', purpose: 'workspace' };
+});
+
+it('authorizes a newly connected project folder account only once', async () => {
+  mockParams = { sessionId: 'project-1', purpose: 'folder' };
+  const getSettings = jest
+    .fn()
+    .mockResolvedValueOnce({
+      googleDriveClientId: '123-example.apps.googleusercontent.com',
+      googleDriveConnected: false,
+    })
+    .mockResolvedValue({
+      googleDriveClientId: '123-example.apps.googleusercontent.com',
+      googleDriveConnected: true,
+    });
+  const client = {
+    getVeritySettings: getSettings,
+    connectGoogleDrive: jest.fn().mockResolvedValue(undefined),
+    listGoogleDriveFiles: jest.fn().mockResolvedValue({ files: [] }),
+  } as unknown as VerityClient;
+  mockCreateVerityClient.mockReturnValue(client);
+  mockRunGoogleDriveAuth.mockResolvedValue({
+    kind: 'success',
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'verity-google:/oauthredirect',
+  });
+
+  render(<GoogleDrivePickerScreen />);
+  fireEvent.press(await screen.findByRole('button', { name: 'Connect Google Drive' }));
+
+  await waitFor(() => expect(client.connectGoogleDrive).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByPlaceholderText('Search Google Drive')).toBeTruthy());
+  expect(mockRunGoogleDriveAuth).toHaveBeenCalledTimes(1);
 });
 
 it('reconnects an old Drive grant and retries the Workspace assignment', async () => {

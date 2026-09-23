@@ -413,6 +413,8 @@ export interface ProjectSettingsRecord {
   /** Per-project agent memory (ADR 0008). PLAINTEXT free-text, never encrypted;
    *  injected into each session's runtime system prompt at context init. */
   memory: string | null;
+  googleDriveFolderId: string | null;
+  googleDriveFolderName: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -450,7 +452,9 @@ type ProjectSettingsKey =
   | 'dopplerMintedTokenSlug'
   | 'defaultBranch'
   | 'defaultModel'
-  | 'memory';
+  | 'memory'
+  | 'googleDriveFolderId'
+  | 'googleDriveFolderName';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -4996,6 +5000,8 @@ export class EventStore implements EventSink {
       default_branch: string | null;
       default_model: string | null;
       memory: string | null;
+      google_drive_folder_id: string | null;
+      google_drive_folder_name: string | null;
       created_at: Date;
       updated_at: Date;
       // See veritySettingsRowToRecord: false → no decrypt (sealed-safe public read).
@@ -5015,6 +5021,8 @@ export class EventStore implements EventSink {
       defaultBranch: row.default_branch,
       defaultModel: row.default_model,
       memory: row.memory,
+      googleDriveFolderId: row.google_drive_folder_id,
+      googleDriveFolderName: row.google_drive_folder_name,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5031,6 +5039,8 @@ export class EventStore implements EventSink {
     'default_branch',
     'default_model',
     'memory',
+    'google_drive_folder_id',
+    'google_drive_folder_name',
     'created_at',
     'updated_at',
   ] as const;
@@ -6011,6 +6021,8 @@ export class EventStore implements EventSink {
       default_branch: normalizeSetting(patch.defaultBranch),
       default_model: normalizeSetting(patch.defaultModel),
       memory,
+      google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
+      google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
     };
     return this.db.transaction().execute(async (tx) => {
       // Ensure and lock the per-project settings row before applying the patch.
@@ -6060,6 +6072,12 @@ export class EventStore implements EventSink {
               ? { default_model: normalizeSetting(patch.defaultModel) }
               : {}),
             ...(patch.memory !== undefined ? { memory } : {}),
+            ...(patch.googleDriveFolderId !== undefined
+              ? { google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId) }
+              : {}),
+            ...(patch.googleDriveFolderName !== undefined
+              ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
+              : {}),
             updated_at: sql`now()`,
           }),
         )

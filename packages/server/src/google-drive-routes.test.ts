@@ -20,6 +20,10 @@ describe('Google Drive connection routes', () => {
       setSessionWorkspaceFile: vi.fn(),
       clearSessionWorkspaceFile: vi.fn(),
       listRecentGoogleWorkspaceFileIds: vi.fn(),
+      listSessions: vi.fn(),
+      getProject: vi.fn(),
+      getProjectSettings: vi.fn(),
+      updateProjectSettings: vi.fn(),
     };
     const app = Fastify();
     registerGoogleDriveRoutes(app, { eventStore });
@@ -58,6 +62,10 @@ describe('Google Drive connection routes', () => {
       setSessionWorkspaceFile: vi.fn(),
       clearSessionWorkspaceFile: vi.fn(),
       listRecentGoogleWorkspaceFileIds: vi.fn(),
+      listSessions: vi.fn(),
+      getProject: vi.fn(),
+      getProjectSettings: vi.fn(),
+      updateProjectSettings: vi.fn(),
     };
     const fetch = vi
       .fn()

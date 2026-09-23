@@ -1,7 +1,7 @@
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const MAX_BODY_CHARS = 100_000;
 
-export class GmailError extends Error {
+class GmailError extends Error {
   constructor(
     message: string,
     readonly status: number,

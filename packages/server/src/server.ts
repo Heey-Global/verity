@@ -570,6 +570,8 @@ interface ProjectSettingsRecord {
   defaultBranch: string | null;
   defaultModel: string | null;
   memory: string | null;
+  googleDriveFolderId: string | null;
+  googleDriveFolderName: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -583,7 +585,9 @@ type ProjectSettingsKey =
   | 'dopplerMintedTokenSlug'
   | 'defaultBranch'
   | 'defaultModel'
-  | 'memory';
+  | 'memory'
+  | 'googleDriveFolderId'
+  | 'googleDriveFolderName';
 
 type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -752,6 +756,8 @@ function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
     defaultBranch: null,
     defaultModel: null,
     memory: null,
+    googleDriveFolderId: null,
+    googleDriveFolderName: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -959,6 +965,8 @@ function publicProjectSettings(
     defaultModel: settings.defaultModel,
     // Operator-visible content, not a secret — exposed plaintext for the UI editor.
     memory: settings.memory,
+    googleDriveFolderId: settings.googleDriveFolderId,
+    googleDriveFolderName: settings.googleDriveFolderName,
     createdAt: settings.createdAt,
     updatedAt: settings.updatedAt,
   };
@@ -1419,11 +1427,18 @@ export interface ServerDeps {
 
 /**
  * The Claude models the picker always offers (ADR 0001 / #143): BARE ids (no `/`) so
- * the conductor routes them to the Claude Code backend, with `claude-opus-5` first as
+ * the conductor routes them to the Claude Code backend, with `claude-opus-5-5` first as
  * the spawn default. These are the canonical ids the rest of the store/tests use; the
  * Claude CLI itself supports more, but the picker surfaces this curated set.
+ *
+ * An id here must also be in the pinned Claude CLI's own model catalog (`deploy/Dockerfile`).
+ * The CLI does not reject one it does not know — it warns `unrecognized_model` and then
+ * assumes a 200K context window, so a session on a 1M-token model would auto-compact at a
+ * fifth of its real window with nothing failing. Adding a model on release day therefore
+ * waits for the CLI pin; `scripts/agent-cli-pins.test.ts` holds that floor.
  */
 export const CLAUDE_MODELS = [
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-fable-5-1',
   'claude-sonnet-5',
@@ -5351,6 +5366,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_google_drive') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const settings = await deps.eventStore.getProjectSettings(projectId);
+          if (
+            session?.projectId !== projectId ||
+            settings?.googleDriveFolderId === null ||
+            settings?.googleDriveFolderId === undefined
+          ) {
+            throw new ControlPlaneSessionAuthorityError(
+              'Google Drive requires a folder connected to the calling project',
+            );
+          }
+          return;
+        }
         if (
           toolName === 'verity_google_slides' ||
           toolName === 'verity_google_docs' ||
@@ -5419,6 +5448,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return (
             session?.projectId === projectId &&
             !(await deps.eventStore.knowledge.isSessionInvalidated(sessionId))
+          );
+        }
+        if (toolName === 'verity_google_drive') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const settings = await deps.eventStore.getProjectSettings(projectId);
+          return (
+            session?.projectId === projectId &&
+            settings?.googleDriveFolderId !== null &&
+            settings?.googleDriveFolderId !== undefined
           );
         }
         if (

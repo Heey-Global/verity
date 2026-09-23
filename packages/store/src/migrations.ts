@@ -2939,7 +2939,23 @@ const migrations: Record<string, Migration> = {
         drop constraint knowledge_wiki_jobs_retired`.execute(db);
     },
   },
-  '0105_gmail_connections': {
+  '0105_project_google_drive_folder': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('project_settings')
+        .addColumn('google_drive_folder_id', 'text')
+        .addColumn('google_drive_folder_name', 'text')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('project_settings')
+        .dropColumn('google_drive_folder_name')
+        .dropColumn('google_drive_folder_id')
+        .execute();
+    },
+  },
+  '0106_gmail_connections': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`alter table verity_settings
         add column gmail_authorized boolean not null default false`.execute(db);

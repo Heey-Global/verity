@@ -265,6 +265,9 @@ export interface ProjectSettingsTable {
    *  operator-visible content, not a credential, so (unlike the `doppler_*` secret
    *  columns above) it is never encrypted at rest. */
   memory: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Google Drive folder exposed as this project's shared read/write workspace. */
+  google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
+  google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }

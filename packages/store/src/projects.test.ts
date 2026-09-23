@@ -857,6 +857,8 @@ describe('EventStore — projects', () => {
       dopplerToken: ' doppler-token-fixture ',
       defaultBranch: ' main ',
       defaultModel: 'claude-sonnet-4-6',
+      googleDriveFolderId: ' drive-folder-1 ',
+      googleDriveFolderName: ' Product docs ',
     });
 
     expect(created).toMatchObject({
@@ -865,6 +867,8 @@ describe('EventStore — projects', () => {
       dopplerToken: 'doppler-token-fixture',
       defaultBranch: 'main',
       defaultModel: 'claude-sonnet-4-6',
+      googleDriveFolderId: 'drive-folder-1',
+      googleDriveFolderName: 'Product docs',
     });
     expect(created?.createdAt).toBeInstanceOf(Date);
     expect(created?.updatedAt).toBeInstanceOf(Date);
@@ -875,6 +879,8 @@ describe('EventStore — projects', () => {
       dopplerToken: 'doppler-token-fixture',
       defaultBranch: 'main',
       defaultModel: null,
+      googleDriveFolderId: 'drive-folder-1',
+      googleDriveFolderName: 'Product docs',
     });
     expect(await ctx.store.getProjectSettings(projectId)).toMatchObject({
       projectId,

@@ -18,7 +18,6 @@ function labels(rows: AttachMenuRow[]): string[] {
 describe('attachMenuRows', () => {
   it('separates content imports from connected services', () => {
     expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: true }))).toEqual([
-      '[Add content]',
       'Take photo',
       'Choose photo',
       'Choose file',
@@ -35,13 +34,11 @@ describe('attachMenuRows', () => {
     ).toMatchObject({ icon: 'mail', detail: 'Read & draft' });
   });
 
-  it('drops the row but keeps the divider group when the flag is off', () => {
+  it('drops the meeting row when the flag is off', () => {
     expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: false }))).toEqual([
-      '[Add content]',
       'Take photo',
       'Choose photo',
       'Choose file',
-      '—',
       '—',
       '[Connect]',
       'Gmail',
