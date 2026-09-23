@@ -1,0 +1,12 @@
+# Installed by deploy/bin/verity-install. The managed Updater writes request.json into this
+# root-owned directory (bind-mounted into its container) when a release needs Docker runtime
+# registrations this host does not have yet; see verity-host-runtime.
+[Unit]
+Description=Verity host runtime requests from the managed Updater
+
+[Path]
+PathChanged=/var/lib/verity/host-runtime/request.json
+Unit=verity-host-runtime.service
+
+[Install]
+WantedBy=multi-user.target

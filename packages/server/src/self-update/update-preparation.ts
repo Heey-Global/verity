@@ -18,6 +18,12 @@ export interface UpdatePreparationDeps {
   readonly verifyImage: (journal: UpdateJournal) => Promise<void>;
   /** Execute the target image's distinct, read-only preflight entrypoint. */
   readonly runPreflight: (journal: UpdateJournal) => Promise<void>;
+  /**
+   * Make the host provide the Docker runtimes the target release declares, or throw. Runs
+   * after preflight and before anything is created from the target, so a host that cannot
+   * run the release fails the operation while the current generation is still serving.
+   */
+  readonly reconcileHostRuntimes?: (journal: UpdateJournal) => Promise<void>;
   /** Upgrade durable authority only after preflight has proved the candidate. */
   readonly prepareStandby?: (journal: UpdateJournal) => Promise<void>;
   /** Idempotently create or inspect the operation-bound, non-routed standby. */
@@ -48,6 +54,7 @@ async function resumeLeased(root: string, deps: UpdatePreparationDeps): Promise<
   if (journal === null) throw new Error('update journal does not exist');
   if (journal.phase === 'failed' || journal.phase === 'standby') return journal;
   const timing = deps.now === undefined ? {} : { now: deps.now };
+  let failureCode: string | undefined;
   try {
     if (journal.phase === 'requested') {
       journal = await advanceUpdate(root, 'requested', 'pulling', timing);
@@ -62,6 +69,11 @@ async function resumeLeased(root: string, deps: UpdatePreparationDeps): Promise<
     }
     if (journal.phase === 'preflight') {
       await deps.runPreflight(journal);
+      if (deps.reconcileHostRuntimes !== undefined) {
+        failureCode = 'host-runtime-failed';
+        await deps.reconcileHostRuntimes(journal);
+        failureCode = undefined;
+      }
       journal = await advanceUpdate(root, 'preflight', 'creating-standby', timing);
     }
     if (journal.phase === 'creating-standby') {
@@ -76,8 +88,9 @@ async function resumeLeased(root: string, deps: UpdatePreparationDeps): Promise<
   } catch (error) {
     const current = await readUpdateJournal(root);
     if (current !== null && current.phase === journal.phase && isActivePhase(journal.phase)) {
-      if (deps.now === undefined) await failUpdate(root, journal.phase, `${journal.phase}-failed`);
-      else await failUpdate(root, journal.phase, `${journal.phase}-failed`, deps.now);
+      const code = failureCode ?? `${journal.phase}-failed`;
+      if (deps.now === undefined) await failUpdate(root, journal.phase, code);
+      else await failUpdate(root, journal.phase, code, deps.now);
     }
     throw error;
   }

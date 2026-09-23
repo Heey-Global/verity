@@ -1388,7 +1388,7 @@ async function serverCanReachSupervisor(runtimePath: string): Promise<void> {
     `the supervisor is ready inside the Sandbox but the Server cannot reach ${socketPath}` +
       `${code === undefined ? '' : ` (${code})`}. The container runtime is not exposing ` +
       'Unix sockets bound in the Runner volume to the host; gVisor needs --host-uds=create ' +
-      '(the runsc-project runtime from deploy/gvisor/install-runsc-host.sh).',
+      '(the runsc-project runtime; re-run the Verity installer on the host to register it).',
   );
 }
 
@@ -2201,7 +2201,7 @@ export class ProvisionerImpl implements Provisioner {
     } catch (cause) {
       const message =
         `Sandbox runtime ${this.opts.sandboxRuntime} is not usable: ${failureMessage(cause)}. ` +
-        'Register it on the Docker host with deploy/gvisor/install-runsc-host.sh.';
+        'Re-run the Verity installer on the host to register it (the running Sandbox was kept).';
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
     }

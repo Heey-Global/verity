@@ -113,6 +113,45 @@ describe('update preparation recovery', () => {
     expect(JSON.stringify(journal)).not.toContain('sensitive detail');
   });
 
+  // v1.5.2 was activated on hosts that lacked the Docker runtime it needed, and every project
+  // then failed its turns. The host check has to fail the operation BEFORE a standby exists,
+  // under its own code, so the current generation keeps serving and the operator is told why.
+  it('fails before the standby when the host cannot provide the runtimes the release needs', async () => {
+    const root = await operation();
+    const actions = {
+      ...deps(),
+      reconcileHostRuntimes: vi.fn(async () => {
+        throw new Error(
+          'This release needs Docker runtime runsc-project; re-run the Verity installer',
+        );
+      }),
+    };
+    await expect(resumeUpdatePreparation(root, actions)).rejects.toThrow(/Verity installer/);
+    expect(actions.runPreflight).toHaveBeenCalledTimes(1);
+    expect(actions.prepareStandby).not.toHaveBeenCalled();
+    expect(actions.ensureStandby).not.toHaveBeenCalled();
+    expect(await readUpdateJournal(root)).toMatchObject({
+      phase: 'failed',
+      failure: { code: 'host-runtime-failed' },
+    });
+  });
+
+  it('reconciles the host after preflight and before the standby', async () => {
+    const root = await operation();
+    const order: string[] = [];
+    const actions = deps();
+    actions.runPreflight.mockImplementation(async () => void order.push('preflight'));
+    actions.ensureStandby.mockImplementation(async () => {
+      order.push('standby');
+      return { containerId: 'c'.repeat(64), containerName: 'verity-standby-update-1' };
+    });
+    const reconcileHostRuntimes = vi.fn(async () => void order.push('host-runtimes'));
+    await expect(
+      resumeUpdatePreparation(root, { ...actions, reconcileHostRuntimes }),
+    ).resolves.toMatchObject({ phase: 'standby' });
+    expect(order).toEqual(['preflight', 'host-runtimes', 'standby']);
+  });
+
   it('keeps standby preparation resumable after durable authority migration', async () => {
     const root = await operation();
     const first = deps();

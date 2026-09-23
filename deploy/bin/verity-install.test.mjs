@@ -26,6 +26,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -69,6 +70,8 @@ function makeHost({
   state = {},
   removeStatus = 0,
   containerPresentOnce = '',
+  hostRuntimeStatus = 0,
+  systemd = false,
 } = {}) {
   // Canonical, because the installer refuses a state directory whose path is not:
   // a symlinked TMPDIR would otherwise fail every case here for the wrong reason.
@@ -110,6 +113,44 @@ function makeHost({
     { mode: 0o755 },
   );
   writeFileSync(join(checkout, 'deploy', 'docker-compose.yml'), 'services: {}\n');
+  // The host runtime component has its own suite (scripts/verity-host-runtime.test.ts) against
+  // the real script; here it only records how the installer invoked it.
+  const hostRuntimeLog = join(root, 'host-runtime.log');
+  mkdirSync(join(checkout, 'deploy', 'host'), { recursive: true });
+  mkdirSync(join(checkout, 'deploy', 'gvisor'), { recursive: true });
+  writeFileSync(
+    join(checkout, 'deploy', 'gvisor', 'versions.env'),
+    'RUNSC_RELEASE=release-20260714.0\n',
+  );
+  writeFileSync(
+    join(checkout, 'deploy', 'host', 'verity-host-runtime'),
+    `#!/usr/bin/env bash\nprintf '%s dir=%s\\n' "$*" "\${VERITY_HOST_RUNTIME_DIR-}" >>${JSON.stringify(hostRuntimeLog)}\n` +
+      `exit ${String(hostRuntimeStatus)}\n`,
+    { mode: 0o755 },
+  );
+  for (const unit of ['verity-host-runtime.path', 'verity-host-runtime.service']) {
+    writeFileSync(join(checkout, 'deploy', 'host', unit), `# ${unit}\n`);
+  }
+  const hostRuntime = {
+    VERITY_HOST_RUNTIME_LIBEXEC: join(root, 'libexec'),
+    VERITY_HOST_RUNTIME_DIR: join(root, 'host-runtime'),
+    VERITY_SYSTEMD_UNIT_DIR: join(root, 'systemd'),
+    VERITY_SYSTEMD_RUN_DIR: systemd ? join(root, 'run-systemd') : join(root, 'no-systemd'),
+  };
+  mkdirSync(hostRuntime.VERITY_SYSTEMD_UNIT_DIR, { recursive: true });
+  if (systemd) {
+    mkdirSync(hostRuntime.VERITY_SYSTEMD_RUN_DIR, { recursive: true });
+    writeFileSync(
+      join(stubDir, 'systemctl'),
+      `#!/bin/sh\nprintf 'systemctl %s\\n' "$*" >>${JSON.stringify(hostRuntimeLog)}\n`,
+      { mode: 0o755 },
+    );
+  }
+  // The installer only checks these exist; the stub host runtime script is what would use
+  // them. The CI image (node:*-slim) ships neither, so a real one cannot be assumed.
+  for (const tool of ['curl', 'jq']) {
+    writeFileSync(join(stubDir, tool), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  }
   writeFileSync(join(stubDir, 'uname'), `#!/bin/sh\nprintf '%s\\n' ${shellQuote(architecture)}\n`, {
     mode: 0o755,
   });
@@ -165,7 +206,18 @@ function makeHost({
     writeFileSync(join(stateDir, name), contents);
   }
 
-  return { root, checkout, stateDir, stubDir, handover, pairingHandoff, binDir, dockerLog };
+  return {
+    root,
+    checkout,
+    stateDir,
+    stubDir,
+    handover,
+    pairingHandoff,
+    binDir,
+    dockerLog,
+    hostRuntime,
+    hostRuntimeLog,
+  };
 }
 
 function run(host, args = [], env = {}) {
@@ -175,6 +227,7 @@ function run(host, args = [], env = {}) {
       PATH: `${host.stubDir}:${process.env.PATH}`,
       HOME: host.root,
       VERITY_STATE_DIR: host.stateDir,
+      ...host.hostRuntime,
       // The fake root user namespace maps only uid/gid 0. Production defaults
       // to the Server image's 1000:1000 identity.
       VERITY_SERVER_UID: '0',
@@ -201,6 +254,7 @@ function runInteractive(host, input, env = {}) {
         PATH: `${host.stubDir}:${process.env.PATH}`,
         HOME: host.root,
         VERITY_STATE_DIR: host.stateDir,
+        ...host.hostRuntime,
         VERITY_SERVER_UID: '0',
         VERITY_SERVER_GID: '0',
         ...env,
@@ -262,7 +316,11 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const host = makeHost();
     const result = spawnSync(join(host.binDir, 'verity-install'), ['--check'], {
       encoding: 'utf8',
-      env: { PATH: `${host.stubDir}:${process.env.PATH}`, VERITY_STATE_DIR: host.stateDir },
+      env: {
+        PATH: `${host.stubDir}:${process.env.PATH}`,
+        VERITY_STATE_DIR: host.stateDir,
+        ...host.hostRuntime,
+      },
     });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /must run as root/);
@@ -382,6 +440,65 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.equal(pairingEnv.VERITY_PAIRING_HOST, '');
     assert.equal(env.VERITY_MANAGED_DEPLOYMENT_ID, stateFile(host, 'deployment-id'));
     assert.match(env.VERITY_MANAGED_DEPLOYMENT_ID, /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
+  });
+
+  // v1.5.2 activated a release that needed the `runsc-project` runtime on hosts that only had
+  // `runsc`, and nothing on the host could add it. The installer is the one root process Verity
+  // runs there, so it puts the host runtime service in place and registers the runtimes BEFORE
+  // the managed migration starts anything that needs them.
+  test('installs the host runtime service and registers the pinned runtimes before the handoff', () => {
+    const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
+    const result = run(host);
+    assert.equal(result.status, 0, result.output);
+    const calls = readFileSync(host.hostRuntimeLog, 'utf8');
+    assert.ok(
+      calls.includes(
+        `apply-pins ${host.checkout}/deploy/gvisor/versions.env dir=${host.hostRuntime.VERITY_HOST_RUNTIME_DIR}\n`,
+      ),
+      calls,
+    );
+    assert.ok(
+      statSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC, 'verity-host-runtime')).mode &
+        0o100,
+    );
+    assert.equal(statSync(host.hostRuntime.VERITY_HOST_RUNTIME_DIR).mode & 0o777, 0o700);
+    // Without systemd the Updater must be told nothing can answer a request, rather than wait.
+    assert.deepEqual(
+      JSON.parse(
+        readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
+      ),
+      { version: 1, trigger: 'none' },
+    );
+    assert.equal(handoverEnv(host).argv, 'managed-up');
+  });
+
+  test('enables the systemd path unit the Updater requests trigger', () => {
+    const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }], systemd: true });
+    const result = run(host);
+    assert.equal(result.status, 0, result.output);
+    const calls = readFileSync(host.hostRuntimeLog, 'utf8');
+    assert.match(calls, /^systemctl daemon-reload$/m);
+    assert.match(calls, /^systemctl enable --now verity-host-runtime\.path$/m);
+    for (const unit of ['verity-host-runtime.path', 'verity-host-runtime.service']) {
+      assert.ok(statSync(join(host.hostRuntime.VERITY_SYSTEMD_UNIT_DIR, unit)).isFile());
+    }
+    assert.deepEqual(
+      JSON.parse(
+        readFileSync(join(host.hostRuntime.VERITY_HOST_RUNTIME_DIR, 'agent.json'), 'utf8'),
+      ),
+      { version: 1, trigger: 'systemd-path' },
+    );
+  });
+
+  test('does not start the migration when the runtimes cannot be registered', () => {
+    const host = makeHost({
+      docker: [{ match: 'image inspect', out: DIGEST_A }],
+      hostRuntimeStatus: 1,
+    });
+    const result = run(host);
+    assert.notEqual(result.status, 0);
+    assert.match(result.output, /gVisor runtimes could not be registered/);
+    assert.equal(existsSync(host.handover), false);
   });
 
   test('forwards an automated DNS selection to pairing material', () => {
@@ -1007,6 +1124,7 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
           PATH: `${host.stubDir}:${process.env.PATH}`,
           HOME: host.root,
           VERITY_STATE_DIR: host.stateDir,
+          ...host.hostRuntime,
         },
       },
     );

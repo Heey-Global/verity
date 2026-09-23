@@ -20,6 +20,7 @@ const UPDATE_FAILURE_CODES = [
   'pulling-failed',
   'verifying-image-failed',
   'preflight-failed',
+  'host-runtime-failed',
   'creating-standby-failed',
 ] as const;
 

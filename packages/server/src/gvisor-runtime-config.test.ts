@@ -8,6 +8,7 @@ import {
   PINNED_RUNSC_RELEASE,
   PROJECT_RUNSC_RUNTIME,
 } from './gvisor-runtime-config.js';
+import { HOST_RUNTIME_ALLOWED_ARGS } from './self-update/host-runtimes.js';
 
 describe('pinned gVisor runtime config', () => {
   it('stays synchronized with the host GitOps pin and registration', () => {
@@ -24,8 +25,34 @@ describe('pinned gVisor runtime config', () => {
     expect(assignments.RUNSC_RELEASE).toBe(PINNED_RUNSC_RELEASE);
     expect(PINNED_RUNSC_PATH).toBe(`/opt/verity/runsc/${PINNED_RUNSC_RELEASE}/runsc`);
     expect(PINNED_RUNSC_ARGS).toEqual(['--platform=systrap', '--network=none']);
-    const installer = readFileSync('deploy/gvisor/install-runsc-host.sh', 'utf8');
-    expect(installer).toContain('["--platform=systrap", "--network=none"]');
+    // versions.env is the one source every host path reads the registrations from: the host
+    // component (`verity-install`, the Updater's requests, install-runsc-host.sh) and the label
+    // below. The Server verifies against these constants, so the two have to agree exactly.
+    const unquote = (value: string | undefined) => (value ?? '').replace(/^'|'$/gu, '');
+    expect(JSON.parse(unquote(assignments.RUNSC_ARGS))).toEqual([...PINNED_RUNSC_ARGS]);
+    expect(JSON.parse(unquote(assignments.RUNSC_PROJECT_ARGS))).toEqual([
+      ...PINNED_PROJECT_RUNSC_ARGS,
+    ]);
+    const hostRuntime = readFileSync('deploy/host/verity-host-runtime', 'utf8');
+    const allowed = JSON.parse(/^ALLOWED_ARGS='(.*)'$/mu.exec(hostRuntime)![1]!) as string[];
+    expect(allowed).toEqual([...HOST_RUNTIME_ALLOWED_ARGS]);
+    for (const arg of [...PINNED_RUNSC_ARGS, ...PINNED_PROJECT_RUNSC_ARGS]) {
+      expect(allowed, `the host component would refuse ${arg}`).toContain(arg);
+    }
+    // What a release declares to the Updater is these same pins. A label that drifted from
+    // versions.env would have the host register one release while the Server verifies another.
+    const label = /^LABEL org\.verity\.host-runtimes="(.*)"$/mu.exec(
+      readFileSync('deploy/Dockerfile', 'utf8'),
+    );
+    expect(label, 'deploy/Dockerfile no longer declares its host runtimes').not.toBeNull();
+    expect(JSON.parse(label![1]!.replaceAll('\\"', '"'))).toEqual({
+      release: assignments.RUNSC_RELEASE,
+      sha512: {
+        x86_64: assignments.RUNSC_SHA512_X86_64,
+        aarch64: assignments.RUNSC_SHA512_AARCH64,
+      },
+      runtimes: { runsc: [...PINNED_RUNSC_ARGS], 'runsc-project': [...PINNED_PROJECT_RUNSC_ARGS] },
+    });
     const ciDaemon = readFileSync('deploy/gvisor-ci.Dockerfile', 'utf8');
     expect(ciDaemon).toContain('COPY deploy/gvisor/versions.env /tmp/versions.env');
     expect(ciDaemon).toContain('install -d -m 0755 /etc/docker');
@@ -53,15 +80,6 @@ describe('pinned gVisor runtime config', () => {
       ).not.toBeNull();
       return JSON.parse(match![1]!) as unknown;
     };
-    const installerRegistrations = [
-      ...installer.matchAll(/"runsc-project"\]? = \{path: \$path, runtimeArgs: (\[[^\]]*\])\}/gu),
-      ...installer.matchAll(/"runsc-project": \{path: \$path, runtimeArgs: (\[[^\]]*\])\}/gu),
-    ];
-    // Both branches: a host with and without an existing daemon.json.
-    expect(installerRegistrations).toHaveLength(2);
-    for (const registration of installerRegistrations) {
-      expect(JSON.parse(registration[1]!)).toEqual([...PINNED_PROJECT_RUNSC_ARGS]);
-    }
     expect(
       projectArgs(ciDaemon, /"runsc-project":\{"path":"%s","runtimeArgs":(\[[^\]]*\])\}/u),
     ).toEqual([...PINNED_PROJECT_RUNSC_ARGS]);

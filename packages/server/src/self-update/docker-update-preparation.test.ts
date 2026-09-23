@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -175,6 +176,67 @@ describe('Docker update preparation', () => {
     expect(verifyImage).toHaveBeenCalledOnce();
     expect(docker.createContainer).toHaveBeenCalledTimes(2);
     expect(docker.startContainer).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * The host runtimes a release declares (ADR 0008 Amendment 2), read off the label every build
+   * of deploy/Dockerfile carries. Without this wiring the reconciliation exists and is tested, and
+   * a release needing `runsc-project` still activates on a host that only has `runsc`.
+   */
+  describe('the host runtimes the target release declares', () => {
+    const label = /^LABEL (org\.verity\.host-runtimes)="(.*)"$/mu.exec(
+      readFileSync('deploy/Dockerfile', 'utf8'),
+    )!;
+    const declared = JSON.parse(label[2]!.replaceAll('\\"', '"')) as {
+      release: string;
+      runtimes: Record<string, string[]>;
+    };
+    const registered = (names: string[]) =>
+      vi.fn(async (name: string) =>
+        names.includes(name)
+          ? {
+              path: `/opt/verity/runsc/${declared.release}/runsc`,
+              args: [...declared.runtimes[name]!],
+            }
+          : undefined,
+      );
+    const prepare = async (
+      docker: FakeDocker & { inspectRuntime: ReturnType<typeof registered> },
+    ) => {
+      const { root } = await setup();
+      const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'verity-host-runtime-'));
+      try {
+        docker.inspectImageLabels = vi.fn(async () => ({
+          [label[1]!]: label[2]!.replaceAll('\\"', '"'),
+        }));
+        return await resumeUpdatePreparation(
+          root,
+          await dockerUpdatePreparation({
+            managedRoot: root,
+            docker,
+            environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+            verifyImage: async () => undefined,
+            hostRuntimeDir,
+          }),
+        );
+      } finally {
+        await rm(hostRuntimeDir, { recursive: true, force: true });
+      }
+    };
+
+    it('creates no standby on a host that lacks one of them', async () => {
+      const docker = { ...fakeDocker(), inspectRuntime: registered(['runsc']) };
+      await expect(prepare(docker)).rejects.toThrow(/runsc-project.*the Verity installer/su);
+      expect(docker.inspectImageLabels).toHaveBeenCalledWith(newImage);
+      // Only the preflight container; the standby is never created.
+      expect(docker.createContainer).toHaveBeenCalledTimes(1);
+    });
+
+    it('prepares the standby on a host that already has them', async () => {
+      const docker = { ...fakeDocker(), inspectRuntime: registered(['runsc', 'runsc-project']) };
+      await expect(prepare(docker)).resolves.toMatchObject({ phase: 'standby' });
+      expect(docker.createContainer).toHaveBeenCalledTimes(2);
+    });
   });
 
   /**

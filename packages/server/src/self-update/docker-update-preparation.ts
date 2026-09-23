@@ -8,6 +8,7 @@ import {
   managedServerContainerSpec,
   specImageEnvironment,
 } from './managed-server-owner.js';
+import { reconcileHostRuntimes, readTargetHostRuntimes } from './host-runtimes.js';
 import { readBundledPostgresImage } from './postgres-image.js';
 import type { StandbyCandidate, UpdatePreparationDeps } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
@@ -37,6 +38,7 @@ export type UpdatePreparationDocker = Pick<
   | 'inspectContainer'
   | 'inspectImageEnv'
   | 'inspectImageLabels'
+  | 'inspectRuntime'
   | 'listContainers'
   | 'pullImage'
   | 'removeContainer'
@@ -51,6 +53,8 @@ export interface DockerUpdatePreparationOptions {
   readonly readFile?: (path: string) => Promise<string>;
   /** Revalidate the signed release metadata that authorized this exact digest. */
   readonly verifyImage: (journal: UpdateJournal) => Promise<void>;
+  /** The host runtime request directory as the Updater sees it; tests only. */
+  readonly hostRuntimeDir?: string;
 }
 
 function candidateName(journal: UpdateJournal, role: string): string {
@@ -313,6 +317,16 @@ export async function dockerUpdatePreparation(
       await options.verifyImage(journal);
     },
     runPreflight,
+    reconcileHostRuntimes: async (journal) => {
+      const requirements = await readTargetHostRuntimes(docker, journal.targetDigest);
+      if (requirements === undefined) return;
+      await reconcileHostRuntimes({
+        docker,
+        requirements,
+        requestId: journal.updateId,
+        ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
+      });
+    },
     prepareStandby: async () => {
       // A legacy Server cannot be reconciled in place after gaining these
       // mounts. Delay the authority migration until preflight succeeds, then

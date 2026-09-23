@@ -697,6 +697,13 @@ services:
       # read-only; the operation-bound target-image helper receives the parent at
       # a different fixed target for atomic publication.
       - ${VERITY_AGENT_SEED_HOST_PATH:-/opt/agent-seed}:/opt/agent-seed:ro
+      # The host runtime service's request directory (ADR 0008 Amendment 2). The Updater
+      # cannot change the host's Docker runtime registrations itself; it writes a request
+      # here and `verity-host-runtime` (a systemd path unit installed by verity-install)
+      # answers. Created by verity-install as root:root 0700; a host installed before it
+      # existed gets an empty directory here, which the Updater reports as "re-run
+      # the Verity installer once" when a release needs a runtime the host lacks.
+      - ${VERITY_HOST_RUNTIME_DIR:-/var/lib/verity/host-runtime}:/run/verity-host-runtime
 
   # HISTORICAL DESIGN SKETCH — DO NOT ENABLE AS A SECURITY BOUNDARY.
   # ---------------------------------------------------------------------------

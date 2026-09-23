@@ -1,0 +1,16 @@
+# Installed by deploy/bin/verity-install. Answers one pending request from the managed Updater:
+# install the pinned runsc binary, register the runtimes a release needs, reload Docker.
+[Unit]
+Description=Reconcile Verity's Docker runtime registrations
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/verity/verity-host-runtime apply-request
+TimeoutStartSec=15min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+ReadWritePaths=/etc/docker

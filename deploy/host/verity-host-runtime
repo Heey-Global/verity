@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# Reconcile the Docker runtime registrations a Verity release needs on this host.
+#
+# The one host component Verity installs (ADR 0008 Amendment 2). The managed Updater is a
+# container with the Docker socket and nothing else: it cannot write /etc/docker or reload
+# dockerd, and a release that needs a new runtime registration (runsc-project, a gVisor bump)
+# must not reach a host that lacks it. So the Updater asks, through a request file in a
+# root-owned host directory, and this script answers: install the pinned, checksum-verified
+# runsc binary, merge exactly the two runtime entries into daemon.json, reload Docker, and
+# report. Nothing else.
+#
+#   verity-host-runtime apply-pins <versions.env>   reconcile from a pin file (verity-install)
+#   verity-host-runtime apply-request               answer the pending request (systemd path unit)
+#
+# Every step is idempotent and each state it can be interrupted in is one the next run
+# finishes from: a binary is only ever renamed into place once verified, daemon.json only once
+# `dockerd --validate` accepted it, and a live registration that disagrees with the file is
+# settled by a reload. Running containers are not restarted: a reload re-reads `runtimes`
+# without touching them. A reload that does not converge restores the previous daemon.json.
+set -euo pipefail
+umask 0022
+
+DAEMON_JSON="${VERITY_DOCKER_DAEMON_JSON:-/etc/docker/daemon.json}"
+RUNSC_ROOT="${VERITY_RUNSC_ROOT:-/opt/verity/runsc}"
+STATE_DIR="${VERITY_HOST_RUNTIME_DIR:-/var/lib/verity/host-runtime}"
+DOCKER_PID_FILE="${VERITY_DOCKER_PID_FILE:-/var/run/docker.pid}"
+SYSTEMD_RUN_DIR="${VERITY_SYSTEMD_RUN_DIR:-/run/systemd/system}"
+RELOAD_TIMEOUT_SECONDS="${VERITY_HOST_RUNTIME_RELOAD_TIMEOUT:-30}"
+DOWNLOAD_BASE='https://storage.googleapis.com/gvisor/releases/release'
+# The only runtime names and arguments a request may carry. A release that needs another flag
+# ships a new copy of this script, which the Verity installer puts in place; the Updater cannot
+# widen what this root process will write into daemon.json.
+RUNTIME_NAMES='["runsc","runsc-project"]'
+ALLOWED_ARGS='["--platform=systrap","--network=none","--network=sandbox","--host-uds=create"]'
+
+log() { printf 'verity-host-runtime: %s\n' "$*" >&2; }
+die() {
+  log "$*"
+  exit 1
+}
+
+need_tools() {
+  local tool
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null || die "missing required host tool: $tool"
+  done
+}
+
+host_arch() {
+  case "${VERITY_HOST_ARCH:-$(uname -m)}" in
+    x86_64 | amd64) echo x86_64 ;;
+    aarch64 | arm64) echo aarch64 ;;
+    *) die "unsupported architecture: ${VERITY_HOST_ARCH:-$(uname -m)}" ;;
+  esac
+}
+
+# One pin out of versions.env, read as data. The file is never sourced: it travels inside
+# release artifacts, and executing it as root would turn a pin file into a root script.
+pin() {
+  local value
+  value="$(sed -n "s/^$1=//p" "$2" | head -n 1)"
+  value="${value#\'}"
+  printf '%s' "${value%\'}"
+}
+
+requirements_from_pins() {
+  local file=$1
+  [[ -f $file ]] || die "pin file not found: $file"
+  jq -cn \
+    --arg release "$(pin RUNSC_RELEASE "$file")" \
+    --arg x86_64 "$(pin RUNSC_SHA512_X86_64 "$file")" \
+    --arg aarch64 "$(pin RUNSC_SHA512_AARCH64 "$file")" \
+    --argjson runsc "$(pin RUNSC_ARGS "$file")" \
+    --argjson project "$(pin RUNSC_PROJECT_ARGS "$file")" \
+    '{release: $release, sha512: {x86_64: $x86_64, aarch64: $aarch64},
+      runtimes: {runsc: $runsc, "runsc-project": $project}}'
+}
+
+# Reject anything outside the fixed shape before a single byte is downloaded or written.
+validate_requirements() {
+  jq -e \
+    --argjson names "$RUNTIME_NAMES" --argjson allowed "$ALLOWED_ARGS" '
+      type == "object" and (keys == ["release", "runtimes", "sha512"])
+      and (.release | type == "string" and test("^release-[0-9]{8}\\.[0-9]+$"))
+      and (.sha512 | type == "object" and keys == ["aarch64", "x86_64"]
+           and all(.[]; type == "string" and test("^[a-f0-9]{128}$")))
+      and (.runtimes | type == "object" and (keys | sort) == ($names | sort)
+           and all(.[]; type == "array" and length > 0 and length <= 8
+                   and all(.[]; type == "string" and (. as $arg | $allowed | index($arg) != null))))
+    ' <<<"$1" >/dev/null || die 'runtime requirements are malformed or outside the allowed set'
+}
+
+runsc_path() { printf '%s/%s/runsc' "$RUNSC_ROOT" "$1"; }
+
+binary_matches() {
+  local path=$1 sha=$2 release=$3
+  [[ -f $path && ! -L $path ]] || return 1
+  printf '%s  %s\n' "$sha" "$path" | sha512sum --check --status || return 1
+  [[ $("$path" --version 2>/dev/null | head -n 1) == "runsc version $release" ]]
+}
+
+ensure_binary() {
+  local release=$1 sha=$2 arch=$3 path dir tmp
+  path="$(runsc_path "$release")"
+  if binary_matches "$path" "$sha" "$release"; then return 0; fi
+  dir="$(dirname "$path")"
+  install -d -m 0755 "$dir"
+  tmp="$(mktemp "$dir/.runsc.XXXXXX")"
+  # shellcheck disable=SC2064 # expand now: the trap must name these paths.
+  trap "rm -f '$tmp'; rmdir --ignore-fail-on-non-empty '$dir' 2>/dev/null || true" RETURN EXIT
+  log "downloading runsc $release ($arch)"
+  curl --fail --silent --show-error --location --proto '=https' \
+    "$DOWNLOAD_BASE/${release#release-}/$arch/runsc" --output "$tmp" ||
+    die "runsc $release could not be downloaded; check this host's HTTPS egress to storage.googleapis.com"
+  printf '%s  %s\n' "$sha" "$tmp" | sha512sum --check --status ||
+    die "downloaded runsc does not match the pinned $release checksum; nothing was changed"
+  chmod 0755 "$tmp"
+  [[ $("$tmp" --version 2>/dev/null | head -n 1) == "runsc version $release" ]] ||
+    die "downloaded runsc does not report $release; nothing was changed"
+  mv -f "$tmp" "$path"
+}
+
+desired_runtimes() {
+  jq -cS --arg path "$2" '.runtimes | with_entries(.value = {path: $path, runtimeArgs: .value})' <<<"$1"
+}
+
+live_runtimes() {
+  docker info --format '{{json .Runtimes}}' 2>/dev/null |
+    jq -cS --argjson want "$1" 'with_entries(select(.key as $k | $want | has($k)))
+      | with_entries(.value = {path: .value.path, runtimeArgs: (.value.runtimeArgs // [])})'
+}
+
+reload_docker() {
+  if [[ -d $SYSTEMD_RUN_DIR ]] && command -v systemctl >/dev/null &&
+    systemctl is-active --quiet docker 2>/dev/null; then
+    systemctl reload docker
+  else
+    # Docker without systemd (e.g. a Docker-in-Docker host): SIGHUP is what `systemctl reload
+    # docker` sends. It re-reads the runtime registrations and restarts no container.
+    local pid=''
+    [[ -f $DOCKER_PID_FILE ]] && pid="$(cat "$DOCKER_PID_FILE")"
+    [[ $pid =~ ^[0-9]+$ ]] || pid="$(pgrep -xo dockerd || true)"
+    if [[ ! $pid =~ ^[0-9]+$ ]]; then
+      log 'cannot reload Docker: no running docker.service and no dockerd process'
+      return 1
+    fi
+    kill -HUP "$pid"
+  fi
+}
+
+await_live() {
+  local want=$1 deadline=$((SECONDS + RELOAD_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    [[ $(live_runtimes "$want") == "$want" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+apply_requirements() {
+  local requirements=$1 arch release sha path want current merged backup='' changed=0
+  need_tools curl docker dockerd jq sha512sum flock
+  validate_requirements "$requirements"
+  arch="$(host_arch)"
+  release="$(jq -r .release <<<"$requirements")"
+  sha="$(jq -r --arg a "$arch" '.sha512[$a]' <<<"$requirements")"
+  path="$(runsc_path "$release")"
+  want="$(desired_runtimes "$requirements" "$path")"
+
+  install -d -m 0700 "$STATE_DIR"
+  exec 9>"$STATE_DIR/.lock"
+  flock -w 900 9 || die 'another host runtime reconciliation is still running'
+
+  ensure_binary "$release" "$sha" "$arch"
+
+  install -d -m 0755 "$(dirname "$DAEMON_JSON")"
+  current='{}'
+  if [[ -e $DAEMON_JSON ]]; then
+    current="$(jq -c . "$DAEMON_JSON")" || die "$DAEMON_JSON is not valid JSON; fix it before retrying"
+  fi
+  # Only these two entries change. Every other key, and every other runtime, stays as it is.
+  merged="$(jq -cS --argjson want "$want" '.runtimes = ((.runtimes // {}) + $want)' <<<"$current")"
+  if [[ $(jq -cS . <<<"$current") != "$merged" ]]; then
+    local tmp
+    tmp="$(mktemp "$(dirname "$DAEMON_JSON")/.daemon.json.verity.XXXXXX")"
+    jq . <<<"$merged" >"$tmp"
+    chmod 0644 "$tmp"
+    if ! dockerd --validate --config-file "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+      die "Docker rejects the merged $DAEMON_JSON (dockerd --validate); nothing was changed"
+    fi
+    if [[ -e $DAEMON_JSON ]]; then
+      backup="$STATE_DIR/daemon.json.previous"
+      cp -p "$DAEMON_JSON" "$backup"
+    fi
+    mv -f "$tmp" "$DAEMON_JSON"
+    changed=1
+  fi
+
+  # Also after an interruption between the write and the reload: the file already says what
+  # it should, but dockerd has not read it yet.
+  if [[ $(live_runtimes "$want") != "$want" ]]; then
+    log 'reloading Docker to register the runtimes (running containers are not restarted)'
+    if ! { reload_docker && await_live "$want"; }; then
+      if ((changed)); then
+        if [[ -n $backup ]]; then cp -p "$backup" "$DAEMON_JSON"; else rm -f "$DAEMON_JSON"; fi
+        reload_docker || true
+        die "Docker did not register the runtimes after a reload; the previous $DAEMON_JSON was restored"
+      fi
+      die "Docker does not report the runtimes $DAEMON_JSON declares, even after a reload; check dockerd's log (other daemon flags may override runtimes)"
+    fi
+  fi
+  log "runtimes runsc and runsc-project are registered for $release"
+}
+
+write_json_atomically() {
+  local target=$1 body=$2 tmp
+  tmp="$(mktemp "$(dirname "$target")/.$(basename "$target").XXXXXX")"
+  printf '%s\n' "$body" >"$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$target"
+}
+
+apply_request() {
+  local request="$STATE_DIR/request.json" result="$STATE_DIR/result.json" id requirements output status
+  need_tools jq
+  [[ -f $request ]] || return 0
+  id="$(jq -er 'select(.version == 1) | .id | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"))' "$request")" ||
+    die 'request.json is not a version-1 request'
+  # Already answered: a path unit fires again on every rewrite of the same request, and the
+  # Updater rewrites it whenever it resumes an operation.
+  if [[ -f $result ]] && [[ $(jq -r '.id // empty' "$result") == "$id" ]] &&
+    [[ $(jq -r '.ok' "$result") == true ]]; then
+    return 0
+  fi
+  requirements="$(jq -c '.requirements' "$request")"
+  status=0
+  output="$( (apply_requirements "$requirements") 2>&1)" || status=$?
+  printf '%s\n' "$output" >&2
+  write_json_atomically "$result" "$(jq -cn --arg id "$id" --argjson ok "$([[ $status -eq 0 ]] && echo true || echo false)" \
+    --arg message "$(printf '%s' "$output" | tail -n 1 | sed 's/^verity-host-runtime: //')" \
+    --arg finishedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{version: 1, id: $id, ok: $ok, message: $message, finishedAt: $finishedAt}')"
+  return "$status"
+}
+
+[[ $(id -u) -eq 0 || ${VERITY_HOST_RUNTIME_TEST:-} == 1 ]] || die 'must run as root'
+case "${1:-}" in
+  apply-pins)
+    [[ $# -eq 2 ]] || die 'usage: verity-host-runtime apply-pins <versions.env>'
+    need_tools jq
+    apply_requirements "$(requirements_from_pins "$2")"
+    ;;
+  apply-request) apply_request ;;
+  *) die 'usage: verity-host-runtime apply-pins <versions.env> | apply-request' ;;
+esac
