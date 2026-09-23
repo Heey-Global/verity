@@ -19,6 +19,7 @@ import {
 } from './embedded.js';
 import { SERVER_VERSION } from './server.js';
 import { resolveGoogleOAuthClientId } from './google-drive.js';
+import { parseSandboxDnsServers } from './gvisor-project-network.js';
 import { readAgentSeedStamp, sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';
 import {
   createPostgresDb,
@@ -884,6 +885,9 @@ async function main(): Promise<void> {
       sandboxNanoCpus: parseCpuCores(process.env.VERITY_SANDBOX_CPUS),
       sandboxCpuShares: parseNonNegativeInt(process.env.VERITY_SANDBOX_CPU_SHARES),
       sandboxCapAdd: splitList(process.env.VERITY_SANDBOX_CAP_ADD),
+      ...(process.env.VERITY_SANDBOX_DNS_SERVERS !== undefined
+        ? { sandboxDnsServers: parseSandboxDnsServers(process.env.VERITY_SANDBOX_DNS_SERVERS) }
+        : {}),
       sandboxAllowPrivilegeEscalation:
         process.env.VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION === '1' ||
         process.env.VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION === 'true',

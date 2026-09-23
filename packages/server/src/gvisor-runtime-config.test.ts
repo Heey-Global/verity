@@ -2,9 +2,11 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
+  PINNED_PROJECT_RUNSC_ARGS,
   PINNED_RUNSC_ARGS,
   PINNED_RUNSC_PATH,
   PINNED_RUNSC_RELEASE,
+  PROJECT_RUNSC_RUNTIME,
 } from './gvisor-runtime-config.js';
 
 describe('pinned gVisor runtime config', () => {
@@ -39,6 +41,37 @@ describe('pinned gVisor runtime config', () => {
     // Renovate only bumps what it can see. Without the annotation the digest above
     // is pinned and unmaintained, which is the failure that looks like success.
     expect(ciDaemon).toMatch(/^# renovate: datasource=docker depName=docker\nFROM docker:/m);
+    // The project registration is read back out of every place that writes or checks it.
+    // The Server's verifier refuses a Sandbox whose daemon registration differs from
+    // PINNED_PROJECT_RUNSC_ARGS, so an installer that drifted would fail every project; a
+    // CI daemon that drifted would test a runtime no host has.
+    const projectArgs = (text: string, marker: RegExp): unknown => {
+      const match = marker.exec(text);
+      expect(
+        match,
+        `no ${PROJECT_RUNSC_RUNTIME} registration found by ${String(marker)}`,
+      ).not.toBeNull();
+      return JSON.parse(match![1]!) as unknown;
+    };
+    const installerRegistrations = [
+      ...installer.matchAll(/"runsc-project"\]? = \{path: \$path, runtimeArgs: (\[[^\]]*\])\}/gu),
+      ...installer.matchAll(/"runsc-project": \{path: \$path, runtimeArgs: (\[[^\]]*\])\}/gu),
+    ];
+    // Both branches: a host with and without an existing daemon.json.
+    expect(installerRegistrations).toHaveLength(2);
+    for (const registration of installerRegistrations) {
+      expect(JSON.parse(registration[1]!)).toEqual([...PINNED_PROJECT_RUNSC_ARGS]);
+    }
+    expect(
+      projectArgs(ciDaemon, /"runsc-project":\{"path":"%s","runtimeArgs":(\[[^\]]*\])\}/u),
+    ).toEqual([...PINNED_PROJECT_RUNSC_ARGS]);
+    const smoke = readFileSync('deploy/bin/verity-gvisor-smoke', 'utf8');
+    expect(
+      projectArgs(smoke, /Runtimes "runsc-project".*?\.runtimeArgs == (\[[^\]]*\])/su),
+    ).toEqual([...PINNED_PROJECT_RUNSC_ARGS]);
+    // Never the Secret-job arguments: that registration is what left v1.5.x projects with no
+    // network and a supervisor socket the Server could not see.
+    expect(PINNED_PROJECT_RUNSC_ARGS).not.toContain('--network=none');
     const dockerignore = readFileSync('.dockerignore', 'utf8');
     expect(dockerignore).not.toMatch(/^deploy\/\*$/m);
     expect(dockerignore).toContain('complete deploy tree is an intentional image input');

@@ -269,6 +269,8 @@ export interface ContainerSpec {
    *  by its service DNS name (e.g. the commit-signing broker at
    *  `http://verity:8082`) container-to-container, without a host round-trip. */
   network?: string;
+  /** Static `/etc/hosts` entries, `host:ip` (`HostConfig.ExtraHosts`). */
+  extraHosts?: string[];
   /** OCI runtime registered with the Docker daemon (`HostConfig.Runtime`). Secret jobs set this
    *  explicitly to `runsc`; omitting it preserves the daemon default for ordinary sandboxes. */
   runtime?: string;
@@ -1129,6 +1131,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
             }
           : {}),
         NetworkMode: spec.network ?? 'default',
+        ...(spec.extraHosts?.length ? { ExtraHosts: spec.extraHosts } : {}),
         ...(spec.runtime !== undefined ? { Runtime: spec.runtime } : {}),
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
         ...(spec.readOnlyRootfs !== undefined ? { ReadonlyRootfs: spec.readOnlyRootfs } : {}),

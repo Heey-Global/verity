@@ -102,7 +102,13 @@ import { PreviewShareManager, sweepOrphanedPreviewShares } from './preview-share
 import { UplinkControlClient } from './uplink-control-client.js';
 import { createDeferredLogger } from './deferred-logger.js';
 import { createDockerGvisorRuntimeVerifier } from './docker-gvisor-runtime-verifier.js';
-import { PINNED_RUNSC_ARGS, PINNED_RUNSC_PATH } from './gvisor-runtime-config.js';
+import {
+  PINNED_PROJECT_RUNSC_ARGS,
+  PINNED_RUNSC_ARGS,
+  PINNED_RUNSC_PATH,
+  PROJECT_RUNSC_RUNTIME,
+} from './gvisor-runtime-config.js';
+import { upstreamResolversFromDockerResolvConf } from './gvisor-project-network.js';
 import {
   createBrokeredSecretJobExecutor,
   type BrokeredSecretJobExecutor,
@@ -796,6 +802,9 @@ export interface EmbeddedServerConfig {
   sandboxCpuShares?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
   sandboxAllowPrivilegeEscalation?: boolean | undefined;
+  /** Upstream resolvers for gVisor project Sandboxes (`VERITY_SANDBOX_DNS_SERVERS`). Unset →
+   *  the ones Docker's embedded resolver forwards to, read from this process's resolv.conf. */
+  sandboxDnsServers?: readonly string[] | undefined;
   /** Port for a SECOND, non-published HTTP listener that serves the `/internal/*`
    *  routes (audit H1 follow-up). When set, `/internal/*` (the commit-signing
    *  broker) is reachable ONLY on this listener — the public API port 404s it — so
@@ -1117,7 +1126,7 @@ export function buildRunnerConductorWiring(deps: {
         if (!(await supervisorSocketReachable(supervisorSocket))) {
           const reason = existsSync(supervisorSocket)
             ? 'the project supervisor socket is not accepting connections; its Sandbox generation was retired or its supervisor was disabled after a boundary attestation warning, leaving the socket behind'
-            : 'the project supervisor socket is missing; provisioning may have disabled the supervisor after a Sandbox boundary attestation warning';
+            : 'the project supervisor socket is missing; provisioning may have disabled the supervisor after a Sandbox boundary attestation warning, or the container runtime keeps the socket inside the Sandbox (gVisor without the runsc-project registration)';
           deps.onMissingSupervisorSocket?.({
             projectId: runnerProjectId,
             socketPath: supervisorSocket,
@@ -3372,7 +3381,21 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
-      ...(config.publicPreviews !== undefined ? { sandboxRuntime: 'runsc' as const } : {}),
+      ...(config.publicPreviews !== undefined
+        ? (() => {
+            const verifier = createDockerGvisorRuntimeVerifier({
+              docker,
+              runtimeName: PROJECT_RUNSC_RUNTIME,
+              expectedPath: PINNED_RUNSC_PATH,
+              expectedArgs: PINNED_PROJECT_RUNSC_ARGS,
+            });
+            return {
+              sandboxRuntime: PROJECT_RUNSC_RUNTIME,
+              verifySandboxRuntime: (runtime: string) => verifier.verify(runtime),
+              sandboxDnsServers: config.sandboxDnsServers ?? dockerUpstreamResolvers(),
+            };
+          })()
+        : {}),
       ...(config.sandboxAllowPrivilegeEscalation !== undefined
         ? { sandboxAllowPrivilegeEscalation: config.sandboxAllowPrivilegeEscalation }
         : {}),
@@ -5123,4 +5146,13 @@ export function createProjectWorktreeFactory(mint: GitHubProjectTokenMint): (
         return token ? gitAuthHeader(token) : undefined;
       },
     });
+}
+
+/** The resolvers Docker's embedded resolver forwards to for this (user-network) container. */
+function dockerUpstreamResolvers(): string[] {
+  try {
+    return upstreamResolversFromDockerResolvConf(readFileSync('/etc/resolv.conf', 'utf8'));
+  } catch {
+    return [];
+  }
 }

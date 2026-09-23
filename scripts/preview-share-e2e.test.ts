@@ -13,6 +13,7 @@ import {
   hashPreviewSecret,
 } from '../packages/preview-tunnel/src/index.js';
 import type { ContainerSpec, DockerClient } from '../packages/server/src/docker.js';
+import { PROJECT_RUNSC_RUNTIME } from '../packages/server/src/gvisor-runtime-config.js';
 import { PreviewShareManager } from '../packages/server/src/preview-share-manager.js';
 import { projectNetworkName } from '../packages/server/src/provisioner.js';
 import {
@@ -305,7 +306,7 @@ function sandboxInspect() {
     capDrop: ['ALL'],
     securityOpt: ['no-new-privileges:true'],
     readOnlyRootfs: true,
-    runtime: 'runsc',
+    runtime: PROJECT_RUNSC_RUNTIME,
     user: 'dev',
   };
 }

@@ -69,7 +69,7 @@ function fixture() {
     capDrop: ['ALL'],
     securityOpt: ['no-new-privileges:true'],
     readOnlyRootfs: false,
-    runtime: 'runsc',
+    runtime: 'runsc-project',
     user: 'dev',
   };
   const docker = {

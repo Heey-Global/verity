@@ -31,6 +31,18 @@ jq --exit-status \
     exit 1
   }
 
+# Project Sandboxes (public previews) run under a second registration of the same binary. It needs
+# gVisor's netstack for the relay and `--host-uds=create` so the Server can reach the supervisor
+# socket the Sandbox binds; `packages/server/src/gvisor-runtime-config.ts` explains both.
+project_registration="$(docker info --format '{{json (index .Runtimes "runsc-project")}}')"
+jq --exit-status \
+  --arg path "$runtime_path" \
+  '.path == $path and .runtimeArgs == ["--platform=systrap", "--network=sandbox", "--host-uds=create"]' \
+  <<<"$project_registration" >/dev/null || {
+    echo 'Docker runsc-project registration does not match the pinned path and arguments; run deploy/gvisor/install-runsc-host.sh' >&2
+    exit 1
+  }
+
 image="${VERITY_GVISOR_SMOKE_IMAGE:-$RUNSC_SMOKE_IMAGE}"
 if [[ ! $image =~ @sha256:[a-f0-9]{64}$ && ! $image =~ ^sha256:[a-f0-9]{64}$ ]]; then
   echo 'VERITY_GVISOR_SMOKE_IMAGE must be pinned by a full sha256 digest or image ID' >&2
@@ -106,5 +118,65 @@ output="$(docker start --attach "$container_id")"
 
 docker rm --force "$container_id" >/dev/null
 container_id=''
+
+# The project runtime, exercised the way a project Runner uses it. A registration that exists but
+# cannot carry these is the v1.5.0 failure: a running Sandbox whose supervisor socket the Server
+# never sees ("the project supervisor socket is missing") and whose relay it cannot reach.
+project_suffix="verity-gvisor-project-smoke-$$"
+project_ids=()
+cleanup_project_best_effort() {
+  for id in "${project_ids[@]}"; do docker rm --force "$id" >/dev/null 2>&1 || true; done
+  docker volume rm --force "$project_suffix" >/dev/null 2>&1 || true
+  docker network rm "$project_suffix" >/dev/null 2>&1 || true
+}
+trap cleanup_project_best_effort EXIT INT TERM
+docker network create --internal "$project_suffix" >/dev/null
+docker volume create "$project_suffix" >/dev/null
+# The limits leave room for gVisor itself: the sentry's threads and memory are charged to the
+# container's cgroup, so a limit sized for a bare `sh` (the Secret-job smoke) starves node.
+hardening=(--cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 --memory 1g
+  --user 65532:65532 --restart no --entrypoint node)
+project_diagnostics() {
+  local id="${project_ids[0]:-}"
+  [[ -n $id ]] || return 0
+  docker inspect --format \
+    'runsc-project sandbox: status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' \
+    "$id" >&2 || true
+  docker logs --tail 40 "$id" 2>&1 | sed 's/^/runsc-project sandbox log: /' >&2 || true
+}
+# 1. The Sandbox binds a Unix socket in its volume; a runc peer (the Server's side) must connect.
+# volume-nocopy everywhere: Docker otherwise copies the image directory's owner onto the empty
+# volume at first mount, and the chown below would not survive into the Sandbox.
+smoke_mount() { printf 'type=volume,src=%s,dst=%s,volume-nocopy' "$project_suffix" "$1"; }
+docker run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges:true \
+  --network none --entrypoint /bin/sh --mount "$(smoke_mount /verity-gvisor-smoke)" "$image" \
+  -c 'chown 65532:65532 /verity-gvisor-smoke' >/dev/null
+project_ids+=("$(docker run --detach --runtime runsc-project --network "$project_suffix" \
+  "${hardening[@]}" --mount "$(smoke_mount /verity-gvisor-smoke)" "$image" -e \
+  'require("node:net").createServer((s)=>s.end("uds-ok\n")).listen("/verity-gvisor-smoke/smoke.sock");
+   require("node:net").createServer((s)=>s.end("tcp-ok\n")).listen(8080);
+   setTimeout(()=>{},60000)')")
+peer_script='const [kind,target]=process.argv.slice(1);const net=require("node:net");
+  const deadline=Date.now()+15000;const attempt=()=>{const c=kind==="uds"?net.createConnection(target):net.createConnection(8080,target);
+  c.on("data",(d)=>{process.stdout.write(String(d));process.exit(0)});
+  c.on("error",(e)=>{if(Date.now()>deadline){console.error(`peer: ${e.code??e.message}`);process.exit(1)}setTimeout(attempt,250)})};attempt()'
+uds_output="$(docker run --rm --network none "${hardening[@]}" --mount "$(smoke_mount /srv/runner)" \
+  "$image" -e "$peer_script" uds /srv/runner/smoke.sock)" || true
+[[ $uds_output == *uds-ok* ]] || {
+  project_diagnostics
+  echo 'a Unix socket bound inside runsc-project is not reachable from the host side (--host-uds=create)' >&2
+  exit 1
+}
+# 2. A peer on the project network reaches the Sandbox over gVisor's netstack (the relay path).
+sandbox_ip="$(docker inspect --format "{{(index .NetworkSettings.Networks \"$project_suffix\").IPAddress}}" "${project_ids[0]}")"
+tcp_output="$(docker run --rm --network "$project_suffix" "${hardening[@]}" "$image" \
+  -e "$peer_script" tcp "$sandbox_ip")" || true
+[[ $tcp_output == *tcp-ok* ]] || {
+  project_diagnostics
+  echo 'runsc-project has no working network on a project network (--network=sandbox)' >&2
+  exit 1
+}
+cleanup_project_best_effort
+project_ids=()
 trap - EXIT INT TERM
-echo "gVisor smoke passed with $RUNSC_RELEASE and a networkless runsc container"
+echo "gVisor smoke passed with $RUNSC_RELEASE: a networkless runsc container and a runsc-project Sandbox with host-visible sockets and a project network"

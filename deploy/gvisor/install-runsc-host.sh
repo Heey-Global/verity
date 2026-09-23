@@ -46,11 +46,11 @@ if [[ -f $daemon_file ]]; then
   had_daemon=true
   cp --preserve=mode,ownership,timestamps "$daemon_file" "$daemon_backup"
   jq --arg path "$install_path" \
-    '.runtimes = (.runtimes // {}) | .runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--network=none"]}' \
+    '.runtimes = (.runtimes // {}) | .runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--network=none"]} | .runtimes["runsc-project"] = {path: $path, runtimeArgs: ["--platform=systrap", "--network=sandbox", "--host-uds=create"]}' \
     "$daemon_file" >"$daemon_tmp"
 else
   jq --null-input --arg path "$install_path" \
-    '{runtimes: {runsc: {path: $path, runtimeArgs: ["--platform=systrap", "--network=none"]}}}' \
+    '{runtimes: {runsc: {path: $path, runtimeArgs: ["--platform=systrap", "--network=none"]}, "runsc-project": {path: $path, runtimeArgs: ["--platform=systrap", "--network=sandbox", "--host-uds=create"]}}}' \
     >"$daemon_tmp"
 fi
 dockerd --validate --config-file "$daemon_tmp"
@@ -66,4 +66,4 @@ if ! systemctl reload docker; then
   exit 1
 fi
 
-echo "installed $RUNSC_RELEASE at $install_path and registered Docker runtime runsc"
+echo "installed $RUNSC_RELEASE at $install_path and registered Docker runtimes runsc and runsc-project"
