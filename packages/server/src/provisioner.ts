@@ -4662,11 +4662,15 @@ export class ProvisionerImpl implements Provisioner {
    *  lose cores under a running Server often enough to ask on every create. A
    *  failed query is not cached, and falls back to `os.cpus()` rather than failing
    *  the create over a limit that only exists to keep the create valid. */
-  private daemonCpuCount: number | undefined;
+  private daemonCpuCount: number | null | undefined; // null: answered, no count
   private async resolveHostCpuCount(): Promise<number> {
     if (this.opts.hostCpuCount !== undefined) return this.opts.hostCpuCount();
-    if (this.daemonCpuCount === undefined) {
-      this.daemonCpuCount = await this.opts.docker.hostCpuCount?.().catch(() => undefined);
+    if (this.daemonCpuCount === undefined && this.opts.docker.hostCpuCount !== undefined) {
+      try {
+        this.daemonCpuCount = (await this.opts.docker.hostCpuCount()) ?? null;
+      } catch {
+        // Not cached: the next create asks again.
+      }
     }
     return this.daemonCpuCount ?? cpus().length;
   }
