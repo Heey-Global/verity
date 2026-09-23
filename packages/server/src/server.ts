@@ -569,6 +569,8 @@ interface ProjectSettingsRecord {
   defaultBranch: string | null;
   defaultModel: string | null;
   memory: string | null;
+  googleDriveFolderId: string | null;
+  googleDriveFolderName: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -582,7 +584,9 @@ type ProjectSettingsKey =
   | 'dopplerMintedTokenSlug'
   | 'defaultBranch'
   | 'defaultModel'
-  | 'memory';
+  | 'memory'
+  | 'googleDriveFolderId'
+  | 'googleDriveFolderName';
 
 type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -751,6 +755,8 @@ function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
     defaultBranch: null,
     defaultModel: null,
     memory: null,
+    googleDriveFolderId: null,
+    googleDriveFolderName: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -958,6 +964,8 @@ function publicProjectSettings(
     defaultModel: settings.defaultModel,
     // Operator-visible content, not a secret — exposed plaintext for the UI editor.
     memory: settings.memory,
+    googleDriveFolderId: settings.googleDriveFolderId,
+    googleDriveFolderName: settings.googleDriveFolderName,
     createdAt: settings.createdAt,
     updatedAt: settings.updatedAt,
   };
@@ -5340,6 +5348,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_google_drive') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const settings = await deps.eventStore.getProjectSettings(projectId);
+          if (
+            session?.projectId !== projectId ||
+            settings?.googleDriveFolderId === null ||
+            settings?.googleDriveFolderId === undefined
+          ) {
+            throw new ControlPlaneSessionAuthorityError(
+              'Google Drive requires a folder connected to the calling project',
+            );
+          }
+          return;
+        }
         if (
           toolName === 'verity_google_slides' ||
           toolName === 'verity_google_docs' ||
@@ -5390,6 +5412,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return (
             session?.projectId === projectId &&
             !(await deps.eventStore.knowledge.isSessionInvalidated(sessionId))
+          );
+        }
+        if (toolName === 'verity_google_drive') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const settings = await deps.eventStore.getProjectSettings(projectId);
+          return (
+            session?.projectId === projectId &&
+            settings?.googleDriveFolderId !== null &&
+            settings?.googleDriveFolderId !== undefined
           );
         }
         if (

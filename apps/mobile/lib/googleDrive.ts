@@ -15,12 +15,11 @@ const DISCOVERY: AuthSession.DiscoveryDocument = {
   tokenEndpoint: 'https://oauth2.googleapis.com/token',
 };
 
-// Read-only Drive access — enough to browse + export/download. `about.get` (used
-// server-side for the account email) also works under this scope, so no extra
-// openid/email scope is requested.
+// A linked folder is a read/write project workspace. Google does not grant
+// folder-wide access to existing children through `drive.file`, so request the
+// Drive scope and enforce the selected folder at Verity's project boundary.
 const SCOPES = [
-  'https://www.googleapis.com/auth/drive.readonly',
-  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/presentations',
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',
