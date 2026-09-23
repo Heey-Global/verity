@@ -35,6 +35,58 @@ function supportedRequestVersion(value) {
   );
 }
 export const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
+export const DEFAULT_SCRIPT_SANDBOX_PATH = '/usr/local/bin/verity-script-sandbox';
+export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR = 'worktree script isolation is unavailable';
+const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Whether the kernel under this container enforces the script sandbox's Landlock
+ * policy. Kept in step with `probeScriptSandbox` in verity-agent-spawn-broker.mjs;
+ * the two are separate installed executables and cannot share a module.
+ *
+ * The supervisor asks for itself rather than trusting a file the launcher left
+ * behind, and only to refuse early and to report the capability in `status`: the
+ * broker re-checks, and the helper refuses to launch anything it cannot confine.
+ */
+export async function probeScriptSandbox(
+  helperPath = DEFAULT_SCRIPT_SANDBOX_PATH,
+  timeoutMs = SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+) {
+  return await new Promise((resolveProbe) => {
+    let child;
+    try {
+      child = spawn(helperPath, ['--probe'], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        timeout: timeoutMs,
+      });
+    } catch {
+      resolveProbe({ available: false, reason: 'script sandbox helper could not be started' });
+      return;
+    }
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      if (stderr.length < 512) stderr += chunk;
+    });
+    child.once('error', () =>
+      resolveProbe({ available: false, reason: 'script sandbox helper could not be started' }),
+    );
+    child.once('close', (code, signal) => {
+      if (code === 0) {
+        resolveProbe({ available: true });
+        return;
+      }
+      const line = stderr.split('\n', 1)[0].trim().slice(0, 256);
+      resolveProbe({
+        available: false,
+        reason:
+          line !== ''
+            ? line
+            : `script sandbox probe exited with ${signal === null ? `code ${String(code)}` : signal}`,
+      });
+    });
+  });
+}
 // Bounds the ENTIRE start-turn request (inline image base64 included) and, via
 // MAX_CONTROL_LINE_BYTES, the per-connection frame-reader buffer — so it is also the
 // supervisor's memory/DoS bound, not only an attachment limit. KNOWN DIVERGENCE: the
@@ -2232,6 +2284,7 @@ export async function handleSupervisorRequest(
   turnStarter,
   onTrustedCliStarted,
   onStartAccepted,
+  capabilities = { scriptIsolation: true },
 ) {
   if (!isObject(request) || !supportedRequestVersion(request.protocolVersion)) {
     throw new Error('unsupported supervisor protocol');
@@ -2242,7 +2295,10 @@ export async function handleSupervisorRequest(
         ok: true,
         protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
         runnerInstanceId,
-        knowledgeIsolation: true,
+        // Both ride on the same helper. The Server reads `scriptIsolation` before it
+        // raises an approval card for an entry script this Sandbox could not confine.
+        knowledgeIsolation: capabilities.scriptIsolation,
+        scriptIsolation: capabilities.scriptIsolation,
       };
     case 'list-turns':
       return { ok: true, turns: await listTurns(runtimeDir) };
@@ -2254,6 +2310,9 @@ export async function handleSupervisorRequest(
       return { ok: true, ...(await claimTurn(runtimeDir, request, runnerInstanceId)) };
     case 'start-turn': {
       if (turnStarter === undefined) throw new Error('runner worker is not installed');
+      if (request.knowledgeIsolation === true && !capabilities.scriptIsolation) {
+        throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
+      }
       // `start` throws on an invalid or refused request, so the acknowledgement can
       // only ever follow an acceptance the supervisor actually made. Everything the
       // Server needs to stop guessing — that the frame was understood and the turn
@@ -2268,6 +2327,10 @@ export async function handleSupervisorRequest(
     case 'run-trusted-cli':
       if (typeof turnStarter?.runTrustedCli !== 'function') {
         throw new Error('runner worker is not installed');
+      }
+      // Refused before the request, and the secrets it carries, reach the broker.
+      if (request.entryScript !== undefined && !capabilities.scriptIsolation) {
+        throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
       }
       return {
         ok: true,
@@ -2296,6 +2359,17 @@ export async function runSupervisor(options = {}) {
   // exists to run turns and always writes the record, whereas `@verity/session` is
   // imported by CLIs that never read one — there, arming is a cost with no reader.
   sampleEventLoopDelay();
+  const scriptIsolation =
+    options.scriptIsolation ??
+    (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
+  if (!scriptIsolation.available) {
+    // The Runner still starts: agent turns, brokered HTTP and plain trusted CLI
+    // commands do not depend on Landlock. Only the entry-script paths are refused.
+    process.stderr.write(
+      `verity-runner-supervisor: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
+    );
+  }
+  const capabilities = { scriptIsolation: scriptIsolation.available };
   const singleton = await acquireSingleton(runtimeDir);
   const adoptedTurns = new Set();
   const turnOptions = { ...options, adoptedTurns };
@@ -2415,6 +2489,7 @@ export async function runSupervisor(options = {}) {
                     })}\n`,
                   )
               : undefined,
+            capabilities,
           );
         })
         .catch(responseForError)

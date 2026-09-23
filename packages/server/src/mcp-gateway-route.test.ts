@@ -20,6 +20,7 @@ import {
   startInternalListener,
   startProjectInternalUnixListener,
 } from './internal-listener.js';
+import { createTrustedCliPreflight } from './mcp-gateway-tools.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayAuditRecord, McpGatewayDeps } from './mcp-gateway.js';
 import {
@@ -77,6 +78,8 @@ function build(
     enforceAuth?: boolean;
     /** Advertise the control-plane session tools, as `embedded.ts` does for that project. */
     sessionTools?: boolean;
+    /** The composition's own pre-card refusal, as `embedded.ts` supplies it. */
+    authorizeCall?: McpGatewayDeps['authorizeCall'];
   } = {},
 ): Harness {
   const cipher = createSealableSecretCipher();
@@ -105,6 +108,7 @@ function build(
         }
       : {}),
     resolveCaller: (input) => Promise.resolve(tokens.resolve(input)),
+    ...(options.authorizeCall === undefined ? {} : { authorizeCall: options.authorizeCall }),
     invokeTool: ({ sessionId, turnId, toolName, request: toolRequest }) => {
       invocations.push({ sessionId, turnId, toolName, request: toolRequest });
       return Promise.resolve({ status: 200, body: 'ok' });
@@ -378,6 +382,49 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
           allowStandingGrant: false,
         },
       ]);
+    });
+  });
+
+  // `buildServer` replaces `authorizeCall` with its own; the composition's must still run
+  // first. Losing it would put an entry-script card in front of an operator on a Sandbox
+  // that cannot confine the script — the call would still fail, but only after approval.
+  it('refuses an entry script before the card when the Sandbox cannot confine it', async () => {
+    const harness = build({
+      trustedCli: true,
+      authorizeCall: createTrustedCliPreflight({
+        runnerRoot: '/srv/verity/runners',
+        requestStatus: () => Promise.resolve({ ok: true, scriptIsolation: false }),
+      }),
+    });
+    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+    await withListener(harness, async (socketPath) => {
+      const res = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'verity_secret_run',
+          arguments: {
+            command: ['/bin/sh', '/work/deploy.sh'],
+            secrets: [{ secretAlias: 'DEPLOY_TOKEN', env: 'DEPLOY_TOKEN' }],
+            entryScript: {
+              path: '/work/deploy.sh',
+              projectPath: 'deploy.sh',
+              sha256: 'a'.repeat(64),
+              loading: 'isolated',
+            },
+          },
+        },
+      });
+      const result = JSON.parse(res.body).result;
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain('does not enforce Landlock');
+      expect(harness.approvals).toEqual([]);
+      expect(harness.invocations).toEqual([]);
+      expect(harness.records.at(-1)).toMatchObject({
+        kind: 'gateway_call_rejected',
+        rejection: 'unavailable',
+      });
     });
   });
 

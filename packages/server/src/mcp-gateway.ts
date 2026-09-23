@@ -191,7 +191,12 @@ export interface McpGatewayDeps {
    * never be the only place a check lives.
    */
   authorizeCall?(
-    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName },
+    input: McpGatewayCaller & {
+      projectId: string;
+      toolName: GatewayToolName;
+      /** The call's validated arguments, for a refusal that depends on what was asked. */
+      request: unknown;
+    },
   ): Promise<void>;
   /** Return true when durable, user-created product state already authorizes this tool call.
    * The call remains authenticated, MAC-keyed, audited, and subject to `authorizeCall` plus the
@@ -541,7 +546,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
 
     if (deps.authorizeCall !== undefined) {
       try {
-        await deps.authorizeCall({ projectId, sessionId, turnId, toolName });
+        await deps.authorizeCall({ projectId, sessionId, turnId, toolName, request: request.data });
       } catch (error) {
         if (error instanceof ControlPlaneSessionToolError) return refuseControlPlane(error);
         return reject(

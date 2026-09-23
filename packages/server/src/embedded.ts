@@ -72,7 +72,7 @@ import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
-import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
+import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createGoogleDocsTool } from './google-docs-tool.js';
@@ -1962,6 +1962,13 @@ export async function buildEmbeddedServer(
           ]
         : [],
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
+    ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
+      ? {
+          authorizeCall: createTrustedCliPreflight({
+            runnerRoot: join(config.dataVolumeRoot, 'runners'),
+          }),
+        }
+      : {}),
     // Both tools reuse the brokered execution implementations, including their at-most-once
     // approval fence. The gateway bearer supplies the project/session/turn identity; its
     // fresh call id makes consumption exact for this approved invocation.

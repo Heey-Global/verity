@@ -4,6 +4,14 @@ export const AGENT_SPAWN_PROTOCOL_VERSION: number;
 export const DEFAULT_RUNTIME_DIR: string;
 export const DEFAULT_CONTROL_DIR: string;
 export const DEFAULT_WORKTREE_ROOT: string;
+export const DEFAULT_SCRIPT_SANDBOX_PATH: string;
+export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR: string;
+export type ScriptSandboxProbe = { available: true } | { available: false; reason: string };
+/** Run `verity-script-sandbox --probe`: whether this kernel enforces its Landlock policy. */
+export function probeScriptSandbox(
+  helperPath?: string,
+  timeoutMs?: number,
+): Promise<ScriptSandboxProbe>;
 export const SHARED_SESSION_ROOT: string;
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX: string;
 export const LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX: string;
@@ -38,6 +46,9 @@ export interface AgentSpawnBrokerOptions {
    *  for tests only — production resolves the one fixed path. */
   openCodeAcpPath?: string;
   scriptSandboxPath?: string;
+  /** The result of {@link probeScriptSandbox}, for tests. Production probes the helper
+   *  once at startup. */
+  scriptIsolation?: ScriptSandboxProbe;
   worktreeRoot?: string;
   /** The one additional tree a Runner may be given. Production passes only
    *  {@link SHARED_SESSION_ROOT}, gated on VERITY_AGENT_SHARED_SESSION_ROOT;

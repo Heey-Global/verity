@@ -1,7 +1,8 @@
-import { runSupervisorTrustedCli } from '@verity/session';
+import { requestRunnerSupervisor, runSupervisorTrustedCli } from '@verity/session';
 import { join } from 'node:path';
 
 import type { McpGatewayDeps } from './mcp-gateway.js';
+import { ControlPlaneSessionToolError } from './session-handoff-tool.js';
 import type { createBrokeredHttpTool } from './brokered-http-tool.js';
 import type { createTrustedCliTool } from './trusted-cli-tool.js';
 
@@ -93,5 +94,49 @@ export function createMcpGatewayToolExecutor(options: {
     }
     toolName satisfies never;
     throw new Error('unsupported MCP gateway tool');
+  };
+}
+
+export const SCRIPT_ISOLATION_UNAVAILABLE_MESSAGE =
+  "Worktree entry scripts are unavailable in this project's Sandbox: its container runtime " +
+  'does not enforce Landlock, which confines what an approved script can read. The request ' +
+  'was not shown for approval and nothing ran. Run an installed executable without ' +
+  '`entryScript` instead, or ask the operator to enable Landlock for this project.';
+
+/**
+ * Refuse a `verity_secret_run` entry script before its approval card is raised when the
+ * project's Sandbox reports it cannot confine one (gVisor, for example, implements no
+ * Landlock). The supervisor and the spawn broker refuse the same request on their own, so
+ * this only moves the refusal ahead of a card whose answer could not change the outcome.
+ *
+ * Only an explicit `scriptIsolation: false` refuses. A supervisor that predates the field
+ * started only after the helper's probe passed, and an unreachable supervisor fails the call
+ * on its own after approval, exactly as before this check existed.
+ */
+export function createTrustedCliPreflight(options: {
+  runnerRoot: string;
+  requestStatus?: (socketPath: string) => Promise<Record<string, unknown>>;
+}): NonNullable<McpGatewayDeps['authorizeCall']> {
+  const requestStatus =
+    options.requestStatus ??
+    ((socketPath: string) => requestRunnerSupervisor(socketPath, { kind: 'status' }));
+  return async ({ projectId, toolName, request }) => {
+    if (toolName !== 'verity_secret_run') return;
+    if (
+      typeof request !== 'object' ||
+      request === null ||
+      (request as { entryScript?: unknown }).entryScript === undefined
+    ) {
+      return;
+    }
+    let status: Record<string, unknown>;
+    try {
+      status = await requestStatus(join(options.runnerRoot, projectId, 'supervisor.sock'));
+    } catch {
+      return;
+    }
+    if (status['scriptIsolation'] === false) {
+      throw new ControlPlaneSessionToolError(SCRIPT_ISOLATION_UNAVAILABLE_MESSAGE);
+    }
   };
 }

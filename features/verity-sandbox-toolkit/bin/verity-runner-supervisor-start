@@ -6,10 +6,25 @@ umask 0007
 RUNTIME_DIR="${VERITY_RUNNER_RUNTIME:-/run/verity-runner}"
 LOG="$RUNTIME_DIR/supervisor.log"
 
-# Reusable worktree-script approvals depend on the kernel enforcing the helper's
-# read boundary. Fail provisioning before the supervisor advertises the tool;
-# an approval card that can only end in exit 126 is not a supported fallback.
-/usr/local/bin/verity-script-sandbox --probe
+# Worktree entry scripts (and the reusable approvals only they can earn) depend
+# on the kernel enforcing the helper's Landlock read boundary. A container runtime
+# can lack Landlock outright: gVisor (runsc), which public-preview deployments
+# select, answers ENOSYS. That disables entry scripts, not the Runner: the
+# supervisor reports the capability in `status` so the Server refuses the call
+# before any approval card, the supervisor and the spawn broker each probe the
+# helper themselves and refuse the request, and the helper still refuses to run a
+# command it cannot confine. So a failed probe is reported here, not fatal.
+#
+# A missing helper is a different fault: the image is not the toolkit it claims
+# to be, and that still fails provisioning.
+SCRIPT_SANDBOX=/usr/local/bin/verity-script-sandbox
+if [ ! -x "$SCRIPT_SANDBOX" ]; then
+  echo "verity-runner-supervisor-start: $SCRIPT_SANDBOX is missing" >&2
+  exit 1
+fi
+if ! "$SCRIPT_SANDBOX" --probe; then
+  echo 'verity-runner-supervisor-start: worktree entry scripts are disabled because this container runtime does not enforce Landlock' >&2
+fi
 
 if /usr/local/bin/verity-runner-supervisor --probe >/dev/null 2>&1; then
   exit 0

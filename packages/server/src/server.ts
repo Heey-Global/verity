@@ -5324,7 +5324,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // Runs before the card, so a caller that may not use these tools is turned away without
       // an operator being asked to read a briefing their answer could not have delivered. The
       // tools re-check it themselves on the way in; this only decides when it is caught.
-      authorizeCall: async ({ projectId, sessionId, toolName }) => {
+      authorizeCall: async (input) => {
+        // The composition's own pre-card refusals (the trusted CLI isolation check) first.
+        await gatewayDeps.authorizeCall?.(input);
+        const { projectId, sessionId, toolName } = input;
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
           if (
