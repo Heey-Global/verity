@@ -71,6 +71,16 @@ export class ProjectTurnGate {
     });
   }
 
+  /**
+   * Take a slot without waiting, even past the limit — for a turn that is already
+   * running in the Sandbox (one reattached after a Server restart), which the cap can
+   * no longer hold back but must still count. Returns the same idempotent release.
+   */
+  hold(key: string): () => void {
+    if (!this.enabled) return () => undefined;
+    return this.take(key);
+  }
+
   private take(key: string): () => void {
     this.running.set(key, this.runningCount(key) + 1);
     let released = false;
@@ -80,6 +90,8 @@ export class ProjectTurnGate {
       const remaining = this.runningCount(key) - 1;
       if (remaining > 0) this.running.set(key, remaining);
       else this.running.delete(key);
+      // A held slot can leave the count at or above the limit even after this release.
+      if (remaining >= this.limit) return;
       const queue = this.waiters.get(key);
       const next = queue?.shift();
       if (queue !== undefined && queue.length === 0) this.waiters.delete(key);

@@ -629,9 +629,10 @@ export interface ConductorDeps {
    * further enqueue throws {@link QueueFullError}. Defaults to 10. */
   maxQueuedTurns?: number | undefined;
   /**
-   * Max turns that may execute at once per project Sandbox (sessions without a
-   * project share one key). A turn over the cap waits — visibly, cancellably — for a
-   * slot before its backend starts. Omit or ≤ 0 for no cap. See {@link ProjectTurnGate}.
+   * Max turns that may execute at once per project Sandbox. A turn over the cap waits
+   * — visibly, cancellably — for a slot before its backend starts; a turn reattached
+   * after a restart counts but is never held back. Sessions without a project are not
+   * capped. Omit or ≤ 0 for no cap. See {@link ProjectTurnGate}.
    */
   maxConcurrentProjectTurns?: number | undefined;
   /**
@@ -4205,6 +4206,13 @@ export class Conductor {
         ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
       });
       boundHandle.delegate = turn;
+      // The recovered Runner is still using its project Sandbox, so it counts against
+      // the per-project cap until it ends. Tied to the Runner's own result rather than
+      // to this settle, which a stop watchdog can take over while the Runner lives on.
+      if (session.projectId !== null) {
+        const releaseSlot = this.projectTurnGate.hold(session.projectId);
+        void turn.result.finally(releaseSlot).catch(() => undefined);
+      }
       // A recovered process may outlive a permission change; attach only to stop it.
       if (await this.deps.store.knowledge.isSessionInvalidated(marker.sessionId)) {
         await boundHandle.cancel();

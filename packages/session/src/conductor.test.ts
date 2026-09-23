@@ -3160,6 +3160,74 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     }
   });
 
+  // A Server restart forgets every slot. Without counting the turns it reattaches, the
+  // first dispatches after a deploy start on top of Runners still loading the Sandbox.
+  it('counts a reattached turn against the per-project cap until its Runner ends', async () => {
+    await ctx.store.upsertProject({
+      id: 'p-restart',
+      owner: 'acme',
+      repo: 'restart',
+      containerName: 'verity-acme-restart',
+      state: 'active',
+    });
+    for (const sessionId of ['s1', 's2']) {
+      await ctx.store.createSession({
+        sessionId,
+        worktree: `/wt/${sessionId}`,
+        model: 'm',
+        projectId: 'p-restart',
+      });
+    }
+    const { seq } = await ctx.store.appendEvent('s1', { t: 'prompt', text: 'go' });
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: seq });
+    await ctx.store.bindTurnIdentity('s1', { turnId: 'turn-held', startCommandId: 'start-held' });
+    let endReattached!: (r: RunResult) => void;
+    const reattached = new Promise<RunResult>((resolve) => (endReattached = resolve));
+    let freshStarts = 0;
+    const idle = (result: Promise<RunResult>): RunnerTurn => ({
+      result,
+      steer: () => Promise.resolve(false),
+      answerPermission: () => Promise.resolve(false),
+      cancel: () => Promise.resolve(false),
+    });
+    const client: RunnerClient = {
+      startTurn: () => {
+        freshStarts += 1;
+        return idle(
+          Promise.resolve({ sessionId: undefined, exitCode: 0, stderr: '', aborted: false }),
+        );
+      },
+      attach: () => idle(reattached),
+    };
+    const { recovery } = fakeRecovery({
+      status: 'live',
+      target: {
+        turnId: 'turn-held',
+        sessionId: 's1',
+        eventFilePath: '/rt/events.jsonl',
+        controlSocketPath: '/rt/control.sock',
+      },
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: inertBackend,
+      worktreeExists: async () => true,
+      runner: () => client,
+      runnerRecovery: recovery,
+      maxConcurrentProjectTurns: 1,
+    });
+
+    await conductor.recover();
+    expect(conductor.isBusy('s1')).toBe(true);
+    await conductor.dispatchTurn('s2', 'after the restart');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(freshStarts).toBe(0);
+
+    endReattached({ sessionId: undefined, exitCode: 0, stderr: '', aborted: false });
+    await waitFor(() => freshStarts === 1);
+    await waitFor(() => !conductor.isBusy('s2'));
+  });
+
   it('settles a dead Runner even while a permission card is still open', async () => {
     // A Sandbox that dies while its turn waits on the operator used to skip every probe:
     // the open card read as "the silence is expected", so the turn stayed running for

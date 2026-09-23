@@ -50,4 +50,25 @@ describe('ProjectTurnGate', () => {
     await Promise.all([gate.acquire('p'), gate.acquire('p'), gate.acquire('p')]);
     expect(gate.wouldWait('p')).toBe(false);
   });
+
+  // A release that woke a waiter while held slots still fill the budget would put one
+  // more turn into a Sandbox that is already at its cap.
+  it('counts held slots and wakes a waiter only once the count is under the limit', async () => {
+    const gate = new ProjectTurnGate(1);
+    const heldA = gate.hold('p');
+    const heldB = gate.hold('p');
+    expect(gate.runningCount('p')).toBe(2);
+    let started = false;
+    const waiter = gate.acquire('p').then((release) => {
+      started = true;
+      return release;
+    });
+    heldA();
+    await Promise.resolve();
+    expect(started).toBe(false);
+    heldB();
+    (await waiter)?.();
+    expect(started).toBe(true);
+    expect(gate.runningCount('p')).toBe(0);
+  });
 });
