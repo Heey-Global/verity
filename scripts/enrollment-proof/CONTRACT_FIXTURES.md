@@ -25,7 +25,7 @@ evidence remains separate from the tests introduced here.
 From the repository root:
 
 ```sh
-node scripts/enrollment-proof/export-schemas.ts
+npm run enrollment:schemas
 npx prettier --write scripts/enrollment-proof/wire-schemas.json
 npx vitest run scripts/enrollment-proof
 ```

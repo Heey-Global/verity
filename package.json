@@ -38,7 +38,8 @@
     "format:write": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts"
   },
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.79.0",
