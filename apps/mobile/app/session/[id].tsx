@@ -4639,7 +4639,7 @@ function SessionFilesSheet({
                 : root === 'worktree'
                   ? 'Worktree'
                   : root === 'knowledge'
-                    ? '📚 Knowledge'
+                    ? '📚 Project'
                     : '📚 Shared'}
               {!driveActive && path ? ` / ${path}` : ''}
             </Text>
@@ -4669,7 +4669,7 @@ function SessionFilesSheet({
                   disabled={mutating}
                   hitSlop={8}
                   accessibilityRole="button"
-                  accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Knowledge'}
+                  accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Project'}
                   style={styles.bookmarkRemove}
                 >
                   <Icon name="repeat" size={18} color={theme.colors.textMuted} />
@@ -4721,7 +4721,7 @@ function SessionFilesSheet({
             {(
               [
                 ['worktree', 'Files'],
-                ['knowledge', '📚 Knowledge'],
+                ['knowledge', '📚 Project'],
                 ['shared', '📚 Shared'],
               ] as const
             ).map(([candidate, label]) => (
