@@ -10,6 +10,7 @@ function run(state: {
   draft?: boolean;
   unrelatedDraft?: boolean;
   newerDraft?: boolean;
+  largeReleasePayload?: boolean;
   pending?: boolean;
   missing?: boolean;
   stale?: boolean;
@@ -57,11 +58,15 @@ else if (args.includes('/releases?')) {
   const releases = (fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:'v1.2.3', draft:!!fixture.state.draft, prerelease:false}];
   if (fixture.state.unrelatedDraft) releases.push({tag_name:'v0.9.0', draft:true, prerelease:false});
   if (fixture.state.newerDraft) releases.push({tag_name:'v1.3.0', draft:true, prerelease:false});
-  result = [releases];
+  if (fixture.state.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'v0.'+index+'.0', draft:true, prerelease:false, body:'x'.repeat(20000)})));
+  const compact = args.includes('--jq');
+  result = compact
+    ? releases.map(({tag_name,draft,prerelease}) => ({tag_name,draft,prerelease})).map(JSON.stringify).join('\\n')+'\\n'
+    : JSON.stringify([releases]);
 }
 else if (args.startsWith('pr list')) result = fixture.state.pending ? [{number:1,author:{login:'github-actions'},mergeCommit:{oid:fixture.boundarySha}}] : [];
 else throw new Error(args);
-process.stdout.write(JSON.stringify(result));
+process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result));
 `,
     { mode: 0o755 },
   );
@@ -133,6 +138,9 @@ describe('release lifecycle reconciliation', () => {
   });
   it('ignores abandoned drafts from older release versions', () => {
     expect(run({ unrelatedDraft: true })).toMatchObject({ status: 0, output: 'mode=plan\n' });
+  });
+  it('keeps lifecycle reconciliation bounded with large release metadata', () => {
+    expect(run({ largeReleasePayload: true })).toMatchObject({ status: 0, output: 'mode=plan\n' });
   });
   it('rejects drafts newer than the manifest version', () => {
     const result = run({ newerDraft: true });

@@ -29,6 +29,27 @@ function manifestVersion(raw, historical = false) {
 }
 /** @param {string[]} args @returns {unknown} */
 const gh = (...args) => JSON.parse(execFileSync('gh', args, { encoding: 'utf8' }));
+/** @param {string} raw @returns {{tag_name: string, draft: boolean, prerelease: boolean}} */
+function parseRelease(raw) {
+  const release = /** @type {unknown} */ (JSON.parse(raw));
+  if (
+    typeof release !== 'object' ||
+    release === null ||
+    !('tag_name' in release) ||
+    typeof release.tag_name !== 'string' ||
+    !('draft' in release) ||
+    typeof release.draft !== 'boolean' ||
+    !('prerelease' in release) ||
+    typeof release.prerelease !== 'boolean'
+  ) {
+    throw new Error('Invalid release metadata');
+  }
+  return {
+    tag_name: release.tag_name,
+    draft: release.draft,
+    prerelease: release.prerelease,
+  };
+}
 /** @param {string} path */
 const api = (path) => gh('api', `repos/${process.env.GITHUB_REPOSITORY}/${path}`);
 const outputFile = process.env.GITHUB_OUTPUT;
@@ -46,14 +67,21 @@ if (main !== eventSha) {
   const tag = `${spec.prefix}${version}`;
   const versionParts = version.split('.').map(Number);
   // Paginate: a release disappearing from page one must never reset history.
-  const releases = /** @type {{tag_name: string, draft: boolean, prerelease: boolean}[][]} */ (
-    gh(
+  const releases = execFileSync(
+    'gh',
+    [
       'api',
       '--paginate',
-      '--slurp',
+      '--jq',
+      '.[] | {tag_name, draft, prerelease}',
       `repos/${process.env.GITHUB_REPOSITORY}/releases?per_page=100`,
-    )
-  ).flat();
+    ],
+    { encoding: 'utf8' },
+  )
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(parseRelease);
   const pending =
     /** @type {{number: number, author: {login: string}, mergeCommit: {oid: string}}[]} */ (
       gh(
