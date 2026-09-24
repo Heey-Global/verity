@@ -78,7 +78,7 @@ function param(value: string | string[] | undefined): string {
 const PROJECT_DETAIL_POLL_MS = 15_000;
 
 export default function ProjectDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
   const client = useMemo(() => createVerityClient(), []);
   const projectId = param(id);
 
@@ -90,17 +90,31 @@ export default function ProjectDetailScreen() {
       />
     );
   }
-  return <ProjectDetailView client={client} projectId={projectId} />;
+  return (
+    <ProjectDetailView
+      client={client}
+      projectId={projectId}
+      initialTab={param(tab) === 'settings' ? 'settings' : 'dev-server'}
+    />
+  );
 }
 
-function ProjectDetailView({ client, projectId }: { client: VerityClient; projectId: string }) {
+function ProjectDetailView({
+  client,
+  projectId,
+  initialTab,
+}: {
+  client: VerityClient;
+  projectId: string;
+  initialTab: ProjectTab;
+}) {
   const insets = useSafeAreaInsets();
   const [detail, setDetail] = useState<ProjectDetail | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
   const [creatingLoop, setCreatingLoop] = useState(false);
-  const [activeTab, setActiveTab] = useState<ProjectTab>('dev-server');
+  const [activeTab, setActiveTab] = useState<ProjectTab>(initialTab);
   const loadGeneration = useRef(0);
   const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
   const pendingProjectMutationRef = useRef<ProjectRecord | undefined>(undefined);
