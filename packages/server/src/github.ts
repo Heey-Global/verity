@@ -853,9 +853,30 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       if (token === undefined || id === null || !Number.isInteger(number) || number <= 0) {
         return false;
       }
+      const url = `https://api.github.com/repos/${id.owner}/${id.repo}/pulls/${String(number)}`;
+      const confirmMerged = async (): Promise<boolean> => {
+        // A lost PUT response can follow a completed merge. Read the PR directly:
+        // the branch status cache and its conditional GET may still say "open".
+        try {
+          const res = await doFetch(url, {
+            headers: githubHeaders(token),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (!res.ok) return false;
+          const body: unknown = await res.json();
+          if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
+          const mergedAt = (body as Record<string, unknown>).merged_at;
+          if (typeof mergedAt !== 'string' || mergedAt.length === 0) return false;
+          cache.clear();
+          lastCacheByBranch.clear();
+          responseCache.clear();
+          return true;
+        } catch {
+          return false;
+        }
+      };
       try {
-        const url = `https://api.github.com/repos/${id.owner}/${id.repo}/pulls/${String(number)}/merge`;
-        const res = await doFetch(url, {
+        const res = await doFetch(`${url}/merge`, {
           method: 'PUT',
           headers: githubHeaders(token),
           signal: AbortSignal.timeout(timeoutMs),
@@ -864,11 +885,13 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
             ...(expectedHeadSha !== undefined ? { sha: expectedHeadSha } : {}),
           }),
         });
-        if (!res.ok) return false;
+        if (!res.ok) return confirmMerged();
         cache.clear();
+        lastCacheByBranch.clear();
+        responseCache.clear();
         return true;
       } catch {
-        return false;
+        return confirmMerged();
       }
     },
   };
