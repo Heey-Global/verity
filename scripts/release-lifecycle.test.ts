@@ -7,6 +7,7 @@ import { parse } from 'yaml';
 
 const script = resolve('scripts/release-lifecycle.mjs');
 function run(state: {
+  train?: 'backend' | 'mobile' | 'website';
   draft?: boolean;
   unrelatedDraft?: boolean;
   newerDraft?: boolean;
@@ -18,7 +19,12 @@ function run(state: {
   historicalManifest?: unknown;
   mainManifest?: unknown;
 }) {
-  const train = 'backend';
+  const train = state.train ?? 'backend';
+  const manifestPath =
+    train === 'mobile' ? 'apps/mobile' : train === 'website' ? 'docs/website' : '.';
+  const prefix = train === 'mobile' ? 'mobile-v' : train === 'website' ? 'website-v' : 'v';
+  const version = train === 'mobile' ? '1.33.0' : '1.2.3';
+  const tag = `${prefix}${version}`;
   const manifestName = `.release-please-manifest.${train}.json`;
   const cwd = mkdtempSync(join(tmpdir(), 'release-lifecycle-'));
   const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -29,20 +35,26 @@ function run(state: {
   git('config', 'commit.gpgSign', 'false');
   writeFileSync(
     join(cwd, manifestName),
-    JSON.stringify(state.historicalManifest ?? { '.': '1.2.3' }),
+    JSON.stringify(state.historicalManifest ?? { [manifestPath]: version }),
   );
   git('add', '.');
   git('commit', '-qm', 'chore: fixture');
   const boundarySha = git('rev-parse', 'HEAD');
-  git('tag', 'v1.2.3');
+  git('tag', tag);
   if (state.mismatchedTag) {
-    writeFileSync(join(cwd, manifestName), JSON.stringify({ '.': '1.2.4' }));
+    writeFileSync(
+      join(cwd, manifestName),
+      JSON.stringify({ [manifestPath]: train === 'mobile' ? '1.33.1' : '1.2.4' }),
+    );
     git('add', '.');
     git('commit', '-qm', 'chore: next version');
-    git('tag', '--force', 'v1.2.3');
+    git('tag', '--force', tag);
     git('reset', '--hard', boundarySha);
   }
-  writeFileSync(join(cwd, manifestName), JSON.stringify(state.mainManifest ?? { '.': '1.2.3' }));
+  writeFileSync(
+    join(cwd, manifestName),
+    JSON.stringify(state.mainManifest ?? { [manifestPath]: version }),
+  );
   git('add', '.');
   git('commit', '--allow-empty', '-qm', 'chore: migrate manifest');
   const sha = git('rev-parse', 'HEAD');
@@ -51,13 +63,13 @@ function run(state: {
     join(cwd, 'bin/gh'),
     `#!/usr/bin/env node
 const args = process.argv.slice(2).join(' ');
-const fixture = ${JSON.stringify({ sha, boundarySha, state })};
+const fixture = ${JSON.stringify({ sha, boundarySha, state, tag, prefix, train })};
 let result;
 if (args.includes('git/ref/heads/main')) result = {object:{sha:fixture.state.stale ? 'f'.repeat(40) : fixture.sha}};
 else if (args.includes('/releases?')) {
-  const releases = (fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:'v1.2.3', draft:!!fixture.state.draft, prerelease:false}];
-  if (fixture.state.unrelatedDraft) releases.push({tag_name:'v0.9.0', draft:true, prerelease:false});
-  if (fixture.state.newerDraft) releases.push({tag_name:'v1.3.0', draft:true, prerelease:false});
+  const releases = (fixture.state.missing || (fixture.state.pending && !fixture.state.draft)) ? [] : [{tag_name:fixture.tag, draft:!!fixture.state.draft, prerelease:false}];
+  if (fixture.state.unrelatedDraft) releases.push({tag_name:fixture.train === 'mobile' ? 'mobile-v1.12.0' : 'v0.9.0', draft:true, prerelease:false});
+  if (fixture.state.newerDraft) releases.push({tag_name:fixture.train === 'mobile' ? 'mobile-v1.34.0' : 'v1.3.0', draft:true, prerelease:false});
   if (fixture.state.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'v0.'+index+'.0', draft:true, prerelease:false, body:'x'.repeat(20000)})));
   const compact = args.includes('--jq');
   result = compact
@@ -138,6 +150,22 @@ describe('release lifecycle reconciliation', () => {
   });
   it('ignores abandoned drafts from older release versions', () => {
     expect(run({ unrelatedDraft: true })).toMatchObject({ status: 0, output: 'mode=plan\n' });
+  });
+  it('ignores completed historical mobile lines while planning the current native release', () => {
+    expect(run({ train: 'mobile', unrelatedDraft: true })).toMatchObject({
+      status: 0,
+      output: 'mode=plan\n',
+    });
+  });
+  it('blocks a mobile draft on or above the current release line', () => {
+    const result = run({ train: 'mobile', newerDraft: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('publication is pending');
+  });
+  it('blocks a mobile draft matching the current manifest version', () => {
+    const result = run({ train: 'mobile', draft: true });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('publication is pending');
   });
   it('keeps lifecycle reconciliation bounded with large release metadata', () => {
     expect(run({ largeReleasePayload: true })).toMatchObject({ status: 0, output: 'mode=plan\n' });
