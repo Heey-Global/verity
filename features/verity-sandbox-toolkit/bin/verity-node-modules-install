@@ -19,6 +19,7 @@ MODULES="$WORK/node_modules"
 STATE_DIR="${VERITY_NODE_MODULES_STATE_DIR:-/tmp/verity-node-modules}"
 STATUS="$STATE_DIR/status"
 LOG="$STATE_DIR/install.log"
+COMPLETE="$MODULES/.verity-install-complete"
 
 mkdir -p "$STATE_DIR" || exit 1
 report() {
@@ -36,10 +37,10 @@ fi
 exec 9>"$STATE_DIR/lock" || exit 1
 flock -n 9 || exit 0
 
-# npm writes its hidden lockfile last, so its presence means a finished install —
-# ours or one the agent ran. Anything else under an npm lockfile (an empty volume,
-# or an install a recreate interrupted) is repaired by starting over.
-if [ -e "$MODULES/.package-lock.json" ]; then
+# npm can write its hidden lockfile before lifecycle scripts finish. Our marker is
+# written only after the whole command succeeds, so an interrupted prepare or
+# postinstall is repaired on the next start.
+if [ -e "$COMPLETE" ]; then
   report 'ready'
   exit 0
 fi
@@ -72,7 +73,11 @@ fi
 
 report "running: npm ci (log: $LOG)"
 if (cd "$WORK" && npm ci --no-audit --no-fund) >"$LOG" 2>&1; then
-  report 'ready'
+  if touch "$COMPLETE"; then
+    report 'ready'
+  else
+    report "failed: npm ci succeeded but completion could not be recorded; see $LOG"
+  fi
 else
   report "failed: npm ci exited non-zero; see $LOG, then run npm ci in /work"
 fi

@@ -918,7 +918,11 @@ describe('createGitWorktreeProvisioner', () => {
     for (const root of [repo, worktree]) {
       writeFileSync(
         join(root, 'package.json'),
-        JSON.stringify({ workspaces: { packages: ['packages/*', 'apps/**', '!apps/skip'] } }),
+        JSON.stringify({
+          workspaces: {
+            packages: ['packages/{core,other}', 'apps/**/web', '!apps/skip'],
+          },
+        }),
       );
       for (const [dir, name] of [
         ['packages/core', '@acme/core'],

@@ -16,6 +16,7 @@ import {
   type Dirent,
 } from 'node:fs';
 import { promisify } from 'node:util';
+import { minimatch } from 'minimatch';
 
 const execFileAsync = promisify(execFile);
 
@@ -792,8 +793,8 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
 /**
  * The root manifest's `workspaces` as a predicate over repo-relative package
  * directories, or undefined when the repo declares none. Covers the forms npm
- * accepts — an array or `{ packages: [...] }`, `*` within a segment, `**` across
- * them, `!` exclusions — which is all `packages/*` / `apps/*` layouts need.
+ * accepts — an array or `{ packages: [...] }`, including brace expansion,
+ * globstars and `!` exclusions.
  */
 function workspaceMatcher(repoDir: string): ((dir: string) => boolean) | undefined {
   let patterns: unknown;
@@ -807,28 +808,19 @@ function workspaceMatcher(repoDir: string): ((dir: string) => boolean) | undefin
     patterns = (patterns as { packages?: unknown }).packages;
   }
   if (!Array.isArray(patterns)) return undefined;
-  const toRegExp = (pattern: string): RegExp => {
-    const body = pattern
-      .replace(/^\.\//, '')
-      .replace(/\/+$/, '')
-      .split(/(\*\*|\*)/)
-      .map((part) => (part === '**' ? '.*' : part === '*' ? '[^/]*' : escapeRegExp(part)))
-      .join('');
-    return new RegExp(`^${body}$`);
-  };
-  const include: RegExp[] = [];
-  const exclude: RegExp[] = [];
+  const include: string[] = [];
+  const exclude: string[] = [];
   for (const pattern of patterns) {
     if (typeof pattern !== 'string' || pattern === '') continue;
-    if (pattern.startsWith('!')) exclude.push(toRegExp(pattern.slice(1)));
-    else include.push(toRegExp(pattern));
+    const normalized = pattern.replace(/^\.\//, '').replace(/\/+$/, '');
+    if (normalized.startsWith('!')) exclude.push(normalized.slice(1));
+    else include.push(normalized);
   }
   if (include.length === 0) return undefined;
-  return (dir) => include.some((re) => re.test(dir)) && !exclude.some((re) => re.test(dir));
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = (dir: string, pattern: string) => minimatch(dir, pattern, { dot: true });
+  return (dir) =>
+    include.some((pattern) => matches(dir, pattern)) &&
+    !exclude.some((pattern) => matches(dir, pattern));
 }
 
 /** Scan depth for nested `node_modules`. Deep enough for the usual layouts

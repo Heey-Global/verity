@@ -34,8 +34,8 @@ function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean })
       `printf '%s|%s\\n' "$PWD" "$*" >>'${calls}'`,
       'find node_modules -mindepth 1 -delete',
       'echo installing',
-      `if [ ${String(opts.npmExit ?? 0)} -ne 0 ]; then exit ${String(opts.npmExit ?? 0)}; fi`,
       'touch node_modules/.package-lock.json',
+      `if [ ${String(opts.npmExit ?? 0)} -ne 0 ]; then exit ${String(opts.npmExit ?? 0)}; fi`,
     ].join('\n'),
   );
   chmodSync(join(bin, 'npm'), 0o755);
@@ -129,6 +129,15 @@ describe('verity-node-modules-install', () => {
     const box = sandbox({ lockfile: true, npmExit: 1 });
     box.run();
     expect(box.status()).toMatch(/^failed: .*install\.log/);
+  });
+
+  it('retries when npm wrote its hidden lockfile before a lifecycle failure', () => {
+    const box = sandbox({ lockfile: true, npmExit: 1 });
+    box.run();
+    expect(existsSync(join(box.work, 'node_modules', '.package-lock.json'))).toBe(true);
+    expect(existsSync(join(box.work, 'node_modules', '.verity-install-complete'))).toBe(false);
+    box.run();
+    expect(box.npmCalls()).toHaveLength(2);
   });
 });
 
