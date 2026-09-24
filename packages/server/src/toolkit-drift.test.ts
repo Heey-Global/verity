@@ -178,33 +178,18 @@ describe('formatToolkitDriftReport', () => {
     expect(out[1]).toContain('only a rebuilt base image fixes it');
   });
 
-  it('names an unpinned project among the unverified rather than dropping it', () => {
-    const out = lines([{ owner: 'acme', repo: 'unpinned', imageRef: null }]);
-    expect(out).toHaveLength(1);
-    expect(out[0]).toContain('acme/unpinned');
-    expect(out[0]).toContain('no verified sandbox toolkit recorded for 1 project(s)');
-  });
-
-  it('keeps unrecorded projects out of the drift lines', () => {
+  // `unknown` is the permanent state of every never-attested base-image
+  // project and has no remedy; a failed attestation already writes its own
+  // provision warning. A line for it would be always on and never actionable.
+  it('says nothing about unrecorded projects', () => {
+    expect(lines([{ owner: 'acme', repo: 'unpinned', imageRef: null }])).toEqual([]);
     const out = lines([
       project('stale', { toolkitIdentity: OLD }),
       project('legacy', { toolkitIdentity: null }),
     ]);
-    expect(out).toHaveLength(2);
+    expect(out).toHaveLength(1);
     expect(out[0]).toContain('acme/stale');
-    expect(out[0]).not.toContain('acme/legacy');
-    expect(out[1]).toContain('no verified sandbox toolkit recorded for 1 project(s)');
-  });
-
-  // `null` is written both when nothing compared the image and when a
-  // comparison rejected it. The line covers both, because claiming the first
-  // would tell an operator an image was never checked that in fact failed its
-  // check — and no remedy is promised, since a trusted default image or a
-  // supervisor-off deployment is never attested at all.
-  it('claims neither more nor less than a null identity supports', () => {
-    const [line] = lines([project('legacy', { toolkitIdentity: null })]);
-    expect(line).toMatch(/either never compared .* or failed that comparison/u);
-    expect(line).not.toMatch(/re-provision/iu);
+    expect(out.join('\n')).not.toContain('acme/legacy');
   });
 
   it('states its own blindness once when the Server ships no toolkit', () => {
@@ -252,9 +237,8 @@ describe('isDriftReportable', () => {
   });
 
   // Unpinning a project empties `image_ref` while its Sandbox keeps running the
-  // image it was last given. Such a row can only be reported as unknown — but
-  // dropping it would take a project that is demonstrably unverified and leave
-  // it out of the one report meant to find exactly those.
+  // image it was last given. It stays in the population and is judged like any
+  // other row — which, with nothing to compare, yields the unshown `unknown`.
   it('keeps an active project whose image was unpinned', () => {
     expect(isDriftReportable({ ...row, imageRef: null })).toBe(true);
   });

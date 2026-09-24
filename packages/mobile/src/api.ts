@@ -370,8 +370,9 @@ export type SandboxUpdate = z.infer<typeof sandboxUpdateSchema>;
 /** Whether the project's recorded runner-boundary attestation was made against
  *  the toolkit this Server ships (`packages/server/src/toolkit-drift.ts`).
  *
- *  `unknown` is NOT a synonym for `matches` — it means the comparison could not
- *  be made at all. `carrier` decides the remedy and is the reason the two
+ *  Current servers send `null` rather than `unknown` when no comparison could
+ *  be made; `unknown` stays accepted so an older server's list still parses,
+ *  and it is NOT a synonym for `matches`. `carrier` decides the remedy and is the reason the two
  *  populations are never merged into one number: a `devcontainer` image is
  *  rebuilt and re-attested by re-provisioning, while a `base-image` project
  *  needs a new base image, which no Verity action produces. */

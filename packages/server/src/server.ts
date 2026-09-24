@@ -630,7 +630,7 @@ interface PublicProjectRecord extends Omit<
  *  decides which remedy applies. The report's `name` is omitted — the client
  *  already knows which project it is holding. */
 interface ProjectToolkitDrift {
-  verdict: ToolkitDriftVerdict;
+  verdict: Exclude<ToolkitDriftVerdict, 'unknown'>;
   carrier: ToolkitCarrier;
 }
 
@@ -5777,11 +5777,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * A failure to read the bundle is a broken deployment, not a reason to fail
    * the project list: it degrades to `undefined`, which `toolkitDriftEntryOf`
    * turns into `unknown` — "cannot be compared", the one verdict that is still
-   * true when the comparison is unavailable. Reporting it as `matches` would be
-   * the exact false all-clear the drift report exists to remove.
+   * true when the comparison is unavailable — and the wire then carries no
+   * verdict at all. Reporting it as `matches` would be the exact false
+   * all-clear the drift report exists to remove.
    *
    * But degrading quietly would be its own version of that: every project would
-   * read `unknown` with nothing anywhere saying why, and the packaging or mount
+   * lose its drift verdict with nothing anywhere saying why, and the packaging or mount
    * fault behind it would be invisible. So it is logged — deduplicated while the
    * fault persists, and re-armed by the first read that succeeds, so a Server
    * polled once a second does not bury the finding in its own noise.
@@ -5798,7 +5799,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           toolkitIdentityFailureLogged = true;
           app.log.error(
             { err: error },
-            'verity: cannot read the bundled sandbox toolkit — every project reports an unknown drift verdict until this is fixed',
+            'verity: cannot read the bundled sandbox toolkit — no project can be checked for drift until this is fixed',
           );
         }
         return undefined;
@@ -5807,7 +5808,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   /**
    * This project's toolkit drift verdict, or `null` when the report declines to
-   * judge the row at all.
+   * judge the row at all or can reach no verdict (`unknown`).
    *
    * Pure: it compares the project's recorded `toolkitIdentity` against the
    * identity the caller already resolved, so it costs no Docker call and no
@@ -5819,6 +5820,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): ProjectToolkitDrift | null => {
     if (!isDriftReportable(project)) return null;
     const { verdict, carrier } = toolkitDriftEntryOf(current, project);
+    // Base-image projects are never attested, so `unknown` is their permanent
+    // state, and a failed attestation already surfaces as a provision warning.
+    // Shown, it would be a banner that is always on and nothing clears.
+    if (verdict === 'unknown') return null;
     return { verdict, carrier };
   };
 

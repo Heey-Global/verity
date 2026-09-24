@@ -357,30 +357,11 @@ describe('toolkit drift notice', () => {
     expect(notice('drifted', 'base-image')).toContain('only a rebuilt base image fixes it');
   });
 
-  // Must not read as an all-clear, and must not promise a repair it cannot keep.
-  it('reports an unrecorded verdict as unruled-out, not as clean', () => {
-    const unknown = notice('unknown', 'devcontainer');
-    expect(unknown).toContain('cannot be ruled out');
-    expect(unknown).not.toContain('Repairing');
-  });
-
-  // `unknown` has three causes — never compared, comparison failed, or this
-  // server could not read its own toolkit to compare against — and the wire
-  // carries no way to tell them apart. Naming one would be wrong for the others.
-  it('does not attribute an unknown verdict to a cause it cannot know', () => {
-    const unknown = notice('unknown', 'devcontainer') ?? '';
-    // "has not been compared" holds in all three cases. Naming which one does not.
-    expect(unknown).toContain('has not been compared');
-    expect(unknown).not.toMatch(/never compared|failed that comparison|could not read/i);
-  });
-
-  // A server that cannot read its own bundle reports `unknown` for every
-  // project, including ones whose recorded identity is intact. Saying "nothing
-  // is recorded for this environment" would blame those projects for a fault
-  // one level up.
-  it('makes no claim about what this project has on record', () => {
-    const unknown = notice('unknown', 'devcontainer') ?? '';
-    expect(unknown).not.toMatch(/recorded|no verified/i);
+  // `unknown` has no remedy, so an older server still sending it must not
+  // raise a banner nothing can clear.
+  it('says nothing for an unknown verdict', () => {
+    expect(notice('unknown', 'devcontainer')).toBeUndefined();
+    expect(notice('unknown', 'base-image')).toBeUndefined();
   });
 
   // Identities are content hashes with no ordering, and the identity covers the
