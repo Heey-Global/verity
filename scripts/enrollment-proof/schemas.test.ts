@@ -80,7 +80,7 @@ it('preserves string-pattern acceptance in the portable export without JavaScrip
   }
   const upper = fixtures.find((f) => f.name === 'uppercase-installation-uuid')!;
   const schema = exported.recoveryRequest as {
-    properties: { installationId: { pattern: string } };
+    properties: Record<string, { pattern: string }>;
   };
   expect(
     new RegExp(schema.properties.installationId.pattern).test(upper.value.installationId as string),
