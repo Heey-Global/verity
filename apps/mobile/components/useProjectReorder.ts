@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AppState, type View } from 'react-native';
 import { Gesture } from 'react-native-gesture-handler';
 import {
@@ -65,7 +65,7 @@ export function useProjectReorder({
   const source = useDerivedValue(() => ({ order, sortable }));
   const [headers, setHeaders] = useState<Header[]>([]);
   const registeredHeaders = useDerivedValue(() => headers);
-  const [active, setActive] = useState<{ id: string; token: number } | null>(null);
+  const [active, setActive] = useState<{ id: string | null; token: number } | null>(null);
   const activeRef = useRef<{ id: string; token: number } | null>(null);
   const completedToken = useRef(0);
   const latestDrop = useRef(onDrop);
@@ -94,9 +94,16 @@ export function useProjectReorder({
     if (token <= completedToken.current) return;
     completedToken.current = token;
     if (activeRef.current?.token === token) activeRef.current = null;
-    setActive((current) => (current?.token === token ? null : current));
+    setActive((current) => (current?.token === token ? { id: null, token } : current));
     if (next) latestDrop.current(next);
   }, []);
+  // Keep the final compact slot until React commits the new order. Clearing it
+  // in finalize starts a return spring against the old layout before that commit.
+  useLayoutEffect(() => {
+    if (active?.id !== null) return;
+    const current = drag.value;
+    if (current?.dropping && current.token === active.token) drag.value = null;
+  }, [active, drag]);
   const cancel = useCallback(() => {
     const current = drag.value ?? activeRef.current;
     if (!current) return;
@@ -129,7 +136,7 @@ export function useProjectReorder({
     'worklet';
     const current = drag.value;
     const origin = pickup.value;
-    if (!current || !origin) return;
+    if (!current || current.dropping || !origin) return;
     const screenTop = origin.hostTop + origin.top + fingerY.value - origin.fingerY;
     let index = current.order.indexOf(current.id);
     let distance = Infinity;
@@ -160,7 +167,7 @@ export function useProjectReorder({
   // Keep destinations beyond the viewport reachable without moving the overlay
   // away from the finger. Native scrolling still stays locked during the drag.
   useFrameCallback((frame) => {
-    if (!drag.value || !pickup.value) return;
+    if (!drag.value || drag.value.dropping || !pickup.value) return;
     updateTarget();
     const pointer = fingerY.value - pickup.value.hostTop;
     const edge = 56;
@@ -208,7 +215,7 @@ export function useProjectReorder({
         .onTouchesUp(() => runOnJS(releaseFallback)())
         .onTouchesCancelled(() => runOnJS(releaseFallback)())
         .onStart((event) => {
-          if (drag.value) return;
+          if (drag.value && !drag.value.dropping) return;
           const host = measure(hostRef);
           if (!host) return;
           for (const header of registeredHeaders.value) {
@@ -247,16 +254,14 @@ export function useProjectReorder({
           }
         })
         .onUpdate((event) => {
-          if (!drag.value) return;
+          if (!drag.value || drag.value.dropping) return;
           fingerY.value = event.absoluteY;
           updateTarget();
         })
         .onFinalize((_event, success) => {
           const current = drag.value;
-          if (!current) return;
-          // Clear on the UI thread before notifying React: a fast second pickup
-          // can never inherit state from the previous gesture.
-          drag.value = null;
+          if (!current || current.dropping) return;
+          drag.value = success ? { ...current, dropping: true } : null;
           pickup.value = null;
           runOnJS(ended)(success ? current.order : null, current.token);
         }),
@@ -333,21 +338,33 @@ export function useProjectRowDrag({
     if (enabled && !floating)
       return register({ id, row: rowRef, handle: handleRef, slot: slotRef });
   }, [enabled, floating, id, register, rowRef, handleRef, slotRef]);
-  const translation = useDerivedValue(() => {
+  const visual = useDerivedValue(() => {
     const current = drag.value;
-    if (!current || current.id === id || floating) return 0;
-    return (
+    if (!current || floating) return 0;
+    const target =
       projectRowPosition(current.order, id, heights.value) -
-      projectRowPosition(renderedOrder, id, heights.value)
-    );
+      projectRowPosition(current.startOrder, id, heights.value);
+    // Settle unfinished neighbour springs at release. The subtraction below
+    // then removes the same displacement in the render that commits the order.
+    return reducedMotion || current.dropping || current.id === id
+      ? target
+      : withSpring(target, SLOT_SPRING);
   });
-  const style = useAnimatedStyle(() => ({
-    opacity: !floating && drag.value?.id === id ? 0 : 1,
-    transform: [
-      {
-        translateY: reducedMotion ? translation.value : withSpring(translation.value, SLOT_SPRING),
-      },
-    ],
-  }));
+  const style = useAnimatedStyle(() => {
+    const current = drag.value;
+    return {
+      opacity: !floating && current?.id === id && !current.dropping ? 0 : 1,
+      transform: [
+        {
+          translateY:
+            !current || floating
+              ? 0
+              : visual.value -
+                (projectRowPosition(renderedOrder, id, heights.value) -
+                  projectRowPosition(current.startOrder, id, heights.value)),
+        },
+      ],
+    };
+  });
   return { slotRef, rowRef, handleRef, style };
 }

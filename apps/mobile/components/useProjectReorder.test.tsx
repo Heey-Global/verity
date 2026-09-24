@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type View } from 'react-native';
-import { measure, scrollTo, type AnimatedRef } from 'react-native-reanimated';
+import { measure, scrollTo, withSpring, type AnimatedRef } from 'react-native-reanimated';
 import { useProjectReorder, useProjectRowDrag } from './useProjectReorder';
 
 let mockFrame: (frame: { timeSincePreviousFrame: number }) => void;
@@ -9,6 +9,7 @@ jest.mock('react-native-reanimated', () => {
   return {
     ...jest.requireActual('react-native-reanimated/mock'),
     useReducedMotion: () => false,
+    withSpring: jest.fn((value: number) => value),
     measure: jest.fn(),
     scrollTo: jest.fn(),
     useAnimatedRef: () => useRef({ current: null }).current,
@@ -252,4 +253,39 @@ it('uses visible slot measurements even when earlier rows have never mounted', (
   expect(saved.indexOf('p79')).toBe(longOrder.indexOf('p41'));
   expect(saved[saved.indexOf('p79') + 1]).toBe('p41');
   expect(saved.filter((id) => id !== 'p79')).toEqual(longOrder.filter((id) => id !== 'p79'));
+});
+
+// An unfinished spring must not survive the layout move and displace the row
+// for a second time. Model the residual rather than making springs immediate.
+it('removes a neighbour displacement in the same render that commits its new slot', () => {
+  const test = setup('a', 160);
+  test.start();
+  test.move(300);
+  jest.mocked(withSpring).mockImplementation((value) => Number(value) - 15);
+  const row = renderHook(
+    ({ renderedOrder }: { renderedOrder: readonly string[] }) =>
+      useProjectRowDrag({
+        id: 'b',
+        reorder: test.hook.result.current,
+        renderedOrder,
+        enabled: false,
+      }),
+    { initialProps: { renderedOrder: order } },
+  );
+  expect(row.result.current.style).toMatchObject({ transform: [{ translateY: -75 }] });
+  const dropped = test.hook.result.current.drag.value!.order;
+  act(() => {
+    test.hook.result.current.drag.value = {
+      ...test.hook.result.current.drag.value!,
+      dropping: true,
+    };
+  });
+  row.rerender({ renderedOrder: dropped });
+  expect(row.result.current.style).toMatchObject({ transform: [{ translateY: 0 }] });
+  act(() => {
+    test.hook.result.current.drag.value = null;
+  });
+  row.rerender({ renderedOrder: dropped });
+  expect(row.result.current.style).toMatchObject({ transform: [{ translateY: 0 }] });
+  jest.mocked(withSpring).mockImplementation((value) => value);
 });

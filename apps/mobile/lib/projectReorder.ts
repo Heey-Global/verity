@@ -75,6 +75,8 @@ export function moveProjectIdToIndex(
 /** The drag in progress, shared with the UI thread. `order` is the preview the rows make room for. */
 export type ProjectDrag = {
   token: number;
+  /** Retained until React commits the final order, so transforms compensate its layout. */
+  dropping?: boolean;
   id: string;
   /** The stacking the rows were rendered in when the drag began. */
   startOrder: readonly string[];
