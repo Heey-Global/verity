@@ -55,7 +55,7 @@ with open(sys.argv[2], 'wb') as f:
 PYENT
 codesign --force --sign - --entitlements "$tmp/Entitlements.plist" "$app" >/dev/null
 codesign --verify --strict "$app"
-codesign --display --entitlements - "$app" > "$tmp/SignedEntitlements.plist"
+codesign --display --entitlements - --xml "$app" > "$tmp/SignedEntitlements.plist"
 python3 - "$tmp/Entitlements.plist" "$tmp/SignedEntitlements.plist" <<'PYENT'
 import plistlib,sys
 with open(sys.argv[1], 'rb') as f:
