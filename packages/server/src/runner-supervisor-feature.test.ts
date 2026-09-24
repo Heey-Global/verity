@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -6186,6 +6187,51 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
       });
     } finally {
       await supervisor.close();
+    }
+  });
+
+  // GC and a fresh claim of the same id can both land inside one retry interval, so
+  // the retry never sees the directory missing. The new claim is this supervisor's
+  // own and its worker may simply not hold the lock yet; settling it as "worker
+  // missing during supervisor recovery" would end a turn that is just starting.
+  it('leaves a re-claimed turn alone when its undecided predecessor is retried', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-reclaimed', startCommandId: 'start-turn-reclaimed' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-reclaimed');
+    await mkdir(join(runtimeDir, 'turns/turn-reclaimed/worker.lock'));
+    // Staged elsewhere, then swapped in with two renames, so no retry can observe
+    // the gap in between.
+    const stage = await mkdtemp(join(tmpdir(), 'verity-runner-reclaim-'));
+    await claimTurn(
+      stage,
+      { turnId: 'turn-reclaimed', startCommandId: 'start-turn-reclaimed-2' },
+      'live-supervisor',
+    );
+    const staged = await readTurnState(stage, 'turn-reclaimed');
+    await writeFile(
+      join(stage, 'turns/turn-reclaimed/state.json'),
+      `${JSON.stringify({ ...staged, workerLock: true })}\n`,
+    );
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await rename(join(runtimeDir, 'turns/turn-reclaimed'), join(stage, 'old-turn'));
+      await rename(join(stage, 'turns/turn-reclaimed'), join(runtimeDir, 'turns/turn-reclaimed'));
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await expect(readTurnState(runtimeDir, 'turn-reclaimed')).resolves.toMatchObject({
+        status: 'claimed',
+        startCommandId: 'start-turn-reclaimed-2',
+      });
+    } finally {
+      await supervisor.close();
+      await rm(stage, { recursive: true, force: true });
     }
   });
 

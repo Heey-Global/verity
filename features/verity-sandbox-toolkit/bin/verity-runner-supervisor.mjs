@@ -2181,13 +2181,24 @@ export function createTurnAdopter(runtimeDir, options = {}) {
   let closed = false;
   let polling = false;
 
-  const probe = async (turnId, initial) => {
+  // `claim` pins a retried probe to the claim it was undecided about. The turn
+  // directory can be GC'd and the same id claimed afresh between two retries; that
+  // new claim is this supervisor's own, and settling or adopting it here would end a
+  // turn whose worker has simply not taken its lock yet. Checked under the lock (or
+  // right after finding it busy), so no re-claim can slip in after the check.
+  const probe = async (turnId, initial, claim) => {
     const lockPath = join(runtimeDir, 'turns', turnId, 'worker.lock');
+    const isOtherClaim = async () => {
+      if (claim === undefined) return false;
+      const state = await readTurnState(runtimeDir, turnId);
+      return !sameClaim(state, claim);
+    };
     let lock;
     try {
       lock = await acquireFileLock(lockPath);
     } catch (error) {
       if (!isLockBusy(error)) return 'uncertain';
+      if (await isOtherClaim()) return 'gone';
       if (initial) {
         const state = await readTurnState(runtimeDir, turnId);
         if (state?.status === 'claimed') {
@@ -2200,6 +2211,7 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       return 'live';
     }
     try {
+      if (await isOtherClaim()) return 'gone';
       try {
         await settleMissingWorkerTurn(runtimeDir, turnId);
       } catch {
@@ -2218,7 +2230,7 @@ export function createTurnAdopter(runtimeDir, options = {}) {
   // live Runner, so the turn badged `running` with nothing left to ever settle it.
   // Retried on a slower cadence than the adopted poll: each probe forks a `flock`, and
   // what keeps a turn undecided (a corrupt state file) can persist indefinitely.
-  const unresolved = new Set();
+  const unresolved = new Map();
   const unresolvedRetryMs = options.unresolvedRetryMs ?? 5000;
   let nextUnresolvedAt = 0;
   const exists = (turnId) =>
@@ -2250,17 +2262,22 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       // an earlier supervisor's `runnerInstanceId`, so `claimTurn` answers a retried
       // start for it as a runner-instance mismatch — this supervisor never launches a
       // worker for it, and no fresh claim can be caught before its worker lock.
-      for (const turnId of retryUnresolved ? [...unresolved] : []) {
+      for (const turnId of retryUnresolved ? [...unresolved.keys()] : []) {
         if (closed) break;
         // Something else may have finished the turn meanwhile (a Server-side settle,
         // or turn GC removing its directory). Its lock then never opens again, so
         // probing alone would keep it here for the life of this supervisor.
+        const claim = unresolved.get(turnId);
         const current = await readTurnState(runtimeDir, turnId).catch(() => null);
-        if (current?.status === 'settled' || (current === undefined && !(await exists(turnId)))) {
+        const finished =
+          current === undefined
+            ? !(await exists(turnId))
+            : current !== null && (current.status === 'settled' || !sameClaim(current, claim));
+        if (finished) {
           unresolved.delete(turnId);
           continue;
         }
-        const disposition = await probe(turnId, true).catch(() => 'uncertain');
+        const disposition = await probe(turnId, true, claim).catch(() => 'uncertain');
         if (disposition === 'uncertain') continue;
         unresolved.delete(turnId);
         if (disposition === 'live') adopted.add(turnId);
@@ -2280,7 +2297,12 @@ export function createTurnAdopter(runtimeDir, options = {}) {
         if (state.workerLock !== true) continue;
         const disposition = await probe(state.turnId, true).catch(() => 'uncertain');
         if (disposition === 'live') adopted.add(state.turnId);
-        else if (disposition === 'uncertain') unresolved.add(state.turnId);
+        else if (disposition === 'uncertain') {
+          unresolved.set(state.turnId, {
+            runnerInstanceId: state.runnerInstanceId,
+            startCommandId: state.startCommandId,
+          });
+        }
       }
       schedule();
     },
@@ -2293,6 +2315,14 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       unresolved.clear();
     },
   };
+}
+
+function sameClaim(state, claim) {
+  return (
+    state !== undefined &&
+    state.runnerInstanceId === claim.runnerInstanceId &&
+    state.startCommandId === claim.startCommandId
+  );
 }
 
 export async function listTurns(runtimeDir) {
