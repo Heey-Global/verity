@@ -100,13 +100,20 @@ if (main !== eventSha) {
       )
     );
   const drafts = releases.filter((release) => {
-    if (train !== 'backend')
+    if (train === 'website')
       return (
-        release.draft &&
-        new RegExp(`^${spec.prefix}\\d+\\.\\d+\\.${train === 'mobile' ? '0' : '\\d+'}$`).test(
-          release.tag_name,
-        )
+        release.draft && new RegExp(`^${spec.prefix}\\d+\\.\\d+\\.\\d+$`).test(release.tag_name)
       );
+    if (train === 'mobile') {
+      if (!release.draft) return false;
+      const match = release.tag_name.match(/^mobile-v(\d+)\.(\d+)\.(\d+)$/);
+      if (!match) return false;
+      const candidate = match.slice(1).map(Number);
+      for (let index = 0; index < candidate.length; index += 1) {
+        if (candidate[index] !== versionParts[index]) return candidate[index] > versionParts[index];
+      }
+      return true;
+    }
     if (!release.draft || !release.tag_name.startsWith(spec.prefix)) return false;
     const candidate = release.tag_name.slice(spec.prefix.length).split('.').map(Number);
     if (candidate.length !== 3 || !candidate.every(Number.isInteger)) return false;
