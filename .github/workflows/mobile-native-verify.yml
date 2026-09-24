@@ -114,6 +114,11 @@ jobs:
       - name: Verify pinned TLS against a self-signed server
         run: scripts/ios-pinned-tls-smoke.sh
 
+      - name: Verify pinned TLS through an opaque relay
+        env:
+          VERITY_SMOKE_OPAQUE_RELAY: '1'
+        run: scripts/ios-pinned-tls-smoke.sh
+
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
         run: pod install
