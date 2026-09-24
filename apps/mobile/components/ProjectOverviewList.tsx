@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshControl, type FlatListProps } from 'react-native';
-import Reanimated, { type AnimatedRef } from 'react-native-reanimated';
+import Reanimated from 'react-native-reanimated';
 
 import { PROJECT_SESSIONS_COLLAPSE_DURATION_MS } from './ProjectSessionsCollapse';
 
 type ProjectOverviewListProps<T extends { id: string }> = Omit<
   FlatListProps<T>,
   | 'scrollEnabled'
+  | 'disableVirtualization'
   | 'maintainVisibleContentPosition'
   | 'refreshControl'
   | 'onRefresh'
@@ -14,7 +15,6 @@ type ProjectOverviewListProps<T extends { id: string }> = Omit<
   | 'CellRendererComponent'
 > & {
   draggingProjectId: string | null;
-  listRef?: AnimatedRef<React.Component>;
   onRefresh: () => void | Promise<void>;
   refreshing: boolean;
 };
@@ -34,7 +34,6 @@ type ProjectOverviewListProps<T extends { id: string }> = Omit<
  */
 export function ProjectOverviewList<T extends { id: string }>({
   draggingProjectId,
-  listRef,
   onRefresh,
   refreshing,
   ...props
@@ -66,8 +65,17 @@ export function ProjectOverviewList<T extends { id: string }>({
   return (
     <Reanimated.FlatList
       {...props}
-      ref={listRef as React.Ref<import('react-native').FlatList<T>>}
+      // The dragged row travels over its neighbours, not under them.
+      CellRendererComponentStyle={({ item }: { item: T }) => ({
+        zIndex: item.id === draggingProjectId ? 1 : 0,
+      })}
       scrollEnabled={!locked}
+      // A native scroll clamp can precede compact row measurements. Recycling
+      // the touched cell against those stale frames removes its recognizer;
+      // mounting it again cannot resume the finger already on the screen.
+      disableVirtualization={locked}
+      // Android clips by layout frame, which a transform does not move: a row
+      // dragged past where its untransformed frame is visible would vanish.
       removeClippedSubviews={!locked}
       maintainVisibleContentPosition={locked ? undefined : { minIndexForVisible: 0 }}
       // `enabled` is honoured on Android; on iOS the scroll lock above is what
