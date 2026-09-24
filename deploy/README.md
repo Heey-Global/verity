@@ -835,6 +835,46 @@ mounted into the internal `postgres` service.
 Only deploy-level, non-per-project mounts (the read-only agent-seed toolkit,
 `/dev/null`) remain host binds.
 
+### Dependencies: a per-project `node_modules` volume
+
+A project with an npm `package-lock.json` at its root gets one more named volume,
+`verity-node-modules-<project>`, mounted over `/work/node_modules`. It is a whole
+volume rather than a `verity-data` subpath because of gVisor: the provisioner
+passes runsc a mount hint (`dev.gvisor.spec.mount.node-modules.*`,
+`share=container`) that gives the Sandbox exclusive access to that mount, so the
+Sentry may trust its own file cache instead of revalidating every lookup against
+the host. runsc pairs a hint with a mount by comparing its source path, and only a
+whole named volume has a source path that is known in advance (its daemon
+`Mountpoint`). Dependency-heavy commands are several times faster this way; the
+exclusivity is sound because nothing outside the Sandbox writes that volume.
+
+- **Only with the Runner supervisor.** Its root start pass hands the fresh,
+  root-owned volume to the agent. Without it the Sandbox keeps `node_modules` on
+  `verity-data` as before.
+- **Only for npm lockfiles.** The volume starts empty and shadows the clone's
+  `node_modules`, and only an npm lockfile can be installed without anyone
+  acting. yarn and pnpm projects, and npm projects without a lockfile, keep
+  `node_modules` on `verity-data`.
+- **One-time install.** On every Sandbox start, `verity-node-modules-install`
+  runs in the background as the agent. If the volume holds no finished npm
+  install, it runs `npm ci` once, which runs the project's own install scripts
+  inside the Sandbox like any install would. The outcome is in
+  `/tmp/verity-node-modules/status` and the npm output in
+  `/tmp/verity-node-modules/install.log` inside the Sandbox. Anything the script
+  cannot do itself (no `npm` or `flock` in the image) is reported there as
+  `manual:`.
+- **Requires Engine API 1.43+** (Docker 24+) for `HostConfig.Annotations`, which
+  carries the hint. The default unversioned `unix:///var/run/docker.sock` uses the
+  daemon's newest API. A `VERITY_DOCKER_BASE_URL` pinned to an older API version drops the
+  annotation: the volume still works, just without the speed-up.
+- **Existing projects** switch over the next time their Sandbox is recreated
+  (an image update, a repair, or a manual recreate), and the one-time install
+  then fills the new volume. The
+  `node_modules` the clone had on `verity-data` stays on disk, shadowed by the
+  mount. It is no longer used, and you can delete it to reclaim the space.
+- **Deleting a project with purge** removes the volume. The disk GC never
+  touches named volumes, so this is the only way it is reclaimed.
+
 ## Data & persistence
 
 Everything still comes up with a single `deploy/bin/verity-compose up -d`: the guarded wrapper

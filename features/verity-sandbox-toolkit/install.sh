@@ -542,6 +542,8 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-runner-supervisor-start
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-stack-start" \
     /usr/local/bin/verity-runner-stack-start
+  install -m 0755 "$FEATURE_DIR/bin/verity-node-modules-install" \
+    /usr/local/bin/verity-node-modules-install
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-worker.mjs" \
     /usr/local/bin/verity-runner-worker
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-spawn-broker.mjs" \

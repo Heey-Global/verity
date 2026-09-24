@@ -879,6 +879,7 @@ describe('createGitWorktreeProvisioner', () => {
     git('config', 'user.name', 'Test');
     git('config', 'commit.gpgsign', 'false');
     // A minimal workspace package that IS committed (so the worktree checks it out).
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
     mkdirSync(join(repo, 'packages', 'foo'), { recursive: true });
     writeFileSync(
       join(repo, 'packages', 'foo', 'package.json'),
@@ -886,10 +887,11 @@ describe('createGitWorktreeProvisioner', () => {
     );
     git('add', '.');
     git('commit', '-q', '-m', 'init', '--no-gpg-sign');
-    // The hoisted workspace symlink npm would create in the SOURCE repo (not
-    // committed — it lives only in the source checkout's node_modules on disk).
+    // What the Server finds at the source repo's node_modules is not the tree the
+    // sandbox resolves through — that is a separate volume mounted over it — so a
+    // stale link left there must not be what the worktree gets.
     mkdirSync(join(repo, 'node_modules', '@verity'), { recursive: true });
-    symlinkSync('../../packages/foo', join(repo, 'node_modules', '@verity', 'foo'));
+    symlinkSync('../../packages/renamed', join(repo, 'node_modules', '@verity', 'foo'));
 
     const provisioner = createGitWorktreeProvisioner({
       repoDir: repo,
@@ -906,6 +908,42 @@ describe('createGitWorktreeProvisioner', () => {
     expect(realpathSync(link)).not.toBe(realpathSync(join(repo, 'packages', 'foo')));
   });
 
+  it('links workspace packages with no node_modules in the source repo at all', () => {
+    // The fresh-project case: dependencies live in the sandbox's own volume, so the
+    // Server's view of `<repo>/node_modules` is empty. Deriving the links from
+    // what was installed there linked nothing, and every `@scope/*` import in a
+    // session then resolved to nothing either.
+    const repo = mkdtempSync(join(tmpdir(), 'verity-worktree-noinstall-'));
+    const worktree = mkdtempSync(join(tmpdir(), 'verity-worktree-noinstall-wt-'));
+    for (const root of [repo, worktree]) {
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({
+          workspaces: {
+            packages: ['packages/{core,other}', 'apps/**/web', '!apps/skip'],
+          },
+        }),
+      );
+      for (const [dir, name] of [
+        ['packages/core', '@acme/core'],
+        ['apps/web', 'web'],
+        ['apps/skip', 'skip'],
+      ] as const) {
+        mkdirSync(join(root, dir), { recursive: true });
+        writeFileSync(join(root, dir, 'package.json'), JSON.stringify({ name }));
+      }
+    }
+    linkWorkspacePackages(repo, worktree);
+    expect(readlinkSync(join(worktree, 'node_modules', '@acme', 'core'))).toBe(
+      '../../packages/core',
+    );
+    expect(readlinkSync(join(worktree, 'node_modules', 'web'))).toBe('../apps/web');
+    expect(realpathSync(join(worktree, 'node_modules', 'web'))).toBe(
+      realpathSync(join(worktree, 'apps', 'web')),
+    );
+    expect(existsSync(join(worktree, 'node_modules', 'skip'))).toBe(false);
+  });
+
   it('linkWorkspacePackages is a no-op for a non-workspace repo (no links to mirror)', () => {
     // An arbitrary project checkout has no hoisted `node_modules/@verity/*` links,
     // so there is nothing to mirror — the worktree is left untouched.
@@ -913,6 +951,27 @@ describe('createGitWorktreeProvisioner', () => {
     const worktree = mkdtempSync(join(tmpdir(), 'verity-worktree-plain-wt-'));
     linkWorkspacePackages(repo, worktree);
     expect(existsSync(join(worktree, 'node_modules'))).toBe(false);
+  });
+
+  it('preserves installed workspace links for a pnpm-style manifest', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'verity-worktree-pnpm-'));
+    const worktree = mkdtempSync(join(tmpdir(), 'verity-worktree-pnpm-wt-'));
+    for (const root of [repo, worktree]) {
+      writeFileSync(join(root, 'package.json'), '{}');
+      mkdirSync(join(root, 'packages', 'core'), { recursive: true });
+      writeFileSync(
+        join(root, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@acme/core' }),
+      );
+    }
+    mkdirSync(join(repo, 'node_modules', '@acme'), { recursive: true });
+    symlinkSync('../../packages/core', join(repo, 'node_modules', '@acme', 'core'));
+
+    linkWorkspacePackages(repo, worktree);
+
+    const link = join(worktree, 'node_modules', '@acme', 'core');
+    expect(readlinkSync(link)).toBe('../../packages/core');
+    expect(realpathSync(link)).toBe(realpathSync(join(worktree, 'packages', 'core')));
   });
 
   /** A source checkout whose app lives in `platform/` with its own installed

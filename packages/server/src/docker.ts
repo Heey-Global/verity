@@ -130,6 +130,15 @@ export interface DockerClient {
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
    *  valid; the real {@link createDockerClient} always provides it. */
   ensureNetwork?(name: string, opts?: { labels?: Record<string, string> }): Promise<void>;
+  /** Create a named local volume if absent (Engine `POST /volumes/create`) and
+   *  resolve its daemon-side `Mountpoint`. Idempotent: the local driver answers a
+   *  create for an existing name with that volume, labels untouched. Optional so
+   *  pre-existing test fakes stay valid; the real {@link createDockerClient} always
+   *  provides it. */
+  ensureVolume?(
+    name: string,
+    opts?: { labels?: Record<string, string> },
+  ): Promise<{ mountpoint: string | undefined }>;
   /** Read one daemon-registered OCI runtime from `GET /info`. The real client always implements
    *  this; optional only so older injected test doubles remain source-compatible. */
   inspectRuntime?(name: string): Promise<DockerRuntimeRegistration | undefined>;
@@ -249,6 +258,11 @@ export interface ContainerSpec {
   }>;
   /** Free-form labels attached to the container. */
   labels?: Record<string, string>;
+  /** OCI annotations handed to the runtime (`HostConfig.Annotations`, Engine API
+   *  1.43+). gVisor reads its mount hints from here. A daemon addressed through an
+   *  older pinned API version drops the field, which costs the hint and nothing
+   *  else. */
+  annotations?: Record<string, string>;
   /** Environment `KEY=value` strings. */
   env?: string[];
   /** Optional user override (devcontainer `remoteUser` / Docker `User`). */
@@ -1138,6 +1152,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
             }
           : {}),
         NetworkMode: spec.network ?? 'default',
+        ...(spec.annotations !== undefined && Object.keys(spec.annotations).length > 0
+          ? { Annotations: spec.annotations }
+          : {}),
         ...(spec.extraHosts?.length ? { ExtraHosts: spec.extraHosts } : {}),
         ...(spec.runtime !== undefined ? { Runtime: spec.runtime } : {}),
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
@@ -1911,6 +1928,21 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       });
       if (res.ok || res.status === 409) return;
       throw await toDockerError(res);
+    },
+    ensureVolume: async (name, opts) => {
+      const res = await callDocker(doFetch, `${base}/volumes/create`, 'POST', timeoutMs, {
+        Name: name,
+        Driver: 'local',
+        ...(opts?.labels !== undefined ? { Labels: opts.labels } : {}),
+      });
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Mountpoint?: unknown };
+      return {
+        mountpoint:
+          typeof json.Mountpoint === 'string' && json.Mountpoint !== ''
+            ? json.Mountpoint
+            : undefined,
+      };
     },
     listImages: async () => {
       const res = await callDocker(doFetch, `${base}/images/json`, 'GET', timeoutMs);

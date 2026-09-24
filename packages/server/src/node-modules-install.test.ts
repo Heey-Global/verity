@@ -1,0 +1,212 @@
+import { execFileSync } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const SCRIPT = 'features/verity-sandbox-toolkit/bin/verity-node-modules-install';
+const LAUNCHER = 'features/verity-sandbox-toolkit/bin/verity-runner-stack-start';
+
+/** A /work stand-in plus an `npm` on PATH that records how it was called and
+ *  behaves like `npm ci`: it empties node_modules first, then installs. */
+function sandbox(opts: { lockfile: boolean; npmExit?: number; flock?: boolean }) {
+  const root = mkdtempSync(join(tmpdir(), 'verity-nm-install-'));
+  const work = join(root, 'work');
+  const state = join(root, 'state');
+  const bin = join(root, 'bin');
+  mkdirSync(join(work, 'node_modules'), { recursive: true });
+  mkdirSync(bin);
+  writeFileSync(join(work, 'package.json'), '{}');
+  if (opts.lockfile) writeFileSync(join(work, 'package-lock.json'), '{}');
+  const calls = join(root, 'npm-calls');
+  writeFileSync(
+    join(bin, 'npm'),
+    [
+      '#!/usr/bin/env bash',
+      `printf '%s|%s\\n' "$PWD" "$*" >>'${calls}'`,
+      'find node_modules -mindepth 1 -delete',
+      'echo installing',
+      'touch node_modules/.package-lock.json',
+      `if [ ${String(opts.npmExit ?? 0)} -ne 0 ]; then exit ${String(opts.npmExit ?? 0)}; fi`,
+    ].join('\n'),
+  );
+  chmodSync(join(bin, 'npm'), 0o755);
+  // Without flock, PATH holds only the tools the script needs besides it.
+  const path = opts.flock === false ? isolatedPath(root, bin) : `${bin}:/usr/bin:/bin`;
+  const env = {
+    PATH: path,
+    HOME: root,
+    VERITY_NODE_MODULES_WORK: work,
+    VERITY_NODE_MODULES_STATE_DIR: state,
+  };
+  const run = () => execFileSync('bash', [SCRIPT], { env });
+  /** Runs the script while another holder already has its lock. */
+  const runLocked = () => {
+    mkdirSync(state, { recursive: true });
+    execFileSync('flock', [join(state, 'lock'), 'bash', SCRIPT], { env });
+  };
+  const status = () => readFileSync(join(state, 'status'), 'utf8').trim();
+  const npmCalls = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []);
+  return { work, state, run, runLocked, status, npmCalls };
+}
+
+/** A PATH directory with just the tools the script uses, minus flock. */
+function isolatedPath(root: string, bin: string): string {
+  const tools = join(root, 'tools');
+  mkdirSync(tools);
+  for (const tool of ['bash', 'mkdir', 'mv', 'cat', 'getent', 'cut', 'id', 'find', 'touch']) {
+    const resolved = execFileSync('bash', ['-c', `command -v ${tool}`], {
+      encoding: 'utf8',
+    }).trim();
+    symlinkSync(resolved, join(tools, tool));
+  }
+  return `${bin}:${tools}`;
+}
+
+describe('verity-node-modules-install', () => {
+  it('installs an npm project whose dependency volume is empty, reproducibly', () => {
+    const box = sandbox({ lockfile: true });
+    box.run();
+    // `ci`, never `install`: install may rewrite the tracked lockfile, leaving the
+    // agent a dirty tree it never touched.
+    expect(box.npmCalls()).toEqual([`${box.work}|ci --no-audit --no-fund`]);
+    expect(box.status()).toBe('ready');
+    // `npm ci` empties node_modules, dotfiles included, before installing. A status
+    // or log kept in there would be deleted by the very install it reports on.
+    expect(existsSync(join(box.state, 'install.log'))).toBe(true);
+    expect(readFileSync(join(box.state, 'install.log'), 'utf8')).toContain('installing');
+  });
+
+  it('leaves a finished install alone on every later start', () => {
+    const box = sandbox({ lockfile: true });
+    box.run();
+    box.run();
+    expect(box.npmCalls()).toHaveLength(1);
+    expect(box.status()).toBe('ready');
+  });
+
+  it('never runs a second install beside one already in progress', () => {
+    // A wake and a Server restart both re-run the launcher. Two concurrent `npm ci`
+    // runs each start by emptying the tree the other is writing.
+    const box = sandbox({ lockfile: true });
+    box.runLocked();
+    expect(box.npmCalls()).toEqual([]);
+  });
+
+  it('starts over after an install that never finished', () => {
+    // A recreate mid-install leaves packages but no npm hidden lockfile; treating
+    // "not empty" as "installed" would strand the project on a partial tree.
+    const box = sandbox({ lockfile: true });
+    mkdirSync(join(box.work, 'node_modules', 'left-pad'));
+    box.run();
+    expect(box.npmCalls()).toHaveLength(1);
+    expect(box.status()).toBe('ready');
+  });
+
+  it('says so rather than exiting silently when flock is missing', () => {
+    const box = sandbox({ lockfile: true, flock: false });
+    box.run();
+    expect(box.npmCalls()).toEqual([]);
+    expect(box.status()).toMatch(/^manual: flock/);
+  });
+
+  it('says so instead of guessing when there is no npm lockfile', () => {
+    const box = sandbox({ lockfile: false });
+    box.run();
+    expect(box.npmCalls()).toEqual([]);
+    expect(box.status()).toMatch(/^manual: no package-lock\.json/);
+  });
+
+  it('reports a failed install with where to look', () => {
+    const box = sandbox({ lockfile: true, npmExit: 1 });
+    box.run();
+    expect(box.status()).toMatch(/^failed: .*install\.log/);
+  });
+
+  it('retries when npm wrote its hidden lockfile before a lifecycle failure', () => {
+    const box = sandbox({ lockfile: true, npmExit: 1 });
+    box.run();
+    expect(existsSync(join(box.work, 'node_modules', '.package-lock.json'))).toBe(true);
+    expect(existsSync(join(box.work, 'node_modules', '.verity-install-complete'))).toBe(false);
+    box.run();
+    expect(box.npmCalls()).toHaveLength(2);
+  });
+});
+
+describe('verity-runner-stack-start node_modules hand-over', () => {
+  const launcher = readFileSync(LAUNCHER, 'utf8');
+  const block = launcher.slice(
+    launcher.indexOf('NODE_MODULES_DIR='),
+    launcher.indexOf('BROKER_RUNTIME='),
+  );
+
+  it('never chowns through a symlink', () => {
+    // Without the volume, /work/node_modules is an agent-writable path. A root
+    // chown that followed a symlink the agent planted there would hand it any file
+    // root can reach.
+    expect(block).toMatch(/\[ ! -L "\$NODE_MODULES_DIR" \]/);
+    expect(block).toMatch(/chown -h "\$AGENT_UID:\$AGENT_GID" "\$NODE_MODULES_DIR"/);
+  });
+
+  /** Runs the launcher's block with its paths moved into a temp dir and
+   *  `as_agent`/`chown` recorded instead of performed. */
+  function runBlock(opts: { mounted: boolean }) {
+    const root = mkdtempSync(join(tmpdir(), 'verity-nm-launch-'));
+    const dir = join(root, 'node_modules');
+    const mountinfo = join(root, 'mountinfo');
+    const log = join(root, 'calls');
+    mkdirSync(dir);
+    writeFileSync(
+      mountinfo,
+      `36 25 0:32 / ${opts.mounted ? dir : '/work'} rw,relatime - ext4 /dev/sda1 rw\n`,
+    );
+    const script = [
+      `as_agent() { echo "as_agent $*" >>'${log}'; }`,
+      `chown() { echo "chown $*" >>'${log}'; }`,
+      // The test process owns the directory; stand in for Docker's root ownership.
+      `stat() { echo 0; }`,
+      'AGENT_UID=1000 AGENT_GID=1000',
+      block.replaceAll('/proc/self/mountinfo', mountinfo).replaceAll('/work/node_modules', dir),
+      'wait',
+    ].join('\n');
+    execFileSync('bash', ['-c', script]);
+    return existsSync(log) ? readFileSync(log, 'utf8') : '';
+  }
+
+  it('starts the install over the volume, and only there', () => {
+    // Without the volume, `npm ci` would empty the clone's own node_modules on
+    // verity-data, which may hold a yarn or pnpm tree the agent installed by hand.
+    expect(runBlock({ mounted: true })).toContain('verity-node-modules-install');
+    expect(runBlock({ mounted: false })).not.toContain('verity-node-modules-install');
+  });
+
+  it('hands a root-owned node_modules to the agent with or without the volume', () => {
+    // Docker leaves its mount point in the clone root-owned; a Sandbox recreated
+    // without the volume would otherwise find node_modules it cannot install into.
+    expect(runBlock({ mounted: false })).toMatch(/^chown -h 1000:1000 /m);
+  });
+
+  it('installs as the agent, detached, without being able to fail the stack start', () => {
+    const start = block.split('\n').find((line) => line.includes('verity-node-modules-install'));
+    // As root, the install would leave a tree the agent cannot update; attached,
+    // it would outlive the 12 s exec deadline and fail the whole Runner start.
+    expect(start).toMatch(/^\s*as_agent nohup /);
+    expect(start).toMatch(/<\/dev\/null >\/dev\/null 2>&1 &$/);
+  });
+
+  it('is installed wherever the launcher is', () => {
+    for (const installer of ['features/verity-sandbox-toolkit/install.sh', 'deploy/Dockerfile']) {
+      expect(readFileSync(installer, 'utf8')).toContain(
+        '/usr/local/bin/verity-node-modules-install',
+      );
+    }
+  });
+});

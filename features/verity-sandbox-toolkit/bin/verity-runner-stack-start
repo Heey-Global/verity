@@ -197,6 +197,30 @@ if [ "$OPENCODE_OWNER" != "$AGENT_UID" ] || [ "$OPENCODE_GROUP" != "$AGENT_GID" 
   exit 1
 fi
 
+# Per-project node_modules volume (provisioner.ts, NODE_MODULES_TARGET). Docker
+# creates a new named volume root-owned, and the agent — which installs into it —
+# cannot write there, so hand over the top directory only: its contents are the
+# agent's own writes. The same goes for the empty root-owned directory Docker
+# leaves in the clone as the mount point, should the Sandbox later be recreated
+# without the volume. Without the volume, /work/node_modules is an agent-writable
+# path that could be a symlink to anything, hence the symlink test and `-h`. Only
+# a root-owned directory is touched, so every start after the first is a no-op.
+# Dependencies are a convenience, not part of the Runner boundary, so nothing here
+# may fail the stack start.
+NODE_MODULES_DIR=/work/node_modules
+if [ -d "$NODE_MODULES_DIR" ] && [ ! -L "$NODE_MODULES_DIR" ] &&
+  [ "$(stat -c '%u' "$NODE_MODULES_DIR")" = '0' ]; then
+  chown -h "$AGENT_UID:$AGENT_GID" "$NODE_MODULES_DIR" ||
+    echo 'could not hand node_modules to the agent' >&2
+fi
+# The install only ever runs over the volume: `npm ci` empties node_modules first,
+# and the clone's own one may hold a tree the agent installed some other way.
+if awk -v target="$NODE_MODULES_DIR" '$5 == target { found = 1 } END { exit !found }' \
+  /proc/self/mountinfo; then
+  # Detached like the broker below: this exec has a short deadline, `npm ci` does not.
+  as_agent nohup /usr/local/bin/verity-node-modules-install </dev/null >/dev/null 2>&1 &
+fi
+
 BROKER_RUNTIME=/run/verity-runner-broker
 BROKER_SOCKET="$BROKER_RUNTIME/agent-spawn-broker.sock"
 BROKER_LOG="$BROKER_RUNTIME/agent-spawn-broker.log"

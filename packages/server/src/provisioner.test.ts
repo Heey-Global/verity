@@ -40,6 +40,8 @@ import {
   devcontainerImageTag,
   DEVCONTAINER_IMAGE_PREFIX,
   projectNetworkName,
+  projectNodeModulesVolumeName,
+  NODE_MODULES_TARGET,
   devcontainerBuildArgs,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
@@ -2672,6 +2674,131 @@ describe('ProvisionerImpl (#174)', () => {
     await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
       /reconciliation failed for 1 project/,
     );
+  });
+
+  describe('per-project node_modules volume', () => {
+    const MOUNTPOINT = '/var/lib/docker/volumes/verity-node-modules-x/_data';
+
+    async function provisionWith(opts: {
+      lockfile: boolean;
+      runnerSupervisor: boolean;
+      ensureVolume?: () => Promise<{ mountpoint: string | undefined }>;
+    }) {
+      const id = await seedProject();
+      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+      const ensureVolume = vi.fn(opts.ensureVolume ?? (async () => ({ mountpoint: MOUNTPOINT })));
+      const { client: docker, calls } = fakeDocker({ createdContainerId: 'cid-1', ensureVolume });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        git,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: '/srv/verity/workspaces',
+        dataVolume: 'verity-data',
+        dataVolumeRoot: '/srv/verity',
+        runnerSupervisor: opts.runnerSupervisor,
+        runnerSupervisorTrustedDefaultImage: true,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        prepareRunnerRuntime: vi.fn(),
+        containerCommand: vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' })),
+        isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+        isFile: (path) =>
+          path === '/srv/verity/workspaces/example-org-example-repo/package.json' ||
+          (opts.lockfile &&
+            path === '/srv/verity/workspaces/example-org-example-repo/package-lock.json'),
+      });
+      const provisioned = provisioner.provision(id);
+      const created = async () => {
+        await provisioned;
+        return calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+      };
+      return { id, provisioned, created, ensureVolume };
+    }
+
+    it('mounts a Node project its own volume with the exclusive gVisor hint for its source', async () => {
+      const { id, created, ensureVolume } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+      });
+      const spec = await created();
+      expect(ensureVolume).toHaveBeenCalledWith(projectNodeModulesVolumeName(id), {
+        labels: { 'verity.project-id': id },
+      });
+      // A whole-volume mount, never a subpath: runsc pairs a hint with a mount by
+      // comparing sources verbatim, and a subpath mount's source is a per-start
+      // safepath. With one, the hint silently matches nothing and the sandbox keeps
+      // the slow shared file access while every assertion about the spec stays true.
+      expect(spec.volumeMounts).toContainEqual({
+        volume: projectNodeModulesVolumeName(id),
+        target: NODE_MODULES_TARGET,
+      });
+      // The hint has to name what the daemon reported, not a path derived from the
+      // volume name: data-root is a daemon setting the Server cannot see.
+      expect(spec.annotations).toEqual({
+        'dev.gvisor.spec.mount.node-modules.source': MOUNTPOINT,
+        'dev.gvisor.spec.mount.node-modules.type': 'bind',
+        'dev.gvisor.spec.mount.node-modules.share': 'container',
+      });
+    });
+
+    it('leaves a project without an npm lockfile on its existing node_modules', async () => {
+      // The volume starts empty and only an npm lockfile gets it filled without
+      // anyone acting. A yarn or pnpm project moved onto it would lose working
+      // dependencies on its next recreate, which an image update triggers unasked.
+      const { created, ensureVolume } = await provisionWith({
+        lockfile: false,
+        runnerSupervisor: true,
+      });
+      const spec = await created();
+      expect(ensureVolume).not.toHaveBeenCalled();
+      expect(spec.volumeMounts?.map((mount) => mount.target)).not.toContain(NODE_MODULES_TARGET);
+      expect(spec.annotations).toBeUndefined();
+    });
+
+    it('does not mount a volume nothing would hand to the agent', async () => {
+      // Without the Runner runtime no root stack start runs, so the fresh volume
+      // would stay root-owned and empty: every install into it fails with EACCES
+      // and the clone's own node_modules is shadowed. Slow beats broken.
+      const { created, ensureVolume } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: false,
+      });
+      const spec = await created();
+      expect(ensureVolume).not.toHaveBeenCalled();
+      expect(spec.volumeMounts?.map((mount) => mount.target) ?? []).not.toContain(
+        NODE_MODULES_TARGET,
+      );
+    });
+
+    it('still mounts the volume when the daemon names no mountpoint, without a hint', async () => {
+      // A hint without a source is ignored by runsc; one with a guessed source
+      // could match nothing, or another mount.
+      const { id, created } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+        ensureVolume: async () => ({ mountpoint: undefined }),
+      });
+      const spec = await created();
+      expect(spec.volumeMounts).toContainEqual({
+        volume: projectNodeModulesVolumeName(id),
+        target: NODE_MODULES_TARGET,
+      });
+      expect(spec.annotations).toBeUndefined();
+    });
+
+    it('fails the provision visibly when the volume cannot be created', async () => {
+      const { id, provisioned } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+        ensureVolume: async () => {
+          throw new Error('disk full');
+        },
+      });
+      await expect(provisioned).rejects.toThrow(/node_modules volume could not be created/);
+      expect((await ctx.store.getProject(id))?.state).toBe('failed');
+    });
   });
 
   describe('ADR 0006 D1 boundary attestation for user devcontainers', () => {
@@ -7493,7 +7620,12 @@ describe('DeprovisionerImpl (#174)', () => {
     };
     const stopMock = vi.fn();
     const removeMock = vi.fn();
-    const { client: docker } = fakeDocker({ stopContainer: stopMock, removeContainer: removeMock });
+    const removeVolume = vi.fn();
+    const { client: docker } = fakeDocker({
+      stopContainer: stopMock,
+      removeContainer: removeMock,
+      removeVolume,
+    });
     const deprovisioner = new DeprovisionerImpl(
       ctx.store,
       ctx.db,
@@ -7507,6 +7639,8 @@ describe('DeprovisionerImpl (#174)', () => {
     expect(result.state).toBe('absent');
     expect(stopMock).toHaveBeenCalledWith('dev-example-org-example-repo');
     expect(removeMock).toHaveBeenCalledWith('dev-example-org-example-repo');
+    // A kept project keeps its installed dependencies with its clone.
+    expect(removeVolume).not.toHaveBeenCalled();
     // no purge → isDir not even probed (the if-branch short-circuits).
     expect(isDirCalls).toHaveLength(0);
     expect(rmCalls).toEqual([]);
@@ -7588,9 +7722,19 @@ describe('DeprovisionerImpl (#174)', () => {
     const removeDir = (p: string): void => {
       rmCalls.push(p);
     };
+    const order: string[] = [];
     const stopMock = vi.fn();
-    const removeMock = vi.fn();
-    const { client: docker } = fakeDocker({ stopContainer: stopMock, removeContainer: removeMock });
+    const removeMock = vi.fn(async () => {
+      order.push('container');
+    });
+    const removeVolume = vi.fn(async (name: string) => {
+      order.push(name);
+    });
+    const { client: docker } = fakeDocker({
+      stopContainer: stopMock,
+      removeContainer: removeMock,
+      removeVolume,
+    });
     const deprovisioner = new DeprovisionerImpl(
       ctx.store,
       ctx.db,
@@ -7604,6 +7748,10 @@ describe('DeprovisionerImpl (#174)', () => {
 
     await deprovisioner.deprovision(id, { purge: true });
     expect(rmCalls).toEqual(['/data/dev/example-org-example-repo', `/srv/verity/runners/${id}`]);
+    // Named, so the disk GC never takes it: without this step every deleted Node
+    // project leaves its full dependency tree on the host for good. After the
+    // container is gone, because the daemon refuses to remove a volume in use.
+    expect(order).toEqual(['container', projectNodeModulesVolumeName(id)]);
     expect(isDirCalls).toEqual(['/data/dev/example-org-example-repo', `/srv/verity/runners/${id}`]);
   });
 
