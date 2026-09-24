@@ -91,6 +91,10 @@ describe('knowledge discovery context', () => {
       await conductor.sendTurn('s', 'Hello');
       expect(seen[0]).toContain('## Project knowledge');
       expect(seen[0]).toContain('writable `/knowledge/insights`');
+      expect(seen[0]).toContain('without asking first');
+      expect(seen[0]).toContain('Prefer improving an existing insight');
+      expect(seen[0]).toContain('cite the relevant source paths');
+      expect(seen[0]).toContain('Ask before saving sensitive personal information');
       expect(seen[0]).toContain('`publish_shared`');
       await conductor.sendTurn('s', 'What are my values?');
       expect(seen[1]).toContain('## Project knowledge');
