@@ -811,6 +811,22 @@ describe('AcpClaudeBackend', () => {
     });
   });
 
+  it('offers the gateway when an older Claude adapter omits its HTTP MCP capability', async () => {
+    const fake = acpSpawner();
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-mcp-unspecified',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: fake.spawner,
+      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'turn-bearer' },
+    });
+    expect(fake.writes.find((message) => message['method'] === 'session/new')).toMatchObject({
+      params: { mcpServers: [{ type: 'http', name: 'verity' }] },
+    });
+  });
+
   it('offers additional trusted HTTP MCP servers alongside the loopback gateway', async () => {
     const fake = acpSpawner({ httpMcp: true });
     await new AcpClaudeBackend().run({
