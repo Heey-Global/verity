@@ -2192,7 +2192,7 @@ export function createTurnAdopter(runtimeDir, options = {}) {
     const isOtherClaim = async () => {
       if (claim === undefined) return false;
       const state = await readTurnState(runtimeDir, turnId);
-      return !sameClaim(state, claim);
+      return state !== undefined && !sameClaim(state, claim);
     };
     let lock;
     try {
