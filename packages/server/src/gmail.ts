@@ -194,7 +194,7 @@ export async function createGmailReplyDraft(
     ? messages.find((message) => message.id === input.messageId)
     : (messages.findLast(
         (message) => !message.labelIds?.includes('SENT') && !message.labelIds?.includes('DRAFT'),
-      ) ?? messages.at(-1));
+      ) ?? messages.findLast((message) => !message.labelIds?.includes('DRAFT')));
   if (target === undefined) {
     throw new Error(
       input.messageId === undefined

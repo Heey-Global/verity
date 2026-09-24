@@ -187,4 +187,51 @@ describe('Gmail API', () => {
     expect(raw).toContain('To: friend@example.test');
     expect(raw).toContain('In-Reply-To: <incoming@example.test>');
   });
+
+  it('uses the sent recipient when a sent-only thread ends with a draft', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        response({
+          messages: [
+            {
+              id: 'sent',
+              labelIds: ['SENT'],
+              payload: {
+                headers: [
+                  { name: 'From', value: 'me@example.test' },
+                  { name: 'To', value: 'friend@example.test' },
+                  { name: 'Subject', value: 'Hello' },
+                  { name: 'Message-ID', value: '<sent@example.test>' },
+                ],
+              },
+            },
+            {
+              id: 'draft',
+              labelIds: ['DRAFT'],
+              payload: {
+                headers: [
+                  { name: 'From', value: 'me@example.test' },
+                  { name: 'To', value: 'friend@example.test' },
+                  { name: 'Message-ID', value: '<draft@example.test>' },
+                ],
+              },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({ id: 'd1', message: { id: 'draft-message', threadId: 't1' } }),
+      );
+
+    await createGmailReplyDraft('token', { threadId: 't1', body: 'Follow-up' }, fetch);
+
+    const body = fetch.mock.calls[1]?.[1]?.body;
+    expect(typeof body).toBe('string');
+    const request = JSON.parse(body as string) as { message: { raw: string } };
+    const raw = Buffer.from(request.message.raw, 'base64url').toString();
+    expect(raw).toContain('To: friend@example.test');
+    expect(raw).toContain('In-Reply-To: <sent@example.test>');
+    expect(raw).not.toContain('<draft@example.test>');
+  });
 });
