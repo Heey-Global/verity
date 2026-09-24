@@ -119,7 +119,7 @@ export interface ProjectMcpBindingsTable {
   enabled: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
-export interface IntegrationAccountsTable {
+interface IntegrationAccountsTable {
   id: string;
   provider: string;
   endpoint: string;
@@ -129,14 +129,14 @@ export interface IntegrationAccountsTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
-export interface MatrixConnectorConfigTable {
+interface MatrixConnectorConfigTable {
   id: string;
   endpoint: string;
   username: string;
   password_secret: string;
 }
 
-export interface IntegrationSourcesTable {
+interface IntegrationSourcesTable {
   account_id: string;
   source_id: string;
   display_name: string;
@@ -148,7 +148,7 @@ export interface IntegrationSourcesTable {
   last_error: string | null;
 }
 
-export interface IntegrationEventsTable {
+interface IntegrationEventsTable {
   account_id: string;
   source_id: string;
   event_id: string;

@@ -51,6 +51,110 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+describe('VerityClient Matrix integrations', () => {
+  const projectId = 'project/one';
+  const source = {
+    accountId: '@verity:example.test',
+    sourceId: '!room:example.test',
+    displayName: 'Project chat',
+    inviter: null,
+    projectId,
+    status: 'active',
+    activatedAt: '2026-09-24T12:00:00.000Z',
+    lastIngestedAt: null,
+    lastError: null,
+  };
+
+  it('reads a redacted Matrix configuration and sends credentials to the project route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({
+        config: {
+          endpoint: 'https://matrix.example.test',
+          username: '@verity:example.test',
+          passwordConfigured: true,
+        },
+      }),
+      json({ ok: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getProjectMatrixConfig(projectId)).toEqual({
+      endpoint: 'https://matrix.example.test',
+      username: '@verity:example.test',
+      passwordConfigured: true,
+    });
+    await client.saveProjectMatrixConfig(projectId, {
+      endpoint: 'https://matrix.example.test',
+      username: '@verity:example.test',
+      password: 'private-password',
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://host/projects/project%2Fone/integrations/matrix/config',
+      'http://host/projects/project%2Fone/integrations/matrix/config',
+    ]);
+    expect(calls[1]?.init?.method).toBe('PUT');
+    expect(calls[1]?.init?.body).toBe(
+      JSON.stringify({
+        endpoint: 'https://matrix.example.test',
+        username: '@verity:example.test',
+        password: 'private-password',
+      }),
+    );
+  });
+
+  it('lists, binds, pauses, and disconnects a room through integration routes', async () => {
+    const account = {
+      id: '@verity:example.test',
+      provider: 'matrix',
+      endpoint: 'https://matrix.example.test',
+      displayName: 'Matrix',
+      status: 'online',
+      lastError: null,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ accounts: [account], sources: [source] }),
+      json({ sources: [source] }),
+      json({ source }),
+      json({ ok: true }),
+      json({ ok: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listIntegrations()).toEqual({ accounts: [account], sources: [source] });
+    expect(await client.listProjectIntegrations(projectId)).toEqual([source]);
+    expect(
+      await client.bindIntegrationSource(source.accountId, source.sourceId, projectId),
+    ).toEqual(source);
+    await client.pauseIntegrationSource(source.accountId, source.sourceId, true);
+    await client.disconnectIntegrationSource(source.accountId, source.sourceId);
+    expect(calls.map((call) => [call.url, call.init?.method])).toEqual([
+      ['http://host/integrations', 'GET'],
+      ['http://host/projects/project%2Fone/integrations', 'GET'],
+      ['http://host/integrations/sources/bind', 'POST'],
+      ['http://host/integrations/sources/pause', 'POST'],
+      ['http://host/integrations/sources/disconnect', 'POST'],
+    ]);
+    expect(calls[2]?.init?.body).toBe(
+      JSON.stringify({
+        accountId: source.accountId,
+        sourceId: source.sourceId,
+        projectId,
+      }),
+    );
+    expect(calls[3]?.init?.body).toBe(
+      JSON.stringify({
+        accountId: source.accountId,
+        sourceId: source.sourceId,
+        paused: true,
+      }),
+    );
+    expect(calls[4]?.init?.body).toBe(
+      JSON.stringify({
+        accountId: source.accountId,
+        sourceId: source.sourceId,
+      }),
+    );
+  });
+});
+
 describe('VerityClient Google Drive browser', () => {
   it('encodes a Drive search query and pagination token', async () => {
     const { fetch, calls } = fakeFetch(json({ files: [], nextPageToken: 'next' }));
