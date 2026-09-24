@@ -46,8 +46,18 @@ if args[1] == "delete" {
   let status = SecItemCopyMatching(lookup as CFDictionary, &result)
   try require(status == errSecSuccess, "read OSStatus=\(status)")
   let row = result as! [String: Any]
-  try require((row[kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String), "accessibility")
-  try require((row[kSecAttrSynchronizable as String] as? NSNumber)?.boolValue != true, "sync")
+  // A SecKeychain file is the legacy macOS backend, not the iOS/data-protection
+  // Keychain. Missing attributes are unsupported evidence, never a passed test.
+  if let accessibility = row[kSecAttrAccessible as String] as? String {
+    try require(accessibility == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String), "accessibility")
+  } else {
+    print("UNVERIFIED: device-only accessibility is not exposed by this Keychain backend")
+  }
+  if let synchronizable = row[kSecAttrSynchronizable as String] as? NSNumber {
+    try require(!synchronizable.boolValue, "sync")
+  } else {
+    print("UNVERIFIED: synchronization policy is not exposed by this Keychain backend")
+  }
   let key = try Curve25519.Signing.PrivateKey(rawRepresentation: row[kSecValueData as String] as! Data)
   let saved = try Data(contentsOf: URL(fileURLWithPath: args[3]))
   try require(key.publicKey.rawRepresentation == saved, "restart key identity")
@@ -61,5 +71,5 @@ if args[1] == "delete" {
   try require(pub.isValidSignature(decode(vector["signature"] as! String), for: message), "Node signature")
   let signature = try key.signature(for: message)
   try require(key.publicKey.isValidSignature(signature, for: message), "persisted key signing")
-  print("PASS: process restart, stored attributes, transcript bytes and Ed25519 vector")
+  print("PASS: process restart, transcript bytes and Ed25519 vector")
 }

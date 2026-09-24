@@ -15,8 +15,7 @@ and signature; its private key was discarded. IDs in this byte/signature vector
 are illustrative placeholders, not full invitation-schema acceptance fixtures.
 The lifetime comes from the storage contract instead of duplicating its number.
 
-The macOS probe creates a disposable Keychain and unique temporary item, checks stored
-accessibility/sync attributes and key continuity in a separate process, then
+The macOS probe creates a disposable Keychain and unique temporary item, reports whether accessibility/sync attributes are exposed and checks key continuity in a separate process, then
 verifies Node's exact transcript bytes and signature with CryptoKit. Cleanup
 removes only that uniquely named item and its disposable test Keychain. It does not lock your login Keychain or
 change device settings. The Swift code has not been compiled in this Linux session.
@@ -51,3 +50,9 @@ include this directory and the two enrollment contracts. The runner uses an
 explicit disposable Keychain, without changing the login Keychain search list.
 CI wiring is not a passing Apple result; device-lock/iOS/sync evidence is still
 outside this macOS probe.
+
+The file-backed macOS Keychain does not establish data-protection Keychain
+accessibility. Missing accessibility or synchronization attributes print explicit
+`UNVERIFIED` results; present but incorrect values fail. A green CI probe proves
+only key continuity and signature/transcript compatibility, not ST01/ST02 device
+protection. The iOS/data-protection Keychain tests remain a release gate.
