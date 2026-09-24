@@ -122,6 +122,10 @@ jobs:
           npx vitest run scripts/enrollment-proof/model.test.ts
           bash scripts/enrollment-proof/run-apple.sh
 
+      - name: Verify iOS enrollment Keychain persistence
+        timeout-minutes: 10
+        run: bash scripts/enrollment-proof/run-ios.sh
+
       - name: Generate the iOS project
         working-directory: apps/mobile
         env:

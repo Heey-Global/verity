@@ -56,3 +56,19 @@ accessibility. Missing accessibility or synchronization attributes print explici
 `UNVERIFIED` results; present but incorrect values fail. A green CI probe proves
 only key continuity and signature/transcript compatibility, not ST01/ST02 device
 protection. The iOS/data-protection Keychain tests remain a release gate.
+
+## iOS simulator probe
+
+Run `bash scripts/enrollment-proof/run-ios.sh` on macOS with an available iOS 17+
+runtime. Native CI runs it in a separate ten-minute step. The harness creates its
+own simulator and app, writes a device-only, non-synchronizing Keychain item,
+terminates the app, and launches a second process to retrieve the same key.
+The second phase requires the accessibility and sync attributes (missing values
+fail), compares the saved public key, signs/verifies a challenge, rejects another
+key and verifies deletion. A result file is removed before each phase so a stale
+success cannot satisfy the next launch. Cleanup deletes the isolated simulator.
+
+This probes the simulator's iOS Keychain API, not physical-device lock/reboot,
+iCloud transport or backup extraction. Those claims still need real-device
+verification. No private key leaves the Keychain except into the test process's
+memory; the file used between launches contains only the public key.
