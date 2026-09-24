@@ -725,7 +725,7 @@ describe('AcpOpenCodeBackend', () => {
     });
   });
 
-  it('offers the gateway when an older OpenCode adapter omits its HTTP MCP capability', async () => {
+  it('offers the gateway when OpenCode omits its optional HTTP MCP capability', async () => {
     const fake = acpSpawner();
     await new AcpOpenCodeBackend().run({
       store: ctx.store,

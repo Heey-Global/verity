@@ -127,9 +127,9 @@ export interface AcpBackendProfile {
   /** Raised when a resume is asked for but the agent cannot load sessions. */
   readonly loadSessionUnsupported: string;
   readonly clientCapabilitiesMeta?: Record<string, unknown> | undefined;
-  /** This adapter is known to accept HTTP MCP descriptors even when an older
-   * release omits the optional capability object from `initialize`. An explicit
-   * `http: false` still wins. */
+  /** This adapter is known to accept HTTP MCP descriptors when it omits the
+   * optional capability object from `initialize`. An explicit `http: false`
+   * still wins. */
   readonly httpMcpWhenUnspecified?: boolean | undefined;
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */

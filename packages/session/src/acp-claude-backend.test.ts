@@ -811,7 +811,7 @@ describe('AcpClaudeBackend', () => {
     });
   });
 
-  it('offers the gateway when an older Claude adapter omits its HTTP MCP capability', async () => {
+  it('offers the gateway when Claude omits its optional HTTP MCP capability', async () => {
     const fake = acpSpawner();
     await new AcpClaudeBackend().run({
       store: ctx.store,
