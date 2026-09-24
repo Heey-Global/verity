@@ -47,6 +47,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  BackHandler,
   Linking,
   Modal,
   Pressable,
@@ -115,12 +116,28 @@ function ProjectDetailView({
   initialTab: ProjectTab;
 }) {
   const insets = useSafeAreaInsets();
+  const { theme } = useUnistyles();
   const [detail, setDetail] = useState<ProjectDetail | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
   const [creatingLoop, setCreatingLoop] = useState(false);
   const [activeTab, setActiveTab] = useState<ProjectTab>(initialTab);
+  const [settingsPage, setSettingsPage] = useState<ProjectSettingsPage | null>(null);
+  const leaveSettings = useCallback(() => {
+    if (settingsPage !== null) setSettingsPage(null);
+    else setActiveTab('dev-server');
+  }, [settingsPage]);
+  useFocusEffect(
+    useCallback(() => {
+      if (activeTab !== 'settings') return;
+      const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+        leaveSettings();
+        return true;
+      });
+      return () => subscription.remove();
+    }, [activeTab, leaveSettings]),
+  );
   const loadGeneration = useRef(0);
   const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
   const pendingProjectMutationRef = useRef<ProjectRecord | undefined>(undefined);
@@ -340,14 +357,32 @@ function ProjectDetailView({
   const lifecycleState = projectLifecycleState(project);
   return (
     <View style={styles.flex}>
-      <Stack.Screen options={{ title }} />
-      {error ? <StaleBanner message={error} onRetry={() => load()} /> : null}
-      <ProjectTabs
-        active={activeTab}
-        creating={creatingLoop}
-        onCreate={createAgentLoop}
-        onChange={setActiveTab}
+      <Stack.Screen
+        options={{ title: activeTab === 'settings' ? (settingsPage ?? 'Project settings') : title }}
       />
+      {error ? <StaleBanner message={error} onRetry={() => load()} /> : null}
+      {activeTab === 'settings' ? (
+        <Pressable
+          style={styles.settingsBack}
+          onPress={leaveSettings}
+          accessibilityRole="button"
+          accessibilityLabel={
+            settingsPage === null ? 'Back to project' : 'Back to project settings'
+          }
+        >
+          <Icon name="chevron-left" size={20} color={theme.colors.primary} />
+          <Text style={styles.settingsBackText}>
+            {settingsPage === null ? title : 'Project settings'}
+          </Text>
+        </Pressable>
+      ) : (
+        <ProjectTabs
+          active={activeTab}
+          creating={creatingLoop}
+          onCreate={createAgentLoop}
+          onChange={setActiveTab}
+        />
+      )}
       <ScrollView
         contentContainerStyle={[
           styles.content,
@@ -385,28 +420,88 @@ function ProjectDetailView({
         ) : null}
         {activeTab === 'settings' ? (
           <>
-            <EnvironmentSection
-              client={client}
-              project={project}
-              onUpdated={onProjectUpdated}
-              onReload={load}
-            />
-            <ProjectSettingsSection
-              client={client}
-              projectId={project.id}
-              settings={settings}
-              onSaved={onSettingsSaved}
-            />
-            <ProjectIntegrationsSection client={client} projectId={project.id} />
-            {project.kind === 'local' ? (
+            {settingsPage === null ? (
+              <>
+                <SettingsGroup title="Project">
+                  <SettingsListPanel>
+                    <SettingsNavRow
+                      icon="server"
+                      title="Environment"
+                      subtitle="Workspace lifecycle and updates"
+                      onPress={() => setSettingsPage('Environment')}
+                    />
+                    <SettingsNavRow
+                      icon="key"
+                      title="Connected services"
+                      subtitle="Doppler, Google Drive, and MCP"
+                      onPress={() => setSettingsPage('Connected services')}
+                    />
+                    <SettingsNavRow
+                      icon="message-square"
+                      title="Integrations"
+                      subtitle="Connected project conversations"
+                      onPress={() => setSettingsPage('Integrations')}
+                    />
+                    {project.kind === 'local' ? (
+                      <SettingsNavRow
+                        icon="github"
+                        title="GitHub"
+                        subtitle="Connect this project to a repository"
+                        onPress={() => setSettingsPage('GitHub')}
+                      />
+                    ) : null}
+                  </SettingsListPanel>
+                </SettingsGroup>
+                <SettingsGroup title="About">
+                  <SettingsListPanel>
+                    <SettingsNavRow
+                      icon="info"
+                      title="Project information"
+                      subtitle="Repository and release details"
+                      onPress={() => setSettingsPage('Project information')}
+                    />
+                    <SettingsNavRow
+                      icon="trash-2"
+                      title="Danger zone"
+                      subtitle="Delete this project"
+                      onPress={() => setSettingsPage('Danger zone')}
+                    />
+                  </SettingsListPanel>
+                </SettingsGroup>
+              </>
+            ) : null}
+            {settingsPage === 'Environment' ? (
+              <EnvironmentSection
+                client={client}
+                project={project}
+                onUpdated={onProjectUpdated}
+                onReload={load}
+              />
+            ) : null}
+            {settingsPage === 'Connected services' ? (
+              <ProjectSettingsSection
+                client={client}
+                projectId={project.id}
+                settings={settings}
+                onSaved={onSettingsSaved}
+              />
+            ) : null}
+            {settingsPage === 'Integrations' ? (
+              <ProjectIntegrationsSection client={client} projectId={project.id} />
+            ) : null}
+            {settingsPage === 'GitHub' && project.kind === 'local' ? (
               <LinkGitHubSection client={client} project={project} onUpdated={onProjectUpdated} />
             ) : null}
-            <SettingsGroup title="Project information">
-              <SettingsPanel>
-                <ProjectFields project={project} />
-              </SettingsPanel>
-            </SettingsGroup>
-            <DangerSection project={project} deleting={deleting} onDelete={deleteProject} />
+            {settingsPage === 'Project information' ? (
+              <SettingsGroup title="Project information">
+                <SettingsPanel>
+                  <ProjectFields project={project} />
+                </SettingsPanel>
+              </SettingsGroup>
+            ) : null}
+            {settingsPage === 'Danger zone' ? (
+              <DangerSection project={project} deleting={deleting} onDelete={deleteProject} />
+            ) : null}
           </>
         ) : null}
       </ScrollView>
@@ -415,6 +510,13 @@ function ProjectDetailView({
 }
 
 type ProjectTab = 'dev-server' | 'automations' | 'settings';
+type ProjectSettingsPage =
+  | 'Environment'
+  | 'Connected services'
+  | 'Integrations'
+  | 'GitHub'
+  | 'Project information'
+  | 'Danger zone';
 
 function ProjectIntegrationsSection({
   client,
@@ -464,8 +566,8 @@ function ProjectIntegrationsSection({
         ))}
         <SettingsNavRow
           icon="link"
-          title="Manage integrations"
-          subtitle="Connect rooms and manage imports"
+          title="Manage project rooms"
+          subtitle="Connect invited rooms and manage imports"
           onPress={() => router.push({ pathname: '/settings/integrations', params: { projectId } })}
         />
       </SettingsListPanel>
@@ -3649,6 +3751,16 @@ const styles = StyleSheet.create((theme) => ({
     alignSelf: 'center',
     gap: theme.spacing.xl,
   },
+  settingsBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
+  },
+  settingsBackText: { color: theme.colors.primary, fontSize: theme.text.sm },
   projectTabs: {
     flexDirection: 'row',
     alignItems: 'center',

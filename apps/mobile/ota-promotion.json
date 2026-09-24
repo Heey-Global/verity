@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.34.2",
+  "version": "1.34.5",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "c57330de74cc9e4ea3ce68bfe977a2e65eb996ba",
-  "tag": "mobile-v1.34.2",
-  "branch": "staging-mobile-v1.34.2-c57330de74cc9e4ea3ce68bfe977a2e65eb996ba",
-  "baseline": "mobile-v1.34.1",
-  "group": "61d2926f-45b4-4377-a1b8-14fa7ad39775",
+  "commit": "43943d4d36bbc59c86efad1fa7f97cc531198971",
+  "tag": "mobile-v1.34.5",
+  "branch": "staging-mobile-v1.34.5-43943d4d36bbc59c86efad1fa7f97cc531198971",
+  "baseline": "mobile-v1.34.4",
+  "group": "c00bc0c7-0e14-4324-a7b8-b5cfa1a44920",
   "notes": [
-    "restore the project reorder from build 1.34.0 (#709)"
+    "configure Matrix account in Verity settings (#714)"
   ]
 }
