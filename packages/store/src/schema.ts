@@ -1179,7 +1179,7 @@ interface KnowledgeMaintenanceQueueTable {
   source_document_id: string;
   due_at: Date;
 }
-export interface SessionMovesTable {
+interface SessionMovesTable {
   backend_ids_json: string;
   preview_restart_json: ColumnType<string | null, string | null | undefined, string | null>;
   session_id: string;
