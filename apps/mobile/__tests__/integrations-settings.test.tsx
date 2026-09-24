@@ -113,6 +113,42 @@ it('shows the server reason when saving the Matrix account fails', async () => {
   expect(
     await screen.findByText(/requires resetting its device and room bindings/),
   ).toBeOnTheScreen();
+  expect(screen.getByLabelText('Matrix homeserver URL').props.value).toBe(
+    'https://matrix.example.test',
+  );
+});
+
+it('keeps the Matrix form editable after validation fails and allows a retry', async () => {
+  const saveMatrixConfig = jest
+    .fn()
+    .mockRejectedValueOnce(new VerityApiError(400, 'Invalid integration request'))
+    .mockResolvedValueOnce(undefined);
+  mockCreateVerityClient.mockReturnValue({
+    getMatrixConfig: jest.fn().mockResolvedValue(null),
+    saveMatrixConfig,
+  } as unknown as VerityClient);
+  render(<MatrixSettingsScreen />);
+
+  fireEvent.changeText(
+    await screen.findByLabelText('Matrix homeserver URL'),
+    'https://wrong.example.test',
+  );
+  fireEvent.changeText(screen.getByLabelText('Matrix account ID'), '@verity:example.test');
+  fireEvent.changeText(screen.getByLabelText('Matrix password'), 'private-password');
+  fireEvent.press(screen.getByText('Save Matrix account'));
+  expect(await screen.findByText('Check the Matrix URL and account ID.')).toBeOnTheScreen();
+
+  fireEvent.changeText(
+    screen.getByLabelText('Matrix homeserver URL'),
+    'https://matrix.example.test',
+  );
+  fireEvent.press(screen.getByText('Save Matrix account'));
+  await waitFor(() => expect(saveMatrixConfig).toHaveBeenCalledTimes(2));
+  expect(saveMatrixConfig).toHaveBeenLastCalledWith({
+    endpoint: 'https://matrix.example.test',
+    username: '@verity:example.test',
+    password: 'private-password',
+  });
 });
 
 it('assigns an invited room from a project without showing server credentials', async () => {

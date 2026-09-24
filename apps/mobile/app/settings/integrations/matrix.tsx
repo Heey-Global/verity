@@ -32,7 +32,8 @@ function MatrixSettingsView({ client }: { client: VerityClient }) {
   const [passwordConfigured, setPasswordConfigured] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -40,9 +41,9 @@ function MatrixSettingsView({ client }: { client: VerityClient }) {
       setEndpoint(config?.endpoint ?? '');
       setUsername(config?.username ?? '');
       setPasswordConfigured(config?.passwordConfigured ?? false);
-      setError(null);
+      setLoadError(null);
     } catch (cause) {
-      setError(
+      setLoadError(
         cause instanceof VerityApiError && cause.status === 404
           ? 'Matrix settings are unavailable on this Verity server. Update the server and retry.'
           : 'Could not load Matrix settings. Check the server connection and retry.',
@@ -67,9 +68,10 @@ function MatrixSettingsView({ client }: { client: VerityClient }) {
         password,
       });
       setPassword('');
+      setSaveError(null);
       await reload();
     } catch (cause) {
-      setError(
+      setSaveError(
         cause instanceof VerityApiError
           ? cause.status === 404
             ? 'Matrix settings are unavailable on this Verity server. Update the server and retry.'
@@ -86,11 +88,11 @@ function MatrixSettingsView({ client }: { client: VerityClient }) {
   };
 
   return (
-    <SettingsScaffold title="Matrix" detail onRetry={() => void reload()}>
+    <SettingsScaffold title="Matrix" detail onRetry={loadError ? () => void reload() : undefined}>
       <SettingsGroup title="Account" description="One Matrix account serves all projects.">
         {loading ? (
           <ActivityIndicator />
-        ) : error ? null : (
+        ) : loadError ? null : (
           <SettingsPanel>
             <View>
               <TextInput
@@ -135,9 +137,9 @@ function MatrixSettingsView({ client }: { client: VerityClient }) {
           </SettingsPanel>
         )}
       </SettingsGroup>
-      {error ? (
+      {loadError || saveError ? (
         <SettingsPanel>
-          <Text style={styles.reproHint}>{error}</Text>
+          <Text style={styles.reproHint}>{loadError ?? saveError}</Text>
         </SettingsPanel>
       ) : null}
     </SettingsScaffold>
