@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.1](https://github.com/Heey-Global/verity/compare/v2.1.0...v2.1.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **models:** expose GPT-6 Sol and Luna ([#676](https://github.com/Heey-Global/verity/issues/676)) ([90ad41b](https://github.com/Heey-Global/verity/commit/90ad41b9efde003d17d0080d9b465f2053c9f70f))
+* **slides:** support uploaded and remote images ([#677](https://github.com/Heey-Global/verity/issues/677)) ([43299ba](https://github.com/Heey-Global/verity/commit/43299ba1c4049cb85c6df35d41acda38db03b632))
+
 ## [2.1.0](https://github.com/Heey-Global/verity/compare/v2.0.0...v2.1.0) (2026-09-24)
 
 
