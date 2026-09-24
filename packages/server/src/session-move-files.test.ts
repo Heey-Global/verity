@@ -155,3 +155,18 @@ it('recognizes an unstaged deletion already absent in the target', async () => {
   expect(moved.alreadyPresent).toContain('deleted');
   expect((await moveGit(target, 'status', '--porcelain')).length).toBe(0);
 });
+
+it('accepts clean target files with checkout line-ending conversion', async () => {
+  const source = await repo();
+  const target = await repo();
+  for (const root of [source, target]) {
+    await writeFile(join(root, '.gitattributes'), '*.txt text eol=crlf\n');
+    await writeFile(join(root, 'filtered.txt'), 'base\r\n');
+    await commit(root);
+  }
+  await writeFile(join(source, 'filtered.txt'), 'changed\r\n');
+  await transferMoveSnapshot(await captureMoveSnapshot(source), target);
+  expect(await readFile(join(target, 'filtered.txt'), 'utf8')).toBe('changed\r\n');
+  expect((await moveGit(target, 'show', ':filtered.txt')).toString()).toBe('base\n');
+  expect((await moveGit(target, 'diff', '--cached')).length).toBe(0);
+});

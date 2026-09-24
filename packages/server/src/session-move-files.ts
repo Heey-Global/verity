@@ -234,13 +234,18 @@ export async function transferMoveSnapshot(
   target: string,
 ): Promise<{ transferred: string[]; alreadyPresent: string[] }> {
   const targetTree = await tree(target);
+  // Git applies checkout/clean filters when deciding whether tracked files changed.
+  const dirtyPaths = new Set(
+    paths(await moveGit(target, 'diff', '--name-only', '--no-renames', '-z', 'HEAD')),
+  );
   const conflicts: string[] = [];
   const alreadyPresent: string[] = [];
   for (const file of snapshot.files) {
     const base = await gitValue(target, targetTree.get(file.path));
     const working = await workingValue(target, file.path);
     if (
-      !same(base, working) ||
+      dirtyPaths.has(file.path) ||
+      (!base && working !== null) ||
       (base && !same(base, file.base) && !same(base, file.index) && !same(base, file.working))
     )
       conflicts.push(file.path);
