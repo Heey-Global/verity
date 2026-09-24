@@ -610,6 +610,22 @@ describe('createDockerClient (#174)', () => {
     expect(body.HostConfig.Runtime).toBeUndefined();
     expect(body.HostConfig.ReadonlyRootfs).toBeUndefined();
     expect(body.HostConfig.Tmpfs).toBeUndefined();
+    expect(body.HostConfig.Annotations).toBeUndefined();
+  });
+
+  it('hands annotations to the runtime under HostConfig, where gVisor reads its mount hints', async () => {
+    // Top-level `Annotations` is not a field the Engine API knows; it would be
+    // accepted and ignored, and the sandbox would fall back to the slow shared
+    // file access without a single error anywhere.
+    const fetch = fakeFetch([
+      { match: /\/containers\/create\?name=/, method: 'POST', resp: res({ Id: 'abc123' }) },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+    const annotations = { 'dev.gvisor.spec.mount.node-modules.share': 'container' };
+    await docker.createContainer({ ...sampleSpec, annotations });
+    const body = JSON.parse(fetch.calls[0]?.init?.body ?? '{}');
+    expect(body.HostConfig.Annotations).toEqual(annotations);
+    expect(body.Annotations).toBeUndefined();
   });
 
   it('emits runtime-hardening HostConfig fields when the spec sets them (C1)', async () => {
@@ -1115,6 +1131,14 @@ describe('createDockerClient (#174)', () => {
             DeviceRequests: null,
             RestartPolicy: { Name: 'no' },
             Init: true,
+            Mounts: [
+              {
+                Type: 'volume',
+                Source: 'verity-data',
+                Target: '/run/credentials',
+                VolumeOptions: { Subpath: 'secrets/project/credentials' },
+              },
+            ],
           },
           Mounts: [
             {
@@ -1142,6 +1166,7 @@ describe('createDockerClient (#174)', () => {
       {
         type: 'bind',
         source: '/run/project/credentials',
+        subpath: 'secrets/project/credentials',
         destination: '/run/credentials',
         readWrite: false,
       },
@@ -1365,6 +1390,22 @@ describe('createDockerClient (#174)', () => {
       args: ['--platform=systrap', '--network=none'],
     });
     await expect(docker.inspectRuntime?.('missing')).resolves.toBeUndefined();
+  });
+
+  it('hostCpuCount reads the daemon CPU count from /info', async () => {
+    const docker = createDockerClient({
+      baseUrl: 'http://docker:2375/v1.41',
+      fetch: fakeFetch([{ match: /\/info$/, method: 'GET', resp: res({ NCPU: 2 }) }]),
+    });
+    await expect(docker.hostCpuCount?.()).resolves.toBe(2);
+    // A daemon that reports no usable count must read as unknown, not as zero cores:
+    // the provisioner then falls back to its own CPU count instead of clamping the
+    // quota to nothing.
+    const silent = createDockerClient({
+      baseUrl: 'http://docker:2375/v1.41',
+      fetch: fakeFetch([{ match: /\/info$/, method: 'GET', resp: res({ NCPU: 0 }) }]),
+    });
+    await expect(silent.hostCpuCount?.()).resolves.toBeUndefined();
   });
 
   it('strips a trailing slash from the base URL', async () => {
@@ -1961,6 +2002,53 @@ describe('createDockerClient network primitives (H2)', () => {
     await expect(client(fetch).ensureNetwork!('verity-proj-abc')).rejects.toBeInstanceOf(
       DockerError,
     );
+  });
+});
+
+describe('createDockerClient ensureVolume', () => {
+  const client = (fetch: ReturnType<typeof fakeFetch>) =>
+    createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
+
+  it('creates a labelled local volume and reports where the daemon put it', async () => {
+    const fetch = fakeFetch([
+      {
+        match: /\/volumes\/create/,
+        method: 'POST',
+        resp: res(
+          { Name: 'verity-node-modules-abc', Mountpoint: '/var/lib/docker/volumes/v/_data' },
+          { status: 201 },
+        ),
+      },
+    ]);
+    const result = await client(fetch).ensureVolume!('verity-node-modules-abc', {
+      labels: { 'verity.project-id': 'abc' },
+    });
+    // The mountpoint is what the gVisor hint has to name verbatim: runsc matches a
+    // hint to a mount by comparing sources, and a volume mount's source is this path.
+    expect(result).toEqual({ mountpoint: '/var/lib/docker/volumes/v/_data' });
+    expect(JSON.parse(fetch.calls[0]?.init?.body ?? '{}')).toEqual({
+      Name: 'verity-node-modules-abc',
+      Driver: 'local',
+      Labels: { 'verity.project-id': 'abc' },
+    });
+  });
+
+  it('reports no mountpoint when the daemon does not name one', async () => {
+    const fetch = fakeFetch([
+      { match: /\/volumes\/create/, method: 'POST', resp: res({ Name: 'v' }, { status: 201 }) },
+    ]);
+    await expect(client(fetch).ensureVolume!('v')).resolves.toEqual({ mountpoint: undefined });
+  });
+
+  it('throws on a failed create', async () => {
+    const fetch = fakeFetch([
+      {
+        match: /\/volumes\/create/,
+        method: 'POST',
+        resp: res({ message: 'boom' }, { ok: false, status: 500 }),
+      },
+    ]);
+    await expect(client(fetch).ensureVolume!('v')).rejects.toBeInstanceOf(DockerError);
   });
 });
 

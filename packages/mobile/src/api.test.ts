@@ -51,6 +51,110 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+describe('VerityClient Matrix integrations', () => {
+  const projectId = 'project/one';
+  const source = {
+    accountId: '@verity:example.test',
+    sourceId: '!room:example.test',
+    displayName: 'Project chat',
+    inviter: null,
+    projectId,
+    status: 'active',
+    activatedAt: '2026-09-24T12:00:00.000Z',
+    lastIngestedAt: null,
+    lastError: null,
+  };
+
+  it('reads a redacted Matrix configuration and sends credentials to the project route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({
+        config: {
+          endpoint: 'https://matrix.example.test',
+          username: '@verity:example.test',
+          passwordConfigured: true,
+        },
+      }),
+      json({ ok: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getProjectMatrixConfig(projectId)).toEqual({
+      endpoint: 'https://matrix.example.test',
+      username: '@verity:example.test',
+      passwordConfigured: true,
+    });
+    await client.saveProjectMatrixConfig(projectId, {
+      endpoint: 'https://matrix.example.test',
+      username: '@verity:example.test',
+      password: 'private-password',
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://host/projects/project%2Fone/integrations/matrix/config',
+      'http://host/projects/project%2Fone/integrations/matrix/config',
+    ]);
+    expect(calls[1]?.init?.method).toBe('PUT');
+    expect(calls[1]?.init?.body).toBe(
+      JSON.stringify({
+        endpoint: 'https://matrix.example.test',
+        username: '@verity:example.test',
+        password: 'private-password',
+      }),
+    );
+  });
+
+  it('lists, binds, pauses, and disconnects a room through integration routes', async () => {
+    const account = {
+      id: '@verity:example.test',
+      provider: 'matrix',
+      endpoint: 'https://matrix.example.test',
+      displayName: 'Matrix',
+      status: 'online',
+      lastError: null,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ accounts: [account], sources: [source] }),
+      json({ sources: [source] }),
+      json({ source }),
+      json({ ok: true }),
+      json({ ok: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listIntegrations()).toEqual({ accounts: [account], sources: [source] });
+    expect(await client.listProjectIntegrations(projectId)).toEqual([source]);
+    expect(
+      await client.bindIntegrationSource(source.accountId, source.sourceId, projectId),
+    ).toEqual(source);
+    await client.pauseIntegrationSource(source.accountId, source.sourceId, true);
+    await client.disconnectIntegrationSource(source.accountId, source.sourceId);
+    expect(calls.map((call) => [call.url, call.init?.method])).toEqual([
+      ['http://host/integrations', 'GET'],
+      ['http://host/projects/project%2Fone/integrations', 'GET'],
+      ['http://host/integrations/sources/bind', 'POST'],
+      ['http://host/integrations/sources/pause', 'POST'],
+      ['http://host/integrations/sources/disconnect', 'POST'],
+    ]);
+    expect(calls[2]?.init?.body).toBe(
+      JSON.stringify({
+        accountId: source.accountId,
+        sourceId: source.sourceId,
+        projectId,
+      }),
+    );
+    expect(calls[3]?.init?.body).toBe(
+      JSON.stringify({
+        accountId: source.accountId,
+        sourceId: source.sourceId,
+        paused: true,
+      }),
+    );
+    expect(calls[4]?.init?.body).toBe(
+      JSON.stringify({
+        accountId: source.accountId,
+        sourceId: source.sourceId,
+      }),
+    );
+  });
+});
+
 describe('VerityClient Google Drive browser', () => {
   it('encodes a Drive search query and pagination token', async () => {
     const { fetch, calls } = fakeFetch(json({ files: [], nextPageToken: 'next' }));
@@ -66,6 +170,19 @@ describe('VerityClient Google Drive browser', () => {
     expect(calls[0]?.url).toBe(
       'http://host/google-drive/files?query=project+plan&sharedWithMe=true&pageToken=page%2F2',
     );
+  });
+
+  it('lists shared drives with pagination', async () => {
+    const { fetch, calls } = fakeFetch(
+      json({ drives: [{ id: 'drive-1', name: 'Finance' }], nextPageToken: 'next' }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.listGoogleSharedDrives('page/2')).resolves.toEqual({
+      drives: [{ id: 'drive-1', name: 'Finance' }],
+      nextPageToken: 'next',
+    });
+    expect(calls[0]?.url).toBe('http://host/google-drive/drives?pageToken=page%2F2');
   });
 
   it('requests the Workspace picker and assigns its native selection', async () => {
@@ -101,6 +218,45 @@ describe('VerityClient Google Drive browser', () => {
     expect(JSON.parse(calls[2]?.init?.body as string)).toEqual({ fileId: 'deck-1' });
     expect(calls[3]?.url).toBe('http://host/sessions/s1/google-workspace/file');
     expect(calls[3]?.init?.method).toBe('DELETE');
+  });
+});
+
+describe('VerityClient Gmail session access', () => {
+  it('connects the account and toggles access for one encoded session', async () => {
+    const connection = {
+      enabled: true,
+      accountEmail: 'person@example.com',
+      clientId: 'google-client-id',
+      connected: true,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ ...connection, enabled: false, connected: false }),
+      json({ connected: true, accountEmail: 'person@example.com' }),
+      json(connection),
+      json({}),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.getSessionGmailConnection('session/1')).resolves.toMatchObject({
+      enabled: false,
+      connected: false,
+    });
+    await client.connectGmail({ code: 'code', codeVerifier: 'verifier', redirectUri: 'verity:/' });
+    await expect(client.enableSessionGmail('session/1')).resolves.toEqual(connection);
+    await client.disableSessionGmail('session/1');
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/session%2F1/gmail',
+      'http://host/gmail/connect',
+      'http://host/sessions/session%2F1/gmail',
+      'http://host/sessions/session%2F1/gmail',
+    ]);
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
   });
 });
 

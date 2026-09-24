@@ -4,7 +4,7 @@ export const DEFAULT_RUNTIME_DIR: string;
 export const DEFAULT_SCRIPT_SANDBOX_PATH: string;
 export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR: string;
 export type ScriptSandboxProbe = { available: true } | { available: false; reason: string };
-/** Run `verity-script-sandbox --probe`: whether this kernel enforces its Landlock policy. */
+/** Run `verity-script-sandbox --probe`: whether this kernel enforces its filesystem policy. */
 export function probeScriptSandbox(
   helperPath?: string,
   timeoutMs?: number,
@@ -184,7 +184,7 @@ export function handleSupervisorRequest(
 ): Promise<Record<string, unknown>>;
 export function createTurnAdopter(
   runtimeDir: string,
-  options?: { adoptionPollMs?: number; adoptedTurns?: Set<string> },
+  options?: { adoptionPollMs?: number; unresolvedRetryMs?: number; adoptedTurns?: Set<string> },
 ): {
   adopt(): Promise<void>;
   close(): Promise<void>;
@@ -204,6 +204,8 @@ export function runSupervisor(options?: {
   ) => import('node:child_process').ChildProcess;
   shutdownGraceMs?: number;
   adoptionPollMs?: number;
+  /** How often a turn whose boot-time probe was undecided is probed again. */
+  unresolvedRetryMs?: number;
   brokerSocket?: string;
   maxConcurrentStarts?: number;
   maxQueuedStarts?: number;

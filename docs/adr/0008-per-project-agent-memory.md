@@ -72,7 +72,7 @@ of that reuse are discussed under "Security" below):
 1. New seed binary `agent-seed/bin/verity-memory` with `append "<text>"` (read-back is
    the operator's job in Project Settings, so no `show` subcommand ships),
    mirroring `agent-seed/bin/verity-gh-token`: it reads the per-container capability from
-   `VERITY_GH_TOKEN_CAPABILITY_FILE` and `curl`s an internal endpoint. `PATH` already
+   `VERITY_GH_BROKER_CAPABILITY_FILE` and `curl`s an internal endpoint. `PATH` already
    includes `/opt/agent-seed/bin`, so it is available in every sandbox and every backend.
 2. New internal route `POST /internal/project/memory` on the **non-published internal
    listener**, added to `preAuthPaths` (`packages/server/src/server.ts:2182`) similarly to

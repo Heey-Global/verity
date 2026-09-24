@@ -15,14 +15,13 @@ export interface AttachMenuHandlers {
   onPickPhotos: () => void;
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
-  onPickGoogleDrive: () => void;
-  onPickGoogleWorkspace: () => void;
+  onConnectGmail: () => void;
 }
 
 /**
  * The menu groups actions by what they do. Content sources can feed the current
- * conversation and Project Knowledge, while Workspace opens a live-synced
- * document for editing. Service names alone do not communicate that distinction.
+ * conversation and Project Knowledge, while connected services grant the
+ * current session access to an external account.
  *
  * `meetingAudioEnabled` defaults to the build-time flag; callers pass it only in
  * tests.
@@ -32,22 +31,22 @@ export function attachMenuRows(
   { meetingAudioEnabled = MEETING_AUDIO_ENABLED }: { meetingAudioEnabled?: boolean } = {},
 ): AttachMenuRow[] {
   return [
-    { section: 'Add content' },
     { icon: 'camera', label: 'Take photo', onPress: handlers.onCapturePhoto },
     { icon: 'image', label: 'Choose photo', onPress: handlers.onPickPhotos },
     { icon: 'file', label: 'Choose file', onPress: handlers.onPickFiles },
-    { divider: true },
     ...(meetingAudioEnabled
-      ? [{ icon: 'mic' as IconName, label: 'Meeting audio', onPress: handlers.onPickMeetingAudio }]
+      ? [
+          { divider: true } as const,
+          { icon: 'mic' as IconName, label: 'Meeting audio', onPress: handlers.onPickMeetingAudio },
+        ]
       : []),
-    { icon: 'cloud', label: 'Google Drive', onPress: handlers.onPickGoogleDrive },
     { divider: true },
-    { section: 'Connect & edit' },
+    { section: 'Connect' },
     {
-      icon: 'grid',
-      label: 'Google Workspace',
-      detail: 'Live synced',
-      onPress: handlers.onPickGoogleWorkspace,
+      icon: 'mail',
+      label: 'Gmail',
+      detail: 'Read & draft',
+      onPress: handlers.onConnectGmail,
     },
   ];
 }

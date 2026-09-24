@@ -2188,8 +2188,8 @@ export interface SupervisorRunnerRecoveryOptions {
   timeoutMs?: number;
 }
 
-/** Stage 5a discovery adapter. It is deliberately not production-wired until the
- * supervisor owns fresh turn launch (Stage 5b). */
+/** Discovery adapter the conductor's startup recovery and liveness sweep probe a
+ * `running` turn marker through (wired in `embedded.ts`). */
 export class SupervisorRunnerRecovery implements RunnerRecovery {
   constructor(private readonly options: SupervisorRunnerRecoveryOptions) {}
 

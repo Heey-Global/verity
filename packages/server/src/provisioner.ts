@@ -55,7 +55,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpus, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type Kysely } from 'kysely';
@@ -164,14 +164,30 @@ const execFileAsync = promisify(execFile);
 // GLOBAL OOM that thrashes the whole box unreachable (observed in prod: one
 // sandbox process ballooned and took the dev-server down). Capping each sandbox
 // keeps an OOM contained to that container's cgroup — the box stays healthy.
-// Safe-by-default for a modest single-host install; override per-host with
-// VERITY_SANDBOX_MEMORY (main.ts) where a higher/lower ceiling fits the
-// available RAM.
-const DEFAULT_SANDBOX_MEMORY_BYTES = 4 * 1024 * 1024 * 1024; // 4 GiB
+//
+// Sized for gVisor, the default project runtime. Under runsc the whole guest is
+// one Sentry process whose memory is a host shmem file charged to this cgroup,
+// and there is no guest OOM killer: when the ceiling is hit the HOST kills the
+// Sentry, and every session of the project dies with it rather than one runaway
+// build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
+// shmem), so the ceiling has to fit all of a project's concurrent turns, not a
+// single process. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
+// where the available RAM differs.
+export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
+// Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
+// Off by default; see the `memorySwapBytes` comment at the container spec.
+export const DEFAULT_SANDBOX_SWAP_BYTES = 0;
 // Keep CPU-heavy builds from starving the control plane and neighbouring
-// sandboxes. Two cores matches the reference Compose deployment and remains
-// overridable through VERITY_SANDBOX_CPUS for larger or smaller hosts.
-const DEFAULT_SANDBOX_NANO_CPUS = 2 * 1e9;
+// sandboxes. Four cores is the ceiling one project may run out to; the CPU
+// weight below still ranks it under the control plane when cores are contended.
+// Overridable through VERITY_SANDBOX_CPUS for larger or smaller hosts.
+export const DEFAULT_SANDBOX_NANO_CPUS = 4 * 1e9;
+
+/** `nanoCpus` capped at `hostCpus` whole cores. `hostCpus` of 0 means the count is
+ *  unknown, and the request is passed through for the daemon to judge. */
+export function clampNanoCpusToHost(nanoCpus: number, hostCpus: number): number {
+  return hostCpus > 0 ? Math.min(nanoCpus, hostCpus * 1e9) : nanoCpus;
+}
 // Relative CPU weight per project sandbox (HostConfig.CpuShares). The ceiling
 // above is per-container and says nothing about how many of them run at once, so
 // on a host with more projects than cores every sandbox's ceiling is real and
@@ -212,7 +228,7 @@ const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
 /** In-container path of the read-only GitHub-token-broker capability file. The
  *  credential helper / gh wrapper read it to authenticate to the token broker. */
-const GH_TOKEN_CAPABILITY_FILE = '/run/verity/gh-token-capability';
+const GH_BROKER_CAPABILITY_FILE = '/run/verity/gh-token-capability';
 
 /** In-container path of the read-only PUBLIC SSH signing key — what
  *  `user.signingkey` points at. The `/home/dev/.ssh` spelling is mounted in home
@@ -614,14 +630,22 @@ export interface ProvisionerOptions {
    *  a project whose devcontainer legitimately needs more. */
   /** Max PIDs per sandbox (fork-bomb guard). Default 512. */
   sandboxPidsLimit?: number | undefined;
-  /** Hard memory ceiling per sandbox, in bytes. Default 4 GiB. */
+  /** Hard memory ceiling per sandbox, in bytes. Default 6 GiB. */
   sandboxMemoryBytes?: number | undefined;
-  /** CPU quota per sandbox in nano-CPUs (1e9 = one core). Default 2 cores. */
+  /** Swap a sandbox may use beyond {@link sandboxMemoryBytes}, in bytes. Default 0
+   *  (swap disabled). Only takes effect on a host that has swap configured. */
+  sandboxSwapBytes?: number | undefined;
+  /** CPU quota per sandbox in nano-CPUs (1e9 = one core). Default 4 cores. */
   sandboxNanoCpus?: number | undefined;
   /** Relative CPU weight per sandbox, deciding who yields once those per-container
    *  quotas oversubscribe the host. Default 512 — below the control plane and the
    *  relays, which stay at the daemon default. 0 opts out. */
   sandboxCpuShares?: number | undefined;
+  /** CPUs on the Docker host, which bounds {@link sandboxNanoCpus}. Unset → the
+   *  daemon's own count (`DockerClient.hostCpuCount`), falling back to this
+   *  process's `os.cpus()` when the daemon cannot say. A result of 0 (unknown)
+   *  leaves the quota unclamped. Injectable for tests. */
+  hostCpuCount?: (() => number) | undefined;
   /** Capabilities to add back on top of the default `CapDrop: ALL` — for a project
    *  that genuinely needs one (e.g. `NET_BIND_SERVICE`). */
   sandboxCapAdd?: string[] | undefined;
@@ -656,6 +680,7 @@ export interface ProvisionerOptions {
   git?: GitRunner;
   /** Optional filesystem probe seams (tests). */
   isDirectory?: (path: string) => boolean;
+  isFile?: (path: string) => boolean;
   localConfigState?: (clonePath: string) => LocalConfigState;
   /** Devcontainer-build spawner (ADR 0003 R3.1). When set together with
    *  {@link dockerHostForBuild}, a project whose clone has a `.devcontainer/`
@@ -913,6 +938,51 @@ export function devcontainerImageTag(owner: string, repo: string, hash12: string
  *  image" action). It cannot import it — the mobile core does not depend on the
  *  server — so the value is pinned by a test here. Change one, change all three. */
 export const DEVCONTAINER_IMAGE_PREFIX = 'verity-devc-';
+
+/** Where a Node project's dependencies are mounted from their own volume. */
+export const NODE_MODULES_TARGET = '/work/node_modules';
+
+function hasMountAtTarget(
+  binds: readonly string[],
+  volumeMounts: readonly VolumeMount[],
+  target: string,
+): boolean {
+  return (
+    binds.some((bind) => bind.split(':')[1] === target) ||
+    volumeMounts.some((mount) => mount.target === target)
+  );
+}
+
+/**
+ * The per-project volume behind {@link NODE_MODULES_TARGET}.
+ *
+ * A named volume rather than a subpath of the data volume, because the point is
+ * the gVisor mount hint, and runsc matches a hint to a mount by comparing its
+ * source path verbatim. A named volume's source is its fixed daemon mountpoint;
+ * a subpath mount's is a per-start safepath nobody can name in advance.
+ */
+export function projectNodeModulesVolumeName(projectId: string): string {
+  return projectNetworkName(projectId).replace(/^verity-proj-/, 'verity-node-modules-');
+}
+
+/**
+ * gVisor mount hint giving the sandbox exclusive access to its node_modules
+ * volume (`runsc/boot/mount_hints.go`: `share=container` maps to
+ * `FileAccessExclusive`). Shared access revalidates every cached dentry against
+ * the host on each lookup, which is what made dependency-heavy commands several
+ * times slower under runsc than runc; exclusive access lets the Sentry trust its
+ * own cache. That is sound only because nothing outside this container writes
+ * the volume — the Server reads workspace packages from the clone, never from
+ * here. A hint missing any field is ignored by runsc, so all three go together.
+ */
+export function nodeModulesMountHint(mountpoint: string): Record<string, string> {
+  const prefix = 'dev.gvisor.spec.mount.node-modules';
+  return {
+    [`${prefix}.source`]: mountpoint,
+    [`${prefix}.type`]: 'bind',
+    [`${prefix}.share`]: 'container',
+  };
+}
 
 /** Docker network name for a project's isolated sandbox network (security review
  *  H2). Docker network names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]*`; sanitize the
@@ -2101,6 +2171,7 @@ export class ProvisionerImpl implements Provisioner {
   private readonly git: GitRunner;
   private readonly containerCommand: ContainerCommandRunner;
   private readonly isDir: (p: string) => boolean;
+  private readonly isFile: (p: string) => boolean;
   private readonly localConfigState: (clonePath: string) => LocalConfigState;
   /** In-process single-flight gate: at most ONE provisioning run per project.
    *  The DB row lock only serializes the short state transitions — the long
@@ -2325,6 +2396,15 @@ export class ProvisionerImpl implements Provisioner {
       ((p) => {
         try {
           return statSync(p).isDirectory();
+        } catch {
+          return false;
+        }
+      });
+    this.isFile =
+      opts.isFile ??
+      ((p) => {
+        try {
+          return statSync(p).isFile();
         } catch {
           return false;
         }
@@ -2943,14 +3023,14 @@ export class ProvisionerImpl implements Provisioner {
                 rewriteMountedSecretFile(
                   join(this.opts.gitSecretRoot, 'git', `signing_broker_token.${oldSigningDigest}`),
                   activation.signingCapability,
-                  0o644,
+                  0o600,
                 );
               }
-              if (mountedDestinations.has(GH_TOKEN_CAPABILITY_FILE)) {
+              if (mountedDestinations.has(GH_BROKER_CAPABILITY_FILE)) {
                 rewriteMountedSecretFile(
                   join(this.opts.gitSecretRoot, 'git', `gh_token_capability.${project.id}`),
                   activation.githubCapability,
-                  0o644,
+                  0o600,
                 );
               }
               if (
@@ -4634,6 +4714,23 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
+  /** The daemon's CPU count, cached once it has answered: a host does not gain or
+   *  lose cores under a running Server often enough to ask on every create. A
+   *  failed query is not cached, and falls back to `os.cpus()` rather than failing
+   *  the create over a limit that only exists to keep the create valid. */
+  private daemonCpuCount: number | null | undefined; // null: answered, no count
+  private async resolveHostCpuCount(): Promise<number> {
+    if (this.opts.hostCpuCount !== undefined) return this.opts.hostCpuCount();
+    if (this.daemonCpuCount === undefined && this.opts.docker.hostCpuCount !== undefined) {
+      try {
+        this.daemonCpuCount = (await this.opts.docker.hostCpuCount()) ?? null;
+      } catch {
+        // Not cached: the next create asks again.
+      }
+    }
+    return this.daemonCpuCount ?? cpus().length;
+  }
+
   private async runContainerPhaseAttempt(
     project: ProjectRecord,
     forcePull = false,
@@ -4897,7 +4994,7 @@ export class ProvisionerImpl implements Provisioner {
             `signing_broker_token.${signingBrokerTokenHash(signingBrokerToken)}`,
             signingBrokerToken,
             'git',
-            0o644,
+            0o600,
           )
         : undefined;
     const signingBrokerBinds =
@@ -4938,19 +5035,19 @@ export class ProvisionerImpl implements Provisioner {
         `gh_token_capability.${project.id}`,
         capability,
         'git',
-        0o644,
+        0o600,
       );
     }
     const ghTokenBrokerBinds =
       ghTokenCapabilityPath !== undefined
-        ? [`${ghTokenCapabilityPath}:${GH_TOKEN_CAPABILITY_FILE}:ro`]
+        ? [`${ghTokenCapabilityPath}:${GH_BROKER_CAPABILITY_FILE}:ro`]
         : [];
     const ghTokenBrokerEnv =
       ghTokenCapabilityPath !== undefined
         ? [
             `VERITY_GH_TOKEN_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/github/token`,
             `VERITY_GH_TOKEN_DOCKER_CONTAINER=${project.containerName}`,
-            `VERITY_GH_TOKEN_CAPABILITY_FILE=${GH_TOKEN_CAPABILITY_FILE}`,
+            `VERITY_GH_BROKER_CAPABILITY_FILE=${GH_BROKER_CAPABILITY_FILE}`,
             // Per-project agent memory broker (ADR 0008). Same internal listener and
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
@@ -5038,7 +5135,7 @@ export class ProvisionerImpl implements Provisioner {
         `VERITY_CODEX_EGRESS_AUTHORITY=${new URL(canonicalCodexGatewayUrl).host}`,
         `VERITY_CLAUDE_EGRESS_CA=${CLAUDE_EGRESS_CA_FILE}`,
         `VERITY_CLAUDE_EGRESS_CERT=${CLAUDE_EGRESS_CERT_FILE}`,
-        `VERITY_CLAUDE_EGRESS_KEY=${CLAUDE_EGRESS_KEY_FILE}`,
+        `VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=${CLAUDE_EGRESS_KEY_FILE}`,
         ...(effectiveClaudeServerName !== undefined
           ? [`VERITY_CLAUDE_EGRESS_SERVERNAME=${effectiveClaudeServerName}`]
           : []),
@@ -5196,14 +5293,55 @@ export class ProvisionerImpl implements Provisioner {
       this.opts.dataVolume,
       this.opts.dataVolumeRoot,
     );
-    // Bound once, then used for BOTH `Memory` and `MemorySwap` below, so the two can
-    // never drift apart when someone changes where the ceiling comes from.
+    // Bound once, then used for BOTH `Memory` and `MemorySwap` below, so the swap
+    // allowance cannot drift away from the ceiling it is added to when someone
+    // changes where the ceiling comes from.
     const sandboxMemoryBytes = this.opts.sandboxMemoryBytes ?? DEFAULT_SANDBOX_MEMORY_BYTES;
+    const hostCpus = await this.resolveHostCpuCount();
+    // Dependencies get their own volume (see nodeModulesMountHint). Only on the
+    // Runner runtime path, because its root stack start is what hands the fresh,
+    // root-owned volume to the agent and starts the one-time install into it;
+    // without that the mount would be an empty directory the agent cannot write.
+    // And only for an npm lockfile, the one case that install can fill unattended:
+    // the volume starts empty and shadows whatever the clone held, so a yarn or
+    // pnpm project recreated onto it would lose working dependencies until someone
+    // noticed and installed by hand.
+    let nodeModules: { volume: string; annotations: Record<string, string> } | undefined;
+    if (
+      runnerRuntimePath !== undefined &&
+      this.opts.docker.ensureVolume !== undefined &&
+      this.isFile(join(dirs.clonePath, 'package-lock.json')) &&
+      !hasMountAtTarget(specBinds, volumeMounts, NODE_MODULES_TARGET)
+    ) {
+      const volume = projectNodeModulesVolumeName(project.id);
+      try {
+        const { mountpoint } = await this.opts.docker.ensureVolume(volume, {
+          labels: { [PROJECT_ID_LABEL]: project.id },
+        });
+        nodeModules = {
+          volume,
+          annotations: mountpoint === undefined ? {} : nodeModulesMountHint(mountpoint),
+        };
+      } catch (cause) {
+        const message = `node_modules volume could not be created: ${failureMessage(cause)}`;
+        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        throw new ProvisioningError(message, cause);
+      }
+    }
+    const sandboxVolumeMounts: VolumeMount[] = [
+      ...volumeMounts,
+      ...(nodeModules !== undefined
+        ? [{ volume: nodeModules.volume, target: NODE_MODULES_TARGET }]
+        : []),
+    ];
     const spec: ContainerSpec = {
       image: image.imageRef,
       name: dirs.containerName,
       binds: specBinds,
-      ...(volumeMounts.length > 0 ? { volumeMounts } : {}),
+      ...(sandboxVolumeMounts.length > 0 ? { volumeMounts: sandboxVolumeMounts } : {}),
+      ...(nodeModules !== undefined && Object.keys(nodeModules.annotations).length > 0
+        ? { annotations: nodeModules.annotations }
+        : {}),
       labels: {
         [PROJECT_ID_LABEL]: project.id,
         ...(effectiveClaudeGatewayUrl === undefined
@@ -5335,24 +5473,35 @@ export class ProvisionerImpl implements Provisioner {
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
       pidsLimit: this.opts.sandboxPidsLimit ?? 512,
       memoryBytes: sandboxMemoryBytes,
-      // Pin the combined memory+swap ceiling TO the memory ceiling, which is how a
-      // cgroup is told the container may not swap. Leaving it out is not neutral:
-      // Docker then grants twice the memory limit as the combined ceiling, so every
-      // sandbox silently gained an extra 4 GiB of swap allowance (observed in prod:
-      // mem=4G/memswap=8G on all five sandboxes, against 4 GiB of host swap in total).
-      // The effect is the opposite of what the memory cap is for — a runaway test run
-      // does not OOM inside its own cgroup where the session can see it and report it,
-      // it swaps, gets orders of magnitude slower, never finishes, and drags every
-      // other container on the host down with it through the shared swap device.
-      // Raise VERITY_SANDBOX_MEMORY if a project legitimately needs more headroom;
-      // do not give the swap back.
-      memorySwapBytes: sandboxMemoryBytes,
+      // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
+      // from the memory ceiling: equal to it means no swap. Leaving it out is not
+      // neutral: Docker then grants twice the memory limit as the combined ceiling,
+      // so every sandbox silently gained a swap allowance as large as its memory
+      // (observed in prod: mem=4G/memswap=8G on all five sandboxes, against 4 GiB of
+      // host swap in total). Unasked-for swap turns a runaway test run into one that
+      // pages, gets orders of magnitude slower, never finishes, and drags every
+      // other container down through the shared swap device.
+      //
+      // VERITY_SANDBOX_SWAP opts in deliberately, as an amount on top of the memory
+      // ceiling. Under gVisor that is the one thing that can spare a Sandbox from the
+      // host OOM killer, which has no process to pick but the Sentry: the guest's
+      // shmem-backed memory can be paged out instead. It only helps if the host has
+      // swap, and that swap is shared by every container on the host.
+      memorySwapBytes:
+        sandboxMemoryBytes + (this.opts.sandboxSwapBytes ?? DEFAULT_SANDBOX_SWAP_BYTES),
       // No core dumps. `kernel.core_pattern` is a shared host setting and is commonly
       // a relative filename, in which case the kernel writes the dump into the crashing
       // process's cwd — for an agent that is the session worktree, hundreds of MB per
       // crashed worker into a git checkout on a disk that is already the scarce resource.
       ulimits: [{ name: 'core', soft: 0, hard: 0 }],
-      nanoCpus: this.opts.sandboxNanoCpus ?? DEFAULT_SANDBOX_NANO_CPUS,
+      // Clamped to the host: dockerd refuses a create whose `NanoCpus` exceeds its
+      // CPU count, so an unclamped 4-core default would stop every sandbox on a
+      // 2-core host from being provisioned, repaired, or updated. A smaller host
+      // simply gets all of its cores as the ceiling.
+      nanoCpus: clampNanoCpusToHost(
+        this.opts.sandboxNanoCpus ?? DEFAULT_SANDBOX_NANO_CPUS,
+        hostCpus,
+      ),
       // The ceiling above bounds ONE sandbox; this decides which container yields
       // when several of them, plus the control plane, want the host's cores at the
       // same moment. Without it every container shares one flat default weight and
@@ -5485,7 +5634,7 @@ export class ProvisionerImpl implements Provisioner {
             ? [`test -r ${SSH_SIGNING_PUBLIC_KEY_FILE}`]
             : [];
           if (ghTokenCapabilityPath !== undefined) {
-            readinessChecks.unshift(`test -r ${GH_TOKEN_CAPABILITY_FILE}`);
+            readinessChecks.unshift(`test -r ${GH_BROKER_CAPABILITY_FILE}`);
           }
           if (readinessChecks.length > 0) {
             await this.containerCommand({
@@ -6028,6 +6177,12 @@ export class DeprovisionerImpl implements Deprovisioner {
           if (this.isDir(runtimePath)) this.removeDir(runtimePath);
         });
       }
+      // After container-remove above: the daemon refuses to remove a volume a
+      // container still references. Named, so the disk GC never reclaims it —
+      // this is its only way out.
+      await bestEffort('node-modules-volume-remove', () =>
+        this.docker.removeVolume?.(projectNodeModulesVolumeName(project.id)),
+      );
     }
 
     // Every authority the sandbox held, revoked together. Each call is STARTED

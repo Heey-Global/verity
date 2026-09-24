@@ -35,6 +35,12 @@ read-only except for `/knowledge/insights`. Shared files are available read-only
 file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool
 or Wiki maintenance flow.
 
+Agents create or revise concise insights without asking first when their work produces a
+durable, reusable conclusion grounded in project sources. They prefer updating an existing
+insight, cite relevant source paths, and mark uncertainty. They ask before preserving sensitive
+personal information or a disputed interpretation. Routine progress, transient state,
+unsupported speculation, and secrets do not belong in insights.
+
 Binary imports are processed into Markdown under a hidden `.text/` directory,
 mirroring the source path. For example, `sources/documents/offer.pdf` produces
 `.text/sources/documents/offer.pdf.md`. The app hides this implementation directory and

@@ -40,8 +40,8 @@ export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR = 'worktree script isolation is 
 const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
 
 /**
- * Whether the kernel under this container enforces the script sandbox's Landlock
- * policy. Kept in step with `probeScriptSandbox` in verity-agent-spawn-broker.mjs;
+ * Whether the kernel under this container enforces the script sandbox's
+ * filesystem policy. Kept in step with `probeScriptSandbox` in verity-agent-spawn-broker.mjs;
  * the two are separate installed executables and cannot share a module.
  *
  * The supervisor asks for itself rather than trusting a file the launcher left
@@ -2181,13 +2181,25 @@ export function createTurnAdopter(runtimeDir, options = {}) {
   let closed = false;
   let polling = false;
 
-  const probe = async (turnId, initial) => {
+  // `claim` pins a retried probe to the claim it was undecided about. Nothing removes
+  // turn directories today, but if one were removed and the id claimed afresh, that
+  // new claim would be this supervisor's own, and settling or adopting it here would
+  // end a turn whose worker has simply not taken its lock yet. Rechecked once the lock
+  // is held (or found busy) to narrow that window, not to close it: a recreated
+  // directory has a different lock file than the one held here.
+  const probe = async (turnId, initial, claim) => {
     const lockPath = join(runtimeDir, 'turns', turnId, 'worker.lock');
+    const isOtherClaim = async () => {
+      if (claim === undefined) return false;
+      const state = await readTurnState(runtimeDir, turnId);
+      return state !== undefined && !sameClaim(state, claim);
+    };
     let lock;
     try {
       lock = await acquireFileLock(lockPath);
     } catch (error) {
       if (!isLockBusy(error)) return 'uncertain';
+      if (await isOtherClaim()) return 'gone';
       if (initial) {
         const state = await readTurnState(runtimeDir, turnId);
         if (state?.status === 'claimed') {
@@ -2200,6 +2212,7 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       return 'live';
     }
     try {
+      if (await isOtherClaim()) return 'gone';
       try {
         await settleMissingWorkerTurn(runtimeDir, turnId);
       } catch {
@@ -2211,8 +2224,24 @@ export function createTurnAdopter(runtimeDir, options = {}) {
     }
   };
 
+  // Turns whose boot-time probe could not decide. Kept apart from `adopted`, which
+  // authorizes control over a LIVE worker: an undecided turn must not gain that, but it
+  // must not be dropped either. Dropping it left its state `running` with a stale
+  // `control.sock` beside it after a whole-Sandbox kill — which the Server reads as a
+  // live Runner, so the turn badged `running` with nothing left to ever settle it.
+  // Retried on a slower cadence than the adopted poll: each probe forks a `flock`, and
+  // what keeps a turn undecided (a corrupt state file) can persist indefinitely.
+  const unresolved = new Map();
+  const unresolvedRetryMs = options.unresolvedRetryMs ?? 5000;
+  let nextUnresolvedAt = 0;
+  const exists = (turnId) =>
+    lstat(join(runtimeDir, 'turns', turnId)).then(
+      () => true,
+      (error) => error?.code !== 'ENOENT',
+    );
+
   const schedule = () => {
-    if (closed || adopted.size === 0 || timer !== undefined) return;
+    if (closed || (adopted.size === 0 && unresolved.size === 0) || timer !== undefined) return;
     timer = setTimeout(() => {
       timer = undefined;
       void poll();
@@ -2227,6 +2256,32 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       for (const turnId of [...adopted]) {
         const disposition = await probe(turnId, false).catch(() => 'uncertain');
         if (disposition === 'dead') adopted.delete(turnId);
+      }
+      const retryUnresolved = Date.now() >= nextUnresolvedAt;
+      if (retryUnresolved) nextUnresolvedAt = Date.now() + unresolvedRetryMs;
+      // Boot-mode probes stay safe after boot: every unresolved turn was claimed under
+      // an earlier supervisor's `runnerInstanceId`, so `claimTurn` answers a retried
+      // start for it as a runner-instance mismatch — this supervisor never launches a
+      // worker for it, and no fresh claim can be caught before its worker lock.
+      for (const turnId of retryUnresolved ? [...unresolved.keys()] : []) {
+        if (closed) break;
+        // Something else may have finished the turn meanwhile, or its directory may be
+        // gone. A missing lock never opens again, so probing alone would keep the
+        // turn here for the life of this supervisor.
+        const claim = unresolved.get(turnId);
+        const current = await readTurnState(runtimeDir, turnId).catch(() => null);
+        const finished =
+          current === undefined
+            ? !(await exists(turnId))
+            : current !== null && (current.status === 'settled' || !sameClaim(current, claim));
+        if (finished) {
+          unresolved.delete(turnId);
+          continue;
+        }
+        const disposition = await probe(turnId, true, claim).catch(() => 'uncertain');
+        if (disposition === 'uncertain') continue;
+        unresolved.delete(turnId);
+        if (disposition === 'live') adopted.add(turnId);
       }
     } finally {
       polling = false;
@@ -2243,6 +2298,12 @@ export function createTurnAdopter(runtimeDir, options = {}) {
         if (state.workerLock !== true) continue;
         const disposition = await probe(state.turnId, true).catch(() => 'uncertain');
         if (disposition === 'live') adopted.add(state.turnId);
+        else if (disposition === 'uncertain') {
+          unresolved.set(state.turnId, {
+            runnerInstanceId: state.runnerInstanceId,
+            startCommandId: state.startCommandId,
+          });
+        }
       }
       schedule();
     },
@@ -2252,8 +2313,17 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       timer = undefined;
       while (polling) await new Promise((resolvePoll) => setTimeout(resolvePoll, 1));
       adopted.clear();
+      unresolved.clear();
     },
   };
+}
+
+function sameClaim(state, claim) {
+  return (
+    state != null &&
+    state.runnerInstanceId === claim.runnerInstanceId &&
+    state.startCommandId === claim.startCommandId
+  );
 }
 
 export async function listTurns(runtimeDir) {
@@ -2372,7 +2442,7 @@ export async function runSupervisor(options = {}) {
     (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
   if (!scriptIsolation.available) {
     // The Runner still starts: agent turns, brokered HTTP and plain trusted CLI
-    // commands do not depend on Landlock. Only the entry-script paths are refused.
+    // commands do not depend on filesystem isolation. Only the entry-script paths are refused.
     process.stderr.write(
       `verity-runner-supervisor: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
     );

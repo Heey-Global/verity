@@ -453,7 +453,7 @@ async function main() {
   const [ca, cert, key] = await Promise.all([
     readFile(required('VERITY_CLAUDE_EGRESS_CA'), 'utf8'),
     readFile(required('VERITY_CLAUDE_EGRESS_CERT'), 'utf8'),
-    readFile(required('VERITY_CLAUDE_EGRESS_KEY'), 'utf8'),
+    readFile(required('VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE'), 'utf8'),
   ]);
   const connector = await runEgressConnector({
     port: required('VERITY_CLAUDE_CONNECTOR_PORT'),

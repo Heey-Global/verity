@@ -370,8 +370,9 @@ export type SandboxUpdate = z.infer<typeof sandboxUpdateSchema>;
 /** Whether the project's recorded runner-boundary attestation was made against
  *  the toolkit this Server ships (`packages/server/src/toolkit-drift.ts`).
  *
- *  `unknown` is NOT a synonym for `matches` — it means the comparison could not
- *  be made at all. `carrier` decides the remedy and is the reason the two
+ *  Current servers send `null` rather than `unknown` when no comparison could
+ *  be made; `unknown` stays accepted so an older server's list still parses,
+ *  and it is NOT a synonym for `matches`. `carrier` decides the remedy and is the reason the two
  *  populations are never merged into one number: a `devcontainer` image is
  *  rebuilt and re-attested by re-provisioning, while a `base-image` project
  *  needs a new base image, which no Verity action produces. */
@@ -451,6 +452,8 @@ export const projectSettingsSchema = z.object({
   // session's runtime system prompt. Optional so a producer predating the field is
   // tolerated; `null` when unset.
   memory: z.string().nullable().optional(),
+  googleDriveFolderId: z.string().nullable().optional(),
+  googleDriveFolderName: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -828,6 +831,8 @@ export const driveFileSchema = z.object({
   size: z.string().optional(),
   iconLink: z.string().optional(),
   canEdit: z.boolean().optional(),
+  parents: z.array(z.string()).optional(),
+  webViewLink: z.string().optional(),
 });
 export type DriveFile = z.infer<typeof driveFileSchema>;
 
@@ -842,10 +847,26 @@ export const driveFileListSchema = z.object({
 });
 export type DriveFileList = z.infer<typeof driveFileListSchema>;
 
+export const sharedDriveSchema = z.object({ id: z.string(), name: z.string() });
+export type SharedDrive = z.infer<typeof sharedDriveSchema>;
+export const sharedDriveListSchema = z.object({
+  drives: z.array(sharedDriveSchema),
+  nextPageToken: z.string().optional(),
+});
+export type SharedDriveList = z.infer<typeof sharedDriveListSchema>;
+
 const googleDriveConnectResultSchema = z.object({
   connected: z.literal(true),
   accountEmail: z.string().nullable(),
 });
+
+const gmailSessionConnectionSchema = z.object({
+  enabled: z.boolean(),
+  accountEmail: z.string().nullable(),
+  clientId: z.string().nullable(),
+  connected: z.boolean(),
+});
+export type GmailSessionConnection = z.infer<typeof gmailSessionConnectionSchema>;
 
 export const googleDriveImportResultSchema = z.object({
   root: z.literal('knowledge'),
@@ -1767,7 +1788,108 @@ const knowledgeSourceBundleSchema = z.object({
   ),
 });
 
+const integrationAccountSchema = z.object({
+  id: z.string(),
+  provider: z.literal('matrix'),
+  endpoint: z.string(),
+  displayName: z.string(),
+  status: z.string(),
+  lastError: z.string().nullable(),
+});
+const integrationSourceSchema = z.object({
+  accountId: z.string(),
+  sourceId: z.string(),
+  displayName: z.string(),
+  inviter: z.string().nullable(),
+  projectId: z.string().nullable(),
+  status: z.enum(['pending', 'active', 'paused']),
+  activatedAt: z.string().nullable(),
+  lastIngestedAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+});
+export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
+export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
+
 export class VerityClient {
+  async getProjectMatrixConfig(
+    projectId: string,
+  ): Promise<{ endpoint: string; username: string; passwordConfigured: boolean } | null> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/integrations/matrix/config`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        config: z
+          .object({ endpoint: z.string(), username: z.string(), passwordConfigured: z.boolean() })
+          .nullable(),
+      })
+      .parse(await res.json()).config;
+  }
+
+  async saveProjectMatrixConfig(
+    projectId: string,
+    input: { endpoint: string; username: string; password: string },
+  ): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/integrations/matrix/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async listIntegrations(): Promise<{
+    accounts: IntegrationAccount[];
+    sources: IntegrationSource[];
+  }> {
+    const res = await this.request('/integrations', { method: 'GET' });
+    return z
+      .object({
+        accounts: z.array(integrationAccountSchema),
+        sources: z.array(integrationSourceSchema),
+      })
+      .parse(await res.json());
+  }
+
+  async listProjectIntegrations(projectId: string): Promise<IntegrationSource[]> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/integrations`, {
+      method: 'GET',
+    });
+    return z.object({ sources: z.array(integrationSourceSchema) }).parse(await res.json()).sources;
+  }
+
+  async bindIntegrationSource(
+    accountId: string,
+    sourceId: string,
+    projectId: string,
+  ): Promise<IntegrationSource> {
+    const res = await this.request('/integrations/sources/bind', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, sourceId, projectId }),
+    });
+    return z.object({ source: integrationSourceSchema }).parse(await res.json()).source;
+  }
+
+  async pauseIntegrationSource(
+    accountId: string,
+    sourceId: string,
+    paused: boolean,
+  ): Promise<void> {
+    await this.request('/integrations/sources/pause', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, sourceId, paused }),
+    });
+  }
+
+  async disconnectIntegrationSource(accountId: string, sourceId: string): Promise<void> {
+    await this.request('/integrations/sources/disconnect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, sourceId }),
+    });
+  }
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly uploadFetchImpl: typeof fetch;
@@ -2332,13 +2454,15 @@ export class VerityClient {
     parentId?: string;
     query?: string;
     sharedWithMe?: boolean;
+    driveId?: string;
     pageToken?: string;
-    purpose?: 'import' | 'workspace';
+    purpose?: 'import' | 'workspace' | 'folder';
   }): Promise<DriveFileList> {
     const search = new URLSearchParams();
     if (params?.parentId) search.set('parentId', params.parentId);
     if (params?.query) search.set('query', params.query);
     if (params?.sharedWithMe) search.set('sharedWithMe', 'true');
+    if (params?.driveId) search.set('driveId', params.driveId);
     if (params?.pageToken) search.set('pageToken', params.pageToken);
     if (params?.purpose) search.set('purpose', params.purpose);
     const qs = search.toString();
@@ -2346,6 +2470,12 @@ export class VerityClient {
       method: 'GET',
     });
     return driveFileListSchema.parse(await res.json());
+  }
+
+  async listGoogleSharedDrives(pageToken?: string): Promise<SharedDriveList> {
+    const query = pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : '';
+    const res = await this.request(`/google-drive/drives${query}`, { method: 'GET' });
+    return sharedDriveListSchema.parse(await res.json());
   }
 
   /** Complete the native OAuth (PKCE) connect: hand the server the one-time code
@@ -2366,6 +2496,112 @@ export class VerityClient {
 
   async disconnectGoogleDrive(): Promise<void> {
     await this.request('/google-drive/disconnect', { method: 'POST' });
+  }
+
+  async getSessionGmailConnection(sessionId: string): Promise<GmailSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async connectGmail(input: {
+    code: string;
+    codeVerifier: string;
+    redirectUri: string;
+  }): Promise<{ accountEmail: string | null }> {
+    const res = await this.request('/gmail/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    const parsed = googleDriveConnectResultSchema.parse(await res.json());
+    return { accountEmail: parsed.accountEmail };
+  }
+
+  async enableSessionGmail(sessionId: string): Promise<GmailSessionConnection> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableSessionGmail(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, { method: 'DELETE' });
+  }
+
+  async connectProjectGoogleDriveFolder(
+    projectId: string,
+    fileId: string,
+  ): Promise<{ id: string; name: string }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folder`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fileId }),
+      },
+    );
+    return z
+      .object({ folder: z.object({ id: z.string(), name: z.string() }) })
+      .parse(await res.json()).folder;
+  }
+
+  async disconnectProjectGoogleDriveFolder(projectId: string): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/google-drive/folder`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listProjectGoogleDriveFiles(
+    projectId: string,
+    folderId: string,
+    params: { parentId?: string; pageToken?: string } = {},
+  ): Promise<DriveFileList> {
+    const search = new URLSearchParams();
+    if (params.parentId) search.set('parentId', params.parentId);
+    if (params.pageToken) search.set('pageToken', params.pageToken);
+    const query = search.toString();
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files${query ? `?${query}` : ''}`,
+      { method: 'GET' },
+    );
+    return driveFileListSchema.parse(await res.json());
+  }
+
+  async uploadProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    upload: { parentId?: string; fileName: string; mimeType: string; data: Blob },
+  ): Promise<DriveFile> {
+    const search = new URLSearchParams({ name: upload.fileName, mimeType: upload.mimeType });
+    if (upload.parentId) search.set('parentId', upload.parentId);
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/upload?${search.toString()}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: uploadBodyWithMimeType(upload.data),
+      },
+      this.uploadFetchImpl,
+    );
+    return z.object({ file: driveFileSchema }).parse(await res.json()).file;
+  }
+
+  projectGoogleDriveDownloadUrl(projectId: string, folderId: string, fileId: string): string {
+    return `${this.baseUrl}/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}/download`;
+  }
+
+  async importProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+  ): Promise<{ path: string; fileName: string }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}/import`,
+      { method: 'POST' },
+    );
+    return z.object({ path: z.string(), fileName: z.string() }).parse(await res.json());
   }
 
   /** Import a Drive file into the project's Knowledge imports folder. */

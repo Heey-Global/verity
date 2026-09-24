@@ -418,7 +418,7 @@ describe('POST /internal/mcp (loopback MCP gateway)', () => {
       });
       const result = JSON.parse(res.body).result;
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result)).toContain('does not enforce Landlock');
+      expect(JSON.stringify(result)).toContain('cannot enforce the filesystem boundary');
       expect(harness.approvals).toEqual([]);
       expect(harness.invocations).toEqual([]);
       expect(harness.records.at(-1)).toMatchObject({

@@ -202,7 +202,7 @@ export interface McpGatewayDeps {
    * The call remains authenticated, MAC-keyed, audited, and subject to `authorizeCall` plus the
    * executor's own checks; only the per-call permission card is skipped. */
   hasStandingAuthorization?(
-    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName },
+    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName; request: unknown },
   ): Promise<boolean>;
   /** Execute the approved call. Resolves with the tool's result, or throws if the server
    *  could not serve it (sealed store, missing binding, transport failure). */
@@ -261,6 +261,7 @@ const TOOL_SCHEMAS = {
         .string()
         .regex(/^[a-f0-9]{64}$/u)
         .optional(),
+      imageUrl: z.url().max(8192).optional(),
       asBackground: z.boolean().optional(),
       x: z.number().finite().min(0).optional(),
       y: z.number().finite().min(0).optional(),
@@ -292,6 +293,73 @@ const TOOL_SCHEMAS = {
       requests: z.array(z.record(z.string(), z.unknown())).min(1).max(25).optional(),
     })
     .strict(),
+  verity_gmail: z.discriminatedUnion('action', [
+    z
+      .object({
+        action: z.literal('search'),
+        query: z.string().min(1).max(2_048),
+        maxResults: z.number().int().min(1).max(20).optional(),
+        pageToken: z.string().min(1).max(2_048).optional(),
+      })
+      .strict(),
+    z.object({ action: z.literal('read_thread'), threadId: z.string().min(1).max(512) }).strict(),
+    z
+      .object({
+        action: z.literal('create_reply_draft'),
+        threadId: z.string().min(1).max(512),
+        messageId: z.string().min(1).max(512).optional(),
+        body: z.string().max(500_000),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal('create_draft'),
+        to: z.array(z.string().email()).min(1).max(50),
+        cc: z.array(z.string().email()).max(50).optional(),
+        bcc: z.array(z.string().email()).max(50).optional(),
+        subject: z.string().max(998),
+        body: z.string().max(500_000),
+        threadId: z.string().min(1).max(512).optional(),
+        inReplyTo: z.string().min(1).max(998).optional(),
+        references: z.string().min(1).max(8_192).optional(),
+      })
+      .strict(),
+    z
+      .object({ action: z.literal('prepare_draft_send'), draftId: z.string().min(1).max(512) })
+      .strict(),
+    z
+      .object({
+        action: z.literal('send_draft'),
+        draftId: z.string().min(1).max(512),
+        messageId: z.string().min(1).max(512),
+        to: z.array(z.string()).min(1).max(50),
+        cc: z.array(z.string()).max(50),
+        bcc: z.array(z.string()).max(50),
+        subject: z.string().max(998),
+        body: z.string().max(500_000),
+        from: z.string().max(998).optional(),
+        replyTo: z.string().max(998).optional(),
+        htmlBody: z.string().max(1_000_000).optional(),
+        externalUrls: z.array(z.string().url().max(4096)).max(100),
+        threadId: z.string().min(1).max(512).optional(),
+        inReplyTo: z.string().min(1).max(998).optional(),
+        references: z.string().min(1).max(8_192).optional(),
+      })
+      .strict(),
+  ]),
+  verity_google_drive: z
+    .object({
+      action: z.enum(['list', 'search', 'read', 'upload', 'select_workspace_file']),
+      folderId: z.string().min(1).max(512).optional(),
+      fileId: z.string().min(1).max(512).optional(),
+      name: z.string().min(1).max(255).optional(),
+      query: z.string().min(1).max(200).optional(),
+      mimeType: z.string().min(1).max(255).optional(),
+      content: z.string().max(10_000_000).optional(),
+      encoding: z.enum(['utf8', 'base64']).optional(),
+      pageToken: z.string().min(1).max(4096).optional(),
+    })
+    .strict(),
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
@@ -304,11 +372,15 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_recent_session_messages: RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
   verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
   verity_google_slides:
-    'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit needs requests and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested.',
+    'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit accepts any structurally valid Google Slides batchUpdate request and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested; insert_image accepts either a Verity session attachmentId or a public HTTP(S) imageUrl.',
   verity_google_docs:
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; every edit requires the revisionId returned by the read.',
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or structural operations.',
+  verity_gmail:
+    'Search and read Gmail, create drafts, or send the approved plain-text snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. The original Gmail draft is retained after sending. Use Gmail search syntax; read the thread before drafting a reply.',
+  verity_google_drive:
+    'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
 };
 
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {
@@ -569,6 +641,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           sessionId,
           turnId,
           toolName,
+          request: request.data,
         });
       } catch {
         return reject(

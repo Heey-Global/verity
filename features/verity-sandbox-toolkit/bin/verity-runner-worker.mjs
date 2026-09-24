@@ -28390,6 +28390,9 @@ var legacyClientNotificationMethods = /* @__PURE__ */ new Set([
   CLIENT_METHODS.elicitation_complete
 ]);
 
+// packages/session/dist/acp-backend.js
+import { createHash } from "node:crypto";
+
 // packages/session/dist/structured-lifecycle.js
 function isRecord2(value) {
   return typeof value === "object" && value !== null;
@@ -29250,11 +29253,16 @@ function processStream(process2) {
   }));
 }
 function imageBlocks(attachments) {
-  return (attachments ?? []).filter((attachment) => attachment.kind === "image").map((attachment) => ({
-    type: "image",
-    mimeType: attachment.mediaType,
-    data: attachment.data
-  }));
+  return (attachments ?? []).filter((attachment) => attachment.kind === "image").flatMap((attachment) => {
+    const attachmentId = createHash("sha256").update(Buffer.from(attachment.data, "base64")).digest("hex");
+    return [
+      {
+        type: "text",
+        text: `Verity session attachment ID for the following image: ${attachmentId}`
+      },
+      { type: "image", mimeType: attachment.mediaType, data: attachment.data }
+    ];
+  });
 }
 function promptWithSystemDirectives(opts) {
   const prompt = opts.prompt ?? "";
@@ -29482,7 +29490,8 @@ async function runAcpTurn(opts, profile) {
         } : { clientCapabilities: { session: { compaction: {} } } }
       });
       const gateway = opts.mcpGateway;
-      const agentSpeaksHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http === true;
+      const advertisedHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http;
+      const agentSpeaksHttpMcp = advertisedHttpMcp === true || advertisedHttpMcp === void 0 && profile.httpMcpWhenUnspecified === true;
       const mcpServers2 = agentSpeaksHttpMcp ? [
         ...gateway === void 0 ? [] : [
           {
@@ -29688,6 +29697,7 @@ ${message}`;
 var CLAUDE_ACP_PROFILE = {
   defaultCommand: "claude-agent-acp",
   telemetryBackend: "claude-acp",
+  httpMcpWhenUnspecified: true,
   loadSessionUnsupported: "Claude ACP adapter does not support persistent session loading",
   clientCapabilitiesMeta: { "subagent-transcript": true },
   sessionMeta: (opts) => ({
@@ -29900,6 +29910,7 @@ var OPENCODE_ACP_PROFILE = {
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: "opencode-acp",
   telemetryBackend: "opencode-acp",
+  httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the
   // shared loop resumes through `session/load` rather than raising this. Kept
   // because the contract requires a message for the agent versions that do not.
@@ -30168,7 +30179,7 @@ function createBrokerSpawner(socketPath) {
 }
 
 // packages/session/dist/runner-server.js
-import { createHash as createHash2, randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
 import { mkdir as mkdir2, open as open4 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
 
@@ -30244,11 +30255,11 @@ ${this.runtimeNotice}`.trim();
 };
 
 // packages/session/dist/runner-transport.js
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import { open } from "node:fs/promises";
 var MAX_FRAME_BYTES = 8 * 1024 * 1024;
 function frameBodyHash(body) {
-  return createHash("sha256").update(JSON.stringify(body)).digest("hex");
+  return createHash2("sha256").update(JSON.stringify(body)).digest("hex");
 }
 function stampFrame(body, meta) {
   return {
@@ -31009,8 +31020,8 @@ var RunnerServer = class {
 function sameCapability(candidate, expected) {
   if (candidate === void 0)
     return false;
-  const left = createHash2("sha256").update(candidate).digest();
-  const right = createHash2("sha256").update(expected).digest();
+  const left = createHash3("sha256").update(candidate).digest();
+  const right = createHash3("sha256").update(expected).digest();
   return timingSafeEqual(left, right);
 }
 

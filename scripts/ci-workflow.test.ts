@@ -711,6 +711,15 @@ describe('mobile native patch CI', () => {
   });
 });
 
+describe('CI aggregate cancellation', () => {
+  it('does not report a stale failure when a newer run cancels this one', () => {
+    const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs: { 'ci-checks': { if?: string } };
+    };
+    expect(workflow.jobs['ci-checks'].if).toBe('${{ always() && !cancelled() }}');
+  });
+});
+
 describe('native iOS compile gate', () => {
   it('dispatches the pinned organization Gitleaks policy for generated release PRs', () => {
     const workflow = parse(readFileSync('.github/workflows/gitleaks-dispatch.yml', 'utf8')) as {
@@ -4114,7 +4123,8 @@ describe('changed-area detector', () => {
    * Which jobs matter is the whole question, and the answer is exactly "the ones
    * the skip drops". `changes` is not one — it is the detector, it carries the
    * allowlist, and it runs on every event including the release commit. Neither
-   * is `ci-checks`, which is `if: always()`. Everything else is gated, so
+   * is `ci-checks`, which runs regardless of shard results unless the entire run
+   * was superseded. Everything else is gated, so
    * everything else is scanned. release.yml and mobile-ota.yml are outside this
    * workflow and the detector does not gate them; they read these files by
    * design, which is what makes them release tooling rather than a violation.

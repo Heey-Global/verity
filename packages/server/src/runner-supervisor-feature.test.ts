@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -588,7 +589,7 @@ describe('verity-runner supervisor runtime', () => {
         env: {
           PATH: '/usr/bin',
           CLAUDE_CODE_OAUTH_TOKEN: 'must-not-cross',
-          VERITY_CLAUDE_EGRESS_KEY: 'must-not-cross',
+          VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: 'must-not-cross',
           ANTHROPIC_API_KEY: 'must-not-cross',
         },
       },
@@ -601,7 +602,7 @@ describe('verity-runner supervisor runtime', () => {
       VERITY_CLAUDE_EGRESS: '1',
     });
     expect(spec.spawnOptions.detached).toBe(true);
-    expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_CLAUDE_EGRESS_KEY');
+    expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE');
     expect(spec.spawnOptions.env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 
@@ -1082,37 +1083,42 @@ describe('verity-runner supervisor runtime', () => {
   });
 
   it('denies mutable worktree reads for reusable scripts but permits one-time dynamic loading', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-script-landlock-'));
+    const root = mkdtempSync(join(tmpdir(), 'verity-script-isolation-'));
     const helper = join(root, 'verity-script-sandbox');
     const snapshotRoot = join(root, 'snapshot');
     const worktree = join(root, 'worktree');
     await mkdir(snapshotRoot);
     await mkdir(worktree);
     await writeFile(join(worktree, 'dependency'), 'mutable\n');
+    await symlink(join(worktree, 'dependency'), join(snapshotRoot, 'escaped-dependency'));
     const allowedSecret = join(root, 'secret-allowed');
     const otherSecret = join(root, 'secret-other');
     await writeFile(allowedSecret, 'allowed\n');
     await writeFile(otherSecret, 'other\n');
-    const sharedMemoryDependency = `/dev/shm/verity-landlock-${String(process.pid)}`;
+    const sharedMemoryDependency = `/dev/shm/verity-script-isolation-${String(process.pid)}`;
     await writeFile(sharedMemoryDependency, 'mutable\n');
     await copyFile(
       resolve('features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox'),
       helper,
     );
     await chmod(helper, 0o755);
-    await expect(execFileAsync(helper, ['--probe'])).resolves.toBeDefined();
+    const execSandbox = (args: string[]) => execFileAsync(helper, args);
+    await expect(execSandbox(['--probe'])).resolves.toBeDefined();
     const command = ['--root', snapshotRoot, '--cwd', snapshotRoot, '--loading'];
     await expect(
-      execFileAsync(helper, [
+      execSandbox([...command, 'isolated', '--', '/usr/bin/cat', join(worktree, 'dependency')]),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
+      execSandbox([
         ...command,
         'isolated',
         '--',
         '/usr/bin/cat',
-        join(worktree, 'dependency'),
+        join(snapshotRoot, 'escaped-dependency'),
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'isolated',
         '--secret',
@@ -1123,7 +1129,7 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).resolves.toMatchObject({ stdout: 'allowed\n' });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'isolated',
         '--secret',
@@ -1134,7 +1140,7 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'isolated',
         '--',
@@ -1143,13 +1149,26 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [...command, 'isolated', '--', '/usr/bin/cat', sharedMemoryDependency]),
+      execSandbox([...command, 'isolated', '--', '/usr/bin/cat', sharedMemoryDependency]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [...command, 'isolated', '--', '/usr/bin/cat', '/etc/passwd']),
+      execSandbox([...command, 'isolated', '--', '/usr/bin/cat', '/etc/passwd']),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
+        ...command,
+        'isolated',
+        '--write-isolated',
+        '--',
+        '/usr/bin/mount',
+        '-o',
+        'remount,rw,bind',
+        snapshotRoot,
+        snapshotRoot,
+      ]),
+    ).rejects.toMatchObject({ code: 32 });
+    await expect(
+      execSandbox([
         ...command,
         'dynamic',
         '--dynamic-root',
@@ -1160,7 +1179,7 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).resolves.toBeDefined();
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'dynamic',
         '--dynamic-root',
@@ -1171,6 +1190,141 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await rm(sharedMemoryDependency, { force: true });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('enforces the mount-namespace backend, including nested read-only mounts, when supported', async () => {
+    const namespaceProbe = await execFileAsync('/usr/bin/unshare', [
+      '--user',
+      '--map-root-user',
+      '--mount',
+      '/bin/true',
+    ]).then(
+      () => true,
+      () => false,
+    );
+    if (!namespaceProbe) return;
+
+    const root = mkdtempSync(join(tmpdir(), 'verity-script-namespace-'));
+    const helper = join(root, 'verity-script-sandbox');
+    const allowedRoot = join(root, 'allowed');
+    const hidden = join(root, 'hidden');
+    const nestedMount = join(allowedRoot, 'dependency-volume');
+    const nestedMountWrite = join(nestedMount, 'write-attempt');
+    const allowedSecret = join(root, 'allowed-secret');
+    await mkdir(allowedRoot);
+    await mkdir(nestedMount);
+    await writeFile(hidden, 'hidden\n');
+    await writeFile(allowedSecret, 'allowed\n');
+    await symlink(hidden, join(allowedRoot, 'escaped'));
+    await copyFile(
+      resolve('features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox'),
+      helper,
+    );
+    await chmod(helper, 0o755);
+    const forcedEnvironment = {
+      ...process.env,
+      VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '1',
+    };
+    await expect(
+      execFileAsync(helper, ['--probe'], { env: forcedEnvironment }),
+    ).resolves.toBeDefined();
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--',
+          '/usr/bin/cat',
+          hidden,
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--secret',
+          allowedSecret,
+          '--',
+          '/usr/bin/cat',
+          allowedSecret,
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).resolves.toMatchObject({ stdout: 'allowed\n' });
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--secret',
+          allowedSecret,
+          '--',
+          '/bin/bash',
+          '-c',
+          'exec 9<"$1"; /usr/bin/diff <(cat /dev/fd/9) <(printf "allowed\\n")',
+          'bash',
+          allowedSecret,
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--',
+          '/usr/bin/cat',
+          join(allowedRoot, 'escaped'),
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
+      execFileAsync('/usr/bin/unshare', [
+        '--user',
+        '--map-root-user',
+        '--mount',
+        '/bin/sh',
+        '-eu',
+        '-c',
+        [
+          'mount -t tmpfs -o mode=0700,size=1m tmpfs "$2"',
+          'touch "$3"',
+          'rm "$3"',
+          'VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE=1 exec "$1" --root "$4" --cwd "$4" --loading isolated --write-isolated -- /bin/sh -c \'touch "$1"; result=$?; rm -f "$1"; exit "$result"\' sh "$3"',
+        ].join('\n'),
+        'sh',
+        helper,
+        nestedMount,
+        nestedMountWrite,
+        allowedRoot,
+      ]),
+    ).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('Read-only file system') });
     await rm(root, { recursive: true, force: true });
   });
 
@@ -2336,7 +2490,7 @@ describe('verity-runner supervisor runtime', () => {
         env: { ...env, VERITY_RUNNER_RUNTIME_UID: '0' },
       }),
     ).rejects.toThrow(/non-root/u);
-    await chmod(env.VERITY_CLAUDE_EGRESS_KEY, 0o644);
+    await chmod(env.VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE, 0o644);
     await expect(execFileAsync(connectorLauncher, ['--validate-config'], { env })).rejects.toThrow(
       /other users/u,
     );
@@ -2345,10 +2499,10 @@ describe('verity-runner supervisor runtime', () => {
   it('rejects connector TLS paths that traverse a symlink', async () => {
     const env = await connectorValidationEnv();
     const alias = join(runtimeDir, 'client-key-alias.pem');
-    await symlink(env.VERITY_CLAUDE_EGRESS_KEY, alias);
+    await symlink(env.VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE, alias);
     await expect(
       execFileAsync(connectorLauncher, ['--validate-config'], {
-        env: { ...env, VERITY_CLAUDE_EGRESS_KEY: alias },
+        env: { ...env, VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: alias },
       }),
     ).rejects.toThrow(/TLS material/u);
   });
@@ -2356,7 +2510,7 @@ describe('verity-runner supervisor runtime', () => {
   it('changes the desired connector identity when TLS material rotates', async () => {
     const env = await connectorValidationEnv();
     const first = await execFileAsync(connectorLauncher, ['--config-fingerprint'], { env });
-    await writeFile(env.VERITY_CLAUDE_EGRESS_KEY, 'rotated-test-key', { mode: 0o640 });
+    await writeFile(env.VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE, 'rotated-test-key', { mode: 0o640 });
     const second = await execFileAsync(connectorLauncher, ['--config-fingerprint'], { env });
     expect(first.stdout).toMatch(/^[a-f0-9]{64}\n$/u);
     expect(second.stdout).toMatch(/^[a-f0-9]{64}\n$/u);
@@ -5708,7 +5862,7 @@ input.on('line', (line) => {
 
 async function connectorValidationEnv(): Promise<
   NodeJS.ProcessEnv & {
-    VERITY_CLAUDE_EGRESS_KEY: string;
+    VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: string;
   }
 > {
   const ca = join(runtimeDir, 'ca.pem');
@@ -5730,7 +5884,7 @@ async function connectorValidationEnv(): Promise<
     VERITY_CLAUDE_EGRESS_AUTHORITY: 'gateway.internal:8443',
     VERITY_CLAUDE_EGRESS_CA: ca,
     VERITY_CLAUDE_EGRESS_CERT: cert,
-    VERITY_CLAUDE_EGRESS_KEY: key,
+    VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE: key,
   };
 }
 
@@ -6112,6 +6266,126 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
       });
     } finally {
       await supervisor.close();
+    }
+  });
+
+  // After a whole-Sandbox kill every worker is gone, but a probe that cannot decide at
+  // boot (here: a lock path it cannot open) used to drop the turn for good. Its state
+  // stayed `running` beside a stale `control.sock`, which the Server reads as a live
+  // Runner — the session then badged `running` with nothing left to ever settle it.
+  it('keeps retrying a turn whose boot-time probe was undecided until it settles', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-undecided', startCommandId: 'start-turn-undecided' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-undecided');
+    const lockPath = join(runtimeDir, 'turns/turn-undecided/worker.lock');
+    await mkdir(lockPath);
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await expect(readTurnState(runtimeDir, 'turn-undecided')).resolves.toMatchObject({
+        status: 'claimed',
+      });
+      await rm(lockPath, { recursive: true });
+      await vi.waitFor(
+        async () => {
+          await expect(readTurnState(runtimeDir, 'turn-undecided')).resolves.toMatchObject({
+            status: 'settled',
+            workerError: 'worker missing during supervisor recovery',
+          });
+        },
+        { timeout: 5000, interval: 20 },
+      );
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  // A removed turn directory makes the lock unopenable for good, so without a drop the
+  // retry forks a `flock` every few seconds for the life of the supervisor. Watched
+  // through the very same claim written back afterwards: identical ids leave only
+  // the missing directory to have dropped it, and a retry still tracking it would
+  // settle that turn.
+  it('stops retrying an undecided turn once its directory is gone', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-gone', startCommandId: 'start-turn-gone' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-gone');
+    await mkdir(join(runtimeDir, 'turns/turn-gone/worker.lock'));
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await rm(join(runtimeDir, 'turns/turn-gone'), { recursive: true });
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await claimTurn(
+        runtimeDir,
+        { turnId: 'turn-gone', startCommandId: 'start-turn-gone' },
+        'dead-supervisor',
+      );
+      await markWorkerLockProtocol('turn-gone');
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await expect(readTurnState(runtimeDir, 'turn-gone')).resolves.toMatchObject({
+        status: 'claimed',
+      });
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  // GC and a fresh claim of the same id can both land inside one retry interval, so
+  // the retry never sees the directory missing. The new claim is this supervisor's
+  // own and its worker may simply not hold the lock yet; settling it as "worker
+  // missing during supervisor recovery" would end a turn that is just starting.
+  it('leaves a re-claimed turn alone when its undecided predecessor is retried', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-reclaimed', startCommandId: 'start-turn-reclaimed' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-reclaimed');
+    await mkdir(join(runtimeDir, 'turns/turn-reclaimed/worker.lock'));
+    // Staged elsewhere, then swapped in with two renames, so no retry can observe
+    // the gap in between.
+    const stage = await mkdtemp(join(tmpdir(), 'verity-runner-reclaim-'));
+    await claimTurn(
+      stage,
+      { turnId: 'turn-reclaimed', startCommandId: 'start-turn-reclaimed-2' },
+      'live-supervisor',
+    );
+    const staged = await readTurnState(stage, 'turn-reclaimed');
+    await writeFile(
+      join(stage, 'turns/turn-reclaimed/state.json'),
+      `${JSON.stringify({ ...staged, workerLock: true })}\n`,
+    );
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await rename(join(runtimeDir, 'turns/turn-reclaimed'), join(stage, 'old-turn'));
+      await rename(join(stage, 'turns/turn-reclaimed'), join(runtimeDir, 'turns/turn-reclaimed'));
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await expect(readTurnState(runtimeDir, 'turn-reclaimed')).resolves.toMatchObject({
+        status: 'claimed',
+        startCommandId: 'start-turn-reclaimed-2',
+      });
+    } finally {
+      await supervisor.close();
+      await rm(stage, { recursive: true, force: true });
     }
   });
 

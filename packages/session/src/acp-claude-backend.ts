@@ -6,6 +6,7 @@ import { ALLOWED_PERMISSION_MODES } from './runner.js';
 const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   defaultCommand: 'claude-agent-acp',
   telemetryBackend: 'claude-acp',
+  httpMcpWhenUnspecified: true,
   loadSessionUnsupported: 'Claude ACP adapter does not support persistent session loading',
   clientCapabilitiesMeta: { 'subagent-transcript': true },
   sessionMeta: (opts) => ({

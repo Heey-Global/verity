@@ -130,9 +130,23 @@ export interface DockerClient {
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
    *  valid; the real {@link createDockerClient} always provides it. */
   ensureNetwork?(name: string, opts?: { labels?: Record<string, string> }): Promise<void>;
+  /** Create a named local volume if absent (Engine `POST /volumes/create`) and
+   *  resolve its daemon-side `Mountpoint`. Idempotent: the local driver answers a
+   *  create for an existing name with that volume, labels untouched. Optional so
+   *  pre-existing test fakes stay valid; the real {@link createDockerClient} always
+   *  provides it. */
+  ensureVolume?(
+    name: string,
+    opts?: { labels?: Record<string, string> },
+  ): Promise<{ mountpoint: string | undefined }>;
   /** Read one daemon-registered OCI runtime from `GET /info`. The real client always implements
    *  this; optional only so older injected test doubles remain source-compatible. */
   inspectRuntime?(name: string): Promise<DockerRuntimeRegistration | undefined>;
+  /** The daemon's CPU count (`NCPU` from `GET /info`): the bound dockerd checks a
+   *  create's `NanoCpus` against. `undefined` when the daemon does not report one.
+   *  Optional so pre-existing test fakes stay valid; the real
+   *  {@link createDockerClient} always provides it. */
+  hostCpuCount?(): Promise<number | undefined>;
   /** List images on the daemon (Engine `GET /images/json`). Read by the disk GC
    *  to find superseded devcontainer image generations. Optional so pre-existing
    *  test fakes stay valid; the real {@link createDockerClient} always provides it. */
@@ -244,6 +258,11 @@ export interface ContainerSpec {
   }>;
   /** Free-form labels attached to the container. */
   labels?: Record<string, string>;
+  /** OCI annotations handed to the runtime (`HostConfig.Annotations`, Engine API
+   *  1.43+). gVisor reads its mount hints from here. A daemon addressed through an
+   *  older pinned API version drops the field, which costs the hint and nothing
+   *  else. */
+  annotations?: Record<string, string>;
   /** Environment `KEY=value` strings. */
   env?: string[];
   /** Optional user override (devcontainer `remoteUser` / Docker `User`). */
@@ -427,6 +446,8 @@ export interface ContainerInspect {
          *  caller comparing a mount against a volume NAME must use this. */
         name?: string | undefined;
         source?: string | undefined;
+        /** Named-volume subpath requested in HostConfig.Mounts. */
+        subpath?: string | undefined;
         destination?: string | undefined;
         readWrite?: boolean | undefined;
       }>
@@ -1133,6 +1154,9 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
             }
           : {}),
         NetworkMode: spec.network ?? 'default',
+        ...(spec.annotations !== undefined && Object.keys(spec.annotations).length > 0
+          ? { Annotations: spec.annotations }
+          : {}),
         ...(spec.extraHosts?.length ? { ExtraHosts: spec.extraHosts } : {}),
         ...(spec.runtime !== undefined ? { Runtime: spec.runtime } : {}),
         ...(spec.groupAdd?.length ? { GroupAdd: spec.groupAdd } : {}),
@@ -1712,6 +1736,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           DeviceRequests?: unknown;
           RestartPolicy?: { Name?: unknown };
           Init?: unknown;
+          Mounts?: unknown;
         };
         Mounts?: unknown;
       };
@@ -1800,11 +1825,24 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
                   Destination?: unknown;
                   RW?: unknown;
                 };
+                const configuredMounts: unknown[] = Array.isArray(json.HostConfig?.Mounts)
+                  ? (json.HostConfig.Mounts as unknown[])
+                  : [];
+                const configuredMount = configuredMounts.find((candidate) => {
+                  if (typeof candidate !== 'object' || candidate === null) return false;
+                  return (candidate as { Target?: unknown }).Target === value.Destination;
+                });
+                const subpath =
+                  typeof configuredMount === 'object' && configuredMount !== null
+                    ? (configuredMount as { VolumeOptions?: { Subpath?: unknown } }).VolumeOptions
+                        ?.Subpath
+                    : undefined;
                 return [
                   {
                     ...(typeof value.Type === 'string' ? { type: value.Type } : {}),
                     ...(typeof value.Name === 'string' ? { name: value.Name } : {}),
                     ...(typeof value.Source === 'string' ? { source: value.Source } : {}),
+                    ...(typeof subpath === 'string' ? { subpath } : {}),
                     ...(typeof value.Destination === 'string'
                       ? { destination: value.Destination }
                       : {}),
@@ -1847,6 +1885,14 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         });
       }
       return { path: candidate.path, args: candidate.runtimeArgs };
+    },
+    hostCpuCount: async () => {
+      const res = await callDocker(doFetch, `${base}/info`, 'GET', timeoutMs);
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { NCPU?: unknown };
+      return typeof json.NCPU === 'number' && Number.isInteger(json.NCPU) && json.NCPU > 0
+        ? json.NCPU
+        : undefined;
     },
     imageExists: async (ref) => {
       // GET /images/{ref}/json — 200 = present, 404 = absent (the daemon reports
@@ -1898,6 +1944,21 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       });
       if (res.ok || res.status === 409) return;
       throw await toDockerError(res);
+    },
+    ensureVolume: async (name, opts) => {
+      const res = await callDocker(doFetch, `${base}/volumes/create`, 'POST', timeoutMs, {
+        Name: name,
+        Driver: 'local',
+        ...(opts?.labels !== undefined ? { Labels: opts.labels } : {}),
+      });
+      if (!res.ok) throw await toDockerError(res);
+      const json = (await res.json()) as { Mountpoint?: unknown };
+      return {
+        mountpoint:
+          typeof json.Mountpoint === 'string' && json.Mountpoint !== ''
+            ? json.Mountpoint
+            : undefined,
+      };
     },
     listImages: async () => {
       const res = await callDocker(doFetch, `${base}/images/json`, 'GET', timeoutMs);

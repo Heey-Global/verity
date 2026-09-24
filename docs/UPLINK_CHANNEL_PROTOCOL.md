@@ -33,6 +33,14 @@ that introduced them. The classification is pinned by tests in
 not individually pinned beyond the refusal path, so treat that column as read-at rather than
 enforced.
 
+## Proposed team extension
+
+[Team-sharing draft v1](protocols/uplink-team-sharing-v1.md) proposes a separately
+negotiated `team-sharing` capability. Existing `sharing` means public previews
+and does not authorize team membership. The draft includes a scoped team-grant
+expiry rule for direct access; it does not change the existing preview or remote
+transport lease behavior. It is not implemented or activated by this document.
+
 ## Scope and relationship to the MVP tunnel
 
 `packages/preview-tunnel` currently implements a **per-share** tunnel: one `PreviewEdge` instance is
@@ -138,8 +146,11 @@ Once welcomed, an installation persists the id and keeps sending it — includin
 subsequently refused — so a refusal carrying an id is a known installation being turned away, not a
 new one arriving.
 
-`features` is an explicit allow-list, for example `["sharing", "remote-control"]`. An absent feature
+`features` is an explicit allow-list, for example `["preview-sharing", "remote-control"]`. An absent feature
 is not enabled, and the client must not infer entitlement from anything else.
+The target preview name is `preview-sharing`; the current implementation still
+uses `sharing`. The proposed coordinated pre-deployment rename has no alias or
+transition window; see the team draft for its V01 acceptance cases.
 
 **Adding `channels[]` does not bump `protocolVersion`, and the reason is the rule for when it
 does.** A version bump is for a change an existing peer cannot survive; this one is survivable in

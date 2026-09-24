@@ -1,0 +1,21 @@
+# Optional overlay for the reference Verity Compose installation.
+# Build connectors/matrix/Dockerfile and set the required values outside Git.
+services:
+  verity:
+    environment:
+      VERITY_MATRIX_CONNECTOR_TOKEN: ${VERITY_MATRIX_CONNECTOR_TOKEN:?set a random connector token}
+
+  matrix-connector:
+    image: ${VERITY_MATRIX_CONNECTOR_IMAGE:-verity-matrix-connector:local}
+    restart: unless-stopped
+    depends_on:
+      - verity
+    environment:
+      MATRIX_STORE_PASSPHRASE: ${MATRIX_STORE_PASSPHRASE:?set a random store passphrase}
+      VERITY_INTERNAL_URL: ${VERITY_INTERNAL_URL:?set the reachable Verity URL}
+      VERITY_MATRIX_CONNECTOR_TOKEN: ${VERITY_MATRIX_CONNECTOR_TOKEN:?set a random connector token}
+    volumes:
+      - matrix-connector-data:/data
+
+volumes:
+  matrix-connector-data:

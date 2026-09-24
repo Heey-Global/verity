@@ -229,7 +229,7 @@ export async function runAcceptance(phase, { api, state, pairingCode, pause = de
       body: {
         sessionId: state.sessionId,
         project: 'verity/control',
-        model: 'claude-opus-5',
+        model: 'claude-opus-5-5',
         name: 'Managed install acceptance',
       },
     });

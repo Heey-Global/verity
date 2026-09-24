@@ -1648,7 +1648,10 @@ jobs:
         server-image,
         agent-seed-drift,
       ]
-    if: always()
+    # A superseding run cancels this run's shards. Do not turn that intentional
+    # cancellation into a stale red aggregate check; the newer run publishes the
+    # required verdict for the same PR head.
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Verify all required jobs succeeded

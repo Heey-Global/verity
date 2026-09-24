@@ -81,6 +81,21 @@ function resultOf(body: unknown): { content: { text: string }[]; isError?: boole
 }
 
 describe('MCP gateway — handshake and discovery (ADR 0014 D1)', () => {
+  it('advertises Gmail draft sending with a complete approval snapshot', async () => {
+    const { gateway } = harness({ servedTools: ['verity_gmail'] });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    });
+    const tool = (response.body as { result: { tools: { name: string; inputSchema: unknown }[] } })
+      .result.tools[0];
+    expect(tool?.name).toBe('verity_gmail');
+    expect(JSON.stringify(tool?.inputSchema)).toContain('create_reply_draft');
+    expect(JSON.stringify(tool?.inputSchema)).toContain('prepare_draft_send');
+    expect(JSON.stringify(tool?.inputSchema)).toContain('send_draft');
+  });
+
   it('echoes a protocol revision it speaks and falls back to its newest', async () => {
     const { gateway } = harness();
     const negotiated = async (asked: string): Promise<string> => {
@@ -306,6 +321,63 @@ describe('MCP gateway — every call is recorded (ADR 0014 D3)', () => {
     expect(requestApproval).not.toHaveBeenCalled();
     expect(invokeTool).toHaveBeenCalledOnce();
     expect(records.at(-1)).toMatchObject({ kind: 'gateway_call_served', decision: 'grant' });
+  });
+
+  it('still asks for approval when one action is excluded from a tool grant', async () => {
+    const hasStandingAuthorization = vi.fn<NonNullable<McpGatewayDeps['hasStandingAuthorization']>>(
+      async ({ request }) =>
+        !(
+          typeof request === 'object' &&
+          request !== null &&
+          'action' in request &&
+          request.action === 'send_draft'
+        ),
+    );
+    const { gateway, requestApproval } = harness({
+      servedTools: ['verity_gmail'],
+      hasStandingAuthorization,
+    });
+    await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(
+        {
+          action: 'create_draft',
+          to: ['friend@example.test'],
+          subject: 'Hello',
+          body: 'Body',
+          externalUrls: [],
+        },
+        'verity_gmail',
+      ),
+    });
+    expect(requestApproval).not.toHaveBeenCalled();
+
+    await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(
+        {
+          action: 'send_draft',
+          draftId: 'd1',
+          messageId: 'm1',
+          to: ['friend@example.test'],
+          cc: [],
+          bcc: [],
+          subject: 'Hello',
+          body: 'Body',
+          externalUrls: [],
+        },
+        'verity_gmail',
+      ),
+    });
+    expect(requestApproval).toHaveBeenCalledOnce();
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'verity_gmail',
+        input: expect.objectContaining({ action: 'send_draft', body: 'Body' }),
+      }),
+    );
   });
 
   it('hands the complete approved trusted CLI request to the turn-bound executor', async () => {

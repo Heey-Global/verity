@@ -38,9 +38,10 @@ import {
   type ProjectSettingsDraft,
   type HttpMcpConnection,
   type ProjectMcpBinding,
+  type IntegrationSource,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -61,6 +62,12 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { createVerityClient } from '../../lib/client';
 import { Icon } from '../../components/Icon';
 import { StatusPill, type StatusPillIntent } from '../../components/StatusPill';
+import {
+  SettingsGroup,
+  SettingsListPanel,
+  SettingsNavRow,
+  SettingsPanel,
+} from '../../components/settings/SettingsChrome';
 import { repairProject } from '../../lib/projectRepair';
 import {
   projectLifecycleState,
@@ -77,7 +84,7 @@ function param(value: string | string[] | undefined): string {
 const PROJECT_DETAIL_POLL_MS = 15_000;
 
 export default function ProjectDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
   const client = useMemo(() => createVerityClient(), []);
   const projectId = param(id);
 
@@ -89,17 +96,31 @@ export default function ProjectDetailScreen() {
       />
     );
   }
-  return <ProjectDetailView client={client} projectId={projectId} />;
+  return (
+    <ProjectDetailView
+      client={client}
+      projectId={projectId}
+      initialTab={param(tab) === 'settings' ? 'settings' : 'dev-server'}
+    />
+  );
 }
 
-function ProjectDetailView({ client, projectId }: { client: VerityClient; projectId: string }) {
+function ProjectDetailView({
+  client,
+  projectId,
+  initialTab,
+}: {
+  client: VerityClient;
+  projectId: string;
+  initialTab: ProjectTab;
+}) {
   const insets = useSafeAreaInsets();
   const [detail, setDetail] = useState<ProjectDetail | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const [deleting, setDeleting] = useState(false);
   const [creatingLoop, setCreatingLoop] = useState(false);
-  const [activeTab, setActiveTab] = useState<ProjectTab>('dev-server');
+  const [activeTab, setActiveTab] = useState<ProjectTab>(initialTab);
   const loadGeneration = useRef(0);
   const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
   const pendingProjectMutationRef = useRef<ProjectRecord | undefined>(undefined);
@@ -167,6 +188,22 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (detail?.project.setupStatus !== 'pending') return;
+    // Projects created before the guided flow was removed can use the same
+    // independent settings and repair controls as newly created projects.
+    void client
+      .setProjectSetupStatus(projectId, 'complete')
+      .then(onProjectUpdated)
+      .catch(() => {
+        // A later visit retries; the project remains usable in the meantime.
+      });
+  }, [client, detail?.project.setupStatus, onProjectUpdated, projectId]);
+  useFocusEffect(
+    useCallback(() => {
+      if (detailLoaded) void load(true);
+    }, [detailLoaded, load]),
+  );
 
   // Keep the container state live while the screen is open. `GET /projects/:id`
   // reconciles the project against Docker, so this is what turns a sandbox that
@@ -184,11 +221,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
       clearInterval(timer);
     };
   }, [detailLoaded, load]);
-
-  useEffect(() => {
-    if (detail?.project.setupStatus !== 'pending') return;
-    router.replace({ pathname: '/new-project', params: { projectId } });
-  }, [detail?.project.setupStatus, projectId]);
 
   useEffect(() => {
     const project = detail?.project;
@@ -303,19 +335,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
     );
   }
 
-  if (detail.project.setupStatus === 'pending') {
-    return (
-      <View style={styles.centered} accessibilityLabel="Opening project setup">
-        <Stack.Screen options={{ title: detail.project.repo }} />
-        <ActivityIndicator />
-        <Text style={styles.operationsTitle}>Opening project setup…</Text>
-        <Text style={styles.operationsSubtitle}>
-          Setup, Dev Server detection, and secrets are kept together in one guided flow.
-        </Text>
-      </View>
-    );
-  }
-
   const { project, settings } = detail;
   const title = project.repo;
   const lifecycleState = projectLifecycleState(project);
@@ -366,13 +385,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
         ) : null}
         {activeTab === 'settings' ? (
           <>
-            <View style={styles.section} accessibilityLabel="Project settings overview">
-              <Text style={styles.sectionHeader}>Project setup</Text>
-              <Text style={styles.settingsGroupDescription}>
-                Manage whether this project is running and which secrets it can access. Dev Server
-                commands and ports stay in the Dev Server tab.
-              </Text>
-            </View>
             <EnvironmentSection
               client={client}
               project={project}
@@ -385,13 +397,15 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
               settings={settings}
               onSaved={onSettingsSaved}
             />
+            <ProjectIntegrationsSection client={client} projectId={project.id} />
             {project.kind === 'local' ? (
               <LinkGitHubSection client={client} project={project} onUpdated={onProjectUpdated} />
             ) : null}
-            <View style={styles.section}>
-              <Text style={styles.sectionHeader}>Project information</Text>
-              <ProjectFields project={project} />
-            </View>
+            <SettingsGroup title="Project information">
+              <SettingsPanel>
+                <ProjectFields project={project} />
+              </SettingsPanel>
+            </SettingsGroup>
             <DangerSection project={project} deleting={deleting} onDelete={deleteProject} />
           </>
         ) : null}
@@ -401,6 +415,63 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
 }
 
 type ProjectTab = 'dev-server' | 'automations' | 'settings';
+
+function ProjectIntegrationsSection({
+  client,
+  projectId,
+}: {
+  client: VerityClient;
+  projectId: string;
+}) {
+  const [sources, setSources] = useState<IntegrationSource[]>([]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void client
+        .listProjectIntegrations(projectId)
+        .then((items) => {
+          if (active) setSources(items);
+        })
+        .catch(() => {
+          if (active) setSources([]);
+        });
+      return () => {
+        active = false;
+      };
+    }, [client, projectId]),
+  );
+  return (
+    <SettingsGroup title="Integrations">
+      <SettingsListPanel>
+        {sources.map((source) => (
+          <SettingsNavRow
+            key={`${source.accountId}:${source.sourceId}`}
+            icon="link"
+            title={source.displayName}
+            subtitle={
+              source.lastIngestedAt
+                ? `Last import: ${new Date(source.lastIngestedAt).toLocaleString()}`
+                : 'No messages imported yet'
+            }
+            status={{
+              intent: source.status === 'active' ? 'ready' : 'transient',
+              label: source.status === 'active' ? 'Connected' : 'Paused',
+            }}
+            onPress={() =>
+              router.push({ pathname: '/settings/integrations', params: { projectId } })
+            }
+          />
+        ))}
+        <SettingsNavRow
+          icon="link"
+          title="Manage integrations"
+          subtitle="Connect rooms and manage imports"
+          onPress={() => router.push({ pathname: '/settings/integrations', params: { projectId } })}
+        />
+      </SettingsListPanel>
+    </SettingsGroup>
+  );
+}
 
 function ProjectTabs({
   active,
@@ -490,9 +561,8 @@ function DangerSection({
 }) {
   const { theme } = useUnistyles();
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionHeader}>Danger zone</Text>
-      <View style={styles.dangerPanel}>
+    <SettingsGroup title="Danger zone">
+      <SettingsPanel>
         <View style={styles.runtimeMetaRow}>
           <Text style={styles.runtimeMetaLabel}>Project</Text>
           <Text style={styles.runtimeMetaValue} numberOfLines={1}>
@@ -518,8 +588,8 @@ function DangerSection({
             {deleting ? 'Deleting...' : 'Delete project'}
           </Text>
         </Pressable>
-      </View>
-    </View>
+      </SettingsPanel>
+    </SettingsGroup>
   );
 }
 
@@ -869,13 +939,16 @@ function EnvironmentSection({
         };
 
   return (
-    <View style={styles.section}>
-      <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeader}>Environment</Text>
-        <StatusPill intent={statusIntent} label={statusLabel} />
-        {working && !rebuilding ? <ActivityIndicator size="small" /> : null}
-      </View>
-      <View style={styles.lifecyclePanel}>
+    <SettingsGroup
+      title="Environment"
+      trailing={
+        <View style={styles.sectionHeaderRow}>
+          <StatusPill intent={statusIntent} label={statusLabel} />
+          {working && !rebuilding ? <ActivityIndicator size="small" /> : null}
+        </View>
+      }
+    >
+      <SettingsPanel>
         <Pressable
           style={({ pressed }) => [
             styles.saveButton,
@@ -942,8 +1015,8 @@ function EnvironmentSection({
         ) : null}
         {driftNotice ? <Text style={styles.runtimeNotice}>{driftNotice}</Text> : null}
         {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-      </View>
-    </View>
+      </SettingsPanel>
+    </SettingsGroup>
   );
 }
 
@@ -1052,13 +1125,11 @@ function LinkGitHubSection({
   }, [client, linking, onUpdated, project.id, selected]);
 
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionHeader}>GitHub</Text>
-      <Text style={styles.settingsGroupDescription}>
-        This project has no GitHub repository. Connect it to an existing repository to combine its
-        history with this project and get pull requests, issues and CI status.
-      </Text>
-      <View style={styles.lifecyclePanel}>
+    <SettingsGroup
+      title="GitHub"
+      description="This project has no GitHub repository. Connect it to an existing repository to combine its history with this project and get pull requests, issues and CI status."
+    >
+      <SettingsPanel>
         <Pressable
           style={({ pressed }) => [
             styles.lifecycleButton,
@@ -1115,8 +1186,8 @@ function LinkGitHubSection({
           </Text>
         </Pressable>
         {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-      </View>
-    </View>
+      </SettingsPanel>
+    </SettingsGroup>
   );
 }
 
@@ -2666,6 +2737,10 @@ function PublicPreviewShareControls({
       {!canOpen ? (
         <Text style={styles.settingsHint}>Start the project before sharing it.</Text>
       ) : null}
+      <Text style={styles.settingsHint}>
+        Public traffic reaches this project sandbox. A compromised dev server can use the
+        sandbox&apos;s project-scoped broker and gateway permissions.
+      </Text>
       {error ? <Text style={styles.settingsError}>{error}</Text> : null}
       {liveShares.map((share) => (
         <View key={share.id} style={styles.publicShareCard}>
@@ -2975,26 +3050,116 @@ function ProjectSettingsSection({
   onSaved: (settings: ProjectSettings) => void;
 }) {
   return (
-    <View style={styles.section}>
-      <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeader}>Secrets</Text>
-      </View>
+    <SettingsGroup
+      title="Connected services"
+      description="Choose which Doppler environment, Google Drive folder, and MCP connections this project can access."
+    >
+      <SettingsPanel>
+        <DopplerBindingSection
+          client={client}
+          projectId={projectId}
+          settings={settings}
+          onSaved={onSaved}
+        />
+        <GoogleDriveFolderSection
+          client={client}
+          projectId={projectId}
+          settings={settings}
+          onSaved={onSaved}
+        />
+        <ProjectMcpBindingsSection client={client} projectId={projectId} />
+        <Text style={styles.settingsHint}>
+          Verity resolves approved secrets in the central broker. No Doppler credential is stored in
+          or injected into the project container.
+        </Text>
+      </SettingsPanel>
+    </SettingsGroup>
+  );
+}
 
-      <Text style={styles.settingsGroupDescription}>
-        Optionally map this project to one Doppler environment. Secret access always runs through
-        the central Verity broker.
+function GoogleDriveFolderSection({
+  client,
+  projectId,
+  settings,
+  onSaved,
+}: {
+  client: VerityClient;
+  projectId: string;
+  settings: ProjectSettings | null;
+  onSaved: (settings: ProjectSettings) => void;
+}) {
+  const [disconnecting, setDisconnecting] = useState(false);
+  const folderName = settings?.googleDriveFolderName ?? null;
+  const choose = useCallback(() => {
+    router.push({
+      pathname: '/google-drive/[sessionId]',
+      params: { sessionId: projectId, purpose: 'folder' },
+    });
+  }, [projectId]);
+  const disconnect = useCallback(() => {
+    if (disconnecting) return;
+    Alert.alert(
+      'Disconnect Google Drive folder?',
+      'The files stay in Google Drive. Verity will no longer access them from this project.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: () => {
+            setDisconnecting(true);
+            void client
+              .disconnectProjectGoogleDriveFolder(projectId)
+              .then(() =>
+                onSaved({
+                  ...settings!,
+                  googleDriveFolderId: null,
+                  googleDriveFolderName: null,
+                }),
+              )
+              .catch(() => Alert.alert('Could not disconnect folder'))
+              .finally(() => setDisconnecting(false));
+          },
+        },
+      ],
+    );
+  }, [client, disconnecting, onSaved, projectId, settings]);
+
+  return (
+    <View style={styles.bindingSection} accessibilityLabel="Google Drive folder">
+      <View style={styles.settingsLabelRow}>
+        <Text style={styles.fieldLabel}>Google Drive folder</Text>
+        {folderName ? <StatusPill intent="ready" label="Connected" /> : null}
+      </View>
+      <Text style={styles.bindingCurrent}>{folderName ?? 'No Drive folder connected.'}</Text>
+      <Text style={styles.bindingHint}>
+        Verity can read, create, and edit files in the connected folder.
       </Text>
-      <DopplerBindingSection
-        client={client}
-        projectId={projectId}
-        settings={settings}
-        onSaved={onSaved}
-      />
-      <ProjectMcpBindingsSection client={client} projectId={projectId} />
-      <Text style={styles.settingsHint}>
-        Verity resolves approved secrets in the central broker. No Doppler credential is stored in
-        or injected into the project container.
-      </Text>
+      <View style={styles.settingsLabelRow}>
+        <Pressable
+          style={({ pressed }) => [styles.bindingButton, pressed ? styles.rowPressed : null]}
+          onPress={choose}
+          accessibilityRole="button"
+          accessibilityLabel={
+            folderName ? 'Change Google Drive folder' : 'Connect Google Drive folder'
+          }
+        >
+          <Text style={styles.bindingButtonLabel}>{folderName ? 'Change' : 'Connect folder'}</Text>
+        </Pressable>
+        {folderName ? (
+          <Pressable
+            style={({ pressed }) => [styles.bindingButton, pressed ? styles.rowPressed : null]}
+            onPress={disconnect}
+            disabled={disconnecting}
+            accessibilityRole="button"
+            accessibilityLabel="Disconnect Google Drive folder"
+          >
+            <Text style={styles.bindingButtonLabel}>
+              {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -3480,9 +3645,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   settingsContent: {
     width: '100%',
-    maxWidth: 1040,
+    maxWidth: 760,
     alignSelf: 'center',
-    padding: theme.spacing.md,
+    gap: theme.spacing.xl,
   },
   projectTabs: {
     flexDirection: 'row',
@@ -3586,10 +3751,11 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   sectionHeader: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontWeight: '600',
     textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   fieldLabel: {
     color: theme.colors.textMuted,
@@ -3598,12 +3764,7 @@ const styles = StyleSheet.create((theme) => ({
     textTransform: 'uppercase',
   },
   projectFactsPanel: {
-    paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    gap: theme.spacing.xs,
   },
   projectFactRow: {
     flexDirection: 'row',
@@ -3695,12 +3856,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   bindingSection: {
     gap: theme.spacing.xs,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.sm,
   },
   bindingCurrent: {
     color: theme.colors.text,

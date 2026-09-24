@@ -50,7 +50,7 @@ fi
 url="${VERITY_PROJECT_MEMORY_URL:-}"
 [ -n "$url" ] || fail "memory broker is not configured for this sandbox (VERITY_PROJECT_MEMORY_URL unset) — project memory is a broker-mode feature"
 
-cap_file="${VERITY_GH_TOKEN_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
+cap_file="${VERITY_GH_BROKER_CAPABILITY_FILE:-/run/verity/gh-token-capability}"
 [ -r "$cap_file" ] || fail "capability file '$cap_file' is missing or unreadable — project memory needs broker mode"
 cap="$(tr -d '[:space:]' <"$cap_file")"
 [ -n "$cap" ] || fail "capability file '$cap_file' is empty"

@@ -40,6 +40,8 @@ import {
   devcontainerImageTag,
   DEVCONTAINER_IMAGE_PREFIX,
   projectNetworkName,
+  projectNodeModulesVolumeName,
+  NODE_MODULES_TARGET,
   devcontainerBuildArgs,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
@@ -50,6 +52,8 @@ import {
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
   RUNNER_BROKER_CAPABILITIES,
+  DEFAULT_SANDBOX_MEMORY_BYTES,
+  DEFAULT_SANDBOX_NANO_CPUS,
   CLAUDE_EGRESS_GATEWAY_URL_LABEL,
   AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   type ProvisionerOptions,
@@ -370,6 +374,9 @@ function createProvisioner(
   return new ProvisionerImpl({
     // No real supervisor runs here; tests that care pass their own.
     supervisorReachable: async () => undefined,
+    // A host larger than any quota asserted here, so CPU expectations do not depend
+    // on the machine running the suite. The clamp itself is tested on its own.
+    hostCpuCount: () => 64,
     ...rest,
     projectRelay,
     claudeEgressGatewayUrl,
@@ -1073,17 +1080,17 @@ describe('ProvisionerImpl (#174)', () => {
     );
     expect(spec.labels?.['verity.project-id']).toBe(id);
     expect(spec.restartPolicy).toBe('unless-stopped');
-    // A hard memory ceiling is ALWAYS set (default 4 GiB) so a runaway sandbox
-    // OOMs inside its own cgroup instead of taking the whole host down.
+    // A hard memory ceiling is ALWAYS set so a runaway sandbox OOMs inside its own
+    // cgroup instead of taking the whole host down.
     expect(spec.pidsLimit).toBe(512);
-    expect(spec.memoryBytes).toBe(4 * 1024 * 1024 * 1024);
+    expect(spec.memoryBytes).toBe(DEFAULT_SANDBOX_MEMORY_BYTES);
     // …and the combined ceiling matches it, so the container cannot swap. Omitting it
     // lets Docker default to twice the memory limit, which turns the OOM this cap
     // exists to produce into an unbounded swap-thrash the session never recovers from.
     expect(spec.memorySwapBytes).toBe(spec.memoryBytes);
     // The CPU quota is safe-by-default too; otherwise one project build can starve
     // the control plane and every neighbouring sandbox on the same host.
-    expect(spec.nanoCpus).toBe(2_000_000_000);
+    expect(spec.nanoCpus).toBe(DEFAULT_SANDBOX_NANO_CPUS);
     // A crashing worker must not dump core into the session worktree.
     expect(spec.ulimits).toEqual([{ name: 'core', soft: 0, hard: 0 }]);
   });
@@ -2470,6 +2477,61 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.nanoCpus).toBe(3_000_000_000);
   });
 
+  it('never asks Docker for more CPUs than the daemon has', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker: { ...docker, hostCpuCount: async () => 1 },
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      // Ask the daemon, as production does, rather than the helper's fixed host.
+      hostCpuCount: undefined,
+    });
+
+    await provisioner.provision(id);
+
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    // dockerd rejects a `NanoCpus` above its CPU count at create time, and the fake
+    // Docker here does not. Unclamped, the default would pass this suite and then
+    // fail every sandbox create on a host smaller than the default ceiling.
+    expect(DEFAULT_SANDBOX_NANO_CPUS).toBeGreaterThan(1e9);
+    expect(spec.nanoCpus).toBe(1e9);
+  });
+
+  it('adds a configured swap allowance on top of the memory ceiling', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      sandboxMemoryBytes: 6 * 1024 ** 3,
+      sandboxSwapBytes: 2 * 1024 ** 3,
+    });
+
+    await provisioner.provision(id);
+
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    // Docker's `MemorySwap` is memory PLUS swap. Passing the swap amount through on
+    // its own would read as a combined ceiling BELOW the memory limit, which the
+    // Docker layer drops, and the sandbox would get Docker's default of swap equal
+    // to its memory: 6 GiB of host swap instead of the 2 GiB configured.
+    expect(spec.memoryBytes).toBe(6 * 1024 ** 3);
+    expect(spec.memorySwapBytes).toBe(8 * 1024 ** 3);
+  });
+
   it('weights a sandbox below the containers it shares the host with', async () => {
     const id = await seedProject();
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
@@ -2502,7 +2564,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(cgroupV2CpuWeight(spec.cpuShares)).toBeLessThan(CGROUP_V2_DEFAULT_CPU_WEIGHT);
     // ...and only a tie-break: the quota the sandbox runs out to when the host is
     // quiet is untouched, so no workload is narrowed to buy the ordering.
-    expect(spec.nanoCpus).toBe(2_000_000_000);
+    expect(spec.nanoCpus).toBe(DEFAULT_SANDBOX_NANO_CPUS);
   });
 
   it('lets a deployment opt out of sandbox CPU weighting', async () => {
@@ -2614,6 +2676,131 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
+  describe('per-project node_modules volume', () => {
+    const MOUNTPOINT = '/var/lib/docker/volumes/verity-node-modules-x/_data';
+
+    async function provisionWith(opts: {
+      lockfile: boolean;
+      runnerSupervisor: boolean;
+      ensureVolume?: () => Promise<{ mountpoint: string | undefined }>;
+    }) {
+      const id = await seedProject();
+      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+      const ensureVolume = vi.fn(opts.ensureVolume ?? (async () => ({ mountpoint: MOUNTPOINT })));
+      const { client: docker, calls } = fakeDocker({ createdContainerId: 'cid-1', ensureVolume });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        git,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: '/srv/verity/workspaces',
+        dataVolume: 'verity-data',
+        dataVolumeRoot: '/srv/verity',
+        runnerSupervisor: opts.runnerSupervisor,
+        runnerSupervisorTrustedDefaultImage: true,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        prepareRunnerRuntime: vi.fn(),
+        containerCommand: vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' })),
+        isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+        isFile: (path) =>
+          path === '/srv/verity/workspaces/example-org-example-repo/package.json' ||
+          (opts.lockfile &&
+            path === '/srv/verity/workspaces/example-org-example-repo/package-lock.json'),
+      });
+      const provisioned = provisioner.provision(id);
+      const created = async () => {
+        await provisioned;
+        return calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+      };
+      return { id, provisioned, created, ensureVolume };
+    }
+
+    it('mounts a Node project its own volume with the exclusive gVisor hint for its source', async () => {
+      const { id, created, ensureVolume } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+      });
+      const spec = await created();
+      expect(ensureVolume).toHaveBeenCalledWith(projectNodeModulesVolumeName(id), {
+        labels: { 'verity.project-id': id },
+      });
+      // A whole-volume mount, never a subpath: runsc pairs a hint with a mount by
+      // comparing sources verbatim, and a subpath mount's source is a per-start
+      // safepath. With one, the hint silently matches nothing and the sandbox keeps
+      // the slow shared file access while every assertion about the spec stays true.
+      expect(spec.volumeMounts).toContainEqual({
+        volume: projectNodeModulesVolumeName(id),
+        target: NODE_MODULES_TARGET,
+      });
+      // The hint has to name what the daemon reported, not a path derived from the
+      // volume name: data-root is a daemon setting the Server cannot see.
+      expect(spec.annotations).toEqual({
+        'dev.gvisor.spec.mount.node-modules.source': MOUNTPOINT,
+        'dev.gvisor.spec.mount.node-modules.type': 'bind',
+        'dev.gvisor.spec.mount.node-modules.share': 'container',
+      });
+    });
+
+    it('leaves a project without an npm lockfile on its existing node_modules', async () => {
+      // The volume starts empty and only an npm lockfile gets it filled without
+      // anyone acting. A yarn or pnpm project moved onto it would lose working
+      // dependencies on its next recreate, which an image update triggers unasked.
+      const { created, ensureVolume } = await provisionWith({
+        lockfile: false,
+        runnerSupervisor: true,
+      });
+      const spec = await created();
+      expect(ensureVolume).not.toHaveBeenCalled();
+      expect(spec.volumeMounts?.map((mount) => mount.target)).not.toContain(NODE_MODULES_TARGET);
+      expect(spec.annotations).toBeUndefined();
+    });
+
+    it('does not mount a volume nothing would hand to the agent', async () => {
+      // Without the Runner runtime no root stack start runs, so the fresh volume
+      // would stay root-owned and empty: every install into it fails with EACCES
+      // and the clone's own node_modules is shadowed. Slow beats broken.
+      const { created, ensureVolume } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: false,
+      });
+      const spec = await created();
+      expect(ensureVolume).not.toHaveBeenCalled();
+      expect(spec.volumeMounts?.map((mount) => mount.target) ?? []).not.toContain(
+        NODE_MODULES_TARGET,
+      );
+    });
+
+    it('still mounts the volume when the daemon names no mountpoint, without a hint', async () => {
+      // A hint without a source is ignored by runsc; one with a guessed source
+      // could match nothing, or another mount.
+      const { id, created } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+        ensureVolume: async () => ({ mountpoint: undefined }),
+      });
+      const spec = await created();
+      expect(spec.volumeMounts).toContainEqual({
+        volume: projectNodeModulesVolumeName(id),
+        target: NODE_MODULES_TARGET,
+      });
+      expect(spec.annotations).toBeUndefined();
+    });
+
+    it('fails the provision visibly when the volume cannot be created', async () => {
+      const { id, provisioned } = await provisionWith({
+        lockfile: true,
+        runnerSupervisor: true,
+        ensureVolume: async () => {
+          throw new Error('disk full');
+        },
+      });
+      await expect(provisioned).rejects.toThrow(/node_modules volume could not be created/);
+      expect((await ctx.store.getProject(id))?.state).toBe('failed');
+    });
+  });
+
   describe('ADR 0006 D1 boundary attestation for user devcontainers', () => {
     function binarySource(path: string): string {
       if (path.endsWith('supervisor')) return 'verity-runner-supervisor.mjs';
@@ -2686,6 +2873,7 @@ describe('ProvisionerImpl (#174)', () => {
     async function recreateDevcontainerProject(
       agentInRuntime: boolean,
       overrides: Partial<ProvisionerOptions> = {},
+      devcontainerConfig?: string,
     ): Promise<{
       warning: string | null;
       imageRef: string | null;
@@ -2696,6 +2884,7 @@ describe('ProvisionerImpl (#174)', () => {
       error?: unknown;
       provisionError?: string | null | undefined;
       dockerMethods: string[];
+      ensureVolume?: ReturnType<typeof vi.fn>;
       resolvConf: string | undefined;
     }> {
       const root = mkdtempSync(join(tmpdir(), 'verity-attest-'));
@@ -2704,15 +2893,22 @@ describe('ProvisionerImpl (#174)', () => {
         mkdirSync(devcontainerDir, { recursive: true });
         writeFileSync(
           join(devcontainerDir, 'devcontainer.json'),
-          '{ "image": "node:24", "remoteUser": "vscode" }',
+          devcontainerConfig ?? '{ "image": "node:24", "remoteUser": "vscode" }',
         );
+        if (devcontainerConfig !== undefined) {
+          writeFileSync(join(root, 'example-org-example-repo', 'package-lock.json'), '{}');
+        }
         const id = await seedProject('active');
         const prepareRunnerRuntime = vi.fn();
         const collector = vi.fn<ImageEvidenceCollector>(async () => ({
           configuredUser: 'vscode',
           files: attestationFiles(agentInRuntime),
         }));
+        const ensureVolume = vi.fn(async () => ({
+          mountpoint: '/var/lib/docker/volumes/test/_data',
+        }));
         const { client: docker, calls: dockerCalls } = fakeDocker({
+          ...(devcontainerConfig === undefined ? {} : { ensureVolume }),
           imageExists: vi.fn(async () => true),
           createdContainerId: 'cid-attested',
           // The relay, as Docker reports it on the project network.
@@ -2784,11 +2980,31 @@ describe('ProvisionerImpl (#174)', () => {
           collector,
           ...(error === undefined ? {} : { error, provisionError: stored?.provisionError }),
           dockerMethods: dockerCalls.map((call) => call.method),
+          ...(devcontainerConfig === undefined ? {} : { ensureVolume }),
         };
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
     }
+
+    it('keeps a devcontainer dependency volume when an npm lockfile enables the managed volume', async () => {
+      const { spec, ensureVolume } = await recreateDevcontainerProject(
+        false,
+        {},
+        JSON.stringify({
+          image: 'node:24',
+          remoteUser: 'vscode',
+          mounts: [
+            'source=project-dependencies,target=${containerWorkspaceFolder}/node_modules,type=volume',
+          ],
+        }),
+      );
+      expect(spec.binds).toContain('project-dependencies:/work/node_modules');
+      expect(
+        spec.volumeMounts?.filter((mount) => mount.target === NODE_MODULES_TARGET) ?? [],
+      ).toEqual([]);
+      expect(ensureVolume).not.toHaveBeenCalled();
+    });
 
     it('enables the supervisor for an image Verity did not build once it proves the boundary', async () => {
       const {
@@ -3314,6 +3530,7 @@ describe('ProvisionerImpl (#174)', () => {
         codexAuthJson: null,
         googleDriveClientId: null,
         googleDriveAccountEmail: null,
+        gmailAuthorized: false,
         googleDriveRefreshToken: null,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -3388,6 +3605,7 @@ describe('ProvisionerImpl (#174)', () => {
           codexAuthJson: null,
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
+          gmailAuthorized: false,
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -3510,7 +3728,7 @@ describe('ProvisionerImpl (#174)', () => {
           'VERITY_CLAUDE_EGRESS_URL=https://relay:8443',
           'VERITY_CLAUDE_EGRESS_CA=/run/verity/claude-egress/ca.crt',
           'VERITY_CLAUDE_EGRESS_CERT=/run/verity/claude-egress/client.crt',
-          'VERITY_CLAUDE_EGRESS_KEY=/run/verity/claude-egress/client.key',
+          'VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=/run/verity/claude-egress/client.key',
           'VERITY_CLAUDE_EGRESS_SERVERNAME=verity-agent-gateway',
           'OPENCODE_CONFIG=/run/verity/opencode-config/opencode.json',
         ]),
@@ -3957,6 +4175,7 @@ describe('ProvisionerImpl (#174)', () => {
           codexAuthJson: '{"tokens":{"access_token":"a"}}',
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
+          gmailAuthorized: false,
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4031,6 +4250,7 @@ describe('ProvisionerImpl (#174)', () => {
           codexAuthJson: null,
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
+          gmailAuthorized: false,
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4061,7 +4281,7 @@ describe('ProvisionerImpl (#174)', () => {
       const tokenHash = signingBrokerTokenHash(token);
       const tokenPath = join(secretRoot, 'git', `signing_broker_token.${tokenHash}`);
       expect(readFileSync(tokenPath, 'utf8')).toBe(`${token}\n`);
-      expect(statSync(tokenPath).mode & 0o777).toBe(0o644);
+      expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
       expect(binds).toContain(`${tokenPath}:${SIGNING_BROKER_TOKEN_FILE}:ro`);
       expect(spec.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL]).toBe(tokenHash);
       // git is pointed at the broker wrapper via GIT_CONFIG_* env (image-agnostic).
@@ -4128,6 +4348,7 @@ describe('ProvisionerImpl (#174)', () => {
           codexAuthJson: null,
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
+          gmailAuthorized: false,
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4210,6 +4431,7 @@ describe('ProvisionerImpl (#174)', () => {
           codexAuthJson: null,
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
+          gmailAuthorized: false,
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -5349,10 +5571,13 @@ describe('ProvisionerImpl (#174)', () => {
       // The capability is materialized as a read-only file and mounted (never env).
       const capPath = join(secretRoot, 'git', `gh_token_capability.${id}`);
       expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
-      expect(statSync(capPath).mode & 0o777).toBe(0o644);
+      expect(statSync(capPath).mode & 0o777).toBe(0o600);
       // The endpoint URL is non-secret env; no gh-token file anywhere.
       expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
       expect(spec.env).toContain(`VERITY_GH_TOKEN_DOCKER_CONTAINER=${spec.name}`);
+      expect(spec.env).toContain(
+        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
+      );
       // The memory broker (ADR 0008) rides the same capability + broker URL.
       expect(spec.env).toContain(
         'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
@@ -7427,7 +7652,12 @@ describe('DeprovisionerImpl (#174)', () => {
     };
     const stopMock = vi.fn();
     const removeMock = vi.fn();
-    const { client: docker } = fakeDocker({ stopContainer: stopMock, removeContainer: removeMock });
+    const removeVolume = vi.fn();
+    const { client: docker } = fakeDocker({
+      stopContainer: stopMock,
+      removeContainer: removeMock,
+      removeVolume,
+    });
     const deprovisioner = new DeprovisionerImpl(
       ctx.store,
       ctx.db,
@@ -7441,6 +7671,8 @@ describe('DeprovisionerImpl (#174)', () => {
     expect(result.state).toBe('absent');
     expect(stopMock).toHaveBeenCalledWith('dev-example-org-example-repo');
     expect(removeMock).toHaveBeenCalledWith('dev-example-org-example-repo');
+    // A kept project keeps its installed dependencies with its clone.
+    expect(removeVolume).not.toHaveBeenCalled();
     // no purge → isDir not even probed (the if-branch short-circuits).
     expect(isDirCalls).toHaveLength(0);
     expect(rmCalls).toEqual([]);
@@ -7522,9 +7754,19 @@ describe('DeprovisionerImpl (#174)', () => {
     const removeDir = (p: string): void => {
       rmCalls.push(p);
     };
+    const order: string[] = [];
     const stopMock = vi.fn();
-    const removeMock = vi.fn();
-    const { client: docker } = fakeDocker({ stopContainer: stopMock, removeContainer: removeMock });
+    const removeMock = vi.fn(async () => {
+      order.push('container');
+    });
+    const removeVolume = vi.fn(async (name: string) => {
+      order.push(name);
+    });
+    const { client: docker } = fakeDocker({
+      stopContainer: stopMock,
+      removeContainer: removeMock,
+      removeVolume,
+    });
     const deprovisioner = new DeprovisionerImpl(
       ctx.store,
       ctx.db,
@@ -7538,6 +7780,10 @@ describe('DeprovisionerImpl (#174)', () => {
 
     await deprovisioner.deprovision(id, { purge: true });
     expect(rmCalls).toEqual(['/data/dev/example-org-example-repo', `/srv/verity/runners/${id}`]);
+    // Named, so the disk GC never takes it: without this step every deleted Node
+    // project leaves its full dependency tree on the host for good. After the
+    // container is gone, because the daemon refuses to remove a volume in use.
+    expect(order).toEqual(['container', projectNodeModulesVolumeName(id)]);
     expect(isDirCalls).toEqual(['/data/dev/example-org-example-repo', `/srv/verity/runners/${id}`]);
   });
 

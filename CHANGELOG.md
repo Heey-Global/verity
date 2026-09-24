@@ -1,5 +1,89 @@
 # Changelog
 
+## [2.3.0](https://github.com/Heey-Global/verity/compare/v2.2.0...v2.3.0) (2026-09-24)
+
+
+### Features
+
+* **integrations:** import Matrix chats into project knowledge ([#703](https://github.com/Heey-Global/verity/issues/703)) ([974d14b](https://github.com/Heey-Global/verity/commit/974d14bcc6491312c4584e5d352235f12f8cfab4))
+* **knowledge:** preserve reusable insights proactively ([#705](https://github.com/Heey-Global/verity/issues/705)) ([f2e4779](https://github.com/Heey-Global/verity/commit/f2e4779ad17c1476f1f6f1a2e3f4b8d8cdf026b0))
+
+
+### Bug Fixes
+
+* **sandbox:** isolate approved scripts under gVisor ([#702](https://github.com/Heey-Global/verity/issues/702)) ([965ef61](https://github.com/Heey-Global/verity/commit/965ef61000049694b0e3d6198026125ceddc73dc))
+
+## [2.2.0](https://github.com/Heey-Global/verity/compare/v2.1.2...v2.2.0) (2026-09-24)
+
+
+### Features
+
+* **drive:** browse shared drives ([#688](https://github.com/Heey-Global/verity/issues/688)) ([8b270d6](https://github.com/Heey-Global/verity/commit/8b270d60860c3723ab04cdb6cd9b5b55006b8f8b))
+* **gmail:** require approval before sending drafts ([#692](https://github.com/Heey-Global/verity/issues/692)) ([24481ab](https://github.com/Heey-Global/verity/commit/24481ab2491c1a198a9c2bc2d68b7f61cb234b92))
+
+
+### Bug Fixes
+
+* **mobile:** bound OTA release metadata ([#696](https://github.com/Heey-Global/verity/issues/696)) ([bffc526](https://github.com/Heey-Global/verity/commit/bffc526b83ba2ef0f258eb1539e473f116ccd688))
+* **models:** remove Claude Opus 5 from the model picker ([#690](https://github.com/Heey-Global/verity/issues/690)) ([9e3fdf5](https://github.com/Heey-Global/verity/commit/9e3fdf50601d74c161ccc755363a4881d17c99f1))
+* **relay:** retry automatic DNS port collisions ([#691](https://github.com/Heey-Global/verity/issues/691)) ([037be56](https://github.com/Heey-Global/verity/commit/037be568e64a49c68b572d60dd57ce162f8b6918))
+* **release:** bound lifecycle release metadata ([#694](https://github.com/Heey-Global/verity/issues/694)) ([6e127a2](https://github.com/Heey-Global/verity/commit/6e127a231f3e99cff72c5153ab757c86b5cf4337))
+* **release:** ignore obsolete mobile drafts ([#698](https://github.com/Heey-Global/verity/issues/698)) ([d1de610](https://github.com/Heey-Global/verity/commit/d1de61016df9b7de99c9cdc08b5b888fb6284e14))
+* **server:** avoid duplicate dependency volume mounts ([#687](https://github.com/Heey-Global/verity/issues/687)) ([4cfe3c9](https://github.com/Heey-Global/verity/commit/4cfe3c96620e10b74f693ded336a08c0deb81c9a))
+* **server:** confirm pull request merge after lost response ([#697](https://github.com/Heey-Global/verity/issues/697)) ([1dacbaf](https://github.com/Heey-Global/verity/commit/1dacbaf98906a45a7be915b558b9bc71eea6707a))
+* **server:** stop reporting an unrecorded sandbox toolkit as possible drift ([#686](https://github.com/Heey-Global/verity/issues/686)) ([9a7f8de](https://github.com/Heey-Global/verity/commit/9a7f8de44a0e24ad85fa59b7d909c95de8a6bec3))
+
+## [2.1.2](https://github.com/Heey-Global/verity/compare/v2.1.1...v2.1.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **server:** validate public preview artifacts ([#673](https://github.com/Heey-Global/verity/issues/673)) ([3f15f06](https://github.com/Heey-Global/verity/commit/3f15f06e63ef82d82d6c1b5687343cc626de3840))
+* **session:** retain MCP when ACP capability is omitted ([#681](https://github.com/Heey-Global/verity/issues/681)) ([d398eee](https://github.com/Heey-Global/verity/commit/d398eeefa379fb676b04d2bf37c303de9925a672))
+* **session:** settle turns stuck running after their sandbox dies ([#674](https://github.com/Heey-Global/verity/issues/674)) ([6a80102](https://github.com/Heey-Global/verity/commit/6a8010293c698ad54529ef15c662662cb0cc360a))
+
+
+### Performance Improvements
+
+* **sandbox:** cache Node dependencies outside the gVisor shared mount ([#682](https://github.com/Heey-Global/verity/issues/682)) ([e18eec3](https://github.com/Heey-Global/verity/commit/e18eec31472e4dc5aac6ab2b8d82f3b37ccb8791))
+
+## [2.1.1](https://github.com/Heey-Global/verity/compare/v2.1.0...v2.1.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **models:** expose GPT-6 Sol and Luna ([#676](https://github.com/Heey-Global/verity/issues/676)) ([90ad41b](https://github.com/Heey-Global/verity/commit/90ad41b9efde003d17d0080d9b465f2053c9f70f))
+* **slides:** support uploaded and remote images ([#677](https://github.com/Heey-Global/verity/issues/677)) ([43299ba](https://github.com/Heey-Global/verity/commit/43299ba1c4049cb85c6df35d41acda38db03b632))
+
+## [2.1.0](https://github.com/Heey-Global/verity/compare/v2.0.0...v2.1.0) (2026-09-24)
+
+
+### Features
+
+* **drive:** connect project folders ([#669](https://github.com/Heey-Global/verity/issues/669)) ([2fe210e](https://github.com/Heey-Global/verity/commit/2fe210e63e42c4fffd36ba9628cd92b1f036b7a8))
+* **gmail:** add session reading and drafts ([#670](https://github.com/Heey-Global/verity/issues/670)) ([37f2e61](https://github.com/Heey-Global/verity/commit/37f2e6118859f75afee17f0d55f0ba45ab0072e1))
+
+
+### Bug Fixes
+
+* **sandbox:** size gVisor project sandboxes for their real load ([#675](https://github.com/Heey-Global/verity/issues/675)) ([c6b9965](https://github.com/Heey-Global/verity/commit/c6b9965e0ff94dfff4d5d0d6298b14e9b74bf21f))
+
+## [2.0.0](https://github.com/Heey-Global/verity/compare/v1.5.4...v2.0.0) (2026-09-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** the verity-sandbox-toolkit Feature no longer accepts `installPi` / `piVersion`, and images built from it carry no `pi` binary.
+
+### Features
+
+* **models:** add Claude Opus 5.5 ([#667](https://github.com/Heey-Global/verity/issues/667)) ([73b4df4](https://github.com/Heey-Global/verity/commit/73b4df4e07675c5e105ed97ed989c01b2a0426b7))
+
+
+### Miscellaneous Chores
+
+* **sandbox:** drop the pi coding agent ([#666](https://github.com/Heey-Global/verity/issues/666)) ([20ed9d2](https://github.com/Heey-Global/verity/commit/20ed9d2b2d20e40b81bb05dd89fba9f8eb026547))
+
 ## [1.5.4](https://github.com/Heey-Global/verity/compare/v1.5.3...v1.5.4) (2026-09-23)
 
 

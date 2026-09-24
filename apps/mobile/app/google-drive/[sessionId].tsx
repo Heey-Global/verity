@@ -10,17 +10,28 @@ import {
   type DriveFile,
 } from '@verity/mobile';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { File as FsFile } from 'expo-file-system';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Linking,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
 import { createVerityClient } from '../../lib/client';
 import { runGoogleDriveAuth } from '../../lib/googleDrive';
+import { pickSessionFiles } from '../../lib/attachments';
 
 type Crumb = { id: string; name: string };
-type DriveView = 'my-drive' | 'shared-with-me';
+type DriveView = 'my-drive' | 'shared';
 
 // A Feather glyph per Drive item: folders, native Google editor types, and a
 // generic file fall-back — enough to scan a listing at a glance.
@@ -36,7 +47,7 @@ export default function GoogleDrivePickerScreen() {
   const { theme } = useUnistyles();
   const { sessionId, purpose } = useLocalSearchParams<{
     sessionId: string;
-    purpose?: 'import' | 'workspace';
+    purpose?: 'import' | 'workspace' | 'folder' | 'project';
   }>();
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
@@ -61,7 +72,7 @@ function GoogleDrivePicker({
 }: {
   client: VerityClient;
   sessionId: string;
-  purpose: 'import' | 'workspace';
+  purpose: 'import' | 'workspace' | 'folder' | 'project';
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
@@ -71,6 +82,8 @@ function GoogleDrivePicker({
   const [connecting, setConnecting] = useState(false);
   const [path, setPath] = useState<Crumb[]>([]);
   const [driveView, setDriveView] = useState<DriveView>('my-drive');
+  const [sharedDriveId, setSharedDriveId] = useState<string | null>(null);
+  const [sharedDriveIds, setSharedDriveIds] = useState<Set<string>>(() => new Set());
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [nextPageToken, setNextPageToken] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
@@ -78,6 +91,7 @@ function GoogleDrivePicker({
   const [importingId, setImportingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [projectFolderId, setProjectFolderId] = useState<string | null>(null);
   const requestSequence = useRef(0);
 
   const connected = settings?.googleDriveConnected === true;
@@ -100,31 +114,74 @@ function GoogleDrivePicker({
   }, [loadSettings]);
 
   useEffect(() => {
+    if (purpose !== 'project') return;
+    void client
+      .getProject(sessionId)
+      .then((detail) => {
+        const id = detail.settings?.googleDriveFolderId;
+        const name = detail.settings?.googleDriveFolderName;
+        if (!id || !name) throw new Error('No Google Drive folder is connected to this project');
+        setProjectFolderId(id);
+        setPath([{ id, name }]);
+      })
+      .catch((caught: unknown) =>
+        setError(caught instanceof Error ? caught.message : 'Could not load the Drive folder.'),
+      );
+  }, [client, purpose, sessionId]);
+
+  useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
   const loadFiles = useCallback(
-    async (
-      folderId: string | undefined,
-      query: string,
-      sharedWithMe: boolean,
-      append: boolean,
-      pageToken?: string,
-    ) => {
+    async (folderId: string | undefined, query: string, append: boolean, pageToken?: string) => {
+      if (purpose === 'project' && projectFolderId === null) {
+        setLoading(false);
+        return;
+      }
       const sequence = ++requestSequence.current;
       setLoading(true);
       setError(null);
       try {
+        if (purpose === 'project') {
+          if (!projectFolderId) return;
+          const page = await client.listProjectGoogleDriveFiles(sessionId, projectFolderId, {
+            ...(folderId ? { parentId: folderId } : {}),
+            ...(pageToken ? { pageToken } : {}),
+          });
+          if (sequence !== requestSequence.current) return;
+          setFiles((current) => (append ? [...current, ...page.files] : page.files));
+          setNextPageToken(page.nextPageToken);
+          return;
+        }
+        const sharedRoot =
+          driveView === 'shared' && sharedDriveId === null && folderId === undefined;
         const page = await client.listGoogleDriveFiles({
           ...(query.length > 0 ? { query } : { parentId: folderId }),
-          ...(sharedWithMe && query.length === 0 && folderId === undefined
-            ? { sharedWithMe: true }
-            : {}),
+          ...(sharedRoot && query.length === 0 ? { sharedWithMe: true } : {}),
+          ...(sharedDriveId ? { driveId: sharedDriveId } : {}),
           pageToken,
           purpose,
         });
         if (sequence !== requestSequence.current) return;
+        let driveFolders: DriveFile[] = [];
+        if (sharedRoot && query.length === 0 && !append) {
+          const drives = [];
+          let drivesPageToken: string | undefined;
+          do {
+            const drivesPage = await client.listGoogleSharedDrives(drivesPageToken);
+            drives.push(...drivesPage.drives);
+            drivesPageToken = drivesPage.nextPageToken;
+          } while (drivesPageToken !== undefined);
+          if (sequence !== requestSequence.current) return;
+          setSharedDriveIds(new Set(drives.map((drive) => `shared-drive:${drive.id}`)));
+          driveFolders = drives.map((drive) => ({
+            id: `shared-drive:${drive.id}`,
+            name: drive.name,
+            mimeType: 'application/vnd.google-apps.folder',
+          }));
+        }
         setFiles((current) =>
           append
             ? [
@@ -133,7 +190,7 @@ function GoogleDrivePicker({
                   (candidate) => !current.some((existing) => existing.id === candidate.id),
                 ),
               ]
-            : page.files,
+            : [...driveFolders, ...page.files],
         );
         setNextPageToken(page.nextPageToken);
       } catch (err) {
@@ -146,14 +203,14 @@ function GoogleDrivePicker({
         if (sequence === requestSequence.current) setLoading(false);
       }
     },
-    [client, purpose],
+    [client, driveView, projectFolderId, purpose, sessionId, sharedDriveId],
   );
 
   // Reload when the folder changes or after the search input settles. Drive
   // performs the search, so results are not limited to the current loaded page.
   useEffect(() => {
     if (!connected) return;
-    void loadFiles(parentId, debouncedQuery, driveView === 'shared-with-me', false);
+    void loadFiles(parentId, debouncedQuery, false);
   }, [connected, debouncedQuery, driveView, loadFiles, parentId]);
 
   const connect = useCallback(async (): Promise<boolean> => {
@@ -183,13 +240,19 @@ function GoogleDrivePicker({
     } finally {
       setConnecting(false);
     }
-  }, [client, clientId, loadSettings]);
+  }, [client, clientId, loadSettings, purpose]);
 
   const openFolder = useCallback(
     (folder: DriveFile) => {
       const openedFromSearch = debouncedQuery.length > 0;
       setSearchQuery('');
       setDebouncedQuery('');
+      if (driveView === 'shared' && sharedDriveId === null && sharedDriveIds.has(folder.id)) {
+        const driveId = folder.id.slice('shared-drive:'.length);
+        setSharedDriveId(driveId);
+        setPath([{ id: driveId, name: folder.name }]);
+        return;
+      }
       // Global search results are not necessarily children of the folder shown
       // before the search. Start a fresh path so "Up" returns to Drive root
       // instead of presenting a hierarchy that does not exist.
@@ -198,12 +261,16 @@ function GoogleDrivePicker({
         { id: folder.id, name: folder.name },
       ]);
     },
-    [debouncedQuery],
+    [debouncedQuery, driveView, sharedDriveId, sharedDriveIds],
   );
 
   const goUp = useCallback(() => {
-    setPath((current) => current.slice(0, -1));
-  }, []);
+    setPath((current) => {
+      if (purpose === 'project' && current.length <= 1) return current;
+      if (driveView === 'shared' && current.length === 1) setSharedDriveId(null);
+      return current.slice(0, -1);
+    });
+  }, [driveView, purpose]);
 
   const disconnect = useCallback(() => {
     void (async () => {
@@ -314,16 +381,115 @@ function GoogleDrivePicker({
     [client, connect, importingId, sessionId],
   );
 
+  const connectCurrentFolder = useCallback(() => {
+    const folder = path.at(-1);
+    if (folder === undefined || importingId !== null) return;
+    setImportingId(folder.id);
+    void client
+      .connectProjectGoogleDriveFolder(sessionId, folder.id)
+      .then(() => router.back())
+      .catch((err: unknown) =>
+        Alert.alert(
+          'Could not connect folder',
+          err instanceof VerityApiError ? err.message : 'Could not connect this folder.',
+        ),
+      )
+      .finally(() => setImportingId(null));
+  }, [client, importingId, path, sessionId]);
+
+  const uploadFiles = useCallback(() => {
+    if (!projectFolderId || !parentId || importingId !== null) return;
+    void (async () => {
+      const picked = await pickSessionFiles();
+      if (picked.length === 0) return;
+      setImportingId('upload');
+      let uploaded = false;
+      try {
+        for (const file of picked) {
+          await client.uploadProjectGoogleDriveFile(sessionId, projectFolderId, {
+            parentId,
+            fileName: file.fileName,
+            mimeType: 'application/octet-stream',
+            data: new FsFile(file.uri),
+          });
+          uploaded = true;
+        }
+      } catch (caught) {
+        Alert.alert(
+          'Could not upload file',
+          caught instanceof Error ? caught.message : String(caught),
+        );
+      } finally {
+        for (const file of picked) {
+          try {
+            new FsFile(file.uri).delete();
+          } catch {
+            // The OS may already have removed the picker cache copy.
+          }
+        }
+        setImportingId(null);
+        if (uploaded) await loadFiles(parentId, '', false);
+      }
+    })().catch((caught: unknown) =>
+      Alert.alert(
+        'Could not pick files',
+        caught instanceof Error ? caught.message : String(caught),
+      ),
+    );
+  }, [client, importingId, loadFiles, parentId, projectFolderId, sessionId]);
+
+  const useProjectFile = useCallback(
+    (file: DriveFile) => {
+      if (!projectFolderId) return;
+      Alert.alert(file.name, 'This file stays in Google Drive.', [
+        { text: 'Cancel', style: 'cancel' },
+        ...(file.webViewLink
+          ? [
+              {
+                text: 'Open in Google Drive',
+                onPress: () => void Linking.openURL(file.webViewLink!),
+              },
+            ]
+          : []),
+        {
+          text: 'Add to Project Knowledge',
+          onPress: () => {
+            setImportingId(file.id);
+            void client
+              .importProjectGoogleDriveFile(sessionId, projectFolderId, file.id)
+              .then((result) => Alert.alert('Added to Project Knowledge', result.path))
+              .catch((caught: unknown) =>
+                Alert.alert(
+                  'Could not add file',
+                  caught instanceof Error ? caught.message : String(caught),
+                ),
+              )
+              .finally(() => setImportingId(null));
+          },
+        },
+      ]);
+    },
+    [client, projectFolderId, sessionId],
+  );
+
   const onPressItem = useCallback(
     (file: DriveFile) => {
       if (isDriveFolder(file)) openFolder(file);
+      else if (purpose === 'project') useProjectFile(file);
       else if (purpose === 'workspace') assignWorkspaceFile(file);
       else importFile(file);
     },
-    [assignWorkspaceFile, importFile, openFolder, purpose],
+    [assignWorkspaceFile, importFile, openFolder, purpose, useProjectFile],
   );
 
-  const rootTitle = purpose === 'workspace' ? 'Choose Workspace file' : 'Google Drive';
+  const rootTitle =
+    purpose === 'workspace'
+      ? 'Choose Workspace file'
+      : purpose === 'folder'
+        ? 'Choose Drive folder'
+        : purpose === 'project'
+          ? 'Google Drive'
+          : 'Google Drive';
   const title = path.length > 0 ? (path[path.length - 1]?.name ?? rootTitle) : rootTitle;
 
   return (
@@ -333,18 +499,31 @@ function GoogleDrivePicker({
           title,
           // Disconnecting the account belongs here in the Drive flow, not in
           // Settings (the client id is server-configured, never user-set).
-          headerRight: connected
-            ? () => (
-                <Pressable
-                  onPress={disconnect}
-                  accessibilityRole="button"
-                  accessibilityLabel="Disconnect Google Drive"
-                  hitSlop={8}
-                >
-                  <Text style={styles.headerAction}>Disconnect</Text>
-                </Pressable>
-              )
-            : undefined,
+          headerRight:
+            connected && purpose === 'project'
+              ? () => (
+                  <Pressable
+                    onPress={uploadFiles}
+                    disabled={importingId !== null || !parentId}
+                    accessibilityRole="button"
+                    accessibilityLabel="Upload files to Google Drive"
+                    hitSlop={8}
+                  >
+                    <Text style={styles.headerAction}>Upload</Text>
+                  </Pressable>
+                )
+              : connected
+                ? () => (
+                    <Pressable
+                      onPress={disconnect}
+                      accessibilityRole="button"
+                      accessibilityLabel="Disconnect Google Drive"
+                      hitSlop={8}
+                    >
+                      <Text style={styles.headerAction}>Disconnect</Text>
+                    </Pressable>
+                  )
+                : undefined,
         }}
       />
 
@@ -357,9 +536,8 @@ function GoogleDrivePicker({
           <Icon name="cloud" size={40} color={theme.colors.textMuted} />
           <Text style={styles.emptyTitle}>Connect Google Drive</Text>
           <Text style={styles.emptyBody}>
-            Google grants Verity access to Workspace files in this account. Verity only edits the
-            native Google Docs, Sheets, or Slides file you explicitly assign to a session. You can
-            disconnect at any time.
+            Google grants Verity access to files in this account. Projects can use only the folder
+            you connect in their settings. You can disconnect at any time.
           </Text>
           <Pressable
             style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
@@ -377,40 +555,53 @@ function GoogleDrivePicker({
         </View>
       ) : (
         <>
-          <View style={styles.searchContainer}>
-            <Icon name="search" size={18} color={theme.colors.textMuted} />
-            <TextInput
-              style={styles.searchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search Google Drive"
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="search"
-              accessibilityLabel="Search Google Drive"
-            />
-            {searchQuery.length > 0 ? (
-              <Pressable
-                onPress={() => {
-                  setSearchQuery('');
-                  setDebouncedQuery('');
-                }}
-                accessibilityRole="button"
-                accessibilityLabel="Clear Google Drive search"
-                hitSlop={8}
-              >
-                <Icon name="x" size={18} color={theme.colors.textMuted} />
-              </Pressable>
-            ) : null}
-          </View>
+          {purpose === 'folder' && path.length > 0 ? (
+            <Pressable
+              style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
+              onPress={connectCurrentFolder}
+              disabled={importingId !== null}
+              accessibilityRole="button"
+              accessibilityLabel={`Connect ${path.at(-1)?.name ?? 'this folder'}`}
+            >
+              <Text style={styles.primaryButtonLabel}>Connect this folder</Text>
+            </Pressable>
+          ) : null}
+          {purpose !== 'project' ? (
+            <View style={styles.searchContainer}>
+              <Icon name="search" size={18} color={theme.colors.textMuted} />
+              <TextInput
+                style={styles.searchInput}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search Google Drive"
+                placeholderTextColor={theme.colors.textFaint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+                accessibilityLabel="Search Google Drive"
+              />
+              {searchQuery.length > 0 ? (
+                <Pressable
+                  onPress={() => {
+                    setSearchQuery('');
+                    setDebouncedQuery('');
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear Google Drive search"
+                  hitSlop={8}
+                >
+                  <Icon name="x" size={18} color={theme.colors.textMuted} />
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
 
-          {path.length === 0 && debouncedQuery.length === 0 ? (
+          {purpose !== 'project' && path.length === 0 && debouncedQuery.length === 0 ? (
             <View style={styles.driveViewTabs}>
               {(
                 [
                   ['my-drive', 'My Drive'],
-                  ['shared-with-me', 'Shared with me'],
+                  ['shared', 'Shared'],
                 ] as const
               ).map(([view, label]) => {
                 const selected = driveView === view;
@@ -418,7 +609,10 @@ function GoogleDrivePicker({
                   <Pressable
                     key={view}
                     style={[styles.driveViewTab, selected ? styles.driveViewTabSelected : null]}
-                    onPress={() => setDriveView(view)}
+                    onPress={() => {
+                      setSharedDriveId(null);
+                      setDriveView(view);
+                    }}
                     accessibilityRole="tab"
                     accessibilityState={{ selected }}
                   >
@@ -436,7 +630,7 @@ function GoogleDrivePicker({
             </View>
           ) : null}
 
-          {path.length > 0 && debouncedQuery.length === 0 ? (
+          {path.length > (purpose === 'project' ? 1 : 0) && debouncedQuery.length === 0 ? (
             <Pressable
               style={({ pressed }) => [styles.upRow, pressed ? styles.itemPressed : null]}
               onPress={goUp}
@@ -454,6 +648,8 @@ function GoogleDrivePicker({
             contentContainerStyle={files.length === 0 ? styles.listEmpty : styles.listContent}
             renderItem={({ item }) => {
               const isImporting = importingId === item.id;
+              const isSharedDrive =
+                driveView === 'shared' && sharedDriveId === null && sharedDriveIds.has(item.id);
               return (
                 <Pressable
                   style={({ pressed }) => [styles.itemRow, pressed ? styles.itemPressed : null]}
@@ -461,17 +657,22 @@ function GoogleDrivePicker({
                   disabled={importingId !== null}
                   accessibilityRole="button"
                   accessibilityLabel={
-                    isDriveFolder(item)
-                      ? `Open folder ${item.name}`
-                      : purpose === 'workspace'
-                        ? `Assign ${item.name}`
-                        : `Import ${item.name}`
+                    isSharedDrive
+                      ? `Open shared drive ${item.name}`
+                      : isDriveFolder(item)
+                        ? `Open folder ${item.name}`
+                        : purpose === 'workspace'
+                          ? `Assign ${item.name}`
+                          : `Import ${item.name}`
                   }
                 >
                   <Icon name={iconForFile(item)} size={22} color={theme.colors.textMuted} />
-                  <Text style={styles.itemLabel} numberOfLines={1}>
-                    {item.name}
-                  </Text>
+                  <View style={styles.itemText}>
+                    <Text style={styles.itemLabel} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    {isSharedDrive ? <Text style={styles.itemMeta}>Shared drive</Text> : null}
+                  </View>
                   {isImporting ? (
                     <ActivityIndicator size="small" color={theme.colors.primary} />
                   ) : isDriveFolder(item) ? (
@@ -501,15 +702,7 @@ function GoogleDrivePicker({
                 ) : null}
                 {!loading && nextPageToken !== undefined ? (
                   <Pressable
-                    onPress={() =>
-                      void loadFiles(
-                        parentId,
-                        debouncedQuery,
-                        driveView === 'shared-with-me',
-                        true,
-                        nextPageToken,
-                      )
-                    }
+                    onPress={() => void loadFiles(parentId, debouncedQuery, true, nextPageToken)}
                     accessibilityRole="button"
                     accessibilityLabel="Load more"
                   >
@@ -607,7 +800,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
   },
   itemPressed: { backgroundColor: theme.colors.surfaceAlt },
-  itemLabel: { flex: 1, color: theme.colors.text, fontSize: theme.text.md },
+  itemText: { flex: 1, gap: 2 },
+  itemLabel: { color: theme.colors.text, fontSize: theme.text.md },
+  itemMeta: { color: theme.colors.textMuted, fontSize: theme.text.xs },
   upRow: {
     flexDirection: 'row',
     alignItems: 'center',

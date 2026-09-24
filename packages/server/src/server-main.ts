@@ -8,6 +8,7 @@ import { tlsFromEnvironment, managedClientIdentitySecret } from './deployment-tl
 import {
   buildEmbeddedServer,
   parseByteSize,
+  parseSwapSize,
   parseCpuCores,
   parseDefaultOnFlag,
   parseNonNegativeInt,
@@ -876,12 +877,13 @@ async function main(): Promise<void> {
       projectRelayImage,
       projectRelayGid,
       // Sandbox runtime hardening (security review C1). The provisioner drops all
-      // caps, blocks privilege escalation, and defaults to 512 PIDs, 4 GiB memory
-      // with swap disabled, and 2 CPU cores. These env knobs tune those ceilings.
+      // caps, blocks privilege escalation, and defaults to 512 PIDs, 6 GiB memory
+      // with swap disabled, and 4 CPU cores. These env knobs tune those ceilings.
       // A devcontainer that needs sudo can set
       // VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION=1 (or add caps via CAP_ADD).
       sandboxPidsLimit: parseNonNegativeInt(process.env.VERITY_SANDBOX_PIDS_LIMIT),
       sandboxMemoryBytes: parseByteSize(process.env.VERITY_SANDBOX_MEMORY),
+      sandboxSwapBytes: parseSwapSize(process.env.VERITY_SANDBOX_SWAP),
       sandboxNanoCpus: parseCpuCores(process.env.VERITY_SANDBOX_CPUS),
       sandboxCpuShares: parseNonNegativeInt(process.env.VERITY_SANDBOX_CPU_SHARES),
       sandboxCapAdd: splitList(process.env.VERITY_SANDBOX_CAP_ADD),

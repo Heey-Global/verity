@@ -1,4 +1,5 @@
 import * as acp from '@agentclientprotocol/sdk';
+import { createHash } from 'node:crypto';
 import type {
   ContentBlock,
   McpServer,
@@ -127,6 +128,10 @@ export interface AcpBackendProfile {
   /** Raised when a resume is asked for but the agent cannot load sessions. */
   readonly loadSessionUnsupported: string;
   readonly clientCapabilitiesMeta?: Record<string, unknown> | undefined;
+  /** This adapter is known to accept HTTP MCP descriptors when it omits the
+   * optional capability object from `initialize`. An explicit `http: false`
+   * still wins. */
+  readonly httpMcpWhenUnspecified?: boolean | undefined;
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */
   sessionMeta(opts: RunTurnOptions): Record<string, unknown>;
@@ -229,11 +234,18 @@ function processStream(process: SpawnedProcess): acp.Stream {
 function imageBlocks(attachments: RunTurnOptions['attachments']): ContentBlock[] {
   return (attachments ?? [])
     .filter((attachment) => attachment.kind === 'image')
-    .map((attachment): ContentBlock => ({
-      type: 'image',
-      mimeType: attachment.mediaType,
-      data: attachment.data,
-    }));
+    .flatMap((attachment): ContentBlock[] => {
+      const attachmentId = createHash('sha256')
+        .update(Buffer.from(attachment.data, 'base64'))
+        .digest('hex');
+      return [
+        {
+          type: 'text',
+          text: `Verity session attachment ID for the following image: ${attachmentId}`,
+        },
+        { type: 'image', mimeType: attachment.mediaType, data: attachment.data },
+      ];
+    });
 }
 
 /** Verity's system directives, prefixed onto the prompt. The ACP agents other than
@@ -713,7 +725,10 @@ export async function runAcpTurn(
         // can never call. Every call is still approval-gated server-side; the
         // bearer identifies the turn, it does not authorize anything.
         const gateway = opts.mcpGateway;
-        const agentSpeaksHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http === true;
+        const advertisedHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http;
+        const agentSpeaksHttpMcp =
+          advertisedHttpMcp === true ||
+          (advertisedHttpMcp === undefined && profile.httpMcpWhenUnspecified === true);
         const mcpServers: McpServer[] = agentSpeaksHttpMcp
           ? [
               ...(gateway === undefined

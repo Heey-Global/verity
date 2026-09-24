@@ -3694,10 +3694,11 @@ export class Conductor {
       await this.deps.store.latestEventSeq(marker.sessionId),
       marker.promptSeq,
     );
-    if ((this.pendingPermissionRequests.get(marker.sessionId)?.size ?? 0) > 0) {
-      this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes: 0 });
-      return;
-    }
+    // A turn waiting on the operator is legitimately silent, so it can never count as
+    // STALLED. It is still probed: a Sandbox that died under an open permission card
+    // leaves the card unanswerable (its control socket is gone), and skipping the probe
+    // here kept exactly that turn `running` forever. Only a confirmed-dead verdict acts.
+    const awaitingOperator = (this.pendingPermissionRequests.get(marker.sessionId)?.size ?? 0) > 0;
     const seen = this.livenessSeen.get(marker.sessionId);
     if (seen === undefined || seen.seq !== newest) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes: 0 });
@@ -3717,7 +3718,7 @@ export class Conductor {
     // `uncertain` proves nothing and resets the confirmed-live count. `live` is a
     // positive observation: the Runner exists, but an unchanged transcript says
     // its turn is making no visible progress.
-    const liveProbes = outcome.status === 'live' ? seen.liveProbes + 1 : 0;
+    const liveProbes = outcome.status === 'live' && !awaitingOperator ? seen.liveProbes + 1 : 0;
     const stalled = outcome.status === 'live' && liveProbes >= TURN_LIVENESS_STALLED_WINDOWS;
     if (outcome.status !== 'dead' && !stalled) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes });

@@ -4346,30 +4346,34 @@ describe('GET /projects (#174)', () => {
       });
     });
 
-    // Not "matches". A Server that ships no bundle cannot compare, and the two
-    // call for opposite responses.
-    it('reports unknown when this Server ships no toolkit bundle', async () => {
-      expect(await driftOf(projectRow(), () => Promise.resolve(undefined))).toMatchObject({
-        verdict: 'unknown',
-      });
+    // No verdict, and never "matches": base-image projects are never attested,
+    // so `unknown` is their permanent state, and a banner on it would be always
+    // on for most of the fleet with nothing that clears it.
+    it('carries no verdict for an unrecorded toolkit identity', async () => {
+      expect(await driftOf(projectRow({ toolkitIdentity: null }))).toBeNull();
+    });
+
+    // A Server that ships no bundle cannot compare. That is a deployment fault
+    // reported by the startup log — not a per-project banner, and not an all-clear.
+    it('carries no verdict when this Server ships no toolkit bundle', async () => {
+      expect(await driftOf(projectRow(), () => Promise.resolve(undefined))).toBeNull();
     });
 
     // A broken bundle read is a deployment fault, not a reason to 500 the whole
-    // project list — but it must not silently become an all-clear either.
-    it('degrades to unknown when the bundle cannot be read, and still serves the list', async () => {
-      expect(await driftOf(projectRow(), () => Promise.reject(new Error('EACCES')))).toMatchObject({
-        verdict: 'unknown',
-      });
+    // project list. It must not become `matches` either: on the wire it carries
+    // no verdict, and the fault is announced by the server log below.
+    it('degrades to no verdict when the bundle cannot be read, and still serves the list', async () => {
+      expect(await driftOf(projectRow(), () => Promise.reject(new Error('EACCES')))).toBeNull();
     });
 
-    // `isDriftReportable` declines these rows, and null is "no subject" — the
-    // client must not render it as a clean bill of health.
+    // `isDriftReportable` declines these rows. null carries no verdict — never
+    // `matches` — so nothing downstream can read it as a verified toolkit.
     it('is null for a row the drift report declines to judge', async () => {
       expect(await driftOf(projectRow({ state: 'failed' }))).toBeNull();
     });
 
     // Degrading quietly would hide the packaging or mount fault behind a fleet
-    // of `unknown` verdicts with nothing anywhere saying why. But the cache
+    // of missing verdicts with nothing anywhere saying why. But the cache
     // drops a rejected read, so every project on every poll retries it — logging
     // per project would bury the line in its own repetition.
     it('logs an unreadable bundle once while it stays unreadable', async () => {
@@ -5732,12 +5736,12 @@ describe('GET /models (#143)', () => {
   // default) must be reflected, so an accidental CLAUDE_MODELS edit is caught in exactly one spot.
   it('pins the curated Claude model list and the spawn default (the single source of record)', () => {
     expect(CLAUDE_MODELS).toEqual([
-      'claude-opus-5',
+      'claude-opus-5-5',
       'claude-fable-5-1',
       'claude-sonnet-5',
       'claude-haiku-4-5-20251001',
     ]);
-    expect(DEFAULT_MODEL).toBe('claude-opus-5');
+    expect(DEFAULT_MODEL).toBe('claude-opus-5-5');
   });
 
   it('returns no subscription models before any agent login is configured', async () => {
@@ -5754,7 +5758,7 @@ describe('GET /models (#143)', () => {
     expect(res.statusCode).toBe(200);
     const body: { models: string[]; default?: string } = res.json();
     expect(body.models).toEqual([...CLAUDE_SORTED]);
-    expect(body.default).toBe('claude-opus-5');
+    expect(body.default).toBe(DEFAULT_MODEL);
     expect(body.default).not.toContain('/');
   });
 
@@ -5815,7 +5819,7 @@ describe('GET /models (#143)', () => {
           'codex/gpt-5.3-codex-spark',
         ],
         moreModels: ['codex/gpt-5.5', 'codex/gpt-5.3-codex-spark'],
-        default: 'claude-opus-5',
+        default: DEFAULT_MODEL,
       });
     } finally {
       await withModels.close();
@@ -5840,7 +5844,7 @@ describe('GET /models (#143)', () => {
         'deepinfra/moonshotai/Kimi-K2.7-Code',
         'deepinfra/zai-org/GLM-5.2',
       ]);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }
@@ -5859,7 +5863,7 @@ describe('GET /models (#143)', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.models).toEqual([...CLAUDE_SORTED]);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }
@@ -5878,7 +5882,7 @@ describe('GET /models (#143)', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.models).toEqual([...CLAUDE_SORTED, 'codex/gpt-5.6-sol']);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }
@@ -5897,7 +5901,7 @@ describe('GET /models (#143)', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(body.models).toEqual([...CLAUDE_SORTED]);
-      expect(body.default).toBe('claude-opus-5');
+      expect(body.default).toBe(DEFAULT_MODEL);
     } finally {
       await withModels.close();
     }
@@ -5909,12 +5913,12 @@ describe('GET /models (#143)', () => {
       eventStore: ctx.store,
       bus,
       conductor,
-      listModels: () => Promise.resolve(['claude-opus-5', 'deepinfra/zai-org/GLM-5.2']),
+      listModels: () => Promise.resolve(['claude-opus-5-5', 'deepinfra/zai-org/GLM-5.2']),
     });
     try {
       const res = await withModels.inject({ method: 'GET', url: '/models' });
       const body = res.json<{ models: string[] }>();
-      expect(body.models.filter((m) => m === 'claude-opus-5')).toHaveLength(1);
+      expect(body.models.filter((m) => m === 'claude-opus-5-5')).toHaveLength(1);
       expect(body.models).toContain('deepinfra/zai-org/GLM-5.2');
     } finally {
       await withModels.close();

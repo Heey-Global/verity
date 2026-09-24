@@ -106,6 +106,8 @@ export const gatewayToolNameSchema = z.enum([
   'verity_google_docs',
   'verity_knowledge',
   'verity_google_sheets',
+  'verity_gmail',
+  'verity_google_drive',
 ]);
 export type GatewayToolName = z.infer<typeof gatewayToolNameSchema>;
 

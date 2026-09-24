@@ -42,6 +42,24 @@ export function createMcpGatewayToolExecutor(options: {
         request: unknown;
       }) => Promise<unknown>)
     | undefined;
+  gmail?:
+    | ((input: {
+        projectId: string;
+        sessionId: string;
+        turnId: string;
+        invocationId: string;
+        request: unknown;
+      }) => Promise<unknown>)
+    | undefined;
+  googleDrive?:
+    | ((input: {
+        projectId: string;
+        sessionId: string;
+        turnId: string;
+        invocationId: string;
+        request: unknown;
+      }) => Promise<unknown>)
+    | undefined;
 }): McpGatewayDeps['invokeTool'] {
   const runTrustedCli = options.runTrustedCli ?? runSupervisorTrustedCli;
   const runnerRoot = options.runnerRoot;
@@ -75,6 +93,14 @@ export function createMcpGatewayToolExecutor(options: {
       if (options.googleSheets === undefined) throw new Error('Google Sheets is unavailable');
       return options.googleSheets({ projectId, sessionId, turnId, invocationId, request });
     }
+    if (toolName === 'verity_gmail') {
+      if (options.gmail === undefined) throw new Error('Gmail is unavailable');
+      return options.gmail({ projectId, sessionId, turnId, invocationId, request });
+    }
+    if (toolName === 'verity_google_drive') {
+      if (options.googleDrive === undefined) throw new Error('Google Drive is unavailable');
+      return options.googleDrive({ projectId, sessionId, turnId, invocationId, request });
+    }
     if (toolName === 'verity_knowledge') {
       throw new Error('knowledge tools are unavailable');
     }
@@ -99,14 +125,14 @@ export function createMcpGatewayToolExecutor(options: {
 
 export const SCRIPT_ISOLATION_UNAVAILABLE_MESSAGE =
   "Worktree entry scripts are unavailable in this project's Sandbox: its container runtime " +
-  'does not enforce Landlock, which confines what an approved script can read. The request ' +
+  'cannot enforce the filesystem boundary for approved scripts. The request ' +
   'was not shown for approval and nothing ran. Run an installed executable without ' +
-  '`entryScript` instead, or ask the operator to enable Landlock for this project.';
+  '`entryScript` instead, or use a container runtime with script isolation support.';
 
 /**
  * Refuse a `verity_secret_run` entry script before its approval card is raised when the
- * project's Sandbox reports it cannot confine one (gVisor, for example, implements no
- * Landlock). The supervisor and the spawn broker refuse the same request on their own, so
+ * project's Sandbox reports it cannot confine one. The supervisor and the spawn broker
+ * refuse the same request on their own, so
  * this only moves the refusal ahead of a card whose answer could not change the outcome.
  *
  * Only an explicit `scriptIsolation: false` refuses. A supervisor that predates the field

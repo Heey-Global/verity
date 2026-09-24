@@ -47,6 +47,7 @@ export interface ControlPlaneDeps {
    * the route layer; provisioning the same folder does not make it visible to
    * HTTP handlers unless this value crosses the composition boundary too. */
   dataRoot?: ServerDeps['dataRoot'];
+  matrixConnectorToken?: ServerDeps['matrixConnectorToken'];
   /** TLS termination options for the public direct-server listener. */
   https?: ServerDeps['https'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
@@ -91,6 +92,8 @@ export interface ControlPlaneDeps {
   previewShareManager?: ServerDeps['previewShareManager'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
+  /** Invalidate cached access tokens after shared Google OAuth credentials change. */
+  onGoogleCredentialsChanged?: ServerDeps['onGoogleCredentialsChanged'];
   /** Standing brokered-secret grants for a project (ADR 0011 D2). */
   listBrokeredGrants?: ((projectId: string) => Promise<BrokeredGrantRecord[]>) | undefined;
   /** Ends one standing grant — the only exit a `forever` grant has. */
@@ -299,6 +302,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
   return buildServer({
     eventStore: deps.eventStore,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
+    ...(deps.matrixConnectorToken !== undefined
+      ? { matrixConnectorToken: deps.matrixConnectorToken }
+      : {}),
     ...(deps.https !== undefined ? { https: deps.https } : {}),
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }
@@ -341,6 +347,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
+    ...(deps.onGoogleCredentialsChanged !== undefined
+      ? { onGoogleCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
     ...(deps.listBrokeredGrants !== undefined
       ? { listBrokeredGrants: deps.listBrokeredGrants }

@@ -36,7 +36,7 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.278}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.280}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.79.0}"
 # renovate: datasource=github-releases depName=cli/cli
@@ -46,7 +46,7 @@ DOPPLER_VERSION="${DOPPLERVERSION:-3.76.5}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.155.1}"
+CODEX_VERSION="${CODEXVERSION:-0.156.1}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-1.12.0}"
 # renovate: datasource=npm depName=opencode-ai
@@ -542,6 +542,8 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-runner-supervisor-start
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-stack-start" \
     /usr/local/bin/verity-runner-stack-start
+  install -m 0755 "$FEATURE_DIR/bin/verity-node-modules-install" \
+    /usr/local/bin/verity-node-modules-install
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-worker.mjs" \
     /usr/local/bin/verity-runner-worker
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-spawn-broker.mjs" \

@@ -13,6 +13,7 @@ import {
   type Attachment,
   type AttachmentUpload,
   type BranchSwitchRequest,
+  type DriveFile,
   VerityApiError,
   type VerityClient,
   type ChoicesMessage,
@@ -36,6 +37,8 @@ import {
   formatChoiceAnswer,
   freezeTranscriptTail,
   frozenTranscriptRows,
+  gmailPreviewHtml,
+  gmailSendSummary,
   githubRefUrl,
   isPullRequestConflicted,
   isSessionImageFilePath,
@@ -82,6 +85,7 @@ import {
   trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
+  type GmailSessionConnection,
   type RestoredQueuedTurn,
   type Row,
   type ToolCallTone,
@@ -128,6 +132,7 @@ import {
   type ViewStyle,
   type ViewToken,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
@@ -173,6 +178,7 @@ import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
+import { runGmailAuth } from '../../lib/googleDrive';
 import {
   type ClickModifiers,
   type DragFileItem,
@@ -2171,6 +2177,7 @@ export function SessionChat({
     if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
+  const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2178,6 +2185,12 @@ export function SessionChat({
         .getSessionGoogleWorkspaceFile(sessionId)
         .then((file) => {
           if (active) setWorkspaceFile(file);
+        })
+        .catch(() => undefined);
+      void client
+        .getSessionGmailConnection(sessionId)
+        .then((connection) => {
+          if (active) setGmailConnection(connection);
         })
         .catch(() => undefined);
       return () => {
@@ -2750,19 +2763,52 @@ export function SessionChat({
     if (Platform.OS === 'ios') pendingMeetingAudioRef.current = true;
     else uploadMeetingAudio();
   }, [uploadMeetingAudio]);
-  const onPickGoogleDrive = useCallback(() => {
+  const onConnectGmail = useCallback(() => {
     setAttachMenuOpen(false);
-    // A route navigation (not a native picker), so it can run immediately without
-    // the iOS modal-dismiss deferral the meeting-audio path needs.
-    router.push({ pathname: '/google-drive/[sessionId]', params: { sessionId } });
-  }, [sessionId]);
-  const onPickGoogleWorkspace = useCallback(() => {
-    setAttachMenuOpen(false);
-    router.push({
-      pathname: '/google-drive/[sessionId]',
-      params: { sessionId, purpose: 'workspace' },
-    });
-  }, [sessionId]);
+    void (async () => {
+      try {
+        let connection = gmailConnection ?? (await client.getSessionGmailConnection(sessionId));
+        if (!connection.connected) {
+          if (!connection.clientId) {
+            Alert.alert(
+              'Gmail not set up',
+              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+            );
+            return;
+          }
+          const auth = await runGmailAuth(connection.clientId);
+          if (auth.kind === 'cancelled') return;
+          await client.connectGmail({
+            code: auth.code,
+            codeVerifier: auth.codeVerifier,
+            redirectUri: auth.redirectUri,
+          });
+        }
+        connection = await client.enableSessionGmail(sessionId);
+        setGmailConnection(connection);
+      } catch (error) {
+        Alert.alert(
+          'Could not connect Gmail',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  }, [client, gmailConnection, sessionId]);
+  const disableGmail = useCallback(() => {
+    void client
+      .disableSessionGmail(sessionId)
+      .then(() =>
+        setGmailConnection((connection) =>
+          connection === null ? null : { ...connection, enabled: false },
+        ),
+      )
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not disconnect Gmail',
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+  }, [client, sessionId]);
   const clearWorkspaceFile = useCallback(() => {
     if (workspaceFile === null) return;
     Alert.alert(
@@ -3347,6 +3393,24 @@ export function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {gmailConnection?.enabled ? (
+        <View style={styles.workspaceFileBar}>
+          <View style={styles.slideDeckLink}>
+            <Icon name="mail" size={16} color={theme.colors.primary} />
+            <Text style={styles.slideDeckName} numberOfLines={1}>
+              Gmail{gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
+            </Text>
+          </View>
+          <Pressable
+            onPress={disableGmail}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Disconnect Gmail from this session"
+          >
+            <Icon name="x" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
+      ) : null}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
       ) : null}
@@ -3364,6 +3428,7 @@ export function SessionChat({
         <SessionFilesSheet
           client={client}
           sessionId={sessionId}
+          projectId={projectId ?? null}
           baseUrl={baseUrl}
           initialFilePath={filesInitialPath}
           onClose={() => setFilesOpen(false)}
@@ -3756,8 +3821,7 @@ export function SessionChat({
         onPickPhotos={onPickPhotos}
         onPickFiles={onPickFiles}
         onPickMeetingAudio={onPickMeetingAudio}
-        onPickGoogleDrive={onPickGoogleDrive}
-        onPickGoogleWorkspace={onPickGoogleWorkspace}
+        onConnectGmail={onConnectGmail}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
@@ -3935,12 +3999,14 @@ const MAX_DROPPED_UPLOADS = 24;
 function SessionFilesSheet({
   client,
   sessionId,
+  projectId,
   baseUrl,
   initialFilePath,
   onClose,
 }: {
   client: VerityClient;
   sessionId: string;
+  projectId: string | null;
   baseUrl: string;
   initialFilePath: string | null;
   onClose: () => void;
@@ -3961,6 +4027,11 @@ function SessionFilesSheet({
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
+  const [driveActive, setDriveActive] = useState(false);
+  const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
+  const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
+  const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
+  const [driveUnconfigured, setDriveUnconfigured] = useState(false);
   // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
   // matches is a superseded tap and is dropped. See openFile.
   const previewRequest = useRef(0);
@@ -4014,6 +4085,7 @@ function SessionFilesSheet({
   }, [client, sessionId, initialFilePath]);
 
   useEffect(() => {
+    if (driveActive) return;
     let active = true;
     setLoading(true);
     setError(null);
@@ -4036,7 +4108,52 @@ function SessionFilesSheet({
     return () => {
       active = false;
     };
-  }, [client, sessionId, path, root, reloadKey]);
+  }, [client, driveActive, sessionId, path, root, reloadKey]);
+
+  useEffect(() => {
+    if (!driveActive || !projectId) return;
+    let active = true;
+    const loadDrive = async (): Promise<void> => {
+      setLoading(true);
+      setError(null);
+      setDriveUnconfigured(false);
+      try {
+        let folderId = driveFolderId;
+        let nextPath = drivePath;
+        if (!folderId) {
+          const detail = await client.getProject(projectId);
+          folderId = detail.settings?.googleDriveFolderId ?? null;
+          const folderName = detail.settings?.googleDriveFolderName ?? null;
+          if (!folderId || !folderName) {
+            if (active) {
+              setDriveEntries([]);
+              setDriveUnconfigured(true);
+            }
+            return;
+          }
+          nextPath = [{ id: folderId, name: folderName }];
+          if (active) {
+            setDriveFolderId(folderId);
+            setDrivePath(nextPath);
+          }
+        }
+        const parentId = nextPath.at(-1)?.id ?? folderId;
+        const page = await client.listProjectGoogleDriveFiles(projectId, folderId, { parentId });
+        if (active) setDriveEntries(page.files);
+      } catch (caught) {
+        if (active) {
+          setDriveEntries([]);
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void loadDrive();
+    return () => {
+      active = false;
+    };
+  }, [client, driveActive, driveFolderId, drivePath, projectId, reloadKey]);
 
   // A reload — an upload landed, or the agent changed the tree — can retire rows
   // the selection still names. Pruning keeps the header count honest and stops a
@@ -4092,6 +4209,107 @@ function SessionFilesSheet({
       }
     })();
   }, [client, path, root, sessionId]);
+
+  const uploadDriveFiles = useCallback(() => {
+    if (!projectId || !driveFolderId || drivePath.length === 0) return;
+    void (async () => {
+      let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
+      try {
+        picked = await pickSessionFiles();
+        if (picked.length === 0) return;
+        setUploading(true);
+        for (const file of picked) {
+          await client.uploadProjectGoogleDriveFile(projectId, driveFolderId, {
+            parentId: drivePath.at(-1)?.id,
+            fileName: file.fileName,
+            mimeType: 'application/octet-stream',
+            data: new FsFile(file.uri),
+          });
+        }
+        setReloadKey((key) => key + 1);
+      } catch (caught) {
+        Alert.alert(
+          'Could not upload file',
+          caught instanceof Error ? caught.message : String(caught),
+        );
+      } finally {
+        for (const file of picked) {
+          try {
+            new FsFile(file.uri).delete();
+          } catch {
+            // Best effort cleanup of the document picker cache copy.
+          }
+        }
+        setUploading(false);
+      }
+    })();
+  }, [client, driveFolderId, drivePath, projectId]);
+
+  const openDriveFile = useCallback(
+    (file: DriveFile) => {
+      if (!projectId || !driveFolderId) return;
+      const canUseInChat = new Set([
+        'application/vnd.google-apps.document',
+        'application/vnd.google-apps.spreadsheet',
+        'application/vnd.google-apps.presentation',
+      ]).has(file.mimeType);
+      Alert.alert(
+        file.name,
+        'This file stays in Google Drive.',
+        [
+          ...(Platform.OS === 'android' && canUseInChat && file.webViewLink
+            ? []
+            : [{ text: 'Cancel', style: 'cancel' as const }]),
+          ...(file.webViewLink
+            ? [
+                {
+                  text: 'Open in Google Drive',
+                  onPress: () => void Linking.openURL(file.webViewLink!),
+                },
+              ]
+            : []),
+          ...(canUseInChat
+            ? [
+                {
+                  text: 'Use in this chat',
+                  onPress: () => {
+                    setMutating(true);
+                    void client
+                      .assignSessionGoogleWorkspaceFile(sessionId, file.id)
+                      .then(() => onClose())
+                      .catch((caught: unknown) =>
+                        Alert.alert(
+                          'Could not use file in chat',
+                          caught instanceof Error ? caught.message : String(caught),
+                        ),
+                      )
+                      .finally(() => setMutating(false));
+                  },
+                },
+              ]
+            : []),
+          {
+            text: 'Add to Project Knowledge',
+            onPress: () => {
+              setMutating(true);
+              void client
+                .importProjectGoogleDriveFile(projectId, driveFolderId, file.id)
+                .then((result) => Alert.alert('Added to Project Knowledge', result.path))
+                .catch((caught: unknown) =>
+                  Alert.alert(
+                    'Could not add file',
+                    caught instanceof Error ? caught.message : String(caught),
+                  ),
+                )
+                .finally(() => setMutating(false));
+            },
+          },
+        ],
+        { cancelable: true },
+      );
+    },
+    [client, driveFolderId, onClose, projectId, sessionId],
+  );
 
   const uploadDroppedFiles = useCallback(
     (files: readonly DroppedFileDescriptor[]) => {
@@ -4389,7 +4607,10 @@ function SessionFilesSheet({
     return byPath;
   }, [entries, selected, downloadUrlFor]);
 
-  const canSelect = useMemo(() => entries.some(isSelectableFile), [entries]);
+  const canSelect = useMemo(
+    () => !driveActive && entries.some(isSelectableFile),
+    [driveActive, entries],
+  );
 
   // React Native lays a `<Text>` out as one native text node, so the whole body in a
   // single node silently renders blank well below the server's 1 MB preview limit (a
@@ -4416,12 +4637,14 @@ function SessionFilesSheet({
                 : 'Files'}
             </Text>
             <Text style={styles.filesPath} numberOfLines={1}>
-              {root === 'worktree'
-                ? 'Worktree'
-                : root === 'knowledge'
-                  ? '📚 Knowledge'
-                  : '📚 Shared'}
-              {path ? ` / ${path}` : ''}
+              {driveActive
+                ? `Google Drive${drivePath.map(({ name }) => ` / ${name}`).join('')}`
+                : root === 'worktree'
+                  ? 'Worktree'
+                  : root === 'knowledge'
+                    ? '📚 Project'
+                    : '📚 Shared'}
+              {!driveActive && path ? ` / ${path}` : ''}
             </Text>
           </View>
           {canSelect ? (
@@ -4449,7 +4672,7 @@ function SessionFilesSheet({
                   disabled={mutating}
                   hitSlop={8}
                   accessibilityRole="button"
-                  accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Knowledge'}
+                  accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Project'}
                   style={styles.bookmarkRemove}
                 >
                   <Icon name="repeat" size={18} color={theme.colors.textMuted} />
@@ -4468,11 +4691,13 @@ function SessionFilesSheet({
             </>
           ) : null}
           <Pressable
-            onPress={uploadFiles}
-            disabled={uploading || mutating || error !== null}
+            onPress={driveActive ? uploadDriveFiles : uploadFiles}
+            disabled={uploading || mutating || error !== null || (driveActive && driveUnconfigured)}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={`Upload files to /${path}`}
+            accessibilityLabel={
+              driveActive ? 'Upload files to Google Drive' : `Upload files to /${path}`
+            }
             style={styles.bookmarkRemove}
           >
             {uploading ? (
@@ -4499,7 +4724,7 @@ function SessionFilesSheet({
             {(
               [
                 ['worktree', 'Files'],
-                ['knowledge', '📚 Knowledge'],
+                ['knowledge', '📚 Project'],
                 ['shared', '📚 Shared'],
               ] as const
             ).map(([candidate, label]) => (
@@ -4507,9 +4732,10 @@ function SessionFilesSheet({
                 key={candidate}
                 disabled={mutating}
                 onPress={() => {
-                  if (mutating || (candidate === root && path === '')) return;
+                  if (mutating || (!driveActive && candidate === root && path === '')) return;
                   previewRequest.current += 1;
                   endSelection();
+                  setDriveActive(false);
                   setRoot(candidate);
                   setPath('');
                   setEntries([]);
@@ -4534,9 +4760,107 @@ function SessionFilesSheet({
                 </Text>
               </Pressable>
             ))}
+            {projectId ? (
+              <Pressable
+                disabled={mutating}
+                onPress={() => {
+                  if (driveActive) return;
+                  previewRequest.current += 1;
+                  endSelection();
+                  setDriveActive(true);
+                  setLoading(true);
+                  setPreview(null);
+                  setError(null);
+                }}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: driveActive }}
+                accessibilityLabel="Google Drive"
+                style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
+              >
+                <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
+                  Google Drive
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
-        {preview ? (
+        {driveActive ? (
+          <ScrollView style={styles.filesList}>
+            {drivePath.length > 1 ? (
+              <Pressable
+                onPress={() => setDrivePath((current) => current.slice(0, -1))}
+                accessibilityRole="button"
+                accessibilityLabel="Back to parent folder"
+                style={({ pressed }) => [styles.fileRow, pressed ? styles.sheetRowPressed : null]}
+              >
+                <Icon name="corner-up-left" size={18} color={theme.colors.textMuted} />
+                <Text style={styles.sheetRowLabel}>..</Text>
+              </Pressable>
+            ) : null}
+            {error ? <Text style={styles.sheetError}>{error}</Text> : null}
+            {driveUnconfigured && projectId ? (
+              <View style={styles.driveSetupNotice}>
+                <Text style={styles.sheetEmpty}>No Google Drive folder connected.</Text>
+                <Pressable
+                  onPress={() => {
+                    onClose();
+                    router.push({
+                      pathname: '/project/[id]',
+                      params: { id: projectId, tab: 'settings' },
+                    });
+                  }}
+                  accessibilityRole="link"
+                  accessibilityLabel="Open project settings to connect Google Drive"
+                >
+                  <Text style={styles.driveSetupLink}>Open project settings</Text>
+                </Pressable>
+              </View>
+            ) : loading ? (
+              <View style={styles.sheetLoading}>
+                <ActivityIndicator color={theme.colors.textMuted} />
+              </View>
+            ) : driveEntries.length === 0 && !error ? (
+              <Text style={styles.sheetEmpty}>This folder is empty.</Text>
+            ) : (
+              driveEntries.map((file) => {
+                const folder = file.mimeType === 'application/vnd.google-apps.folder';
+                return (
+                  <Pressable
+                    key={file.id}
+                    onPress={() =>
+                      folder
+                        ? setDrivePath((current) => [...current, { id: file.id, name: file.name }])
+                        : openDriveFile(file)
+                    }
+                    disabled={mutating}
+                    accessibilityRole="button"
+                    accessibilityLabel={folder ? `Open folder ${file.name}` : file.name}
+                    style={({ pressed }) => [
+                      styles.fileRow,
+                      pressed ? styles.sheetRowPressed : null,
+                    ]}
+                  >
+                    <Icon
+                      name={folder ? 'folder' : 'file'}
+                      size={18}
+                      color={theme.colors.textMuted}
+                    />
+                    <View style={styles.fileMain}>
+                      <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
+                        {file.name}
+                      </Text>
+                    </View>
+                    <Icon
+                      name={folder ? 'chevron-right' : 'more-horizontal'}
+                      size={17}
+                      color={theme.colors.textFaint}
+                    />
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+        ) : preview ? (
           <View style={styles.filesPreviewWrap}>
             <View style={styles.filesPreviewHeader}>
               <Pressable
@@ -6468,6 +6792,7 @@ function PermissionPrompt({
   const isListSessions = pending.tool === 'verity_list_sessions';
   const isSessionProgress = pending.tool === 'verity_session_progress';
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
+  const isGmail = pending.tool === 'verity_gmail';
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
@@ -6476,6 +6801,7 @@ function PermissionPrompt({
   const recentSummary = isRecentSessionMessages
     ? recentSessionMessagesSummary(pending.input)
     : null;
+  const gmailSummary = isGmail ? gmailSendSummary(pending.input) : null;
   const cliSecretLabel = cliSummary === null ? null : trustedCliSecretLabel(cliSummary);
   const grantInput =
     typeof pending.input === 'object' && pending.input !== null && !Array.isArray(pending.input)
@@ -6496,7 +6822,8 @@ function PermissionPrompt({
     (isSessionHandoff && handoffSummary === null) ||
     (isListSessions && listingSummary === null) ||
     (isSessionProgress && progressSummary === null) ||
-    (isRecentSessionMessages && recentSummary === null)
+    (isRecentSessionMessages && recentSummary === null) ||
+    (isGmail && gmailSummary === null)
       ? permissionInputText(pending.input)
       : null;
   // The fallback path only — `brokeredRequestDetails` is non-null exactly when no summariser
@@ -6530,6 +6857,7 @@ function PermissionPrompt({
       recentSummary === null
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
+      gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
     // so this is consistency rather than exposure — but it is the headline, and the one field
@@ -6657,6 +6985,74 @@ function PermissionPrompt({
             . Attachments and tool payloads are excluded; recognized credential patterns are
             redacted, but free text may still contain sensitive material. Another page requires a
             new approval.
+          </Text>
+        </View>
+      ) : gmailSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          {gmailSummary.from === null ? null : (
+            <Text style={styles.permissionSubtitle} selectable>
+              From: {spellOutBidiControls(gmailSummary.from)}
+            </Text>
+          )}
+          {gmailSummary.replyTo === null ? null : (
+            <Text style={styles.permissionSubtitle} selectable>
+              Reply-To: {spellOutBidiControls(gmailSummary.replyTo)}
+            </Text>
+          )}
+          <Text style={styles.permissionSubtitle} selectable>
+            To: {spellOutBidiControls(gmailSummary.to.join(', '))}
+          </Text>
+          {gmailSummary.cc.length > 0 ? (
+            <Text style={styles.permissionSubtitle} selectable>
+              CC: {spellOutBidiControls(gmailSummary.cc.join(', '))}
+            </Text>
+          ) : null}
+          {gmailSummary.bcc.length > 0 ? (
+            <Text style={styles.permissionSubtitle} selectable>
+              BCC: {spellOutBidiControls(gmailSummary.bcc.join(', '))}
+            </Text>
+          ) : null}
+          <Text style={styles.permissionSubtitle} selectable>
+            Subject: {spellOutBidiControls(gmailSummary.subject)}
+          </Text>
+          {gmailSummary.htmlBody === null ? null : (
+            <Text style={styles.permissionHttpMeta}>HTML version:</Text>
+          )}
+          {gmailSummary.htmlBody === null ? null : (
+            <WebView
+              style={styles.permissionHtmlPreview}
+              source={{ html: gmailPreviewHtml(gmailSummary.htmlBody), baseUrl: 'about:blank' }}
+              javaScriptEnabled={false}
+              domStorageEnabled={false}
+              cacheEnabled={false}
+              originWhitelist={['about:blank']}
+              onShouldStartLoadWithRequest={(request) => request.url === 'about:blank'}
+              accessibilityLabel="Email HTML preview; external images and navigation are blocked"
+            />
+          )}
+          {gmailSummary.htmlBody === null ? null : (
+            <Text style={styles.permissionHttpMeta}>Plain-text alternative:</Text>
+          )}
+          <ScrollView style={styles.permissionBriefing} nestedScrollEnabled>
+            <Text style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(gmailSummary.body)}
+            </Text>
+          </ScrollView>
+          {gmailSummary.externalUrls.length > 0 ? (
+            <View>
+              <Text style={styles.permissionHttpMeta}>
+                External links and images in this email:
+              </Text>
+              {gmailSummary.externalUrls.map((url) => (
+                <Text key={url} style={styles.permissionHttpMeta} selectable>
+                  {spellOutBidiControls(url)}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+          <Text style={styles.permissionHttpMeta}>
+            Gmail sends exactly this text and HTML snapshot once. The original draft remains in
+            Gmail so a concurrent edit cannot change what is sent or be deleted by this action.
           </Text>
         </View>
       ) : brokeredRequestDetails !== null ? (
@@ -7215,7 +7611,7 @@ function InputBar({
   knowledgeEnabled: boolean;
   saveAttachmentsToKnowledge: boolean;
   onToggleSaveAttachmentsToKnowledge: () => void;
-  /** Open the attach menu, docked to the paperclip (its measured screen rect). */
+  /** Open the add menu, docked to the plus button (its measured screen rect). */
   onAttach: (anchor: AttachAnchor) => void;
   /** Attach Finder/Desktop files dropped anywhere on the composer. */
   onDropFiles: (files: Parameters<typeof readDroppedAttachments>[0]) => void;
@@ -7350,10 +7746,10 @@ function InputBar({
               hitSlop={4}
               accessibilityRole="button"
               accessibilityState={{ disabled: dead }}
-              accessibilityLabel="Add attachment"
+              accessibilityLabel="Add content or connect a service"
             >
               <Icon
-                name="paperclip"
+                name="plus"
                 size={22}
                 color={dead ? theme.colors.textFaint : theme.colors.textMuted}
               />
@@ -7405,7 +7801,7 @@ function InputBar({
 // Screen-space rect of the attach button, so the menu can dock to it.
 type AttachAnchor = { x: number; y: number; width: number; height: number };
 
-// The attach menu (mirrors Claude's): the composer's paperclip opens this small
+// The add menu: the composer's plus button opens this small
 // popover docked to it — a source per row (camera, photo library, or an arbitrary
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
@@ -7415,8 +7811,7 @@ function AttachMenu({
   onPickPhotos,
   onPickFiles,
   onPickMeetingAudio,
-  onPickGoogleDrive,
-  onPickGoogleWorkspace,
+  onConnectGmail,
   onClose,
   onDismiss,
 }: {
@@ -7426,8 +7821,7 @@ function AttachMenu({
   onPickPhotos: () => void;
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
-  onPickGoogleDrive: () => void;
-  onPickGoogleWorkspace: () => void;
+  onConnectGmail: () => void;
   onClose: () => void;
   onDismiss: () => void;
 }) {
@@ -7438,8 +7832,7 @@ function AttachMenu({
     onPickPhotos,
     onPickFiles,
     onPickMeetingAudio,
-    onPickGoogleDrive,
-    onPickGoogleWorkspace,
+    onConnectGmail,
   });
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).
@@ -8099,6 +8492,15 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
     paddingVertical: theme.spacing.md,
+  },
+  driveSetupNotice: {
+    alignItems: 'flex-start',
+    gap: theme.spacing.xs,
+  },
+  driveSetupLink: {
+    color: theme.colors.primary,
+    fontSize: theme.text.sm,
+    fontWeight: '700',
   },
   sheetLoading: {
     paddingVertical: theme.spacing.lg,
@@ -9250,6 +9652,11 @@ const styles = StyleSheet.create((theme) => ({
   permissionBriefing: {
     maxHeight: 320,
   },
+  permissionHtmlPreview: {
+    height: 320,
+    borderRadius: theme.radius.sm,
+    overflow: 'hidden',
+  },
   permissionButtons: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -9438,7 +9845,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     textAlign: 'center',
   },
-  // Compact attach popover docked to the paperclip (Claude-style), not a bottom sheet.
+  // Compact add popover docked to the plus button, not a bottom sheet.
   menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
   menuCard: {
     position: 'absolute',

@@ -121,10 +121,6 @@ export function projectOverviewStatus(
   }
   if (badge.pulsing) return { label: badge.label, tone: 'working' };
   const state = projectLifecycleState(project);
-  if (project.setupStatus === 'pending') {
-    const status = projectSetupStatus(project, detection);
-    return { label: status.label, tone: status.intent === 'progress' ? 'working' : 'idle' };
-  }
   const warning = projectOverviewWarning(project);
   if (warning) return { label: warning, tone: 'attention' };
   // The grey moon in the shared status gutter already communicates the stable
@@ -206,8 +202,8 @@ export function projectOverviewWarning(project: ProjectRecord): string | undefin
  *
  * Wider than {@link hasActionableToolkitDrift} on purpose. The overview chip is
  * a call to action and so narrows to the population a repair fixes; this is the
- * screen someone opens *about this project*, and there "no verdict was ever
- * recorded" and "this needs a new base image" are both answers worth having.
+ * screen someone opens *about this project*, and there "this needs a new base
+ * image" is an answer worth having even though no Verity action provides it.
  *
  * The two carriers are never merged into one sentence: re-provisioning rebuilds
  * and re-attests a `devcontainer` image, but for a `base-image` project it only
@@ -217,24 +213,10 @@ export function projectOverviewWarning(project: ProjectRecord): string | undefin
 export function toolkitDriftNotice(project: ProjectRecord): string | undefined {
   const drift = project.toolkitDrift;
   if (!drift) return undefined;
-  if (drift.verdict === 'matches') return undefined;
-  if (drift.verdict === 'unknown') {
-    // Deliberately does not name a cause. `unknown` covers three of them — the
-    // image was never compared, the comparison failed, or the server could not
-    // read its own toolkit to compare against — and the wire carries no way to
-    // tell them apart. Naming one would be wrong two thirds of the time; what
-    // is true in all three is that nothing rules drift out.
-    //
-    // For the same reason it says nothing about what this project has on
-    // record: when the server cannot read its own bundle, a project with a
-    // perfectly good recorded identity still lands here, and telling its owner
-    // that nothing is recorded would send them after their own environment for
-    // a fault on the other side of the comparison.
-    return (
-      'This environment has not been compared against a verified sandbox toolkit, ' +
-      'so drift cannot be ruled out.'
-    );
-  }
+  // Only `drifted` has something to say. Current servers never send `unknown`
+  // (it has no remedy), and an older one that does must not raise a banner
+  // nothing can clear.
+  if (drift.verdict !== 'drifted') return undefined;
   const remedy =
     drift.carrier === 'devcontainer'
       ? 'Repairing this environment rebuilds and re-attests it.'
@@ -248,9 +230,5 @@ export function toolkitDriftNotice(project: ProjectRecord): string | undefined {
 }
 
 export function hasPendingProjectSetup(projects: ProjectRecord[]): boolean {
-  return projects.some(
-    ({ setupStatus, state }) =>
-      state !== 'failed' &&
-      (setupStatus === 'pending' || state === 'cloning' || state === 'container_starting'),
-  );
+  return projects.some(({ state }) => state === 'cloning' || state === 'container_starting');
 }

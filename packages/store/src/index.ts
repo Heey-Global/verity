@@ -16,6 +16,14 @@ export {
   type PostgresControlPlaneFence,
   type PostgresControlPlaneLockOptions,
 } from './db.js';
+export {
+  IntegrationStore,
+  type IntegrationAccount,
+  type IntegrationSource,
+  type IntegrationEvent,
+  type IntegrationEventKind,
+  type IntegrationSourceStatus,
+} from './integrations.js';
 // NOTE: `createEmbeddedDb` (pglite) is deliberately NOT exported here. pglite is
 // a devDependency and must stay out of every production import graph; the test
 // harness reaches it through `@verity/store/testing`.
@@ -33,6 +41,7 @@ export {
   type SessionRecord,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
+  type SessionGmailConnection,
   type GoogleWorkspaceFileKind,
   type GoogleSlideImageCleanupRecord,
   type SessionInput,

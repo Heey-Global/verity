@@ -7,7 +7,7 @@ export const DEFAULT_WORKTREE_ROOT: string;
 export const DEFAULT_SCRIPT_SANDBOX_PATH: string;
 export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR: string;
 export type ScriptSandboxProbe = { available: true } | { available: false; reason: string };
-/** Run `verity-script-sandbox --probe`: whether this kernel enforces its Landlock policy. */
+/** Run `verity-script-sandbox --probe`: whether this kernel enforces its filesystem policy. */
 export function probeScriptSandbox(
   helperPath?: string,
   timeoutMs?: number,

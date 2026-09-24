@@ -31,7 +31,14 @@ export type ToolkitDriftVerdict =
   | 'drifted'
   /** Nothing recorded, or the Server ships no bundle to compare against. NOT a
    *  synonym for `matches` — it is the absence of a verdict, and the whole
-   *  reason {@link ToolkitDriftInput.toolkitIdentity} exists. */
+   *  reason {@link ToolkitDriftInput.toolkitIdentity} exists. Internal only: no
+   *  output site shows it. Only a passing attestation records an identity, and
+   *  the managed default image is never attested, so `unknown` is the permanent
+   *  state of every base-image project, with no action that clears it. The one
+   *  case with real signal, a failed attestation, already writes its own
+   *  `provision_warning`. The cost: a `devcontainer` row that was simply never
+   *  attested (provisioned before attestation existed) goes unreported too —
+   *  its next start re-provisions and re-attests it. */
   | 'unknown';
 
 export interface ToolkitDriftInput {
@@ -53,14 +60,14 @@ export interface ToolkitDriftInput {
  * on, and the remedies would be work with no subject. The control plane has no
  * Sandbox at all.
  *
- * A row with no `imageRef` DOES count, and this is the one inclusion worth
- * arguing for. It has nothing to compare, so it can only ever be `unknown` — but
- * that is a statement, and dropping it would be silence. An active project
- * reaches that state by being unpinned: `upsertProject` writes the new pin
- * straight into `image_ref`, so clearing a pin empties it while the Sandbox goes
- * on running the image it was last given. Excluding those rows would take a
- * project that is demonstrably unverified and remove it from the report on the
- * grounds that there is nothing to say about it.
+ * A row with no `imageRef` still counts, though today it says nothing: with
+ * nothing to compare it can only be `unknown`, which neither output site shows.
+ * An active project reaches that state by being unpinned: `upsertProject` writes
+ * the new pin straight into `image_ref`, so clearing a pin empties it while the
+ * Sandbox goes on running the image it was last given. Keeping it in the
+ * population means the row is judged by the same {@link toolkitDriftEntryOf}
+ * as every other, rather than filtered out by a second rule that would have to
+ * be kept in step with the first.
  *
  * `active` is a RECORDED state, not an observation: the container reconciler
  * runs on the project-list and detail paths, so at startup a row can still say
@@ -93,6 +100,7 @@ export interface ToolkitDriftReport {
   readonly current: string | undefined;
   readonly entries: readonly ToolkitDriftEntry[];
   readonly drifted: readonly ToolkitDriftEntry[];
+  /** Kept as the honest partition of `entries`, though no output reads it. */
   readonly unknown: readonly ToolkitDriftEntry[];
 }
 
@@ -225,22 +233,6 @@ export function formatToolkitDriftReport(report: ToolkitDriftReport): readonly s
         `last verified against a different toolkit or boundary policy than this Server ships, ` +
         `so their attestation verdict no longer holds and needs re-checking: ` +
         `${nameList(drifted)}. ${remedy}.`,
-    );
-  }
-  if (report.unknown.length > 0) {
-    // Says only what the recorded state supports, and promises no remedy.
-    // Only a passing boundary attestation records an identity, so `null` covers
-    // both "never compared" (provisioned before this existed, running the
-    // trusted default image, or with the Runner supervisor off) and "compared
-    // and rejected" — a case that already announces itself per project, as a
-    // provision warning and a disabled Runner. The line must not claim the
-    // first, and cannot distinguish them; and since some of those projects are
-    // never attested by design, telling them to re-provision would be advice
-    // that cannot terminate.
-    lines.push(
-      `verity: no verified sandbox toolkit recorded for ${String(report.unknown.length)} ` +
-        `project(s) — their image was either never compared against this Server's toolkit or ` +
-        `failed that comparison, so drift cannot be ruled out: ${nameList(report.unknown)}.`,
     );
   }
   return lines;

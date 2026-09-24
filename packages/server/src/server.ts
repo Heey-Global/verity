@@ -8,6 +8,7 @@ import {
 import { knowledgeSourceToolResult } from './knowledge-source-tool-result.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
+import { registerIntegrationRoutes } from './integrations/routes.js';
 import { createKnowledgeInvalidationReconciler } from './knowledge-lifecycle.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { publishSharedInsight } from './knowledge-publish.js';
@@ -84,6 +85,8 @@ import {
   type CodexUsageHealth,
   type CodexUsageService,
 } from './codexUsage.js';
+import { gmailHasStandingAuthorization } from './gmail-tool.js';
+import { assertSafeGmailSendSnapshot, type GmailDraftSendSnapshot } from './gmail.js';
 import {
   assertSessionRealPath,
   attachmentDisposition,
@@ -195,6 +198,7 @@ import type { GitHubIdentity, IssueSummary, PullRequestStatus, ReleaseSummary } 
 import type { GitHubTaskService } from './github-tasks.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
+import { registerGmailRoutes } from './gmail-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
 import { registerPushTokenRoute } from './push-token-route.js';
@@ -576,6 +580,8 @@ interface ProjectSettingsRecord {
   defaultBranch: string | null;
   defaultModel: string | null;
   memory: string | null;
+  googleDriveFolderId: string | null;
+  googleDriveFolderName: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -589,7 +595,9 @@ type ProjectSettingsKey =
   | 'dopplerMintedTokenSlug'
   | 'defaultBranch'
   | 'defaultModel'
-  | 'memory';
+  | 'memory'
+  | 'googleDriveFolderId'
+  | 'googleDriveFolderName';
 
 type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -632,7 +640,7 @@ interface PublicProjectRecord extends Omit<
  *  decides which remedy applies. The report's `name` is omitted — the client
  *  already knows which project it is holding. */
 interface ProjectToolkitDrift {
-  verdict: ToolkitDriftVerdict;
+  verdict: Exclude<ToolkitDriftVerdict, 'unknown'>;
   carrier: ToolkitCarrier;
 }
 
@@ -758,6 +766,8 @@ function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
     defaultBranch: null,
     defaultModel: null,
     memory: null,
+    googleDriveFolderId: null,
+    googleDriveFolderName: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -965,6 +975,8 @@ function publicProjectSettings(
     defaultModel: settings.defaultModel,
     // Operator-visible content, not a secret — exposed plaintext for the UI editor.
     memory: settings.memory,
+    googleDriveFolderId: settings.googleDriveFolderId,
+    googleDriveFolderName: settings.googleDriveFolderName,
     createdAt: settings.createdAt,
     updatedAt: settings.updatedAt,
   };
@@ -972,6 +984,7 @@ function publicProjectSettings(
 }
 
 export interface ServerDeps {
+  matrixConnectorToken?: string | undefined;
   /** TLS termination for direct/non-managed deployments. Managed deployments
    * terminate at the dedicated Gateway instead. */
   https?: HttpsServerOptions | undefined;
@@ -1023,6 +1036,8 @@ export interface ServerDeps {
    *  uses it for the code exchange + refresh. Omit → the Drive feature reports
    *  "not configured". */
   googleDriveClientId?: string | undefined;
+  /** Invalidate access tokens minted from shared Google credentials after OAuth reconnects. */
+  onGoogleCredentialsChanged?: (() => void) | undefined;
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
    *  Omit → the secret store is treated as an unmanaged always-unlocked no-op. */
   secretCipher?: SealableSecretCipher | undefined;
@@ -1423,12 +1438,18 @@ export interface ServerDeps {
 
 /**
  * The Claude models the picker always offers (ADR 0001 / #143): BARE ids (no `/`) so
- * the conductor routes them to the Claude Code backend, with `claude-opus-5` first as
+ * the conductor routes them to the Claude Code backend, with `claude-opus-5-5` first as
  * the spawn default. These are the canonical ids the rest of the store/tests use; the
  * Claude CLI itself supports more, but the picker surfaces this curated set.
+ *
+ * An id here must also be in the pinned Claude CLI's own model catalog (`deploy/Dockerfile`).
+ * The CLI does not reject one it does not know — it warns `unrecognized_model` and then
+ * assumes a 200K context window, so a session on a 1M-token model would auto-compact at a
+ * fifth of its real window with nothing failing. Adding a model on release day therefore
+ * waits for the CLI pin; `scripts/agent-cli-pins.test.ts` holds that floor.
  */
 export const CLAUDE_MODELS = [
-  'claude-opus-5',
+  'claude-opus-5-5',
   'claude-fable-5-1',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
@@ -4805,6 +4826,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
   });
+  registerGmailRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.onGoogleCredentialsChanged !== undefined
+      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
+      : {}),
+  });
 
   // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────
   // The cipher holds the at-rest key in memory only. `status` reports the
@@ -5347,12 +5376,52 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           return;
         }
+        if (toolName === 'verity_google_drive') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const settings = await deps.eventStore.getProjectSettings(projectId);
+          if (
+            session?.projectId !== projectId ||
+            settings?.googleDriveFolderId === null ||
+            settings?.googleDriveFolderId === undefined
+          ) {
+            throw new ControlPlaneSessionAuthorityError(
+              'Google Drive requires a folder connected to the calling project',
+            );
+          }
+          return;
+        }
         if (
           toolName === 'verity_google_slides' ||
           toolName === 'verity_google_docs' ||
-          toolName === 'verity_google_sheets'
+          toolName === 'verity_google_sheets' ||
+          toolName === 'verity_gmail'
         ) {
           const session = await deps.eventStore.getSession(sessionId);
+          if (toolName === 'verity_gmail') {
+            if (
+              typeof input.request === 'object' &&
+              input.request !== null &&
+              'action' in input.request &&
+              input.request.action === 'send_draft'
+            ) {
+              assertSafeGmailSendSnapshot(input.request as unknown as GmailDraftSendSnapshot);
+            }
+            const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
+            const settings = await deps.eventStore.getVeritySettings();
+            if (
+              session === undefined ||
+              session.projectId !== projectId ||
+              connection === undefined ||
+              settings?.gmailAuthorized !== true ||
+              settings.googleDriveAccountEmail?.toLowerCase() !==
+                connection.accountEmail.toLowerCase()
+            ) {
+              throw new ControlPlaneSessionAuthorityError(
+                'Gmail requires access enabled for the calling session',
+              );
+            }
+            return;
+          }
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           const expectedKind = toolName.slice('verity_google_'.length);
           if (
@@ -5391,7 +5460,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      hasStandingAuthorization: async ({ projectId, sessionId, toolName }) => {
+      hasStandingAuthorization: async ({ projectId, sessionId, toolName, request }) => {
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
           return (
@@ -5399,14 +5468,35 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             !(await deps.eventStore.knowledge.isSessionInvalidated(sessionId))
           );
         }
+        if (toolName === 'verity_google_drive') {
+          const session = await deps.eventStore.getSession(sessionId);
+          const settings = await deps.eventStore.getProjectSettings(projectId);
+          return (
+            session?.projectId === projectId &&
+            settings?.googleDriveFolderId !== null &&
+            settings?.googleDriveFolderId !== undefined
+          );
+        }
         if (
           toolName !== 'verity_google_slides' &&
           toolName !== 'verity_google_docs' &&
-          toolName !== 'verity_google_sheets'
+          toolName !== 'verity_google_sheets' &&
+          toolName !== 'verity_gmail'
         )
           return false;
         const session = await deps.eventStore.getSession(sessionId);
         if (session === undefined || session.projectId !== projectId) return false;
+        if (toolName === 'verity_gmail') {
+          if (!gmailHasStandingAuthorization(request)) return false;
+          const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
+          const settings = await deps.eventStore.getVeritySettings();
+          return (
+            connection !== undefined &&
+            settings?.gmailAuthorized === true &&
+            settings.googleDriveAccountEmail?.toLowerCase() ===
+              connection.accountEmail.toLowerCase()
+          );
+        }
         const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
         return file?.kind === toolName.slice('verity_google_'.length);
       },
@@ -5706,11 +5796,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
    * A failure to read the bundle is a broken deployment, not a reason to fail
    * the project list: it degrades to `undefined`, which `toolkitDriftEntryOf`
    * turns into `unknown` — "cannot be compared", the one verdict that is still
-   * true when the comparison is unavailable. Reporting it as `matches` would be
-   * the exact false all-clear the drift report exists to remove.
+   * true when the comparison is unavailable — and the wire then carries no
+   * verdict at all. Reporting it as `matches` would be the exact false
+   * all-clear the drift report exists to remove.
    *
    * But degrading quietly would be its own version of that: every project would
-   * read `unknown` with nothing anywhere saying why, and the packaging or mount
+   * lose its drift verdict with nothing anywhere saying why, and the packaging or mount
    * fault behind it would be invisible. So it is logged — deduplicated while the
    * fault persists, and re-armed by the first read that succeeds, so a Server
    * polled once a second does not bury the finding in its own noise.
@@ -5727,7 +5818,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           toolkitIdentityFailureLogged = true;
           app.log.error(
             { err: error },
-            'verity: cannot read the bundled sandbox toolkit — every project reports an unknown drift verdict until this is fixed',
+            'verity: cannot read the bundled sandbox toolkit — no project can be checked for drift until this is fixed',
           );
         }
         return undefined;
@@ -5736,7 +5827,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   /**
    * This project's toolkit drift verdict, or `null` when the report declines to
-   * judge the row at all.
+   * judge the row at all or can reach no verdict (`unknown`).
    *
    * Pure: it compares the project's recorded `toolkitIdentity` against the
    * identity the caller already resolved, so it costs no Docker call and no
@@ -5748,6 +5839,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): ProjectToolkitDrift | null => {
     if (!isDriftReportable(project)) return null;
     const { verdict, carrier } = toolkitDriftEntryOf(current, project);
+    // Base-image projects are never attested, so `unknown` is their permanent
+    // state, and a failed attestation already surfaces as a provision warning.
+    // Shown, it would be a banner that is always on and nothing clears.
+    if (verdict === 'unknown') return null;
     return { verdict, carrier };
   };
 
@@ -5876,6 +5971,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       reconcileInvalidations: reconcileKnowledgeInvalidations,
     });
   }
+  registerIntegrationRoutes(app, {
+    store: deps.eventStore.integrations,
+    ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
+    ...(deps.matrixConnectorToken !== undefined
+      ? { connectorToken: deps.matrixConnectorToken }
+      : {}),
+  });
   registerHttpMcpConnectionRoutes(app, deps.eventStore);
   registerProjectDetailRoutes(app, {
     getDetail: async (id) => {

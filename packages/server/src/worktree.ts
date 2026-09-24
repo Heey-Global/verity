@@ -16,6 +16,7 @@ import {
   type Dirent,
 } from 'node:fs';
 import { promisify } from 'node:util';
+import { minimatch } from 'minimatch';
 
 const execFileAsync = promisify(execFile);
 
@@ -734,24 +735,27 @@ function branchOfWorktree(worktreePath: string): string | undefined {
  * every session's resolution. True isolation of the git working tree wasn't
  * matched by isolation of module resolution.
  *
- * The fix mirrors the source repo's workspace links into the worktree, verbatim.
- * Those links are already RELATIVE (`../../packages/foo`) and the worktree has the
- * same internal layout, so the identical target resolves within the worktree
- * (`<worktree>/packages/foo`) — and stays bind-mount portable (#207). Only
+ * The fix gives the worktree the links npm would create for its workspaces:
+ * `node_modules/<name>` pointing RELATIVELY at the package directory
+ * (`../../packages/foo`), so it resolves within the worktree
+ * (`<worktree>/packages/foo`) and stays bind-mount portable (#207). Only
  * first-party workspace packages are linked; third-party deps keep resolving up
  * to the shared `<repoDir>/node_modules` (branch-independent, no install needed).
  *
- * Best-effort and self-scoping: a repo that is not an npm-workspace monorepo (no
- * `<repoDir>/node_modules/<name>` links to mirror) yields nothing to do, so this
- * is a no-op for arbitrary project checkouts. Never throws — a link that can't be
- * created is skipped rather than failing the spawn.
+ * For npm workspaces, which packages to link is read from the root `workspaces`
+ * field and each package's `name`, so a fresh dependency volume does not hide the
+ * information. Other managers can declare workspaces elsewhere (for example
+ * `pnpm-workspace.yaml`); for those, retain the established source-link fallback.
+ *
+ * Best-effort and self-scoping: a repo with neither npm workspace metadata nor
+ * installed workspace links yields nothing to do. Never throws — a link that
+ * can't be created is skipped rather than failing the spawn.
  */
 export function linkWorkspacePackages(repoDir: string, worktreePath: string): void {
   // Guard: without a real worktree dir (e.g. a mocked git runner in tests) there
   // is nothing to link into.
   if (!existsSync(worktreePath)) return;
-  const rootModules = join(repoDir, 'node_modules');
-  if (!existsSync(rootModules)) return;
+  const isWorkspace = workspaceMatcher(repoDir);
   for (const glob of ['packages', 'apps']) {
     const dir = join(repoDir, glob);
     if (!existsSync(dir)) continue;
@@ -765,25 +769,65 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
       } catch {
         continue; // not a package (no/invalid package.json)
       }
-      // Only mirror packages the source repo actually links (hoisted workspace
-      // symlink). A non-symlink or missing entry means this package isn't part of
-      // the resolvable workspace tree — leave resolution as-is.
-      let target: string;
-      try {
-        target = readlinkSync(join(rootModules, name));
-      } catch {
-        continue;
+      if (isWorkspace !== undefined) {
+        // A directory the root manifest does not list is not part of npm's
+        // workspace tree, so leave its resolution as-is.
+        if (!isWorkspace(`${glob}/${entry}`)) continue;
+      } else {
+        // pnpm and other managers may declare workspaces outside package.json.
+        // Their installed root link remains the authoritative compatibility
+        // signal; merely finding a package under packages/ or apps/ is not.
+        try {
+          readlinkSync(join(repoDir, 'node_modules', name));
+        } catch {
+          continue;
+        }
       }
       const dst = join(worktreePath, 'node_modules', name);
+      // Relative, exactly as npm writes it, so it resolves inside the worktree.
+      const target = relative(dirname(dst), join(worktreePath, glob, entry));
       try {
         mkdirSync(dirname(dst), { recursive: true }); // creates the scope dir (e.g. @verity)
         rmSync(dst, { force: true, recursive: true }); // replace any stale entry
-        symlinkSync(target, dst); // same relative target → resolves inside the worktree
+        symlinkSync(target, dst);
       } catch {
         // A single unlinkable package must not fail the spawn.
       }
     }
   }
+}
+
+/**
+ * The root manifest's `workspaces` as a predicate over repo-relative package
+ * directories, or undefined when the repo declares none. Covers the forms npm
+ * accepts — an array or `{ packages: [...] }`, including brace expansion,
+ * globstars and `!` exclusions.
+ */
+function workspaceMatcher(repoDir: string): ((dir: string) => boolean) | undefined {
+  let patterns: unknown;
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(join(repoDir, 'package.json'), 'utf8'));
+    patterns = (manifest as { workspaces?: unknown }).workspaces;
+  } catch {
+    return undefined;
+  }
+  if (patterns !== null && typeof patterns === 'object' && !Array.isArray(patterns)) {
+    patterns = (patterns as { packages?: unknown }).packages;
+  }
+  if (!Array.isArray(patterns)) return undefined;
+  const include: string[] = [];
+  const exclude: string[] = [];
+  for (const pattern of patterns) {
+    if (typeof pattern !== 'string' || pattern === '') continue;
+    const normalized = pattern.replace(/^\.\//, '').replace(/\/+$/, '');
+    if (normalized.startsWith('!')) exclude.push(normalized.slice(1));
+    else include.push(normalized);
+  }
+  if (include.length === 0) return undefined;
+  const matches = (dir: string, pattern: string) => minimatch(dir, pattern, { dot: true });
+  return (dir) =>
+    include.some((pattern) => matches(dir, pattern)) &&
+    !exclude.some((pattern) => matches(dir, pattern));
 }
 
 /** Scan depth for nested `node_modules`. Deep enough for the usual layouts

@@ -803,7 +803,7 @@ describe('createGitHubPrService', () => {
   });
 
   it('keeps the cache when GitHub refuses the merge', async () => {
-    const { fetch, calls } = fakeFetch(ok([{ number: 119 }]), fail(405), ok([{ number: 119 }]));
+    const { fetch, calls } = fakeFetch(ok([{ number: 119 }]), fail(405), ok({ merged_at: null }));
     const svc = createGitHubPrService({
       repoDir: '/r',
       token: 'tok',
@@ -816,7 +816,44 @@ describe('createGitHubPrService', () => {
     expect(await svc.prForBranch('feat/122-x')).toBe(119);
     expect(await svc.mergePr(119)).toBe(false);
     expect(await svc.prForBranch('feat/122-x')).toBe(119);
-    expect(calls).toHaveLength(2); // nothing changed on GitHub — no third lookup
+    expect(calls).toHaveLength(3); // confirm directly, then retain the cached branch status
+  });
+
+  it('confirms a completed merge when GitHub returns an error for the PUT', async () => {
+    const { fetch, calls } = fakeFetch(
+      ok([{ number: 119 }]),
+      fail(405),
+      ok({ merged_at: '2026-09-24T12:00:00Z' }),
+      ok([{ number: 119 }]),
+    );
+    const svc = createGitHubPrService({
+      repoDir: '/r',
+      token: 'tok',
+      git: githubRemote,
+      fetch,
+      ttlMs: 60_000,
+      now: () => 1000,
+    });
+
+    expect(await svc.prForBranch('feat/122-x')).toBe(119);
+    expect(await svc.mergePr(119)).toBe(true);
+    expect(calls[2]?.url).toBe('https://api.github.com/repos/Example-Org/Example-Repo/pulls/119');
+    expect(calls[2]?.headers?.['If-None-Match']).toBeUndefined();
+    expect(await svc.prForBranch('feat/122-x')).toBe(119);
+    expect(calls).toHaveLength(4); // the next status read sees the merged PR
+  });
+
+  it('confirms a completed merge when the PUT response is lost', async () => {
+    const { fetch, calls } = fakeFetch(
+      async () => {
+        throw new Error('connection reset');
+      },
+      ok({ merged_at: '2026-09-24T12:00:00Z' }),
+    );
+    const svc = createGitHubPrService({ repoDir: '/r', token: 'tok', git: githubRemote, fetch });
+
+    expect(await svc.mergePr(119)).toBe(true);
+    expect(calls).toHaveLength(2);
   });
 
   it('caches within the TTL and re-fetches after it', async () => {

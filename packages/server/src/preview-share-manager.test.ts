@@ -9,9 +9,14 @@ import {
   PreviewShareInputError,
   PreviewShareManager,
   PreviewShareNotFoundError,
+  type PreviewShareManagerOptions,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
-import { projectNetworkName, RUNNER_BROKER_CAPABILITIES } from './provisioner.js';
+import {
+  codexGatewayConfig,
+  projectNetworkName,
+  RUNNER_BROKER_CAPABILITIES,
+} from './provisioner.js';
 
 const digest = `ghcr.io/heey-global/verity/preview-connector@sha256:${'a'.repeat(64)}`;
 const project = {
@@ -21,7 +26,12 @@ const project = {
 };
 const devServer = { id: 'dev-1', projectId: 'p1', containerPort: '3000' };
 
-function fixture() {
+function fixture(
+  options: {
+    inspectArtifact?: PreviewShareManagerOptions['inspectArtifact'];
+    listArtifactDirectory?: PreviewShareManagerOptions['listArtifactDirectory'];
+  } = {},
+) {
   const record = {
     id: 'share-id',
     projectId: 'p1',
@@ -106,6 +116,10 @@ function fixture() {
     isDevServerRunning,
     now: () => new Date('2030-01-01T00:00:00Z'),
     wait: vi.fn(async () => undefined),
+    ...(options.inspectArtifact === undefined ? {} : { inspectArtifact: options.inspectArtifact }),
+    ...(options.listArtifactDirectory === undefined
+      ? {}
+      : { listArtifactDirectory: options.listArtifactDirectory }),
   });
   return {
     manager,
@@ -370,18 +384,28 @@ describe('PreviewShareManager', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
-  it('blocks mounted broker capabilities before creating a share', async () => {
-    const { manager, docker, edge, inspect } = fixture();
+  it('allows the project-scoped GitHub broker capability with exact metadata', async () => {
+    const inspectArtifact = vi.fn(async () => ({
+      uid: 1000,
+      gid: process.getgid?.() ?? 1000,
+      mode: 0o600,
+      kind: 'file' as const,
+      contents: 'capability',
+    }));
+    const { manager, docker, inspect } = fixture({ inspectArtifact });
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
       env: [
         'VERITY_GH_TOKEN_URL=http://relay/internal/github/token',
-        'VERITY_GH_TOKEN_CAPABILITY_FILE=/run/verity/gh-token-capability',
+        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
       ],
       mountCount: 1,
       mounts: [
         {
-          type: 'bind',
+          type: 'volume',
+          name: 'verity-data',
+          source: '/var/lib/docker/volumes/verity-data/_data/secrets/git/gh_token_capability.p1',
+          subpath: 'secrets/git/gh_token_capability.p1',
           destination: '/run/verity/gh-token-capability',
           readWrite: false,
         },
@@ -389,28 +413,255 @@ describe('PreviewShareManager', () => {
     });
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
-    ).rejects.toBeInstanceOf(PreviewShareConflictError);
-    expect(edge.create).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ state: 'active' });
+    expect(inspectArtifact).toHaveBeenCalledWith('/data/secrets/git/gh_token_capability.p1', false);
   });
 
-  it('blocks the provisioner Claude egress private-key projection', async () => {
-    const { manager, docker, edge, inspect } = fixture();
+  it('allows the agent-gateway identity only with its exact paths and permissions', async () => {
+    const inspectArtifact = vi.fn(async (path: string) => ({
+      uid: 1000,
+      gid: path.endsWith('.key') ? 1101 : (process.getgid?.() ?? 1000),
+      mode: path.endsWith('.key') ? 0o040 : 0o644,
+      kind: 'file' as const,
+      contents: path.endsWith('.key') ? 'private key' : 'certificate',
+    }));
+    const { manager, docker, inspect } = fixture({ inspectArtifact });
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
-      env: ['VERITY_CLAUDE_EGRESS_KEY=/run/verity/claude-egress/client.key'],
+      env: ['VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE=/run/verity/claude-egress/client.key'],
+      mountCount: 3,
+      mounts: [
+        ['egress_ca.p1.crt', '/run/verity/claude-egress/ca.crt'],
+        ['egress_client.p1.crt', '/run/verity/claude-egress/client.crt'],
+        ['egress_client.p1.key', '/run/verity/claude-egress/client.key'],
+      ].map(([source, destination]) => ({
+        type: 'volume',
+        name: 'verity-data',
+        source: `/var/lib/docker/volumes/verity-data/_data/secrets/claude-egress/${source}`,
+        subpath: `secrets/claude-egress/${source}`,
+        destination,
+        readWrite: false,
+      })),
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+    expect(inspectArtifact).toHaveBeenCalledWith(
+      '/data/secrets/claude-egress/egress_client.p1.key',
+      false,
+    );
+  });
+
+  it('blocks a broker capability whose mode is broader than the provisioner contract', async () => {
+    const { manager, docker, edge, inspect } = fixture({
+      inspectArtifact: async () => ({
+        uid: 1000,
+        gid: process.getgid?.() ?? 1000,
+        mode: 0o644,
+        kind: 'file',
+      }),
+    });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      env: ['VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability'],
       mountCount: 1,
       mounts: [
         {
-          type: 'bind',
-          source: '/srv/verity/secrets/claude-egress/client.key',
-          destination: '/run/verity/claude-egress/client.key',
+          type: 'volume',
+          name: 'verity-data',
+          source: '/var/lib/docker/volumes/verity-data/_data/secrets/git/gh_token_capability.p1',
+          subpath: 'secrets/git/gh_token_capability.p1',
+          destination: '/run/verity/gh-token-capability',
           readWrite: false,
         },
       ],
     });
     await expect(
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
-    ).rejects.toBeInstanceOf(PreviewShareConflictError);
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('allows only server-generated Codex and OpenCode gateway configuration', async () => {
+    const inspectArtifact = vi.fn(async (path: string) => {
+      const common = { uid: 1000, gid: 1000 };
+      if (path.endsWith('/opencode')) {
+        return { ...common, mode: 0o755, kind: 'directory' as const };
+      }
+      if (path.endsWith('/opencode/opencode.json')) {
+        return {
+          ...common,
+          mode: 0o644,
+          kind: 'file' as const,
+          contents: JSON.stringify({
+            $schema: 'https://opencode.ai/config.json',
+            autoupdate: false,
+            provider: {
+              verity: {
+                npm: '@ai-sdk/openai-compatible',
+                name: 'OpenAI-compatible',
+                options: {
+                  baseURL: 'http://127.0.0.1:47821/opencode',
+                  apiKey: 'verity-opencode-gateway-placeholder-v1',
+                },
+                models: { 'model-a': { name: 'model-a' } },
+              },
+            },
+          }),
+        };
+      }
+      return {
+        ...common,
+        mode: 0o644,
+        kind: 'file' as const,
+        contents: codexGatewayConfig(47_821),
+      };
+    });
+    const { manager, docker, inspect } = fixture({
+      inspectArtifact,
+      listArtifactDirectory: async () => ['opencode.json'],
+    });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 2,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          source: '/var/lib/docker/volumes/verity-data/_data/secrets/codex/config.toml',
+          subpath: 'secrets/codex/config.toml',
+          destination: '/run/verity/codex/config.toml',
+          readWrite: false,
+        },
+        {
+          type: 'volume',
+          name: 'verity-data',
+          source: '/var/lib/docker/volumes/verity-data/_data/secrets/opencode',
+          subpath: 'secrets/opencode',
+          destination: '/run/verity/opencode-config',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it('blocks provider credentials hidden in an otherwise valid gateway config mount', async () => {
+    const { manager, docker, edge, inspect } = fixture({
+      inspectArtifact: async (path) =>
+        path.endsWith('/opencode')
+          ? { uid: 1000, gid: 1000, mode: 0o755, kind: 'directory' }
+          : {
+              uid: 1000,
+              gid: 1000,
+              mode: 0o644,
+              kind: 'file',
+              contents: JSON.stringify({
+                provider: { attacker: { options: { apiKey: 'provider-secret' } } },
+              }),
+            },
+      listArtifactDirectory: async () => ['opencode.json'],
+    });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          subpath: 'secrets/opencode',
+          destination: '/run/verity/opencode-config',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks additional files beside the validated OpenCode gateway config', async () => {
+    const { manager, docker, edge, inspect } = fixture({
+      inspectArtifact: async (path) =>
+        path.endsWith('/opencode')
+          ? { uid: 1000, gid: 1000, mode: 0o755, kind: 'directory' }
+          : {
+              uid: 1000,
+              gid: 1000,
+              mode: 0o644,
+              kind: 'file',
+              contents: JSON.stringify({ autoupdate: false }),
+            },
+      listArtifactDirectory: async () => ['auth.json', 'opencode.json'],
+    });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          subpath: 'secrets/opencode',
+          destination: '/run/verity/opencode-config',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks credentials hidden in OpenCode model options', async () => {
+    const { manager, docker, edge, inspect } = fixture({
+      inspectArtifact: async (path) =>
+        path.endsWith('/opencode')
+          ? { uid: 1000, gid: 1000, mode: 0o755, kind: 'directory' }
+          : {
+              uid: 1000,
+              gid: 1000,
+              mode: 0o644,
+              kind: 'file',
+              contents: JSON.stringify({
+                $schema: 'https://opencode.ai/config.json',
+                autoupdate: false,
+                provider: {
+                  verity: {
+                    npm: '@ai-sdk/openai-compatible',
+                    name: 'OpenAI-compatible',
+                    options: {
+                      baseURL: 'http://127.0.0.1:47821/opencode',
+                      apiKey: 'verity-opencode-gateway-placeholder-v1',
+                    },
+                    models: {
+                      'model-a': { name: 'model-a', apiKey: 'provider-secret' },
+                    },
+                  },
+                },
+              }),
+            },
+      listArtifactDirectory: async () => ['opencode.json'],
+    });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          subpath: 'secrets/opencode',
+          destination: '/run/verity/opencode-config',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
     expect(edge.create).not.toHaveBeenCalled();
   });
 

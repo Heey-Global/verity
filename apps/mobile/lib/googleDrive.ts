@@ -15,15 +15,19 @@ const DISCOVERY: AuthSession.DiscoveryDocument = {
   tokenEndpoint: 'https://oauth2.googleapis.com/token',
 };
 
-// Read-only Drive access — enough to browse + export/download. `about.get` (used
-// server-side for the account email) also works under this scope, so no extra
-// openid/email scope is requested.
+// A linked folder is a read/write project workspace. Google does not grant
+// folder-wide access to existing children through `drive.file`, so request the
+// Drive scope and enforce the selected folder at Verity's project boundary.
 const SCOPES = [
-  'https://www.googleapis.com/auth/drive.readonly',
-  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/presentations',
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',
+];
+const GMAIL_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.settings.basic',
 ];
 
 /**
@@ -47,14 +51,25 @@ export type GoogleDriveAuthResult =
  * mint a refresh token every time (so a reconnect always yields a fresh token).
  */
 export async function runGoogleDriveAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  return runGoogleAuth(clientId, SCOPES);
+}
+
+/** Authorize Gmail while retaining the existing Workspace grants. Google can
+ * replace the stored refresh token during incremental authorization, so the
+ * request deliberately includes the full union rather than Gmail alone. */
+export async function runGmailAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  return runGoogleAuth(clientId, [...SCOPES, ...GMAIL_SCOPES]);
+}
+
+async function runGoogleAuth(clientId: string, scopes: string[]): Promise<GoogleDriveAuthResult> {
   const redirectUri = googleDriveRedirectUri(clientId);
   const request = new AuthSession.AuthRequest({
     clientId,
-    scopes: SCOPES,
+    scopes,
     redirectUri,
     usePKCE: true,
     responseType: AuthSession.ResponseType.Code,
-    extraParams: { access_type: 'offline', prompt: 'consent' },
+    extraParams: { access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true' },
   });
   // Building the URL generates and stores the PKCE code verifier on the request.
   await request.makeAuthUrlAsync(DISCOVERY);

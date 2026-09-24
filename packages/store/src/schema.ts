@@ -61,6 +61,13 @@ interface SessionSlideDecksTable {
   assigned_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+/** Explicit Gmail access grant for one session. */
+interface SessionGmailConnectionsTable {
+  session_id: string;
+  account_email: string;
+  enabled_at: ColumnType<Date, string | undefined, never>;
+}
+
 /** Workspace file ids ordered by their latest explicit assignment. */
 interface RecentGoogleSlideDecksTable {
   file_id: string;
@@ -110,6 +117,46 @@ export interface ProjectMcpBindingsTable {
   project_id: string;
   connection_id: string;
   enabled: ColumnType<boolean, boolean | undefined, boolean>;
+}
+
+interface IntegrationAccountsTable {
+  id: string;
+  provider: string;
+  endpoint: string;
+  display_name: string;
+  status: ColumnType<string, string | undefined, string>;
+  last_error: string | null;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+interface MatrixConnectorConfigTable {
+  id: string;
+  endpoint: string;
+  username: string;
+  password_secret: string;
+}
+
+interface IntegrationSourcesTable {
+  account_id: string;
+  source_id: string;
+  display_name: string;
+  inviter: string | null;
+  project_id: string | null;
+  status: ColumnType<string, string | undefined, string>;
+  activated_at: Date | null;
+  last_ingested_at: Date | null;
+  last_error: string | null;
+}
+
+interface IntegrationEventsTable {
+  account_id: string;
+  source_id: string;
+  event_id: string;
+  target_event_id: string | null;
+  kind: string;
+  sender: string;
+  occurred_at: Date;
+  body: string | null;
 }
 
 /**
@@ -258,6 +305,9 @@ export interface ProjectSettingsTable {
    *  operator-visible content, not a credential, so (unlike the `doppler_*` secret
    *  columns above) it is never encrypted at rest. */
   memory: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Google Drive folder exposed as this project's shared read/write workspace. */
+  google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
+  google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
@@ -357,6 +407,8 @@ export interface VeritySettingsTable {
   google_drive_client_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_account_email: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_refresh_token: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Whether the shared Google grant has been expanded with Gmail scopes. */
+  gmail_authorized: ColumnType<boolean, boolean | undefined, boolean>;
   /** Paid Uplink credential. Encrypted at rest; never sourced from an environment
    * variable or materialized to a host file. The installation id is public and
    * is assigned by the Uplink during the first successful handshake. */
@@ -1145,6 +1197,10 @@ export interface SessionMovesTable {
 
 export interface Database {
   session_moves: SessionMovesTable;
+  integration_accounts: IntegrationAccountsTable;
+  matrix_connector_config: MatrixConnectorConfigTable;
+  integration_sources: IntegrationSourcesTable;
+  integration_events: IntegrationEventsTable;
   project_knowledge_spaces: KnowledgeSpacesTable;
   knowledge_wiki_jobs: KnowledgeWikiJobsTable;
   knowledge_provenance: KnowledgeProvenanceTable;
@@ -1161,6 +1217,7 @@ export interface Database {
   control_plane_generation: ControlPlaneGenerationTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
+  session_gmail_connections: SessionGmailConnectionsTable;
   recent_google_slide_decks: RecentGoogleSlideDecksTable;
   google_slide_image_cleanup: GoogleSlideImageCleanupTable;
   google_slide_invocations: GoogleSlideInvocationsTable;

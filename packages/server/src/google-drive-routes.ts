@@ -14,9 +14,11 @@ import {
   getDriveAccountEmail,
   getDriveFile,
   listDriveFiles,
+  listSharedDrives,
   planDriveImport,
   referenceDocFileName,
   type DriveFileList,
+  type SharedDriveList,
 } from './google-drive.js';
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
@@ -24,6 +26,7 @@ import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
 import { writeReferenceDocFile } from './reference-docs.js';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from './knowledge-folder.js';
 import { extractKnowledgeFile } from './knowledge-file-ingest.js';
+import { registerProjectGoogleDriveRoutes } from './google-drive-project-routes.js';
 
 const sessionParams = z.object({
   id: z
@@ -40,10 +43,12 @@ const filesQuery = z.object({
   parentId: z.string().trim().min(1).max(512).optional(),
   query: z.string().trim().min(1).max(200).optional(),
   sharedWithMe: z.enum(['true']).optional(),
+  driveId: z.string().trim().min(1).max(512).optional(),
   pageToken: z.string().trim().min(1).max(4096).optional(),
-  purpose: z.enum(['import', 'slides', 'workspace']).optional(),
+  purpose: z.enum(['import', 'slides', 'workspace', 'folder']).optional(),
 });
 const importBody = z.object({ fileId: z.string().trim().min(1).max(512) });
+const projectParams = z.object({ id: z.string().trim().min(1).max(512) });
 const SLIDES_PICKER_MIME_TYPES = [
   'application/vnd.google-apps.folder',
   'application/vnd.google-apps.presentation',
@@ -73,6 +78,11 @@ interface GoogleDriveRouteDeps {
       | 'setSessionWorkspaceFile'
       | 'clearSessionWorkspaceFile'
       | 'listRecentGoogleWorkspaceFileIds'
+      | 'clearSessionGmailConnections'
+      | 'getProject'
+      | 'getProjectSettings'
+      | 'updateProjectSettings'
+      | 'listSessions'
     >;
   googleDriveClientId?: string;
   secretCipher?: SealableSecretCipher;
@@ -88,6 +98,14 @@ export function registerGoogleDriveRoutes(app: FastifyInstance, deps: GoogleDriv
 }
 
 function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriveRouteDeps): void {
+  const clearProjectWorkspaceFiles = async (projectId: string): Promise<void> => {
+    const sessions = await deps.eventStore.listSessions();
+    await Promise.all(
+      sessions
+        .filter((session) => session.projectId === projectId)
+        .map((session) => deps.eventStore.clearSessionWorkspaceFile(session.sessionId)),
+    );
+  };
   const resolveCredentials = async (): Promise<
     { clientId: string; refreshToken: string } | undefined
   > => {
@@ -104,6 +122,16 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     return clientId && refreshToken ? { clientId, refreshToken } : undefined;
   };
   const accessToken = createCachedGoogleAccessToken(resolveCredentials);
+  registerProjectGoogleDriveRoutes(app, {
+    getLinkedFolder: async (projectId, folderId) => {
+      const settings = await deps.eventStore.getProjectSettings(projectId);
+      return settings?.googleDriveFolderId === folderId && settings.googleDriveFolderName
+        ? { projectId, folderId, name: settings.googleDriveFolderName }
+        : undefined;
+    },
+    googleAccessToken: accessToken,
+    ...(deps.dataRoot === undefined ? {} : { dataRoot: deps.dataRoot }),
+  });
   app.post(
     '/google-drive/connect',
     { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
@@ -136,10 +164,24 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       } catch {
         accountEmail = undefined;
       }
+      const previous = await deps.eventStore.getVeritySettings();
+      const gmailAuthorized =
+        tokens.scopes?.includes('https://www.googleapis.com/auth/gmail.readonly') === true &&
+        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.compose') &&
+        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.settings.basic');
+      if (
+        !gmailAuthorized ||
+        (previous?.googleDriveAccountEmail !== null &&
+          previous?.googleDriveAccountEmail !== undefined &&
+          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail?.toLowerCase())
+      ) {
+        await deps.eventStore.clearSessionGmailConnections();
+      }
       await deps.eventStore.updateVeritySettings({
         googleDriveClientId: clientId,
         googleDriveRefreshToken: tokens.refreshToken,
         googleDriveAccountEmail: accountEmail ?? null,
+        gmailAuthorized,
       });
       // Google may return the same refresh-token string when consent expands an
       // existing grant. Its server-side scopes still changed, so keying only on
@@ -151,10 +193,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
 
   app.post('/google-drive/disconnect', async () => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
+    await deps.eventStore.clearSessionGmailConnections();
     await deps.eventStore.updateVeritySettings({
       googleDriveClientId: null,
       googleDriveRefreshToken: null,
       googleDriveAccountEmail: null,
+      gmailAuthorized: false,
     });
     accessToken.invalidate();
     return { connected: false as const };
@@ -175,13 +219,18 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           parentId: query.parentId,
           query: query.query,
           sharedWithMe: query.sharedWithMe === 'true',
+          driveId: query.driveId,
           pageToken: query.pageToken,
-          ...(query.purpose === 'slides' || query.purpose === 'workspace'
+          ...(query.purpose === 'slides' ||
+          query.purpose === 'workspace' ||
+          query.purpose === 'folder'
             ? {
                 mimeTypes:
-                  query.purpose === 'workspace'
-                    ? WORKSPACE_PICKER_MIME_TYPES
-                    : SLIDES_PICKER_MIME_TYPES,
+                  query.purpose === 'folder'
+                    ? ['application/vnd.google-apps.folder']
+                    : query.purpose === 'workspace'
+                      ? WORKSPACE_PICKER_MIME_TYPES
+                      : SLIDES_PICKER_MIME_TYPES,
               }
             : {}),
         });
@@ -190,6 +239,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           query.parentId !== undefined ||
           query.query !== undefined ||
           query.sharedWithMe !== undefined ||
+          query.driveId !== undefined ||
           query.pageToken !== undefined
         ) {
           return page;
@@ -221,6 +271,79 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       }
     },
   );
+
+  app.get(
+    '/google-drive/drives',
+    async (request, reply): Promise<SharedDriveList | { error: string }> => {
+      const query = z
+        .object({ pageToken: z.string().trim().min(1).max(4096).optional() })
+        .parse(request.query);
+      const token = await accessToken();
+      if (token === undefined) {
+        reply.code(409);
+        return { error: 'Google Drive is not connected' };
+      }
+      try {
+        return await listSharedDrives({
+          accessToken: token,
+          ...(query.pageToken ? { pageToken: query.pageToken } : {}),
+        });
+      } catch (error) {
+        const reason = error instanceof GoogleDriveError ? error.reason : 'list_failed';
+        reply.code(502);
+        return { error: `Could not list shared drives (${reason})` };
+      }
+    },
+  );
+
+  app.put('/projects/:id/google-drive/folder', async (request, reply) => {
+    const { id } = projectParams.parse(request.params);
+    const { fileId } = importBody.parse(request.body);
+    if ((await deps.eventStore.getProject(id)) === undefined) {
+      reply.code(404);
+      return { error: `project ${id} not found` };
+    }
+    const token = await accessToken();
+    if (token === undefined) {
+      reply.code(409);
+      return { error: 'Google Drive is not connected' };
+    }
+    try {
+      const folder = await getDriveFile(token, fileId);
+      if (folder.mimeType !== 'application/vnd.google-apps.folder') {
+        reply.code(415);
+        return { error: 'Choose a Google Drive folder' };
+      }
+      if (folder.canEdit !== true) {
+        reply.code(403);
+        return { error: 'You need edit access to connect this folder' };
+      }
+      await deps.eventStore.updateProjectSettings(id, {
+        googleDriveFolderId: folder.id,
+        googleDriveFolderName: folder.name,
+      });
+      await clearProjectWorkspaceFiles(id);
+      return { folder: { id: folder.id, name: folder.name } };
+    } catch (error) {
+      const reason = error instanceof GoogleDriveError ? error.reason : 'metadata_failed';
+      reply.code(502);
+      return { error: `Could not connect the Google Drive folder (${reason})` };
+    }
+  });
+
+  app.delete('/projects/:id/google-drive/folder', async (request, reply) => {
+    const { id } = projectParams.parse(request.params);
+    if ((await deps.eventStore.getProject(id)) === undefined) {
+      reply.code(404);
+      return { error: `project ${id} not found` };
+    }
+    await deps.eventStore.updateProjectSettings(id, {
+      googleDriveFolderId: null,
+      googleDriveFolderName: null,
+    });
+    await clearProjectWorkspaceFiles(id);
+    reply.code(204);
+  });
 
   app.get('/sessions/:id/google-workspace/file', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);

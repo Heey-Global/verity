@@ -4,6 +4,8 @@
 # Info.plist. Point VERITY_SMOKE_APP_PLIST at that file to run it standalone.
 # It also needs a routable IPv4 address, because loopback is exempt from the
 # rules under test — a machine with only a VPN interface cannot run it.
+# Set VERITY_SMOKE_OPAQUE_RELAY=1 to run the same macOS/iOS pin and
+# hostname checks through a byte-only relay to the local TLS backend.
 set -euo pipefail
 
 tmp="$(mktemp -d)"
@@ -77,7 +79,7 @@ swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tm
 addresses=(127.0.0.1)
 if [[ -n "$host_ip" ]]; then addresses+=("$host_ip"); fi
 python3 - "$tmp/cert.pem" "$tmp/key.pem" "${addresses[@]}" <<'PY' &
-import http.server, ssl, sys, threading
+import asyncio, http.server, os, ssl, sys, threading
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -99,14 +101,51 @@ context.load_cert_chain(sys.argv[1], sys.argv[2])
 # happens to have. All sockets are bound before any is served, so a failed bind
 # cannot hide behind an already-answering listener and let the readiness probe
 # through.
+# In relay mode only the private backend terminates TLS. The externally
+# reachable listener forwards opaque bytes, preserving URL hostname checks.
+relay_mode = os.environ.get('VERITY_SMOKE_OPAQUE_RELAY') == '1'
 servers = []
-for address in sys.argv[3:]:
-    server = http.server.ThreadingHTTPServer((address, 18443), Handler)
+for address in (['127.0.0.1'] if relay_mode else sys.argv[3:]):
+    server = http.server.ThreadingHTTPServer((address, 18444 if relay_mode else 18443), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     servers.append(server)
 for server in servers:
     threading.Thread(target=server.serve_forever, daemon=True).start()
-threading.Event().wait()
+async def relay(reader, writer):
+    upstream = None
+    tasks = []
+    async def pump(source, target):
+        while data := await source.read(65536):
+            target.write(data)
+            await target.drain()
+    try:
+        remote_reader, upstream = await asyncio.wait_for(
+            asyncio.open_connection('127.0.0.1', 18444), timeout=5)
+        tasks = [asyncio.create_task(pump(reader, upstream)),
+                 asyncio.create_task(pump(remote_reader, writer))]
+        await asyncio.wait(tasks, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        writer.close()
+        if upstream is not None:
+            upstream.close()
+
+async def serve_relays():
+    listeners = []
+    try:
+        for address in sys.argv[3:]:
+            listeners.append(await asyncio.start_server(relay, address, 18443))
+        await asyncio.gather(*(listener.serve_forever() for listener in listeners))
+    finally:
+        for listener in listeners:
+            listener.close()
+
+if relay_mode:
+    asyncio.run(serve_relays())
+else:
+    threading.Event().wait()
 PY
 server_pid=$!
 

@@ -84,17 +84,22 @@ export function SettingsScaffold({
 export function SettingsGroup({
   title,
   description,
+  trailing,
   children,
 }: {
   title: string;
   description?: string;
+  trailing?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <View style={styles.settingsGroup}>
-      <Text style={styles.groupHeader} accessibilityRole="header">
-        {title}
-      </Text>
+      <View style={styles.sectionHeaderRow}>
+        <Text style={styles.groupHeader} accessibilityRole="header">
+          {title}
+        </Text>
+        {trailing}
+      </View>
       {description !== undefined ? (
         <Text style={styles.groupDescription}>{description}</Text>
       ) : null}

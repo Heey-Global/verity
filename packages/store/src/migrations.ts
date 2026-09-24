@@ -2939,7 +2939,104 @@ const migrations: Record<string, Migration> = {
         drop constraint knowledge_wiki_jobs_retired`.execute(db);
     },
   },
-  '0105_session_project_moves': {
+  '0105_project_google_drive_folder': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('project_settings')
+        .addColumn('google_drive_folder_id', 'text')
+        .addColumn('google_drive_folder_name', 'text')
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('project_settings')
+        .dropColumn('google_drive_folder_name')
+        .dropColumn('google_drive_folder_id')
+        .execute();
+    },
+  },
+  '0106_gmail_connections': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table verity_settings
+        add column gmail_authorized boolean not null default false`.execute(db);
+      await sql`create table session_gmail_connections (
+        session_id text primary key references sessions(session_id) on delete cascade,
+        account_email text not null,
+        enabled_at timestamptz not null default now()
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_gmail_connections`.execute(db);
+      await sql`alter table verity_settings drop column gmail_authorized`.execute(db);
+    },
+  },
+  '0107_gmail_signature_scope': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Existing refresh tokens predate gmail.settings.basic. Force one visible reconnect
+      // instead of advertising Gmail while silently omitting the configured signature.
+      await sql`delete from session_gmail_connections`.execute(db);
+      await sql`update verity_settings set gmail_authorized = false`.execute(db);
+    },
+    async down(): Promise<void> {
+      // Authorization and per-session consent cannot be reconstructed safely.
+    },
+  },
+  '0108_inbound_integrations': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table integration_accounts (
+        id text primary key,
+        provider text not null,
+        endpoint text not null,
+        display_name text not null,
+        status text not null default 'offline',
+        last_error text,
+        updated_at timestamptz not null default now()
+      )`.execute(db);
+      await sql`create table integration_sources (
+        account_id text not null references integration_accounts(id) on delete cascade,
+        source_id text not null,
+        display_name text not null,
+        inviter text,
+        project_id text references projects(id) on delete set null,
+        status text not null default 'pending',
+        activated_at timestamptz,
+        last_ingested_at timestamptz,
+        last_error text,
+        primary key (account_id, source_id)
+      )`.execute(db);
+      await sql`create table integration_events (
+        account_id text not null,
+        source_id text not null,
+        event_id text not null,
+        target_event_id text,
+        kind text not null,
+        sender text not null,
+        occurred_at timestamptz not null,
+        body text,
+        primary key (account_id, source_id, event_id),
+        foreign key (account_id, source_id) references integration_sources(account_id, source_id) on delete cascade
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table integration_events`.execute(db);
+      await sql`drop table integration_sources`.execute(db);
+      await sql`drop table integration_accounts`.execute(db);
+    },
+  },
+  '0109_matrix_connector_config': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table matrix_connector_config (
+        id text primary key,
+        endpoint text not null,
+        username text not null,
+        password_secret text not null
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table matrix_connector_config`.execute(db);
+    },
+  },
+  '0110_session_project_moves': {
     async up(db: Kysely<unknown>): Promise<void> {
       // A session FK would silently drop source recovery protection when the moved session is deleted.
       await sql`create table session_moves (

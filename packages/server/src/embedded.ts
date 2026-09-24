@@ -76,7 +76,9 @@ import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-g
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createGoogleDocsTool } from './google-docs-tool.js';
+import { createGmailTool } from './gmail-tool.js';
 import { createGoogleSheetsTool } from './google-sheets-tool.js';
+import { createGoogleDriveAgentTool } from './google-drive-agent-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import {
   createGitWorktreeProvisioner,
@@ -796,6 +798,7 @@ export interface EmbeddedServerConfig {
    *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
   sandboxPidsLimit?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  sandboxSwapBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
@@ -1522,6 +1525,14 @@ export function parseByteSize(value: string | undefined): number | undefined {
   return bytes;
 }
 
+/** Parse a swap allowance (`VERITY_SANDBOX_SWAP`) into bytes. Same syntax as
+ *  {@link parseByteSize}, plus `0` for "no swap" — the one value a memory ceiling
+ *  must never take, and the default here. Unset/empty → `undefined` (default). */
+export function parseSwapSize(value: string | undefined): number | undefined {
+  if (value !== undefined && /^0+(?:\.0+)?\s*[kmgt]?b?$/i.test(value.trim())) return 0;
+  return parseByteSize(value);
+}
+
 /** Parse a CPU-core count (`VERITY_SANDBOX_CPUS`, e.g. `1.5`) into Docker
  *  nano-CPUs (1 core = 1e9). Unset/empty → `undefined` (unlimited). Invalid THROWS. */
 export function parseCpuCores(value: string | undefined): number | undefined {
@@ -1878,6 +1889,10 @@ export async function buildEmbeddedServer(
   const googleSheetsTool = createGoogleSheetsTool({ eventStore, googleAccessToken });
   const invokeGoogleSheets: typeof googleSheetsTool.invoke = (input) =>
     googleSheetsTool.invoke(input);
+  const gmailTool = createGmailTool({ eventStore, googleAccessToken });
+  const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
+  const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
+  const invokeGoogleDrive: typeof googleDriveTool.invoke = (input) => googleDriveTool.invoke(input);
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
@@ -1948,6 +1963,8 @@ export async function buildEmbeddedServer(
             'verity_google_docs',
             'verity_knowledge',
             'verity_google_sheets',
+            'verity_gmail',
+            'verity_google_drive',
           ]
         : [
             'verity_http_request',
@@ -1956,6 +1973,8 @@ export async function buildEmbeddedServer(
             'verity_google_docs',
             'verity_knowledge',
             'verity_google_sheets',
+            'verity_gmail',
+            'verity_google_drive',
           ],
     // Control-plane session tools are handled in `buildServer`, which owns session
     // creation and dispatch. Keep their advertisement scoped to the control project.
@@ -1988,6 +2007,8 @@ export async function buildEmbeddedServer(
       googleSlides: invokeGoogleSlides,
       googleDocs: invokeGoogleDocs,
       googleSheets: invokeGoogleSheets,
+      gmail: invokeGmail,
+      googleDrive: invokeGoogleDrive,
     }),
     recordCall: async ({ projectId, kind, ...gateway }) => {
       await secretAuditLog.append({
@@ -3374,6 +3395,9 @@ export async function buildEmbeddedServer(
       ...(config.sandboxMemoryBytes !== undefined
         ? { sandboxMemoryBytes: config.sandboxMemoryBytes }
         : {}),
+      ...(config.sandboxSwapBytes !== undefined
+        ? { sandboxSwapBytes: config.sandboxSwapBytes }
+        : {}),
       ...(config.sandboxNanoCpus !== undefined ? { sandboxNanoCpus: config.sandboxNanoCpus } : {}),
       ...(config.sandboxCpuShares !== undefined
         ? { sandboxCpuShares: config.sandboxCpuShares }
@@ -3854,6 +3878,9 @@ export async function buildEmbeddedServer(
 
   const app = buildControlPlane({
     eventStore,
+    ...(process.env.VERITY_MATRIX_CONNECTOR_TOKEN
+      ? { matrixConnectorToken: process.env.VERITY_MATRIX_CONNECTOR_TOKEN }
+      : {}),
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
@@ -3894,6 +3921,7 @@ export async function buildEmbeddedServer(
     ...(config.googleDriveClientId !== undefined
       ? { googleDriveClientId: config.googleDriveClientId }
       : {}),
+    onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
     persistAgentCredentials: async (patch, persist) => {
       await claudeCredentialSync.persistCredentials(patch, persist);

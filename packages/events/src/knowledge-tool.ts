@@ -71,6 +71,11 @@ export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
   'Durable project knowledge is mounted at `/knowledge`. Immutable source material is under ' +
   '`/knowledge/sources`, with documents and meeting artifacts in separate subfolders. ' +
   'Create and revise distilled project knowledge under the writable `/knowledge/insights` folder. ' +
+  'When work produces a durable, reusable conclusion grounded in project sources, create or update ' +
+  'a concise Markdown insight without asking first. Prefer improving an existing insight over creating ' +
+  'a duplicate, cite the relevant source paths, and clearly mark uncertainty. Do not save routine ' +
+  'progress, transient state, unsupported speculation, or secrets. Ask before saving sensitive personal ' +
+  'information or a disputed interpretation as durable knowledge. ' +
   'Files shared with every project are available read-only at `/knowledge/shared`, organized into ' +
   '`sources` and `insights`. Use `verity_knowledge` with `publish_shared` only when the user explicitly ' +
   'asks to make an insight shared, global, or available to every project. Before concluding that project information is unavailable, ' +

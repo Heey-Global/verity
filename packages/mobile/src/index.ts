@@ -131,6 +131,11 @@ export {
 export { spellOutBidiControls } from './ui/bidi.js';
 export { permissionInputText } from './ui/permissionInput.js';
 export {
+  gmailPreviewHtml,
+  gmailSendSummary,
+  type GmailSendSummary,
+} from './ui/gmailSendSummary.js';
+export {
   briefingExtent,
   listSessionsSentence,
   listSessionsSummary,
@@ -320,6 +325,7 @@ export {
   type SessionHistoryPage,
   type SessionStatus,
   type SessionGoogleWorkspaceFile,
+  type GmailSessionConnection,
   type SessionSummary,
   type SessionListEnvelope,
   type AttentionSignal,
@@ -396,6 +402,7 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export { healthSchema, type Health } from './api.js';
 export { canCreatePublicPreviewTarget, type PublicPreviewTargetKind } from './publicPreview.js';
 export { secretUnlockedSchema, type SecretUnlocked } from './api.js';
@@ -417,11 +424,15 @@ export { signingKeyGenerateSchema, type SigningKeyGenerateResult } from './api.j
 export {
   driveFileSchema,
   driveFileListSchema,
+  sharedDriveSchema,
+  sharedDriveListSchema,
   googleDriveImportResultSchema,
   isDriveFolder,
   DRIVE_FOLDER_MIME,
   type DriveFile,
   type DriveFileList,
+  type SharedDrive,
+  type SharedDriveList,
   type GoogleDriveImportResult,
 } from './api.js';
 export {

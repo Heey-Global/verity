@@ -54,7 +54,7 @@ WORKSPACE="${WORKSPACE:-/work}"
 # provisioner mounting the key at /run/verity/ssh (#436).
 if [ -n "${GIT_USER_NAME:-}" ]; then git config --global user.name "$GIT_USER_NAME" || true; fi
 if [ -n "${GIT_USER_EMAIL:-}" ]; then git config --global user.email "$GIT_USER_EMAIL" || true; fi
-if [ -n "${VERITY_GH_TOKEN_URL:-}" ] && [ -r "${VERITY_GH_TOKEN_CAPABILITY_FILE:-/run/verity/gh-token-capability}" ]; then
+if [ -n "${VERITY_GH_TOKEN_URL:-}" ] && [ -r "${VERITY_GH_BROKER_CAPABILITY_FILE:-/run/verity/gh-token-capability}" ]; then
   git config --global credential.helper '!verity-gh-cred' || true
 fi
 

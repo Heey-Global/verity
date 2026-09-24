@@ -725,6 +725,22 @@ describe('AcpOpenCodeBackend', () => {
     });
   });
 
+  it('offers the gateway when OpenCode omits its optional HTTP MCP capability', async () => {
+    const fake = acpSpawner();
+    await new AcpOpenCodeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-opencode-mcp-unspecified',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Use Verity tools',
+      spawner: fake.spawner,
+      mcpGateway: { url: 'http://relay:8080/internal/mcp', token: 'turn-bearer' },
+    });
+    expect(write(fake.writes, 'session/new')).toMatchObject({
+      params: { mcpServers: [{ type: 'http', name: 'verity' }] },
+    });
+  });
+
   it('sends an image attachment inline', async () => {
     const fake = acpSpawner();
     await new AcpOpenCodeBackend().run({
@@ -742,6 +758,10 @@ describe('AcpOpenCodeBackend', () => {
       params: {
         prompt: [
           { type: 'text', text: 'Look' },
+          {
+            type: 'text',
+            text: 'Verity session attachment ID for the following image: 8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4',
+          },
           { type: 'image', mimeType: 'image/png', data: 'aGk=' },
         ],
       },

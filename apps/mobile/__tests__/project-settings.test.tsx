@@ -96,6 +96,7 @@ const healthWithRebuild = (): jest.Mock =>
 function makeClient(
   opts: {
     detail?: ProjectDetail;
+    setProjectSetupStatus?: jest.Mock;
     updateProjectSettings?: jest.Mock;
     listDopplerProjects?: jest.Mock;
     listDopplerConfigs?: jest.Mock;
@@ -134,6 +135,13 @@ function makeClient(
     getHealth:
       opts.getHealth ?? jest.fn().mockResolvedValue({ status: 'ok', publicPreviewsEnabled: false }),
     getProject: jest.fn().mockResolvedValue(opts.detail ?? makeDetail()),
+    listProjectIntegrations: jest.fn().mockResolvedValue([]),
+    setProjectSetupStatus:
+      opts.setProjectSetupStatus ??
+      jest.fn().mockImplementation(async () => ({
+        ...(opts.detail ?? makeDetail()).project,
+        setupStatus: 'complete',
+      })),
     updateProjectSettings:
       opts.updateProjectSettings ??
       jest
@@ -229,25 +237,26 @@ afterEach(() => {
 });
 
 describe('ProjectDetailScreen — project settings', () => {
-  it('routes pending projects into the unified setup flow without rendering controls', async () => {
+  it('keeps project settings available while setup is pending', async () => {
     const base = makeDetail();
     const detail: ProjectDetail = {
       ...base,
       project: { ...base.project, state: 'container_starting', setupStatus: 'pending' },
     };
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
+    const setProjectSetupStatus = jest
+      .fn()
+      .mockResolvedValue({ ...detail.project, setupStatus: 'complete' });
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail, setProjectSetupStatus }));
     render(<ProjectDetailScreen />);
 
-    expect(await screen.findByLabelText('Opening project setup')).toBeOnTheScreen();
-    expect(mockRouter.replace).toHaveBeenCalledWith({
-      pathname: '/new-project',
-      params: { projectId: 'p/1' },
-    });
-    expect(screen.queryByText('Dev Servers')).toBeNull();
-    expect(screen.queryByLabelText('Project settings')).toBeNull();
+    fireEvent.press(await screen.findByLabelText('Project settings'));
+    expect(await screen.findByText('Environment')).toBeOnTheScreen();
+    expect(screen.getByText('Connected services')).toBeOnTheScreen();
+    await waitFor(() => expect(setProjectSetupStatus).toHaveBeenCalledWith('p/1', 'complete'));
+    expect(mockRouter.replace).not.toHaveBeenCalled();
   });
 
-  it('renders normal project tabs after guided setup is complete', async () => {
+  it('renders project tabs after provisioning completes', async () => {
     const base = makeDetail();
     const detail: ProjectDetail = {
       ...base,
@@ -644,6 +653,45 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.getByLabelText('Name')).toHaveProp('value', 'Web');
   });
 
+  it('names the inherited project permissions beside external sharing', async () => {
+    const base = makeDetail();
+    const detail = { ...base, project: { ...base.project, state: 'active' as const } };
+    const server = {
+      id: 'ds-web',
+      projectId: 'p/1',
+      name: 'Web',
+      command: 'npm run dev',
+      url: null,
+      workdir: null,
+      hostPort: '3000',
+      containerPort: '3000',
+      sortOrder: 0,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        detail,
+        getHealth: jest.fn().mockResolvedValue({ status: 'ok', publicPreviewsEnabled: true }),
+        listDevServers: jest.fn().mockResolvedValue([server]),
+        getDevServerStatus: jest.fn().mockResolvedValue({
+          projectId: 'p/1',
+          url: null,
+          running: true,
+          pid: '123',
+        }),
+      }),
+    );
+    render(<ProjectDetailScreen />);
+
+    expect(await screen.findByText('External sharing')).toBeOnTheScreen();
+    expect(
+      screen.getByText(
+        "Public traffic reaches this project sandbox. A compromised dev server can use the sandbox's project-scoped broker and gateway permissions.",
+      ),
+    ).toBeOnTheScreen();
+  });
+
   it('blocks deletion while a runtime mutation is in flight', async () => {
     const base = makeDetail();
     const detail = { ...base, project: { ...base.project, state: 'active' as const } };
@@ -724,9 +772,8 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
-    expect(await screen.findByText('Project setup')).toBeOnTheScreen();
     expect(screen.getByText('Environment')).toBeOnTheScreen();
-    expect(screen.getByText('Secrets')).toBeOnTheScreen();
+    expect(screen.getByText('Connected services')).toBeOnTheScreen();
     expect(screen.getByText('Project information')).toBeOnTheScreen();
     expect(screen.queryByText('Container')).toBeNull();
     // Not "Running": Verity is recreating this container onto the new image, and
@@ -849,7 +896,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
-    expect(await screen.findByText('Project setup')).toBeOnTheScreen();
+    expect(await screen.findByText('Environment')).toBeOnTheScreen();
     expect(screen.queryByText(/needs re-checking/)).toBeNull();
   });
 
