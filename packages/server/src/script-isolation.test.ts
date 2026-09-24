@@ -22,13 +22,10 @@ import {
 } from './mcp-gateway-tools.js';
 import { ControlPlaneSessionToolError } from './session-handoff-tool.js';
 
-// Landlock is absent on a whole class of runtimes, not only on old kernels: gVisor
-// (`runsc`), which public-preview deployments select since v1.5.0, answers ENOSYS
-// to all three syscalls. Before this suite the launcher treated that as fatal and
-// took every project Runner down with it. What must hold instead: the Runner starts,
-// and the one thing that needs Landlock — a worktree entry script — is refused
-// before its approval card and again before its secrets are written, never run
-// unconfined.
+// The native helper uses Landlock where available and a private filesystem view
+// built with user/mount namespaces under gVisor. If a runtime supports neither,
+// the Runner must still start and refuse the paths that require isolation before
+// their approval card and again before secrets are written, never run unconfined.
 
 const architecture =
   process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : undefined;
@@ -50,15 +47,14 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-/** A helper standing in for the real one on a kernel without Landlock: the same exit
- *  code and first stderr line the prebuilt prints under gVisor. */
+/** A helper standing in for a runtime with no supported isolation mechanism. */
 async function unavailableHelper(): Promise<string> {
-  const helper = join(root, 'verity-script-sandbox-no-landlock');
+  const helper = join(root, 'verity-script-sandbox-unavailable');
   await writeFile(
     helper,
     [
       '#!/bin/sh',
-      'echo "verity-script-sandbox: Landlock is unavailable: Function not implemented" >&2',
+      'echo "verity-script-sandbox: script isolation is unavailable: Function not implemented" >&2',
       'exit 126',
       '',
     ].join('\n'),
@@ -98,9 +94,9 @@ async function brokerStatus(socketPath: string): Promise<Record<string, unknown>
 
 describe('script sandbox probe', () => {
   it.skipIf(prebuiltHelper === undefined || process.platform !== 'linux')(
-    'reports the attested helper as available on a kernel that enforces Landlock',
+    'reports the attested helper as available when a filesystem boundary can be enforced',
     async () => {
-      // Copied, as the existing Landlock suite does: the checkout's own mode bits are
+      // Copied, as the native-helper suite does: the checkout's own mode bits are
       // not what an installed helper has.
       const helper = join(root, 'verity-script-sandbox');
       await copyFile(prebuiltHelper!, helper);
@@ -110,11 +106,11 @@ describe('script sandbox probe', () => {
     },
   );
 
-  it('reports ENOSYS from the helper as unavailable, with its reason', async () => {
+  it('reports an unavailable isolation helper with its reason', async () => {
     const helper = await unavailableHelper();
     const expected = {
       available: false,
-      reason: 'verity-script-sandbox: Landlock is unavailable: Function not implemented',
+      reason: 'verity-script-sandbox: script isolation is unavailable: Function not implemented',
     };
     await expect(probeFromBroker(helper)).resolves.toEqual(expected);
     await expect(probeFromSupervisor(helper)).resolves.toEqual(expected);
@@ -130,7 +126,7 @@ describe('script sandbox probe', () => {
   });
 });
 
-describe('Runner start without Landlock', () => {
+describe('Runner start without script isolation', () => {
   it('starts the supervisor, reports the capability off, and serves plain requests', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const supervisor = await runSupervisor({
@@ -236,7 +232,7 @@ describe('spawn broker entry scripts', () => {
   async function scriptFixture() {
     const worktree = join(root, 'worktree');
     await mkdir(worktree);
-    // Readable to the script only if Landlock is NOT confining it to its snapshot.
+    // Readable to the script only if the helper is NOT confining it to its snapshot.
     await writeFile(join(worktree, 'mutable-dependency'), 'unconfined read\n');
     const script = join(worktree, 'deploy.sh');
     const contents = `printf 'token=%s\\n' "$DEPLOY_TOKEN"; cat ${join(worktree, 'mutable-dependency')} || echo confined\n`;
@@ -285,7 +281,7 @@ describe('spawn broker entry scripts', () => {
     });
   }
 
-  it('refuses an entry script before materializing it or its secrets when Landlock is unavailable', async () => {
+  it('refuses an entry script before materializing it or its secrets when isolation is unavailable', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const spawned: string[][] = [];
     const broker = await startBroker(await unavailableHelper(), spawned);
@@ -332,7 +328,7 @@ describe('spawn broker entry scripts', () => {
   });
 
   it.skipIf(prebuiltHelper === undefined || process.platform !== 'linux')(
-    'still confines an approved entry script with the real helper when Landlock is available',
+    'confines an approved entry script with the real helper',
     async () => {
       const helper = join(root, 'verity-script-sandbox');
       await copyFile(prebuiltHelper!, helper);
@@ -351,7 +347,7 @@ describe('spawn broker entry scripts', () => {
         expect(spawned[0]?.[0]).toBe(helper);
         expect(result).toMatchObject({ exitCode: 0 });
         expect(result.stdout).toContain('token=[REDACTED]');
-        // Landlock denied the mutable worktree read; the script did not see it.
+        // The helper denied the mutable worktree read; the script did not see it.
         expect(result.stdout).toContain('confined');
         expect(result.stdout).not.toContain('unconfined read');
       } finally {
