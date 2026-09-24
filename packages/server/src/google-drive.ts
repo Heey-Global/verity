@@ -268,6 +268,8 @@ export interface DriveFile {
   size?: string;
   iconLink?: string;
   canEdit?: boolean;
+  parents?: string[];
+  webViewLink?: string;
 }
 
 export interface DriveFileList {
@@ -275,7 +277,8 @@ export interface DriveFileList {
   nextPageToken?: string;
 }
 
-const DRIVE_FILE_FIELDS = 'id,name,mimeType,modifiedTime,size,iconLink,capabilities(canEdit)';
+const DRIVE_FILE_FIELDS =
+  'id,name,mimeType,modifiedTime,size,iconLink,parents,webViewLink,capabilities(canEdit)';
 
 function parseDriveFile(raw: unknown): DriveFile | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
@@ -293,7 +296,78 @@ function parseDriveFile(raw: unknown): DriveFile | undefined {
     ...(typeof (r.capabilities as { canEdit?: unknown } | undefined)?.canEdit === 'boolean'
       ? { canEdit: (r.capabilities as { canEdit: boolean }).canEdit }
       : {}),
+    ...(Array.isArray(r.parents) && r.parents.every((parent) => typeof parent === 'string')
+      ? { parents: r.parents }
+      : {}),
+    ...(typeof r.webViewLink === 'string' ? { webViewLink: r.webViewLink } : {}),
   };
+}
+
+/** Create a regular Drive file, native Workspace file, or folder in one parent. */
+export async function createDriveFile(
+  accessToken: string,
+  input: { name: string; mimeType: string; parentId: string; bytes?: Buffer },
+  opts: GoogleTransportOptions = {},
+): Promise<DriveFile> {
+  const metadata = { name: input.name, mimeType: input.mimeType, parents: [input.parentId] };
+  let response: GoogleHttpResponse;
+  if (input.bytes === undefined) {
+    response = await driveMutation(
+      `${GOOGLE_DRIVE_API}/files?fields=${encodeURIComponent(DRIVE_FILE_FIELDS)}&supportsAllDrives=true`,
+      accessToken,
+      { method: 'POST', body: JSON.stringify(metadata), contentType: 'application/json' },
+      opts,
+    );
+  } else {
+    const boundary = `verity-${createHash('sha256').update(input.bytes).digest('hex').slice(0, 16)}`;
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+          `--${boundary}\r\nContent-Type: ${input.mimeType}\r\n\r\n`,
+      ),
+      input.bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    response = await driveMutation(
+      `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=${encodeURIComponent(DRIVE_FILE_FIELDS)}&supportsAllDrives=true`,
+      accessToken,
+      { method: 'POST', body, contentType: `multipart/related; boundary=${boundary}` },
+      opts,
+    );
+  }
+  const file = parseDriveFile(await response.json().catch(() => ({})));
+  if (file === undefined)
+    throw new GoogleDriveError('Google Drive returned malformed file metadata', 'malformed');
+  return file;
+}
+
+/** Rename a file and, when requested, move it between two authorized parents. */
+export async function updateDriveFile(
+  accessToken: string,
+  fileId: string,
+  input: { name?: string; addParentId?: string; removeParentId?: string },
+  opts: GoogleTransportOptions = {},
+): Promise<DriveFile> {
+  const query = new URLSearchParams({
+    fields: DRIVE_FILE_FIELDS,
+    supportsAllDrives: 'true',
+    ...(input.addParentId ? { addParents: input.addParentId } : {}),
+    ...(input.removeParentId ? { removeParents: input.removeParentId } : {}),
+  });
+  const response = await driveMutation(
+    `${GOOGLE_DRIVE_API}/files/${encodeURIComponent(fileId)}?${query.toString()}`,
+    accessToken,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(input.name === undefined ? {} : { name: input.name }),
+      contentType: 'application/json',
+    },
+    opts,
+  );
+  const file = parseDriveFile(await response.json().catch(() => ({})));
+  if (file === undefined)
+    throw new GoogleDriveError('Google Drive returned malformed file metadata', 'malformed');
+  return file;
 }
 
 /**

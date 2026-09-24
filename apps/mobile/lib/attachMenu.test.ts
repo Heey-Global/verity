@@ -17,37 +17,21 @@ function labels(rows: AttachMenuRow[]): string[] {
 }
 
 describe('attachMenuRows', () => {
-  it('separates content imports from the live editing connection', () => {
+  it('keeps Drive and Workspace setup out of the session menu', () => {
     expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: true }))).toEqual([
-      '[Add content]',
       'Take photo',
       'Choose photo',
       'Choose file',
       '—',
       'Meeting audio',
-      'Google Drive',
-      '—',
-      '[Connect & edit]',
-      'Google Workspace',
     ]);
-    expect(
-      attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
-        (row) => 'label' in row && row.label === 'Google Workspace',
-      ),
-    ).toMatchObject({ detail: 'Live synced' });
   });
 
-  it('drops the row but keeps the divider group when the flag is off', () => {
+  it('drops the meeting row when the flag is off', () => {
     expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: false }))).toEqual([
-      '[Add content]',
       'Take photo',
       'Choose photo',
       'Choose file',
-      '—',
-      'Google Drive',
-      '—',
-      '[Connect & edit]',
-      'Google Workspace',
     ]);
   });
 

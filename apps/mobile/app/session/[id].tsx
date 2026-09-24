@@ -3364,6 +3364,7 @@ export function SessionChat({
         <SessionFilesSheet
           client={client}
           sessionId={sessionId}
+          projectId={projectId ?? null}
           baseUrl={baseUrl}
           initialFilePath={filesInitialPath}
           onClose={() => setFilesOpen(false)}
@@ -3935,12 +3936,14 @@ const MAX_DROPPED_UPLOADS = 24;
 function SessionFilesSheet({
   client,
   sessionId,
+  projectId,
   baseUrl,
   initialFilePath,
   onClose,
 }: {
   client: VerityClient;
   sessionId: string;
+  projectId: string | null;
   baseUrl: string;
   initialFilePath: string | null;
   onClose: () => void;
@@ -4534,6 +4537,22 @@ function SessionFilesSheet({
                 </Text>
               </Pressable>
             ))}
+            {projectId ? (
+              <Pressable
+                disabled={mutating}
+                onPress={() => {
+                  router.push({
+                    pathname: '/google-drive/[sessionId]',
+                    params: { sessionId: projectId, purpose: 'project' },
+                  });
+                }}
+                accessibilityRole="tab"
+                accessibilityLabel="Google Drive"
+                style={styles.filesRootButton}
+              >
+                <Text style={styles.filesRootLabel}>Google Drive</Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
         {preview ? (

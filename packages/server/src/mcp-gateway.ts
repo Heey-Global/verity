@@ -292,6 +292,19 @@ const TOOL_SCHEMAS = {
       requests: z.array(z.record(z.string(), z.unknown())).min(1).max(25).optional(),
     })
     .strict(),
+  verity_google_drive: z
+    .object({
+      action: z.enum(['list', 'search', 'read', 'upload', 'select_workspace_file']),
+      folderId: z.string().min(1).max(512).optional(),
+      fileId: z.string().min(1).max(512).optional(),
+      name: z.string().min(1).max(255).optional(),
+      query: z.string().min(1).max(200).optional(),
+      mimeType: z.string().min(1).max(255).optional(),
+      content: z.string().max(10_000_000).optional(),
+      encoding: z.enum(['utf8', 'base64']).optional(),
+      pageToken: z.string().min(1).max(4096).optional(),
+    })
+    .strict(),
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
@@ -309,6 +322,8 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; every edit requires the revisionId returned by the read.',
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or structural operations.',
+  verity_google_drive:
+    'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
 };
 
 function toolDeclarations(served: ReadonlySet<GatewayToolName>): readonly {

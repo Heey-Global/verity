@@ -2990,11 +2990,104 @@ function ProjectSettingsSection({
         settings={settings}
         onSaved={onSaved}
       />
+      <GoogleDriveFolderSection
+        client={client}
+        projectId={projectId}
+        settings={settings}
+        onSaved={onSaved}
+      />
       <ProjectMcpBindingsSection client={client} projectId={projectId} />
       <Text style={styles.settingsHint}>
         Verity resolves approved secrets in the central broker. No Doppler credential is stored in
         or injected into the project container.
       </Text>
+    </View>
+  );
+}
+
+function GoogleDriveFolderSection({
+  client,
+  projectId,
+  settings,
+  onSaved,
+}: {
+  client: VerityClient;
+  projectId: string;
+  settings: ProjectSettings | null;
+  onSaved: (settings: ProjectSettings) => void;
+}) {
+  const [disconnecting, setDisconnecting] = useState(false);
+  const folderName = settings?.googleDriveFolderName ?? null;
+  const choose = useCallback(() => {
+    router.push({
+      pathname: '/google-drive/[sessionId]',
+      params: { sessionId: projectId, purpose: 'folder' },
+    });
+  }, [projectId]);
+  const disconnect = useCallback(() => {
+    if (disconnecting) return;
+    Alert.alert(
+      'Disconnect Google Drive folder?',
+      'The files stay in Google Drive. Verity will no longer access them from this project.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disconnect',
+          style: 'destructive',
+          onPress: () => {
+            setDisconnecting(true);
+            void client
+              .disconnectProjectGoogleDriveFolder(projectId)
+              .then(() =>
+                onSaved({
+                  ...settings!,
+                  googleDriveFolderId: null,
+                  googleDriveFolderName: null,
+                }),
+              )
+              .catch(() => Alert.alert('Could not disconnect folder'))
+              .finally(() => setDisconnecting(false));
+          },
+        },
+      ],
+    );
+  }, [client, disconnecting, onSaved, projectId, settings]);
+
+  return (
+    <View style={styles.bindingSection} accessibilityLabel="Google Drive folder">
+      <View style={styles.settingsLabelRow}>
+        <Text style={styles.fieldLabel}>Google Drive folder</Text>
+        {folderName ? <StatusPill intent="ready" label="Connected" /> : null}
+      </View>
+      <Text style={styles.bindingCurrent}>{folderName ?? 'No Drive folder connected.'}</Text>
+      <Text style={styles.bindingHint}>
+        Verity can read, create, and edit files in the connected folder.
+      </Text>
+      <View style={styles.settingsLabelRow}>
+        <Pressable
+          style={({ pressed }) => [styles.bindingButton, pressed ? styles.rowPressed : null]}
+          onPress={choose}
+          accessibilityRole="button"
+          accessibilityLabel={
+            folderName ? 'Change Google Drive folder' : 'Connect Google Drive folder'
+          }
+        >
+          <Text style={styles.bindingButtonLabel}>{folderName ? 'Change' : 'Connect folder'}</Text>
+        </Pressable>
+        {folderName ? (
+          <Pressable
+            style={({ pressed }) => [styles.bindingButton, pressed ? styles.rowPressed : null]}
+            onPress={disconnect}
+            disabled={disconnecting}
+            accessibilityRole="button"
+            accessibilityLabel="Disconnect Google Drive folder"
+          >
+            <Text style={styles.bindingButtonLabel}>
+              {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }

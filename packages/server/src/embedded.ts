@@ -77,6 +77,7 @@ import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createGoogleDocsTool } from './google-docs-tool.js';
 import { createGoogleSheetsTool } from './google-sheets-tool.js';
+import { createGoogleDriveAgentTool } from './google-drive-agent-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import {
   createGitWorktreeProvisioner,
@@ -799,6 +800,7 @@ export interface EmbeddedServerConfig {
    *  Omit for {@link DEFAULT_MAX_CONCURRENT_PROJECT_TURNS}; 0 disables the cap. */
   maxConcurrentProjectTurns?: number | undefined;
   sandboxMemoryBytes?: number | undefined;
+  sandboxSwapBytes?: number | undefined;
   sandboxNanoCpus?: number | undefined;
   sandboxCpuShares?: number | undefined;
   sandboxCapAdd?: string[] | undefined;
@@ -1525,6 +1527,14 @@ export function parseByteSize(value: string | undefined): number | undefined {
   return bytes;
 }
 
+/** Parse a swap allowance (`VERITY_SANDBOX_SWAP`) into bytes. Same syntax as
+ *  {@link parseByteSize}, plus `0` for "no swap" — the one value a memory ceiling
+ *  must never take, and the default here. Unset/empty → `undefined` (default). */
+export function parseSwapSize(value: string | undefined): number | undefined {
+  if (value !== undefined && /^0+(?:\.0+)?\s*[kmgt]?b?$/i.test(value.trim())) return 0;
+  return parseByteSize(value);
+}
+
 /**
  * Default cap on turns executing at once inside one project Sandbox. All of a
  * project's sessions share one container and one memory limit, and under gVisor an
@@ -1889,6 +1899,8 @@ export async function buildEmbeddedServer(
   const googleSheetsTool = createGoogleSheetsTool({ eventStore, googleAccessToken });
   const invokeGoogleSheets: typeof googleSheetsTool.invoke = (input) =>
     googleSheetsTool.invoke(input);
+  const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
+  const invokeGoogleDrive: typeof googleDriveTool.invoke = (input) => googleDriveTool.invoke(input);
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
@@ -1959,6 +1971,7 @@ export async function buildEmbeddedServer(
             'verity_google_docs',
             'verity_knowledge',
             'verity_google_sheets',
+            'verity_google_drive',
           ]
         : [
             'verity_http_request',
@@ -1967,6 +1980,7 @@ export async function buildEmbeddedServer(
             'verity_google_docs',
             'verity_knowledge',
             'verity_google_sheets',
+            'verity_google_drive',
           ],
     // Control-plane session tools are handled in `buildServer`, which owns session
     // creation and dispatch. Keep their advertisement scoped to the control project.
@@ -1999,6 +2013,7 @@ export async function buildEmbeddedServer(
       googleSlides: invokeGoogleSlides,
       googleDocs: invokeGoogleDocs,
       googleSheets: invokeGoogleSheets,
+      googleDrive: invokeGoogleDrive,
     }),
     recordCall: async ({ projectId, kind, ...gateway }) => {
       await secretAuditLog.append({
@@ -3384,6 +3399,9 @@ export async function buildEmbeddedServer(
         : {}),
       ...(config.sandboxMemoryBytes !== undefined
         ? { sandboxMemoryBytes: config.sandboxMemoryBytes }
+        : {}),
+      ...(config.sandboxSwapBytes !== undefined
+        ? { sandboxSwapBytes: config.sandboxSwapBytes }
         : {}),
       ...(config.sandboxNanoCpus !== undefined ? { sandboxNanoCpus: config.sandboxNanoCpus } : {}),
       ...(config.sandboxCpuShares !== undefined
