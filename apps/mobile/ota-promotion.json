@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.40",
+  "version": "1.33.41",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "d934ffc4a54be524e2cbd0111f214d38dc9d5908",
-  "tag": "mobile-v1.33.40",
-  "branch": "staging-mobile-v1.33.40-d934ffc4a54be524e2cbd0111f214d38dc9d5908",
-  "baseline": "mobile-v1.33.39",
-  "group": "d42d6c00-c5ed-4c9a-ab2b-81d8eef6b878",
+  "commit": "3f15f06e63ef82d82d6c1b5687343cc626de3840",
+  "tag": "mobile-v1.33.41",
+  "branch": "staging-mobile-v1.33.41-3f15f06e63ef82d82d6c1b5687343cc626de3840",
+  "baseline": "mobile-v1.33.40",
+  "group": "9bcb7a62-da18-41bc-8651-fe141e81abee",
   "notes": [
-    "stabilize project folder browsing (#680)"
+    "validate public preview artifacts (#673)"
   ]
 }
