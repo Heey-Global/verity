@@ -126,22 +126,14 @@ it('requires an explicit project binding before accepting chat, then updates edi
   await app.close();
 });
 
-it('keeps the Matrix password out of project settings and limits worker access', async () => {
+it('stores Matrix configuration globally, redacts its settings response, and limits worker access', async () => {
   const app = Fastify();
   registerIntegrationRoutes(app, {
     store: ctx.store.integrations,
     connectorToken: 'a-secret-long-enough-for-the-worker-route',
   });
   await app.ready();
-  const projectId = randomUUID();
-  await ctx.store.upsertProject({
-    id: projectId,
-    owner: 'example',
-    repo: 'matrix-config',
-    containerName: `matrix-config-${projectId}`,
-    state: 'absent',
-  });
-  const path = `/projects/${projectId}/integrations/matrix/config`;
+  const path = '/integrations/matrix/config';
   const payload = {
     endpoint: 'https://matrix.example.test',
     username: '@verity:example.test',
@@ -153,6 +145,10 @@ it('keeps the Matrix password out of project settings and limits worker access',
     config: { endpoint: payload.endpoint, username: payload.username, passwordConfigured: true },
   });
   expect(summary.body).not.toContain(payload.password);
+  expect(
+    (await app.inject({ method: 'GET', url: '/projects/example/integrations/matrix/config' }))
+      .statusCode,
+  ).toBe(404);
   expect(
     (await app.inject({ method: 'GET', url: '/internal/integrations/matrix/config' })).statusCode,
   ).toBe(401);

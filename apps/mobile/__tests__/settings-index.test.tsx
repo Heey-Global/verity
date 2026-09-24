@@ -50,6 +50,7 @@ describe('settings index — destinations', () => {
   it.each([
     ['GitHub', '/settings/github'],
     ['Connected services', '/settings/services'],
+    ['Integrations', '/settings/integrations'],
     ['Maintenance', '/settings/maintenance'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
     ['Manage paired devices', '/devices'],

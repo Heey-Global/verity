@@ -566,8 +566,8 @@ function ProjectIntegrationsSection({
         ))}
         <SettingsNavRow
           icon="link"
-          title="Manage integrations"
-          subtitle="Connect rooms and manage imports"
+          title="Manage project rooms"
+          subtitle="Connect invited rooms and manage imports"
           onPress={() => router.push({ pathname: '/settings/integrations', params: { projectId } })}
         />
       </SettingsListPanel>
