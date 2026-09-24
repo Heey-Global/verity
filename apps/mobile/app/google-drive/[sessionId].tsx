@@ -428,7 +428,7 @@ function GoogleDrivePicker({
           }
         }
         setImportingId(null);
-        if (uploaded) await loadFiles(parentId, '', false, false);
+        if (uploaded) await loadFiles(parentId, '', false);
       }
     })().catch((caught: unknown) =>
       Alert.alert(
