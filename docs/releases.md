@@ -112,8 +112,11 @@ manifest is already on main. Both lifecycle reconciliation and delayed-tag
 validation use the same lookup, retaining the pending label, release branch,
 bot author, ancestor commit, and manifest-version checks. If publication was
 stranded by a missing search result, merge the lookup fix and let the next
-eligible push reconcile the original release commit; do not move its version
-to newer source or remove the pending label to bypass the gate.
+eligible push reconcile the original release commit. If workflow files changed
+since that commit, the delayed-tag gate prints the exact validated tag and SHA
+that an authorized checkout must push before retrying the latest release run.
+Do not move the version to newer source or remove the pending label to bypass
+the gate.
 
 The first release of a product needs an explicit bootstrap decision rather than
 an implicit fallback from an unknown boundary. A delayed trigger must not
