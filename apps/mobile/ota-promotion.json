@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.34.2",
+  "version": "1.34.3",
   "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "c57330de74cc9e4ea3ce68bfe977a2e65eb996ba",
-  "tag": "mobile-v1.34.2",
-  "branch": "staging-mobile-v1.34.2-c57330de74cc9e4ea3ce68bfe977a2e65eb996ba",
-  "baseline": "mobile-v1.34.1",
-  "group": "61d2926f-45b4-4377-a1b8-14fa7ad39775",
+  "commit": "02dd64b2a93d126b91d84709f91a117c65823fcf",
+  "tag": "mobile-v1.34.3",
+  "branch": "staging-mobile-v1.34.3-02dd64b2a93d126b91d84709f91a117c65823fcf",
+  "baseline": "mobile-v1.34.2",
+  "group": "ba27f420-c108-4ab0-8abd-eeb20889a863",
   "notes": [
-    "restore the project reorder from build 1.34.0 (#709)"
+    "restore floating project drag with safe ref cleanup (#712)",
+    "move sessions between local projects (#708)"
   ]
 }
