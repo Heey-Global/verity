@@ -83,16 +83,10 @@ export function registerIntegrationRoutes(
       accounts: await store.listAccounts(),
       sources: await store.listSources(),
     }));
-    instance.get('/projects/:id/integrations/matrix/config', async (request, reply) => {
-      const { id } = z.object({ id: identifier }).parse(request.params);
-      if (!(await store.projectExists(id)))
-        return reply.code(404).send({ error: 'Project not found' });
+    instance.get('/integrations/matrix/config', async () => {
       return { config: await store.matrixConfigSummary() };
     });
-    instance.put('/projects/:id/integrations/matrix/config', async (request, reply) => {
-      const { id } = z.object({ id: identifier }).parse(request.params);
-      if (!(await store.projectExists(id)))
-        return reply.code(404).send({ error: 'Project not found' });
+    instance.put('/integrations/matrix/config', async (request, reply) => {
       const input = z
         .object({
           endpoint: z.url().startsWith('https://'),

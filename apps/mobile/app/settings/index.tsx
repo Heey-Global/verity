@@ -183,6 +183,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() => router.push('/settings/services')}
           />
           <SettingsNavRow
+            icon="link"
+            title="Integrations"
+            subtitle="Matrix account and server connection"
+            onPress={() => router.push('/settings/integrations')}
+          />
+          <SettingsNavRow
             icon="tool"
             title="Maintenance"
             subtitle="Server updates and reprovisioning"

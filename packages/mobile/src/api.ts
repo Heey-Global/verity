@@ -1798,13 +1798,12 @@ export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
 export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
 
 export class VerityClient {
-  async getProjectMatrixConfig(
-    projectId: string,
-  ): Promise<{ endpoint: string; username: string; passwordConfigured: boolean } | null> {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(projectId)}/integrations/matrix/config`,
-      { method: 'GET' },
-    );
+  async getMatrixConfig(): Promise<{
+    endpoint: string;
+    username: string;
+    passwordConfigured: boolean;
+  } | null> {
+    const res = await this.request('/integrations/matrix/config', { method: 'GET' });
     return z
       .object({
         config: z
@@ -1814,11 +1813,12 @@ export class VerityClient {
       .parse(await res.json()).config;
   }
 
-  async saveProjectMatrixConfig(
-    projectId: string,
-    input: { endpoint: string; username: string; password: string },
-  ): Promise<void> {
-    await this.request(`/projects/${encodeURIComponent(projectId)}/integrations/matrix/config`, {
+  async saveMatrixConfig(input: {
+    endpoint: string;
+    username: string;
+    password: string;
+  }): Promise<void> {
+    await this.request('/integrations/matrix/config', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),

@@ -1,4 +1,4 @@
-import { projectDisplayName, type IntegrationSource, type VerityClient } from '@verity/mobile';
+import { type IntegrationSource, type VerityClient } from '@verity/mobile';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, Alert, Pressable, Text, TextInput, View } from 'react-native';
@@ -45,48 +45,36 @@ function IntegrationsView({
     status: string;
     lastError: string | null;
   } | null>(null);
-  const [projects, setProjects] = useState<Awaited<ReturnType<VerityClient['listProjects']>>>([]);
-  const [selected, setSelected] = useState<IntegrationSource | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const projectName = (projectId: string | null): string => {
-    const project = projects.find((item) => item.id === projectId);
-    return project ? projectDisplayName(project) : (projectId ?? 'Unknown project');
-  };
-
   const reload = useCallback(async () => {
     try {
-      const [integrations, projectList] = await Promise.all([
+      const [integrations, config] = await Promise.all([
         client.listIntegrations(),
-        client.listProjects(),
+        client.getMatrixConfig(),
       ]);
       setSources(integrations.sources);
       setAccount(integrations.accounts.find((item) => item.provider === 'matrix') ?? null);
-      setProjects(projectList);
-      if (projectId) {
-        const config = await client.getProjectMatrixConfig(projectId);
-        setEndpoint(config?.endpoint ?? '');
-        setUsername(config?.username ?? '');
-        setPasswordConfigured(config?.passwordConfigured ?? false);
-      }
+      setEndpoint(config?.endpoint ?? '');
+      setUsername(config?.username ?? '');
+      setPasswordConfigured(config?.passwordConfigured ?? false);
       setError(null);
     } catch {
       setError('Could not load integrations.');
     } finally {
       setLoading(false);
     }
-  }, [client, projectId]);
+  }, [client]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
   const saveAccount = async () => {
-    if (!projectId) return;
     setBusy(true);
     try {
-      await client.saveProjectMatrixConfig(projectId, {
+      await client.saveMatrixConfig({
         endpoint: endpoint.trim(),
         username: username.trim(),
         password,
@@ -104,7 +92,6 @@ function IntegrationsView({
     setBusy(true);
     try {
       await client.bindIntegrationSource(source.accountId, source.sourceId, projectId);
-      setSelected(null);
       await reload();
     } catch {
       setError('Could not connect this room.');
@@ -129,20 +116,24 @@ function IntegrationsView({
   };
 
   return (
-    <SettingsScaffold title="Integrations" detail onRetry={() => void reload()}>
-      <SettingsGroup
-        title="Matrix"
-        description="Import bridged WhatsApp and Signal conversations into project Knowledge."
-      >
-        <SettingsPanel>
-          <Text style={styles.disclosureTitle}>{account?.displayName ?? 'Not connected'}</Text>
-          <Text style={styles.reproSubtitle}>
-            {account
-              ? `Connector ${account.status}. Invite its Matrix account to a room, then choose a project below.`
-              : 'Enter a dedicated Matrix account below to receive room invitations.'}
-          </Text>
-          {account?.lastError ? <Text style={styles.reproHint}>{account.lastError}</Text> : null}
-          {projectId ? (
+    <SettingsScaffold
+      title={projectId ? 'Project integrations' : 'Integrations'}
+      detail
+      onRetry={() => void reload()}
+    >
+      {!projectId ? (
+        <SettingsGroup
+          title="Matrix"
+          description="Import bridged WhatsApp and Signal conversations into project Knowledge."
+        >
+          <SettingsPanel>
+            <Text style={styles.disclosureTitle}>{account?.displayName ?? 'Not connected'}</Text>
+            <Text style={styles.reproSubtitle}>
+              {account
+                ? `Connector ${account.status}. Invite its Matrix account to a room, then connect that room in a project's settings.`
+                : 'Enter a dedicated Matrix account below to receive room invitations.'}
+            </Text>
+            {account?.lastError ? <Text style={styles.reproHint}>{account.lastError}</Text> : null}
             <View>
               <TextInput
                 accessibilityLabel="Matrix homeserver URL"
@@ -183,9 +174,9 @@ function IntegrationsView({
                 server.
               </Text>
             </View>
-          ) : null}
-        </SettingsPanel>
-      </SettingsGroup>
+          </SettingsPanel>
+        </SettingsGroup>
+      ) : null}
 
       {error ? (
         <SettingsPanel>
@@ -194,102 +185,88 @@ function IntegrationsView({
       ) : null}
       {loading ? <ActivityIndicator /> : null}
 
-      <SettingsGroup
-        title="Invitations"
-        description="A room is imported only after you connect it to a project."
-      >
-        <SettingsListPanel>
-          {sources.filter((item) => item.status === 'pending').length === 0 ? (
-            <SettingsPanel>
-              <Text style={styles.reproSubtitle}>No pending rooms.</Text>
-            </SettingsPanel>
-          ) : (
-            sources
-              .filter((item) => item.status === 'pending')
-              .map((item) => (
-                <SettingsNavRow
-                  key={`${item.accountId}:${item.sourceId}`}
-                  icon="link"
-                  title={item.displayName}
-                  subtitle={item.inviter ? `Invited by ${item.inviter}` : item.sourceId}
-                  onPress={() => setSelected(item)}
-                />
-              ))
-          )}
-        </SettingsListPanel>
-      </SettingsGroup>
-
-      {selected ? (
-        <SettingsGroup title={`Connect ${selected.displayName} to a project`}>
+      {projectId ? (
+        <SettingsGroup
+          title="Invitations"
+          description="A room is imported only after you connect it to a project."
+        >
           <SettingsListPanel>
-            {projects.map((project) => (
-              <SettingsNavRow
-                key={project.id}
-                icon="folder"
-                title={projectDisplayName(project)}
-                subtitle="Import new messages into this project"
-                onPress={() => {
-                  if (!busy) void bind(selected, project.id);
-                }}
-              />
-            ))}
+            {sources.filter((item) => item.status === 'pending').length === 0 ? (
+              <SettingsPanel>
+                <Text style={styles.reproSubtitle}>No pending rooms.</Text>
+              </SettingsPanel>
+            ) : (
+              sources
+                .filter((item) => item.status === 'pending')
+                .map((item) => (
+                  <SettingsNavRow
+                    key={`${item.accountId}:${item.sourceId}`}
+                    icon="link"
+                    title={item.displayName}
+                    subtitle={item.inviter ? `Invited by ${item.inviter}` : item.sourceId}
+                    onPress={() => {
+                      if (!busy) void bind(item, projectId);
+                    }}
+                  />
+                ))
+            )}
           </SettingsListPanel>
         </SettingsGroup>
       ) : null}
 
-      <SettingsGroup
-        title="Connected rooms"
-        description="Pausing holds new messages until you resume importing."
-      >
-        {sources
-          .filter((item) => item.projectId)
-          .map((item) => (
-            <SettingsPanel key={`${item.accountId}:${item.sourceId}`}>
-              <Text style={styles.disclosureTitle}>{item.displayName}</Text>
-              <Text style={styles.reproSubtitle}>
-                {projectName(item.projectId)} · {item.status}
-              </Text>
-              <Text style={styles.reproHint}>
-                {item.lastIngestedAt
-                  ? `Last import: ${new Date(item.lastIngestedAt).toLocaleString()}`
-                  : 'No messages imported yet.'}
-              </Text>
-              <View style={styles.actionRow}>
-                <Pressable
-                  disabled={busy}
-                  accessibilityRole="button"
-                  onPress={() => void change(item, item.status === 'paused' ? 'resume' : 'pause')}
-                  style={styles.primaryButton}
-                >
-                  <Text style={styles.primaryButtonLabel}>
-                    {item.status === 'paused' ? 'Resume' : 'Pause'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  disabled={busy}
-                  accessibilityRole="button"
-                  onPress={() =>
-                    Alert.alert(
-                      'Disconnect room?',
-                      'Existing Knowledge stays in the project. Invite the Matrix account again to reconnect.',
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Disconnect',
-                          style: 'destructive',
-                          onPress: () => void change(item, 'disconnect'),
-                        },
-                      ],
-                    )
-                  }
-                  style={styles.dangerButton}
-                >
-                  <Text style={styles.dangerButtonLabel}>Disconnect</Text>
-                </Pressable>
-              </View>
-            </SettingsPanel>
-          ))}
-      </SettingsGroup>
+      {projectId ? (
+        <SettingsGroup
+          title="Connected rooms"
+          description="Pausing holds new messages until you resume importing."
+        >
+          {sources
+            .filter((item) => item.projectId === projectId)
+            .map((item) => (
+              <SettingsPanel key={`${item.accountId}:${item.sourceId}`}>
+                <Text style={styles.disclosureTitle}>{item.displayName}</Text>
+                <Text style={styles.reproSubtitle}>{item.status}</Text>
+                <Text style={styles.reproHint}>
+                  {item.lastIngestedAt
+                    ? `Last import: ${new Date(item.lastIngestedAt).toLocaleString()}`
+                    : 'No messages imported yet.'}
+                </Text>
+                <View style={styles.actionRow}>
+                  <Pressable
+                    disabled={busy}
+                    accessibilityRole="button"
+                    onPress={() => void change(item, item.status === 'paused' ? 'resume' : 'pause')}
+                    style={styles.primaryButton}
+                  >
+                    <Text style={styles.primaryButtonLabel}>
+                      {item.status === 'paused' ? 'Resume' : 'Pause'}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={busy}
+                    accessibilityRole="button"
+                    onPress={() =>
+                      Alert.alert(
+                        'Disconnect room?',
+                        'Existing Knowledge stays in the project. Invite the Matrix account again to reconnect.',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Disconnect',
+                            style: 'destructive',
+                            onPress: () => void change(item, 'disconnect'),
+                          },
+                        ],
+                      )
+                    }
+                    style={styles.dangerButton}
+                  >
+                    <Text style={styles.dangerButtonLabel}>Disconnect</Text>
+                  </Pressable>
+                </View>
+              </SettingsPanel>
+            ))}
+        </SettingsGroup>
+      ) : null}
     </SettingsScaffold>
   );
 }

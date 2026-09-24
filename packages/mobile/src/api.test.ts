@@ -65,7 +65,7 @@ describe('VerityClient Matrix integrations', () => {
     lastError: null,
   };
 
-  it('reads a redacted Matrix configuration and sends credentials to the project route', async () => {
+  it('reads a redacted Matrix configuration and sends credentials to the global route', async () => {
     const { fetch, calls } = fakeFetchSequence(
       json({
         config: {
@@ -77,19 +77,19 @@ describe('VerityClient Matrix integrations', () => {
       json({ ok: true }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.getProjectMatrixConfig(projectId)).toEqual({
+    expect(await client.getMatrixConfig()).toEqual({
       endpoint: 'https://matrix.example.test',
       username: '@verity:example.test',
       passwordConfigured: true,
     });
-    await client.saveProjectMatrixConfig(projectId, {
+    await client.saveMatrixConfig({
       endpoint: 'https://matrix.example.test',
       username: '@verity:example.test',
       password: 'private-password',
     });
     expect(calls.map((call) => call.url)).toEqual([
-      'http://host/projects/project%2Fone/integrations/matrix/config',
-      'http://host/projects/project%2Fone/integrations/matrix/config',
+      'http://host/integrations/matrix/config',
+      'http://host/integrations/matrix/config',
     ]);
     expect(calls[1]?.init?.method).toBe('PUT');
     expect(calls[1]?.init?.body).toBe(
