@@ -13,6 +13,7 @@ import {
   type Attachment,
   type AttachmentUpload,
   type BranchSwitchRequest,
+  type DriveFile,
   VerityApiError,
   type VerityClient,
   type ChoicesMessage,
@@ -3964,6 +3965,10 @@ function SessionFilesSheet({
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
+  const [driveActive, setDriveActive] = useState(false);
+  const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
+  const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
+  const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
   // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
   // matches is a superseded tap and is dropped. See openFile.
   const previewRequest = useRef(0);
@@ -4017,6 +4022,7 @@ function SessionFilesSheet({
   }, [client, sessionId, initialFilePath]);
 
   useEffect(() => {
+    if (driveActive) return;
     let active = true;
     setLoading(true);
     setError(null);
@@ -4039,7 +4045,45 @@ function SessionFilesSheet({
     return () => {
       active = false;
     };
-  }, [client, sessionId, path, root, reloadKey]);
+  }, [client, driveActive, sessionId, path, root, reloadKey]);
+
+  useEffect(() => {
+    if (!driveActive || !projectId) return;
+    let active = true;
+    const loadDrive = async (): Promise<void> => {
+      setLoading(true);
+      setError(null);
+      try {
+        let folderId = driveFolderId;
+        let nextPath = drivePath;
+        if (!folderId) {
+          const detail = await client.getProject(projectId);
+          folderId = detail.settings?.googleDriveFolderId ?? null;
+          const folderName = detail.settings?.googleDriveFolderName ?? null;
+          if (!folderId || !folderName) throw new Error('No Google Drive folder is connected.');
+          nextPath = [{ id: folderId, name: folderName }];
+          if (active) {
+            setDriveFolderId(folderId);
+            setDrivePath(nextPath);
+          }
+        }
+        const parentId = nextPath.at(-1)?.id ?? folderId;
+        const page = await client.listProjectGoogleDriveFiles(projectId, folderId, { parentId });
+        if (active) setDriveEntries(page.files);
+      } catch (caught) {
+        if (active) {
+          setDriveEntries([]);
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void loadDrive();
+    return () => {
+      active = false;
+    };
+  }, [client, driveActive, driveFolderId, drivePath, projectId, reloadKey]);
 
   // A reload — an upload landed, or the agent changed the tree — can retire rows
   // the selection still names. Pruning keeps the header count honest and stops a
@@ -4095,6 +4139,75 @@ function SessionFilesSheet({
       }
     })();
   }, [client, path, root, sessionId]);
+
+  const uploadDriveFiles = useCallback(() => {
+    if (!projectId || !driveFolderId || drivePath.length === 0) return;
+    void (async () => {
+      let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
+      try {
+        picked = await pickSessionFiles();
+        if (picked.length === 0) return;
+        setUploading(true);
+        for (const file of picked) {
+          await client.uploadProjectGoogleDriveFile(projectId, driveFolderId, {
+            parentId: drivePath.at(-1)?.id,
+            fileName: file.fileName,
+            mimeType: 'application/octet-stream',
+            data: new FsFile(file.uri),
+          });
+        }
+        setReloadKey((key) => key + 1);
+      } catch (caught) {
+        Alert.alert(
+          'Could not upload file',
+          caught instanceof Error ? caught.message : String(caught),
+        );
+      } finally {
+        for (const file of picked) {
+          try {
+            new FsFile(file.uri).delete();
+          } catch {
+            // Best effort cleanup of the document picker cache copy.
+          }
+        }
+        setUploading(false);
+      }
+    })();
+  }, [client, driveFolderId, drivePath, projectId]);
+
+  const openDriveFile = useCallback(
+    (file: DriveFile) => {
+      if (!projectId || !driveFolderId) return;
+      Alert.alert(file.name, 'This file stays in Google Drive.', [
+        { text: 'Cancel', style: 'cancel' },
+        ...(file.webViewLink
+          ? [
+              {
+                text: 'Open in Google Drive',
+                onPress: () => void Linking.openURL(file.webViewLink!),
+              },
+            ]
+          : []),
+        {
+          text: 'Add to Project Knowledge',
+          onPress: () => {
+            setMutating(true);
+            void client
+              .importProjectGoogleDriveFile(projectId, driveFolderId, file.id)
+              .then((result) => Alert.alert('Added to Project Knowledge', result.path))
+              .catch((caught: unknown) =>
+                Alert.alert(
+                  'Could not add file',
+                  caught instanceof Error ? caught.message : String(caught),
+                ),
+              )
+              .finally(() => setMutating(false));
+          },
+        },
+      ]);
+    },
+    [client, driveFolderId, projectId],
+  );
 
   const uploadDroppedFiles = useCallback(
     (files: readonly DroppedFileDescriptor[]) => {
@@ -4392,7 +4505,10 @@ function SessionFilesSheet({
     return byPath;
   }, [entries, selected, downloadUrlFor]);
 
-  const canSelect = useMemo(() => entries.some(isSelectableFile), [entries]);
+  const canSelect = useMemo(
+    () => !driveActive && entries.some(isSelectableFile),
+    [driveActive, entries],
+  );
 
   // React Native lays a `<Text>` out as one native text node, so the whole body in a
   // single node silently renders blank well below the server's 1 MB preview limit (a
@@ -4419,12 +4535,14 @@ function SessionFilesSheet({
                 : 'Files'}
             </Text>
             <Text style={styles.filesPath} numberOfLines={1}>
-              {root === 'worktree'
-                ? 'Worktree'
-                : root === 'knowledge'
-                  ? '📚 Knowledge'
-                  : '📚 Shared'}
-              {path ? ` / ${path}` : ''}
+              {driveActive
+                ? `Google Drive${drivePath.map(({ name }) => ` / ${name}`).join('')}`
+                : root === 'worktree'
+                  ? 'Worktree'
+                  : root === 'knowledge'
+                    ? '📚 Knowledge'
+                    : '📚 Shared'}
+              {!driveActive && path ? ` / ${path}` : ''}
             </Text>
           </View>
           {canSelect ? (
@@ -4471,11 +4589,13 @@ function SessionFilesSheet({
             </>
           ) : null}
           <Pressable
-            onPress={uploadFiles}
+            onPress={driveActive ? uploadDriveFiles : uploadFiles}
             disabled={uploading || mutating || error !== null}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={`Upload files to /${path}`}
+            accessibilityLabel={
+              driveActive ? 'Upload files to Google Drive' : `Upload files to /${path}`
+            }
             style={styles.bookmarkRemove}
           >
             {uploading ? (
@@ -4510,9 +4630,10 @@ function SessionFilesSheet({
                 key={candidate}
                 disabled={mutating}
                 onPress={() => {
-                  if (mutating || (candidate === root && path === '')) return;
+                  if (mutating || (!driveActive && candidate === root && path === '')) return;
                   previewRequest.current += 1;
                   endSelection();
+                  setDriveActive(false);
                   setRoot(candidate);
                   setPath('');
                   setEntries([]);
@@ -4541,21 +4662,86 @@ function SessionFilesSheet({
               <Pressable
                 disabled={mutating}
                 onPress={() => {
-                  router.push({
-                    pathname: '/google-drive/[sessionId]',
-                    params: { sessionId: projectId, purpose: 'project' },
-                  });
+                  if (driveActive) return;
+                  previewRequest.current += 1;
+                  endSelection();
+                  setDriveActive(true);
+                  setLoading(true);
+                  setPreview(null);
+                  setError(null);
                 }}
                 accessibilityRole="tab"
+                accessibilityState={{ selected: driveActive }}
                 accessibilityLabel="Google Drive"
-                style={styles.filesRootButton}
+                style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
               >
-                <Text style={styles.filesRootLabel}>Google Drive</Text>
+                <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
+                  Google Drive
+                </Text>
               </Pressable>
             ) : null}
           </View>
         ) : null}
-        {preview ? (
+        {driveActive ? (
+          <ScrollView style={styles.filesList}>
+            {drivePath.length > 1 ? (
+              <Pressable
+                onPress={() => setDrivePath((current) => current.slice(0, -1))}
+                accessibilityRole="button"
+                accessibilityLabel="Back to parent folder"
+                style={({ pressed }) => [styles.fileRow, pressed ? styles.sheetRowPressed : null]}
+              >
+                <Icon name="corner-up-left" size={18} color={theme.colors.textMuted} />
+                <Text style={styles.sheetRowLabel}>..</Text>
+              </Pressable>
+            ) : null}
+            {error ? <Text style={styles.sheetError}>{error}</Text> : null}
+            {loading ? (
+              <View style={styles.sheetLoading}>
+                <ActivityIndicator color={theme.colors.textMuted} />
+              </View>
+            ) : driveEntries.length === 0 && !error ? (
+              <Text style={styles.sheetEmpty}>This folder is empty.</Text>
+            ) : (
+              driveEntries.map((file) => {
+                const folder = file.mimeType === 'application/vnd.google-apps.folder';
+                return (
+                  <Pressable
+                    key={file.id}
+                    onPress={() =>
+                      folder
+                        ? setDrivePath((current) => [...current, { id: file.id, name: file.name }])
+                        : openDriveFile(file)
+                    }
+                    disabled={mutating}
+                    accessibilityRole="button"
+                    accessibilityLabel={folder ? `Open folder ${file.name}` : file.name}
+                    style={({ pressed }) => [
+                      styles.fileRow,
+                      pressed ? styles.sheetRowPressed : null,
+                    ]}
+                  >
+                    <Icon
+                      name={folder ? 'folder' : 'file'}
+                      size={18}
+                      color={theme.colors.textMuted}
+                    />
+                    <View style={styles.fileMain}>
+                      <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
+                        {file.name}
+                      </Text>
+                    </View>
+                    <Icon
+                      name={folder ? 'chevron-right' : 'more-horizontal'}
+                      size={17}
+                      color={theme.colors.textFaint}
+                    />
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+        ) : preview ? (
           <View style={styles.filesPreviewWrap}>
             <View style={styles.filesPreviewHeader}>
               <Pressable

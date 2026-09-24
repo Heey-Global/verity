@@ -29,37 +29,21 @@ afterEach(() => {
   mockParams = { sessionId: 'session-1', purpose: 'workspace' };
 });
 
-it('authorizes a newly connected project folder account only once', async () => {
+it('uses an existing Drive connection without authorizing it again', async () => {
   mockParams = { sessionId: 'project-1', purpose: 'folder' };
-  const getSettings = jest
-    .fn()
-    .mockResolvedValueOnce({
-      googleDriveClientId: '123-example.apps.googleusercontent.com',
-      googleDriveConnected: false,
-    })
-    .mockResolvedValue({
+  const client = {
+    getVeritySettings: jest.fn().mockResolvedValue({
       googleDriveClientId: '123-example.apps.googleusercontent.com',
       googleDriveConnected: true,
-    });
-  const client = {
-    getVeritySettings: getSettings,
-    connectGoogleDrive: jest.fn().mockResolvedValue(undefined),
+    }),
     listGoogleDriveFiles: jest.fn().mockResolvedValue({ files: [] }),
   } as unknown as VerityClient;
   mockCreateVerityClient.mockReturnValue(client);
-  mockRunGoogleDriveAuth.mockResolvedValue({
-    kind: 'success',
-    code: 'code',
-    codeVerifier: 'verifier',
-    redirectUri: 'verity-google:/oauthredirect',
-  });
 
   render(<GoogleDrivePickerScreen />);
-  fireEvent.press(await screen.findByRole('button', { name: 'Connect Google Drive' }));
 
-  await waitFor(() => expect(client.connectGoogleDrive).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByPlaceholderText('Search Google Drive')).toBeTruthy());
-  expect(mockRunGoogleDriveAuth).toHaveBeenCalledTimes(1);
+  expect(mockRunGoogleDriveAuth).not.toHaveBeenCalled();
 });
 
 it('reconnects an old Drive grant and retries the Workspace assignment', async () => {
