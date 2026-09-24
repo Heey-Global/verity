@@ -198,6 +198,7 @@ interface ServiceState {
   invalidMetadata?: boolean;
   approvedOnMain?: string;
   deliveredWork?: string;
+  largeReleasePayload?: boolean;
 }
 
 function serviceFixture(changes: Partial<ServiceState> = {}) {
@@ -265,7 +266,10 @@ if(tool === 'gh') {
     if(endpoint?.includes('/releases?')) {
       s.releaseReads++;
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
-      out([[{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[])]]);
+      const releases=[{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[])];
+      if (s.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'mobile-v1.32.'+index,draft:false,prerelease:false,body:'x'.repeat(20000)})));
+      if(args.includes('--jq')) out(releases.map(({tag_name,draft,prerelease})=>JSON.stringify({tag_name,draft,prerelease})).join('\\n')+'\\n');
+      out([releases]);
     }
     if(endpoint?.endsWith('/pulls')) out([{number:51,merged_at:'2026-01-01',head:{ref:'automation/promote-mobile-ota-1.33.0',sha}}]);
     if(endpoint?.includes('/git/commits/')) out({verification:{verified:true}});
@@ -323,6 +327,17 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
 }
 
 describe('OTA CLI interrupted external operations', () => {
+  it('stages candidates with large release metadata without buffering changelogs', () => {
+    const service = serviceFixture({ largeReleasePayload: true });
+    const result = service.run('stage');
+    expect(result.status).toBe(0);
+    expect(
+      service
+        .state()
+        .calls.some((call) => call.includes('--jq .[] | {tag_name, draft, prerelease}')),
+    ).toBe(true);
+  });
+
   it('reconciles an accepted upload after a lost response without another publish', () => {
     const service = serviceFixture({ loseUpload: true });
     expect(service.run('stage').status).not.toBe(0);

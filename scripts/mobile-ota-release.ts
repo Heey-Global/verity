@@ -235,14 +235,7 @@ function staleApprovals(number: number, head: string): Review[] {
 }
 
 function published(runtime: string) {
-  const pages = json<Release[][]>(
-    'api',
-    '--paginate',
-    '--slurp',
-    `repos/${repository()}/releases?per_page=100`,
-  );
-  const versions = pages
-    .flat()
+  const versions = releaseRows()
     .filter((release) => !release.draft && !release.prerelease)
     .map((release) => release.tag_name)
     .filter((tag) => /^mobile-v\d+\.\d+\.\d+$/.test(tag))
@@ -251,6 +244,20 @@ function published(runtime: string) {
   if (!latest || !latest.startsWith(`mobile-v${runtime.split('.').slice(0, 2).join('.')}.`))
     throw new Error('Published native runtime changed; stage a new candidate');
   return latest;
+}
+
+function releaseRows(): Release[] {
+  const rows = gh(
+    'api',
+    '--paginate',
+    '--jq',
+    '.[] | {tag_name, draft, prerelease}',
+    `repos/${repository()}/releases?per_page=100`,
+  );
+  return rows
+    .split('\n')
+    .filter(Boolean)
+    .map((row) => JSON.parse(row) as Release);
 }
 
 function reserve(tag: string, candidate: Candidate) {
@@ -695,11 +702,7 @@ function finishRelease(candidate: Artifact) {
     notesFile,
     `${candidate.notes.map((note) => `- ${note}`).join('\n')}\n\nEAS group: ${candidate.group}\nSource: ${candidate.commit}\nRuntime: ${candidate.runtime}\n`,
   );
-  const releases = api<Release[][]>(
-    '--paginate',
-    '--slurp',
-    `repos/${repository()}/releases?per_page=100`,
-  ).flat();
+  const releases = releaseRows();
   if (!releases.some((release) => release.tag_name === candidate.tag))
     gh(
       'release',
