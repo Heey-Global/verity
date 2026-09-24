@@ -19,6 +19,12 @@ const CLAUDE_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
   'claude-opus-5-5': '2.1.280',
 };
 
+/** First Codex CLI release whose bundled picker catalog lists GPT-6 Sol and Luna. */
+const CODEX_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
+  'gpt-6-sol': '0.156.1',
+  'gpt-6-luna': '0.156.1',
+};
+
 /**
  * Two images install the agent CLIs: the devcontainer Feature builds project
  * Sandboxes, and `deploy/Dockerfile` builds the Server image, which also runs the
@@ -97,6 +103,27 @@ describe('agent CLI version pins', () => {
         expect(
           semver.gte(pin!, floor),
           `${file} pins ${name}@${pin!}, which predates ${model} (needs >= ${floor})`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('pins a Codex CLI whose bundled catalog includes the supported GPT-6 models', async () => {
+    const [dockerfile, feature] = await Promise.all([
+      readFile('deploy/Dockerfile', 'utf8'),
+      readFile('features/verity-sandbox-toolkit/install.sh', 'utf8'),
+    ]);
+    const name = '@openai/codex';
+    const pins = [
+      ['deploy/Dockerfile', dockerfilePins(dockerfile).get(name)],
+      ['features/verity-sandbox-toolkit/install.sh', featurePins(feature).get(name)],
+    ] as const;
+    for (const [file, pin] of pins) expect(pin, `no ${name} pin found in ${file}`).toBeDefined();
+    for (const [model, floor] of Object.entries(CODEX_MODEL_CLI_FLOOR)) {
+      for (const [file, pin] of pins) {
+        expect(
+          semver.gte(pin!, floor),
+          `${file} pins ${name}@${pin!}, whose bundled catalog predates ${model} (needs >= ${floor})`,
         ).toBe(true);
       }
     }
