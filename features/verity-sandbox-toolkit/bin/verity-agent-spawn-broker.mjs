@@ -1491,17 +1491,11 @@ export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR =
 const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
 
 /**
- * Ask the helper whether this kernel will enforce its Landlock policy. The helper
- * applies a real ruleset in `--probe`, so exit 0 means a command it launches would
- * be confined; anything else means it would refuse to launch one.
- *
- * A container runtime can lack Landlock outright: gVisor (`runsc`), which
- * public-preview deployments select, implements none of the three syscalls and
- * answers ENOSYS. That is a property of the container, not of a request, so the
- * broker asks once and refuses the requests that depend on it rather than
- * materializing an approved script and its secrets for a launch that can only
- * exit 126. The helper stays the enforcement point either way: a probe that
- * wrongly reported success would still end in the helper's own refusal.
+ * Ask the helper whether this kernel will enforce its filesystem policy. It uses
+ * Landlock on Linux hosts and a private user/mount namespace under gVisor. Exit 0
+ * means a command it launches would be confined; anything else means it refuses
+ * to launch one. The helper stays the enforcement point: a probe that wrongly
+ * reported success would still end in the helper's own refusal.
  */
 export async function probeScriptSandbox(
   helperPath = DEFAULT_SCRIPT_SANDBOX_PATH,

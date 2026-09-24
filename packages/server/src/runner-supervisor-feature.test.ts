@@ -1083,37 +1083,42 @@ describe('verity-runner supervisor runtime', () => {
   });
 
   it('denies mutable worktree reads for reusable scripts but permits one-time dynamic loading', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-script-landlock-'));
+    const root = mkdtempSync(join(tmpdir(), 'verity-script-isolation-'));
     const helper = join(root, 'verity-script-sandbox');
     const snapshotRoot = join(root, 'snapshot');
     const worktree = join(root, 'worktree');
     await mkdir(snapshotRoot);
     await mkdir(worktree);
     await writeFile(join(worktree, 'dependency'), 'mutable\n');
+    await symlink(join(worktree, 'dependency'), join(snapshotRoot, 'escaped-dependency'));
     const allowedSecret = join(root, 'secret-allowed');
     const otherSecret = join(root, 'secret-other');
     await writeFile(allowedSecret, 'allowed\n');
     await writeFile(otherSecret, 'other\n');
-    const sharedMemoryDependency = `/dev/shm/verity-landlock-${String(process.pid)}`;
+    const sharedMemoryDependency = `/dev/shm/verity-script-isolation-${String(process.pid)}`;
     await writeFile(sharedMemoryDependency, 'mutable\n');
     await copyFile(
       resolve('features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox'),
       helper,
     );
     await chmod(helper, 0o755);
-    await expect(execFileAsync(helper, ['--probe'])).resolves.toBeDefined();
+    const execSandbox = (args: string[]) => execFileAsync(helper, args);
+    await expect(execSandbox(['--probe'])).resolves.toBeDefined();
     const command = ['--root', snapshotRoot, '--cwd', snapshotRoot, '--loading'];
     await expect(
-      execFileAsync(helper, [
+      execSandbox([...command, 'isolated', '--', '/usr/bin/cat', join(worktree, 'dependency')]),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
+      execSandbox([
         ...command,
         'isolated',
         '--',
         '/usr/bin/cat',
-        join(worktree, 'dependency'),
+        join(snapshotRoot, 'escaped-dependency'),
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'isolated',
         '--secret',
@@ -1124,7 +1129,7 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).resolves.toMatchObject({ stdout: 'allowed\n' });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'isolated',
         '--secret',
@@ -1135,7 +1140,7 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'isolated',
         '--',
@@ -1144,13 +1149,26 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [...command, 'isolated', '--', '/usr/bin/cat', sharedMemoryDependency]),
+      execSandbox([...command, 'isolated', '--', '/usr/bin/cat', sharedMemoryDependency]),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [...command, 'isolated', '--', '/usr/bin/cat', '/etc/passwd']),
+      execSandbox([...command, 'isolated', '--', '/usr/bin/cat', '/etc/passwd']),
     ).rejects.toMatchObject({ code: 1 });
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
+        ...command,
+        'isolated',
+        '--write-isolated',
+        '--',
+        '/usr/bin/mount',
+        '-o',
+        'remount,rw,bind',
+        snapshotRoot,
+        snapshotRoot,
+      ]),
+    ).rejects.toMatchObject({ code: 32 });
+    await expect(
+      execSandbox([
         ...command,
         'dynamic',
         '--dynamic-root',
@@ -1161,7 +1179,7 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).resolves.toBeDefined();
     await expect(
-      execFileAsync(helper, [
+      execSandbox([
         ...command,
         'dynamic',
         '--dynamic-root',
@@ -1172,6 +1190,141 @@ describe('verity-runner supervisor runtime', () => {
       ]),
     ).rejects.toMatchObject({ code: 1 });
     await rm(sharedMemoryDependency, { force: true });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('enforces the mount-namespace backend, including nested read-only mounts, when supported', async () => {
+    const namespaceProbe = await execFileAsync('/usr/bin/unshare', [
+      '--user',
+      '--map-root-user',
+      '--mount',
+      '/bin/true',
+    ]).then(
+      () => true,
+      () => false,
+    );
+    if (!namespaceProbe) return;
+
+    const root = mkdtempSync(join(tmpdir(), 'verity-script-namespace-'));
+    const helper = join(root, 'verity-script-sandbox');
+    const allowedRoot = join(root, 'allowed');
+    const hidden = join(root, 'hidden');
+    const nestedMount = join(allowedRoot, 'dependency-volume');
+    const nestedMountWrite = join(nestedMount, 'write-attempt');
+    const allowedSecret = join(root, 'allowed-secret');
+    await mkdir(allowedRoot);
+    await mkdir(nestedMount);
+    await writeFile(hidden, 'hidden\n');
+    await writeFile(allowedSecret, 'allowed\n');
+    await symlink(hidden, join(allowedRoot, 'escaped'));
+    await copyFile(
+      resolve('features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox'),
+      helper,
+    );
+    await chmod(helper, 0o755);
+    const forcedEnvironment = {
+      ...process.env,
+      VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '1',
+    };
+    await expect(
+      execFileAsync(helper, ['--probe'], { env: forcedEnvironment }),
+    ).resolves.toBeDefined();
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--',
+          '/usr/bin/cat',
+          hidden,
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--secret',
+          allowedSecret,
+          '--',
+          '/usr/bin/cat',
+          allowedSecret,
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).resolves.toMatchObject({ stdout: 'allowed\n' });
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--secret',
+          allowedSecret,
+          '--',
+          '/bin/bash',
+          '-c',
+          'exec 9<"$1"; /usr/bin/diff <(cat /dev/fd/9) <(printf "allowed\\n")',
+          'bash',
+          allowedSecret,
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      execFileAsync(
+        helper,
+        [
+          '--root',
+          allowedRoot,
+          '--cwd',
+          allowedRoot,
+          '--loading',
+          'isolated',
+          '--',
+          '/usr/bin/cat',
+          join(allowedRoot, 'escaped'),
+        ],
+        { env: forcedEnvironment },
+      ),
+    ).rejects.toMatchObject({ code: 1 });
+    await expect(
+      execFileAsync('/usr/bin/unshare', [
+        '--user',
+        '--map-root-user',
+        '--mount',
+        '/bin/sh',
+        '-eu',
+        '-c',
+        [
+          'mount -t tmpfs -o mode=0700,size=1m tmpfs "$2"',
+          'touch "$3"',
+          'rm "$3"',
+          'VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE=1 exec "$1" --root "$4" --cwd "$4" --loading isolated --write-isolated -- /bin/sh -c \'touch "$1"; result=$?; rm -f "$1"; exit "$result"\' sh "$3"',
+        ].join('\n'),
+        'sh',
+        helper,
+        nestedMount,
+        nestedMountWrite,
+        allowedRoot,
+      ]),
+    ).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('Read-only file system') });
     await rm(root, { recursive: true, force: true });
   });
 

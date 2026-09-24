@@ -40,8 +40,8 @@ export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR = 'worktree script isolation is 
 const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
 
 /**
- * Whether the kernel under this container enforces the script sandbox's Landlock
- * policy. Kept in step with `probeScriptSandbox` in verity-agent-spawn-broker.mjs;
+ * Whether the kernel under this container enforces the script sandbox's
+ * filesystem policy. Kept in step with `probeScriptSandbox` in verity-agent-spawn-broker.mjs;
  * the two are separate installed executables and cannot share a module.
  *
  * The supervisor asks for itself rather than trusting a file the launcher left
@@ -2442,7 +2442,7 @@ export async function runSupervisor(options = {}) {
     (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
   if (!scriptIsolation.available) {
     // The Runner still starts: agent turns, brokered HTTP and plain trusted CLI
-    // commands do not depend on Landlock. Only the entry-script paths are refused.
+    // commands do not depend on filesystem isolation. Only the entry-script paths are refused.
     process.stderr.write(
       `verity-runner-supervisor: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
     );
