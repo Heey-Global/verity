@@ -27,7 +27,6 @@ import { materializeFileAttachments } from './file-attachments.js';
 import { buildHandoffPrompt } from './handoff.js';
 import { isNoSessionInitFailure } from './ingest.js';
 import { withMeetingContext } from './meeting-context.js';
-import { ProjectTurnGate } from './project-turn-gate.js';
 import {
   buildBranchPrompt,
   buildTitlePrompt,
@@ -85,14 +84,6 @@ const UNCERTAIN_RECOVERY_EXHAUSTED_NOTICE =
   'This turn was left in flight by a restart and its Runner could not be reached to ' +
   'confirm whether it is still alive. Verity has stopped waiting and released the ' +
   'session — send the message again if the work did not finish.';
-/** Transcript wording while a turn waits for a {@link ProjectTurnGate} slot. */
-function projectTurnWaitNotice(running: number): string {
-  return (
-    `Waiting for a free slot: ${String(running)} other turn${running === 1 ? ' is' : 's are'} ` +
-    "already running in this project's sandbox. This turn starts automatically when " +
-    'one finishes; Stop cancels it.'
-  );
-}
 /** How often the in-flight liveness sweep runs. */
 const TURN_LIVENESS_SWEEP_MS = 30_000;
 /** How many consecutive sweeps an in-flight turn may append NO event before its
@@ -255,11 +246,6 @@ class SessionTurnHandle implements RunnerTurn {
    * backend has been resolved, which is fail-closed at both readers: no
    * auto-approval, and no grant persisted. */
   grantChannel: BrokeredGrantChannel | undefined;
-  /** Frees this turn's {@link ProjectTurnGate} slot (idempotent). Normally freed when
-   * the Runner's result settles; the force-settle frees it too, because a Runner that
-   * is confirmed dead or wedged may never resolve that result. A plain Stop does not:
-   * the Runner still occupies the Sandbox until its cancel lands. */
-  releaseProjectSlot: (() => void) | undefined;
   /** Which settle path owns this turn's terminal writes + release: the turn's own
    * run loop (`'run'`) or the stop watchdog's force-settle (`'force'`). Claimed
    * SYNCHRONOUSLY before any terminal side effect, so exactly one owner ever
@@ -633,13 +619,6 @@ export interface ConductorDeps {
   /** Max turns that may be queued behind an in-flight one per session before a
    * further enqueue throws {@link QueueFullError}. Defaults to 10. */
   maxQueuedTurns?: number | undefined;
-  /**
-   * Max turns that may execute at once per project Sandbox. A turn over the cap waits
-   * — visibly, cancellably — for a slot before its backend starts; a turn reattached
-   * after a restart counts but is never held back. Sessions without a project are not
-   * capped. Omit or ≤ 0 for no cap. See {@link ProjectTurnGate}.
-   */
-  maxConcurrentProjectTurns?: number | undefined;
   /**
    * How often a backend-confirmed pre-execution failure is replayed on its own.
    * This deliberately excludes mid-turn crashes and every failure whose execution
@@ -1015,7 +994,6 @@ export class Conductor {
   private readonly maintenanceLocks = new Set<string>();
   private readonly deferredAfterCurrentTurn = new Map<string, Array<() => void>>();
   private readonly maxQueue: number;
-  private readonly projectTurnGate: ProjectTurnGate;
   // Auto-title bookkeeping (in-memory). `autoTitleDone` holds sessions whose titling
   // is settled — named by the operator, generated, or attempted-and-given-up — so we
   // never revisit them; `autoTitleInFlight` guards against two overlapping settles
@@ -1049,7 +1027,6 @@ export class Conductor {
 
   constructor(private readonly deps: ConductorDeps) {
     this.maxQueue = deps.maxQueuedTurns ?? 10;
-    this.projectTurnGate = new ProjectTurnGate(deps.maxConcurrentProjectTurns ?? 0);
     this.autoResumeAttempts = deps.autoResumeAttempts ?? 1;
     this.autoResumeDelayMs = deps.autoResumeDelayMs ?? AUTO_RESUME_DELAY_MS;
     this.backend = deps.backend ?? new AcpClaudeBackend();
@@ -1445,57 +1422,7 @@ export class Conductor {
       throw new KnowledgeSessionClosedError(sessionId);
   }
 
-  /**
-   * Run the backend turn inside one of its project's {@link ProjectTurnGate} slots.
-   * Waiting happens with the durable marker already written and the in-flight lock
-   * held, so the turn is a normal running turn to everything else: Stop aborts the
-   * wait (settling as `interrupted`), and the liveness sweep leaves it alone because
-   * no Runner identity is bound until the backend actually starts. A session without
-   * a project shares no project Sandbox, so it is not gated.
-   */
   private async runBackendTurnWithResumeRecovery(
-    sessionId: string,
-    prompt: string,
-    session: SessionRecord,
-    opts: TurnOptions,
-  ): Promise<RunResult> {
-    const key = session.projectId;
-    if (key === null) return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
-    // Both callers register the handle before the run starts. Without it the wait
-    // could be neither stopped nor force-freed, so refuse rather than queue blind.
-    const handle = this.turns.get(sessionId);
-    if (handle === undefined) throw new Error(`turn ${sessionId} has no in-flight handle`);
-    const signal = handle.controller.signal;
-    let notice: Promise<void> | undefined;
-    const release = await this.projectTurnGate.acquire(key, signal, () => {
-      notice = this.emitEvent(sessionId, {
-        t: 'notice',
-        role: 'agent',
-        text: projectTurnWaitNotice(this.projectTurnGate.runningCount(key)),
-      }).catch((error: unknown) => {
-        this.reportTurnError(sessionId, error);
-      });
-    });
-    // Keep the notice ahead of the turn's own events in the transcript.
-    await notice;
-    if (release === undefined) {
-      return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
-    }
-    // Stop can land between the slot handoff and this continuation: give the slot
-    // straight back rather than start a Runner the operator already cancelled.
-    if (signal.aborted) {
-      release();
-      return { sessionId: undefined, exitCode: 0, stderr: '', aborted: true };
-    }
-    handle.releaseProjectSlot = release;
-    try {
-      return await this.runGatedBackendTurn(sessionId, prompt, session, opts);
-    } finally {
-      release();
-    }
-  }
-
-  private async runGatedBackendTurn(
     sessionId: string,
     prompt: string,
     session: SessionRecord,
@@ -2574,7 +2501,6 @@ export class Conductor {
       // never keep the session fenced. `clearRunningTurn` catches + reports its
       // own store errors.
       this.releaseInFlight(sessionId);
-      handle.releaseProjectSlot?.();
       // Scoped to the wedged turn's own prompt_seq: even a delayed delete can then
       // never erase a successor turn's marker (crash-recovery anchor). An
       // undefined markerSeq means the wedge happened before this turn ever wrote
@@ -4223,17 +4149,6 @@ export class Conductor {
         ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
       });
       boundHandle.delegate = turn;
-      // The recovered Runner is still using its project Sandbox, so it counts against
-      // the per-project cap until its result settles or the force-settle gives up on it.
-      // Accepted window: the Server admits dispatches while recovery walks its markers,
-      // so a turn dispatched in the seconds before recovery reaches this one is not
-      // held back by it. Closing that would mean blocking dispatch on recovery, which a
-      // sealed secret store can defer indefinitely.
-      if (session.projectId !== null) {
-        const releaseSlot = this.projectTurnGate.hold(session.projectId);
-        boundHandle.releaseProjectSlot = releaseSlot;
-        void turn.result.finally(releaseSlot).catch(() => undefined);
-      }
       // A recovered process may outlive a permission change; attach only to stop it.
       if (await this.deps.store.knowledge.isSessionInvalidated(marker.sessionId)) {
         await boundHandle.cancel();

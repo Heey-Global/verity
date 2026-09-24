@@ -702,16 +702,6 @@ VERITY_SANDBOX_CPUS=4
 VERITY_SANDBOX_CPU_SHARES=512
 ```
 
-`VERITY_PROJECT_MAX_CONCURRENT_TURNS` (default `2`) caps how many turns execute
-at once inside one project Sandbox. Every session of a project shares that one
-container and its memory limit, and under gVisor there is no in-Sandbox OOM killer:
-when the combined workload outgrows the limit, the host kills the gVisor Sentry and
-every session in the Sandbox dies together. A turn over the cap shows a waiting
-notice and starts as soon as a slot frees up; Stop cancels it while it waits.
-A turn waiting on a permission card keeps its slot, because its agent is still
-loaded in the Sandbox. Turns that survive a Server restart still count toward the
-cap. Raise the cap together with `VERITY_SANDBOX_MEMORY`, or set `0` to disable it.
-
 Active project Sandboxes sleep after 30 minutes without a running turn, Agent
 Loop, dev server, or public preview. New turns and Agent Loops wake them
 automatically. This is a product lifecycle rule rather than a deployment setting.
@@ -779,9 +769,8 @@ shared-memory file charged to the container. gVisor has no OOM killer of its
 own, so there is no runaway process inside the guest for the kernel to pick:
 it kills the Sentry, and every session of the project goes down together.
 Keeping a margin below the limit does not help, because nothing inside the guest
-ever uses that margin. That is why the default is 6 GiB rather than 4 GiB, and
-why `VERITY_PROJECT_MAX_CONCURRENT_TURNS` limits how many turns share one
-Sandbox.
+ever uses that margin. That is why the default is 6 GiB rather than 4 GiB: the
+ceiling has to fit every turn the project runs at once, not a single process.
 
 The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
 not capped to the host, so on a small machine (8 GiB or less) set
