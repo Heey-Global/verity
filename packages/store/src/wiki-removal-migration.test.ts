@@ -58,7 +58,12 @@ it('removes legacy Wiki jobs and their maintenance sessions', async () => {
     await sql`insert into knowledge_provenance(revision_id,job_id,source_revisions) values(${wikiDocument.currentRevisionId},'job','[]')`.execute(
       ctx.db,
     );
-    await store.updateVeritySettings({ knowledgeModel: 'codex/default' });
+    // This fixture is deliberately pinned to the historical 0102 schema. Use
+    // that schema directly instead of asking the current Store to write columns
+    // introduced by later migrations.
+    await sql`insert into verity_settings(id, knowledge_model)
+      values('global', 'codex/default')
+      on conflict (id) do update set knowledge_model = excluded.knowledge_model`.execute(ctx.db);
 
     const firstRemoval = await migrator.migrateTo('0103_remove_wiki_maintenance');
     if (firstRemoval.error) throw new Error('Migration failed', { cause: firstRemoval.error });

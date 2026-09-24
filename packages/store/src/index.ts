@@ -33,6 +33,7 @@ export {
   type SessionRecord,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
+  type SessionGmailConnection,
   type GoogleWorkspaceFileKind,
   type GoogleSlideImageCleanupRecord,
   type SessionInput,

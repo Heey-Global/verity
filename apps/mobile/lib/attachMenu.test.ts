@@ -6,8 +6,7 @@ const handlers = {
   onPickPhotos: jest.fn(),
   onPickFiles: jest.fn(),
   onPickMeetingAudio: jest.fn(),
-  onPickGoogleDrive: jest.fn(),
-  onPickGoogleWorkspace: jest.fn(),
+  onConnectGmail: jest.fn(),
 };
 
 function labels(rows: AttachMenuRow[]): string[] {
@@ -17,14 +16,22 @@ function labels(rows: AttachMenuRow[]): string[] {
 }
 
 describe('attachMenuRows', () => {
-  it('keeps Drive and Workspace setup out of the session menu', () => {
+  it('separates content imports from connected services', () => {
     expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: true }))).toEqual([
       'Take photo',
       'Choose photo',
       'Choose file',
       '—',
       'Meeting audio',
+      '—',
+      '[Connect]',
+      'Gmail',
     ]);
+    expect(
+      attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
+        (row) => 'label' in row && row.label === 'Gmail',
+      ),
+    ).toMatchObject({ icon: 'mail', detail: 'Read & draft' });
   });
 
   it('drops the meeting row when the flag is off', () => {
@@ -32,6 +39,9 @@ describe('attachMenuRows', () => {
       'Take photo',
       'Choose photo',
       'Choose file',
+      '—',
+      '[Connect]',
+      'Gmail',
     ]);
   });
 

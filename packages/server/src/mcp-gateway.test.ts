@@ -81,6 +81,20 @@ function resultOf(body: unknown): { content: { text: string }[]; isError?: boole
 }
 
 describe('MCP gateway — handshake and discovery (ADR 0014 D1)', () => {
+  it('advertises Gmail draft actions without any send action', async () => {
+    const { gateway } = harness({ servedTools: ['verity_gmail'] });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    });
+    const tool = (response.body as { result: { tools: { name: string; inputSchema: unknown }[] } })
+      .result.tools[0];
+    expect(tool?.name).toBe('verity_gmail');
+    expect(JSON.stringify(tool?.inputSchema)).toContain('create_reply_draft');
+    expect(JSON.stringify(tool?.inputSchema)).not.toContain('send');
+  });
+
   it('echoes a protocol revision it speaks and falls back to its newest', async () => {
     const { gateway } = harness();
     const negotiated = async (asked: string): Promise<string> => {

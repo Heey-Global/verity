@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0](https://github.com/Heey-Global/verity/compare/v2.0.0...v2.1.0) (2026-09-24)
+
+
+### Features
+
+* **drive:** connect project folders ([#669](https://github.com/Heey-Global/verity/issues/669)) ([2fe210e](https://github.com/Heey-Global/verity/commit/2fe210e63e42c4fffd36ba9628cd92b1f036b7a8))
+* **gmail:** add session reading and drafts ([#670](https://github.com/Heey-Global/verity/issues/670)) ([37f2e61](https://github.com/Heey-Global/verity/commit/37f2e6118859f75afee17f0d55f0ba45ab0072e1))
+
+
+### Bug Fixes
+
+* **sandbox:** size gVisor project sandboxes for their real load ([#675](https://github.com/Heey-Global/verity/issues/675)) ([c6b9965](https://github.com/Heey-Global/verity/commit/c6b9965e0ff94dfff4d5d0d6298b14e9b74bf21f))
+
 ## [2.0.0](https://github.com/Heey-Global/verity/compare/v1.5.4...v2.0.0) (2026-09-23)
 
 

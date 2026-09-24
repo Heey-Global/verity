@@ -292,6 +292,37 @@ const TOOL_SCHEMAS = {
       requests: z.array(z.record(z.string(), z.unknown())).min(1).max(25).optional(),
     })
     .strict(),
+  verity_gmail: z.discriminatedUnion('action', [
+    z
+      .object({
+        action: z.literal('search'),
+        query: z.string().min(1).max(2_048),
+        maxResults: z.number().int().min(1).max(20).optional(),
+        pageToken: z.string().min(1).max(2_048).optional(),
+      })
+      .strict(),
+    z.object({ action: z.literal('read_thread'), threadId: z.string().min(1).max(512) }).strict(),
+    z
+      .object({
+        action: z.literal('create_reply_draft'),
+        threadId: z.string().min(1).max(512),
+        messageId: z.string().min(1).max(512).optional(),
+        body: z.string().max(500_000),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal('create_draft'),
+        to: z.array(z.string().email()).min(1).max(50),
+        cc: z.array(z.string().email()).max(50).optional(),
+        subject: z.string().max(998),
+        body: z.string().max(500_000),
+        threadId: z.string().min(1).max(512).optional(),
+        inReplyTo: z.string().min(1).max(998).optional(),
+        references: z.string().min(1).max(8_192).optional(),
+      })
+      .strict(),
+  ]),
   verity_google_drive: z
     .object({
       action: z.enum(['list', 'search', 'read', 'upload', 'select_workspace_file']),
@@ -322,6 +353,8 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; every edit requires the revisionId returned by the read.',
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or structural operations.',
+  verity_gmail:
+    'Search and read Gmail for this session, or create a Gmail draft. This tool cannot send email. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:
     'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
 };

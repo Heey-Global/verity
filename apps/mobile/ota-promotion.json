@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.33.38",
+  "version": "1.33.39",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "b5053a345e5ac661e5188c46d18dcc428c107eb7",
-  "tag": "mobile-v1.33.38",
-  "branch": "staging-mobile-v1.33.38-b5053a345e5ac661e5188c46d18dcc428c107eb7",
-  "baseline": "mobile-v1.33.37",
-  "group": "7f898606-24ab-4b81-b062-b5bdbb35e289",
+  "commit": "37f2e6118859f75afee17f0d55f0ba45ab0072e1",
+  "tag": "mobile-v1.33.39",
+  "branch": "staging-mobile-v1.33.39-37f2e6118859f75afee17f0d55f0ba45ab0072e1",
+  "baseline": "mobile-v1.33.38",
+  "group": "2fbe1f02-6f74-4b6b-bdc9-dfa1c7a37666",
   "notes": [
-    "reconcile host Docker runtimes before activating a release (#660)"
+    "add session reading and drafts (#670)",
+    "connect project folders (#669)"
   ]
 }
