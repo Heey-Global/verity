@@ -742,24 +742,20 @@ function branchOfWorktree(worktreePath: string): string | undefined {
  * first-party workspace packages are linked; third-party deps keep resolving up
  * to the shared `<repoDir>/node_modules` (branch-independent, no install needed).
  *
- * Which packages to link is read from the manifests — the root `workspaces` field
- * and each package's `name` — never from `<repoDir>/node_modules`. That directory
- * is a separate volume mounted into the sandbox (provisioner.ts,
- * NODE_MODULES_TARGET), so what the Server sees at that path is either nothing or
- * whatever the clone held before the volume shadowed it. Reading links from there
- * would link nothing on a fresh project and yesterday's layout on an old one.
+ * For npm workspaces, which packages to link is read from the root `workspaces`
+ * field and each package's `name`, so a fresh dependency volume does not hide the
+ * information. Other managers can declare workspaces elsewhere (for example
+ * `pnpm-workspace.yaml`); for those, retain the established source-link fallback.
  *
- * Best-effort and self-scoping: a repo that is not an npm-workspace monorepo (no
- * root `workspaces`) yields nothing to do, so this is a no-op for arbitrary
- * project checkouts. Never throws — a link that can't be created is skipped
- * rather than failing the spawn.
+ * Best-effort and self-scoping: a repo with neither npm workspace metadata nor
+ * installed workspace links yields nothing to do. Never throws — a link that
+ * can't be created is skipped rather than failing the spawn.
  */
 export function linkWorkspacePackages(repoDir: string, worktreePath: string): void {
   // Guard: without a real worktree dir (e.g. a mocked git runner in tests) there
   // is nothing to link into.
   if (!existsSync(worktreePath)) return;
   const isWorkspace = workspaceMatcher(repoDir);
-  if (isWorkspace === undefined) return;
   for (const glob of ['packages', 'apps']) {
     const dir = join(repoDir, glob);
     if (!existsSync(dir)) continue;
@@ -773,9 +769,20 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
       } catch {
         continue; // not a package (no/invalid package.json)
       }
-      // A directory the root manifest does not list is not part of the workspace
-      // tree npm links, so leave its resolution as-is.
-      if (!isWorkspace(`${glob}/${entry}`)) continue;
+      if (isWorkspace !== undefined) {
+        // A directory the root manifest does not list is not part of npm's
+        // workspace tree, so leave its resolution as-is.
+        if (!isWorkspace(`${glob}/${entry}`)) continue;
+      } else {
+        // pnpm and other managers may declare workspaces outside package.json.
+        // Their installed root link remains the authoritative compatibility
+        // signal; merely finding a package under packages/ or apps/ is not.
+        try {
+          readlinkSync(join(repoDir, 'node_modules', name));
+        } catch {
+          continue;
+        }
+      }
       const dst = join(worktreePath, 'node_modules', name);
       // Relative, exactly as npm writes it, so it resolves inside the worktree.
       const target = relative(dirname(dst), join(worktreePath, glob, entry));

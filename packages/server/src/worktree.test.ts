@@ -953,6 +953,27 @@ describe('createGitWorktreeProvisioner', () => {
     expect(existsSync(join(worktree, 'node_modules'))).toBe(false);
   });
 
+  it('preserves installed workspace links for a pnpm-style manifest', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'verity-worktree-pnpm-'));
+    const worktree = mkdtempSync(join(tmpdir(), 'verity-worktree-pnpm-wt-'));
+    for (const root of [repo, worktree]) {
+      writeFileSync(join(root, 'package.json'), '{}');
+      mkdirSync(join(root, 'packages', 'core'), { recursive: true });
+      writeFileSync(
+        join(root, 'packages', 'core', 'package.json'),
+        JSON.stringify({ name: '@acme/core' }),
+      );
+    }
+    mkdirSync(join(repo, 'node_modules', '@acme'), { recursive: true });
+    symlinkSync('../../packages/core', join(repo, 'node_modules', '@acme', 'core'));
+
+    linkWorkspacePackages(repo, worktree);
+
+    const link = join(worktree, 'node_modules', '@acme', 'core');
+    expect(readlinkSync(link)).toBe('../../packages/core');
+    expect(realpathSync(link)).toBe(realpathSync(join(worktree, 'packages', 'core')));
+  });
+
   /** A source checkout whose app lives in `platform/` with its own installed
    * dependency tree — the layout the repo-root up-walk cannot serve. */
   function repoWithNestedModules(): { repo: string; worktree: string } {
