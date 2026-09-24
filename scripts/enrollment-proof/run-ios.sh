@@ -32,9 +32,6 @@ xcrun simctl boot "$simulator"
 xcrun simctl bootstatus "$simulator" -b
 app="$tmp/EnrollmentProof.app"
 mkdir -p "$app"
-xcrun swiftc -parse-as-library -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-  -target "$(uname -m)-apple-ios17.0-simulator" scripts/enrollment-proof/IOSProof.swift \
-  -framework UIKit -o "$app/EnrollmentProof"
 python3 - "$app/Info.plist" <<'PY'
 import plistlib,sys
 with open(sys.argv[1], 'wb') as f:
@@ -53,26 +50,27 @@ with open(sys.argv[2], 'wb') as f:
  plistlib.dump({'application-identifier': identifier,
                'keychain-access-groups': [identifier]}, f)
 PYENT
-codesign --force --sign - --entitlements "$tmp/Entitlements.plist" "$app" >/dev/null
+# Simulator securityd reads the simulated app's entitlements from Mach-O.
+# Keep these out of the host macOS ad-hoc signature.
+xcrun --sdk iphonesimulator swiftc -parse-as-library \
+  -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  -target "$(uname -m)-apple-ios17.0-simulator" scripts/enrollment-proof/IOSProof.swift \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements \
+  -Xlinker "$tmp/Entitlements.plist" -framework UIKit -o "$app/EnrollmentProof"
+codesign --force --sign - "$app" >/dev/null
 codesign --verify --strict "$app"
-codesign --display --entitlements - --xml "$app" > "$tmp/SignedEntitlements.plist"
-python3 - "$tmp/Entitlements.plist" "$tmp/SignedEntitlements.plist" <<'PYENT'
-import plistlib,sys
-with open(sys.argv[1], 'rb') as f:
- expected = plistlib.load(f)
-with open(sys.argv[2], 'rb') as f:
- actual = plistlib.load(f)
-if actual != expected:
- raise SystemExit('Simulator Keychain entitlements missing from signed app')
-PYENT
 xcrun simctl install "$simulator" "$app"
 container="$(xcrun simctl get_app_container "$simulator" app.verity.enrollment-proof data)"
 result="$container/Documents/result.txt"
 service="verity.enrollment.ios.$(uuidgen)"
 for phase in create verify; do
   rm -f "$result"
-  SIMCTL_CHILD_VERITY_PROOF_PHASE="$phase" SIMCTL_CHILD_VERITY_PROOF_SERVICE="$service" \
-    xcrun simctl launch "$simulator" app.verity.enrollment-proof
+  if ! SIMCTL_CHILD_VERITY_PROOF_PHASE="$phase" SIMCTL_CHILD_VERITY_PROOF_SERVICE="$service" \
+    xcrun simctl launch "$simulator" app.verity.enrollment-proof; then
+    xcrun simctl spawn "$simulator" log show --last 2m --style compact \
+      --predicate 'eventMessage CONTAINS "app.verity.enrollment-proof"' || true
+    exit 1
+  fi
   for _ in {1..60}; do
     [[ -f "$result" ]] && break
     sleep 1
