@@ -4,6 +4,10 @@ import { randomUUID } from 'expo-crypto';
 import { useUnistyles } from 'react-native-unistyles';
 import { VerityApiError, type VerityClient } from '@verity/mobile';
 
+type MoveInput = Parameters<VerityClient['moveSession']>[1];
+// Keep ambiguous requests through dialog unmounts, scoped to the connected client.
+const pendingMoves = new WeakMap<VerityClient, Map<string, MoveInput>>();
+
 type MoveResult = Awaited<ReturnType<VerityClient['moveSession']>>;
 export function MoveSessionDialog({
   sessionId,
@@ -19,9 +23,13 @@ export function MoveSessionDialog({
   onMoved: () => void;
 }) {
   const { theme } = useUnistyles();
-  const [target, setTarget] = useState<string>();
-  const [operationId, setOperationId] = useState(randomUUID);
-  const [leaveCommits, setLeaveCommits] = useState(false);
+  const pending = pendingMoves.get(client) ?? new Map<string, MoveInput>();
+  pendingMoves.set(client, pending);
+  const previous = pending.get(sessionId);
+  const [unresolved, setUnresolved] = useState(previous !== undefined);
+  const [target, setTarget] = useState<string | undefined>(previous?.project);
+  const [operationId, setOperationId] = useState(() => previous?.operationId ?? randomUUID());
+  const [leaveCommits, setLeaveCommits] = useState(previous?.onCommits === 'leave');
   const [commitConfirmation, setCommitConfirmation] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -31,14 +39,28 @@ export function MoveSessionDialog({
     setBusy(true);
     setError(undefined);
     try {
-      const moved = await client.moveSession(sessionId, {
+      const input: MoveInput = {
         project: target,
         operationId,
         onCommits: leaveCommits ? 'leave' : 'block',
-      });
+      };
+      pending.set(sessionId, input);
+      setUnresolved(true);
+      const moved = await client.moveSession(sessionId, input);
+      pending.delete(sessionId);
+      setUnresolved(false);
       setResult(moved);
       onMoved();
     } catch (cause) {
+      if (
+        cause instanceof VerityApiError &&
+        cause.status >= 400 &&
+        cause.status < 500 &&
+        cause.status !== 408
+      ) {
+        pending.delete(sessionId);
+        setUnresolved(false);
+      }
       setError(
         cause instanceof Error ? cause.message : 'Move failed. Retry to reconcile the result.',
       );
@@ -106,10 +128,15 @@ export function MoveSessionDialog({
                       setCommitConfirmation(false);
                       setError(undefined);
                     },
-                    busy || target === project.id,
+                    busy || unresolved || target === project.id,
                   )}
                 </View>
               ))}
+              {unresolved && !busy && (
+                <Text style={{ color: theme.colors.text }}>
+                  Retry the pending move to confirm its result before choosing another project.
+                </Text>
+              )}
               {error && (
                 <Text accessibilityRole="alert" style={{ color: theme.colors.text }}>
                   {error}

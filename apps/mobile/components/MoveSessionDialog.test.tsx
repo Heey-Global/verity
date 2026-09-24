@@ -60,3 +60,32 @@ it('requires explicit acknowledgement before leaving source commits', async () =
   expect(move.mock.calls[1][1].onCommits).toBe('leave');
   expect(move.mock.calls[1][1].operationId).not.toBe(move.mock.calls[0][1].operationId);
 });
+
+it('reconciles an unresolved move after closing and reopening the dialog', async () => {
+  const move = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('Network interrupted'))
+    .mockResolvedValue(result);
+  const client = { moveSession: move } as unknown as VerityClient;
+  const props = {
+    sessionId: 'reopened',
+    projects: [
+      { id: 'b', name: 'Target project' },
+      { id: 'c', name: 'Other project' },
+    ],
+    client,
+    onClose: jest.fn(),
+    onMoved: jest.fn(),
+  };
+  const first = render(<MoveSessionDialog {...props} />);
+  fireEvent.press(screen.getByText('Target project'));
+  fireEvent.press(screen.getByText('Move'));
+  await screen.findByText('Network interrupted');
+  fireEvent.press(screen.getByText('Cancel'));
+  first.unmount();
+  render(<MoveSessionDialog {...props} />);
+  fireEvent.press(screen.getByText('Other project'));
+  fireEvent.press(screen.getByText('Move'));
+  await screen.findByText(/Not copied: private/);
+  expect(move.mock.calls[1]).toEqual(move.mock.calls[0]);
+});
