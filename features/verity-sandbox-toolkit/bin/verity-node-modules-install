@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# One-time dependency install into the per-project node_modules volume.
+#
+# The provisioner mounts a dedicated Docker volume at /work/node_modules so that,
+# under gVisor, dependency reads bypass the shared-file gofer path (see
+# provisioner.ts, NODE_MODULES_TARGET). A fresh volume is empty and shadows
+# whatever the clone had there, so without this every session would start with
+# no dependencies and nothing saying why. verity-runner-stack-start launches this
+# in the background, as the agent, on every container start; it does real work
+# only when an npm project's dependencies are missing.
+#
+# The outcome is written to "$STATE_DIR/status" (one line) and the npm output to
+# "$STATE_DIR/install.log". Neither lives inside node_modules: `npm ci` empties
+# that directory, dotfiles included, before it installs.
+set -uo pipefail
+
+WORK="${VERITY_NODE_MODULES_WORK:-/work}"
+MODULES="$WORK/node_modules"
+STATE_DIR="${VERITY_NODE_MODULES_STATE_DIR:-/tmp/verity-node-modules}"
+STATUS="$STATE_DIR/status"
+LOG="$STATE_DIR/install.log"
+
+mkdir -p "$STATE_DIR" || exit 1
+report() {
+  printf '%s\n' "$1" >"$STATUS.$$" && mv -f "$STATUS.$$" "$STATUS"
+}
+
+# A wake and a Server restart both re-run the stack launcher; a second install
+# racing the first would have `npm ci` empty the tree the first is writing.
+exec 9>"$STATE_DIR/lock" || exit 1
+flock -n 9 || exit 0
+
+# npm writes its hidden lockfile last, so its presence means a finished install —
+# ours or one the agent ran. Anything else under an npm lockfile (an empty volume,
+# or an install a recreate interrupted) is repaired by starting over.
+if [ -e "$MODULES/.package-lock.json" ]; then
+  report 'ready'
+  exit 0
+fi
+if [ ! -f "$WORK/package.json" ]; then
+  report 'skipped: no package.json in /work'
+  exit 0
+fi
+if [ ! -f "$WORK/package-lock.json" ]; then
+  # Only npm is automated: its lockfile makes the install reproducible and never
+  # rewrites a tracked file. yarn/pnpm projects, or npm projects without a
+  # lockfile, keep their dependencies once installed by hand.
+  report 'manual: no package-lock.json; install dependencies in /work with the project package manager'
+  exit 0
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  report 'manual: npm is not on PATH; run npm ci in /work'
+  exit 0
+fi
+
+# The launcher is a root `docker exec`, so HOME still names root's home, which the
+# agent cannot write; npm would fail on its cache before fetching anything.
+if [ ! -w "${HOME:-/nonexistent}" ]; then
+  HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"
+  if [ -z "$HOME" ] || [ ! -w "$HOME" ]; then
+    HOME="$STATE_DIR/home"
+    mkdir -p "$HOME" || exit 1
+  fi
+  export HOME
+fi
+
+report "running: npm ci (log: $LOG)"
+if (cd "$WORK" && npm ci --no-audit --no-fund) >"$LOG" 2>&1; then
+  report 'ready'
+else
+  report "failed: npm ci exited non-zero; see $LOG, then run npm ci in /work"
+fi

@@ -40,6 +40,8 @@ import {
   devcontainerImageTag,
   DEVCONTAINER_IMAGE_PREFIX,
   projectNetworkName,
+  projectNodeModulesVolumeName,
+  NODE_MODULES_TARGET,
   devcontainerBuildArgs,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
@@ -2672,6 +2674,88 @@ describe('ProvisionerImpl (#174)', () => {
     await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
       /reconciliation failed for 1 project/,
     );
+  });
+
+  describe('per-project node_modules volume', () => {
+    const MOUNTPOINT = '/var/lib/docker/volumes/verity-node-modules-x/_data';
+
+    async function provisionWith(opts: { packageJson: boolean; runnerSupervisor: boolean }) {
+      const id = await seedProject();
+      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+      const ensureVolume = vi.fn(async () => ({ mountpoint: MOUNTPOINT }));
+      const { client: docker, calls } = fakeDocker({ createdContainerId: 'cid-1', ensureVolume });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        git,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: '/srv/verity/workspaces',
+        dataVolume: 'verity-data',
+        dataVolumeRoot: '/srv/verity',
+        runnerSupervisor: opts.runnerSupervisor,
+        runnerSupervisorTrustedDefaultImage: true,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        prepareRunnerRuntime: vi.fn(),
+        containerCommand: vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' })),
+        isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+        isFile: (path) =>
+          opts.packageJson && path === '/srv/verity/workspaces/example-org-example-repo/package.json',
+      });
+      await provisioner.provision(id);
+      const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+      return { id, spec, ensureVolume };
+    }
+
+    it('mounts a Node project its own volume with the exclusive gVisor hint for its source', async () => {
+      const { id, spec, ensureVolume } = await provisionWith({
+        packageJson: true,
+        runnerSupervisor: true,
+      });
+      expect(ensureVolume).toHaveBeenCalledWith(projectNodeModulesVolumeName(id), {
+        labels: { 'verity.project-id': id },
+      });
+      // A whole-volume mount, never a subpath: runsc pairs a hint with a mount by
+      // comparing sources verbatim, and a subpath mount's source is a per-start
+      // safepath. With one, the hint silently matches nothing and the sandbox keeps
+      // the slow shared file access while every assertion about the spec stays true.
+      expect(spec.volumeMounts).toContainEqual({
+        volume: projectNodeModulesVolumeName(id),
+        target: NODE_MODULES_TARGET,
+      });
+      // The hint has to name what the daemon reported, not a path derived from the
+      // volume name: data-root is a daemon setting the Server cannot see.
+      expect(spec.annotations).toEqual({
+        'dev.gvisor.spec.mount.node-modules.source': MOUNTPOINT,
+        'dev.gvisor.spec.mount.node-modules.type': 'bind',
+        'dev.gvisor.spec.mount.node-modules.share': 'container',
+      });
+    });
+
+    it('leaves a project without package.json alone', async () => {
+      const { spec, ensureVolume } = await provisionWith({
+        packageJson: false,
+        runnerSupervisor: true,
+      });
+      expect(ensureVolume).not.toHaveBeenCalled();
+      expect(spec.volumeMounts?.map((mount) => mount.target)).not.toContain(NODE_MODULES_TARGET);
+      expect(spec.annotations).toBeUndefined();
+    });
+
+    it('does not mount a volume nothing would hand to the agent', async () => {
+      // Without the Runner runtime no root stack start runs, so the fresh volume
+      // would stay root-owned and empty: every install into it fails with EACCES
+      // and the clone's own node_modules is shadowed. Slow beats broken.
+      const { spec, ensureVolume } = await provisionWith({
+        packageJson: true,
+        runnerSupervisor: false,
+      });
+      expect(ensureVolume).not.toHaveBeenCalled();
+      expect(spec.volumeMounts?.map((mount) => mount.target) ?? []).not.toContain(
+        NODE_MODULES_TARGET,
+      );
+    });
   });
 
   describe('ADR 0006 D1 boundary attestation for user devcontainers', () => {
@@ -7507,6 +7591,8 @@ describe('DeprovisionerImpl (#174)', () => {
     expect(result.state).toBe('absent');
     expect(stopMock).toHaveBeenCalledWith('dev-example-org-example-repo');
     expect(removeMock).toHaveBeenCalledWith('dev-example-org-example-repo');
+    // A kept project keeps its installed dependencies with its clone.
+    expect(docker.removeVolume).toBeUndefined();
     // no purge → isDir not even probed (the if-branch short-circuits).
     expect(isDirCalls).toHaveLength(0);
     expect(rmCalls).toEqual([]);
@@ -7588,9 +7674,19 @@ describe('DeprovisionerImpl (#174)', () => {
     const removeDir = (p: string): void => {
       rmCalls.push(p);
     };
+    const order: string[] = [];
     const stopMock = vi.fn();
-    const removeMock = vi.fn();
-    const { client: docker } = fakeDocker({ stopContainer: stopMock, removeContainer: removeMock });
+    const removeMock = vi.fn(async () => {
+      order.push('container');
+    });
+    const removeVolume = vi.fn(async (name: string) => {
+      order.push(name);
+    });
+    const { client: docker } = fakeDocker({
+      stopContainer: stopMock,
+      removeContainer: removeMock,
+      removeVolume,
+    });
     const deprovisioner = new DeprovisionerImpl(
       ctx.store,
       ctx.db,
@@ -7604,6 +7700,10 @@ describe('DeprovisionerImpl (#174)', () => {
 
     await deprovisioner.deprovision(id, { purge: true });
     expect(rmCalls).toEqual(['/data/dev/example-org-example-repo', `/srv/verity/runners/${id}`]);
+    // Named, so the disk GC never takes it: without this step every deleted Node
+    // project leaves its full dependency tree on the host for good. After the
+    // container is gone, because the daemon refuses to remove a volume in use.
+    expect(order).toEqual(['container', projectNodeModulesVolumeName(id)]);
     expect(isDirCalls).toEqual(['/data/dev/example-org-example-repo', `/srv/verity/runners/${id}`]);
   });
 

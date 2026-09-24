@@ -258,6 +258,7 @@ COPY features/verity-sandbox-toolkit /opt/verity-features/verity-sandbox-toolkit
 RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs /usr/local/bin/verity-runner-supervisor \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor-start /usr/local/bin/verity-runner-supervisor-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-stack-start /usr/local/bin/verity-runner-stack-start \
+    && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-node-modules-install /usr/local/bin/verity-node-modules-install \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs /usr/local/bin/verity-runner-worker \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs /usr/local/bin/verity-agent-spawn-broker \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs /usr/local/bin/verity-egress-connector \

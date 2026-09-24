@@ -680,6 +680,7 @@ export interface ProvisionerOptions {
   git?: GitRunner;
   /** Optional filesystem probe seams (tests). */
   isDirectory?: (path: string) => boolean;
+  isFile?: (path: string) => boolean;
   localConfigState?: (clonePath: string) => LocalConfigState;
   /** Devcontainer-build spawner (ADR 0003 R3.1). When set together with
    *  {@link dockerHostForBuild}, a project whose clone has a `.devcontainer/`
@@ -941,6 +942,40 @@ export const DEVCONTAINER_IMAGE_PREFIX = 'verity-devc-';
 /** Docker network name for a project's isolated sandbox network (security review
  *  H2). Docker network names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]*`; sanitize the
  *  project id and prefix so it is always valid and Verity-owned. */
+/** Where a Node project's dependencies are mounted from their own volume. */
+export const NODE_MODULES_TARGET = '/work/node_modules';
+
+/**
+ * The per-project volume behind {@link NODE_MODULES_TARGET}.
+ *
+ * A named volume rather than a subpath of the data volume, because the point is
+ * the gVisor mount hint, and runsc matches a hint to a mount by comparing its
+ * source path verbatim. A named volume's source is its fixed daemon mountpoint;
+ * a subpath mount's is a per-start safepath nobody can name in advance.
+ */
+export function projectNodeModulesVolumeName(projectId: string): string {
+  return projectNetworkName(projectId).replace(/^verity-proj-/, 'verity-node-modules-');
+}
+
+/**
+ * gVisor mount hint giving the sandbox exclusive access to its node_modules
+ * volume (`runsc/boot/mount_hints.go`: `share=container` maps to
+ * `FileAccessExclusive`). Shared access revalidates every cached dentry against
+ * the host on each lookup, which is what made dependency-heavy commands several
+ * times slower under runsc than runc; exclusive access lets the Sentry trust its
+ * own cache. That is sound only because nothing outside this container writes
+ * the volume — the Server reads workspace packages from the clone, never from
+ * here. A hint missing any field is ignored by runsc, so all three go together.
+ */
+export function nodeModulesMountHint(mountpoint: string): Record<string, string> {
+  const prefix = 'dev.gvisor.spec.mount.node-modules';
+  return {
+    [`${prefix}.source`]: mountpoint,
+    [`${prefix}.type`]: 'bind',
+    [`${prefix}.share`]: 'container',
+  };
+}
+
 export function projectNetworkName(projectId: string): string {
   const clean = projectId
     .toLowerCase()
@@ -2125,6 +2160,7 @@ export class ProvisionerImpl implements Provisioner {
   private readonly git: GitRunner;
   private readonly containerCommand: ContainerCommandRunner;
   private readonly isDir: (p: string) => boolean;
+  private readonly isFile: (p: string) => boolean;
   private readonly localConfigState: (clonePath: string) => LocalConfigState;
   /** In-process single-flight gate: at most ONE provisioning run per project.
    *  The DB row lock only serializes the short state transitions — the long
@@ -2349,6 +2385,15 @@ export class ProvisionerImpl implements Provisioner {
       ((p) => {
         try {
           return statSync(p).isDirectory();
+        } catch {
+          return false;
+        }
+      });
+    this.isFile =
+      opts.isFile ??
+      ((p) => {
+        try {
+          return statSync(p).isFile();
         } catch {
           return false;
         }
@@ -5242,11 +5287,45 @@ export class ProvisionerImpl implements Provisioner {
     // changes where the ceiling comes from.
     const sandboxMemoryBytes = this.opts.sandboxMemoryBytes ?? DEFAULT_SANDBOX_MEMORY_BYTES;
     const hostCpus = await this.resolveHostCpuCount();
+    // Dependencies get their own volume (see nodeModulesMountHint). Only on the
+    // Runner runtime path, because its root stack start is what hands the fresh,
+    // root-owned volume to the agent and starts the one-time install into it;
+    // without that the mount would be an empty directory the agent cannot write.
+    let nodeModules: { volume: string; annotations: Record<string, string> } | undefined;
+    if (
+      runnerRuntimePath !== undefined &&
+      this.opts.docker.ensureVolume !== undefined &&
+      this.isFile(join(dirs.clonePath, 'package.json'))
+    ) {
+      const volume = projectNodeModulesVolumeName(project.id);
+      try {
+        const { mountpoint } = await this.opts.docker.ensureVolume(volume, {
+          labels: { [PROJECT_ID_LABEL]: project.id },
+        });
+        nodeModules = {
+          volume,
+          annotations: mountpoint === undefined ? {} : nodeModulesMountHint(mountpoint),
+        };
+      } catch (cause) {
+        const message = `node_modules volume could not be created: ${failureMessage(cause)}`;
+        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        throw new ProvisioningError(message, cause);
+      }
+    }
+    const sandboxVolumeMounts: VolumeMount[] = [
+      ...volumeMounts,
+      ...(nodeModules !== undefined
+        ? [{ volume: nodeModules.volume, target: NODE_MODULES_TARGET }]
+        : []),
+    ];
     const spec: ContainerSpec = {
       image: image.imageRef,
       name: dirs.containerName,
       binds: specBinds,
-      ...(volumeMounts.length > 0 ? { volumeMounts } : {}),
+      ...(sandboxVolumeMounts.length > 0 ? { volumeMounts: sandboxVolumeMounts } : {}),
+      ...(nodeModules !== undefined && Object.keys(nodeModules.annotations).length > 0
+        ? { annotations: nodeModules.annotations }
+        : {}),
       labels: {
         [PROJECT_ID_LABEL]: project.id,
         ...(effectiveClaudeGatewayUrl === undefined
@@ -6082,6 +6161,12 @@ export class DeprovisionerImpl implements Deprovisioner {
           if (this.isDir(runtimePath)) this.removeDir(runtimePath);
         });
       }
+      // After container-remove above: the daemon refuses to remove a volume a
+      // container still references. Named, so the disk GC never reclaims it —
+      // this is its only way out.
+      await bestEffort('node-modules-volume-remove', () =>
+        this.docker.removeVolume?.(projectNodeModulesVolumeName(project.id)),
+      );
     }
 
     // Every authority the sandbox held, revoked together. Each call is STARTED
