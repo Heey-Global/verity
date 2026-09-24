@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.2.0](https://github.com/Heey-Global/verity/compare/v2.1.2...v2.2.0) (2026-09-24)
+
+
+### Features
+
+* **drive:** browse shared drives ([#688](https://github.com/Heey-Global/verity/issues/688)) ([8b270d6](https://github.com/Heey-Global/verity/commit/8b270d60860c3723ab04cdb6cd9b5b55006b8f8b))
+* **gmail:** require approval before sending drafts ([#692](https://github.com/Heey-Global/verity/issues/692)) ([24481ab](https://github.com/Heey-Global/verity/commit/24481ab2491c1a198a9c2bc2d68b7f61cb234b92))
+
+
+### Bug Fixes
+
+* **mobile:** bound OTA release metadata ([#696](https://github.com/Heey-Global/verity/issues/696)) ([bffc526](https://github.com/Heey-Global/verity/commit/bffc526b83ba2ef0f258eb1539e473f116ccd688))
+* **models:** remove Claude Opus 5 from the model picker ([#690](https://github.com/Heey-Global/verity/issues/690)) ([9e3fdf5](https://github.com/Heey-Global/verity/commit/9e3fdf50601d74c161ccc755363a4881d17c99f1))
+* **relay:** retry automatic DNS port collisions ([#691](https://github.com/Heey-Global/verity/issues/691)) ([037be56](https://github.com/Heey-Global/verity/commit/037be568e64a49c68b572d60dd57ce162f8b6918))
+* **release:** bound lifecycle release metadata ([#694](https://github.com/Heey-Global/verity/issues/694)) ([6e127a2](https://github.com/Heey-Global/verity/commit/6e127a231f3e99cff72c5153ab757c86b5cf4337))
+* **release:** ignore obsolete mobile drafts ([#698](https://github.com/Heey-Global/verity/issues/698)) ([d1de610](https://github.com/Heey-Global/verity/commit/d1de61016df9b7de99c9cdc08b5b888fb6284e14))
+* **server:** avoid duplicate dependency volume mounts ([#687](https://github.com/Heey-Global/verity/issues/687)) ([4cfe3c9](https://github.com/Heey-Global/verity/commit/4cfe3c96620e10b74f693ded336a08c0deb81c9a))
+* **server:** confirm pull request merge after lost response ([#697](https://github.com/Heey-Global/verity/issues/697)) ([1dacbaf](https://github.com/Heey-Global/verity/commit/1dacbaf98906a45a7be915b558b9bc71eea6707a))
+* **server:** stop reporting an unrecorded sandbox toolkit as possible drift ([#686](https://github.com/Heey-Global/verity/issues/686)) ([9a7f8de](https://github.com/Heey-Global/verity/commit/9a7f8de44a0e24ad85fa59b7d909c95de8a6bec3))
+
 ## [2.1.2](https://github.com/Heey-Global/verity/compare/v2.1.1...v2.1.2) (2026-09-24)
 
 
