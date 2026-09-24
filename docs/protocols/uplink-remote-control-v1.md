@@ -585,7 +585,8 @@ Core to provision the route and publish an updated transport descriptor through
 its existing authenticated, pinned API. Proposed endpoint:
 `GET /api/remote-control/descriptor`, accessible to an authenticated device for
 its own connection. The response has a strict versioned schema with `version: 1`,
-monotonic persisted `generation`, `enabled`, the configured `uplinkOrigin`,
+monotonic persisted `generation`, `enabled`, the service `installationId`,
+the configured `uplinkOrigin`,
 `installationHandle`, unchanged `coreOrigin`, and negotiated `capabilities`.
 An unavailable/disabled descriptor omits routing fields. No tickets, subscription
 keys or new Core trust anchors belong in this response. Core emits a descriptor
