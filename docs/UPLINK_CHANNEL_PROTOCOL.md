@@ -33,6 +33,15 @@ that introduced them. The classification is pinned by tests in
 not individually pinned beyond the refusal path, so treat that column as read-at rather than
 enforced.
 
+## Proposed Remote Control profile
+
+[Remote Control v1, revision 5](protocols/uplink-remote-control-v1.md) incorporates
+the Uplink review and proposes concrete
+admission messages, paired-ticket lifecycle, bounded byte transport and joint
+acceptance vectors for administrator setup, paired administrator/member access,
+team enrollment and Uplink upgrades of existing pairings. It is not yet a frozen
+contract or an implemented feature.
+
 ## Proposed team extension
 
 [Team-sharing draft v1](protocols/uplink-team-sharing-v1.md) proposes a separately

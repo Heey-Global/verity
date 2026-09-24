@@ -29,6 +29,10 @@ on:
       - 'scripts/ios-pinned-tls-smoke.sh'
       - 'scripts/ios-pinned-tls-smoke.swift'
       - 'scripts/ios-pinned-tls-smoke-app.swift'
+      - 'scripts/remote-control-tunnel/**'
+      - 'scripts/enrollment-proof/**'
+      - 'docs/protocols/uplink-enrollment-v1.md'
+      - 'docs/protocols/uplink-enrollment-storage-v1.md'
   workflow_dispatch:
     inputs:
       ref:
@@ -70,6 +74,16 @@ jobs:
             echo 'required=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Smoke fixtures do not alter the shipping app fingerprint, but their
+          # changes must still execute on Apple rather than silently skip CI.
+          if ! git diff --quiet "$BASE_SHA" HEAD -- \
+            .github/workflows/mobile-native-verify.yml \
+            'scripts/ios-pinned-tls-smoke*' scripts/remote-control-tunnel \
+            scripts/enrollment-proof docs/protocols/uplink-enrollment-v1.md \
+            docs/protocols/uplink-enrollment-storage-v1.md; then
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           native_changes="$(node scripts/mobile-native-compatibility.mjs "$BASE_SHA" HEAD)"
           if [ -n "$native_changes" ]; then
             printf '%s\n' "$native_changes"
@@ -102,6 +116,16 @@ jobs:
           npm run -w @verity/mobile build
           npm run -w @verity/mobile-app typecheck
 
+      - name: Verify enrollment reference model and macOS Keychain probe
+        timeout-minutes: 5
+        run: |
+          npx vitest run scripts/enrollment-proof/model.test.ts
+          bash scripts/enrollment-proof/run-apple.sh
+
+      - name: Verify iOS enrollment Keychain persistence
+        timeout-minutes: 10
+        run: bash scripts/enrollment-proof/run-ios.sh
+
       - name: Generate the iOS project
         working-directory: apps/mobile
         env:
@@ -118,6 +142,13 @@ jobs:
         env:
           VERITY_SMOKE_OPAQUE_RELAY: '1'
         run: scripts/ios-pinned-tls-smoke.sh
+
+      - name: Verify native Remote Control tunnel prototype
+        timeout-minutes: 10
+        run: |
+          node --test scripts/remote-control-tunnel/mock.test.mjs
+          bash scripts/remote-control-tunnel/run-apple.sh macos
+          bash scripts/remote-control-tunnel/run-apple.sh ios
 
       - name: Install CocoaPods
         working-directory: apps/mobile/ios

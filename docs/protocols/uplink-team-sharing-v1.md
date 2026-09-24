@@ -96,7 +96,9 @@ Core's [T0 reconciliation](uplink-team-t0-reconciliation.md) confirms that
 current pairing uses pinned HTTPS and server identity signatures, not an
 application-layer encrypted relay handshake or client private-key proof.
 A broker-terminated HTTPS route cannot simply forward existing pairing safely.
-The tunnel-versus-application-encryption decision remains open before freeze.
+The proposed enrollment path now uses pinned inner TLS over the Remote Control
+tunnel, with the enrollment companion defining device proof and recovery. Joint
+security approval and executable evidence remain required before freeze.
 
 ## Envelope and limits
 
@@ -279,3 +281,38 @@ the table itself is not a passing test suite.
 For security guards, deliberately break the guarded verification and observe
 failure. A simulator must consume these same vectors; it cannot define a second
 protocol or provide a production entitlement bypass.
+
+## Enrollment transport and post-commit recovery integration
+
+This proposal incorporates Remote Control revision 5 and the revision-2
+[enrollment companion](uplink-enrollment-v1.md), including its exact recovery
+message schemas and version-2 local preface. The preface fields are `version: 2`,
+`sessionId`, `installationId`, `purpose`, `redemptionId`, `recoveryReservationId`.
+Team purpose is `team-member`; normal join uses an empty recovery ID, recovery
+uses the original redemption plus its new one-use recovery reservation. Match the
+entire tuple to Core's accepted control state through the protected Core-UID
+socket. Adopt the revised signature transcript with it; no version guessing.
+
+Keep the normal `team.join.pending` / local membership commit / `team.join.commit`
+outbox sequence. For a lost post-commit result, use the distinct
+`team.recovery.reserve -> team.recovery.ready -> connect` admission sequence.
+Uplink forwards `team.recovery.request`; only authenticated Core returns
+`team.recovery.accept` or `team.recovery.refuse` based on its receipt and current
+rights. It may later send `team.recovery.cancel`. Core receipt eligibility does
+not depend on whether the original commit outbox has reached Uplink.
+
+The recovery record has its own ID, owning socket, stable control binding and
+fresh session. Its absolute lifetime is 60 seconds, with a 15-second Core decision
+bound; existing pending budgets apply from request arrival. Bind/consume once,
+never reuse the committed redemption as a new join reservation. Core verifies
+same-device proof inside TLS before returning the original credential result.
+No second membership, seat or credential is minted; original commit outbox retries
+retain their original redemption identity. Expiry, revocation, cancellation,
+restart and replacement fence the new transport independently of the old receipt.
+
+EN13–EN19 complement team V08–V13 for context substitution, stolen recovery IDs,
+concurrent attempts and restart. This incorporates Uplink's accepted transport
+state machine only. Native key protection, result encryption/retention,
+and executable fixture evidence still block joint freeze. Backup restore is
+unsupported in v1 per the enrollment companion; ordinary persisted revocation
+floors remain required. No automatic destructive reset is introduced.
