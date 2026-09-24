@@ -82,7 +82,9 @@ swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tm
 addresses=(127.0.0.1)
 if [[ -n "$host_ip" ]]; then addresses+=("$host_ip"); fi
 python3 - "$tmp/cert.pem" "$tmp/key.pem" "$tmp/server-ready" "${addresses[@]}" <<'PY' &
-import asyncio, http.server, os, ssl, sys, threading
+import asyncio, faulthandler, http.server, os, socketserver, ssl, sys, threading
+
+faulthandler.dump_traceback_later(15, repeat=True)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -98,6 +100,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class SmokeServer(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer normally reverse-resolves every bound address. The fixture
+        # needs no DNS name, and runner reverse DNS can block listener startup.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(sys.argv[1], sys.argv[2])
 # Bound to the addresses under test rather than every interface the runner
@@ -109,7 +120,7 @@ context.load_cert_chain(sys.argv[1], sys.argv[2])
 relay_mode = os.environ.get('VERITY_SMOKE_OPAQUE_RELAY') == '1'
 servers = []
 for address in (['127.0.0.1'] if relay_mode else sys.argv[4:]):
-    server = http.server.ThreadingHTTPServer((address, 18444 if relay_mode else 18443), Handler)
+    server = SmokeServer((address, 18444 if relay_mode else 18443), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     servers.append(server)
 for server in servers:
@@ -143,6 +154,7 @@ async def serve_relays():
         # Signal only after every listener is bound, including the routable one.
         with open(sys.argv[3], 'w') as ready:
             ready.write('ready')
+        faulthandler.cancel_dump_traceback_later()
         await asyncio.gather(*(listener.serve_forever() for listener in listeners))
     finally:
         for listener in listeners:
@@ -153,6 +165,7 @@ if relay_mode:
 else:
     with open(sys.argv[3], 'w') as ready:
         ready.write('ready')
+    faulthandler.cancel_dump_traceback_later()
     threading.Event().wait()
 PY
 server_pid=$!
