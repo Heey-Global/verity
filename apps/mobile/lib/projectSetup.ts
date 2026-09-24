@@ -121,10 +121,6 @@ export function projectOverviewStatus(
   }
   if (badge.pulsing) return { label: badge.label, tone: 'working' };
   const state = projectLifecycleState(project);
-  if (project.setupStatus === 'pending') {
-    const status = projectSetupStatus(project, detection);
-    return { label: status.label, tone: status.intent === 'progress' ? 'working' : 'idle' };
-  }
   const warning = projectOverviewWarning(project);
   if (warning) return { label: warning, tone: 'attention' };
   // The grey moon in the shared status gutter already communicates the stable
@@ -248,9 +244,5 @@ export function toolkitDriftNotice(project: ProjectRecord): string | undefined {
 }
 
 export function hasPendingProjectSetup(projects: ProjectRecord[]): boolean {
-  return projects.some(
-    ({ setupStatus, state }) =>
-      state !== 'failed' &&
-      (setupStatus === 'pending' || state === 'cloning' || state === 'container_starting'),
-  );
+  return projects.some(({ state }) => state === 'cloning' || state === 'container_starting');
 }

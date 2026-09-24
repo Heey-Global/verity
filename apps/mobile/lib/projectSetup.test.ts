@@ -105,12 +105,12 @@ describe('project setup presentation', () => {
     expect(projectOverviewStatus(cloningDuringRebuild)?.label).toBe('Rebuilding secure workspace…');
   });
 
-  it('keeps pending setup live on the overview until setup is completed', () => {
+  it('does not treat optional setup as lifecycle progress', () => {
     const pending = { ...project, state: 'active', setupStatus: 'pending' } as ProjectRecord;
 
-    expect(projectOverviewStatus(pending)?.label).toBe('Detecting Dev Server…');
+    expect(projectOverviewStatus(pending)).toBeUndefined();
     expect(projectOverviewStatus(pending, detection)?.label).toBe('1 Dev Server found');
-    expect(hasPendingProjectSetup([pending])).toBe(true);
+    expect(hasPendingProjectSetup([pending])).toBe(false);
     expect(hasPendingProjectSetup([{ ...project, setupStatus: undefined }])).toBe(true);
     expect(hasPendingProjectSetup([{ ...pending, setupStatus: 'complete' }])).toBe(false);
     expect(hasPendingProjectSetup([{ ...pending, state: 'failed' }])).toBe(false);
