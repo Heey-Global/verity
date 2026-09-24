@@ -61,6 +61,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { createVerityClient } from '../../lib/client';
 import { Icon } from '../../components/Icon';
 import { StatusPill, type StatusPillIntent } from '../../components/StatusPill';
+import { SettingsGroup, SettingsPanel } from '../../components/settings/SettingsChrome';
 import { repairProject } from '../../lib/projectRepair';
 import {
   projectLifecycleState,
@@ -167,6 +168,17 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (detail?.project.setupStatus !== 'pending') return;
+    // Projects created before the guided flow was removed can use the same
+    // independent settings and repair controls as newly created projects.
+    void client
+      .setProjectSetupStatus(projectId, 'complete')
+      .then(onProjectUpdated)
+      .catch(() => {
+        // A later visit retries; the project remains usable in the meantime.
+      });
+  }, [client, detail?.project.setupStatus, onProjectUpdated, projectId]);
   useFocusEffect(
     useCallback(() => {
       if (detailLoaded) void load(true);
@@ -189,11 +201,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
       clearInterval(timer);
     };
   }, [detailLoaded, load]);
-
-  useEffect(() => {
-    if (detail?.project.setupStatus !== 'pending') return;
-    router.replace({ pathname: '/new-project', params: { projectId } });
-  }, [detail?.project.setupStatus, projectId]);
 
   useEffect(() => {
     const project = detail?.project;
@@ -308,19 +315,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
     );
   }
 
-  if (detail.project.setupStatus === 'pending') {
-    return (
-      <View style={styles.centered} accessibilityLabel="Opening project setup">
-        <Stack.Screen options={{ title: detail.project.repo }} />
-        <ActivityIndicator />
-        <Text style={styles.operationsTitle}>Opening project setup…</Text>
-        <Text style={styles.operationsSubtitle}>
-          Setup, Dev Server detection, and secrets are kept together in one guided flow.
-        </Text>
-      </View>
-    );
-  }
-
   const { project, settings } = detail;
   const title = project.repo;
   const lifecycleState = projectLifecycleState(project);
@@ -371,13 +365,6 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
         ) : null}
         {activeTab === 'settings' ? (
           <>
-            <View style={styles.section} accessibilityLabel="Project settings overview">
-              <Text style={styles.sectionHeader}>Project setup</Text>
-              <Text style={styles.settingsGroupDescription}>
-                Manage whether this project is running and which secrets it can access. Dev Server
-                commands and ports stay in the Dev Server tab.
-              </Text>
-            </View>
             <EnvironmentSection
               client={client}
               project={project}
@@ -393,10 +380,11 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
             {project.kind === 'local' ? (
               <LinkGitHubSection client={client} project={project} onUpdated={onProjectUpdated} />
             ) : null}
-            <View style={styles.section}>
-              <Text style={styles.sectionHeader}>Project information</Text>
-              <ProjectFields project={project} />
-            </View>
+            <SettingsGroup title="Project information">
+              <SettingsPanel>
+                <ProjectFields project={project} />
+              </SettingsPanel>
+            </SettingsGroup>
             <DangerSection project={project} deleting={deleting} onDelete={deleteProject} />
           </>
         ) : null}
@@ -495,9 +483,8 @@ function DangerSection({
 }) {
   const { theme } = useUnistyles();
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionHeader}>Danger zone</Text>
-      <View style={styles.dangerPanel}>
+    <SettingsGroup title="Danger zone">
+      <SettingsPanel>
         <View style={styles.runtimeMetaRow}>
           <Text style={styles.runtimeMetaLabel}>Project</Text>
           <Text style={styles.runtimeMetaValue} numberOfLines={1}>
@@ -523,8 +510,8 @@ function DangerSection({
             {deleting ? 'Deleting...' : 'Delete project'}
           </Text>
         </Pressable>
-      </View>
-    </View>
+      </SettingsPanel>
+    </SettingsGroup>
   );
 }
 
@@ -874,13 +861,16 @@ function EnvironmentSection({
         };
 
   return (
-    <View style={styles.section}>
-      <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeader}>Environment</Text>
-        <StatusPill intent={statusIntent} label={statusLabel} />
-        {working && !rebuilding ? <ActivityIndicator size="small" /> : null}
-      </View>
-      <View style={styles.lifecyclePanel}>
+    <SettingsGroup
+      title="Environment"
+      trailing={
+        <View style={styles.sectionHeaderRow}>
+          <StatusPill intent={statusIntent} label={statusLabel} />
+          {working && !rebuilding ? <ActivityIndicator size="small" /> : null}
+        </View>
+      }
+    >
+      <SettingsPanel>
         <Pressable
           style={({ pressed }) => [
             styles.saveButton,
@@ -947,8 +937,8 @@ function EnvironmentSection({
         ) : null}
         {driftNotice ? <Text style={styles.runtimeNotice}>{driftNotice}</Text> : null}
         {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-      </View>
-    </View>
+      </SettingsPanel>
+    </SettingsGroup>
   );
 }
 
@@ -1057,13 +1047,11 @@ function LinkGitHubSection({
   }, [client, linking, onUpdated, project.id, selected]);
 
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionHeader}>GitHub</Text>
-      <Text style={styles.settingsGroupDescription}>
-        This project has no GitHub repository. Connect it to an existing repository to combine its
-        history with this project and get pull requests, issues and CI status.
-      </Text>
-      <View style={styles.lifecyclePanel}>
+    <SettingsGroup
+      title="GitHub"
+      description="This project has no GitHub repository. Connect it to an existing repository to combine its history with this project and get pull requests, issues and CI status."
+    >
+      <SettingsPanel>
         <Pressable
           style={({ pressed }) => [
             styles.lifecycleButton,
@@ -1120,8 +1108,8 @@ function LinkGitHubSection({
           </Text>
         </Pressable>
         {error ? <Text style={styles.settingsError}>{error}</Text> : null}
-      </View>
-    </View>
+      </SettingsPanel>
+    </SettingsGroup>
   );
 }
 
@@ -2984,33 +2972,30 @@ function ProjectSettingsSection({
   onSaved: (settings: ProjectSettings) => void;
 }) {
   return (
-    <View style={styles.section}>
-      <View style={styles.sectionHeaderRow}>
-        <Text style={styles.sectionHeader}>Secrets</Text>
-      </View>
-
-      <Text style={styles.settingsGroupDescription}>
-        Optionally map this project to one Doppler environment. Secret access always runs through
-        the central Verity broker.
-      </Text>
-      <DopplerBindingSection
-        client={client}
-        projectId={projectId}
-        settings={settings}
-        onSaved={onSaved}
-      />
-      <GoogleDriveFolderSection
-        client={client}
-        projectId={projectId}
-        settings={settings}
-        onSaved={onSaved}
-      />
-      <ProjectMcpBindingsSection client={client} projectId={projectId} />
-      <Text style={styles.settingsHint}>
-        Verity resolves approved secrets in the central broker. No Doppler credential is stored in
-        or injected into the project container.
-      </Text>
-    </View>
+    <SettingsGroup
+      title="Connected services"
+      description="Choose which Doppler environment, Google Drive folder, and MCP connections this project can access."
+    >
+      <SettingsPanel>
+        <DopplerBindingSection
+          client={client}
+          projectId={projectId}
+          settings={settings}
+          onSaved={onSaved}
+        />
+        <GoogleDriveFolderSection
+          client={client}
+          projectId={projectId}
+          settings={settings}
+          onSaved={onSaved}
+        />
+        <ProjectMcpBindingsSection client={client} projectId={projectId} />
+        <Text style={styles.settingsHint}>
+          Verity resolves approved secrets in the central broker. No Doppler credential is stored in
+          or injected into the project container.
+        </Text>
+      </SettingsPanel>
+    </SettingsGroup>
   );
 }
 
@@ -3582,9 +3567,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   settingsContent: {
     width: '100%',
-    maxWidth: 1040,
+    maxWidth: 760,
     alignSelf: 'center',
-    padding: theme.spacing.md,
+    gap: theme.spacing.xl,
   },
   projectTabs: {
     flexDirection: 'row',
@@ -3688,10 +3673,11 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   sectionHeader: {
-    color: theme.colors.textMuted,
+    color: theme.colors.setup.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontWeight: '600',
     textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   fieldLabel: {
     color: theme.colors.textMuted,
@@ -3700,12 +3686,7 @@ const styles = StyleSheet.create((theme) => ({
     textTransform: 'uppercase',
   },
   projectFactsPanel: {
-    paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    gap: theme.spacing.xs,
   },
   projectFactRow: {
     flexDirection: 'row',
@@ -3797,12 +3778,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   bindingSection: {
     gap: theme.spacing.xs,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    paddingVertical: theme.spacing.sm,
   },
   bindingCurrent: {
     color: theme.colors.text,

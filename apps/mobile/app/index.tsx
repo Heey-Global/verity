@@ -858,9 +858,7 @@ function useProjects(client: VerityClient) {
             .map(async (project) => [project.id, await client.listDevServers(project.id)] as const),
         );
         const projectsToAnalyze = nextProjects.filter(
-          ({ id, state, setupStatus }) =>
-            state === 'active' &&
-            (setupStatus === 'pending' || !detectionAttemptedProjectIds.current.has(id)),
+          ({ id, state }) => state === 'active' && !detectionAttemptedProjectIds.current.has(id),
         );
         for (const { id } of projectsToAnalyze) detectionAttemptedProjectIds.current.add(id);
         const detectionResults = await Promise.allSettled(
@@ -1070,7 +1068,7 @@ function applyProjectOrder(
 }
 
 function isPausedProjectGroup(group: SessionProjectGroup): boolean {
-  return group.project?.state === 'absent' && group.project.setupStatus !== 'pending';
+  return group.project?.state === 'absent';
 }
 
 /** A live project row the user may drag; the control plane and non-project rows keep their slot. */
@@ -1251,32 +1249,12 @@ function ProjectGroup({
                     shown when nothing is. Both at once is what made a status
                     message and a version number share — and squeeze — one line. */}
                   {group.status ? (
-                    group.project?.setupStatus === 'pending' ? (
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Continue setup for ${group.title}`}
-                        onPress={() =>
-                          router.push({
-                            pathname: '/new-project',
-                            params: { projectId: group.project!.id },
-                          })
-                        }
-                      >
-                        <Text
-                          style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
-                          numberOfLines={1}
-                        >
-                          {group.status.label}
-                        </Text>
-                      </Pressable>
-                    ) : (
-                      <Text
-                        style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
-                        numberOfLines={1}
-                      >
-                        {group.status.label}
-                      </Text>
-                    )
+                    <Text
+                      style={[styles.projectStatusLabel, statusToneStyle(group.status.tone)]}
+                      numberOfLines={1}
+                    >
+                      {group.status.label}
+                    </Text>
                   ) : group.subtitle ? (
                     <Text style={styles.projectSubtitle} numberOfLines={1}>
                       {group.subtitle}
