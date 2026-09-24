@@ -29482,7 +29482,8 @@ async function runAcpTurn(opts, profile) {
         } : { clientCapabilities: { session: { compaction: {} } } }
       });
       const gateway = opts.mcpGateway;
-      const agentSpeaksHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http === true;
+      const advertisedHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http;
+      const agentSpeaksHttpMcp = advertisedHttpMcp === true || advertisedHttpMcp === void 0 && profile.httpMcpWhenUnspecified === true;
       const mcpServers2 = agentSpeaksHttpMcp ? [
         ...gateway === void 0 ? [] : [
           {
@@ -29688,6 +29689,7 @@ ${message}`;
 var CLAUDE_ACP_PROFILE = {
   defaultCommand: "claude-agent-acp",
   telemetryBackend: "claude-acp",
+  httpMcpWhenUnspecified: true,
   loadSessionUnsupported: "Claude ACP adapter does not support persistent session loading",
   clientCapabilitiesMeta: { "subagent-transcript": true },
   sessionMeta: (opts) => ({
@@ -29900,6 +29902,7 @@ var OPENCODE_ACP_PROFILE = {
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: "opencode-acp",
   telemetryBackend: "opencode-acp",
+  httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the
   // shared loop resumes through `session/load` rather than raising this. Kept
   // because the contract requires a message for the agent versions that do not.
