@@ -252,6 +252,13 @@ describe('ProjectDetailScreen — project settings', () => {
     fireEvent.press(await screen.findByLabelText('Project settings'));
     expect(await screen.findByText('Environment')).toBeOnTheScreen();
     expect(screen.getByText('Connected services')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Connected services'));
+    expect(await screen.findByLabelText('Doppler binding')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Environment')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Back to project settings'));
+    expect(await screen.findByLabelText('Environment')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Back to project'));
+    expect(await screen.findByText('Dev Servers')).toBeOnTheScreen();
     await waitFor(() => expect(setProjectSetupStatus).toHaveBeenCalledWith('p/1', 'complete'));
     expect(mockRouter.replace).not.toHaveBeenCalled();
   });
@@ -776,6 +783,7 @@ describe('ProjectDetailScreen — project settings', () => {
     expect(screen.getByText('Connected services')).toBeOnTheScreen();
     expect(screen.getByText('Project information')).toBeOnTheScreen();
     expect(screen.queryByText('Container')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Environment'));
     // Not "Running": Verity is recreating this container onto the new image, and
     // the pill reads the same badge the overview dot pulses on. A green settled
     // "Running" beside a row saying a rebuild is in flight is the screen
@@ -827,6 +835,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(
       await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
     ).toBeOnTheScreen();
@@ -859,6 +868,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(
       await screen.findByText(/attestation verdict no longer holds and needs re-checking/),
     ).toBeOnTheScreen();
@@ -880,6 +890,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByText(/only a rebuilt base image fixes it/)).toBeOnTheScreen();
   });
 
@@ -896,6 +907,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByText('Environment')).toBeOnTheScreen();
     expect(screen.queryByText(/needs re-checking/)).toBeNull();
   });
@@ -916,6 +928,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(
       await screen.findByText('Runner supervisor is disabled after boundary attestation failed.'),
     ).toBeOnTheScreen();
@@ -936,6 +949,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Rebuilding secure workspace…')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Running')).toBeNull();
   });
@@ -949,6 +963,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Paused')).toBeOnTheScreen();
     expect(screen.getByLabelText('Start project')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Update project environment')).toBeNull();
@@ -961,6 +976,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Needs repair')).toBeOnTheScreen();
     expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
   });
@@ -975,6 +991,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Starting secure workspace…')).toBeOnTheScreen();
     expect(screen.queryByLabelText('container_starting')).toBeNull();
     expect(screen.getByLabelText('Repair project')).toBeOnTheScreen();
@@ -1023,6 +1040,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     fireEvent.press(await screen.findByLabelText('Rebuild project image'));
 
     await waitFor(() =>
@@ -1052,6 +1070,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Repair project')).toBeOnTheScreen();
     expect(await screen.findByLabelText('Rebuild project image')).toBeOnTheScreen();
   });
@@ -1074,6 +1093,7 @@ describe('ProjectDetailScreen — project settings', () => {
     const view = render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Pause project')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
     view.unmount();
@@ -1088,6 +1108,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Start project')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
   });
@@ -1116,6 +1137,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Environment'));
     expect(await screen.findByLabelText('Pause project')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Rebuild project image')).toBeNull();
   });
@@ -1225,6 +1247,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Danger zone'));
     fireEvent.press(await screen.findByLabelText('Delete project'));
 
     await waitFor(() => expect(deleteProject).toHaveBeenCalledWith('p/1'));
@@ -1241,6 +1264,7 @@ describe('ProjectDetailScreen — project settings', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Danger zone'));
     fireEvent.press(await screen.findByLabelText('Delete project'));
 
     const [title, message] = alert.mock.calls[0];
@@ -1270,6 +1294,7 @@ describe('ProjectDetailScreen — Doppler binding picker (#320)', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Connected services'));
     // Open the picker → project list loads.
     fireEvent.press(await screen.findByLabelText('Choose Doppler binding'));
     fireEvent.press(await screen.findByLabelText('Doppler project Acme App'));
@@ -1288,6 +1313,7 @@ describe('ProjectDetailScreen — Doppler binding picker (#320)', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Connected services'));
     fireEvent.press(await screen.findByLabelText('Choose Doppler binding'));
     expect(
       await screen.findByText(/Set the Doppler account token in onboarding/),
@@ -1306,6 +1332,7 @@ describe('ProjectDetailScreen — Doppler binding picker (#320)', () => {
     render(<ProjectDetailScreen />);
 
     fireEvent.press(await screen.findByLabelText('Project settings'));
+    fireEvent.press(await screen.findByLabelText('Connected services'));
     expect(await screen.findByText('acme-app / dev')).toBeOnTheScreen();
     expect(screen.getByLabelText('Change Doppler binding')).toBeOnTheScreen();
     expect(screen.getByText('Mapped')).toBeOnTheScreen();
