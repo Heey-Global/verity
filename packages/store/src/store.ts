@@ -1689,6 +1689,158 @@ export class EventStore implements EventSink {
     }));
   }
 
+  async listPreparedSessionMoves() {
+    return await this.db
+      .selectFrom('session_moves')
+      .selectAll()
+      .where('result_json', 'is', null)
+      .execute();
+  }
+
+  async listMovePreviewRestarts() {
+    return await this.db
+      .selectFrom('session_moves')
+      .selectAll()
+      .where('preview_restart_json', 'is not', null)
+      .execute();
+  }
+
+  async setMovePreviewRestart(
+    sessionId: string,
+    operationId: string,
+    serverIds: string[] | null,
+  ): Promise<void> {
+    await this.db
+      .updateTable('session_moves')
+      .set({ preview_restart_json: serverIds === null ? null : JSON.stringify(serverIds) })
+      .where('session_id', '=', sessionId)
+      .where('operation_id', '=', operationId)
+      .execute();
+  }
+
+  async getSessionMove(sessionId: string, operationId: string) {
+    return await this.db
+      .selectFrom('session_moves')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .where('operation_id', '=', operationId)
+      .executeTakeFirst();
+  }
+
+  async getSessionMoveNotice(sessionId: string): Promise<string | undefined> {
+    const row = await this.db
+      .selectFrom('session_moves')
+      .select('notice')
+      .where('session_id', '=', sessionId)
+      .where('result_json', 'is not', null)
+      .orderBy('created_at', 'desc')
+      .executeTakeFirst();
+    return row?.notice;
+  }
+
+  /** Reserve a destination before touching disk, so an interrupted preparation remains identifiable. */
+  async prepareSessionMove(input: {
+    sessionId: string;
+    operationId: string;
+    sourceProjectId: string;
+    sourceWorktree: string;
+    targetProjectId: string;
+    targetWorktree: string;
+    branch: string;
+    onCommits: string;
+  }): Promise<void> {
+    await this.db
+      .insertInto('session_moves')
+      .values({
+        session_id: input.sessionId,
+        operation_id: input.operationId,
+        source_project_id: input.sourceProjectId,
+        source_worktree: input.sourceWorktree,
+        target_project_id: input.targetProjectId,
+        target_worktree: input.targetWorktree,
+        branch: input.branch,
+        on_commits: input.onCommits,
+        backend_ids_json: JSON.stringify(
+          (await this.getSessionBackendStates(input.sessionId)).map(
+            (binding) => binding.backendSessionId,
+          ),
+        ),
+        notice: '',
+        result_json: null,
+      })
+      .execute();
+  }
+
+  async commitSessionMove(
+    sessionId: string,
+    operationId: string,
+    notice: string,
+    resultJson: string,
+  ): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      const move = await tx
+        .selectFrom('session_moves')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .where('operation_id', '=', operationId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (move.result_json !== null) return;
+      for (const projectId of [move.source_project_id, move.target_project_id].sort()) {
+        const project = await tx
+          .selectFrom('projects')
+          .select(['hidden_at', 'kind'])
+          .where('id', '=', projectId)
+          .forShare()
+          .executeTakeFirst();
+        if (!project || project.hidden_at !== null || project.kind !== 'local')
+          throw new Error('Move project is unavailable');
+      }
+      const session = await tx
+        .selectFrom('sessions')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (
+        session.project_id !== move.source_project_id ||
+        session.worktree !== move.source_worktree
+      )
+        throw new Error('Session workspace changed during move');
+      await tx
+        .updateTable('sessions')
+        .set({ project_id: move.target_project_id, worktree: move.target_worktree })
+        .where('session_id', '=', sessionId)
+        .execute();
+      await tx
+        .updateTable('dev_servers')
+        .set({ preview_session_id: null })
+        .where('preview_session_id', '=', sessionId)
+        .where('project_id', '=', move.source_project_id)
+        .execute();
+      await tx.deleteFrom('session_backend_state').where('session_id', '=', sessionId).execute();
+      await tx
+        .updateTable('secret_provider_permissions')
+        .set({ state: 'revoked', updated_at: new Date().toISOString() })
+        .where('session_id', '=', sessionId)
+        .where('project_id', '=', move.source_project_id)
+        .execute();
+      await tx
+        .deleteFrom('secret_approvals')
+        .where('session_id', '=', sessionId)
+        .where('project_id', '=', move.source_project_id)
+        .execute();
+      await sql`delete from secret_run_grants where claims_json::jsonb->>'sessionId' = ${sessionId}
+        and claims_json::jsonb->>'projectId' = ${move.source_project_id}`.execute(tx);
+      await tx
+        .updateTable('session_moves')
+        .set({ notice, result_json: resultJson })
+        .where('session_id', '=', sessionId)
+        .where('operation_id', '=', operationId)
+        .execute();
+    });
+  }
+
   /**
    * Set (or clear, with `null`) a session's project binding. Returns `true` if a
    * row matched (`UPDATE` affected a row), `false` if the session id is unknown.
@@ -1915,14 +2067,21 @@ export class EventStore implements EventSink {
    * them, and a partial answer here would delete a live conversation.
    */
   async listLiveBackendSessionIds(): Promise<string[]> {
-    const [bindings, sessions] = await Promise.all([
+    const [bindings, sessions, moves] = await Promise.all([
       this.db.selectFrom('session_backend_state').select('backend_session_id').execute(),
       this.db.selectFrom('sessions').select('session_id').execute(),
+      this.db
+        .selectFrom('session_moves')
+        .innerJoin('projects', 'projects.id', 'session_moves.source_project_id')
+        .select('backend_ids_json')
+        .where('projects.hidden_at', 'is', null)
+        .execute(),
     ]);
     return [
       ...new Set([
         ...bindings.map((row) => row.backend_session_id),
         ...sessions.map((row) => row.session_id),
+        ...moves.flatMap((row) => JSON.parse(row.backend_ids_json) as string[]),
       ]),
     ];
   }
@@ -1940,7 +2099,19 @@ export class EventStore implements EventSink {
    */
   async listSessionWorktrees(): Promise<string[]> {
     const rows = await this.db.selectFrom('sessions').select('worktree').execute();
-    return rows.map((row) => row.worktree);
+    const retained = await this.db
+      .selectFrom('session_moves')
+      .innerJoin('projects', 'projects.id', 'session_moves.source_project_id')
+      .select('source_worktree')
+      .where('projects.hidden_at', 'is', null)
+      .where('result_json', 'is not', null)
+      .execute();
+    return [
+      ...new Set([
+        ...rows.map((row) => row.worktree),
+        ...retained.map((row) => row.source_worktree),
+      ]),
+    ];
   }
 
   async deleteSessionBackendStates(sessionId: string): Promise<number> {

@@ -364,6 +364,20 @@ export class PreviewShareManager {
     }
   }
 
+  /** Hold preview retargeting while only the moving session's public shares are revoked. */
+  async beginSessionMove(projectId: string, sessionId: string): Promise<() => void> {
+    const release = await this.acquireLifecycleLocks([`project:${projectId}`]);
+    try {
+      for (const server of await this.options.store.listDevServers(projectId)) {
+        if (server.previewSessionId === sessionId) await this.stopDevServer(server.id);
+      }
+      return release;
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       await this.stopProject(projectId);
@@ -388,6 +402,12 @@ export class PreviewShareManager {
       `dev-server:${devServerId}`,
     ]);
     try {
+      if (
+        (await this.options.store.listMovePreviewRestarts()).some(
+          (move) => move.source_project_id === devServer.projectId,
+        )
+      )
+        throw new Error('Retry the pending session move before changing this preview.');
       await this.stopDevServer(devServerId);
       return release;
     } catch (error) {

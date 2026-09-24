@@ -3147,3 +3147,24 @@ describe('projectRecordSchema lifecycle states', () => {
     },
   );
 });
+
+it('moves a session with a stable retry key and parses the retained-workspace result', async () => {
+  const moved = {
+    projectId: 'b',
+    worktree: '/b/move',
+    branch: 'move',
+    contextMode: 'history-handoff',
+    transferred: ['file'],
+    alreadyPresent: [],
+    skipped: ['private'],
+    retainedWorktree: '/a/old',
+    retainedBranch: 'old',
+  };
+  const { fetch, calls } = fakeFetch(new Response(JSON.stringify(moved), { status: 200 }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  const body = { project: 'b', operationId: 'retry-key' };
+  expect(await client.moveSession('a/b', body)).toEqual(moved);
+  expect(calls[0]?.url).toBe('http://host/sessions/a%2Fb/project');
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(JSON.parse(calls[0]?.init?.body as string)).toEqual(body);
+});

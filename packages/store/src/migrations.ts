@@ -2939,6 +2939,29 @@ const migrations: Record<string, Migration> = {
         drop constraint knowledge_wiki_jobs_retired`.execute(db);
     },
   },
+  '0105_session_project_moves': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table session_moves (
+        session_id text not null references sessions(session_id) on delete cascade,
+        operation_id text not null,
+        source_project_id text not null,
+        source_worktree text not null,
+        target_project_id text not null,
+        target_worktree text not null,
+        branch text not null,
+        on_commits text not null,
+        notice text not null,
+        result_json text,
+        preview_restart_json text,
+        backend_ids_json text not null,
+        created_at timestamptz not null default now(),
+        primary key (session_id, operation_id)
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('session_moves').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

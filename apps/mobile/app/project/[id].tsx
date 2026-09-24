@@ -219,7 +219,7 @@ function ProjectDetailView({ client, projectId }: { client: VerityClient; projec
     const target = detail.project;
     Alert.alert(
       'Delete project?',
-      `This removes ${projectDisplayName(target)} from Verity, stops its container, and deletes the local clone along with the project's sessions and their history. This can't be undone.`,
+      `This removes ${projectDisplayName(target)} from Verity, stops its container, and deletes the local clone, including retained recovery workspaces, along with the project's sessions and their history. This can't be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {

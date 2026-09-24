@@ -24,6 +24,7 @@ import type { AgentEvent } from '@verity/events';
  */
 
 export interface HandoffOptions {
+  workspaceChanged?: boolean;
   /** Approximate token ceiling for the serialized history (chars/4 heuristic). */
   tokenBudget?: number;
   /** Per-tool-result char cap in the serialized history. */
@@ -83,6 +84,12 @@ const HEADER =
   "earlier work are yours — don't mistake them for a separate agent's concurrent " +
   'edits. Continue seamlessly. Tool outputs below may be truncated — re-run a tool ' +
   'or re-read a file if you need its current contents.';
+const MOVED_HEADER =
+  'The following is the earlier part of THIS session — your own prior work. ' +
+  'You are the sole agent continuing this session. Continue from this history using the current project and workspace instructions. ' +
+  'Earlier paths, branches, and files may belong to a previous workspace; consult ' +
+  'any project move notice and verify their current location before using them. ' +
+  'Tool outputs below may be truncated — re-run a tool or re-read a file when needed.';
 const CURRENT_MARKER = "Now respond to the operator's latest message:";
 
 /**
@@ -96,6 +103,8 @@ export function buildHandoffPrompt(
   currentPrompt: string,
   opts: HandoffOptions = {},
 ): string {
+  const render = (blocks: string[], omitted: boolean, prompt: string) =>
+    renderHandoffPrompt(blocks, omitted, prompt, opts.workspaceChanged ? MOVED_HEADER : HEADER);
   const budgetChars = (opts.tokenBudget ?? DEFAULT_TOKEN_BUDGET) * CHARS_PER_TOKEN;
   const cap = opts.toolResultCharCap ?? DEFAULT_TOOL_RESULT_CHAR_CAP;
   const blocks = serializeEvents(priorEvents, cap);
@@ -103,7 +112,7 @@ export function buildHandoffPrompt(
 
   const { kept, omitted } = takeSuffixWithinBudget(blocks, budgetChars);
   if (kept.length === 0) return currentPrompt;
-  if (!omitted) return renderHandoffPrompt(kept, false, currentPrompt);
+  if (!omitted) return render(kept, false, currentPrompt);
 
   const retrievalBudget = Math.min(
     MAX_RETRIEVAL_CHARS,
@@ -117,9 +126,9 @@ export function buildHandoffPrompt(
     currentPrompt,
     budgetChars - totalChars(recent.kept),
   );
-  if (retrieved.length === 0) return renderHandoffPrompt(kept, true, currentPrompt);
+  if (retrieved.length === 0) return render(kept, true, currentPrompt);
 
-  return renderHandoffPrompt(
+  return render(
     ['**Relevant earlier context:**', ...retrieved, '**Most recent context:**', ...recent.kept],
     true,
     currentPrompt,
@@ -193,9 +202,14 @@ function takeSuffixWithinBudget(
   return { kept: kept.reverse(), omitted: false, firstKept: 0 };
 }
 
-function renderHandoffPrompt(blocks: string[], omitted: boolean, currentPrompt: string): string {
+function renderHandoffPrompt(
+  blocks: string[],
+  omitted: boolean,
+  currentPrompt: string,
+  header: string,
+): string {
   const omittedNote = omitted ? '_(earlier turns omitted to fit the context budget)_\n\n' : '';
-  return `${HEADER}\n\n${omittedNote}${blocks.join('\n\n')}\n\n${CURRENT_MARKER}\n\n${currentPrompt}`;
+  return `${header}\n\n${omittedNote}${blocks.join('\n\n')}\n\n${CURRENT_MARKER}\n\n${currentPrompt}`;
 }
 
 function selectRelevantEarlierBlocks(

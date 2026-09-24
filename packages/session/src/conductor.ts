@@ -936,6 +936,12 @@ export class Conductor {
   // a stop that is merely slower than its own bound would otherwise print "could not
   // confirm" and "confirmed gone" a second apart on a session that stopped normally.
   private readonly announcedUnconfirmedTermination = new Set<string>();
+  private readonly movingSessions = new Set<string>();
+
+  isMovingSession(sessionId: string): boolean {
+    return this.movingSessions.has(sessionId);
+  }
+
   private readonly pendingEnqueues = new Map<string, Set<Promise<void>>>();
   // Per-session live handle for the IN-FLIGHT turn (ADR 0006 Stage 1). Present iff a
   // turn is currently running for that session. It collapses the three former
@@ -1150,7 +1156,9 @@ export class Conductor {
       }
     }
     const priorEvents = lastPrompt >= 0 ? events.slice(0, lastPrompt) : events;
-    return buildHandoffPrompt(priorEvents, prompt);
+    return buildHandoffPrompt(priorEvents, prompt, {
+      workspaceChanged: (await this.deps.store.getSessionMoveNotice(sessionId)) !== undefined,
+    });
   }
 
   /**
@@ -1441,10 +1449,15 @@ export class Conductor {
         notices: pendingNotes,
       });
     }
+    const moveNotice = await this.deps.store.getSessionMoveNotice(sessionId);
+    if (moveNotice !== undefined) {
+      prompt = appendExternalPromptData(prompt, 'Verity project move', { notice: moveNotice });
+    }
     prompt = await withMeetingContext(session.worktree, prompt);
     const backendState = await this.deps.store.getSessionBackendState(sessionId, backendKey);
     const canResumeCanonicalClaudeSession =
       backendKey === 'claude' &&
+      moveNotice === undefined &&
       backendState === undefined &&
       (await this.isClaudeOriginSession(session));
     const resumeSessionId =
@@ -1766,6 +1779,33 @@ export class Conductor {
       }
     };
     await this.runWhenIdle(sessionId, guarded);
+  }
+
+  /** Workspace moves refuse queued submissions without cancelling an existing turn. */
+  async tryMoveSession<T>(
+    sessionId: string,
+    fn: () => Promise<T>,
+  ): Promise<{ ran: true; value: T } | { ran: false }> {
+    if (
+      this.inFlight.has(sessionId) ||
+      this.stopping.has(sessionId) ||
+      this.pendingEnqueues.has(sessionId)
+    )
+      return { ran: false };
+    this.stopping.set(sessionId, 1);
+    this.movingSessions.add(sessionId);
+    try {
+      return await this.tryRunExclusive(sessionId, async () => {
+        if ((await this.deps.store.listQueuedTurns()).some((turn) => turn.sessionId === sessionId))
+          throw new SessionBusyError(sessionId);
+        return await fn();
+      });
+    } finally {
+      this.movingSessions.delete(sessionId);
+      const remaining = (this.stopping.get(sessionId) ?? 1) - 1;
+      if (remaining === 0) this.stopping.delete(sessionId);
+      else this.stopping.set(sessionId, remaining);
+    }
   }
 
   /**

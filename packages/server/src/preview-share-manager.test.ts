@@ -43,6 +43,8 @@ function fixture() {
     updatedAt: new Date(),
   } as const;
   const store = {
+    listMovePreviewRestarts: vi.fn(async () => [] as { source_project_id: string }[]),
+    listDevServers: vi.fn(async () => [{ ...devServer, previewSessionId: 'moving' }]),
     getDevServer: vi.fn(async () => devServer),
     getProject: vi.fn(async () => project),
     createPublicPreviewShare: vi.fn<EventStore['createPublicPreviewShare']>(async (input) => ({
@@ -872,4 +874,22 @@ describe('sweepOrphanedPreviewShares', () => {
     ).rejects.toThrow(AggregateError);
     expect(store.transitionPublicPreviewShare.mock.calls.map(([id]) => id)).toEqual(['other']);
   });
+});
+
+it('refuses preview mutations while a move restart is pending and releases its fence', async () => {
+  const { manager, store } = fixture();
+  store.listMovePreviewRestarts.mockResolvedValueOnce([{ source_project_id: 'p1' }]);
+  await expect(manager.beginDevServerMutation('dev-1')).rejects.toThrow('pending session move');
+  const release = await manager.beginDevServerMutation('dev-1');
+  release();
+});
+it('holds share creation while a session move changes its preview target', async () => {
+  const { manager, edge } = fixture();
+  const release = await manager.beginSessionMove('p1', 'moving');
+  const creating = manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 });
+  await Promise.resolve();
+  expect(edge.create).not.toHaveBeenCalled();
+  release();
+  await creating;
+  expect(edge.create).toHaveBeenCalledOnce();
 });
