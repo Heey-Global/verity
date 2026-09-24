@@ -1,8 +1,11 @@
 # Isolated enrollment evidence prototype
 
+The [schema and fixture review packet](CONTRACT_FIXTURES.md) adds portable
+message schemas and fixed vectors for all permitted enrollment actions.
+
 No production route imports this directory. Run from the repository root:
 
-- `npx vitest run scripts/enrollment-proof/model.test.ts`
+- `npx vitest run scripts/enrollment-proof`
 - On macOS with Xcode command-line tools:
   `scripts/enrollment-proof/run-apple.sh`
 

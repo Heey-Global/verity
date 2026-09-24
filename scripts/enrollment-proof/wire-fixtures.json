@@ -1,0 +1,1768 @@
+[
+  {
+    "name": "valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": "",
+      "recoveryReservationId": ""
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": ""
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-challenge-3",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "initial-admin",
+      "action": "initialize"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-challenge-4",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "team-member",
+      "action": "recover"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-initialized-7",
+    "schema": "initialized",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "state": "ready"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-ack-8",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expiresAt": 1800000060000
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-recoveryAccept-11",
+    "schema": "recoveryAccept",
+    "value": {
+      "type": "team.recovery.accept",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1800000060000
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-recoveryRefuse-12",
+    "schema": "recoveryRefuse",
+    "value": {
+      "type": "team.recovery.refuse",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "code": "unavailable"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-recoveryReady-13",
+    "schema": "recoveryReady",
+    "value": {
+      "type": "team.recovery.ready",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1800000060000
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-recoveryCancel-14",
+    "schema": "recoveryCancel",
+    "value": {
+      "type": "team.recovery.cancel",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-initializeError-16",
+    "schema": "initializeError",
+    "value": {
+      "error": "invalid_request"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-initializeError-17",
+    "schema": "initializeError",
+    "value": {
+      "error": "enrollment_rejected"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-initializeError-18",
+    "schema": "initializeError",
+    "value": {
+      "error": "password_rejected"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-initializeError-19",
+    "schema": "initializeError",
+    "value": {
+      "error": "rate_limited",
+      "retryAfterMs": 1000
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-initializeError-20",
+    "schema": "initializeError",
+    "value": {
+      "error": "temporarily_unavailable"
+    },
+    "valid": true
+  },
+  {
+    "name": "valid-locked-21",
+    "schema": "locked",
+    "value": {
+      "error": "recovery_locked"
+    },
+    "valid": true
+  },
+  {
+    "name": "unknown-field-valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": "",
+      "recoveryReservationId": "",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-version-valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": "",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-sessionId-valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": "",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-installationId-valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "purpose": "initial-admin",
+      "redemptionId": "",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-purpose-valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-redemptionId-valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-preface-0",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": "",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-version-valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-sessionId-valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-installationId-valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-purpose-valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-redemptionId-valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-preface-1",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-version-valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-sessionId-valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-installationId-valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-purpose-valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-redemptionId-valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-preface-2",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-challenge-3",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "initial-admin",
+      "action": "initialize",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-challenge-3",
+    "schema": "challenge",
+    "value": {
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "initial-admin",
+      "action": "initialize"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-invitationId-valid-challenge-3",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "initial-admin",
+      "action": "initialize"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-deviceKey-valid-challenge-3",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "action": "initialize"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-purpose-valid-challenge-3",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-action-valid-challenge-3",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "initial-admin"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-challenge-4",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "team-member",
+      "action": "recover",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-challenge-4",
+    "schema": "challenge",
+    "value": {
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "team-member",
+      "action": "recover"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-invitationId-valid-challenge-4",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "team-member",
+      "action": "recover"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-deviceKey-valid-challenge-4",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "team-member",
+      "action": "recover"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-purpose-valid-challenge-4",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "recover"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-action-valid-challenge-4",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "team-member"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-challengeId-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-invitationId-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-purpose-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-deviceKey-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-action-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-secret-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-signature-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-masterPassword-valid-initialize-5",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-challengeId-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-invitationId-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-purpose-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-deviceKey-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-action-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-secret-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-signature-valid-complete-6",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-initialized-7",
+    "schema": "initialized",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "state": "ready",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-initialized-7",
+    "schema": "initialized",
+    "value": {
+      "state": "ready"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-state-valid-initialized-7",
+    "schema": "initialized",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-ack-8",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-ack-8",
+    "schema": "ack",
+    "value": {
+      "receiptId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-receiptId-valid-ack-8",
+    "schema": "ack",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"],
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-type-valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-requestId-valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-installationHandle-valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-redemptionId-valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "capabilities": ["remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-capabilities-valid-recoveryReserve-9",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expiresAt": 1800000060000,
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-type-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-requestId-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-installationId-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-redemptionId-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-operationId-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-expiresAt-valid-recoveryRequest-10",
+    "schema": "recoveryRequest",
+    "value": {
+      "type": "team.recovery.request",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-recoveryAccept-11",
+    "schema": "recoveryAccept",
+    "value": {
+      "type": "team.recovery.accept",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1800000060000,
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-type-valid-recoveryAccept-11",
+    "schema": "recoveryAccept",
+    "value": {
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-recoveryAccept-11",
+    "schema": "recoveryAccept",
+    "value": {
+      "type": "team.recovery.accept",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-expiresAt-valid-recoveryAccept-11",
+    "schema": "recoveryAccept",
+    "value": {
+      "type": "team.recovery.accept",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-recoveryRefuse-12",
+    "schema": "recoveryRefuse",
+    "value": {
+      "type": "team.recovery.refuse",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "code": "unavailable",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-type-valid-recoveryRefuse-12",
+    "schema": "recoveryRefuse",
+    "value": {
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "code": "unavailable"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-recoveryRefuse-12",
+    "schema": "recoveryRefuse",
+    "value": {
+      "type": "team.recovery.refuse",
+      "code": "unavailable"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-code-valid-recoveryRefuse-12",
+    "schema": "recoveryRefuse",
+    "value": {
+      "type": "team.recovery.refuse",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-recoveryReady-13",
+    "schema": "recoveryReady",
+    "value": {
+      "type": "team.recovery.ready",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1800000060000,
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-type-valid-recoveryReady-13",
+    "schema": "recoveryReady",
+    "value": {
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-requestId-valid-recoveryReady-13",
+    "schema": "recoveryReady",
+    "value": {
+      "type": "team.recovery.ready",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-recoveryReady-13",
+    "schema": "recoveryReady",
+    "value": {
+      "type": "team.recovery.ready",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "expiresAt": 1800000060000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-expiresAt-valid-recoveryReady-13",
+    "schema": "recoveryReady",
+    "value": {
+      "type": "team.recovery.ready",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-recoveryCancel-14",
+    "schema": "recoveryCancel",
+    "value": {
+      "type": "team.recovery.cancel",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-type-valid-recoveryCancel-14",
+    "schema": "recoveryCancel",
+    "value": {
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-recoveryCancel-14",
+    "schema": "recoveryCancel",
+    "value": {
+      "type": "team.recovery.cancel"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-type-valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-requestId-valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-installationHandle-valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-capabilities-valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-enrollmentPurpose-valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-recoveryReservationId-valid-recoveryConnect-15",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-initializeError-16",
+    "schema": "initializeError",
+    "value": {
+      "error": "invalid_request",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-error-valid-initializeError-16",
+    "schema": "initializeError",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-initializeError-17",
+    "schema": "initializeError",
+    "value": {
+      "error": "enrollment_rejected",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-error-valid-initializeError-17",
+    "schema": "initializeError",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-initializeError-18",
+    "schema": "initializeError",
+    "value": {
+      "error": "password_rejected",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-error-valid-initializeError-18",
+    "schema": "initializeError",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-initializeError-19",
+    "schema": "initializeError",
+    "value": {
+      "error": "rate_limited",
+      "retryAfterMs": 1000,
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-error-valid-initializeError-19",
+    "schema": "initializeError",
+    "value": {
+      "retryAfterMs": 1000
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-retryAfterMs-valid-initializeError-19",
+    "schema": "initializeError",
+    "value": {
+      "error": "rate_limited"
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-initializeError-20",
+    "schema": "initializeError",
+    "value": {
+      "error": "temporarily_unavailable",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-error-valid-initializeError-20",
+    "schema": "initializeError",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "unknown-field-valid-locked-21",
+    "schema": "locked",
+    "value": {
+      "error": "recovery_locked",
+      "unexpected": true
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-error-valid-locked-21",
+    "schema": "locked",
+    "value": {},
+    "valid": false
+  },
+  {
+    "name": "no-preface-version-fallback",
+    "schema": "preface",
+    "value": {
+      "version": 1,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": "",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "admin-cannot-claim-redemption",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "admin-cannot-claim-recovery",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "initial-admin",
+      "redemptionId": "",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg"
+    },
+    "valid": false
+  },
+  {
+    "name": "team-requires-redemption",
+    "schema": "preface",
+    "value": {
+      "version": 2,
+      "sessionId": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+      "installationId": "00000000-0000-4000-8000-000000000001",
+      "purpose": "team-member",
+      "redemptionId": "",
+      "recoveryReservationId": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "team-cannot-initialize",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "team-member",
+      "action": "initialize"
+    },
+    "valid": false
+  },
+  {
+    "name": "team-cannot-use-initialize-endpoint",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "team-member",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "initialize-action-mismatch",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "commit",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "complete-action-mismatch",
+    "schema": "complete",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "-l5BJprfEGLgUSC2u8zTMSqtSdcY6-p0l25Xoj8I5KAjYtdqXs-_B_mj8m9w_Fb8utAgwYryuDL0noN1MGRlCA"
+    },
+    "valid": false
+  },
+  {
+    "name": "password-utf8-limit",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+    },
+    "valid": false
+  },
+  {
+    "name": "password-empty",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA",
+      "masterPassword": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "signature-padding",
+    "schema": "initialize",
+    "value": {
+      "challengeId": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "purpose": "initial-admin",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "action": "initialize",
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+      "signature": "0bxKC4_3suEYcHWA1HhY94jchddOVFzQFFsMichU2bmt_s0wsyLkr0Oy-9HwDjpK6Zp2dzcy0Btw4zpVN1j9AA=",
+      "masterPassword": "synthetic-fixture-password"
+    },
+    "valid": false
+  },
+  {
+    "name": "operation-padding",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s",
+      "purpose": "initial-admin",
+      "action": "initialize"
+    },
+    "valid": false
+  },
+  {
+    "name": "key-padding",
+    "schema": "challenge",
+    "value": {
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "invitationId": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "deviceKey": "MCowBQYDK2VwAyEAyKqAPk_2ic40ZoKAH7IjYS0uZDGbtcjLyZ2innaTK2s=",
+      "purpose": "initial-admin",
+      "action": "initialize"
+    },
+    "valid": false
+  },
+  {
+    "name": "mixed-normal-recovery-connect",
+    "schema": "recoveryConnect",
+    "value": {
+      "type": "connect",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "capabilities": ["remote-control-v1"],
+      "enrollmentPurpose": "team-member",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "valid": false
+  },
+  {
+    "name": "no-secret-to-uplink",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1"],
+      "secret": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU"
+    },
+    "valid": false
+  },
+  {
+    "name": "duplicate-capability",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["remote-control-v1", "remote-control-v1"]
+    },
+    "valid": false
+  },
+  {
+    "name": "missing-required-capability",
+    "schema": "recoveryReserve",
+    "value": {
+      "type": "team.recovery.reserve",
+      "requestId": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+      "installationHandle": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      "redemptionId": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "operationId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "capabilities": ["other"]
+    },
+    "valid": false
+  },
+  {
+    "name": "fractional-expiry",
+    "schema": "recoveryAccept",
+    "value": {
+      "type": "team.recovery.accept",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 1.5
+    },
+    "valid": false
+  },
+  {
+    "name": "unsafe-expiry",
+    "schema": "recoveryAccept",
+    "value": {
+      "type": "team.recovery.accept",
+      "recoveryReservationId": "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg",
+      "expiresAt": 9007199254740992
+    },
+    "valid": false
+  },
+  {
+    "name": "retry-too-short",
+    "schema": "initializeError",
+    "value": {
+      "error": "rate_limited",
+      "retryAfterMs": 999
+    },
+    "valid": false
+  }
+]

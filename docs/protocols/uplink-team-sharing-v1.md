@@ -284,7 +284,7 @@ protocol or provide a production entitlement bypass.
 
 ## Enrollment transport and post-commit recovery integration
 
-This proposal incorporates Remote Control revision 5 and the revision-2
+This proposal incorporates Remote Control revision 6 and the revision-5
 [enrollment companion](uplink-enrollment-v1.md), including its exact recovery
 message schemas and version-2 local preface. The preface fields are `version: 2`,
 `sessionId`, `installationId`, `purpose`, `redemptionId`, `recoveryReservationId`.
@@ -316,3 +316,17 @@ state machine only. Native key protection, result encryption/retention,
 and executable fixture evidence still block joint freeze. Backup restore is
 unsupported in v1 per the enrollment companion; ordinary persisted revocation
 floors remain required. No automatic destructive reset is introduced.
+
+### Initialization authority boundary
+
+The enrollment companion's initialize schema and retry/error behavior form part
+of this contract's authority boundary. `initialize` is initial-admin-only and uses
+the version-2 trusted initial-admin context; team join/recovery must reject that
+purpose/action substitution even on an unclaimed Core. Master passwords never
+appear in team reservation/control messages. A valid team recovery proof may
+receive authenticated `recovery_locked`; an authorized administrator must unlock
+Core separately. No team membership or reservation authorizes initialize.
+
+EN20–EN25 supplement the existing EN13–EN19/V08–V13 context and recovery scenarios.
+This synchronization does not pin schema revisions or authorize runtime work.
+Native evidence and joint fixture approval remain outstanding.

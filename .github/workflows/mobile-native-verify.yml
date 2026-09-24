@@ -119,7 +119,7 @@ jobs:
       - name: Verify enrollment reference model and macOS Keychain probe
         timeout-minutes: 5
         run: |
-          npx vitest run scripts/enrollment-proof/model.test.ts
+          npx vitest run scripts/enrollment-proof
           bash scripts/enrollment-proof/run-apple.sh
 
       - name: Verify iOS enrollment Keychain persistence
