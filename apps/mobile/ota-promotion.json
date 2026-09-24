@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.33.39",
+  "version": "1.33.40",
   "runtime": "1.33.0",
   "channel": "testflight",
-  "commit": "37f2e6118859f75afee17f0d55f0ba45ab0072e1",
-  "tag": "mobile-v1.33.39",
-  "branch": "staging-mobile-v1.33.39-37f2e6118859f75afee17f0d55f0ba45ab0072e1",
-  "baseline": "mobile-v1.33.38",
-  "group": "2fbe1f02-6f74-4b6b-bdc9-dfa1c7a37666",
+  "commit": "d934ffc4a54be524e2cbd0111f214d38dc9d5908",
+  "tag": "mobile-v1.33.40",
+  "branch": "staging-mobile-v1.33.40-d934ffc4a54be524e2cbd0111f214d38dc9d5908",
+  "baseline": "mobile-v1.33.39",
+  "group": "d42d6c00-c5ed-4c9a-ab2b-81d8eef6b878",
   "notes": [
-    "add session reading and drafts (#670)",
-    "connect project folders (#669)"
+    "stabilize project folder browsing (#680)"
   ]
 }
