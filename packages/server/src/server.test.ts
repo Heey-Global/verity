@@ -4346,20 +4346,23 @@ describe('GET /projects (#174)', () => {
       });
     });
 
-    // Not "matches". A Server that ships no bundle cannot compare, and the two
-    // call for opposite responses.
-    it('reports unknown when this Server ships no toolkit bundle', async () => {
-      expect(await driftOf(projectRow(), () => Promise.resolve(undefined))).toMatchObject({
-        verdict: 'unknown',
-      });
+    // No verdict, and never "matches": `unknown` has no remedy (base-image
+    // projects are never attested, so it is their permanent state), and a banner
+    // on it would be always on for most of the fleet with nothing that clears it.
+    it('carries no verdict for an unrecorded toolkit identity', async () => {
+      expect(await driftOf(projectRow({ toolkitIdentity: null }))).toBeNull();
+    });
+
+    // A Server that ships no bundle cannot compare. That is a deployment fault
+    // reported by the startup log — not a per-project banner, and not an all-clear.
+    it('carries no verdict when this Server ships no toolkit bundle', async () => {
+      expect(await driftOf(projectRow(), () => Promise.resolve(undefined))).toBeNull();
     });
 
     // A broken bundle read is a deployment fault, not a reason to 500 the whole
     // project list — but it must not silently become an all-clear either.
-    it('degrades to unknown when the bundle cannot be read, and still serves the list', async () => {
-      expect(await driftOf(projectRow(), () => Promise.reject(new Error('EACCES')))).toMatchObject({
-        verdict: 'unknown',
-      });
+    it('degrades to no verdict when the bundle cannot be read, and still serves the list', async () => {
+      expect(await driftOf(projectRow(), () => Promise.reject(new Error('EACCES')))).toBeNull();
     });
 
     // `isDriftReportable` declines these rows, and null is "no subject" — the
@@ -4369,7 +4372,7 @@ describe('GET /projects (#174)', () => {
     });
 
     // Degrading quietly would hide the packaging or mount fault behind a fleet
-    // of `unknown` verdicts with nothing anywhere saying why. But the cache
+    // of missing verdicts with nothing anywhere saying why. But the cache
     // drops a rejected read, so every project on every poll retries it — logging
     // per project would bury the line in its own repetition.
     it('logs an unreadable bundle once while it stays unreadable', async () => {
