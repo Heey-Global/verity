@@ -13,7 +13,10 @@ server_pid=''
 simulator_udid=''
 cleanup() {
   trap - EXIT INT TERM
-  if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
+  if [[ -n "$server_pid" ]]; then
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+  fi
   if [[ -n "$simulator_udid" ]]; then
     xcrun simctl shutdown "$simulator_udid" >/dev/null 2>&1 || true
     xcrun simctl delete "$simulator_udid" >/dev/null 2>&1 || true
@@ -78,7 +81,7 @@ cp scripts/ios-pinned-tls-smoke.swift "$tmp/main.swift"
 swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tmp/smoke"
 addresses=(127.0.0.1)
 if [[ -n "$host_ip" ]]; then addresses+=("$host_ip"); fi
-python3 - "$tmp/cert.pem" "$tmp/key.pem" "${addresses[@]}" <<'PY' &
+python3 - "$tmp/cert.pem" "$tmp/key.pem" "$tmp/server-ready" "${addresses[@]}" <<'PY' &
 import asyncio, http.server, os, ssl, sys, threading
 
 
@@ -105,7 +108,7 @@ context.load_cert_chain(sys.argv[1], sys.argv[2])
 # reachable listener forwards opaque bytes, preserving URL hostname checks.
 relay_mode = os.environ.get('VERITY_SMOKE_OPAQUE_RELAY') == '1'
 servers = []
-for address in (['127.0.0.1'] if relay_mode else sys.argv[3:]):
+for address in (['127.0.0.1'] if relay_mode else sys.argv[4:]):
     server = http.server.ThreadingHTTPServer((address, 18444 if relay_mode else 18443), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     servers.append(server)
@@ -135,8 +138,11 @@ async def relay(reader, writer):
 async def serve_relays():
     listeners = []
     try:
-        for address in sys.argv[3:]:
+        for address in sys.argv[4:]:
             listeners.append(await asyncio.start_server(relay, address, 18443))
+        # Signal only after every listener is bound, including the routable one.
+        with open(sys.argv[3], 'w') as ready:
+            ready.write('ready')
         await asyncio.gather(*(listener.serve_forever() for listener in listeners))
     finally:
         for listener in listeners:
@@ -145,26 +151,28 @@ async def serve_relays():
 if relay_mode:
     asyncio.run(serve_relays())
 else:
+    with open(sys.argv[3], 'w') as ready:
+        ready.write('ready')
     threading.Event().wait()
 PY
 server_pid=$!
 
-# Both listeners are probed: waiting only on loopback would let the iOS run
-# start against an address that never came up and read as a TLS failure.
-for address in "${addresses[@]}"; do
-  ready=''
-  for _ in {1..50}; do
-    if nc -z "$address" 18443; then
-      ready=1
-      break
-    fi
-    sleep 0.1
-  done
-  [[ -n "$ready" ]] || {
-    echo "TLS smoke server never accepted connections on $address:18443" >&2
+# Python/asyncio startup on the Apple runner can exceed the old five-second
+# probe window. Wait for all binds, not repeated platform-specific nc probes.
+ready=''
+for _ in {1..300}; do
+  if ! kill -0 "$server_pid" 2>/dev/null; then
+    wait "$server_pid" || true
+    echo 'TLS smoke server exited before readiness' >&2
     exit 1
-  }
+  fi
+  if [[ -f "$tmp/server-ready" ]]; then ready=1; break; fi
+  sleep 0.1
 done
+[[ -n "$ready" ]] || {
+  echo 'TLS smoke server did not report all listeners ready within 30 seconds' >&2
+  exit 1
+}
 "$tmp/smoke" 'https://127.0.0.1:18443/' "$pin" success
 "$tmp/smoke" 'https://127.0.0.1:18443/' 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' PIN_MISMATCH
 # A matching key must not erase the TLS hostname check. This catches a fallback
