@@ -6153,6 +6153,42 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
     }
   });
 
+  // A GC'd turn directory makes the lock unopenable for good, so without a drop the
+  // retry forks a `flock` every few seconds for the life of the supervisor. Watched
+  // through a turn re-created under the same id: a retry still tracking it would
+  // settle that turn, which it has no claim to.
+  it('stops retrying an undecided turn once its directory is gone', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-gone', startCommandId: 'start-turn-gone' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-gone');
+    await mkdir(join(runtimeDir, 'turns/turn-gone/worker.lock'));
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await rm(join(runtimeDir, 'turns/turn-gone'), { recursive: true });
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await claimTurn(
+        runtimeDir,
+        { turnId: 'turn-gone', startCommandId: 'start-turn-gone-2' },
+        'dead-supervisor',
+      );
+      await markWorkerLockProtocol('turn-gone');
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await expect(readTurnState(runtimeDir, 'turn-gone')).resolves.toMatchObject({
+        status: 'claimed',
+      });
+    } finally {
+      await supervisor.close();
+    }
+  });
+
   // The same recovery, for a turn the operator had already stopped. The worker is
   // equally missing, but "the system lost your worker" and "you cancelled this" are
   // different things to be told, and the durable tombstone is the only thing left

@@ -2221,6 +2221,11 @@ export function createTurnAdopter(runtimeDir, options = {}) {
   const unresolved = new Set();
   const unresolvedRetryMs = options.unresolvedRetryMs ?? 5000;
   let nextUnresolvedAt = 0;
+  const exists = (turnId) =>
+    lstat(join(runtimeDir, 'turns', turnId)).then(
+      () => true,
+      (error) => error?.code !== 'ENOENT',
+    );
 
   const schedule = () => {
     if (closed || (adopted.size === 0 && unresolved.size === 0) || timer !== undefined) return;
@@ -2247,6 +2252,14 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       // worker for it, and no fresh claim can be caught before its worker lock.
       for (const turnId of retryUnresolved ? [...unresolved] : []) {
         if (closed) break;
+        // Something else may have finished the turn meanwhile (a Server-side settle,
+        // or turn GC removing its directory). Its lock then never opens again, so
+        // probing alone would keep it here for the life of this supervisor.
+        const current = await readTurnState(runtimeDir, turnId).catch(() => null);
+        if (current?.status === 'settled' || (current === undefined && !(await exists(turnId)))) {
+          unresolved.delete(turnId);
+          continue;
+        }
         const disposition = await probe(turnId, true).catch(() => 'uncertain');
         if (disposition === 'uncertain') continue;
         unresolved.delete(turnId);
