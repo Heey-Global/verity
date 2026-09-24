@@ -25,7 +25,40 @@ function query(id: number, name = 'registry.npmjs.org'): Buffer {
 /** Stands in for Docker's embedded resolver: answers every query with its id and a marker. */
 async function fakeUpstream(options: { silent?: boolean } = {}) {
   const received: Buffer[] = [];
-  const udp = createSocket('udp4');
+  let udp: UdpSocket | undefined;
+  let tcp: Server | undefined;
+  let port: number | undefined;
+  // TCP and UDP have separate ephemeral-port allocators. Holding a UDP port does
+  // not stop another process from taking the same TCP number before `listen`, so
+  // allocate both as one retried operation rather than trusting that race window.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidateTcp = createServer((socket) => {
+      socket.once('data', (framed) => {
+        const reply = Buffer.concat([framed.subarray(2, 4), Buffer.from('tcp-answer')]);
+        const length = Buffer.alloc(2);
+        length.writeUInt16BE(reply.length);
+        socket.end(Buffer.concat([length, reply]));
+      });
+    });
+    await new Promise<void>((resolve) => candidateTcp.listen(0, '127.0.0.1', resolve));
+    const address = candidateTcp.address();
+    if (typeof address !== 'object' || address === null) throw new Error('missing TCP address');
+    const candidateUdp = createSocket('udp4');
+    const bound = await new Promise<boolean>((resolve) => {
+      candidateUdp.once('error', () => resolve(false));
+      candidateUdp.bind(address.port, '127.0.0.1', () => resolve(true));
+    });
+    candidateUdp.removeAllListeners('error');
+    if (bound) {
+      udp = candidateUdp;
+      tcp = candidateTcp;
+      port = address.port;
+      break;
+    }
+    await new Promise<void>((resolve) => candidateTcp.close(() => resolve()));
+  }
+  if (udp === undefined || tcp === undefined || port === undefined)
+    throw new Error('could not allocate a shared TCP/UDP upstream port');
   udp.on('message', (message, from) => {
     received.push(message);
     if (options.silent) return;
@@ -35,17 +68,6 @@ async function fakeUpstream(options: { silent?: boolean } = {}) {
       from.address,
     );
   });
-  await new Promise<void>((resolve) => udp.bind(0, '127.0.0.1', resolve));
-  const port = udp.address().port;
-  const tcp: Server = createServer((socket) => {
-    socket.once('data', (framed) => {
-      const reply = Buffer.concat([framed.subarray(2, 4), Buffer.from('tcp-answer')]);
-      const length = Buffer.alloc(2);
-      length.writeUInt16BE(reply.length);
-      socket.end(Buffer.concat([length, reply]));
-    });
-  });
-  await new Promise<void>((resolve) => tcp.listen(port, '127.0.0.1', resolve));
   cleanups.push(async () => {
     await new Promise<void>((resolve) => udp.close(() => resolve()));
     await new Promise<void>((resolve) => tcp.close(() => resolve()));
