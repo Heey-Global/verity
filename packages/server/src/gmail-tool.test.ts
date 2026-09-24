@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createGmailTool, type GmailToolStore } from './gmail-tool.js';
+import {
+  createGmailTool,
+  gmailHasStandingAuthorization,
+  type GmailToolStore,
+} from './gmail-tool.js';
 
 function setup(overrides: Partial<GmailToolStore> = {}) {
+  const completeGoogleWorkspaceInvocation = vi.fn().mockResolvedValue(undefined);
   const eventStore: GmailToolStore = {
     getSession: vi.fn().mockResolvedValue({ projectId: 'p1' }),
     getSessionGmailConnection: vi
@@ -14,7 +19,7 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
       googleDriveAccountEmail: 'me@example.test',
     }),
     claimGoogleWorkspaceInvocation: vi.fn().mockResolvedValue({ status: 'claimed' }),
-    completeGoogleWorkspaceInvocation: vi.fn().mockResolvedValue(undefined),
+    completeGoogleWorkspaceInvocation,
     ...overrides,
   };
   const gmail = {
@@ -22,9 +27,26 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
     readThread: vi.fn().mockResolvedValue({ id: 't1', messages: [] }),
     createDraft: vi.fn().mockResolvedValue({ id: 'd1' }),
     createReplyDraft: vi.fn().mockResolvedValue({ id: 'd2' }),
+    prepareDraftSend: vi.fn().mockResolvedValue({
+      draftId: 'd1',
+      messageId: 'm1',
+      to: ['a@example.test'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Body',
+      externalUrls: [],
+    }),
+    sendDraft: vi.fn().mockResolvedValue({ messageId: 'sent' }),
+    readSignature: vi.fn().mockResolvedValue({
+      text: 'Best regards\nJane',
+      html: '<div>Best regards<br>Jane</div>',
+      externalUrls: [],
+    }),
   };
   return {
     eventStore,
+    completeGoogleWorkspaceInvocation,
     gmail,
     tool: createGmailTool({ eventStore, gmail, googleAccessToken: async () => 'token' }),
   };
@@ -39,12 +61,43 @@ const input = (request: unknown) => ({
 });
 
 describe('Gmail session tool', () => {
-  it('has no send action', async () => {
+  it('requires a per-call approval only for sending', () => {
+    expect(gmailHasStandingAuthorization({ action: 'search', query: 'is:unread' })).toBe(true);
+    expect(gmailHasStandingAuthorization({ action: 'create_draft' })).toBe(true);
+    expect(gmailHasStandingAuthorization({ action: 'prepare_draft_send' })).toBe(true);
+    expect(gmailHasStandingAuthorization({ action: 'send_draft' })).toBe(false);
+  });
+
+  it('rejects an unknown send action', async () => {
     const { tool, gmail } = setup();
     await expect(
       tool.invoke(input({ action: 'send', to: ['a@example.test'], body: 'Body' })),
     ).rejects.toThrow('Unsupported Gmail action');
     expect(gmail.createDraft).not.toHaveBeenCalled();
+  });
+
+  it('sends an approved draft snapshot through the idempotent mutation path', async () => {
+    const { tool, gmail, completeGoogleWorkspaceInvocation } = setup();
+    const snapshot = {
+      draftId: 'd1',
+      messageId: 'm1',
+      to: ['a@example.test'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Body',
+      externalUrls: [],
+    };
+    await expect(tool.invoke(input({ action: 'send_draft', ...snapshot }))).resolves.toEqual({
+      messageId: 'sent',
+    });
+    expect(gmail.sendDraft).toHaveBeenCalledWith('token', {
+      action: 'send_draft',
+      ...snapshot,
+    });
+    expect(completeGoogleWorkspaceInvocation).toHaveBeenCalledWith('inv1', {
+      messageId: 'sent',
+    });
   });
 
   it('refuses a session without its own Gmail access row', async () => {
@@ -121,5 +174,31 @@ describe('Gmail session tool', () => {
       ),
     ).resolves.toEqual({ id: 'existing' });
     expect(gmail.createDraft).not.toHaveBeenCalled();
+  });
+
+  it('appends the connected Gmail signature to new and reply drafts', async () => {
+    const { tool, gmail } = setup();
+    await tool.invoke(
+      input({ action: 'create_draft', to: ['a@example.test'], subject: 'Hello', body: 'Body' }),
+    );
+    expect(gmail.createDraft).toHaveBeenCalledWith(
+      'token',
+      expect.objectContaining({
+        body: 'Body\n\nBest regards\nJane',
+        htmlBody: expect.stringContaining('<div>Best regards<br />Jane</div>'),
+      }),
+    );
+
+    const second = setup();
+    await second.tool.invoke(
+      input({ action: 'create_reply_draft', threadId: 't1', body: 'Reply' }),
+    );
+    expect(second.gmail.createReplyDraft).toHaveBeenCalledWith(
+      'token',
+      expect.objectContaining({
+        body: 'Reply\n\nBest regards\nJane',
+        htmlBody: expect.stringContaining('<div>Best regards<br />Jane</div>'),
+      }),
+    );
   });
 });

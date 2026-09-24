@@ -164,7 +164,8 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       const previous = await deps.eventStore.getVeritySettings();
       const gmailAuthorized =
         tokens.scopes?.includes('https://www.googleapis.com/auth/gmail.readonly') === true &&
-        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.compose');
+        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.compose') &&
+        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.settings.basic');
       if (
         !gmailAuthorized ||
         (previous?.googleDriveAccountEmail !== null &&

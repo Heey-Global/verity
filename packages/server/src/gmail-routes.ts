@@ -28,6 +28,7 @@ const REQUIRED_GMAIL_SCOPES = new Set([
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.settings.basic',
 ]);
 
 type GmailRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &

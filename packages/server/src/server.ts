@@ -77,6 +77,8 @@ import {
   type CodexUsageHealth,
   type CodexUsageService,
 } from './codexUsage.js';
+import { gmailHasStandingAuthorization } from './gmail-tool.js';
+import { assertSafeGmailSendSnapshot, type GmailDraftSendSnapshot } from './gmail.js';
 import {
   assertSessionRealPath,
   attachmentDisposition,
@@ -5388,6 +5390,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ) {
           const session = await deps.eventStore.getSession(sessionId);
           if (toolName === 'verity_gmail') {
+            if (
+              typeof input.request === 'object' &&
+              input.request !== null &&
+              'action' in input.request &&
+              input.request.action === 'send_draft'
+            ) {
+              assertSafeGmailSendSnapshot(input.request as unknown as GmailDraftSendSnapshot);
+            }
             const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
             const settings = await deps.eventStore.getVeritySettings();
             if (
@@ -5442,7 +5452,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
-      hasStandingAuthorization: async ({ projectId, sessionId, toolName }) => {
+      hasStandingAuthorization: async ({ projectId, sessionId, toolName, request }) => {
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
           return (
@@ -5469,6 +5479,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         const session = await deps.eventStore.getSession(sessionId);
         if (session === undefined || session.projectId !== projectId) return false;
         if (toolName === 'verity_gmail') {
+          if (!gmailHasStandingAuthorization(request)) return false;
           const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
           const settings = await deps.eventStore.getVeritySettings();
           return (

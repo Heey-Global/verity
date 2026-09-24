@@ -49,7 +49,7 @@ describe('Gmail routes', () => {
           refresh_token: 'refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose',
+            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
         }),
       )
       .mockResolvedValueOnce(googleResponse({ emailAddress: 'you@example.com' }));
@@ -167,7 +167,7 @@ describe('Gmail routes', () => {
           refresh_token: 'new-refresh',
           expires_in: 3600,
           scope:
-            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose',
+            'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/presentations https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.settings.basic',
         }),
       )
       .mockResolvedValueOnce(googleResponse({ emailAddress: 'new@example.com' }));

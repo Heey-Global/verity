@@ -43,7 +43,7 @@ describe('Google Drive connection routes', () => {
     await app.close();
   });
 
-  it('revokes Gmail grants when Drive reconnects without Gmail scopes', async () => {
+  it('revokes Gmail grants when Drive reconnects without Gmail signature scope', async () => {
     const clearSessionGmailConnections = vi.fn().mockResolvedValue(undefined);
     const updateVeritySettings = vi.fn().mockResolvedValue(undefined);
     const eventStore = {
@@ -75,13 +75,14 @@ describe('Google Drive connection routes', () => {
             access_token: 'access',
             refresh_token: 'refresh',
             expires_in: 3600,
-            scope: 'https://www.googleapis.com/auth/drive.readonly',
+            scope:
+              'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose',
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ user: { emailAddress: 'new@example.test' } }), {
+        new Response(JSON.stringify({ user: { emailAddress: 'old@example.test' } }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),

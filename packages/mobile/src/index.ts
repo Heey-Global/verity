@@ -131,6 +131,11 @@ export {
 export { spellOutBidiControls } from './ui/bidi.js';
 export { permissionInputText } from './ui/permissionInput.js';
 export {
+  gmailPreviewHtml,
+  gmailSendSummary,
+  type GmailSendSummary,
+} from './ui/gmailSendSummary.js';
+export {
   briefingExtent,
   listSessionsSentence,
   listSessionsSummary,
