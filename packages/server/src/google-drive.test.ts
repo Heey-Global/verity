@@ -12,6 +12,7 @@ import {
   getDriveAccountEmail,
   getDriveFile,
   listDriveFiles,
+  listSharedDrives,
   planDriveImport,
   referenceDocFileName,
   resolveGoogleOAuthClientId,
@@ -297,6 +298,39 @@ describe('listDriveFiles', () => {
     expect(url.searchParams.get('q')).not.toContain('in parents');
     expect(url.searchParams.get('corpora')).toBe('user');
     expect(url.searchParams.get('includeItemsFromAllDrives')).toBe('true');
+  });
+
+  it('scopes shared-drive folder listings to that drive corpus', async () => {
+    const { fetch, calls } = recordingFetch(() => jsonRes({ files: [] }));
+    await listDriveFiles(
+      { accessToken: 'at', parentId: 'folder-1', driveId: 'drive-1' },
+      { fetch },
+    );
+    const url = new URL(calls[0]?.url ?? '');
+    expect(url.searchParams.get('corpora')).toBe('drive');
+    expect(url.searchParams.get('driveId')).toBe('drive-1');
+    expect(url.searchParams.get('supportsAllDrives')).toBe('true');
+    expect(url.searchParams.get('includeItemsFromAllDrives')).toBe('true');
+  });
+
+  it('lists shared drives and ignores malformed entries', async () => {
+    const { fetch, calls } = recordingFetch(() =>
+      jsonRes({
+        drives: [
+          { id: 'drive-1', name: 'Finance' },
+          { id: 3, name: 'Invalid' },
+        ],
+        nextPageToken: 'next',
+      }),
+    );
+    const result = await listSharedDrives({ accessToken: 'at', pageToken: 'page-1' }, { fetch });
+    expect(result).toEqual({
+      drives: [{ id: 'drive-1', name: 'Finance' }],
+      nextPageToken: 'next',
+    });
+    const url = new URL(calls[0]?.url ?? '');
+    expect(url.pathname).toBe('/drive/v3/drives');
+    expect(url.searchParams.get('pageToken')).toBe('page-1');
   });
 
   it('combines location and MIME filters for the Slides picker', async () => {

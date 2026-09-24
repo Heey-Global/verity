@@ -418,11 +418,15 @@ export { signingKeyGenerateSchema, type SigningKeyGenerateResult } from './api.j
 export {
   driveFileSchema,
   driveFileListSchema,
+  sharedDriveSchema,
+  sharedDriveListSchema,
   googleDriveImportResultSchema,
   isDriveFolder,
   DRIVE_FOLDER_MIME,
   type DriveFile,
   type DriveFileList,
+  type SharedDrive,
+  type SharedDriveList,
   type GoogleDriveImportResult,
 } from './api.js';
 export {

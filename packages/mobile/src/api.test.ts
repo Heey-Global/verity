@@ -68,6 +68,19 @@ describe('VerityClient Google Drive browser', () => {
     );
   });
 
+  it('lists shared drives with pagination', async () => {
+    const { fetch, calls } = fakeFetch(
+      json({ drives: [{ id: 'drive-1', name: 'Finance' }], nextPageToken: 'next' }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.listGoogleSharedDrives('page/2')).resolves.toEqual({
+      drives: [{ id: 'drive-1', name: 'Finance' }],
+      nextPageToken: 'next',
+    });
+    expect(calls[0]?.url).toBe('http://host/google-drive/drives?pageToken=page%2F2');
+  });
+
   it('requests the Workspace picker and assigns its native selection', async () => {
     const file = {
       assignmentId: 'assignment-1',

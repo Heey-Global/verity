@@ -14,9 +14,11 @@ import {
   getDriveAccountEmail,
   getDriveFile,
   listDriveFiles,
+  listSharedDrives,
   planDriveImport,
   referenceDocFileName,
   type DriveFileList,
+  type SharedDriveList,
 } from './google-drive.js';
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
@@ -41,6 +43,7 @@ const filesQuery = z.object({
   parentId: z.string().trim().min(1).max(512).optional(),
   query: z.string().trim().min(1).max(200).optional(),
   sharedWithMe: z.enum(['true']).optional(),
+  driveId: z.string().trim().min(1).max(512).optional(),
   pageToken: z.string().trim().min(1).max(4096).optional(),
   purpose: z.enum(['import', 'slides', 'workspace', 'folder']).optional(),
 });
@@ -215,6 +218,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           parentId: query.parentId,
           query: query.query,
           sharedWithMe: query.sharedWithMe === 'true',
+          driveId: query.driveId,
           pageToken: query.pageToken,
           ...(query.purpose === 'slides' ||
           query.purpose === 'workspace' ||
@@ -234,6 +238,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           query.parentId !== undefined ||
           query.query !== undefined ||
           query.sharedWithMe !== undefined ||
+          query.driveId !== undefined ||
           query.pageToken !== undefined
         ) {
           return page;
@@ -262,6 +267,30 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         request.log.error({ reason }, 'verity: google drive browse failed');
         reply.code(502);
         return { error: `Could not list Google Drive files (${reason})` };
+      }
+    },
+  );
+
+  app.get(
+    '/google-drive/drives',
+    async (request, reply): Promise<SharedDriveList | { error: string }> => {
+      const query = z
+        .object({ pageToken: z.string().trim().min(1).max(4096).optional() })
+        .parse(request.query);
+      const token = await accessToken();
+      if (token === undefined) {
+        reply.code(409);
+        return { error: 'Google Drive is not connected' };
+      }
+      try {
+        return await listSharedDrives({
+          accessToken: token,
+          ...(query.pageToken ? { pageToken: query.pageToken } : {}),
+        });
+      } catch (error) {
+        const reason = error instanceof GoogleDriveError ? error.reason : 'list_failed';
+        reply.code(502);
+        return { error: `Could not list shared drives (${reason})` };
       }
     },
   );

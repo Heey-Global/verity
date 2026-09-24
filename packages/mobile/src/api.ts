@@ -846,6 +846,14 @@ export const driveFileListSchema = z.object({
 });
 export type DriveFileList = z.infer<typeof driveFileListSchema>;
 
+export const sharedDriveSchema = z.object({ id: z.string(), name: z.string() });
+export type SharedDrive = z.infer<typeof sharedDriveSchema>;
+export const sharedDriveListSchema = z.object({
+  drives: z.array(sharedDriveSchema),
+  nextPageToken: z.string().optional(),
+});
+export type SharedDriveList = z.infer<typeof sharedDriveListSchema>;
+
 const googleDriveConnectResultSchema = z.object({
   connected: z.literal(true),
   accountEmail: z.string().nullable(),
@@ -2331,6 +2339,7 @@ export class VerityClient {
     parentId?: string;
     query?: string;
     sharedWithMe?: boolean;
+    driveId?: string;
     pageToken?: string;
     purpose?: 'import' | 'workspace' | 'folder';
   }): Promise<DriveFileList> {
@@ -2338,6 +2347,7 @@ export class VerityClient {
     if (params?.parentId) search.set('parentId', params.parentId);
     if (params?.query) search.set('query', params.query);
     if (params?.sharedWithMe) search.set('sharedWithMe', 'true');
+    if (params?.driveId) search.set('driveId', params.driveId);
     if (params?.pageToken) search.set('pageToken', params.pageToken);
     if (params?.purpose) search.set('purpose', params.purpose);
     const qs = search.toString();
@@ -2345,6 +2355,12 @@ export class VerityClient {
       method: 'GET',
     });
     return driveFileListSchema.parse(await res.json());
+  }
+
+  async listGoogleSharedDrives(pageToken?: string): Promise<SharedDriveList> {
+    const query = pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : '';
+    const res = await this.request(`/google-drive/drives${query}`, { method: 'GET' });
+    return sharedDriveListSchema.parse(await res.json());
   }
 
   /** Complete the native OAuth (PKCE) connect: hand the server the one-time code

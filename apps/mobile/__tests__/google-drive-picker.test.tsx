@@ -46,6 +46,37 @@ it('uses an existing Drive connection without authorizing it again', async () =>
   expect(mockRunGoogleDriveAuth).not.toHaveBeenCalled();
 });
 
+it('opens a shared drive from the combined Shared view', async () => {
+  mockParams = { sessionId: 'project-1', purpose: 'folder' };
+  const listFiles = jest.fn().mockResolvedValue({ files: [] });
+  const client = {
+    getVeritySettings: jest.fn().mockResolvedValue({
+      googleDriveClientId: '123-example.apps.googleusercontent.com',
+      googleDriveConnected: true,
+    }),
+    listGoogleDriveFiles: listFiles,
+    listGoogleSharedDrives: jest.fn().mockResolvedValue({
+      drives: [{ id: 'drive-1', name: 'Finance' }],
+    }),
+  } as unknown as VerityClient;
+  mockCreateVerityClient.mockReturnValue(client);
+
+  render(<GoogleDrivePickerScreen />);
+  fireEvent.press(await screen.findByText('Shared'));
+  expect(await screen.findByText('Shared drive')).toBeTruthy();
+  fireEvent.press(screen.getByText('Finance'));
+
+  await waitFor(() =>
+    expect(listFiles).toHaveBeenCalledWith(
+      expect.objectContaining({
+        driveId: 'drive-1',
+        parentId: 'drive-1',
+        purpose: 'folder',
+      }),
+    ),
+  );
+});
+
 it('reconnects an old Drive grant and retries the Workspace assignment', async () => {
   const assign = jest
     .fn()

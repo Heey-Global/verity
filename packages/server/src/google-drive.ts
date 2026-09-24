@@ -282,6 +282,16 @@ export interface DriveFileList {
   nextPageToken?: string;
 }
 
+interface SharedDrive {
+  id: string;
+  name: string;
+}
+
+export interface SharedDriveList {
+  drives: SharedDrive[];
+  nextPageToken?: string;
+}
+
 const DRIVE_FILE_FIELDS =
   'id,name,mimeType,modifiedTime,size,iconLink,parents,webViewLink,capabilities(canEdit)';
 
@@ -389,6 +399,7 @@ export async function listDriveFiles(
     pageToken?: string | undefined;
     pageSize?: number | undefined;
     mimeTypes?: readonly string[] | undefined;
+    driveId?: string | undefined;
   },
   opts: GoogleTransportOptions = {},
 ): Promise<DriveFileList> {
@@ -418,9 +429,10 @@ export async function listDriveFiles(
     // `user` covers files owned by or shared to the connected account. Keep it
     // explicit so global name search includes "Shared with me" even if Google
     // changes corpus inference for a future query shape.
-    corpora: 'user',
+    corpora: params.driveId ? 'drive' : 'user',
     supportsAllDrives: 'true',
     includeItemsFromAllDrives: 'true',
+    ...(params.driveId ? { driveId: params.driveId } : {}),
     ...(params.pageToken ? { pageToken: params.pageToken } : {}),
   });
   const res = await driveGet(`/files?${search.toString()}`, params.accessToken, opts);
@@ -433,6 +445,36 @@ export async function listDriveFiles(
     : [];
   return {
     files,
+    ...(typeof body.nextPageToken === 'string' ? { nextPageToken: body.nextPageToken } : {}),
+  };
+}
+
+/** List shared drives available to the connected Google account. */
+export async function listSharedDrives(
+  params: { accessToken: string; pageToken?: string; pageSize?: number },
+  opts: GoogleTransportOptions = {},
+): Promise<SharedDriveList> {
+  const search = new URLSearchParams({
+    fields: 'nextPageToken,drives(id,name)',
+    pageSize: String(params.pageSize ?? 100),
+    ...(params.pageToken ? { pageToken: params.pageToken } : {}),
+  });
+  const res = await driveGet(`/drives?${search.toString()}`, params.accessToken, opts);
+  const body = (await res.json().catch(() => ({}))) as {
+    drives?: unknown;
+    nextPageToken?: unknown;
+  };
+  const drives = Array.isArray(body.drives)
+    ? body.drives.flatMap((raw): SharedDrive[] => {
+        if (typeof raw !== 'object' || raw === null) return [];
+        const drive = raw as Record<string, unknown>;
+        return typeof drive.id === 'string' && typeof drive.name === 'string'
+          ? [{ id: drive.id, name: drive.name }]
+          : [];
+      })
+    : [];
+  return {
+    drives,
     ...(typeof body.nextPageToken === 'string' ? { nextPageToken: body.nextPageToken } : {}),
   };
 }
