@@ -43,7 +43,28 @@ with open(sys.argv[1], 'wb') as f:
  CFBundleVersion='1',CFBundleSupportedPlatforms=['iPhoneSimulator'],MinimumOSVersion='17.0',
  LSRequiresIPhoneOS=True,UILaunchScreen={}),f)
 PY
-codesign --force --sign - "$app" >/dev/null
+# The standalone simulator app has no Xcode-generated signing identity.
+# Without an application identifier, securityd rejects SecItemAdd with -34018.
+python3 - "$app/Info.plist" "$tmp/Entitlements.plist" <<'PYENT'
+import plistlib,sys
+with open(sys.argv[1], 'rb') as f:
+ identifier = plistlib.load(f)['CFBundleIdentifier']
+with open(sys.argv[2], 'wb') as f:
+ plistlib.dump({'application-identifier': identifier,
+               'keychain-access-groups': [identifier]}, f)
+PYENT
+codesign --force --sign - --entitlements "$tmp/Entitlements.plist" "$app" >/dev/null
+codesign --verify --strict "$app"
+codesign --display --entitlements - "$app" > "$tmp/SignedEntitlements.plist"
+python3 - "$tmp/Entitlements.plist" "$tmp/SignedEntitlements.plist" <<'PYENT'
+import plistlib,sys
+with open(sys.argv[1], 'rb') as f:
+ expected = plistlib.load(f)
+with open(sys.argv[2], 'rb') as f:
+ actual = plistlib.load(f)
+if actual != expected:
+ raise SystemExit('Simulator Keychain entitlements missing from signed app')
+PYENT
 xcrun simctl install "$simulator" "$app"
 container="$(xcrun simctl get_app_container "$simulator" app.verity.enrollment-proof data)"
 result="$container/Documents/result.txt"
