@@ -726,35 +726,7 @@ jobs:
       # --max-old-space-size cap was measured too and rejected: once batched it
       # bought ~5% more, and 768 MB turned the SIGTERM into a hard V8 OOM.
       - name: ESLint
-        shell: bash
-        run: |
-          set -euo pipefail
-          exts=('*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.mts' '*.cts')
-          # No --cache here either; see the note above the Prettier cache step.
-          eslint_opts=(--no-warn-ignored)
-          batch=64
-          lint_batched() {
-            local label="$1"; shift
-            local -a all=("$@")
-            local i part=1
-            for ((i = 0; i < ${#all[@]}; i += batch)); do
-              echo "::group::eslint $label ($part)"
-              npx eslint "${eslint_opts[@]}" -- "${all[@]:i:batch}"
-              echo "::endgroup::"
-              part=$((part + 1))
-            done
-          }
-          for pkg in packages/*; do
-            [ -d "$pkg" ] || continue
-            mapfile -t files < <(git ls-files -- "$pkg" \
-              | grep -E '\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$' || true)
-            [ "${#files[@]}" -gt 0 ] || continue
-            lint_batched "$pkg" "${files[@]}"
-          done
-          mapfile -t rest < <(git ls-files "${exts[@]}" ':!:packages/**')
-          if [ "${#rest[@]}" -gt 0 ]; then
-            lint_batched "(non-package files)" "${rest[@]}"
-          fi
+        run: npm run lint
       - run: npm run format
 
   knip:

@@ -28,7 +28,7 @@
     "check:runner-worker": "npm run build && node scripts/build-runner-worker.mjs --check",
     "typecheck": "tsc -b",
     "clean": "tsc -b --clean",
-    "lint": "eslint .",
+    "lint": "bash scripts/lint.sh",
     "licenses:check": "node scripts/third-party-notices.ts --check",
     "licenses:write": "node scripts/third-party-notices.ts --write",
     "knip": "knip --exports",
