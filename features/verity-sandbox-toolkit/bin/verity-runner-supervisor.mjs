@@ -2181,11 +2181,12 @@ export function createTurnAdopter(runtimeDir, options = {}) {
   let closed = false;
   let polling = false;
 
-  // `claim` pins a retried probe to the claim it was undecided about. The turn
-  // directory can be GC'd and the same id claimed afresh between two retries; that
-  // new claim is this supervisor's own, and settling or adopting it here would end a
-  // turn whose worker has simply not taken its lock yet. Checked under the lock (or
-  // right after finding it busy), so no re-claim can slip in after the check.
+  // `claim` pins a retried probe to the claim it was undecided about. Nothing removes
+  // turn directories today, but if one were removed and the id claimed afresh, that
+  // new claim would be this supervisor's own, and settling or adopting it here would
+  // end a turn whose worker has simply not taken its lock yet. Rechecked once the lock
+  // is held (or found busy) to narrow that window, not to close it: a recreated
+  // directory has a different lock file than the one held here.
   const probe = async (turnId, initial, claim) => {
     const lockPath = join(runtimeDir, 'turns', turnId, 'worker.lock');
     const isOtherClaim = async () => {
@@ -2264,9 +2265,9 @@ export function createTurnAdopter(runtimeDir, options = {}) {
       // worker for it, and no fresh claim can be caught before its worker lock.
       for (const turnId of retryUnresolved ? [...unresolved.keys()] : []) {
         if (closed) break;
-        // Something else may have finished the turn meanwhile (a Server-side settle,
-        // or turn GC removing its directory). Its lock then never opens again, so
-        // probing alone would keep it here for the life of this supervisor.
+        // Something else may have finished the turn meanwhile, or its directory may be
+        // gone. A missing lock never opens again, so probing alone would keep the
+        // turn here for the life of this supervisor.
         const claim = unresolved.get(turnId);
         const current = await readTurnState(runtimeDir, turnId).catch(() => null);
         const finished =
@@ -2319,7 +2320,7 @@ export function createTurnAdopter(runtimeDir, options = {}) {
 
 function sameClaim(state, claim) {
   return (
-    state !== undefined &&
+    state != null &&
     state.runnerInstanceId === claim.runnerInstanceId &&
     state.startCommandId === claim.startCommandId
   );

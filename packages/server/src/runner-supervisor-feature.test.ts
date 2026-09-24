@@ -6154,10 +6154,11 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
     }
   });
 
-  // A GC'd turn directory makes the lock unopenable for good, so without a drop the
+  // A removed turn directory makes the lock unopenable for good, so without a drop the
   // retry forks a `flock` every few seconds for the life of the supervisor. Watched
-  // through a turn re-created under the same id: a retry still tracking it would
-  // settle that turn, which it has no claim to.
+  // through the very same claim written back afterwards: identical ids leave only
+  // the missing directory to have dropped it, and a retry still tracking it would
+  // settle that turn.
   it('stops retrying an undecided turn once its directory is gone', async () => {
     await claimTurn(
       runtimeDir,
@@ -6177,7 +6178,7 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
       await new Promise((resolveWait) => setTimeout(resolveWait, 200));
       await claimTurn(
         runtimeDir,
-        { turnId: 'turn-gone', startCommandId: 'start-turn-gone-2' },
+        { turnId: 'turn-gone', startCommandId: 'start-turn-gone' },
         'dead-supervisor',
       );
       await markWorkerLockProtocol('turn-gone');
