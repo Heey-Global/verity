@@ -8953,10 +8953,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     for (const move of await deps.eventStore.listMovePreviewRestarts()) {
       let release: (() => void) | undefined;
       try {
-        release = await deps.previewShareManager?.beginSessionMove(
-          move.source_project_id,
-          move.session_id,
-        );
+        release = await deps.previewShareManager?.beginSessionMove(move.source_project_id);
         await recoverMovePreviews(move.session_id, move.operation_id);
       } catch (error) {
         app.log.warn(
@@ -9008,10 +9005,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           'This retry key belongs to a different move.',
         );
       if (prior?.result_json) {
-        const release = await deps.previewShareManager?.beginSessionMove(
-          prior.source_project_id,
-          id,
-        );
+        const release = await deps.previewShareManager?.beginSessionMove(prior.source_project_id);
         try {
           await recoverMovePreviews(id, body.operationId);
         } finally {
@@ -9064,10 +9058,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                   'unavailable',
                   'Preview lifecycle coordination is unavailable.',
                 );
-              const releasePreview = await deps.previewShareManager?.beginSessionMove(
-                source.id,
-                id,
-              );
+              const releasePreview = await deps.previewShareManager?.beginSessionMove(source.id);
               try {
                 await recoverMovePreviews(id, body.operationId);
                 const allServers = await deps.eventStore.listDevServers(source.id);
@@ -9221,6 +9212,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                   `Historical paths refer to the previous project. Uncommitted work was copied. ` +
                   `The old workspace ${session.worktree} and branch ${snapshot.branch} are retained. ` +
                   `Commits were not transferred. ${snapshot.skipped.length} skipped entries remain in the source workspace. Use the target project's instructions and permissions.`;
+                await deps.previewShareManager?.revokeSessionShares(source.id, id);
                 await deps.eventStore.commitSessionMove(
                   id,
                   body.operationId,

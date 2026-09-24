@@ -76,6 +76,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     .mockRejectedValueOnce(new Error('restart interrupted'))
     .mockResolvedValue(runtimeResult);
   const stop = vi.fn().mockResolvedValue({ ...runtimeResult, running: false });
+  const revokeShares = vi.fn(async () => undefined);
   const app = buildServer({
     eventStore: ctx.store,
     conductor,
@@ -88,6 +89,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     } as unknown as ProjectRuntime,
     previewShareManager: {
       beginSessionMove: async () => () => undefined,
+      revokeSessionShares: revokeShares,
       isAvailable: () => false,
     } as unknown as PreviewShareManager,
     provisioner: {
@@ -150,6 +152,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     });
     expect(commitGate.statusCode).toBe(409);
     expect(commitGate.json()).toMatchObject({ code: 'source_commits' });
+    expect(revokeShares).toHaveBeenCalledExactlyOnceWith(projects[0]!.id, 'moved');
   } finally {
     await app.close();
   }

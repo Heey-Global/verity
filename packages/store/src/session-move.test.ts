@@ -87,3 +87,25 @@ it('keeps source recovery protection after the moved session is deleted', async 
   expect(await ctx.store.listSessionWorktrees()).toContain('/a/session');
   expect(await ctx.store.listLiveBackendSessionIds()).toContain('old');
 });
+
+it('retains the canonical backend identity without an explicit backend binding', async () => {
+  await ctx.store.createSession({
+    sessionId: 'unbound',
+    projectId: 'a',
+    worktree: '/a/unbound',
+    model: 'claude-test',
+  });
+  await ctx.store.prepareSessionMove({
+    sessionId: 'unbound',
+    operationId: 'canonical',
+    sourceProjectId: 'a',
+    sourceWorktree: '/a/unbound',
+    targetProjectId: 'b',
+    targetWorktree: '/b/unbound',
+    branch: 'canonical',
+    onCommits: 'block',
+  });
+  await ctx.store.commitSessionMove('unbound', 'canonical', 'Moved', '{}');
+  await ctx.store.deleteSession('unbound');
+  expect(await ctx.store.listLiveBackendSessionIds()).toContain('unbound');
+});

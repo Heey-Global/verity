@@ -885,11 +885,22 @@ it('refuses preview mutations while a move restart is pending and releases its f
 });
 it('holds share creation while a session move changes its preview target', async () => {
   const { manager, edge } = fixture();
-  const release = await manager.beginSessionMove('p1', 'moving');
+  const release = await manager.beginSessionMove('p1');
   const creating = manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 });
   await Promise.resolve();
   expect(edge.create).not.toHaveBeenCalled();
   release();
   await creating;
   expect(edge.create).toHaveBeenCalledOnce();
+});
+
+it('does not revoke public links just to validate a session move', async () => {
+  const { manager } = fixture();
+  const revoke = vi.spyOn(manager, 'stopDevServer').mockResolvedValue(undefined);
+  const release = await manager.beginSessionMove('p1');
+  try {
+    expect(revoke).not.toHaveBeenCalled();
+  } finally {
+    release();
+  }
 });

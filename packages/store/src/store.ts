@@ -1760,11 +1760,12 @@ export class EventStore implements EventSink {
         target_worktree: input.targetWorktree,
         branch: input.branch,
         on_commits: input.onCommits,
-        backend_ids_json: JSON.stringify(
-          (await this.getSessionBackendStates(input.sessionId)).map(
+        backend_ids_json: JSON.stringify([
+          input.sessionId,
+          ...(await this.getSessionBackendStates(input.sessionId)).map(
             (binding) => binding.backendSessionId,
           ),
-        ),
+        ]),
         notice: '',
         result_json: null,
       })
