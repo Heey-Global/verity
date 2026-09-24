@@ -156,7 +156,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     const retry = await app.inject({ method: 'POST', url: '/sessions/moved/project', payload });
     expect(retry.json()).toEqual(recovered.json());
     // Model another request committing after the initial reads but before this request acquires admission.
-    vi.spyOn(ctx.store, 'getSession').mockResolvedValueOnce(originalSession);
+    const sessionLookup = vi.spyOn(ctx.store, 'getSession').mockResolvedValueOnce(originalSession);
     const moveLookup = vi.spyOn(ctx.store, 'getSessionMove').mockResolvedValueOnce(undefined);
     const mismatchedRetry = await app.inject({
       method: 'POST',
@@ -166,7 +166,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     expect(mismatchedRetry.statusCode).toBe(409);
     expect(mismatchedRetry.body).toContain('operation_conflict');
     moveLookup.mockRestore();
-    vi.mocked(ctx.store.getSession).mockRestore();
+    sessionLookup.mockRestore();
 
     await conductor.sendTurn('moved', 'Continue.');
     expect(resume).toBeUndefined();
