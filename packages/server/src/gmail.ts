@@ -368,8 +368,17 @@ function emailHtml(body: string, signatureHtml: string): string {
 
 function gmailHtmlExternalUrls(html: string): string[] {
   const urls = new Set<string>();
-  for (const match of html.matchAll(/\b(?:href|src)\s*=\s*["'](https?:\/\/[^"']+)["']/giu)) {
-    if (match[1] !== undefined) urls.add(match[1]);
+  for (const match of html.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/giu)) {
+    if (match[1] === undefined) continue;
+    const value = match[1].replace(/&(#(?:x[0-9a-f]+|[0-9]+)|[a-z]+);/giu, (_, entity: string) =>
+      decodeHtmlEntity(entity),
+    );
+    try {
+      const url = new URL(value);
+      if (url.protocol === 'http:' || url.protocol === 'https:') urls.add(url.href);
+    } catch {
+      // Relative and malformed values cannot identify an external resource.
+    }
   }
   return [...urls];
 }
@@ -395,12 +404,22 @@ function decodeHtmlEntity(entity: string): string {
 }
 
 function gmailSignatureText(html: string): string {
-  return sanitizeGmailHtml(html)
-    .replace(/<img\b[^>]*\balt\s*=\s*["']([^"']*)["'][^>]*>/giu, '$1')
-    .replace(/<br\s*\/?>/giu, '\n')
-    .replace(/<\/\s*(?:div|p|li|tr|table)\s*>/giu, '\n')
-    .replace(/<li\b[^>]*>/giu, '• ')
-    .replace(/<[^>]+>/gu, '')
+  let text = sanitizeHtml(html, {
+    allowedTags: ['br', 'div', 'li', 'p', 'table', 'tr'],
+    allowedAttributes: {},
+    transformTags: {
+      img: (_tagName, attributes) => ({
+        tagName: 'span',
+        attribs: {},
+        text: attributes['alt'] ?? '',
+      }),
+    },
+  });
+  text = text.replaceAll('<br />', '\n').replaceAll('<li>', '• ');
+  for (const tag of ['div', 'li', 'p', 'table', 'tr']) {
+    text = text.replaceAll(`<${tag}>`, '').replaceAll(`</${tag}>`, '\n');
+  }
+  return text
     .replace(/&(#(?:x[0-9a-f]+|[0-9]+)|[a-z]+);/giu, (_, entity: string) =>
       decodeHtmlEntity(entity),
     )

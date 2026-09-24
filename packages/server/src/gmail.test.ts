@@ -47,6 +47,18 @@ describe('Gmail API', () => {
     expect(alreadySigned.htmlBody.match(/Best regards/gu)).toHaveLength(1);
   });
 
+  it('preserves block boundaries in the plain-text signature', async () => {
+    const fetchImpl = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      response({
+        signature: '<div>Jane Doe</div><div>Company</div>',
+      }),
+    );
+
+    await expect(readGmailSignature('token', 'me@example.test', fetchImpl)).resolves.toMatchObject({
+      text: 'Jane Doe\nCompany',
+    });
+  });
+
   it('searches with Gmail syntax and returns bounded metadata', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
@@ -343,7 +355,7 @@ describe('Gmail API', () => {
 
   it('prepares and sends a sanitized HTML alternative with disclosed external resources', async () => {
     const html =
-      '<div>Hello<br><b>Jane</b><a href="https://example.test/profile">Profile</a><img src="https://example.test/logo.png" onerror="bad()"></div>';
+      '<div>Hello<br><b>Jane</b><a href="https://example.test/profile">Profile</a><img src="https://example.test/logo.png" onerror="bad()"><img src="https:cdn.example.test/pixel.png"></div>';
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       response({
         id: 'd1',
@@ -379,8 +391,12 @@ describe('Gmail API', () => {
       from: 'Sales <sales@example.test>',
       replyTo: 'support@example.test',
       htmlBody:
-        '<div>Hello<br /><b>Jane</b><a href="https://example.test/profile">Profile</a><img src="https://example.test/logo.png" /></div>',
-      externalUrls: ['https://example.test/profile', 'https://example.test/logo.png'],
+        '<div>Hello<br /><b>Jane</b><a href="https://example.test/profile">Profile</a><img src="https://example.test/logo.png" /><img src="https:cdn.example.test/pixel.png" /></div>',
+      externalUrls: [
+        'https://example.test/profile',
+        'https://example.test/logo.png',
+        'https://cdn.example.test/pixel.png',
+      ],
     });
 
     const sendFetch = vi

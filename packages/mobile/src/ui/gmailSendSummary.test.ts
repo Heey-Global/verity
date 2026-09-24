@@ -32,16 +32,12 @@ describe('gmailSendSummary', () => {
     });
   });
 
-  it('renders HTML without loading images, links, scripts, or event handlers', () => {
-    const preview = gmailPreviewHtml(
-      '<script>bad()</script><a href="https://example.test" onclick="bad()">Site</a><img src="https://example.test/pixel">',
-    );
+  it('renders the sanitized snapshot under an offline content policy', () => {
+    const preview = gmailPreviewHtml('<a>Site</a><span>Logo</span>');
     expect(preview).toContain('Site');
-    expect(preview).toContain('[Image blocked in preview]');
-    expect(preview).not.toContain('https://example.test');
-    expect(preview).not.toContain('onclick');
-    expect(preview).not.toContain('bad()');
     expect(preview).toContain("default-src 'none'");
+    expect(preview).toContain('img{display:none!important}');
+    expect(preview).toContain('a{pointer-events:none!important');
   });
 
   it('does not mistake another Gmail action for a send approval', () => {

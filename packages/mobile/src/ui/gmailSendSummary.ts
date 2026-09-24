@@ -54,13 +54,7 @@ export function gmailSendSummary(input: unknown): GmailSendSummary | null {
 }
 
 export function gmailPreviewHtml(html: string): string {
-  // The server has already sanitized this HTML with an allowlist. These replacements only make
-  // that trusted markup offline for preview; JavaScript, storage, and navigation are also disabled
-  // on the WebView itself. lgtm[js/incomplete-multi-character-sanitization]
-  const offline = html
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, '')
-    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*')/giu, '')
-    .replace(/<img\b[^>]*>/giu, '<span>[Image blocked in preview]</span>')
-    .replace(/\s+(?:href|src)\s*=\s*(?:"[^"]*"|'[^']*')/giu, '');
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>body{font-family:-apple-system,system-ui,sans-serif;font-size:15px;line-height:1.4;color:#111;background:#fff;margin:12px;overflow-wrap:anywhere}</style></head><body>${offline}</body></html>`;
+  // The gateway supplies the server's allowlist-sanitized snapshot. The WebView disables
+  // JavaScript and navigation, while this policy prevents every remote resource from loading.
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>body{font-family:-apple-system,system-ui,sans-serif;font-size:15px;line-height:1.4;color:#111;background:#fff;margin:12px;overflow-wrap:anywhere}img{display:none!important}a{pointer-events:none!important;color:inherit!important;text-decoration:underline}</style></head><body>${html}</body></html>`;
 }
