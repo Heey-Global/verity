@@ -142,6 +142,7 @@ const OPENCODE_ACP_PROFILE: AcpBackendProfile = {
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: 'opencode-acp',
   telemetryBackend: 'opencode-acp',
+  httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the
   // shared loop resumes through `session/load` rather than raising this. Kept
   // because the contract requires a message for the agent versions that do not.
