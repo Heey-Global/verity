@@ -29,6 +29,7 @@ on:
       - 'scripts/ios-pinned-tls-smoke.sh'
       - 'scripts/ios-pinned-tls-smoke.swift'
       - 'scripts/ios-pinned-tls-smoke-app.swift'
+      - 'scripts/remote-control-tunnel/**'
   workflow_dispatch:
     inputs:
       ref:
@@ -67,6 +68,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" != pull_request ]; then
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Smoke fixtures do not alter the shipping app fingerprint, but their
+          # changes must still execute on Apple rather than silently skip CI.
+          if ! git diff --quiet "$BASE_SHA" HEAD -- \
+            .github/workflows/mobile-native-verify.yml \
+            'scripts/ios-pinned-tls-smoke*' scripts/remote-control-tunnel; then
             echo 'required=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -118,6 +127,13 @@ jobs:
         env:
           VERITY_SMOKE_OPAQUE_RELAY: '1'
         run: scripts/ios-pinned-tls-smoke.sh
+
+      - name: Verify native Remote Control tunnel prototype
+        timeout-minutes: 10
+        run: |
+          node --test scripts/remote-control-tunnel/mock.test.mjs
+          bash scripts/remote-control-tunnel/run-apple.sh macos
+          bash scripts/remote-control-tunnel/run-apple.sh ios
 
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
