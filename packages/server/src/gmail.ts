@@ -396,7 +396,6 @@ function decodeHtmlEntity(entity: string): string {
 
 function gmailSignatureText(html: string): string {
   return sanitizeGmailHtml(html)
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, '')
     .replace(/<img\b[^>]*\balt\s*=\s*["']([^"']*)["'][^>]*>/giu, '$1')
     .replace(/<br\s*\/?>/giu, '\n')
     .replace(/<\/\s*(?:div|p|li|tr|table)\s*>/giu, '\n')
