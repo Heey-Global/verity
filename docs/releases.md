@@ -106,6 +106,15 @@ The release lifecycle makes a decision before invoking Release Please:
    not. The Mobile train is deliberately excluded: its OTA-versus-native
    decision is derived from the push diff, which a dispatched run does not have.
 
+Pending merged release PRs are read from the paginated pull-request REST API,
+not GitHub's search index. A merged PR can be absent from search while its
+manifest is already on main. Both lifecycle reconciliation and delayed-tag
+validation use the same lookup, retaining the pending label, release branch,
+bot author, ancestor commit, and manifest-version checks. If publication was
+stranded by a missing search result, merge the lookup fix and let the next
+eligible push reconcile the original release commit; do not move its version
+to newer source or remove the pending label to bypass the gate.
+
 The first release of a product needs an explicit bootstrap decision rather than
 an implicit fallback from an unknown boundary. A delayed trigger must not
 replace a newer plan with an older source snapshot.

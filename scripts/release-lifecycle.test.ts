@@ -13,6 +13,7 @@ function run(state: {
   newerDraft?: boolean;
   largeReleasePayload?: boolean;
   pending?: boolean;
+  searchMissing?: boolean;
   missing?: boolean;
   stale?: boolean;
   mismatchedTag?: boolean;
@@ -76,7 +77,16 @@ else if (args.includes('/releases?')) {
     ? releases.map(({tag_name,draft,prerelease}) => ({tag_name,draft,prerelease})).map(JSON.stringify).join('\\n')+'\\n'
     : JSON.stringify([releases]);
 }
-else if (args.startsWith('pr list')) result = fixture.state.pending ? [{number:1,author:{login:'github-actions'},mergeCommit:{oid:fixture.boundarySha}}] : [];
+else if (args.includes('/pulls?')) {
+  if (!args.includes('--paginate')) throw new Error('PR enumeration must paginate');
+  const component = fixture.train === 'backend' ? 'server' : fixture.train;
+  const pr = {number:1, user:{login:'github-actions[bot]'}, merge_commit_sha:fixture.boundarySha,
+    merged_at:'2026-09-24T18:42:54Z', head:{ref:'release-please--branches--main--components--'+component}, labels:['autorelease: pending']};
+  result = [...(fixture.state.pending ? [pr] : []),
+    {...pr, merged_at:null}, {...pr, labels:['autorelease: tagged']},
+    {...pr, head:{ref:'unrelated'}}].map(JSON.stringify).join('\\n');
+}
+else if (args.startsWith('pr list')) result = fixture.state.pending && !fixture.state.searchMissing ? [{number:1,author:{login:'github-actions'},mergeCommit:{oid:fixture.boundarySha}}] : [];
 else throw new Error(args);
 process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result));
 `,
@@ -177,6 +187,12 @@ describe('release lifecycle reconciliation', () => {
   });
   it('reconciles a merged release without planning another PR', () => {
     expect(run({ pending: true })).toMatchObject({ status: 0, output: 'mode=release\n' });
+  });
+  it('finds a pending merged release even when the search index omits it', () => {
+    expect(run({ pending: true, searchMissing: true })).toMatchObject({
+      status: 0,
+      output: 'mode=release\n',
+    });
   });
   it('lets the newest event reconcile moving main', () => {
     expect(run({ stale: true })).toMatchObject({ status: 0, output: 'mode=skip\n' });
