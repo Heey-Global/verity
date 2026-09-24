@@ -135,6 +135,7 @@ function makeClient(
     getHealth:
       opts.getHealth ?? jest.fn().mockResolvedValue({ status: 'ok', publicPreviewsEnabled: false }),
     getProject: jest.fn().mockResolvedValue(opts.detail ?? makeDetail()),
+    listProjectIntegrations: jest.fn().mockResolvedValue([]),
     setProjectSetupStatus:
       opts.setProjectSetupStatus ??
       jest.fn().mockImplementation(async () => ({

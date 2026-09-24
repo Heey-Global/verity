@@ -134,6 +134,36 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'broker token (SHA-256 of the signing key), presented by the sandbox commit-signing wrapper',
   ),
   declare(
+    'GET',
+    '/internal/integrations/matrix/bindings',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
+    'GET',
+    '/internal/integrations/matrix/config',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/account',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/source',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/event',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
     'POST',
     '/internal/github/token',
     'container-capability',

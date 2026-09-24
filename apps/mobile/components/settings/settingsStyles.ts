@@ -5,6 +5,15 @@ import { StyleSheet } from 'react-native-unistyles';
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
 export const settingsStyles = StyleSheet.create((theme) => ({
+  input: {
+    color: theme.colors.text,
+    backgroundColor: theme.colors.surface,
+    borderColor: theme.colors.border,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+  },
   disclosure: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.md,

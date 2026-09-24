@@ -1775,7 +1775,108 @@ const knowledgeSourceBundleSchema = z.object({
   ),
 });
 
+const integrationAccountSchema = z.object({
+  id: z.string(),
+  provider: z.literal('matrix'),
+  endpoint: z.string(),
+  displayName: z.string(),
+  status: z.string(),
+  lastError: z.string().nullable(),
+});
+const integrationSourceSchema = z.object({
+  accountId: z.string(),
+  sourceId: z.string(),
+  displayName: z.string(),
+  inviter: z.string().nullable(),
+  projectId: z.string().nullable(),
+  status: z.enum(['pending', 'active', 'paused']),
+  activatedAt: z.string().nullable(),
+  lastIngestedAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+});
+export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
+export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
+
 export class VerityClient {
+  async getProjectMatrixConfig(
+    projectId: string,
+  ): Promise<{ endpoint: string; username: string; passwordConfigured: boolean } | null> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/integrations/matrix/config`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        config: z
+          .object({ endpoint: z.string(), username: z.string(), passwordConfigured: z.boolean() })
+          .nullable(),
+      })
+      .parse(await res.json()).config;
+  }
+
+  async saveProjectMatrixConfig(
+    projectId: string,
+    input: { endpoint: string; username: string; password: string },
+  ): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/integrations/matrix/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async listIntegrations(): Promise<{
+    accounts: IntegrationAccount[];
+    sources: IntegrationSource[];
+  }> {
+    const res = await this.request('/integrations', { method: 'GET' });
+    return z
+      .object({
+        accounts: z.array(integrationAccountSchema),
+        sources: z.array(integrationSourceSchema),
+      })
+      .parse(await res.json());
+  }
+
+  async listProjectIntegrations(projectId: string): Promise<IntegrationSource[]> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/integrations`, {
+      method: 'GET',
+    });
+    return z.object({ sources: z.array(integrationSourceSchema) }).parse(await res.json()).sources;
+  }
+
+  async bindIntegrationSource(
+    accountId: string,
+    sourceId: string,
+    projectId: string,
+  ): Promise<IntegrationSource> {
+    const res = await this.request('/integrations/sources/bind', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, sourceId, projectId }),
+    });
+    return z.object({ source: integrationSourceSchema }).parse(await res.json()).source;
+  }
+
+  async pauseIntegrationSource(
+    accountId: string,
+    sourceId: string,
+    paused: boolean,
+  ): Promise<void> {
+    await this.request('/integrations/sources/pause', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, sourceId, paused }),
+    });
+  }
+
+  async disconnectIntegrationSource(accountId: string, sourceId: string): Promise<void> {
+    await this.request('/integrations/sources/disconnect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, sourceId }),
+    });
+  }
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly uploadFetchImpl: typeof fetch;

@@ -119,6 +119,46 @@ export interface ProjectMcpBindingsTable {
   enabled: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
+interface IntegrationAccountsTable {
+  id: string;
+  provider: string;
+  endpoint: string;
+  display_name: string;
+  status: ColumnType<string, string | undefined, string>;
+  last_error: string | null;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+interface MatrixConnectorConfigTable {
+  id: string;
+  endpoint: string;
+  username: string;
+  password_secret: string;
+}
+
+interface IntegrationSourcesTable {
+  account_id: string;
+  source_id: string;
+  display_name: string;
+  inviter: string | null;
+  project_id: string | null;
+  status: ColumnType<string, string | undefined, string>;
+  activated_at: Date | null;
+  last_ingested_at: Date | null;
+  last_error: string | null;
+}
+
+interface IntegrationEventsTable {
+  account_id: string;
+  source_id: string;
+  event_id: string;
+  target_event_id: string | null;
+  kind: string;
+  sender: string;
+  occurred_at: Date;
+  body: string | null;
+}
+
 /**
  * Multi-repo fleet registry (concept §19, #174). One row per GitHub repo the
  * App-installation lists + Verity has registered. **Cache** of the GitHub-
@@ -1140,6 +1180,10 @@ interface KnowledgeMaintenanceQueueTable {
   due_at: Date;
 }
 export interface Database {
+  integration_accounts: IntegrationAccountsTable;
+  matrix_connector_config: MatrixConnectorConfigTable;
+  integration_sources: IntegrationSourcesTable;
+  integration_events: IntegrationEventsTable;
   project_knowledge_spaces: KnowledgeSpacesTable;
   knowledge_wiki_jobs: KnowledgeWikiJobsTable;
   knowledge_provenance: KnowledgeProvenanceTable;

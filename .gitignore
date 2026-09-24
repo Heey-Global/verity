@@ -74,3 +74,4 @@ coverage
 /core
 /core.[0-9]*
 /core.*.[0-9]*
+/connectors/matrix/target/

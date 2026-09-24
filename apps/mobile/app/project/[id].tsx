@@ -38,6 +38,7 @@ import {
   type ProjectSettingsDraft,
   type HttpMcpConnection,
   type ProjectMcpBinding,
+  type IntegrationSource,
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
@@ -61,7 +62,12 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { createVerityClient } from '../../lib/client';
 import { Icon } from '../../components/Icon';
 import { StatusPill, type StatusPillIntent } from '../../components/StatusPill';
-import { SettingsGroup, SettingsPanel } from '../../components/settings/SettingsChrome';
+import {
+  SettingsGroup,
+  SettingsListPanel,
+  SettingsNavRow,
+  SettingsPanel,
+} from '../../components/settings/SettingsChrome';
 import { repairProject } from '../../lib/projectRepair';
 import {
   projectLifecycleState,
@@ -391,6 +397,7 @@ function ProjectDetailView({
               settings={settings}
               onSaved={onSettingsSaved}
             />
+            <ProjectIntegrationsSection client={client} projectId={project.id} />
             {project.kind === 'local' ? (
               <LinkGitHubSection client={client} project={project} onUpdated={onProjectUpdated} />
             ) : null}
@@ -408,6 +415,63 @@ function ProjectDetailView({
 }
 
 type ProjectTab = 'dev-server' | 'automations' | 'settings';
+
+function ProjectIntegrationsSection({
+  client,
+  projectId,
+}: {
+  client: VerityClient;
+  projectId: string;
+}) {
+  const [sources, setSources] = useState<IntegrationSource[]>([]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void client
+        .listProjectIntegrations(projectId)
+        .then((items) => {
+          if (active) setSources(items);
+        })
+        .catch(() => {
+          if (active) setSources([]);
+        });
+      return () => {
+        active = false;
+      };
+    }, [client, projectId]),
+  );
+  return (
+    <SettingsGroup title="Integrations">
+      <SettingsListPanel>
+        {sources.map((source) => (
+          <SettingsNavRow
+            key={`${source.accountId}:${source.sourceId}`}
+            icon="link"
+            title={source.displayName}
+            subtitle={
+              source.lastIngestedAt
+                ? `Last import: ${new Date(source.lastIngestedAt).toLocaleString()}`
+                : 'No messages imported yet'
+            }
+            status={{
+              intent: source.status === 'active' ? 'ready' : 'transient',
+              label: source.status === 'active' ? 'Connected' : 'Paused',
+            }}
+            onPress={() =>
+              router.push({ pathname: '/settings/integrations', params: { projectId } })
+            }
+          />
+        ))}
+        <SettingsNavRow
+          icon="link"
+          title="Manage integrations"
+          subtitle="Connect rooms and manage imports"
+          onPress={() => router.push({ pathname: '/settings/integrations', params: { projectId } })}
+        />
+      </SettingsListPanel>
+    </SettingsGroup>
+  );
+}
 
 function ProjectTabs({
   active,

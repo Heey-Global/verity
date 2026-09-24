@@ -402,6 +402,7 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export { type IntegrationAccount, type IntegrationSource } from './api.js';
 export { healthSchema, type Health } from './api.js';
 export { canCreatePublicPreviewTarget, type PublicPreviewTargetKind } from './publicPreview.js';
 export { secretUnlockedSchema, type SecretUnlocked } from './api.js';
