@@ -1,14 +1,16 @@
 {
   "schema": 1,
-  "version": "1.33.41",
-  "runtime": "1.33.0",
+  "version": "1.34.1",
+  "runtime": "1.34.0",
   "channel": "testflight",
-  "commit": "3f15f06e63ef82d82d6c1b5687343cc626de3840",
-  "tag": "mobile-v1.33.41",
-  "branch": "staging-mobile-v1.33.41-3f15f06e63ef82d82d6c1b5687343cc626de3840",
-  "baseline": "mobile-v1.33.40",
-  "group": "9bcb7a62-da18-41bc-8651-fe141e81abee",
+  "commit": "49e377235ba752727113b3efaf27f555cef7e317",
+  "tag": "mobile-v1.34.1",
+  "branch": "staging-mobile-v1.34.1-49e377235ba752727113b3efaf27f555cef7e317",
+  "baseline": "mobile-v1.34.0",
+  "group": "5facb226-d765-4a58-8ec5-8c15dfa3f6b9",
   "notes": [
-    "validate public preview artifacts (#673)"
+    "keep dragged projects anchored to the finger (#707)",
+    "import Matrix chats into project knowledge (#703)",
+    "preserve reusable insights proactively (#705)"
   ]
 }
