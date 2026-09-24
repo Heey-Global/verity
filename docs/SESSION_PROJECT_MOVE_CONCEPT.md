@@ -162,14 +162,16 @@ The success response includes the new project/branch, `contextMode: "history-han
 and already-present paths, skipped paths, and the retained source workspace/branch. Return stable
 error codes for busy state, unsupported sessions, file conflicts, and unacknowledged source commits.
 
-Add “Move to project…” to the existing long-press session menu alongside Rename and Delete.
-Open a picker listing other visible local projects, then show a confirmation naming the target
-with a “Move” button. Keep the action unavailable while the session is running, with an
-explanation that the current turn must finish or be stopped; the session itself is not ended. Explain that the chat
-remains, context continues through the normal agent-switch handoff, and uncommitted work is copied.
-Show source commits that require acknowledgement and actionable conflict details. On success keep the same chat identity, regroup the session under the target project, and show
-any files left behind and where to find them. If no eligible target exists, explain that another
-local project is needed. Keep the picker open on a conflict and show the affected paths.
+The existing long-press session dialog contains the session name and a compact project selector.
+Keep rename, move, and delete in this single dialog. The primary action is “Save” for name-only
+changes and “Save and move” when a different project is selected. Save a changed name before
+attempting the move; if the move fails, retain the saved name and retry only the pending move.
+Disable project changes while the session is running, with an explanation; renaming stays available.
+Explain that the conversation and uncommitted files move while committed changes remain in the source.
+Keep commit acknowledgement, actionable errors, and successful move details inside the same dialog.
+Show a server-update hint for a missing move endpoint rather than a bare “Not Found” message.
+On success keep the same chat identity, regroup the session under the target project, and show
+any files left behind. Bound the dialog width on tablets and scroll its content on smaller screens.
 
 Reload the authoritative session and list after success. On a timeout, reconcile using the same
 operation id before claiming failure or reverting the displayed project. Keep the route under
