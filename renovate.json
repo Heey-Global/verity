@@ -128,6 +128,7 @@
         "react-native-svg",
         "react-native-uitextview",
         "react-native-unistyles",
+        "react-native-webview",
         "react-native-worklets"
       ],
       "matchFileNames": ["apps/mobile/package.json", "package.json"],

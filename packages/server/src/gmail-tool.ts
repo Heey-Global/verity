@@ -1,4 +1,15 @@
-import { createGmailDraft, createGmailReplyDraft, readGmailThread, searchGmail } from './gmail.js';
+import {
+  appendGmailSignature,
+  createGmailDraft,
+  createGmailReplyDraft,
+  readGmailDraftForSend,
+  readGmailThread,
+  readGmailSignature,
+  searchGmail,
+  sendGmailDraft,
+  type GmailDraftSendSnapshot,
+  type GmailSignature,
+} from './gmail.js';
 
 export interface GmailInvocationInput {
   projectId: string;
@@ -32,17 +43,35 @@ export interface GmailToolStore {
 type GmailRequest =
   | { action: 'search'; query: string; maxResults?: number; pageToken?: string }
   | { action: 'read_thread'; threadId: string }
-  | { action: 'create_reply_draft'; threadId: string; messageId?: string; body: string }
+  | {
+      action: 'create_reply_draft';
+      threadId: string;
+      messageId?: string;
+      body: string;
+      htmlBody?: string;
+    }
   | {
       action: 'create_draft';
       to: string[];
       cc?: string[];
+      bcc?: string[];
       subject: string;
       body: string;
       threadId?: string;
       inReplyTo?: string;
       references?: string;
-    };
+    }
+  | { action: 'prepare_draft_send'; draftId: string }
+  | ({ action: 'send_draft' } & GmailDraftSendSnapshot);
+
+export function gmailHasStandingAuthorization(request: unknown): boolean {
+  return !(
+    typeof request === 'object' &&
+    request !== null &&
+    'action' in request &&
+    request.action === 'send_draft'
+  );
+}
 
 export function createGmailTool(deps: {
   eventStore: GmailToolStore;
@@ -58,6 +87,9 @@ export function createGmailTool(deps: {
       token: string,
       input: Extract<GmailRequest, { action: 'create_reply_draft' }>,
     ): Promise<unknown>;
+    prepareDraftSend(token: string, draftId: string): Promise<GmailDraftSendSnapshot>;
+    sendDraft(token: string, snapshot: GmailDraftSendSnapshot): Promise<unknown>;
+    readSignature(token: string, accountEmail: string): Promise<GmailSignature>;
   };
 }): { invoke(input: GmailInvocationInput): Promise<unknown> } {
   const gmail = deps.gmail ?? {
@@ -65,6 +97,9 @@ export function createGmailTool(deps: {
     readThread: readGmailThread,
     createDraft: createGmailDraft,
     createReplyDraft: createGmailReplyDraft,
+    prepareDraftSend: readGmailDraftForSend,
+    sendDraft: sendGmailDraft,
+    readSignature: readGmailSignature,
   };
   const authorized = async (
     input: GmailInvocationInput,
@@ -116,19 +151,43 @@ export function createGmailTool(deps: {
         await verifyCredentialUnchanged(input, credential);
         return gmail.readThread(token, request.threadId);
       }
-      if (request.action !== 'create_draft' && request.action !== 'create_reply_draft') {
+      if (request.action === 'prepare_draft_send') {
+        await verifyCredentialUnchanged(input, credential);
+        return gmail.prepareDraftSend(token, request.draftId);
+      }
+      if (
+        request.action !== 'create_draft' &&
+        request.action !== 'create_reply_draft' &&
+        request.action !== 'send_draft'
+      ) {
         throw new Error('Unsupported Gmail action');
       }
+      const requestWithSignature =
+        request.action === 'create_draft' || request.action === 'create_reply_draft'
+          ? {
+              ...request,
+              ...appendGmailSignature(
+                request.body,
+                await gmail.readSignature(token, credential.accountEmail),
+              ),
+            }
+          : request;
       const claim = await deps.eventStore.claimGoogleWorkspaceInvocation(input);
       if (claim.status === 'completed') return claim.result;
       if (claim.status === 'pending') {
-        throw new Error('This Gmail draft may already have been created; check Gmail drafts');
+        throw new Error(
+          request.action === 'send_draft'
+            ? 'This Gmail draft may already have been sent; check Gmail sent mail'
+            : 'This Gmail draft may already have been created; check Gmail drafts',
+        );
       }
       await verifyCredentialUnchanged(input, credential);
       const result =
-        request.action === 'create_draft'
-          ? await gmail.createDraft(token, request)
-          : await gmail.createReplyDraft(token, request);
+        requestWithSignature.action === 'create_draft'
+          ? await gmail.createDraft(token, requestWithSignature)
+          : requestWithSignature.action === 'create_reply_draft'
+            ? await gmail.createReplyDraft(token, requestWithSignature)
+            : await gmail.sendDraft(token, requestWithSignature);
       await deps.eventStore.completeGoogleWorkspaceInvocation(input.invocationId, result);
       return result;
     },

@@ -37,6 +37,8 @@ import {
   formatChoiceAnswer,
   freezeTranscriptTail,
   frozenTranscriptRows,
+  gmailPreviewHtml,
+  gmailSendSummary,
   githubRefUrl,
   isPullRequestConflicted,
   isSessionImageFilePath,
@@ -130,6 +132,7 @@ import {
   type ViewStyle,
   type ViewToken,
 } from 'react-native';
+import { WebView } from 'react-native-webview';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
@@ -6789,6 +6792,7 @@ function PermissionPrompt({
   const isListSessions = pending.tool === 'verity_list_sessions';
   const isSessionProgress = pending.tool === 'verity_session_progress';
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
+  const isGmail = pending.tool === 'verity_gmail';
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
@@ -6797,6 +6801,7 @@ function PermissionPrompt({
   const recentSummary = isRecentSessionMessages
     ? recentSessionMessagesSummary(pending.input)
     : null;
+  const gmailSummary = isGmail ? gmailSendSummary(pending.input) : null;
   const cliSecretLabel = cliSummary === null ? null : trustedCliSecretLabel(cliSummary);
   const grantInput =
     typeof pending.input === 'object' && pending.input !== null && !Array.isArray(pending.input)
@@ -6817,7 +6822,8 @@ function PermissionPrompt({
     (isSessionHandoff && handoffSummary === null) ||
     (isListSessions && listingSummary === null) ||
     (isSessionProgress && progressSummary === null) ||
-    (isRecentSessionMessages && recentSummary === null)
+    (isRecentSessionMessages && recentSummary === null) ||
+    (isGmail && gmailSummary === null)
       ? permissionInputText(pending.input)
       : null;
   // The fallback path only — `brokeredRequestDetails` is non-null exactly when no summariser
@@ -6851,6 +6857,7 @@ function PermissionPrompt({
       recentSummary === null
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
+      gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
     // so this is consistency rather than exposure — but it is the headline, and the one field
@@ -6978,6 +6985,74 @@ function PermissionPrompt({
             . Attachments and tool payloads are excluded; recognized credential patterns are
             redacted, but free text may still contain sensitive material. Another page requires a
             new approval.
+          </Text>
+        </View>
+      ) : gmailSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          {gmailSummary.from === null ? null : (
+            <Text style={styles.permissionSubtitle} selectable>
+              From: {spellOutBidiControls(gmailSummary.from)}
+            </Text>
+          )}
+          {gmailSummary.replyTo === null ? null : (
+            <Text style={styles.permissionSubtitle} selectable>
+              Reply-To: {spellOutBidiControls(gmailSummary.replyTo)}
+            </Text>
+          )}
+          <Text style={styles.permissionSubtitle} selectable>
+            To: {spellOutBidiControls(gmailSummary.to.join(', '))}
+          </Text>
+          {gmailSummary.cc.length > 0 ? (
+            <Text style={styles.permissionSubtitle} selectable>
+              CC: {spellOutBidiControls(gmailSummary.cc.join(', '))}
+            </Text>
+          ) : null}
+          {gmailSummary.bcc.length > 0 ? (
+            <Text style={styles.permissionSubtitle} selectable>
+              BCC: {spellOutBidiControls(gmailSummary.bcc.join(', '))}
+            </Text>
+          ) : null}
+          <Text style={styles.permissionSubtitle} selectable>
+            Subject: {spellOutBidiControls(gmailSummary.subject)}
+          </Text>
+          {gmailSummary.htmlBody === null ? null : (
+            <Text style={styles.permissionHttpMeta}>HTML version:</Text>
+          )}
+          {gmailSummary.htmlBody === null ? null : (
+            <WebView
+              style={styles.permissionHtmlPreview}
+              source={{ html: gmailPreviewHtml(gmailSummary.htmlBody), baseUrl: 'about:blank' }}
+              javaScriptEnabled={false}
+              domStorageEnabled={false}
+              cacheEnabled={false}
+              originWhitelist={['about:blank']}
+              onShouldStartLoadWithRequest={(request) => request.url === 'about:blank'}
+              accessibilityLabel="Email HTML preview; external images and navigation are blocked"
+            />
+          )}
+          {gmailSummary.htmlBody === null ? null : (
+            <Text style={styles.permissionHttpMeta}>Plain-text alternative:</Text>
+          )}
+          <ScrollView style={styles.permissionBriefing} nestedScrollEnabled>
+            <Text style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(gmailSummary.body)}
+            </Text>
+          </ScrollView>
+          {gmailSummary.externalUrls.length > 0 ? (
+            <View>
+              <Text style={styles.permissionHttpMeta}>
+                External links and images in this email:
+              </Text>
+              {gmailSummary.externalUrls.map((url) => (
+                <Text key={url} style={styles.permissionHttpMeta} selectable>
+                  {spellOutBidiControls(url)}
+                </Text>
+              ))}
+            </View>
+          ) : null}
+          <Text style={styles.permissionHttpMeta}>
+            Gmail sends exactly this text and HTML snapshot once. The original draft remains in
+            Gmail so a concurrent edit cannot change what is sent or be deleted by this action.
           </Text>
         </View>
       ) : brokeredRequestDetails !== null ? (
@@ -9576,6 +9651,11 @@ const styles = StyleSheet.create((theme) => ({
   // it is approved, not a request body being spot-checked.
   permissionBriefing: {
     maxHeight: 320,
+  },
+  permissionHtmlPreview: {
+    height: 320,
+    borderRadius: theme.radius.sm,
+    overflow: 'hidden',
   },
   permissionButtons: {
     flexDirection: 'row',

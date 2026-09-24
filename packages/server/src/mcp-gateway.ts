@@ -202,7 +202,7 @@ export interface McpGatewayDeps {
    * The call remains authenticated, MAC-keyed, audited, and subject to `authorizeCall` plus the
    * executor's own checks; only the per-call permission card is skipped. */
   hasStandingAuthorization?(
-    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName },
+    input: McpGatewayCaller & { projectId: string; toolName: GatewayToolName; request: unknown },
   ): Promise<boolean>;
   /** Execute the approved call. Resolves with the tool's result, or throws if the server
    *  could not serve it (sealed store, missing binding, transport failure). */
@@ -316,8 +316,31 @@ const TOOL_SCHEMAS = {
         action: z.literal('create_draft'),
         to: z.array(z.string().email()).min(1).max(50),
         cc: z.array(z.string().email()).max(50).optional(),
+        bcc: z.array(z.string().email()).max(50).optional(),
         subject: z.string().max(998),
         body: z.string().max(500_000),
+        threadId: z.string().min(1).max(512).optional(),
+        inReplyTo: z.string().min(1).max(998).optional(),
+        references: z.string().min(1).max(8_192).optional(),
+      })
+      .strict(),
+    z
+      .object({ action: z.literal('prepare_draft_send'), draftId: z.string().min(1).max(512) })
+      .strict(),
+    z
+      .object({
+        action: z.literal('send_draft'),
+        draftId: z.string().min(1).max(512),
+        messageId: z.string().min(1).max(512),
+        to: z.array(z.string()).min(1).max(50),
+        cc: z.array(z.string()).max(50),
+        bcc: z.array(z.string()).max(50),
+        subject: z.string().max(998),
+        body: z.string().max(500_000),
+        from: z.string().max(998).optional(),
+        replyTo: z.string().max(998).optional(),
+        htmlBody: z.string().max(1_000_000).optional(),
+        externalUrls: z.array(z.string().url().max(4096)).max(100),
         threadId: z.string().min(1).max(512).optional(),
         inReplyTo: z.string().min(1).max(998).optional(),
         references: z.string().min(1).max(8_192).optional(),
@@ -355,7 +378,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or structural operations.',
   verity_gmail:
-    'Search and read Gmail for this session, or create a Gmail draft. This tool cannot send email. Use Gmail search syntax; read the thread before drafting a reply.',
+    'Search and read Gmail, create drafts, or send the approved plain-text snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. The original Gmail draft is retained after sending. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:
     'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
 };
@@ -618,6 +641,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           sessionId,
           turnId,
           toolName,
+          request: request.data,
         });
       } catch {
         return reject(

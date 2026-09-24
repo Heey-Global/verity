@@ -51,7 +51,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 1 |
 | ISC | 61 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 959 |
+| MIT | 967 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -461,6 +461,7 @@ separately by `TRADEMARKS.md`.
 | @types/qrcode | MIT | [source](https://www.npmjs.com/package/%40types%2Fqrcode) |
 | @types/react-test-renderer | MIT | [source](https://www.npmjs.com/package/%40types%2Freact-test-renderer) |
 | @types/react | MIT | [source](https://www.npmjs.com/package/%40types%2Freact) |
+| @types/sanitize-html | MIT | [source](https://www.npmjs.com/package/%40types%2Fsanitize-html) |
 | @types/semver | MIT | [source](https://www.npmjs.com/package/%40types%2Fsemver) |
 | @types/stack-utils | MIT | [source](https://www.npmjs.com/package/%40types%2Fstack-utils) |
 | @types/tough-cookie | MIT | [source](https://www.npmjs.com/package/%40types%2Ftough-cookie) |
@@ -589,6 +590,7 @@ separately by `TRADEMARKS.md`.
 | cssstyle | MIT | [source](https://www.npmjs.com/package/cssstyle) |
 | csstype | MIT | [source](https://www.npmjs.com/package/csstype) |
 | data-urls | MIT | [source](https://www.npmjs.com/package/data-urls) |
+| dayjs | MIT | [source](https://www.npmjs.com/package/dayjs) |
 | debug | MIT | [source](https://www.npmjs.com/package/debug) |
 | decamelize | MIT | [source](https://www.npmjs.com/package/decamelize) |
 | decimal.js | MIT | [source](https://www.npmjs.com/package/decimal.js) |
@@ -768,6 +770,7 @@ separately by `TRADEMARKS.md`.
 | hosted-git-info | ISC | [source](https://www.npmjs.com/package/hosted-git-info) |
 | html-encoding-sniffer | MIT | [source](https://www.npmjs.com/package/html-encoding-sniffer) |
 | html-escaper | MIT | [source](https://www.npmjs.com/package/html-escaper) |
+| htmlparser2 | MIT | [source](https://www.npmjs.com/package/htmlparser2) |
 | http-cache-semantics | BSD-2-Clause | [source](https://www.npmjs.com/package/http-cache-semantics) |
 | http-errors | MIT | [source](https://www.npmjs.com/package/http-errors) |
 | http-proxy-agent | MIT | [source](https://www.npmjs.com/package/http-proxy-agent) |
@@ -793,6 +796,7 @@ separately by `TRADEMARKS.md`.
 | is-in-ssh | MIT | [source](https://www.npmjs.com/package/is-in-ssh) |
 | is-inside-container | MIT | [source](https://www.npmjs.com/package/is-inside-container) |
 | is-number | MIT | [source](https://www.npmjs.com/package/is-number) |
+| is-plain-object | MIT | [source](https://www.npmjs.com/package/is-plain-object) |
 | is-plain-obj | MIT | [source](https://www.npmjs.com/package/is-plain-obj) |
 | is-potential-custom-element-name | MIT | [source](https://www.npmjs.com/package/is-potential-custom-element-name) |
 | is-promise | MIT | [source](https://www.npmjs.com/package/is-promise) |
@@ -856,6 +860,7 @@ separately by `TRADEMARKS.md`.
 | knip | ISC | [source](https://www.npmjs.com/package/knip) |
 | kysely | MIT | [source](https://www.npmjs.com/package/kysely) |
 | lan-network | MIT | [source](https://www.npmjs.com/package/lan-network) |
+| launder | MIT | [source](https://www.npmjs.com/package/launder) |
 | leven | MIT | [source](https://www.npmjs.com/package/leven) |
 | levn | MIT | [source](https://www.npmjs.com/package/levn) |
 | light-my-request | BSD-3-Clause | [source](https://www.npmjs.com/package/light-my-request) |
@@ -960,6 +965,7 @@ separately by `TRADEMARKS.md`.
 | package-manager-detector | MIT | [source](https://www.npmjs.com/package/package-manager-detector) |
 | parse-json | MIT | [source](https://www.npmjs.com/package/parse-json) |
 | parse-png | MIT | [source](https://www.npmjs.com/package/parse-png) |
+| parse-srcset | MIT | [source](https://www.npmjs.com/package/parse-srcset) |
 | parse5 | MIT | [source](https://www.npmjs.com/package/parse5) |
 | parseurl | MIT | [source](https://www.npmjs.com/package/parseurl) |
 | path-exists | MIT | [source](https://www.npmjs.com/package/path-exists) |
@@ -1036,6 +1042,7 @@ separately by `TRADEMARKS.md`.
 | react-native-svg | MIT | [source](https://www.npmjs.com/package/react-native-svg) |
 | react-native-uitextview | MIT | [source](https://www.npmjs.com/package/react-native-uitextview) |
 | react-native-unistyles | MIT | [source](https://www.npmjs.com/package/react-native-unistyles) |
+| react-native-webview | MIT | [source](https://www.npmjs.com/package/react-native-webview) |
 | react-native-worklets | MIT | [source](https://www.npmjs.com/package/react-native-worklets) |
 | react-native | MIT | [source](https://www.npmjs.com/package/react-native) |
 | react-refresh | MIT | [source](https://www.npmjs.com/package/react-refresh) |
@@ -1077,6 +1084,7 @@ separately by `TRADEMARKS.md`.
 | safe-stable-stringify | MIT | [source](https://www.npmjs.com/package/safe-stable-stringify) |
 | safer-buffer | MIT | [source](https://www.npmjs.com/package/safer-buffer) |
 | sandbox-cli-detector | MIT | [source](https://www.npmjs.com/package/sandbox-cli-detector) |
+| sanitize-html | MIT | [source](https://www.npmjs.com/package/sanitize-html) |
 | sax | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/sax) |
 | saxes | ISC | [source](https://www.npmjs.com/package/saxes) |
 | scheduler | MIT | [source](https://www.npmjs.com/package/scheduler) |

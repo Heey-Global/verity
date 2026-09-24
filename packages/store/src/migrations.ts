@@ -2970,6 +2970,17 @@ const migrations: Record<string, Migration> = {
       await sql`alter table verity_settings drop column gmail_authorized`.execute(db);
     },
   },
+  '0107_gmail_signature_scope': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Existing refresh tokens predate gmail.settings.basic. Force one visible reconnect
+      // instead of advertising Gmail while silently omitting the configured signature.
+      await sql`delete from session_gmail_connections`.execute(db);
+      await sql`update verity_settings set gmail_authorized = false`.execute(db);
+    },
+    async down(): Promise<void> {
+      // Authorization and per-session consent cannot be reconstructed safely.
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
