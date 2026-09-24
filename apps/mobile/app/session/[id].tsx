@@ -4237,35 +4237,67 @@ function SessionFilesSheet({
   const openDriveFile = useCallback(
     (file: DriveFile) => {
       if (!projectId || !driveFolderId) return;
-      Alert.alert(file.name, 'This file stays in Google Drive.', [
-        { text: 'Cancel', style: 'cancel' },
-        ...(file.webViewLink
-          ? [
-              {
-                text: 'Open in Google Drive',
-                onPress: () => void Linking.openURL(file.webViewLink!),
-              },
-            ]
-          : []),
-        {
-          text: 'Add to Project Knowledge',
-          onPress: () => {
-            setMutating(true);
-            void client
-              .importProjectGoogleDriveFile(projectId, driveFolderId, file.id)
-              .then((result) => Alert.alert('Added to Project Knowledge', result.path))
-              .catch((caught: unknown) =>
-                Alert.alert(
-                  'Could not add file',
-                  caught instanceof Error ? caught.message : String(caught),
-                ),
-              )
-              .finally(() => setMutating(false));
+      const canUseInChat = new Set([
+        'application/vnd.google-apps.document',
+        'application/vnd.google-apps.spreadsheet',
+        'application/vnd.google-apps.presentation',
+      ]).has(file.mimeType);
+      Alert.alert(
+        file.name,
+        'This file stays in Google Drive.',
+        [
+          ...(Platform.OS === 'android' && canUseInChat && file.webViewLink
+            ? []
+            : [{ text: 'Cancel', style: 'cancel' as const }]),
+          ...(file.webViewLink
+            ? [
+                {
+                  text: 'Open in Google Drive',
+                  onPress: () => void Linking.openURL(file.webViewLink!),
+                },
+              ]
+            : []),
+          ...(canUseInChat
+            ? [
+                {
+                  text: 'Use in this chat',
+                  onPress: () => {
+                    setMutating(true);
+                    void client
+                      .assignSessionGoogleWorkspaceFile(sessionId, file.id)
+                      .then(() => onClose())
+                      .catch((caught: unknown) =>
+                        Alert.alert(
+                          'Could not use file in chat',
+                          caught instanceof Error ? caught.message : String(caught),
+                        ),
+                      )
+                      .finally(() => setMutating(false));
+                  },
+                },
+              ]
+            : []),
+          {
+            text: 'Add to Project Knowledge',
+            onPress: () => {
+              setMutating(true);
+              void client
+                .importProjectGoogleDriveFile(projectId, driveFolderId, file.id)
+                .then((result) => Alert.alert('Added to Project Knowledge', result.path))
+                .catch((caught: unknown) =>
+                  Alert.alert(
+                    'Could not add file',
+                    caught instanceof Error ? caught.message : String(caught),
+                  ),
+                )
+                .finally(() => setMutating(false));
+            },
           },
-        },
-      ]);
+        ],
+        { cancelable: true },
+      );
     },
-    [client, driveFolderId, projectId],
+    [client, driveFolderId, onClose, projectId, sessionId],
   );
 
   const uploadDroppedFiles = useCallback(
