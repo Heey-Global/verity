@@ -508,10 +508,11 @@ function SessionList({ client }: { client: VerityClient }) {
   );
 
   const renderGroup = useCallback(
-    (item: SessionProjectGroup) => {
+    (item: SessionProjectGroup, floating = false) => {
       return (
         <ProjectGroup
-          group={item}
+          group={floating ? { ...item, sessions: [] } : item}
+          floating={floating}
           wide={wide}
           collapsed={
             draggingProjectId !== null ||
@@ -655,65 +656,93 @@ function SessionList({ client }: { client: VerityClient }) {
       {/* Pinned above the list, not rendered as its header: the usage meters are
           the one thing on this screen that must not scroll, drag or fold away. */}
       {providerLimitRows.length > 0 ? <ProviderLimitMeters rows={providerLimitRows} /> : null}
-      <ProjectOverviewList
-        onScroll={reorder.onScroll}
-        scrollEventThrottle={16}
-        draggingProjectId={draggingProjectId}
-        refreshing={refreshingOverview}
-        onRefresh={onRefreshOverview}
-        data={activeGroups}
-        extraData={collapsedOverride}
-        keyExtractor={(g) => g.id}
-        renderItem={renderItem}
-        contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
-        ItemSeparatorComponent={GroupSeparator}
-        ListEmptyComponent={
-          pausedGroups.length === 0 ? (
-            <View style={styles.emptyOverview}>
-              {projectsLoading ? <ActivityIndicator /> : null}
-              <Text style={styles.emptyTitle}>
-                {projectsLoading ? 'Loading projects' : 'Welcome to Verity'}
-              </Text>
-              <Text style={styles.emptySubtitle}>
-                Add an existing GitHub repository or create an empty project to get started.
-              </Text>
-              {!projectsLoading ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Add your first project"
-                  onPress={() => router.push('/new-project')}
-                  style={({ pressed }) => [styles.emptyAction, pressed ? styles.rowPressed : null]}
-                >
-                  <Text style={styles.emptyActionLabel}>Add your first project</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null
-        }
-        ListFooterComponent={
-          <>
-            {pausedGroups.length > 0 ? (
-              <View style={styles.pausedSection}>
-                <View style={styles.issuesHeaderRow}>
-                  <Text style={styles.issuesHeader}>Paused</Text>
-                  <Text style={styles.pausedCount}>{pausedGroups.length}</Text>
+      <GestureDetector gesture={reorder.gesture}>
+        <Reanimated.View
+          ref={reorder.hostRef}
+          collapsable={false}
+          style={styles.flex}
+          onLayout={(event) => reorder.onViewportLayout(event.nativeEvent.layout.height)}
+        >
+          <ProjectOverviewList
+            listRef={reorder.listRef}
+            onContentSizeChange={reorder.onContentSizeChange}
+            onScroll={reorder.onScroll}
+            scrollEventThrottle={16}
+            draggingProjectId={draggingProjectId}
+            refreshing={refreshingOverview}
+            onRefresh={onRefreshOverview}
+            data={activeGroups}
+            extraData={collapsedOverride}
+            keyExtractor={(g) => g.id}
+            renderItem={renderItem}
+            contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
+            ItemSeparatorComponent={GroupSeparator}
+            ListEmptyComponent={
+              pausedGroups.length === 0 ? (
+                <View style={styles.emptyOverview}>
+                  {projectsLoading ? <ActivityIndicator /> : null}
+                  <Text style={styles.emptyTitle}>
+                    {projectsLoading ? 'Loading projects' : 'Welcome to Verity'}
+                  </Text>
+                  <Text style={styles.emptySubtitle}>
+                    Add an existing GitHub repository or create an empty project to get started.
+                  </Text>
+                  {!projectsLoading ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Add your first project"
+                      onPress={() => router.push('/new-project')}
+                      style={({ pressed }) => [
+                        styles.emptyAction,
+                        pressed ? styles.rowPressed : null,
+                      ]}
+                    >
+                      <Text style={styles.emptyActionLabel}>Add your first project</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
-                <View style={styles.pausedList}>
-                  {pausedGroups.map((group) => (
-                    <Fragment key={group.id}>{renderGroup(group)}</Fragment>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-            <IssuesSection
-              issues={issues}
-              loading={issuesLoading}
-              error={issuesError}
-              refresh={refreshIssues}
-            />
-          </>
-        }
-      />
+              ) : null
+            }
+            ListFooterComponent={
+              <>
+                {pausedGroups.length > 0 ? (
+                  <View style={styles.pausedSection}>
+                    <View style={styles.issuesHeaderRow}>
+                      <Text style={styles.issuesHeader}>Paused</Text>
+                      <Text style={styles.pausedCount}>{pausedGroups.length}</Text>
+                    </View>
+                    <View style={styles.pausedList}>
+                      {pausedGroups.map((group) => (
+                        <Fragment key={group.id}>{renderGroup(group)}</Fragment>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+                <IssuesSection
+                  issues={issues}
+                  loading={issuesLoading}
+                  error={issuesError}
+                  refresh={refreshIssues}
+                />
+              </>
+            }
+          />
+          {draggingProjectId !== null ? (
+            <Reanimated.View
+              pointerEvents="none"
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              style={reorder.overlayStyle}
+            >
+              {activeGroups
+                .filter((group) => group.id === draggingProjectId)
+                .map((group) => (
+                  <Fragment key={group.id}>{renderGroup(group, true)}</Fragment>
+                ))}
+            </Reanimated.View>
+          ) : null}
+        </Reanimated.View>
+      </GestureDetector>
       <RenameModal
         session={renaming}
         onSubmit={onSubmitRename}
@@ -1097,6 +1126,7 @@ function statusToneStyle(tone: ProjectOverviewStatus['tone']) {
 
 function ProjectGroup({
   group,
+  floating = false,
   wide,
   collapsed,
   onToggle,
@@ -1119,6 +1149,7 @@ function ProjectGroup({
   repairingProjectIds,
 }: {
   group: SessionProjectGroup;
+  floating?: boolean;
   wide: boolean;
   collapsed: boolean;
   onToggle: () => void;
@@ -1144,11 +1175,17 @@ function ProjectGroup({
   repairingProjectIds?: ReadonlySet<string>;
 }) {
   const { theme } = useUnistyles();
-  const { gesture, style: dragStyle } = useProjectRowDrag({
+  const {
+    slotRef,
+    rowRef,
+    handleRef,
+    style: dragStyle,
+  } = useProjectRowDrag({
     id: group.id,
     reorder,
     renderedOrder,
     enabled: sortable,
+    floating,
   });
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
@@ -1182,35 +1219,34 @@ function ProjectGroup({
   // the header alone: what the row occupies once every group is folded.
   const pitch = (height: number) => height + theme.spacing.md + (wide ? 2 : 0);
   const onHeaderLayout = (event: LayoutChangeEvent) => {
-    reorder.reportCompactHeight(group.id, pitch(event.nativeEvent.layout.height));
-  };
-  // Measured while idle only: mid-drag the group is folded, and its height
-  // would say nothing about how far the rows below it moved up.
-  const onGroupLayout = (event: LayoutChangeEvent) => {
-    if (!reordering) reorder.reportExpandedHeight(group.id, pitch(event.nativeEvent.layout.height));
+    if (!floating) reorder.reportCompactHeight(group.id, pitch(event.nativeEvent.layout.height));
   };
   return (
-    <Reanimated.View
-      style={[
-        styles.projectGroup,
-        !wide && styles.projectGroupFlat,
-        dragging ? styles.projectGroupDragging : null,
-        dragStyle,
-      ]}
-      onLayout={onGroupLayout}
-    >
-      <View
-        onLayout={onHeaderLayout}
+    <Reanimated.View ref={slotRef} collapsable={false}>
+      <Reanimated.View
         style={[
-          styles.projectHeader,
-          headerHovered ? styles.projectHeaderHovered : null,
-          !collapsed && sessionCount > 0 ? styles.projectHeaderOpen : null,
+          styles.projectGroup,
+          !wide && styles.projectGroupFlat,
+          dragging ? styles.projectGroupDragging : null,
+          dragStyle,
+          floating ? { marginHorizontal: 0 } : null,
         ]}
+        ref={rowRef}
+        collapsable={false}
       >
-        {/* A held press on the header picks the row up; a tap still toggles it,
+        <View
+          onLayout={onHeaderLayout}
+          style={[
+            styles.projectHeader,
+            headerHovered ? styles.projectHeaderHovered : null,
+            !collapsed && sessionCount > 0 ? styles.projectHeaderOpen : null,
+          ]}
+        >
+          {/* A held press on the header picks the row up; a tap still toggles it,
             and a swipe before the hold elapses scrolls the list as usual. */}
-        <GestureDetector gesture={gesture}>
           <Pressable
+            ref={handleRef}
+            collapsable={false}
             style={({ pressed }) => [styles.projectToggle, pressed ? styles.rowPressed : null]}
             onHoverIn={() => setHeaderHovered(true)}
             onHoverOut={() => setHeaderHovered(false)}
@@ -1264,74 +1300,109 @@ function ProjectGroup({
               ) : null}
             </View>
           </Pressable>
-        </GestureDetector>
-        <View style={[styles.projectActions, reordering ? styles.projectActionsHidden : null]}>
-          {/* Repair is only offered for a live project row whose reconciled state is
+          <View style={[styles.projectActions, reordering ? styles.projectActionsHidden : null]}>
+            {/* Repair is only offered for a live project row whose reconciled state is
               failed. Missing rows may be soft-deleted and cannot use this endpoint. */}
-          {repairProjectId && onRepairProject ? (
-            <Pressable
-              style={[
-                styles.projectIconButton,
-                styles.projectRepairButton,
-                repairing ? styles.projectActionDisabled : null,
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={`Repair ${group.title}`}
-              onPress={() => onRepairProject(repairProjectId)}
-              disabled={repairing}
-            >
-              {repairing ? (
-                <ActivityIndicator size="small" color={theme.colors.tone.danger} />
-              ) : (
-                <Icon name="tool" size={16} color={theme.colors.tone.danger} />
-              )}
-            </Pressable>
-          ) : null}
-          {group.project ? (
-            <>
-              {updateGlyph ? (
-                <Pressable
-                  style={[
-                    styles.projectIconButton,
-                    styles.projectUpdateButton,
-                    {
-                      borderColor: `${updateGlyph.color}99`,
-                      backgroundColor: `${updateGlyph.color}1f`,
-                    },
-                    updating ? styles.projectActionDisabled : null,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${updateGlyph.label} for ${group.title}`}
-                  onPress={() => onUpdateProject(group.project!)}
-                  disabled={updating}
-                >
-                  {updating ? (
-                    <ActivityIndicator size="small" color={updateGlyph.color} />
-                  ) : (
-                    <Icon name={updateGlyph.icon} size={18} color={updateGlyph.color} />
-                  )}
-                </Pressable>
-              ) : null}
-              {!controlPlane && projectRepoRef(group.project) !== undefined ? (
+            {repairProjectId && onRepairProject ? (
+              <Pressable
+                style={[
+                  styles.projectIconButton,
+                  styles.projectRepairButton,
+                  repairing ? styles.projectActionDisabled : null,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={`Repair ${group.title}`}
+                onPress={() => onRepairProject(repairProjectId)}
+                disabled={repairing}
+              >
+                {repairing ? (
+                  <ActivityIndicator size="small" color={theme.colors.tone.danger} />
+                ) : (
+                  <Icon name="tool" size={16} color={theme.colors.tone.danger} />
+                )}
+              </Pressable>
+            ) : null}
+            {group.project ? (
+              <>
+                {updateGlyph ? (
+                  <Pressable
+                    style={[
+                      styles.projectIconButton,
+                      styles.projectUpdateButton,
+                      {
+                        borderColor: `${updateGlyph.color}99`,
+                        backgroundColor: `${updateGlyph.color}1f`,
+                      },
+                      updating ? styles.projectActionDisabled : null,
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${updateGlyph.label} for ${group.title}`}
+                    onPress={() => onUpdateProject(group.project!)}
+                    disabled={updating}
+                  >
+                    {updating ? (
+                      <ActivityIndicator size="small" color={updateGlyph.color} />
+                    ) : (
+                      <Icon name={updateGlyph.icon} size={18} color={updateGlyph.color} />
+                    )}
+                  </Pressable>
+                ) : null}
+                {!controlPlane && projectRepoRef(group.project) !== undefined ? (
+                  <Pressable
+                    style={styles.projectIconButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open ${group.title} on GitHub`}
+                    onPress={() =>
+                      void Linking.openURL(
+                        `https://github.com/${projectRepoRef(group.project!)!}`,
+                      ).catch(() => undefined)
+                    }
+                  >
+                    <Icon name="github" size={18} color={theme.colors.textMuted} />
+                  </Pressable>
+                ) : null}
+                {onNewSession ? (
+                  <Pressable
+                    style={styles.projectIconButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Start new session in ${group.title}`}
+                    onPress={() => onNewSession(group.project!)}
+                  >
+                    <Icon name="plus" size={20} color={theme.colors.primary} />
+                  </Pressable>
+                ) : (
+                  <Link
+                    href={{
+                      pathname: '/new',
+                      params: { projectId: group.project.id },
+                    }}
+                    accessibilityLabel={`Start new session in ${group.title}`}
+                    asChild
+                  >
+                    <Pressable style={styles.projectIconButton} accessibilityRole="button">
+                      <Icon name="plus" size={20} color={theme.colors.primary} />
+                    </Pressable>
+                  </Link>
+                )}
+                {!controlPlane ? (
+                  <Link
+                    href={{ pathname: '/project/[id]', params: { id: group.project.id } }}
+                    accessibilityLabel={`Open project settings for ${group.title}`}
+                    asChild
+                  >
+                    <Pressable style={styles.projectOpenButton} accessibilityRole="button">
+                      <Icon name="more-horizontal" size={20} color={theme.colors.textMuted} />
+                    </Pressable>
+                  </Link>
+                ) : null}
+              </>
+            ) : group.inactiveProjectId ? null : defaultNewSessionProject ? (
+              onNewSession ? (
                 <Pressable
                   style={styles.projectIconButton}
                   accessibilityRole="button"
-                  accessibilityLabel={`Open ${group.title} on GitHub`}
-                  onPress={() =>
-                    void Linking.openURL(
-                      `https://github.com/${projectRepoRef(group.project!)!}`,
-                    ).catch(() => undefined)
-                  }
-                >
-                  <Icon name="github" size={18} color={theme.colors.textMuted} />
-                </Pressable>
-              ) : null}
-              {onNewSession ? (
-                <Pressable
-                  style={styles.projectIconButton}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Start new session in ${group.title}`}
-                  onPress={() => onNewSession(group.project!)}
+                  accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
+                  onPress={() => onNewSession(defaultNewSessionProject)}
                 >
                   <Icon name="plus" size={20} color={theme.colors.primary} />
                 </Pressable>
@@ -1339,82 +1410,49 @@ function ProjectGroup({
                 <Link
                   href={{
                     pathname: '/new',
-                    params: { projectId: group.project.id },
+                    params: {
+                      projectId: defaultNewSessionProject.id,
+                    },
                   }}
-                  accessibilityLabel={`Start new session in ${group.title}`}
+                  accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
                   asChild
                 >
                   <Pressable style={styles.projectIconButton} accessibilityRole="button">
                     <Icon name="plus" size={20} color={theme.colors.primary} />
                   </Pressable>
                 </Link>
-              )}
-              {!controlPlane ? (
-                <Link
-                  href={{ pathname: '/project/[id]', params: { id: group.project.id } }}
-                  accessibilityLabel={`Open project settings for ${group.title}`}
-                  asChild
-                >
-                  <Pressable style={styles.projectOpenButton} accessibilityRole="button">
-                    <Icon name="more-horizontal" size={20} color={theme.colors.textMuted} />
-                  </Pressable>
-                </Link>
-              ) : null}
-            </>
-          ) : group.inactiveProjectId ? null : defaultNewSessionProject ? (
-            onNewSession ? (
-              <Pressable
-                style={styles.projectIconButton}
-                accessibilityRole="button"
-                accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
-                onPress={() => onNewSession(defaultNewSessionProject)}
-              >
-                <Icon name="plus" size={20} color={theme.colors.primary} />
-              </Pressable>
-            ) : (
-              <Link
-                href={{
-                  pathname: '/new',
-                  params: {
-                    projectId: defaultNewSessionProject.id,
-                  },
-                }}
-                accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
-                asChild
-              >
-                <Pressable style={styles.projectIconButton} accessibilityRole="button">
-                  <Icon name="plus" size={20} color={theme.colors.primary} />
-                </Pressable>
-              </Link>
-            )
-          ) : null}
+              )
+            ) : null}
+          </View>
         </View>
-      </View>
-      {group.sessions.length > 0 ? (
-        <ProjectSessionsCollapse collapsed={collapsed}>
-          <View style={styles.projectSessions}>
-            {group.sessions.map((session, index) => (
-              <Fragment key={session.sessionId}>
-                {/* Quiet inset hairline between sessions (never above the first — the
+        {group.sessions.length > 0 ? (
+          <ProjectSessionsCollapse collapsed={collapsed}>
+            <View style={styles.projectSessions}>
+              {group.sessions.map((session, index) => (
+                <Fragment key={session.sessionId}>
+                  {/* Quiet inset hairline between sessions (never above the first — the
                   project header already draws its own bottom border). Inset to start
                   under the session title, leaving the dot gutter clear (iOS-style
                   leading inset), so adjacent session blocks read as separate without
                   the restless full-width line grid the group had before. */}
-                {index > 0 ? <View style={styles.sessionDivider} /> : null}
-                <SessionRow
-                  session={session}
-                  onRename={() => onRenameSession(session)}
-                  onSelect={onSelectSession ? () => onSelectSession(session.sessionId) : undefined}
-                  onOpen={() => onOpenSession(session)}
-                  unread={unread.has(session.sessionId)}
-                  selected={selectedId === session.sessionId}
-                  renaming={renamingId === session.sessionId}
-                />
-              </Fragment>
-            ))}
-          </View>
-        </ProjectSessionsCollapse>
-      ) : null}
+                  {index > 0 ? <View style={styles.sessionDivider} /> : null}
+                  <SessionRow
+                    session={session}
+                    onRename={() => onRenameSession(session)}
+                    onSelect={
+                      onSelectSession ? () => onSelectSession(session.sessionId) : undefined
+                    }
+                    onOpen={() => onOpenSession(session)}
+                    unread={unread.has(session.sessionId)}
+                    selected={selectedId === session.sessionId}
+                    renaming={renamingId === session.sessionId}
+                  />
+                </Fragment>
+              ))}
+            </View>
+          </ProjectSessionsCollapse>
+        ) : null}
+      </Reanimated.View>
     </Reanimated.View>
   );
 }
