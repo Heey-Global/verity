@@ -942,6 +942,17 @@ export const DEVCONTAINER_IMAGE_PREFIX = 'verity-devc-';
 /** Where a Node project's dependencies are mounted from their own volume. */
 export const NODE_MODULES_TARGET = '/work/node_modules';
 
+function hasMountAtTarget(
+  binds: readonly string[],
+  volumeMounts: readonly VolumeMount[],
+  target: string,
+): boolean {
+  return (
+    binds.some((bind) => bind.split(':')[1] === target) ||
+    volumeMounts.some((mount) => mount.target === target)
+  );
+}
+
 /**
  * The per-project volume behind {@link NODE_MODULES_TARGET}.
  *
@@ -5299,7 +5310,8 @@ export class ProvisionerImpl implements Provisioner {
     if (
       runnerRuntimePath !== undefined &&
       this.opts.docker.ensureVolume !== undefined &&
-      this.isFile(join(dirs.clonePath, 'package-lock.json'))
+      this.isFile(join(dirs.clonePath, 'package-lock.json')) &&
+      !hasMountAtTarget(specBinds, volumeMounts, NODE_MODULES_TARGET)
     ) {
       const volume = projectNodeModulesVolumeName(project.id);
       try {

@@ -2873,6 +2873,7 @@ describe('ProvisionerImpl (#174)', () => {
     async function recreateDevcontainerProject(
       agentInRuntime: boolean,
       overrides: Partial<ProvisionerOptions> = {},
+      devcontainerConfig?: string,
     ): Promise<{
       warning: string | null;
       imageRef: string | null;
@@ -2883,6 +2884,7 @@ describe('ProvisionerImpl (#174)', () => {
       error?: unknown;
       provisionError?: string | null | undefined;
       dockerMethods: string[];
+      ensureVolume?: ReturnType<typeof vi.fn>;
       resolvConf: string | undefined;
     }> {
       const root = mkdtempSync(join(tmpdir(), 'verity-attest-'));
@@ -2891,15 +2893,22 @@ describe('ProvisionerImpl (#174)', () => {
         mkdirSync(devcontainerDir, { recursive: true });
         writeFileSync(
           join(devcontainerDir, 'devcontainer.json'),
-          '{ "image": "node:24", "remoteUser": "vscode" }',
+          devcontainerConfig ?? '{ "image": "node:24", "remoteUser": "vscode" }',
         );
+        if (devcontainerConfig !== undefined) {
+          writeFileSync(join(root, 'example-org-example-repo', 'package-lock.json'), '{}');
+        }
         const id = await seedProject('active');
         const prepareRunnerRuntime = vi.fn();
         const collector = vi.fn<ImageEvidenceCollector>(async () => ({
           configuredUser: 'vscode',
           files: attestationFiles(agentInRuntime),
         }));
+        const ensureVolume = vi.fn(async () => ({
+          mountpoint: '/var/lib/docker/volumes/test/_data',
+        }));
         const { client: docker, calls: dockerCalls } = fakeDocker({
+          ...(devcontainerConfig === undefined ? {} : { ensureVolume }),
           imageExists: vi.fn(async () => true),
           createdContainerId: 'cid-attested',
           // The relay, as Docker reports it on the project network.
@@ -2971,11 +2980,31 @@ describe('ProvisionerImpl (#174)', () => {
           collector,
           ...(error === undefined ? {} : { error, provisionError: stored?.provisionError }),
           dockerMethods: dockerCalls.map((call) => call.method),
+          ...(devcontainerConfig === undefined ? {} : { ensureVolume }),
         };
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
     }
+
+    it('keeps a devcontainer dependency volume when an npm lockfile enables the managed volume', async () => {
+      const { spec, ensureVolume } = await recreateDevcontainerProject(
+        false,
+        {},
+        JSON.stringify({
+          image: 'node:24',
+          remoteUser: 'vscode',
+          mounts: [
+            'source=project-dependencies,target=${containerWorkspaceFolder}/node_modules,type=volume',
+          ],
+        }),
+      );
+      expect(spec.binds).toContain('project-dependencies:/work/node_modules');
+      expect(
+        spec.volumeMounts?.filter((mount) => mount.target === NODE_MODULES_TARGET) ?? [],
+      ).toEqual([]);
+      expect(ensureVolume).not.toHaveBeenCalled();
+    });
 
     it('enables the supervisor for an image Verity did not build once it proves the boundary', async () => {
       const {
