@@ -170,9 +170,9 @@ const execFileAsync = promisify(execFile);
 // and there is no guest OOM killer: when the ceiling is hit the HOST kills the
 // Sentry, and every session of the project dies with it rather than one runaway
 // build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
-// shmem), so the ceiling has to fit a project's concurrent turns (see
-// VERITY_PROJECT_MAX_CONCURRENT_TURNS), not a single process. Override per-host
-// with VERITY_SANDBOX_MEMORY (server-main.ts) where the available RAM differs.
+// shmem), so the ceiling has to fit all of a project's concurrent turns, not a
+// single process. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
+// where the available RAM differs.
 export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
 // Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
 // Off by default; see the `memorySwapBytes` comment at the container spec.

@@ -3160,6 +3160,65 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     }
   });
 
+  it('settles a dead Runner even while its permission card is still open', async () => {
+    // A Sandbox that dies while its turn waits on the operator used to skip every probe:
+    // the open card read as "the silence is expected", so the turn stayed running for
+    // good and its card stayed answerable against a control socket nobody listens on.
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-dies-under-card');
+      let outcome: RunnerRecoveryOutcome = {
+        status: 'live',
+        target: {
+          turnId: 'turn-dies-under-card',
+          sessionId: 's1',
+          eventFilePath: '/rt/events.jsonl',
+          controlSocketPath: '/rt/control.sock',
+        },
+      };
+      const recovery: RunnerRecovery = { discover: async () => outcome };
+      // The reattached Runner re-surfaces its still-open prompt, then never speaks again.
+      const client: RunnerClient = {
+        startTurn: () => {
+          throw new Error('startTurn must not be called on a reattach');
+        },
+        attach: (_target, callbacks) => {
+          callbacks?.onPermissionRequest?.({
+            requestId: 'req-open-card',
+            toolUseId: 'tu-open-card',
+            toolName: 'Bash',
+            input: { command: 'npm test' },
+          });
+          return {
+            result: new Promise<RunResult>(() => undefined),
+            steer: () => Promise.resolve(false),
+            answerPermission: () => Promise.resolve(false),
+            cancel: () => Promise.resolve(false),
+          };
+        },
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: () => client,
+        runnerRecovery: recovery,
+      });
+
+      await conductor.recover();
+      expect(conductor.pendingPermissions('s1')).toEqual(['tu-open-card']);
+      outcome = { status: 'dead' };
+      for (let i = 0; i < 12 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      expect(await ctx.store.listRunningTurns()).toHaveLength(0);
+      expect(conductor.pendingPermissions('s1')).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not sweep markers while startup recovery still owns them', async () => {
     // Recovery owns every open marker while it runs: the ones it has not reached yet
     // are not in `uncertainRecovery`, so a sweep overlapping it would happily probe

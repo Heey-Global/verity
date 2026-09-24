@@ -769,9 +769,8 @@ shared-memory file charged to the container. gVisor has no OOM killer of its
 own, so there is no runaway process inside the guest for the kernel to pick:
 it kills the Sentry, and every session of the project goes down together.
 Keeping a margin below the limit does not help, because nothing inside the guest
-ever uses that margin. That is why the default is 6 GiB rather than 4 GiB, and
-why `VERITY_PROJECT_MAX_CONCURRENT_TURNS` limits how many turns share one
-Sandbox.
+ever uses that margin. That is why the default is 6 GiB rather than 4 GiB: the
+ceiling has to fit every turn the project runs at once, not a single process.
 
 The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
 not capped to the host, so on a small machine (8 GiB or less) set

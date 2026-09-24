@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -6112,6 +6113,126 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
       });
     } finally {
       await supervisor.close();
+    }
+  });
+
+  // After a whole-Sandbox kill every worker is gone, but a probe that cannot decide at
+  // boot (here: a lock path it cannot open) used to drop the turn for good. Its state
+  // stayed `running` beside a stale `control.sock`, which the Server reads as a live
+  // Runner — the session then badged `running` with nothing left to ever settle it.
+  it('keeps retrying a turn whose boot-time probe was undecided until it settles', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-undecided', startCommandId: 'start-turn-undecided' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-undecided');
+    const lockPath = join(runtimeDir, 'turns/turn-undecided/worker.lock');
+    await mkdir(lockPath);
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await expect(readTurnState(runtimeDir, 'turn-undecided')).resolves.toMatchObject({
+        status: 'claimed',
+      });
+      await rm(lockPath, { recursive: true });
+      await vi.waitFor(
+        async () => {
+          await expect(readTurnState(runtimeDir, 'turn-undecided')).resolves.toMatchObject({
+            status: 'settled',
+            workerError: 'worker missing during supervisor recovery',
+          });
+        },
+        { timeout: 5000, interval: 20 },
+      );
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  // A removed turn directory makes the lock unopenable for good, so without a drop the
+  // retry forks a `flock` every few seconds for the life of the supervisor. Watched
+  // through the very same claim written back afterwards: identical ids leave only
+  // the missing directory to have dropped it, and a retry still tracking it would
+  // settle that turn.
+  it('stops retrying an undecided turn once its directory is gone', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-gone', startCommandId: 'start-turn-gone' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-gone');
+    await mkdir(join(runtimeDir, 'turns/turn-gone/worker.lock'));
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await rm(join(runtimeDir, 'turns/turn-gone'), { recursive: true });
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await claimTurn(
+        runtimeDir,
+        { turnId: 'turn-gone', startCommandId: 'start-turn-gone' },
+        'dead-supervisor',
+      );
+      await markWorkerLockProtocol('turn-gone');
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await expect(readTurnState(runtimeDir, 'turn-gone')).resolves.toMatchObject({
+        status: 'claimed',
+      });
+    } finally {
+      await supervisor.close();
+    }
+  });
+
+  // GC and a fresh claim of the same id can both land inside one retry interval, so
+  // the retry never sees the directory missing. The new claim is this supervisor's
+  // own and its worker may simply not hold the lock yet; settling it as "worker
+  // missing during supervisor recovery" would end a turn that is just starting.
+  it('leaves a re-claimed turn alone when its undecided predecessor is retried', async () => {
+    await claimTurn(
+      runtimeDir,
+      { turnId: 'turn-reclaimed', startCommandId: 'start-turn-reclaimed' },
+      'dead-supervisor',
+    );
+    await markWorkerLockProtocol('turn-reclaimed');
+    await mkdir(join(runtimeDir, 'turns/turn-reclaimed/worker.lock'));
+    // Staged elsewhere, then swapped in with two renames, so no retry can observe
+    // the gap in between.
+    const stage = await mkdtemp(join(tmpdir(), 'verity-runner-reclaim-'));
+    await claimTurn(
+      stage,
+      { turnId: 'turn-reclaimed', startCommandId: 'start-turn-reclaimed-2' },
+      'live-supervisor',
+    );
+    const staged = await readTurnState(stage, 'turn-reclaimed');
+    await writeFile(
+      join(stage, 'turns/turn-reclaimed/state.json'),
+      `${JSON.stringify({ ...staged, workerLock: true })}\n`,
+    );
+    const supervisor = await runSupervisor({
+      runtimeDir,
+      ...selfOwned,
+      adoptionPollMs: 10,
+      unresolvedRetryMs: 10,
+    });
+    try {
+      await rename(join(runtimeDir, 'turns/turn-reclaimed'), join(stage, 'old-turn'));
+      await rename(join(stage, 'turns/turn-reclaimed'), join(runtimeDir, 'turns/turn-reclaimed'));
+      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await expect(readTurnState(runtimeDir, 'turn-reclaimed')).resolves.toMatchObject({
+        status: 'claimed',
+        startCommandId: 'start-turn-reclaimed-2',
+      });
+    } finally {
+      await supervisor.close();
+      await rm(stage, { recursive: true, force: true });
     }
   });
 

@@ -184,7 +184,7 @@ export function handleSupervisorRequest(
 ): Promise<Record<string, unknown>>;
 export function createTurnAdopter(
   runtimeDir: string,
-  options?: { adoptionPollMs?: number; adoptedTurns?: Set<string> },
+  options?: { adoptionPollMs?: number; unresolvedRetryMs?: number; adoptedTurns?: Set<string> },
 ): {
   adopt(): Promise<void>;
   close(): Promise<void>;
@@ -204,6 +204,8 @@ export function runSupervisor(options?: {
   ) => import('node:child_process').ChildProcess;
   shutdownGraceMs?: number;
   adoptionPollMs?: number;
+  /** How often a turn whose boot-time probe was undecided is probed again. */
+  unresolvedRetryMs?: number;
   brokerSocket?: string;
   maxConcurrentStarts?: number;
   maxQueuedStarts?: number;
