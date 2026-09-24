@@ -320,6 +320,7 @@ export {
   type SessionHistoryPage,
   type SessionStatus,
   type SessionGoogleWorkspaceFile,
+  type GmailSessionConnection,
   type SessionSummary,
   type SessionListEnvelope,
   type AttentionSignal,

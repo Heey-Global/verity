@@ -104,6 +104,45 @@ describe('VerityClient Google Drive browser', () => {
   });
 });
 
+describe('VerityClient Gmail session access', () => {
+  it('connects the account and toggles access for one encoded session', async () => {
+    const connection = {
+      enabled: true,
+      accountEmail: 'person@example.com',
+      clientId: 'google-client-id',
+      connected: true,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ ...connection, enabled: false, connected: false }),
+      json({ connected: true, accountEmail: 'person@example.com' }),
+      json(connection),
+      json({}),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.getSessionGmailConnection('session/1')).resolves.toMatchObject({
+      enabled: false,
+      connected: false,
+    });
+    await client.connectGmail({ code: 'code', codeVerifier: 'verifier', redirectUri: 'verity:/' });
+    await expect(client.enableSessionGmail('session/1')).resolves.toEqual(connection);
+    await client.disableSessionGmail('session/1');
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/session%2F1/gmail',
+      'http://host/gmail/connect',
+      'http://host/sessions/session%2F1/gmail',
+      'http://host/sessions/session%2F1/gmail',
+    ]);
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
+  });
+});
+
 describe('VerityClient health capabilities', () => {
   it('surfaces pushEnabled and remains compatible with older servers', async () => {
     const current = new VerityClient({

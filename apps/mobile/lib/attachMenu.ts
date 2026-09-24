@@ -15,11 +15,14 @@ export interface AttachMenuHandlers {
   onPickPhotos: () => void;
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
-  onPickGoogleDrive: () => void;
-  onPickGoogleWorkspace: () => void;
+  onConnectGmail: () => void;
 }
 
 /**
+ * The menu groups actions by what they do. Content sources can feed the current
+ * conversation and Project Knowledge, while connected services grant the
+ * current session access to an external account.
+ *
  * `meetingAudioEnabled` defaults to the build-time flag; callers pass it only in
  * tests.
  */
@@ -37,5 +40,13 @@ export function attachMenuRows(
           { icon: 'mic' as IconName, label: 'Meeting audio', onPress: handlers.onPickMeetingAudio },
         ]
       : []),
+    { divider: true },
+    { section: 'Connect' },
+    {
+      icon: 'mail',
+      label: 'Gmail',
+      detail: 'Read & draft',
+      onPress: handlers.onConnectGmail,
+    },
   ];
 }

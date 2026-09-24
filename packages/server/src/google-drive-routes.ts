@@ -75,6 +75,7 @@ interface GoogleDriveRouteDeps {
       | 'setSessionWorkspaceFile'
       | 'clearSessionWorkspaceFile'
       | 'listRecentGoogleWorkspaceFileIds'
+      | 'clearSessionGmailConnections'
       | 'getProject'
       | 'getProjectSettings'
       | 'updateProjectSettings'
@@ -160,10 +161,23 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       } catch {
         accountEmail = undefined;
       }
+      const previous = await deps.eventStore.getVeritySettings();
+      const gmailAuthorized =
+        tokens.scopes?.includes('https://www.googleapis.com/auth/gmail.readonly') === true &&
+        tokens.scopes.includes('https://www.googleapis.com/auth/gmail.compose');
+      if (
+        !gmailAuthorized ||
+        (previous?.googleDriveAccountEmail !== null &&
+          previous?.googleDriveAccountEmail !== undefined &&
+          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail?.toLowerCase())
+      ) {
+        await deps.eventStore.clearSessionGmailConnections();
+      }
       await deps.eventStore.updateVeritySettings({
         googleDriveClientId: clientId,
         googleDriveRefreshToken: tokens.refreshToken,
         googleDriveAccountEmail: accountEmail ?? null,
+        gmailAuthorized,
       });
       // Google may return the same refresh-token string when consent expands an
       // existing grant. Its server-side scopes still changed, so keying only on
@@ -175,10 +189,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
 
   app.post('/google-drive/disconnect', async () => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
+    await deps.eventStore.clearSessionGmailConnections();
     await deps.eventStore.updateVeritySettings({
       googleDriveClientId: null,
       googleDriveRefreshToken: null,
       googleDriveAccountEmail: null,
+      gmailAuthorized: false,
     });
     accessToken.invalidate();
     return { connected: false as const };
