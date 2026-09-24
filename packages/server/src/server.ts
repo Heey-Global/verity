@@ -5820,9 +5820,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): ProjectToolkitDrift | null => {
     if (!isDriftReportable(project)) return null;
     const { verdict, carrier } = toolkitDriftEntryOf(current, project);
-    // `unknown` has no remedy — base-image projects are never attested, so it
-    // is their permanent state — and a failed attestation already surfaces as
-    // a provision warning. Shown, it would be a banner nothing can clear.
+    // Base-image projects are never attested, so `unknown` is their permanent
+    // state, and a failed attestation already surfaces as a provision warning.
+    // Shown, it would be a banner that is always on and nothing clears.
     if (verdict === 'unknown') return null;
     return { verdict, carrier };
   };

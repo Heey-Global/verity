@@ -4346,9 +4346,9 @@ describe('GET /projects (#174)', () => {
       });
     });
 
-    // No verdict, and never "matches": `unknown` has no remedy (base-image
-    // projects are never attested, so it is their permanent state), and a banner
-    // on it would be always on for most of the fleet with nothing that clears it.
+    // No verdict, and never "matches": base-image projects are never attested,
+    // so `unknown` is their permanent state, and a banner on it would be always
+    // on for most of the fleet with nothing that clears it.
     it('carries no verdict for an unrecorded toolkit identity', async () => {
       expect(await driftOf(projectRow({ toolkitIdentity: null }))).toBeNull();
     });
@@ -4360,13 +4360,14 @@ describe('GET /projects (#174)', () => {
     });
 
     // A broken bundle read is a deployment fault, not a reason to 500 the whole
-    // project list — but it must not silently become an all-clear either.
+    // project list. It must not become `matches` either: on the wire it carries
+    // no verdict, and the fault is announced by the server log below.
     it('degrades to no verdict when the bundle cannot be read, and still serves the list', async () => {
       expect(await driftOf(projectRow(), () => Promise.reject(new Error('EACCES')))).toBeNull();
     });
 
-    // `isDriftReportable` declines these rows, and null is "no subject" — the
-    // client must not render it as a clean bill of health.
+    // `isDriftReportable` declines these rows. null carries no verdict — never
+    // `matches` — so nothing downstream can read it as a verified toolkit.
     it('is null for a row the drift report declines to judge', async () => {
       expect(await driftOf(projectRow({ state: 'failed' }))).toBeNull();
     });

@@ -34,8 +34,11 @@ export type ToolkitDriftVerdict =
    *  reason {@link ToolkitDriftInput.toolkitIdentity} exists. Internal only: no
    *  output site shows it. Only a passing attestation records an identity, and
    *  the managed default image is never attested, so `unknown` is the permanent
-   *  state of every base-image project and has no remedy; the one case with real
-   *  signal, a failed attestation, already writes its own `provision_warning`. */
+   *  state of every base-image project, with no action that clears it. The one
+   *  case with real signal, a failed attestation, already writes its own
+   *  `provision_warning`. The cost: a `devcontainer` row that was simply never
+   *  attested (provisioned before attestation existed) goes unreported too —
+   *  its next start re-provisions and re-attests it. */
   | 'unknown';
 
 export interface ToolkitDriftInput {
@@ -97,6 +100,7 @@ export interface ToolkitDriftReport {
   readonly current: string | undefined;
   readonly entries: readonly ToolkitDriftEntry[];
   readonly drifted: readonly ToolkitDriftEntry[];
+  /** Kept as the honest partition of `entries`, though no output reads it. */
   readonly unknown: readonly ToolkitDriftEntry[];
 }
 
