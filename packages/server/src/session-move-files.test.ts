@@ -131,3 +131,27 @@ it('preserves a staged deletion even when the original bytes remain in the workt
   expect((await moveGit(target, 'ls-files', '--', 'kept')).length).toBe(0);
   expect(await readFile(join(target, 'kept'), 'utf8')).toBe('original');
 });
+
+it('recognizes an unstaged change already committed in the target', async () => {
+  const source = await repo();
+  const target = await repo();
+  await writeFile(join(source, 'changed'), 'before');
+  await commit(source);
+  await writeFile(join(source, 'changed'), 'after');
+  await writeFile(join(target, 'changed'), 'after');
+  await commit(target);
+  const moved = await transferMoveSnapshot(await captureMoveSnapshot(source), target);
+  expect(moved.alreadyPresent).toContain('changed');
+  expect((await moveGit(target, 'status', '--porcelain')).length).toBe(0);
+});
+
+it('recognizes an unstaged deletion already absent in the target', async () => {
+  const source = await repo();
+  const target = await repo();
+  await writeFile(join(source, 'deleted'), 'before');
+  await commit(source);
+  await rm(join(source, 'deleted'));
+  const moved = await transferMoveSnapshot(await captureMoveSnapshot(source), target);
+  expect(moved.alreadyPresent).toContain('deleted');
+  expect((await moveGit(target, 'status', '--porcelain')).length).toBe(0);
+});
